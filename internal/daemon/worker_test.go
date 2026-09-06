@@ -20,7 +20,7 @@ func TestWorkerExecutesNormalQueueWithoutRawAdministratorPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation := submitWorkerTestOperation(t, service, root, "worker-normal")
+	operation := submitWorkerTestOperation(t, service, root, "worker-normal", "sandbox-worker")
 	if operation.State != daemonv1.OperationState_OPERATION_STATE_QUEUED {
 		t.Fatalf("submitted operation = %#v", operation)
 	}
@@ -59,9 +59,9 @@ func TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := registerWorkerForTest(t, service, "stable-worker", root)
-	interrupted := submitWorkerTestOperation(t, service, root, "interrupted")
+	interrupted := submitWorkerTestOperation(t, service, root, "interrupted", "stable-worker")
 	assignment := leaseWorkerTestOperation(t, service, first)
-	queued := submitWorkerTestOperation(t, service, root, "queued-after-reconnect")
+	queued := submitWorkerTestOperation(t, service, root, "queued-after-reconnect", "stable-worker")
 
 	second := registerWorkerForTest(t, service, "stable-worker", root)
 	if second.WorkerGeneration == first.WorkerGeneration {
@@ -86,13 +86,65 @@ func TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork(t *testing.T) {
 	}
 }
 
+func TestQueuedOperationCannotCrossWorkersThatShareARoot(t *testing.T) {
+	root := t.TempDir()
+	service, err := NewService(root, "daemon-build", "shared-root", allowRawForTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerA := registerWorkerForTest(t, service, "agent-a", root)
+	workerB := registerWorkerForTest(t, service, "agent-b", root)
+	queued := submitWorkerTestOperation(t, service, root, "agent-a-job", workerA.WorkerId)
+	journal, err := os.ReadFile(filepath.Join(root, ".wb", "runtime", "daemon", "operations", queued.OperationId+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(journal), `"target_worker_id": "agent-a"`) {
+		t.Fatalf("journal does not bind the target worker: %s", journal)
+	}
+	_, err = service.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
+		IdempotencyKey: "agent-a-job", WorkingDirectory: root, Argv: []string{"go", "test", "./..."}, CpuUnits: 1, TargetWorkerId: workerB.WorkerId,
+	}))
+	if connect.CodeOf(err) != connect.CodeAlreadyExists {
+		t.Fatalf("changed target worker idempotency error = %v", err)
+	}
+
+	wrongWorker, err := service.LeaseOperation(context.Background(), connect.NewRequest(&daemonv1.LeaseOperationRequest{
+		WorkerId: workerB.WorkerId, WorkerGeneration: workerB.WorkerGeneration, WaitMilliseconds: 1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrongWorker.Msg.Assignment.OperationId != "" {
+		t.Fatalf("worker %q leased operation targeted to %q: %#v", workerB.WorkerId, workerA.WorkerId, wrongWorker.Msg.Assignment)
+	}
+	assignment := leaseWorkerTestOperation(t, service, workerA)
+	if assignment.OperationId != queued.OperationId {
+		t.Fatalf("target worker leased %q, want %q", assignment.OperationId, queued.OperationId)
+	}
+}
+
+func TestNormalWorkerSubmissionRequiresExplicitTarget(t *testing.T) {
+	root := t.TempDir()
+	service, err := NewService(root, "daemon-build", "missing-target", allowRawForTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
+		WorkingDirectory: root, Argv: []string{"go", "test"},
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "target_worker_id") {
+		t.Fatalf("missing target worker error = %v", err)
+	}
+}
+
 func TestQueuedWorkerOperationSurvivesDaemonRestartAndReconnect(t *testing.T) {
 	root := t.TempDir()
 	before, err := NewService(root, "old-build", "3", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
-	queued := submitWorkerTestOperation(t, before, root, "survive-restart")
+	queued := submitWorkerTestOperation(t, before, root, "survive-restart", "reconnected-worker")
 	after, err := NewService(root, "new-build", "4", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +165,7 @@ func TestWorkerLeaseExpiryRequiresRecovery(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	service.now = func() time.Time { return now }
 	registration := registerWorkerForTest(t, service, "expiring-worker", root)
-	operation := submitWorkerTestOperation(t, service, root, "lease-expiry")
+	operation := submitWorkerTestOperation(t, service, root, "lease-expiry", "expiring-worker")
 	_ = leaseWorkerTestOperation(t, service, registration)
 	now = now.Add(workerLeaseDuration + time.Second)
 	recovered, err := service.GetOperation(context.Background(), connect.NewRequest(&daemonv1.GetOperationRequest{OperationId: operation.OperationId}))
@@ -132,7 +184,7 @@ func TestWorkerDisconnectRequiresRecoveryForRunningLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	registration := registerWorkerForTest(t, service, "disconnecting-worker", root)
-	operation := submitWorkerTestOperation(t, service, root, "disconnect")
+	operation := submitWorkerTestOperation(t, service, root, "disconnect", "disconnecting-worker")
 	_ = leaseWorkerTestOperation(t, service, registration)
 	disconnected, err := service.DisconnectWorker(context.Background(), connect.NewRequest(&daemonv1.DisconnectWorkerRequest{
 		WorkerId: registration.WorkerId, WorkerGeneration: registration.WorkerGeneration,
@@ -160,7 +212,7 @@ func TestWorkerRegistrationAndQueueFailClosedOnPermissionsAndSecrets(t *testing.
 		t.Fatal(err)
 	}
 	registration := registerWorkerForTest(t, service, "rooted-worker", root)
-	outsideOperation := submitWorkerTestOperation(t, service, outside, "outside")
+	outsideOperation := submitWorkerTestOperation(t, service, outside, "outside", "rooted-worker")
 	lease, err := service.LeaseOperation(context.Background(), connect.NewRequest(&daemonv1.LeaseOperationRequest{
 		WorkerId: registration.WorkerId, WorkerGeneration: registration.WorkerGeneration, WaitMilliseconds: 1,
 	}))
@@ -175,7 +227,7 @@ func TestWorkerRegistrationAndQueueFailClosedOnPermissionsAndSecrets(t *testing.
 		t.Fatalf("outside operation = %#v, %v", stillQueued.Msg, err)
 	}
 	_, err = service.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: root, Argv: []string{"go", "test"}, Environment: map[string]string{"GITHUB_TOKEN": "must-stay-worker-side"},
+		WorkingDirectory: root, Argv: []string{"go", "test"}, TargetWorkerId: "rooted-worker", Environment: map[string]string{"GITHUB_TOKEN": "must-stay-worker-side"},
 	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "must not enter the daemon request") {
 		t.Fatalf("secret environment rejection = %v", err)
@@ -196,21 +248,22 @@ func TestWorkerIdempotencyCannotCrossTrustedRawBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := &daemonv1.SubmitOperationRequest{
-		IdempotencyKey: "execution-boundary", WorkingDirectory: root, Argv: []string{"go", "test"},
+		IdempotencyKey: "execution-boundary", WorkingDirectory: root, Argv: []string{"go", "test"}, TargetWorkerId: "idempotency-worker",
 	}
 	if _, err := service.SubmitOperation(context.Background(), connect.NewRequest(request)); err != nil {
 		t.Fatal(err)
 	}
 	request.LocalRawCommand = true
+	request.TargetWorkerId = ""
 	if _, err := service.SubmitOperation(context.Background(), connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeAlreadyExists {
 		t.Fatalf("cross-mode idempotency error = %v", err)
 	}
 }
 
-func submitWorkerTestOperation(t *testing.T, service *Service, cwd, key string) *daemonv1.Operation {
+func submitWorkerTestOperation(t *testing.T, service *Service, cwd, key, targetWorkerID string) *daemonv1.Operation {
 	t.Helper()
 	response, err := service.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		IdempotencyKey: key, WorkingDirectory: cwd, Argv: []string{"go", "test", "./..."}, CpuUnits: 1,
+		IdempotencyKey: key, WorkingDirectory: cwd, Argv: []string{"go", "test", "./..."}, CpuUnits: 1, TargetWorkerId: targetWorkerID,
 	}))
 	if err != nil {
 		t.Fatal(err)

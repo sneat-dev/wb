@@ -36,15 +36,16 @@ const (
 )
 
 type record struct {
-	Schema        int                 `json:"schema"`
-	Generation    string              `json:"scheduler_generation"`
-	RequestSHA    string              `json:"request_sha256"`
-	Operation     *daemonv1.Operation `json:"operation"`
-	WorkingDir    string              `json:"working_directory"`
-	Argv          []string            `json:"argv"`
-	Environment   map[string]string   `json:"environment,omitempty"`
-	ExecutionMode string              `json:"execution_mode,omitempty"`
-	LeaseID       string              `json:"lease_id,omitempty"`
+	Schema         int                 `json:"schema"`
+	Generation     string              `json:"scheduler_generation"`
+	RequestSHA     string              `json:"request_sha256"`
+	Operation      *daemonv1.Operation `json:"operation"`
+	WorkingDir     string              `json:"working_directory"`
+	Argv           []string            `json:"argv"`
+	Environment    map[string]string   `json:"environment,omitempty"`
+	ExecutionMode  string              `json:"execution_mode,omitempty"`
+	TargetWorkerID string              `json:"target_worker_id,omitempty"`
+	LeaseID        string              `json:"lease_id,omitempty"`
 }
 
 type active struct {
@@ -116,10 +117,29 @@ func NewService(projectsRoot, build, generation string, authorizeRaw func() erro
 			// raw operation. Preserve that boundary across the schema addition.
 			item.ExecutionMode = executionModeRaw
 		}
+		if item.ExecutionMode == executionModeWorker {
+			operationTarget := strings.TrimSpace(item.Operation.TargetWorkerId)
+			if item.TargetWorkerID == "" {
+				item.TargetWorkerID = operationTarget
+			}
+			if operationTarget != "" && operationTarget != item.TargetWorkerID {
+				return nil, fmt.Errorf("daemon operation %s has conflicting target worker identities", entry.Name())
+			}
+			item.Operation.TargetWorkerId = item.TargetWorkerID
+			if err := validateWorkerID(item.TargetWorkerID); err != nil {
+				item.Operation.State = daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED
+				item.Operation.Error = "worker operation has no valid target identity; resubmit it with an explicit stable worker ID"
+				item.Operation.Cursor = nextCursor(item.Operation.Cursor)
+				item.Operation.FinishedUnixMilli = service.now().UnixMilli()
+				if err := service.persistLocked(&item); err != nil {
+					return nil, err
+				}
+			}
+		}
 		service.records[item.Operation.OperationId] = &item
 		if item.Operation.IdempotencyKey != "" {
 			if item.RequestSHA == "" {
-				item.RequestSHA = requestDigest(item.WorkingDir, item.Argv, item.Environment, item.Operation.CpuUnits, item.ExecutionMode)
+				item.RequestSHA = requestDigest(item.WorkingDir, item.Argv, item.Environment, item.Operation.CpuUnits, item.ExecutionMode, item.TargetWorkerID)
 			}
 			service.byKey[item.Operation.IdempotencyKey] = item.Operation.OperationId
 		}
@@ -172,8 +192,17 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 	executionMode := executionModeWorker
 	if input.LocalRawCommand {
 		executionMode = executionModeRaw
+		if strings.TrimSpace(input.TargetWorkerId) != "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("target_worker_id is only valid for normal worker execution"))
+		}
 		if err := service.authorize(); err != nil {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("raw daemon execution authorization failed: %w", err))
+		}
+	}
+	targetWorkerID := strings.TrimSpace(input.TargetWorkerId)
+	if executionMode == executionModeWorker {
+		if err := validateWorkerID(targetWorkerID); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("target_worker_id: %w", err))
 		}
 	}
 	if len(input.Argv) == 0 || strings.TrimSpace(input.Argv[0]) == "" {
@@ -210,7 +239,7 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
-	requestSHA := requestDigest(input.WorkingDirectory, input.Argv, environment, input.CpuUnits, executionMode)
+	requestSHA := requestDigest(input.WorkingDirectory, input.Argv, environment, input.CpuUnits, executionMode, targetWorkerID)
 	service.mu.Lock()
 	if input.IdempotencyKey != "" {
 		if id := service.byKey[input.IdempotencyKey]; id != "" {
@@ -235,12 +264,13 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 		State: daemonv1.OperationState_OPERATION_STATE_QUEUED, Cursor: "1",
 		CommandKind: classify(input.Argv), ArgsSha256: digest(input.Argv),
 		ArgumentCount: uint32(len(input.Argv)), CpuUnits: input.CpuUnits,
+		TargetWorkerId:     targetWorkerID,
 		SubmittedUnixMilli: now.UnixMilli(),
 	}
 	if executionMode == executionModeWorker && operation.CpuUnits == 0 {
 		operation.CpuUnits = uint32(runqueue.Units(input.Argv, runqueue.Budget()))
 	}
-	item := &record{Schema: QueueSchema, Generation: service.generation, RequestSHA: requestSHA, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: environment, ExecutionMode: executionMode}
+	item := &record{Schema: QueueSchema, Generation: service.generation, RequestSHA: requestSHA, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: environment, ExecutionMode: executionMode, TargetWorkerID: targetWorkerID}
 	service.records[id] = item
 	if input.IdempotencyKey != "" {
 		service.byKey[input.IdempotencyKey] = id
@@ -545,19 +575,21 @@ func digest(argv []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func requestDigest(workingDirectory string, argv []string, environment map[string]string, cpuUnits uint32, executionMode string) string {
+func requestDigest(workingDirectory string, argv []string, environment map[string]string, cpuUnits uint32, executionMode, targetWorkerID string) string {
 	encoded, _ := json.Marshal(struct {
 		WorkingDirectory string            `json:"working_directory"`
 		Argv             []string          `json:"argv"`
 		Environment      map[string]string `json:"environment,omitempty"`
 		CPUUnits         uint32            `json:"cpu_units,omitempty"`
 		ExecutionMode    string            `json:"execution_mode"`
+		TargetWorkerID   string            `json:"target_worker_id,omitempty"`
 	}{
 		WorkingDirectory: workingDirectory,
 		Argv:             argv,
 		Environment:      environment,
 		CPUUnits:         cpuUnits,
 		ExecutionMode:    executionMode,
+		TargetWorkerID:   targetWorkerID,
 	})
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])

@@ -306,10 +306,11 @@ an update never starts a previously absent daemon.
 
 The lifecycle record is private local state, atomically written with a schema
 version, fenced queue generation, owner provenance/token, and predecessor
-handoff. `wb run --async -- <argv>` and `wb daemon operation submit` dispatch
-through the durable queue; `get`, `wait`, and `cancel` address the returned
-operation ID. Queued jobs resume under the next lifecycle generation only while
-the external raw-execution policy remains valid. A job that was running at
+handoff. `wb run --async --worker <stable-id> -- <argv>` and `wb daemon
+operation submit` dispatch through the durable queue; `get`, `wait`, and
+`cancel` address the returned operation ID. Worker jobs remain queued for their
+named worker across generations; trusted raw jobs resume only while the
+external raw-execution policy remains valid. A job that was running at
 process exit becomes `recovery_required` rather than being executed twice.
 Ordinary commands remain daemon-free; only an explicitly daemon-backed async
 operation may request startup. The foreground `serve` path emits an alive
@@ -349,9 +350,12 @@ Normal daemon-backed agent jobs execute only in a long-lived `wb worker
 connect` process started inside the caller or harness sandbox. The worker
 registers a stable caller-supplied ID, exact WB build and protocol, OS and
 architecture, CPU capacity, and one or more explicit canonical roots. The
-daemon journals and schedules the request but never receives the worker's
-environment or launches its process. It leases compatible queued work to a
-worker whose capacity and roots admit it. The worker independently resolves
+daemon journals and schedules the request, including argv, but never receives
+the worker's environment or launches its process. The submitter must name the
+stable target worker ID; the daemon rejects an omitted target and leases the
+job only to that identity when its capacity and roots admit it. It never picks
+another compatible worker. Secrets must therefore stay in the worker's
+inherited environment and never appear in durable argv. The worker independently resolves
 and checks the assigned working directory before execution, inherits its own
 sandbox and environment, emits progress and renews the lease every five
 seconds, bounds returned output, and completes the durable receipt.
@@ -359,8 +363,8 @@ seconds, bounds returned output, and completes the durable receipt.
 A reconnect with the same stable worker ID creates a new worker generation and
 moves any operation still leased to the previous generation to
 `recovery_required`. An expired heartbeat or explicit disconnect does the same.
-Queued jobs remain queued across daemon generations and are leased after a
-compatible worker reconnects. The Windows client and listener retain the
+Queued jobs remain queued across daemon generations and are leased after the
+same stable worker identity reconnects. The Windows client and listener retain the
 current-user named-pipe endpoint abstraction and fail closed while that native
 adapter is unavailable; no TCP fallback is permitted. The administrator-owned
 WB v0.105.0 raw-execution policy remains available only through `wb daemon
@@ -1059,11 +1063,14 @@ appears in neither process arguments nor operation receipts.
 
 ### AC: sandbox-worker-owns-normal-daemon-execution
 
-Given `wb run --async` submits a normal job and no administrator raw-execution
+Given `wb run --async --worker <stable-id>` submits a normal job and no
+administrator raw-execution
 policy exists, when a compatible `wb worker connect` process registers from
 inside the harness sandbox with an explicit canonical root and CPU capacity,
-then the daemon persists the secret-free intent, leases it to that exact worker
-generation, the worker independently refuses a cwd outside its permitted roots,
+then the daemon persists argv and the explicit target identity but no
+environment, leases it only to that stable worker ID and current generation,
+never leases it to another worker sharing the same root, the worker
+independently refuses a cwd outside its permitted roots,
 and an admitted job emits progress at least every ten seconds and ends with a
 bounded durable receipt. If the daemon restarts, queued work is leased after
 reconnect; if the worker disconnects, misses its lease heartbeat, or reconnects

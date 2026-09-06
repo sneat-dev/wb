@@ -51,6 +51,7 @@ message SubmitOperationRequest {
   map<string, string> environment = 4;
   uint32 cpu_units = 5;
   bool local_raw_command = 6;
+  string target_worker_id = 7;
 }
 
 message GetOperationRequest {
@@ -91,6 +92,7 @@ message Operation {
   int64 last_progress_unix_milli = 21;
   int64 lease_expires_unix_milli = 22;
   string progress = 23;
+  string target_worker_id = 24;
 }
 
 message RegisterWorkerRequest {

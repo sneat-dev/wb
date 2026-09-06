@@ -61,6 +61,28 @@ func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
 	}
 }
 
+func TestRunAsyncRequiresExplicitStableWorker(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--async", "--", "go", "test"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--async requires --worker <stable-id>") || !strings.Contains(stderr.String(), "never guesses") {
+		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
+	}
+}
+
+func TestRunWorkerFlagRequiresAsyncCommandMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--worker", "agent-a", "--", "go", "test"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--worker requires --async command mode") {
+		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
+	}
+}
+
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")

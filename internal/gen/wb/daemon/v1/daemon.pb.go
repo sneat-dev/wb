@@ -259,6 +259,7 @@ type SubmitOperationRequest struct {
 	Environment      map[string]string      `protobuf:"bytes,4,rep,name=environment,proto3" json:"environment,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	CpuUnits         uint32                 `protobuf:"varint,5,opt,name=cpu_units,json=cpuUnits,proto3" json:"cpu_units,omitempty"`
 	LocalRawCommand  bool                   `protobuf:"varint,6,opt,name=local_raw_command,json=localRawCommand,proto3" json:"local_raw_command,omitempty"`
+	TargetWorkerId   string                 `protobuf:"bytes,7,opt,name=target_worker_id,json=targetWorkerId,proto3" json:"target_worker_id,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -333,6 +334,13 @@ func (x *SubmitOperationRequest) GetLocalRawCommand() bool {
 		return x.LocalRawCommand
 	}
 	return false
+}
+
+func (x *SubmitOperationRequest) GetTargetWorkerId() string {
+	if x != nil {
+		return x.TargetWorkerId
+	}
+	return ""
 }
 
 type GetOperationRequest struct {
@@ -508,6 +516,7 @@ type Operation struct {
 	LastProgressUnixMilli int64                  `protobuf:"varint,21,opt,name=last_progress_unix_milli,json=lastProgressUnixMilli,proto3" json:"last_progress_unix_milli,omitempty"`
 	LeaseExpiresUnixMilli int64                  `protobuf:"varint,22,opt,name=lease_expires_unix_milli,json=leaseExpiresUnixMilli,proto3" json:"lease_expires_unix_milli,omitempty"`
 	Progress              string                 `protobuf:"bytes,23,opt,name=progress,proto3" json:"progress,omitempty"`
+	TargetWorkerId        string                 `protobuf:"bytes,24,opt,name=target_worker_id,json=targetWorkerId,proto3" json:"target_worker_id,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -699,6 +708,13 @@ func (x *Operation) GetLeaseExpiresUnixMilli() int64 {
 func (x *Operation) GetProgress() string {
 	if x != nil {
 		return x.Progress
+	}
+	return ""
+}
+
+func (x *Operation) GetTargetWorkerId() string {
+	if x != nil {
+		return x.TargetWorkerId
 	}
 	return ""
 }
@@ -1500,14 +1516,15 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\x14scheduler_generation\x18\x04 \x01(\tR\x13schedulerGeneration\x12/\n" +
 	"\x05state\x18\x05 \x01(\x0e2\x19.wb.daemon.v1.DaemonStateR\x05state\x12\x1d\n" +
 	"\n" +
-	"cpu_budget\x18\x06 \x01(\rR\tcpuBudget\"\xe4\x02\n" +
+	"cpu_budget\x18\x06 \x01(\rR\tcpuBudget\"\x8e\x03\n" +
 	"\x16SubmitOperationRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12+\n" +
 	"\x11working_directory\x18\x02 \x01(\tR\x10workingDirectory\x12\x12\n" +
 	"\x04argv\x18\x03 \x03(\tR\x04argv\x12W\n" +
 	"\venvironment\x18\x04 \x03(\v25.wb.daemon.v1.SubmitOperationRequest.EnvironmentEntryR\venvironment\x12\x1b\n" +
 	"\tcpu_units\x18\x05 \x01(\rR\bcpuUnits\x12*\n" +
-	"\x11local_raw_command\x18\x06 \x01(\bR\x0flocalRawCommand\x1a>\n" +
+	"\x11local_raw_command\x18\x06 \x01(\bR\x0flocalRawCommand\x12(\n" +
+	"\x10target_worker_id\x18\a \x01(\tR\x0etargetWorkerId\x1a>\n" +
 	"\x10EnvironmentEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"8\n" +
@@ -1518,7 +1535,7 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\fafter_cursor\x18\x02 \x01(\tR\vafterCursor\x12+\n" +
 	"\x11wait_milliseconds\x18\x03 \x01(\rR\x10waitMilliseconds\";\n" +
 	"\x16CancelOperationRequest\x12!\n" +
-	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\x94\a\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\xbe\a\n" +
 	"\tOperation\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12!\n" +
 	"\foperation_id\x18\x02 \x01(\tR\voperationId\x12'\n" +
@@ -1546,7 +1563,8 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\x11worker_generation\x18\x14 \x01(\tR\x10workerGeneration\x127\n" +
 	"\x18last_progress_unix_milli\x18\x15 \x01(\x03R\x15lastProgressUnixMilli\x127\n" +
 	"\x18lease_expires_unix_milli\x18\x16 \x01(\x03R\x15leaseExpiresUnixMilli\x12\x1a\n" +
-	"\bprogress\x18\x17 \x01(\tR\bprogress\"\xe5\x01\n" +
+	"\bprogress\x18\x17 \x01(\tR\bprogress\x12(\n" +
+	"\x10target_worker_id\x18\x18 \x01(\tR\x0etargetWorkerId\"\xe5\x01\n" +
 	"\x15RegisterWorkerRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x14\n" +
 	"\x05build\x18\x02 \x01(\tR\x05build\x12)\n" +

@@ -23,12 +23,14 @@ stable ID and only the canonical roots it may execute within:
 wb worker connect --id codex-local --root /absolute/projects/root
 ```
 
-`wb run --async -- <command>` submits long-running work without blocking the
-caller. The daemon schedules and journals it; the worker independently checks
-the cwd, executes with its inherited sandbox and environment, and returns a
-bounded receipt. A reconnect creates a new worker generation. Queued work
-survives daemon restart; an interrupted running lease becomes
-`recovery_required`.
+`wb run --async --worker codex-local -- <command>` submits long-running work
+without blocking the caller and binds it to that stable worker ID. The daemon
+never chooses another worker even when roots and capacity match. It journals
+argv, so secrets belong in the worker's inherited environment and never in
+argv. The worker independently checks the cwd, executes with its inherited
+sandbox and environment, and returns a bounded receipt. A reconnect creates a
+new generation of the same stable identity. Queued work survives daemon
+restart; an interrupted running lease becomes `recovery_required`.
 
 Raw command submission from the daemon process is a trusted fallback and is
 disabled by default. An administrator may opt in by creating

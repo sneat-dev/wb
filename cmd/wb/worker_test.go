@@ -66,7 +66,7 @@ func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) 
 	defer server.Close()
 	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
 	operation, err := client.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: root, Argv: []string{"go", "version"},
+		WorkingDirectory: root, Argv: []string{"go", "version"}, TargetWorkerId: "refusing-worker",
 	}))
 	if err != nil {
 		t.Fatal(err)

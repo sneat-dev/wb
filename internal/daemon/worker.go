@@ -58,8 +58,8 @@ func (service *Service) StartLeaseRecovery(ctx context.Context) {
 func (service *Service) RegisterWorker(_ context.Context, request *connect.Request[daemonv1.RegisterWorkerRequest]) (*connect.Response[daemonv1.RegisterWorkerResponse], error) {
 	input := request.Msg
 	id := strings.TrimSpace(input.WorkerId)
-	if id == "" || len(id) > maxWorkerIDBytes || strings.ContainsAny(id, "/\\\x00\r\n") {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id must be 1-%d safe bytes", maxWorkerIDBytes))
+	if err := validateWorkerID(id); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id: %w", err))
 	}
 	if input.ProtocolVersion != ProtocolVersion {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker protocol %d is incompatible with daemon protocol %d", input.ProtocolVersion, ProtocolVersion))
@@ -96,6 +96,13 @@ func (service *Service) RegisterWorker(_ context.Context, request *connect.Reque
 		WorkerId: id, WorkerGeneration: generation, SchedulerGeneration: service.generation,
 		HeartbeatMilliseconds: uint32(workerHeartbeatInterval.Milliseconds()), LeaseMilliseconds: uint32(workerLeaseDuration.Milliseconds()),
 	}}), nil
+}
+
+func validateWorkerID(id string) error {
+	if id == "" || len(id) > maxWorkerIDBytes || strings.ContainsAny(id, "/\\\x00\r\n") {
+		return fmt.Errorf("must be 1-%d safe bytes", maxWorkerIDBytes)
+	}
+	return nil
 }
 
 func (service *Service) LeaseOperation(ctx context.Context, request *connect.Request[daemonv1.LeaseOperationRequest]) (*connect.Response[daemonv1.LeaseOperationResponse], error) {
@@ -266,7 +273,7 @@ func (service *Service) workerLocked(id, generation string) (*workerState, error
 func (service *Service) compatibleQueuedOperationLocked(worker *workerState) *record {
 	items := make([]*record, 0)
 	for _, item := range service.records {
-		if item.ExecutionMode != executionModeWorker || item.Operation.State != daemonv1.OperationState_OPERATION_STATE_QUEUED || item.Operation.CpuUnits > worker.capacity {
+		if item.ExecutionMode != executionModeWorker || item.TargetWorkerID != worker.id || item.Operation.State != daemonv1.OperationState_OPERATION_STATE_QUEUED || item.Operation.CpuUnits > worker.capacity {
 			continue
 		}
 		if permitted, _ := pathWithinAny(worker.roots, item.WorkingDir); !permitted {

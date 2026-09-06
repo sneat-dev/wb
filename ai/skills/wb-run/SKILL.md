@@ -11,24 +11,27 @@ without changing agent instructions:
 
 ```sh
 wb run -- go test ./internal/worktrees -run TestCreate
-wb run --async -- go test ./internal/worktrees -run TestCreate
+wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate
 wb run -- git status --short
 wb run --history --days 7
 ```
 
 Synchronous command mode preserves standard streams and the child exit code.
-`--async` submits through the authenticated durable local daemon and returns a
-JSON operation receipt. Start a long-lived worker from inside the same harness
-sandbox before submitting daemon-backed work:
+`--async --worker <stable-id>` submits through the authenticated durable local
+daemon for only that worker identity and returns a JSON operation receipt. WB
+rejects a missing target rather than choosing another compatible sandbox.
+Start a long-lived worker from inside the same harness sandbox before
+submitting daemon-backed work:
 
 ```sh
 wb worker connect --id <stable-worker-id> --root <canonical-projects-root>
 ```
 
-The daemon schedules and journals normal jobs; the worker independently checks
-the assigned cwd, inherits the harness environment and sandbox, renews its
-lease every five seconds, and executes the command. Secrets in the worker's
-environment never enter the daemon request. The external administrator policy
+The daemon schedules and journals normal jobs, including argv; the named worker
+independently checks the assigned cwd, inherits the harness environment and
+sandbox, renews its lease every five seconds, and executes the command. Keep
+secrets in the worker's inherited environment, never argv. Environment
+overrides are refused and never enter the daemon request. The external administrator policy
 is only for the trusted `wb daemon operation submit` raw fallback; agents and
 WB commands must not create it. CPU-heavy work shares a cross-process budget of
 `CPUCount-1`; WB leaves one logical CPU for the harness and OS and exports the

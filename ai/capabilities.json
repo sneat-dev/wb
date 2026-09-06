@@ -5322,11 +5322,12 @@
                 "--history",
                 "--format",
                 "--json",
-                "--list"
+                "--list",
+                "--worker"
               ],
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
-                "With --async, submits bounded argv without environment through the authenticated durable local queue for a compatible sandboxed worker and returns a JSON operation receipt without waiting.",
+                "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
                 "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
@@ -5345,6 +5346,7 @@
                 "--config",
                 "--history",
                 "--list",
+                "--worker",
                 "run -- <command>"
               ]
             }
@@ -5359,7 +5361,7 @@
               "marker": "# WB run",
               "examples": [
                 "wb run --list",
-                "wb run --async -- go test ./internal/worktrees -run TestCreate",
+                "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
                 "wb run -- go test ./internal/worktrees -run TestCreate",
                 "wb run --history --days 7"
               ]
@@ -7908,6 +7910,11 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "internal/daemon/worker_test.go",
+              "name": "TestQueuedOperationCannotCrossWorkersThatShareARoot",
+              "kind": "integration"
+            },
             {
               "path": "internal/daemon/worker_test.go",
               "name": "TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork",
