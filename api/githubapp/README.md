@@ -77,6 +77,25 @@ Organization projections are omitted until a host supplies an
 installation-scoped complete aggregation; a public repository count from
 `/orgs/{owner}` is not treated as an exact organization summary.
 
+## GitHub App installation tokens
+
+`InstallationTokenSource` is the host-neutral credential boundary used by an
+authoritative GitHub reader. The host supplies its numeric GitHub App ID, PEM
+private-key bytes, an `http.RoundTripper`, and a clock. `APIBase` is optional
+and defaults to `https://api.github.com`; a host can set it for a GitHub
+Enterprise API or an isolated transport test.
+
+For each verified `WebhookDelivery`, the source reads only the exact positive
+`installation.id` from the JSON payload. It backdates the RS256 GitHub App JWT
+by one minute for clock skew, expires it nine minutes after the supplied clock,
+and posts `{}` to
+`/app/installations/{installation.id}/access_tokens`. The exchange accepts only
+GitHub's `201 Created` response with a non-empty, whitespace-safe token and an
+`expires_at` later than the same clock reading. Malformed payloads, unsupported
+or invalid PKCS1/PKCS8 RSA keys, transport failures, oversized or malformed
+responses, unexpected status codes, and expired tokens fail closed. Errors do
+not include the PEM key, JWT, token, or response body.
+
 ## Firestore adapter schema
 
 The host may bind `FirestoreProjectionStore`, `FirestoreProjectionWriter`, and

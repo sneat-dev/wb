@@ -1072,6 +1072,19 @@ registered interested daemons. Each daemon coalesces bursts and performs one
 fresh exact read before acting. Replayed delivery IDs create no duplicate work,
 and an offline daemon resumes from its cursor or reconciliation poll.
 
+### AC: github-app-token-is-scoped-to-the-delivery-installation
+
+Given the host supplies a positive GitHub App ID, PEM RSA private key, HTTP
+transport, and clock, when an authoritative refresh needs GitHub access for a
+verified webhook delivery, the provider parses the exact positive
+`installation.id` from that delivery payload, signs a short-lived RS256 GitHub
+App JWT, and posts to that installation's access-token endpoint. It returns only
+a non-empty token whose reported expiry is later than the same clock reading.
+A missing or malformed installation identity, invalid key, failed transport,
+non-`201` response, malformed or oversized body, blank token, or expired token
+fails closed without exposing key, JWT, token, or response-body material in the
+error.
+
 ### AC: github-relay-entitlement-is-explicit
 
 Given an installed public repository has a root `README.md` WB section linking
