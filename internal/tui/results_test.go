@@ -19,8 +19,8 @@ func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
 		{Repo: discover.Repo{Org: "a", Name: "broken"}, Status: fleetsync.Failed},
 	}
 	m := NewResultsModel(results)
-	if got := len(m.summary.Items()); got != 17 {
-		t.Fatalf("list items = %d, want all 17 summary categories", got)
+	if got := len(m.summary.Items()); got != 18 {
+		t.Fatalf("list items = %d, want all 18 summary categories", got)
 	}
 	assertResultGroupCount(t, m, "Pulled", 1)
 	assertResultGroupCount(t, m, "Pull succeeded", 1)
@@ -29,7 +29,7 @@ func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
 	if got := m.summary.Title; got != "Summary" {
 		t.Fatalf("list title = %q, want Summary", got)
 	}
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 25})
 	m = updated.(ResultsModel)
 	view := m.View().Content
 	if !strings.Contains(view, "Not owned") || !strings.Contains(view, "Fork") || !strings.Contains(view, "Errors") {

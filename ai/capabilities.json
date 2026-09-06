@@ -5138,7 +5138,7 @@
           "limitation": null
         },
         "ai_skill": {
-          "status": "Partial",
+          "status": "Planned",
           "skills": [],
           "limitation": "The durable recovery command is emitted directly by repository transfer processing; a standalone operator runbook is not yet published."
         },
