@@ -420,11 +420,61 @@ func (store *Store) RepositoryStream(repository string) (Stream, bool, []Unreada
 			return stream, true, unreadable, nil
 		}
 	}
+	// A newer stream schema must still fail closed for a repository it may
+	// contain. It must not, however, stop an unrelated repository from landing.
+	// Schema 2 kept members[].repository and added linked_consumers[].repository
+	// for local-only consumers. Those two stable indexes are enough to prove a
+	// repository is unrelated without decoding link reversal detail this binary
+	// does not understand. Later schemas, malformed records, and incomplete
+	// indexes remain unreadable and therefore keep the global guard.
+	relevantUnreadable := unreadable[:0]
+	for _, entry := range unreadable {
+		excludes, known := unreadableStreamExcludesRepository(entry.Path, repository)
+		if known && excludes {
+			continue
+		}
+		relevantUnreadable = append(relevantUnreadable, entry)
+	}
 	// "No stream holds this repository" is only true of the streams WB could
 	// read. An unreadable record may be the one that holds it, so the caller
 	// is handed the list rather than a bare false — the guard decides what to
 	// do about an answer it cannot fully stand behind.
-	return Stream{}, false, unreadable, nil
+	return Stream{}, false, relevantUnreadable, nil
+}
+
+func unreadableStreamExcludesRepository(path, repository string) (excludes, known bool) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var index struct {
+		SchemaVersion int `json:"schema_version"`
+		Members       []struct {
+			Repository string `json:"repository"`
+		} `json:"members"`
+		LinkedConsumers []struct {
+			Repository string `json:"repository"`
+		} `json:"linked_consumers"`
+	}
+	if err := json.Unmarshal(contents, &index); err != nil || index.SchemaVersion != 2 || len(index.Members)+len(index.LinkedConsumers) == 0 {
+		return false, false
+	}
+	repositories := make([]string, 0, len(index.Members)+len(index.LinkedConsumers))
+	for _, member := range index.Members {
+		repositories = append(repositories, member.Repository)
+	}
+	for _, consumer := range index.LinkedConsumers {
+		repositories = append(repositories, consumer.Repository)
+	}
+	for _, indexedRepository := range repositories {
+		if strings.TrimSpace(indexedRepository) == "" {
+			return false, false
+		}
+		if indexedRepository == repository {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 // LiveLinksForWorktree returns every live link recorded against one consumer
