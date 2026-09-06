@@ -170,10 +170,14 @@ func (provider *Provider) doJSON(ctx context.Context, method string, input, outp
 		}
 		response, requestErr := provider.client.Do(request)
 		if requestErr == nil && response.StatusCode >= 200 && response.StatusCode < 300 {
-			defer response.Body.Close()
 			decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
-			if err := decoder.Decode(output); err != nil {
-				return fmt.Errorf("decode successful hub response: %w", err)
+			decodeErr := decoder.Decode(output)
+			closeErr := response.Body.Close()
+			if decodeErr != nil {
+				return fmt.Errorf("decode successful hub response: %w", decodeErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close successful hub response: %w", closeErr)
 			}
 			return nil
 		}
@@ -212,10 +216,13 @@ func (provider *Provider) credential() (string, error) {
 			return "", errors.New("open hub credential file")
 		}
 	}
-	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
-	if err != nil {
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
 		return "", errors.New("read hub credential file")
+	}
+	if closeErr != nil {
+		return "", errors.New("close hub credential file")
 	}
 	if len(raw) > maxTokenBytes {
 		return "", errors.New("hub credential file is too large")
