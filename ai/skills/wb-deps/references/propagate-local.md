@@ -85,6 +85,13 @@ membership remains the link-record and merge-guard authority.
    If the recorded target was pruned while the link was live, `--undo` restores
    the link and then **reports it as dangling** — the published package is not
    actually back until you re-install.
+4. When several packages from the provider are staged in one consumer
+   workspace, WB reads their runtime dependency declarations and links staged
+   siblings to each other. This keeps imports inside `app` or `core` on the
+   same staged `core` and `auth-core` identities as imports from the consumer
+   root, while external peers such as Angular continue to resolve from the
+   consumer installation. WB preflights the whole sibling graph, so a conflict
+   creates no partial graph and can be corrected before retrying.
 
 Restart an already-running frontend build after the link topology changes. If
 the build still resolves the previous package target, preserve any diagnostics
