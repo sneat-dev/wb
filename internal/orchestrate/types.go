@@ -119,21 +119,33 @@ type Handler[T any] interface {
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
 type RemoteCheck struct {
-	Name   string `json:"name" yaml:"name"`
-	Bucket string `json:"bucket" yaml:"bucket"`
-	Link   string `json:"link,omitempty" yaml:"link,omitempty"`
-	AppID  int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
+	Name       string `json:"name" yaml:"name"`
+	Bucket     string `json:"bucket" yaml:"bucket"`
+	Link       string `json:"link,omitempty" yaml:"link,omitempty"`
+	AppID      int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
+	CheckRunID int64  `json:"check_run_id,omitempty" yaml:"check_run_id,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
 // It deliberately carries an excerpt rather than the raw job log so a machine
 // receipt remains compact and does not become an accidental log archive.
 type CIFailureDetail struct {
-	Check   string `json:"check" yaml:"check"`
-	RunURL  string `json:"run_url,omitempty" yaml:"run_url,omitempty"`
-	JobURL  string `json:"job_url,omitempty" yaml:"job_url,omitempty"`
-	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty"`
-	Reason  string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Check       string                `json:"check" yaml:"check"`
+	RunURL      string                `json:"run_url,omitempty" yaml:"run_url,omitempty"`
+	JobURL      string                `json:"job_url,omitempty" yaml:"job_url,omitempty"`
+	Annotations []CIFailureAnnotation `json:"annotations,omitempty" yaml:"annotations,omitempty"`
+	Excerpt     string                `json:"excerpt,omitempty" yaml:"excerpt,omitempty"`
+	Reason      string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+}
+
+// CIFailureAnnotation is a compact, deduplicated GitHub check-run finding.
+// It is deliberately narrower than GitHub's annotation payload so CI receipts
+// remain useful to machines without becoming a copy of the Actions log.
+type CIFailureAnnotation struct {
+	Path      string `json:"path" yaml:"path"`
+	StartLine int    `json:"start_line" yaml:"start_line"`
+	EndLine   int    `json:"end_line,omitempty" yaml:"end_line,omitempty"`
+	Message   string `json:"message" yaml:"message"`
 }
 
 // RequiredRemoteCheck is GitHub's target-policy expectation. IntegrationID
