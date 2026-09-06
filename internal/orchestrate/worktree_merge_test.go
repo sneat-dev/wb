@@ -2602,6 +2602,37 @@ func TestPrepareWorktreeMergeRebatchesExactOpenChecksFailedReceipt(t *testing.T)
 	}
 }
 
+func TestPrepareWorktreeMergeRefusesMalformedPreparedReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*WorktreeMergeReceipt)
+	}{
+		{name: "wrong phase", mutate: func(receipt *WorktreeMergeReceipt) { receipt.Phase = WorktreeMergePhaseLand }},
+		{name: "published fields", mutate: func(receipt *WorktreeMergeReceipt) {
+			receipt.PullRequest = "41"
+			receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			firstSource := createMergeSource(t, fixture, "malformed-prepared-first", "feature/malformed-prepared-first", "first.txt", "first\n")
+			secondSource := createMergeSource(t, fixture, "malformed-prepared-second", "feature/malformed-prepared-second", "second.txt", "second\n")
+			receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&receipt)
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				t.Fatal(err)
+			}
+			_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+			if err == nil {
+				t.Fatal("malformed prepared receipt was accepted")
+			}
+		})
+	}
+}
+
 func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name        string

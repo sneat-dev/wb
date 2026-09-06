@@ -579,7 +579,8 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 		}
 		collisionAcknowledged = true
 	}
-	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
+	preparedOrAcknowledgedCollision := (receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePrepared &&
+		receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "") ||
 		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
 	publishedChecksFailure := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeChecksFailed &&
 		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
@@ -776,7 +777,8 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	if collisionErr != nil {
 		return WorktreeMergePreparedRebatch{}, collisionErr
 	}
-	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
+	preparedOrAcknowledgedCollision := (receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePrepared &&
+		receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "") ||
 		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
 	publishedChecksFailure := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeChecksFailed &&
 		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA && receipt.LandingSHA == ""
