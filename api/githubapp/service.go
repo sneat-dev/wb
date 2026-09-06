@@ -12,8 +12,8 @@ import (
 
 var (
 	ErrPrivateData = errors.New("private Workbench data requires membership")
-	ErrNoReadModel = errors.New("Workbench read model is not configured")
-	ErrNoWebhook   = errors.New("Workbench webhook processor is not configured")
+	ErrNoReadModel = errors.New("workbench read model is not configured")
+	ErrNoWebhook   = errors.New("workbench webhook processor is not configured")
 )
 
 // ReadModel owns persistence and GitHub data projection. It must return only
