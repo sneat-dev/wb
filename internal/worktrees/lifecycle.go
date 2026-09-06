@@ -52,6 +52,10 @@ type ListOptions struct {
 	// substitutes for one: every containment proof still runs, so a wrong or
 	// dishonest pointer can only fail closed. See absorbedLandingReceipt.
 	AbsorbedBy string
+	// MergeReceiptProofs are orchestrator-produced receipts that may replace a
+	// candidate's historical recorded base for this inspection only. The proof
+	// must bind the exact source identity before the target changes.
+	MergeReceiptProofs []MergeReceiptCleanupProof
 	// Progress, when set, is called as the walk reaches and finishes each
 	// candidate. The inventory is one long blocking call — with GitHub set it
 	// fetches from the network once per candidate, serially — so without this
@@ -254,6 +258,9 @@ type ListResult struct {
 	RebaseMergedAtOrigin     bool   `json:"rebase_merged_at_origin,omitempty"`
 	AbsorbedAtOrigin         bool   `json:"absorbed_at_origin,omitempty"`
 	AbsorbedBySHA            string `json:"absorbed_by_sha,omitempty"`
+	// RecordedBase preserves the immutable manifest/claim target in a cleanup
+	// receipt when an exact orchestrator landing proof authorizes another target.
+	RecordedBase string `json:"recorded_base,omitempty"`
 	// SupersededAtOrigin records an explicitly reviewed split-branch
 	// terminalization. It deliberately does not set IntegratedAtOrigin: the
 	// original head did not land as a whole.
@@ -507,7 +514,7 @@ type CleanupOptions struct {
 }
 
 // MergeReceiptCleanupProof binds one source worktree to the exact candidate
-// and landing identities recorded by worktree merge. It is an internal
+// and landing identities recorded by a WB orchestrator. It is an internal
 // orchestration receipt, not a general replacement for --absorbed-by.
 type MergeReceiptCleanupProof struct {
 	Repository     string
@@ -983,12 +990,13 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	}
 	reporter := &listProgressReporter{report: options.Progress}
 	policy := inspectPolicy{
-		includeDetached: options.IncludeDetached,
-		ttl:             options.TTL,
-		residueEvidence: options.ResidueEvidence,
-		residueDepth:    options.ResidueDepth,
-		activity:        options.Activity,
-		now:             options.Now,
+		includeDetached:    options.IncludeDetached,
+		ttl:                options.TTL,
+		residueEvidence:    options.ResidueEvidence,
+		residueDepth:       options.ResidueDepth,
+		activity:           options.Activity,
+		now:                options.Now,
+		mergeReceiptProofs: options.MergeReceiptProofs,
 	}
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, purged, listErr := listLayout(
@@ -1691,12 +1699,13 @@ func inspectLifecycleTaskLock(home string, layout wbhome.Layout, task string) (b
 // re-inspection under the task lock all ask the same question.
 func cleanupInspectPolicy(options CleanupOptions) inspectPolicy {
 	return inspectPolicy{
-		includeDetached: options.IncludeDetached,
-		ttl:             options.TTL,
-		residueEvidence: cleanupWantsResidueEvidence(options),
-		residueDepth:    options.ResidueDepth,
-		activity:        options.Activity,
-		now:             options.Now,
+		includeDetached:    options.IncludeDetached,
+		ttl:                options.TTL,
+		residueEvidence:    cleanupWantsResidueEvidence(options),
+		residueDepth:       options.ResidueDepth,
+		activity:           options.Activity,
+		now:                options.Now,
+		mergeReceiptProofs: options.MergeReceiptProofs,
 	}
 }
 
@@ -2171,20 +2180,21 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		normalized.ReportDir = DefaultCleanupReportDir(resolution.Write.Home, now)
 	}
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
-		ProjectsRoot:    normalized.ProjectsRoot,
-		Tasks:           normalized.Tasks,
-		Base:            normalized.Base,
-		Filter:          inventoryFilter,
-		AbsorbedBy:      normalized.AbsorbedBy,
-		GitHub:          true,
-		Progress:        normalized.Progress,
-		Workers:         normalized.Workers,
-		IncludeDetached: normalized.IncludeDetached,
-		TTL:             normalized.TTL,
-		Activity:        normalized.Activity,
-		ResidueEvidence: cleanupWantsResidueEvidence(normalized),
-		ResidueDepth:    normalized.ResidueDepth,
-		Now:             normalized.Now,
+		ProjectsRoot:       normalized.ProjectsRoot,
+		Tasks:              normalized.Tasks,
+		Base:               normalized.Base,
+		Filter:             inventoryFilter,
+		AbsorbedBy:         normalized.AbsorbedBy,
+		MergeReceiptProofs: normalized.MergeReceiptProofs,
+		GitHub:             true,
+		Progress:           normalized.Progress,
+		Workers:            normalized.Workers,
+		IncludeDetached:    normalized.IncludeDetached,
+		TTL:                normalized.TTL,
+		Activity:           normalized.Activity,
+		ResidueEvidence:    cleanupWantsResidueEvidence(normalized),
+		ResidueDepth:       normalized.ResidueDepth,
+		Now:                normalized.Now,
 	})
 	if err != nil {
 		return CleanupOutcome{}, err
@@ -3274,10 +3284,9 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 // pointer to a landing commit or merged pull request for work that reached the
 // target inside a differently named integration branch; it only says where to
 // look for a receipt and never substitutes for one (see absorbedLandingReceipt).
-// inspectPolicy carries the reporting-only widenings of an inventory read. Its
-// zero value is exactly the behaviour every mutation path had before them, so a
-// caller that removes worktrees or branches keeps passing it and can never
-// silently inherit a widening it did not ask for.
+// inspectPolicy carries explicitly requested inspection behavior. Its zero
+// value is exactly the behavior every mutation path had before these options,
+// so a caller cannot silently inherit cleanup authority it did not provide.
 type inspectPolicy struct {
 	// includeDetached keeps a detached checkout as a result instead of an
 	// error. Branch is empty for one; every branch-shaped operation must check.
@@ -3291,8 +3300,9 @@ type inspectPolicy struct {
 	// a checkout may be removed ask for it.
 	activity bool
 	// residueDepth bounds that walk.
-	residueDepth int
-	now          func() time.Time
+	residueDepth       int
+	now                func() time.Time
+	mergeReceiptProofs []MergeReceiptCleanupProof
 }
 
 func (policy inspectPolicy) clock() time.Time {
@@ -3409,6 +3419,11 @@ func inspectLifecycleWorktree(
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 		External: external, Local: layout.Local, Detached: detached,
+	}
+	if target := mergeReceiptCleanupTargetOverride(ctx, policy.mergeReceiptProofs, result); target != "" && target != result.Base {
+		result.RecordedBase = result.Base
+		result.Base = target
+		base = target
 	}
 	owners, ownerErr := lifecycleOwnerViews(home, worktree)
 	if ownerErr != nil {
@@ -4315,6 +4330,26 @@ func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCle
 		return nil
 	}
 	return nil
+}
+
+// mergeReceiptCleanupTargetOverride changes only the target used by this
+// inspection. The immutable manifest and Work Log remain untouched. A proof
+// whose source identity or bounded Git identities do not match grants nothing;
+// applyMergeReceiptCleanupProof reports its ordinary rejection later.
+func mergeReceiptCleanupTargetOverride(ctx context.Context, proofs []MergeReceiptCleanupProof, entry ListResult) string {
+	for _, proof := range proofs {
+		if filepath.Clean(proof.SourceWorktree) != filepath.Clean(entry.WorktreeDir) {
+			continue
+		}
+		if proof.Repository != entry.Repository || proof.SourceTask != entry.Task ||
+			proof.SourceBranch != entry.Branch || proof.SourceSHA != entry.HeadSHA ||
+			!validBranch(ctx, proof.Target) || !isGitObjectID(proof.SourceSHA) ||
+			!isGitObjectID(proof.CandidateSHA) || !isGitObjectID(proof.LandingSHA) {
+			return ""
+		}
+		return proof.Target
+	}
+	return ""
 }
 
 func mergeReceiptCleanupProofRejection(ctx context.Context, proof MergeReceiptCleanupProof, entry ListResult) string {

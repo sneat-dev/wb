@@ -814,6 +814,54 @@ func TestLandRetiresTheWorktreeThatProducedTheBranch(t *testing.T) {
 	}
 }
 
+// The pull request base proved during landing is the cleanup target even when
+// the immutable creation record names the integration branch the worktree was
+// originally stacked on. The historical record remains untouched; the exact
+// in-memory landing receipt authorizes this one cleanup transaction.
+func TestLandRetiresWorktreeWhenManifestBaseDiffersFromPullRequestBase(t *testing.T) {
+	fixture := newLandFixture(t, "bump/retargeted", "go.mod")
+	runEngineGit(t, fixture.canonical, "branch", "feature/integration", fixture.baseSHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "feature/integration")
+
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "bump-retargeted",
+		Base: "feature/integration", Branch: "bump/retargeted", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].Base != "feature/integration" {
+		t.Fatalf("created = %#v, want worktree recorded against feature/integration", created)
+	}
+
+	options := landOptions(fixture)
+	options.Keep = false
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if len(result.CleanedTasks) != 1 || result.CleanedTasks[0] != "bump-retargeted" {
+		t.Fatalf("cleaned tasks = %#v, want the retargeted worktree", result.CleanedTasks)
+	}
+	if len(result.CleanupReports) != 1 {
+		t.Fatalf("cleanup reports = %#v, want one append-only receipt", result.CleanupReports)
+	}
+	report, readErr := os.ReadFile(result.CleanupReports[0])
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(report), `"base": "main"`) || !strings.Contains(string(report), `"recorded_base": "feature/integration"`) {
+		t.Fatalf("cleanup receipt did not preserve proven and recorded targets:\n%s", report)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("the retargeted worktree survived landing cleanup: %v", statErr)
+	}
+}
+
 // A landing whose worktree cannot be retired must say so rather than report a
 // clean success. The landing itself is done and irreversible; the finding is
 // what tells the operator there is still something on their disk.

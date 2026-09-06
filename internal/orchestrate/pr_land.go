@@ -521,7 +521,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	if !options.Keep {
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Started, view.Head.Ref, 0, 0)
-		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref, landed.MergeCommitSHA)
+		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Head.SHA, view.Base.Ref, landed.MergeCommitSHA)
 		result.CleanedTasks = tasks
 		result.CleanupReports = reports
 		if cleanupErr == nil && len(tasks) == 0 {
@@ -789,9 +789,10 @@ func branchAlreadyGone(stdout, stderr []byte) bool {
 
 // cleanupLandedWorktrees retires every WB worktree that produced this branch.
 // It reuses the ordinary cleanup transaction — one deletion path, one durable
-// Work Log seal — and passes the landing commit as the absorbed-by receipt,
-// which is what makes a squash landing provable.
-func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headRef, base, landingSHA string) ([]string, []string, error) {
+// Work Log seal — and passes the exact PR head, base, and landing commit as a
+// receipt. That proof may supersede an earlier manifest base in memory without
+// rewriting the append-only creation record.
+func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headRef, headSHA, base, landingSHA string) ([]string, []string, error) {
 	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
 		Base:         base,
@@ -802,25 +803,34 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 	}
 	tasks := make([]string, 0, 1)
 	seen := map[string]bool{}
+	proofsByTask := map[string][]worktrees.MergeReceiptCleanupProof{}
 	for _, entry := range listed.Results {
-		if entry.Repository != repository || entry.Branch != headRef || seen[entry.Task] {
+		if entry.Repository != repository || entry.Branch != headRef {
 			continue
 		}
-		seen[entry.Task] = true
-		tasks = append(tasks, entry.Task)
+		proofsByTask[entry.Task] = append(proofsByTask[entry.Task], worktrees.MergeReceiptCleanupProof{
+			Repository: repository, Target: base, SourceTask: entry.Task,
+			SourceWorktree: entry.WorktreeDir, SourceBranch: headRef, SourceSHA: headSHA,
+			CandidateSHA: headSHA, LandingSHA: landingSHA,
+		})
+		if !seen[entry.Task] {
+			seen[entry.Task] = true
+			tasks = append(tasks, entry.Task)
+		}
 	}
 	cleaned := make([]string, 0, len(tasks))
 	reports := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		outcome, cleanupErr := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
-			ProjectsRoot:    projectsRoot,
-			Tasks:           []string{task},
-			ExactRepository: repository,
-			Base:            base,
-			AbsorbedBy:      landingSHA,
-			Apply:           true,
-			OlderThan:       0,
-			Workers:         1,
+			ProjectsRoot:       projectsRoot,
+			Tasks:              []string{task},
+			ExactRepository:    repository,
+			Base:               base,
+			AbsorbedBy:         landingSHA,
+			MergeReceiptProofs: proofsByTask[task],
+			Apply:              true,
+			OlderThan:          0,
+			Workers:            1,
 		})
 		if outcome.ReportPath != "" {
 			reports = append(reports, outcome.ReportPath)
