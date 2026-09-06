@@ -442,11 +442,25 @@ func TestReleaseEligibilityUsesGitChangeSets(t *testing.T) {
 	if got := run(cli, head); got != "eligible=false" {
 		t.Fatalf("docs-only = %q", got)
 	}
+	write("api/githubapp/provider.go")
+	git("add", ".")
+	git("commit", "-m", "github app api")
+	api := git("rev-parse", "HEAD")
+	if got := run(head, api); got != "eligible=true" {
+		t.Fatalf("github app api = %q", got)
+	}
+	write("docs/after-api.md")
+	git("add", ".")
+	git("commit", "-m", "docs after api")
+	docsAfterAPI := git("rev-parse", "HEAD")
+	if got := run(api, docsAfterAPI); got != "eligible=false" {
+		t.Fatalf("docs-only after api = %q", got)
+	}
 	write(".github/workflows/go-ci.yml")
 	git("add", ".")
 	git("commit", "-m", "workflow")
 	workflow := git("rev-parse", "HEAD")
-	if got := run(head, workflow); got != "eligible=true" {
+	if got := run(docsAfterAPI, workflow); got != "eligible=true" {
 		t.Fatalf("workflow-only = %q", got)
 	}
 	write(".github/scripts/release-eligible.sh")
