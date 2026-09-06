@@ -326,6 +326,7 @@ func (engine *Engine) linkConsumer(
 	}
 
 	var applied []streams.Link
+	var appliedNpm []streams.Link
 	if len(goDeclarations) > 0 {
 		links, err := engine.linkGo(ctx, library, consumer, goDeclarations, result.LibraryRepository, hash)
 		if err != nil {
@@ -340,6 +341,24 @@ func (engine *Engine) linkConsumer(
 			continue
 		}
 		applied = append(applied, link)
+		appliedNpm = append(appliedNpm, link)
+	}
+	// Once every npm package in this consumer has been staged, reconcile only
+	// declared runtime sibling edges. Linking one package at a time cannot do
+	// this safely: the sibling stage may not exist until a later declaration is
+	// applied. A failed package stays intent-only and is therefore excluded from
+	// reconciliation; its recorded link remains undoable for recovery.
+	if len(appliedNpm) == len(npmDeclarations) {
+		for workspace, names := range npmLinkGroups(appliedNpm) {
+			workspaceDir, workspaceErr := workspacePath(consumer, workspace)
+			if workspaceErr != nil {
+				outcome.Errors = append(outcome.Errors, workspaceErr.Error())
+				continue
+			}
+			if linkErr := engine.Node.LinkSiblings(ctx, workspaceDir, names); linkErr != nil {
+				outcome.Errors = append(outcome.Errors, linkErr.Error())
+			}
+		}
 	}
 	// Re-record with the exact artefacts each mechanism produced. A link that
 	// failed to apply keeps its intended record rather than being removed:
@@ -365,6 +384,22 @@ func (engine *Engine) linkConsumer(
 			"linking changed tracked files, which a local link must never do: %s", strings.Join(introduced, ", ")))
 	}
 	return outcome
+}
+
+func npmLinkGroups(links []streams.Link) map[string][]string {
+	groups := map[string][]string{}
+	for _, link := range links {
+		workspace := link.Workspace
+		if workspace == "" {
+			workspace = "."
+		}
+		groups[workspace] = append(groups[workspace], link.Identity)
+	}
+	for workspace, names := range groups {
+		sort.Strings(names)
+		groups[workspace] = dedupe(names)
+	}
+	return groups
 }
 
 // intendedLinks is what the consumer is about to carry. It is recorded before
