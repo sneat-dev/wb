@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -83,6 +84,7 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 	}
 	deps.alive = func(pid int) bool { return pid == 900 }
 	deps.health = func(context.Context, string) error { return errors.New("connect: operation not permitted") }
+	deps.bridgeHealth = func(context.Context, string, string) error { return errors.New("bridge unavailable") }
 
 	result, err := newDaemonController(deps, root).Status(context.Background())
 	if err != nil {
@@ -91,14 +93,14 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 	if result.State.Status != daemon.StatusReady || !result.ProcessManagerRunning || result.Reachable {
 		t.Fatalf("ready daemon with blocked probe = %#v", result)
 	}
-	if !strings.Contains(result.ReachabilityError, "operation not permitted") {
-		t.Fatalf("probe error = %q", result.ReachabilityError)
+	if !strings.Contains(result.DirectTransportError, "operation not permitted") || !strings.Contains(result.ReachabilityError, "bridge unavailable") {
+		t.Fatalf("probe errors = direct %q, effective %q", result.DirectTransportError, result.ReachabilityError)
 	}
 	var textOutput bytes.Buffer
 	if err := writeDaemonResult(&textOutput, "text", result); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"state=ready", "process_manager_running=true", "api_reachable=false", `api_probe_error="connect: operation not permitted"`} {
+	for _, want := range []string{"state=ready", "process_manager_running=true", "api_reachable=false", "direct_transport_reachable=false", `direct_transport_error="connect: operation not permitted"`, `api_probe_error="protected file bridge: bridge unavailable"`} {
 		if !strings.Contains(textOutput.String(), want) {
 			t.Fatalf("text status %q does not contain %q", textOutput.String(), want)
 		}
@@ -107,7 +109,7 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 	if err := writeDaemonResult(&jsonOutput, "json", result); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"process_manager_running": true`, `"reachable": false`, `"reachability_error": "connect: operation not permitted"`, `"status": "ready"`} {
+	for _, want := range []string{`"process_manager_running": true`, `"reachable": false`, `"direct_transport_reachable": false`, `"direct_transport_error": "connect: operation not permitted"`, `"reachability_error": "protected file bridge: bridge unavailable"`, `"status": "ready"`} {
 		if !strings.Contains(jsonOutput.String(), want) {
 			t.Fatalf("JSON status %q does not contain %q", jsonOutput.String(), want)
 		}
@@ -115,6 +117,102 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
 	if err != nil || !found || stored.Status != daemon.StatusReady || stored.Queue.Generation != 1 {
 		t.Fatalf("probe failure mutated lifecycle state = %#v, %t, %v", stored, found, err)
+	}
+}
+
+func TestDaemonStatusUsesAuthenticatedFileBridgeAfterDirectTransportDenial(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state.MarkReady(901, time.Now())
+	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 901 }
+	deps.health = func(context.Context, string) error { return syscall.EPERM }
+	var probedRoot, probedGeneration string
+	deps.bridgeHealth = func(_ context.Context, root, generation string) error {
+		probedRoot, probedGeneration = root, generation
+		return nil
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reachable || result.DirectTransportReachable || result.ReachabilityTransport != "file_bridge" || !strings.Contains(result.DirectTransportError, "operation not permitted") || result.ReachabilityError != "" {
+		t.Fatalf("file-bridge status = %#v", result)
+	}
+	if probedRoot != root || probedGeneration != "1" {
+		t.Fatalf("bridge probe = root %q generation %q", probedRoot, probedGeneration)
+	}
+	var output bytes.Buffer
+	if err := writeDaemonResult(&output, "text", result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"api_reachable=true", "direct_transport_reachable=false", "api_transport=file_bridge", "direct_transport_error="} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("text status %q does not contain %q", output.String(), want)
+		}
+	}
+	output.Reset()
+	if err := writeDaemonResult(&output, "json", result); err != nil {
+		t.Fatal(err)
+	}
+	var decoded daemonResult
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("bridge status JSON = %v; output=%s", err, output.String())
+	}
+	if !decoded.Reachable || decoded.DirectTransportReachable || decoded.ReachabilityTransport != "file_bridge" || !strings.Contains(decoded.DirectTransportError, "operation not permitted") {
+		t.Fatalf("decoded bridge status = %#v", decoded)
+	}
+}
+
+func TestDaemonStatusReportsDirectTransportWithoutBridgeProbe(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state.MarkReady(902, time.Now())
+	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 902 }
+	deps.health = func(context.Context, string) error { return nil }
+	deps.bridgeHealth = func(context.Context, string, string) error {
+		t.Fatal("direct success unexpectedly probed the file bridge")
+		return nil
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reachable || !result.DirectTransportReachable || result.ReachabilityTransport != "direct" || result.DirectTransportError != "" || result.ReachabilityError != "" {
+		t.Fatalf("direct status = %#v", result)
+	}
+}
+
+func TestDaemonStatusDoesNotBridgeDisallowedDirectFailure(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state.MarkReady(903, time.Now())
+	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 903 }
+	deps.health = func(context.Context, string) error { return errors.New("unexpected response identity") }
+	deps.bridgeHealth = func(context.Context, string, string) error {
+		t.Fatal("disallowed direct failure unexpectedly probed the file bridge")
+		return nil
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reachable || result.DirectTransportReachable || result.DirectTransportError != "unexpected response identity" || result.ReachabilityError != result.DirectTransportError {
+		t.Fatalf("disallowed fallback status = %#v", result)
 	}
 }
 
@@ -187,6 +285,79 @@ func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
 	}
 	if restarted.State.Queue.Generation != first.State.Queue.Generation+1 || restarted.State.Queue.HandoffFrom == nil {
 		t.Fatalf("restart = %#v", restarted)
+	}
+}
+
+func TestDaemonRestartProgressIsPhaseAwareAndBounded(t *testing.T) {
+	if daemonRestartProgressInterval >= 10*time.Second {
+		t.Fatalf("restart progress interval = %s", daemonRestartProgressInterval)
+	}
+	ticks := make(chan time.Time, 1)
+	stopped := false
+	var observedInterval time.Duration
+	controller := daemonController{deps: daemonDependencies{restartTicker: func(interval time.Duration) (<-chan time.Time, func()) {
+		observedInterval = interval
+		return ticks, func() { stopped = true }
+	}}}
+	messages := make(chan string, 2)
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		controller.restartPhase(func(message string) { messages <- message }, "draining daemon pid 900", func() { <-release })
+		close(done)
+	}()
+	if message := <-messages; message != "draining daemon pid 900" {
+		t.Fatalf("initial progress = %q", message)
+	}
+	ticks <- time.Now()
+	if message := <-messages; message != "draining daemon pid 900 (still waiting)" {
+		t.Fatalf("repeated progress = %q", message)
+	}
+	close(release)
+	<-done
+	if !stopped {
+		t.Fatal("restart progress ticker was not stopped")
+	}
+	if observedInterval != daemonRestartProgressInterval {
+		t.Fatalf("restart progress ticker interval = %s", observedInterval)
+	}
+}
+
+func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			root := t.TempDir()
+			deps := daemonTestDependencies(t, root)
+			if _, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen); err != nil {
+				t.Fatal(err)
+			}
+			previousRoot := projectsRoot
+			projectsRoot = root
+			t.Cleanup(func() { projectsRoot = previousRoot })
+			command := newDaemonRestartCmd(deps)
+			var stdout, stderr bytes.Buffer
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			command.SetArgs([]string{"--format", format})
+			if err := command.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"draining daemon pid", "starting replacement daemon"} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Fatalf("%s progress %q does not contain %q", format, stderr.String(), want)
+				}
+			}
+			if format == "json" {
+				var result daemonResult
+				if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Action != "restart" {
+					t.Fatalf("JSON restart = %#v, %v; output=%s", result, err, stdout.String())
+				}
+				return
+			}
+			if !strings.Contains(stdout.String(), "daemon restart:") {
+				t.Fatalf("text result = %q", stdout.String())
+			}
+		})
 	}
 }
 

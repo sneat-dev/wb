@@ -188,6 +188,47 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	}
 }
 
+func TestRunMergePolicyApplyIgnoresUnrelatedRepositoryResponseChanges(t *testing.T) {
+	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() {
+		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
+	})
+	mergePolicyDiscover = func(string, string, []string, []string, bool) ([]discover.Repo, error) {
+		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
+	}
+	repositoryReads := 0
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch {
+		case strings.Contains(endpoint, "/rules/branches/"):
+			return []byte(`[]`), nil
+		case strings.Contains(endpoint, "/protection"):
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		default:
+			repositoryReads++
+			return fmt.Appendf(nil, `{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true,"merge_commit_title":"MERGE_MESSAGE","merge_commit_message":"PR_TITLE","temp_clone_token":"dummy-%d","unrelated_metadata":{"observation":%d}}`, repositoryReads, repositoryReads), nil
+		}
+	}
+	mutations := 0
+	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if command := strings.Join(args, " "); !strings.Contains(command, "--method PATCH repos/acme/app") {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + command)}
+		}
+		return githubobserver.CommandResponse{}
+	}
+
+	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repositoryReads != 3 {
+		t.Fatalf("repository reads = %d, want plan and two validations", repositoryReads)
+	}
+	if mutations != 1 || report.Repositories[0].Disposition != "applied" {
+		t.Fatalf("mutations=%d repository=%#v", mutations, report.Repositories[0])
+	}
+}
+
 func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
 	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
@@ -290,7 +331,7 @@ func TestApplyClassicLinearHistoryUsesDedicatedDeleteAndRecordsPartialResult(t *
 		Repository:    "acme/app",
 		DefaultBranch: "main",
 		Disposition:   "drift",
-		ObservedSHA:   digestJSON(repositoryBody),
+		ObservedSHA:   mustRepositoryPolicySHA(t, repositoryBody),
 		ProtectionSHA: digestJSON(protectionBody),
 		ClassicLinear: true,
 	}}}
@@ -359,7 +400,8 @@ func TestOrganizationRulesetIsAuditOnlyAndBlocksRepositoryFallback(t *testing.T)
 		mutated = true
 		return githubobserver.CommandResponse{}
 	}
-	report := mergePolicyReport{Repositories: []mergePolicyRepository{{Repository: "acme/app", DefaultBranch: "main", Disposition: "drift", ObservedSHA: digestJSON([]byte(`{"default_branch":"main"}`)), ProtectionSHA: digestJSON([]byte(`{"default_branch":"main"}`)), Rulesets: []mergePolicyRuleRef{{Type: "pull_request", SourceType: "Organization", Source: "acme", ID: 7, Methods: []string{"squash"}}}}}}
+	repositoryBody := []byte(`{"default_branch":"main"}`)
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{{Repository: "acme/app", DefaultBranch: "main", Disposition: "drift", ObservedSHA: mustRepositoryPolicySHA(t, repositoryBody), ProtectionSHA: digestJSON(repositoryBody), Rulesets: []mergePolicyRuleRef{{Type: "pull_request", SourceType: "Organization", Source: "acme", ID: 7, Methods: []string{"squash"}}}}}}
 	buildMergePolicyRulesetPlan(context.Background(), &report)
 	if len(report.Rulesets) != 1 || report.Rulesets[0].Disposition != "blocked" || !strings.Contains(report.Rulesets[0].Error, "audit-only") {
 		t.Fatalf("ruleset plan = %#v", report.Rulesets)
@@ -400,7 +442,7 @@ func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
 			Repository:    fmt.Sprintf("acme/app-%d", index),
 			DefaultBranch: "main",
 			Disposition:   "drift",
-			ObservedSHA:   digestJSON(body),
+			ObservedSHA:   mustRepositoryPolicySHA(t, body),
 			ProtectionSHA: "none",
 		})
 	}
@@ -481,7 +523,7 @@ func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
 			Repository:    fmt.Sprintf("acme/app-%d", index),
 			DefaultBranch: "main",
 			Disposition:   "drift",
-			ObservedSHA:   digestJSON(body),
+			ObservedSHA:   mustRepositoryPolicySHA(t, body),
 			ProtectionSHA: "none",
 		})
 	}
@@ -541,4 +583,13 @@ func TestEnterpriseRuleThatAllowsMergeLeavesOnlyRepositorySettingsDrift(t *testi
 	if len(report.Rulesets) != 0 {
 		t.Fatalf("enterprise rule that already allows merge must not produce a shared plan: %#v", report.Rulesets)
 	}
+}
+
+func mustRepositoryPolicySHA(t *testing.T, body []byte) string {
+	t.Helper()
+	_, sha, err := decodeRepositoryPolicy(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha
 }

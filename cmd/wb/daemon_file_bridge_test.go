@@ -567,6 +567,18 @@ func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 	}
 }
 
+func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
+	root := t.TempDir()
+	_, stop := startTestDaemonFileBridge(t, root, "health-token", "61")
+	defer stop()
+	if err := daemonFileBridgeHealthy(context.Background(), root, "61"); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemonFileBridgeHealthy(context.Background(), root, "60"); err == nil || !strings.Contains(err.Error(), "generation is 61, want 60") {
+		t.Fatalf("stale health generation error = %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

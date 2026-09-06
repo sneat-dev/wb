@@ -383,13 +383,13 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 		result.Disposition, result.Error = "error", err.Error()
 		return result
 	}
-	var policy githubRepositoryPolicy
-	if err := json.Unmarshal(body, &policy); err != nil {
+	policy, observedSHA, err := decodeRepositoryPolicy(body)
+	if err != nil {
 		result.Disposition, result.Error = "error", "decode repository settings: "+err.Error()
 		return result
 	}
 	result.DefaultBranch = policy.DefaultBranch
-	result.ObservedSHA = digestJSON(body)
+	result.ObservedSHA = observedSHA
 	if !policy.AllowMergeCommit {
 		result.Drift = append(result.Drift, "allow_merge_commit=false")
 	}
@@ -581,8 +581,9 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 			continue
 		}
 		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
+		_, freshSHA, decodeErr := decodeRepositoryPolicy(fresh)
 		protectionSHA, _, _, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
-		if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA {
+		if err != nil || decodeErr != nil || protectionErr != nil || freshSHA != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA {
 			repo.Disposition = "blocked"
 			repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
 		}
@@ -689,8 +690,9 @@ func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository,
 		}
 	}
 	fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
+	_, freshSHA, decodeErr := decodeRepositoryPolicy(fresh)
 	protectionSHA, classicLinear, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
-	if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
+	if err != nil || decodeErr != nil || protectionErr != nil || freshSHA != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
 		repo.Disposition = "blocked"
 		repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
 		return repo, nil
@@ -898,6 +900,17 @@ func appendUnique(values []string, value string) []string {
 func containsSorted(values []string, want string) bool {
 	index := sort.SearchStrings(values, want)
 	return index < len(values) && values[index] == want
+}
+func decodeRepositoryPolicy(body []byte) (githubRepositoryPolicy, string, error) {
+	var policy githubRepositoryPolicy
+	if err := json.Unmarshal(body, &policy); err != nil {
+		return githubRepositoryPolicy{}, "", err
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		return githubRepositoryPolicy{}, "", err
+	}
+	return policy, digestJSON(canonical), nil
 }
 func digestJSON(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
 func githubCommandMessage(response githubobserver.CommandResponse) string {

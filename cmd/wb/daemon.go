@@ -21,22 +21,26 @@ import (
 )
 
 const (
-	daemonDefaultListen     = "127.0.0.1:8766"
-	daemonReadyTimeout      = 5 * time.Second
-	daemonStopTimeout       = 5 * time.Second
-	daemonHeartbeatInterval = 10 * time.Second
+	daemonDefaultListen           = "127.0.0.1:8766"
+	daemonReadyTimeout            = 5 * time.Second
+	daemonStopTimeout             = 5 * time.Second
+	daemonHeartbeatInterval       = 10 * time.Second
+	daemonRestartProgressInterval = 8 * time.Second
 )
 
 type daemonResult struct {
-	Action                  string            `json:"action"`
-	Managed                 bool              `json:"managed"`
-	ProcessManagerRunning   bool              `json:"process_manager_running"`
-	Reachable               bool              `json:"reachable"`
-	ReachabilityError       string            `json:"reachability_error,omitempty"`
-	ProvenanceMatches       bool              `json:"provenance_matches_installed"`
-	State                   daemonPublicState `json:"state,omitempty"`
-	AlreadyRunning          bool              `json:"already_running,omitempty"`
-	AutomaticVersionHandoff bool              `json:"automatic_version_handoff,omitempty"`
+	Action                   string            `json:"action"`
+	Managed                  bool              `json:"managed"`
+	ProcessManagerRunning    bool              `json:"process_manager_running"`
+	Reachable                bool              `json:"reachable"`
+	ReachabilityError        string            `json:"reachability_error,omitempty"`
+	ReachabilityTransport    string            `json:"reachability_transport,omitempty"`
+	DirectTransportReachable bool              `json:"direct_transport_reachable"`
+	DirectTransportError     string            `json:"direct_transport_error,omitempty"`
+	ProvenanceMatches        bool              `json:"provenance_matches_installed"`
+	State                    daemonPublicState `json:"state,omitempty"`
+	AlreadyRunning           bool              `json:"already_running,omitempty"`
+	AutomaticVersionHandoff  bool              `json:"automatic_version_handoff,omitempty"`
 }
 
 // daemonPublicState is intentionally narrower than the private state file:
@@ -71,30 +75,37 @@ func publicDaemonState(state daemon.State) daemonPublicState {
 }
 
 type daemonDependencies struct {
-	now         func() time.Time
-	executable  func() (string, error)
-	start       func(string, []string, string) (int, error)
-	alive       func(int) bool
-	stop        func(int) error
-	sleep       func(time.Duration)
-	version     func() versionInfo
-	token       func() (string, error)
-	health      func(context.Context, string) error
-	rawPolicy   func(string) (bool, string, error)
-	localClient func(string, string) (*http.Client, error)
+	now           func() time.Time
+	executable    func() (string, error)
+	start         func(string, []string, string) (int, error)
+	alive         func(int) bool
+	stop          func(int) error
+	sleep         func(time.Duration)
+	version       func() versionInfo
+	token         func() (string, error)
+	health        func(context.Context, string) error
+	bridgeHealth  func(context.Context, string, string) error
+	restartTicker func(time.Duration) (<-chan time.Time, func())
+	rawPolicy     func(string) (bool, string, error)
+	localClient   func(string, string) (*http.Client, error)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
 	return daemonDependencies{
-		now:         func() time.Time { return time.Now().UTC() },
-		executable:  os.Executable,
-		start:       startDaemonProcess,
-		alive:       daemonProcessAlive,
-		stop:        stopDaemonProcess,
-		sleep:       time.Sleep,
-		version:     collectVersion,
-		token:       daemonOwnerToken,
-		health:      daemonHealthy,
+		now:          func() time.Time { return time.Now().UTC() },
+		executable:   os.Executable,
+		start:        startDaemonProcess,
+		alive:        daemonProcessAlive,
+		stop:         stopDaemonProcess,
+		sleep:        time.Sleep,
+		version:      collectVersion,
+		token:        daemonOwnerToken,
+		health:       daemonHealthy,
+		bridgeHealth: daemonFileBridgeHealthy,
+		restartTicker: func(interval time.Duration) (<-chan time.Time, func()) {
+			ticker := time.NewTicker(interval)
+			return ticker.C, ticker.Stop
+		},
 		localClient: daemonLocalHTTPClient,
 		rawPolicy: func(root string) (bool, string, error) {
 			path, err := daemon.RawExecutionPolicyPath()
@@ -225,7 +236,10 @@ func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			result, err := newDaemonController(deps, projectsRoot).Restart(command.Context(), ifRunning)
+			progress := func(phase string) {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
+			}
+			result, err := newDaemonController(deps, projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress)
 			if err != nil {
 				return err
 			}
@@ -258,7 +272,13 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 	if result.Managed {
 		status = string(result.State.Status)
 	}
-	_, err := fmt.Fprintf(out, "daemon %s: state=%s, process_manager_running=%t, api_reachable=%t, installed_provenance=%t", result.Action, status, result.ProcessManagerRunning, result.Reachable, result.ProvenanceMatches)
+	_, err := fmt.Fprintf(out, "daemon %s: state=%s, process_manager_running=%t, api_reachable=%t, direct_transport_reachable=%t, installed_provenance=%t", result.Action, status, result.ProcessManagerRunning, result.Reachable, result.DirectTransportReachable, result.ProvenanceMatches)
+	if err == nil && result.ReachabilityTransport != "" {
+		_, err = fmt.Fprintf(out, ", api_transport=%s", result.ReachabilityTransport)
+	}
+	if err == nil && result.DirectTransportError != "" {
+		_, err = fmt.Fprintf(out, ", direct_transport_error=%q", result.DirectTransportError)
+	}
 	if err == nil && result.ReachabilityError != "" {
 		_, err = fmt.Fprintf(out, ", api_probe_error=%q", result.ReachabilityError)
 	}
@@ -333,8 +353,24 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 	if alive {
 		if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
 			result.Reachable = true
+			result.DirectTransportReachable = true
+			result.ReachabilityTransport = "direct"
 		} else {
-			result.ReachabilityError = healthErr.Error()
+			result.DirectTransportError = healthErr.Error()
+			if daemonFileBridgeFallbackAllowed(healthErr) {
+				bridgeHealth := controller.deps.bridgeHealth
+				if bridgeHealth == nil {
+					bridgeHealth = daemonFileBridgeHealthy
+				}
+				if bridgeErr := bridgeHealth(ctx, controller.root, fmt.Sprint(state.Queue.Generation)); bridgeErr == nil {
+					result.Reachable = true
+					result.ReachabilityTransport = "file_bridge"
+				} else {
+					result.ReachabilityError = fmt.Sprintf("protected file bridge: %v", bridgeErr)
+				}
+			} else {
+				result.ReachabilityError = healthErr.Error()
+			}
 		}
 	}
 	current, err := controller.provenance()
@@ -367,8 +403,11 @@ func (controller daemonController) Start(ctx context.Context, listen string) (da
 			result := daemonResult{Action: "start", Managed: true, ProcessManagerRunning: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true}
 			if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
 				result.Reachable = true
+				result.DirectTransportReachable = true
+				result.ReachabilityTransport = "direct"
 			} else {
 				result.ReachabilityError = healthErr.Error()
+				result.DirectTransportError = healthErr.Error()
 			}
 			return result, nil
 		}
@@ -392,6 +431,10 @@ func optionalDaemonState(state daemon.State, found bool) *daemon.State {
 }
 
 func (controller daemonController) Restart(ctx context.Context, ifRunning bool) (daemonResult, error) {
+	return controller.RestartWithProgress(ctx, ifRunning, nil)
+}
+
+func (controller daemonController) RestartWithProgress(ctx context.Context, ifRunning bool, progress func(string)) (daemonResult, error) {
 	release, err := controller.lifecycleLock()
 	if err != nil {
 		return daemonResult{}, err
@@ -409,10 +452,16 @@ func (controller daemonController) Restart(ctx context.Context, ifRunning bool) 
 		if err != nil {
 			return daemonResult{}, err
 		}
-		return controller.launch(ctx, optionalDaemonState(state, found), daemonListenOrDefault(state.Listen), current, "restart", found)
+		var result daemonResult
+		controller.restartPhase(progress, "starting daemon", func() {
+			result, err = controller.launch(ctx, optionalDaemonState(state, found), daemonListenOrDefault(state.Listen), current, "restart", found)
+		})
+		return result, err
 	}
-	if _, err := controller.stop(ctx, state); err != nil {
-		return daemonResult{}, err
+	var stopErr error
+	controller.restartPhase(progress, fmt.Sprintf("draining daemon pid %d", state.PID), func() { _, stopErr = controller.stop(ctx, state) })
+	if stopErr != nil {
+		return daemonResult{}, stopErr
 	}
 	stopped, _, err := controller.store.Load()
 	if err != nil {
@@ -422,7 +471,41 @@ func (controller daemonController) Restart(ctx context.Context, ifRunning bool) 
 	if err != nil {
 		return daemonResult{}, err
 	}
-	return controller.launch(ctx, &stopped, daemonListenOrDefault(stopped.Listen), current, "restart", true)
+	var result daemonResult
+	controller.restartPhase(progress, "starting replacement daemon", func() {
+		result, err = controller.launch(ctx, &stopped, daemonListenOrDefault(stopped.Listen), current, "restart", true)
+	})
+	return result, err
+}
+
+func (controller daemonController) restartPhase(progress func(string), phase string, operation func()) {
+	if progress == nil {
+		operation()
+		return
+	}
+	progress(phase)
+	done := make(chan struct{})
+	go func() {
+		operation()
+		close(done)
+	}()
+	tickerFactory := controller.deps.restartTicker
+	if tickerFactory == nil {
+		tickerFactory = func(interval time.Duration) (<-chan time.Time, func()) {
+			ticker := time.NewTicker(interval)
+			return ticker.C, ticker.Stop
+		}
+	}
+	ticks, stopTicker := tickerFactory(daemonRestartProgressInterval)
+	defer stopTicker()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticks:
+			progress(phase + " (still waiting)")
+		}
+	}
 }
 func daemonListenOrDefault(listen string) string {
 	if listen == "" {
@@ -518,7 +601,7 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 			return daemonResult{}, loadErr
 		}
 		if found && state.OwnerToken == token && state.Status == daemon.StatusReady && state.PID == pid && controller.deps.health(ctx, listen) == nil {
-			return daemonResult{Action: action, Managed: true, ProcessManagerRunning: true, Reachable: true, ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff}, nil
+			return daemonResult{Action: action, Managed: true, ProcessManagerRunning: true, Reachable: true, DirectTransportReachable: true, ReachabilityTransport: "direct", ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff}, nil
 		}
 		controller.deps.sleep(50 * time.Millisecond)
 	}
