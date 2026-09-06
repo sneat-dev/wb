@@ -23,7 +23,7 @@ import (
 
 func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
 	command := newFleetMergePolicyCmd()
-	for _, name := range []string{"apply", "parallel", "report-dir", "resume", "format", "json"} {
+	for _, name := range []string{"apply", "org", "repo", "user", "parallel", "report-dir", "resume", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}
@@ -36,8 +36,19 @@ func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
 	if got := command.Flags().Lookup("apply").DefValue; got != "false" {
 		t.Fatalf("--apply default = %s", got)
 	}
-	if got, want := command.Flags().Lookup("parallel").DefValue, strconv.Itoa(runqueue.Budget()); got != want {
+	if got, want := command.Flags().Lookup("parallel").DefValue, strconv.Itoa(min(runqueue.Budget(), 16)); got != want {
 		t.Fatalf("--parallel default = %s, want WB CPU budget %s", got, want)
+	}
+}
+
+func TestFleetMergePolicyApplyRequiresExplicitScope(t *testing.T) {
+	command := newFleetMergePolicyCmd()
+	if err := command.Flags().Set("apply", "true"); err != nil {
+		t.Fatal(err)
+	}
+	err := command.RunE(command, nil)
+	if err == nil || !strings.Contains(err.Error(), "explicit --org, --repo, or --user") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -49,12 +60,58 @@ func TestDiscoverRemoteMergePolicyFleetMarksGitHubInventoryRemote(t *testing.T) 
 	mergePolicyAuthUser = func() (string, error) { return "alex", nil }
 	mergePolicyMemberOrgs = func() ([]string, error) { return []string{"acme"}, nil }
 	mergePolicyListRemote = func(owner string) ([]discover.Repo, error) { return []discover.Repo{{Org: owner, Name: "app"}}, nil }
-	repos, err := discoverRemoteMergePolicyFleet("acme/", nil)
+	repos, err := discoverRemoteMergePolicyFleet("acme/", nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(repos) != 1 || !repos[0].Remote || repos[0].Slug() != "acme/app" {
 		t.Fatalf("repos = %#v", repos)
+	}
+}
+
+func TestApplyExplicitOrganizationNeverInspectsMemberOrganizations(t *testing.T) {
+	originalUser, originalOrgs, originalList := mergePolicyAuthUser, mergePolicyMemberOrgs, mergePolicyListRemote
+	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() {
+		mergePolicyAuthUser, mergePolicyMemberOrgs, mergePolicyListRemote = originalUser, originalOrgs, originalList
+		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
+	})
+	mergePolicyAuthUser = func() (string, error) { t.Fatal("explicit --org must not add the user owner"); return "", nil }
+	mergePolicyMemberOrgs = func() ([]string, error) { t.Fatal("explicit --org must not inventory memberships"); return nil, nil }
+	var listed []string
+	mergePolicyListRemote = func(owner string) ([]discover.Repo, error) {
+		listed = append(listed, owner)
+		return []discover.Repo{{Org: owner, Name: "app"}}, nil
+	}
+	mergePolicyDiscover = func(_ string, filter string, owners, repositories []string, includeUser bool) ([]discover.Repo, error) {
+		return discoverRemoteMergePolicyFleet(filter, owners, repositories, includeUser)
+	}
+	repositoryBody := []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "unselected") {
+			t.Fatalf("unselected member organization was inspected: %s", endpoint)
+		}
+		switch {
+		case strings.Contains(endpoint, "/rules/branches/"):
+			return []byte(`[]`), nil
+		case strings.HasSuffix(endpoint, "/protection"):
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		default:
+			return repositoryBody, nil
+		}
+	}
+	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		if strings.Contains(strings.Join(args, " "), "unselected") {
+			t.Fatal("unselected member organization was mutated")
+		}
+		return githubobserver.CommandResponse{}
+	}
+	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, owners: []string{"selected"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(listed, []string{"selected"}) || len(report.Repositories) != 1 || report.Repositories[0].Repository != "selected/app" {
+		t.Fatalf("listed=%#v report=%#v", listed, report.Repositories)
 	}
 }
 
@@ -84,7 +141,7 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	t.Cleanup(func() {
 		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
 	})
-	mergePolicyDiscover = func(string, string) ([]discover.Repo, error) {
+	mergePolicyDiscover = func(string, string, []string, []string, bool) ([]discover.Repo, error) {
 		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
 	}
 	reads := 0
@@ -266,7 +323,7 @@ func TestRunMergePolicyResumeCarriesPartialActions(t *testing.T) {
 	if err := persistMergePolicyReport(previous); err != nil {
 		t.Fatal(err)
 	}
-	mergePolicyDiscover = func(string, string) ([]discover.Repo, error) {
+	mergePolicyDiscover = func(string, string, []string, []string, bool) ([]discover.Repo, error) {
 		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
 	}
 	repositoryBody := []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`)

@@ -1,7 +1,9 @@
 # Audit and apply GitHub merge policy
 
-Audit is read-only and selects the authenticated user's fleet plus repeated
-`--org` owners. Narrow it with `--filter` before a fleet-wide apply.
+Audit is read-only and, without selectors, inventories the authenticated user's
+fleet. Apply requires explicit scope: repeat `--org/-o`, use exact `--repo
+owner/repository`, or select `--user`. An explicit `--org` list restricts owners;
+it never adds the user's other member organizations.
 
 ```sh
 wb fleet merge-policy --filter sneat-dev/wb

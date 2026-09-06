@@ -26,11 +26,14 @@ import (
 const mergePolicySchemaVersion = 1
 
 type mergePolicyOptions struct {
-	apply     bool
-	parallel  int
-	json      bool
-	reportDir string
-	resume    bool
+	apply        bool
+	includeUser  bool
+	owners       []string
+	parallel     int
+	json         bool
+	repositories []string
+	reportDir    string
+	resume       bool
 }
 
 type mergePolicyReport struct {
@@ -115,8 +118,8 @@ var (
 	mergePolicyAuthUser   = discover.AuthUser
 	mergePolicyMemberOrgs = discover.MemberOrgs
 	mergePolicyListRemote = discover.ListRemote
-	mergePolicyDiscover   = func(root, filter string) ([]discover.Repo, error) {
-		return discoverRemoteMergePolicyFleet(filter, extraOrgs)
+	mergePolicyDiscover   = func(root, filter string, owners, repositories []string, includeUser bool) ([]discover.Repo, error) {
+		return discoverRemoteMergePolicyFleet(filter, owners, repositories, includeUser)
 	}
 	mergePolicyRead = func(ctx context.Context, endpoint string) ([]byte, error) {
 		return githubobserver.Read(ctx, "", "api", endpoint)
@@ -128,7 +131,7 @@ var (
 )
 
 func newFleetMergePolicyCmd() *cobra.Command {
-	defaultParallel := runqueue.Budget()
+	defaultParallel := min(runqueue.Budget(), 16)
 	options := mergePolicyOptions{parallel: defaultParallel}
 	command := &cobra.Command{
 		Use:   "merge-policy",
@@ -139,6 +142,10 @@ The desired policy enables merge commits only and asks GitHub to use the pull
 request title and body for the merge commit. Audit is the default and is
 read-only. --apply is explicit: WB first inventories the exact selected scope,
 writes the durable plan, then changes only merge settings.
+
+Audit without selectors may inventory the authenticated user and member
+organizations. Apply fails closed unless --org/-o, --repo, or --user selects
+the mutation scope explicitly; --org restricts rather than enlarges that scope.
 
 Repository-owned required-linear-history policy is desired drift: apply removes
 the dedicated classic setting and the corresponding repository ruleset rule
@@ -151,11 +158,18 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 2 invalid usage.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
+			options.owners = requestedMergePolicyOwners(command, options.owners)
+			if len(options.repositories) > 0 && (len(options.owners) > 0 || options.includeUser) {
+				return usageError("--repo cannot be combined with --org or --user")
+			}
 			if options.parallel < 1 || options.parallel > 16 {
 				return usageError("--parallel must be between 1 and 16")
 			}
 			if options.resume && (!options.apply || strings.TrimSpace(options.reportDir) == "") {
 				return usageError("--resume requires --apply and --report-dir")
+			}
+			if options.apply && len(options.owners) == 0 && len(options.repositories) == 0 && !options.includeUser {
+				return usageError("--apply requires explicit --org, --repo, or --user scope")
 			}
 			report, err := runMergePolicy(command.Context(), options, command.ErrOrStderr())
 			if err != nil {
@@ -175,6 +189,9 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 		},
 	}
 	command.Flags().BoolVar(&options.apply, "apply", false, "apply the exact planned merge policy; audit is the default")
+	command.Flags().StringArrayVarP(&options.owners, "org", "o", nil, "only inspect or apply this GitHub organization (repeatable)")
+	command.Flags().StringArrayVar(&options.repositories, "repo", nil, "only inspect or apply this exact owner/repository (repeatable)")
+	command.Flags().BoolVar(&options.includeUser, "user", false, "include the authenticated user's own repositories in explicit scope")
 	command.Flags().IntVar(&options.parallel, "parallel", defaultParallel, "maximum GitHub repositories to inspect or apply concurrently (1-16; default: WB CPU budget)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/merge-policy)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "resume into an existing --report-dir after interruption; all decisions are re-observed")
@@ -212,7 +229,7 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 			resumedActions[repo.Repository] = append([]string(nil), repo.AppliedActions...)
 		}
 	}
-	repos, err := mergePolicyDiscover(projectsRoot, filterFlag)
+	repos, err := mergePolicyDiscover(projectsRoot, filterFlag, options.owners, options.repositories, options.includeUser)
 	if err != nil {
 		return mergePolicyReport{}, err
 	}
@@ -284,19 +301,45 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 	return report, nil
 }
 
-func discoverRemoteMergePolicyFleet(filter string, explicitOwners []string) ([]discover.Repo, error) {
+func discoverRemoteMergePolicyFleet(filter string, explicitOwners, exactRepositories []string, includeUser bool) ([]discover.Repo, error) {
+	if len(exactRepositories) > 0 {
+		var repos []discover.Repo
+		seen := map[string]bool{}
+		for _, slug := range exactRepositories {
+			owner, name, ok := strings.Cut(strings.TrimSpace(slug), "/")
+			if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+				return nil, fmt.Errorf("invalid --repo %q; use owner/repository", slug)
+			}
+			normalized := owner + "/" + name
+			if seen[normalized] || (filter != "" && !strings.Contains(normalized, filter)) {
+				continue
+			}
+			seen[normalized] = true
+			repos = append(repos, discover.Repo{Org: owner, Name: name, Remote: true})
+		}
+		sort.Slice(repos, func(i, j int) bool { return repos[i].Slug() < repos[j].Slug() })
+		return repos, nil
+	}
 	owners := map[string]bool{}
-	user, err := mergePolicyAuthUser()
-	if err != nil {
-		return nil, fmt.Errorf("resolve authenticated GitHub owner: %w", err)
-	}
-	owners[user] = true
-	orgs, err := mergePolicyMemberOrgs()
-	if err != nil {
-		return nil, fmt.Errorf("list authenticated GitHub organizations: %w", err)
-	}
-	for _, org := range orgs {
-		owners[org] = true
+	if len(explicitOwners) == 0 && !includeUser {
+		user, err := mergePolicyAuthUser()
+		if err != nil {
+			return nil, fmt.Errorf("resolve authenticated GitHub owner: %w", err)
+		}
+		owners[user] = true
+		orgs, err := mergePolicyMemberOrgs()
+		if err != nil {
+			return nil, fmt.Errorf("list authenticated GitHub organizations: %w", err)
+		}
+		for _, org := range orgs {
+			owners[org] = true
+		}
+	} else if includeUser {
+		user, err := mergePolicyAuthUser()
+		if err != nil {
+			return nil, fmt.Errorf("resolve authenticated GitHub owner: %w", err)
+		}
+		owners[user] = true
 	}
 	for _, owner := range explicitOwners {
 		if owner = strings.TrimSpace(owner); owner != "" {
@@ -323,6 +366,14 @@ func discoverRemoteMergePolicyFleet(filter string, explicitOwners []string) ([]d
 	}
 	sort.Slice(repos, func(i, j int) bool { return repos[i].Slug() < repos[j].Slug() })
 	return repos, nil
+}
+
+func requestedMergePolicyOwners(command *cobra.Command, owners []string) []string {
+	selected := append([]string(nil), owners...)
+	if rootOrg := command.Root().PersistentFlags().Lookup("org"); rootOrg != nil && rootOrg.Changed {
+		selected = append(selected, extraOrgs...)
+	}
+	return selected
 }
 
 func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyRepository {

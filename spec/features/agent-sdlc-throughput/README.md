@@ -1278,6 +1278,12 @@ resumed run re-observes all authorities instead of trusting its old snapshot.
 The durable report is checkpointed after every mutation so partial progress
 remains visible across interruption.
 
+A selector-free audit may inventory the authenticated user and all member
+organizations because it is read-only. Apply MUST require explicit command-local
+scope through repeatable `--org/-o`, exact `--repo owner/repository`, or `--user`.
+An explicit organization list restricts owners and MUST NOT add organizations
+from membership discovery or persistent defaults.
+
 ### AC: lessons-are-curated-off-worker-path
 
 Several observations of one gap create no global worker-context load and become
