@@ -54,6 +54,8 @@ type fakeNode struct {
 	order        []string
 	installed    []string
 	builds       int
+	buildRoots   []string
+	packageDirs  []string
 	buildErr     error
 	dist         string
 	linked       map[string]string
@@ -79,13 +81,22 @@ func (node *fakeNode) Build(_ context.Context, libraryDir, packageDir string) (s
 		return "", node.buildErr
 	}
 	node.builds++
+	node.buildRoots = append(node.buildRoots, libraryDir)
+	node.packageDirs = append(node.packageDirs, packageDir)
 	return node.dist, nil
 }
 
-func (node *fakeNode) Link(_ context.Context, consumerDir, packageName, dist string) (string, error) {
+func (node *fakeNode) Link(_ context.Context, consumerDir, packageName, dist string) (NodeLinkResult, error) {
 	node.linked[consumerDir+" "+packageName] = dist
 	node.order = append(node.order, "link "+consumerDir+" "+packageName)
-	return node.previousReal, nil
+	marker := linkAppliedMarkerPath(consumerDir, packageName)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		return NodeLinkResult{}, err
+	}
+	if err := os.WriteFile(marker, []byte("fake-owned-stage\n"), 0o644); err != nil {
+		return NodeLinkResult{}, err
+	}
+	return NodeLinkResult{Previous: node.previousReal}, nil
 }
 
 func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string) error {
@@ -93,6 +104,9 @@ func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string)
 		return err
 	}
 	node.unlinked = append(node.unlinked, consumerDir+" "+packageName)
+	if err := os.Remove(linkAppliedMarkerPath(consumerDir, packageName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 
@@ -100,6 +114,49 @@ type fakeVerifier struct {
 	linked   map[string]VerificationRun
 	baseline map[string]VerificationRun
 	envSeen  map[string][]string
+}
+
+type failingBuildExecNode struct {
+	ExecNode
+}
+
+func (node failingBuildExecNode) FrozenInstall(context.Context, string) error { return nil }
+func (node failingBuildExecNode) Build(context.Context, string, string) (string, error) {
+	return "", errors.New("provider build failed")
+}
+
+// refreshThenFailNode models pnpm reconciling the top-level package link back
+// to the published peer-context package during the next frozen install. WB's
+// marker, recovery record, and stage remain until undo.
+type refreshThenFailNode struct {
+	ExecNode
+	dist        string
+	builds      int
+	consumerDir string
+	packageName string
+}
+
+func (node *refreshThenFailNode) FrozenInstall(context.Context, string) error {
+	if node.builds == 0 {
+		return nil
+	}
+	target := filepath.Join(node.consumerDir, "node_modules", filepath.FromSlash(node.packageName))
+	original, err := os.ReadFile(target + linkSymlinkBackupSuffix)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(target); err != nil {
+		return err
+	}
+	return os.Symlink(strings.TrimSpace(string(original)), target)
+}
+
+func (node *refreshThenFailNode) Build(context.Context, string, string) (string, error) {
+	node.builds++
+	if node.builds > 1 {
+		return "", errors.New("provider rebuild failed")
+	}
+	return node.dist, nil
 }
 
 func newFakeVerifier() *fakeVerifier {
@@ -308,6 +365,368 @@ func TestNpmConsumerLinksFromABuiltDistWithoutTouchingTrackedConfig(t *testing.T
 		if strings.Contains(manifestBefore+workspaceBefore, forbidden) {
 			t.Errorf("tracked config contains %q", forbidden)
 		}
+	}
+}
+
+// A stream owns repository-root worktrees even when their npm workspaces live
+// below frontend/. Discovery and every npm operation use that workspace while
+// the link record and merge guard remain attached to the repository member.
+func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"frontend/package.json":           `{"name":"provider","private":true}`,
+			"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
+			"frontend/pnpm-lock.yaml":         "lockfileVersion: '9.0'\n",
+			"frontend/libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`,
+			"landings/package.json":           `{"name":"landing"}`,
+			"landings/pnpm-workspace.yaml":    "packages: []\n",
+			"landings/pnpm-lock.yaml":         "lockfileVersion: '9.0'\n",
+		},
+		map[string]string{
+			"frontend/package.json":        `{"name":"consumer","private":true,"dependencies":{"@acme/core":"^1.0.0"}}`,
+			"frontend/pnpm-workspace.yaml": "packages:\n  - apps/**\n",
+			"frontend/pnpm-lock.yaml":      "lockfileVersion: '9.0'\n",
+			"landings/package.json":        `{"name":"landing","dependencies":{"elsewhere":"1.0.0"}}`,
+			"landings/pnpm-workspace.yaml": "packages: []\n",
+			"landings/pnpm-lock.yaml":      "lockfileVersion: '9.0'\n",
+		})
+	manifestBefore := readFile(t, filepath.Join(fixture.consumer, "frontend", "package.json"))
+
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed() || len(result.Consumers[0].Links) != 1 {
+		t.Fatalf("result = %#v", result.Consumers)
+	}
+	providerWorkspace := filepath.Join(fixture.library, "frontend")
+	consumerWorkspace := filepath.Join(fixture.consumer, "frontend")
+	if len(fixture.node.installed) != 1 || fixture.node.installed[0] != consumerWorkspace {
+		t.Fatalf("frozen installs = %v, want nested workspace %s once", fixture.node.installed, consumerWorkspace)
+	}
+	if len(fixture.node.buildRoots) != 1 || fixture.node.buildRoots[0] != providerWorkspace {
+		t.Fatalf("build roots = %v, want %s", fixture.node.buildRoots, providerWorkspace)
+	}
+	if len(fixture.node.packageDirs) != 1 || fixture.node.packageDirs[0] != filepath.Join(providerWorkspace, "libs", "core") {
+		t.Fatalf("package dirs = %v, want nested library package", fixture.node.packageDirs)
+	}
+	if fixture.node.linked[consumerWorkspace+" @acme/core"] != fixture.node.dist {
+		t.Fatalf("linked = %v, want link in nested consumer workspace", fixture.node.linked)
+	}
+	link := result.Consumers[0].Links[0]
+	if link.Workspace != "frontend" || len(link.Artifacts) == 0 || link.Artifacts[0] != "frontend/node_modules/@acme/core" {
+		t.Fatalf("link record = %#v, want repository-relative nested workspace evidence", link)
+	}
+	if readFile(t, filepath.Join(fixture.consumer, "frontend", "package.json")) != manifestBefore {
+		t.Fatal("nested package.json changed while linking")
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 1 {
+		t.Fatalf("merge guard links = %#v, err = %v; want repository-root record", live, err)
+	}
+
+	undo, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true})
+	if err != nil || undo.Failed() {
+		t.Fatalf("undo = %#v, err = %v", undo.Consumers, err)
+	}
+	if len(fixture.node.unlinked) != 1 || fixture.node.unlinked[0] != consumerWorkspace+" @acme/core" {
+		t.Fatalf("unlinked = %v, want nested consumer workspace", fixture.node.unlinked)
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 0 {
+		t.Fatalf("merge guard survived undo: %#v (err %v)", live, err)
+	}
+}
+
+func TestNestedConsumerPathDoesNotBypassRepositoryRootStreamMembership(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
+			"frontend/package.json":           `{"private":true}`,
+			"frontend/libs/core/package.json": `{"name":"@acme/core"}`,
+		},
+		map[string]string{
+			"frontend/pnpm-workspace.yaml": "packages: []\n",
+			"frontend/package.json":        `{"dependencies":{"@acme/core":"1.0.0"}}`,
+		})
+	_, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{filepath.Join(fixture.consumer, "frontend")},
+	})
+	if refusal, ok := Refused(err); !ok || refusal.Code != RefusalNotRecordable {
+		t.Fatalf("error = %v, want exact repository-root membership refusal", err)
+	}
+	if len(fixture.node.installed) != 0 || len(fixture.node.linked) != 0 {
+		t.Fatalf("nested-path bypass caused side effects: installs=%v links=%v", fixture.node.installed, fixture.node.linked)
+	}
+}
+
+func TestSamePackageInTwoConsumerWorkspacesKeepsTwoUndoRecords(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"libs/core/package.json": `{"name":"@acme/core"}`,
+			"package.json":           `{"private":true}`,
+		},
+		map[string]string{
+			"package.json":                 `{"dependencies":{"@acme/core":"1.0.0"}}`,
+			"pnpm-lock.yaml":               "lockfileVersion: '9.0'\n",
+			"frontend/package.json":        `{"dependencies":{"@acme/core":"1.0.0"}}`,
+			"frontend/pnpm-workspace.yaml": "packages: []\n",
+			"frontend/pnpm-lock.yaml":      "lockfileVersion: '9.0'\n",
+		})
+	result, err := fixture.engine.Run(context.Background(), Options{Library: fixture.library, Consumers: []string{fixture.consumer}})
+	if err != nil || result.Failed() {
+		t.Fatalf("result = %#v, err = %v", result.Consumers, err)
+	}
+	if len(fixture.node.installed) != 2 || fixture.node.installed[0] != fixture.consumer || fixture.node.installed[1] != filepath.Join(fixture.consumer, "frontend") {
+		t.Fatalf("frozen installs = %v, want each independent workspace", fixture.node.installed)
+	}
+	stream, err := fixture.store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := stream.Member("acme/app")
+	if len(member.Links) != 2 {
+		t.Fatalf("recorded links = %#v, want one per workspace", member.Links)
+	}
+	if _, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true}); err != nil {
+		t.Fatal(err)
+	}
+	wantUnlinked := map[string]bool{
+		fixture.consumer + " @acme/core":                            true,
+		filepath.Join(fixture.consumer, "frontend") + " @acme/core": true,
+	}
+	for _, unlinked := range fixture.node.unlinked {
+		delete(wantUnlinked, unlinked)
+	}
+	if len(wantUnlinked) != 0 {
+		t.Fatalf("unlinked = %v, missing %v", fixture.node.unlinked, wantUnlinked)
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 0 {
+		t.Fatalf("merge guard survived complete multi-workspace undo: %#v (err %v)", live, err)
+	}
+}
+
+func TestUndoRejectsWorkspaceSymlinkEscapeAndKeepsMergeGuardClosed(t *testing.T) {
+	fixture := newFixture(t, map[string]string{"backend/go.mod": goLibraryModule}, map[string]string{})
+	outside := t.TempDir()
+	if err := os.MkdirAll(fixture.consumer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(fixture.consumer, "frontend")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.Update("fixture", func(stream *streams.Stream) error {
+		member, _ := stream.Member("acme/app")
+		for index := range stream.Members {
+			if stream.Members[index].Repository == member.Repository {
+				stream.Members[index].Links = []streams.Link{{
+					Library: fixture.library, Mechanism: streams.MechanismPnpmLink,
+					Identity: "@acme/core", Workspace: "frontend", CreatedAt: time.Now(),
+				}}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() || !strings.Contains(strings.Join(result.Consumers[0].Errors, " "), "outside worktree") {
+		t.Fatalf("result = %#v, want symlink escape refusal", result.Consumers)
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 1 {
+		t.Fatalf("merge guard opened after refused undo: %#v (err %v)", live, err)
+	}
+}
+
+func TestFailedBuildUndoPreservesPublishedPackageFilesystem(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"frontend/package.json":           `{"private":true}`,
+			"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
+			"frontend/libs/core/package.json": `{"name":"@acme/core"}`,
+		},
+		map[string]string{
+			"frontend/package.json":        `{"dependencies":{"@acme/core":"1.0.0"}}`,
+			"frontend/pnpm-workspace.yaml": "packages: []\n",
+		})
+	consumerWorkspace := filepath.Join(fixture.consumer, "frontend")
+	storePackage := filepath.Join(consumerWorkspace, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(storePackage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storePackage, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(consumerWorkspace, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(target), storePackage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+	fixture.engine.Node = failingBuildExecNode{ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: time.Second}}
+
+	result, err := fixture.engine.Run(context.Background(), Options{Library: fixture.library, Consumers: []string{fixture.consumer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() {
+		t.Fatalf("failed provider build reported success: %#v", result.Consumers)
+	}
+	assertPublished := func(stage string) {
+		t.Helper()
+		contents, readErr := os.ReadFile(filepath.Join(target, "package.json"))
+		if readErr != nil || !strings.Contains(string(contents), `"version":"1.0.0"`) {
+			t.Fatalf("%s: published package unavailable: %s (err %v)", stage, contents, readErr)
+		}
+	}
+	assertPublished("after failed build")
+	stream, err := fixture.store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := stream.Member("acme/app")
+	if len(member.Links) != 1 || member.Links[0].State != streams.LinkStateIntent {
+		t.Fatalf("links = %#v, want one unapplied intent", member.Links)
+	}
+
+	undo, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true})
+	if err != nil || undo.Failed() {
+		t.Fatalf("undo = %#v, err = %v", undo.Consumers, err)
+	}
+	assertPublished("after undo")
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 0 {
+		t.Fatalf("intent record survived safe undo: %#v (err %v)", live, err)
+	}
+}
+
+func TestAppliedRecordWithoutOwnershipMarkerFailsClosed(t *testing.T) {
+	fixture := newFixture(t, map[string]string{"backend/go.mod": goLibraryModule}, map[string]string{})
+	if _, err := fixture.store.Update("fixture", func(stream *streams.Stream) error {
+		for index := range stream.Members {
+			if stream.Members[index].Repository == "acme/app" {
+				stream.Members[index].Links = []streams.Link{{
+					Library: fixture.library, Mechanism: streams.MechanismPnpmLink,
+					State: streams.LinkStateApplied, Identity: "@acme/core", CreatedAt: time.Now(),
+				}}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() || !strings.Contains(strings.Join(result.Consumers[0].Errors, " "), "has no ownership marker") {
+		t.Fatalf("undo = %#v, want missing-marker refusal", result.Consumers)
+	}
+	if len(fixture.node.unlinked) != 0 {
+		t.Fatalf("unlink was invoked without ownership proof: %v", fixture.node.unlinked)
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 1 {
+		t.Fatalf("merge guard opened after missing-marker refusal: %#v (err %v)", live, err)
+	}
+}
+
+func TestRefreshBuildFailureKeepsAppliedRecoveryUntilUndo(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"package.json":           `{"private":true}`,
+			"libs/core/package.json": `{"name":"@acme/core"}`,
+		},
+		map[string]string{
+			"package.json":   `{"dependencies":{"@acme/core":"1.0.0"}}`,
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+		})
+	storePackage := filepath.Join(fixture.consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(storePackage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storePackage, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(fixture.consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(target), storePackage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+	dist := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := &refreshThenFailNode{
+		ExecNode:    ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: time.Second},
+		dist:        dist,
+		consumerDir: fixture.consumer,
+		packageName: "@acme/core",
+	}
+	fixture.engine.Node = node
+
+	first, err := fixture.engine.Run(context.Background(), Options{Library: fixture.library, Consumers: []string{fixture.consumer}})
+	if err != nil || first.Failed() {
+		t.Fatalf("initial link = %#v, err = %v", first.Consumers, err)
+	}
+	marker := linkAppliedMarkerPath(fixture.consumer, "@acme/core")
+	stageBytes, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := strings.TrimSpace(string(stageBytes))
+
+	second, err := fixture.engine.Run(context.Background(), Options{Library: fixture.library, Consumers: []string{fixture.consumer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Failed() || !strings.Contains(strings.Join(second.Consumers[0].Errors, " "), "provider rebuild failed") {
+		t.Fatalf("refresh = %#v, want failed provider rebuild", second.Consumers)
+	}
+	stream, err := fixture.store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := stream.Member("acme/app")
+	if len(member.Links) != 1 || member.Links[0].State != streams.LinkStateApplied {
+		t.Fatalf("links = %#v, want prior applied recovery record retained", member.Links)
+	}
+	if !fileExists(marker) || !fileExists(stage) || !fileExists(target+linkSymlinkBackupSuffix) {
+		t.Fatal("failed refresh discarded the prior marker, stage, or recovery record")
+	}
+	if contents, err := os.ReadFile(filepath.Join(target, "package.json")); err != nil || !strings.Contains(string(contents), `"version":"1.0.0"`) {
+		t.Fatalf("frozen install did not restore published package: %s (err %v)", contents, err)
+	}
+
+	undo, err := fixture.engine.Run(context.Background(), Options{Consumers: []string{fixture.consumer}, Undo: true})
+	if err != nil || undo.Failed() {
+		t.Fatalf("undo = %#v, err = %v", undo.Consumers, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(target, "package.json")); err != nil || !strings.Contains(string(contents), `"version":"1.0.0"`) {
+		t.Fatalf("published package unavailable after undo: %s (err %v)", contents, err)
+	}
+	for _, artifact := range []string{marker, stage, target + linkSymlinkBackupSuffix} {
+		if fileExists(artifact) {
+			t.Fatalf("recovery artifact survived undo: %s", artifact)
+		}
+	}
+	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 0 {
+		t.Fatalf("link records survived undo: %#v (err %v)", live, err)
 	}
 }
 
