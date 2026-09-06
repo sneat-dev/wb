@@ -41,6 +41,10 @@ type Node interface {
 	Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, err error)
 	// Unlink restores the node_modules entry recorded by Link.
 	Unlink(ctx context.Context, consumerDir, packageName string) error
+	// LinkSiblings wires runtime dependency edges between packages that WB has
+	// staged from the same provider. External peers continue to resolve from
+	// the consumer's installed dependency context.
+	LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error
 }
 
 // NodeLinkResult reports every generated path relative to the npm workspace.
