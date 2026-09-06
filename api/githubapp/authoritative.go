@@ -208,7 +208,7 @@ func (reader GitHubRESTProjectionReader) get(ctx context.Context, token, path st
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 		return fmt.Errorf("github API %s: %s", response.Status, strings.TrimSpace(string(body)))

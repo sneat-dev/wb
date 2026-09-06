@@ -45,19 +45,19 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/repos/acme/widgets":
-			io.WriteString(w, `{"full_name":"acme/widgets","name":"widgets","default_branch":"main","open_issues_count":4,"html_url":"https://github.com/acme/widgets"}`)
+			_, _ = io.WriteString(w, `{"full_name":"acme/widgets","name":"widgets","default_branch":"main","open_issues_count":4,"html_url":"https://github.com/acme/widgets"}`)
 		case r.URL.Path == "/repos/acme/widgets/commits":
-			io.WriteString(w, `[{"sha":"0123456789abcdef0123456789abcdef01234567"}]`)
+			_, _ = io.WriteString(w, `[{"sha":"0123456789abcdef0123456789abcdef01234567"}]`)
 		case r.URL.Path == "/repos/acme/widgets/contents/README.md":
-			io.WriteString(w, `{"encoding":"base64","content":"`+readme+`"}`)
+			_, _ = io.WriteString(w, `{"encoding":"base64","content":"`+readme+`"}`)
 		case r.URL.Path == "/search/issues" && strings.Contains(r.URL.Query().Get("q"), "is:open"):
-			io.WriteString(w, `{"total_count":2}`)
+			_, _ = io.WriteString(w, `{"total_count":2}`)
 		case r.URL.Path == "/search/issues":
-			io.WriteString(w, `{"total_count":7}`)
+			_, _ = io.WriteString(w, `{"total_count":7}`)
 		case r.URL.Path == "/repos/acme/widgets/releases":
-			io.WriteString(w, `[{"html_url":"https://github.com/acme/widgets/releases/tag/v1"}]`)
+			_, _ = io.WriteString(w, `[{"html_url":"https://github.com/acme/widgets/releases/tag/v1"}]`)
 		case r.URL.Path == "/repos/acme/widgets/pulls":
-			io.WriteString(w, `[{"number":9,"merged_at":"2026-09-06T03:00:00Z","html_url":"https://github.com/acme/widgets/pull/9","merge_commit_sha":"abcdef"},{"number":8,"merged_at":null}]`)
+			_, _ = io.WriteString(w, `[{"number":9,"merged_at":"2026-09-06T03:00:00Z","html_url":"https://github.com/acme/widgets/pull/9","merge_commit_sha":"abcdef"},{"number":8,"merged_at":null}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -149,7 +149,7 @@ func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 						return
 					}
 					if mode == "identity" {
-						io.WriteString(w, `{"full_name":"acme/other","name":"widgets","default_branch":"main"}`)
+						_, _ = io.WriteString(w, `{"full_name":"acme/other","name":"widgets","default_branch":"main"}`)
 						return
 					}
 					branch := "main"
@@ -160,63 +160,63 @@ func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 					if mode == "negative" {
 						openIssues = "1"
 					}
-					io.WriteString(w, `{"full_name":"acme/widgets","name":"widgets","default_branch":"`+branch+`","open_issues_count":`+openIssues+`}`)
+					_, _ = io.WriteString(w, `{"full_name":"acme/widgets","name":"widgets","default_branch":"`+branch+`","open_issues_count":`+openIssues+`}`)
 				case r.URL.Path == "/repos/acme/widgets/commits":
 					if mode == "readme-error" {
 						fail()
 						return
 					}
 					if mode == "commits" {
-						io.WriteString(w, `[]`)
+						_, _ = io.WriteString(w, `[]`)
 						return
 					}
 					if mode == "badsha" {
-						io.WriteString(w, `[{"sha":"short"}]`)
+						_, _ = io.WriteString(w, `[{"sha":"short"}]`)
 						return
 					}
-					io.WriteString(w, `[{"sha":"`+sha+`"}]`)
+					_, _ = io.WriteString(w, `[{"sha":"`+sha+`"}]`)
 				case r.URL.Path == "/repos/acme/widgets/contents/README.md":
 					if mode == "content-error" {
 						fail()
 						return
 					}
 					if mode == "encoding" {
-						io.WriteString(w, `{"encoding":"utf-8","content":"x"}`)
+						_, _ = io.WriteString(w, `{"encoding":"utf-8","content":"x"}`)
 						return
 					}
 					if mode == "base64" {
-						io.WriteString(w, `{"encoding":"base64","content":"%%%"}`)
+						_, _ = io.WriteString(w, `{"encoding":"base64","content":"%%%"}`)
 						return
 					}
 					content := readme
 					if mode == "nooptin" {
 						content = base64.StdEncoding.EncodeToString([]byte("# About\n"))
 					}
-					io.WriteString(w, `{"encoding":"base64","content":"`+content+`"}`)
+					_, _ = io.WriteString(w, `{"encoding":"base64","content":"`+content+`"}`)
 				case r.URL.Path == "/search/issues" && strings.Contains(r.URL.Query().Get("q"), "is:open"):
 					if mode == "open" {
 						fail()
 						return
 					}
-					io.WriteString(w, `{"total_count":2}`)
+					_, _ = io.WriteString(w, `{"total_count":2}`)
 				case r.URL.Path == "/search/issues":
 					if mode == "merged" {
 						fail()
 						return
 					}
-					io.WriteString(w, `{"total_count":7}`)
+					_, _ = io.WriteString(w, `{"total_count":7}`)
 				case r.URL.Path == "/repos/acme/widgets/releases":
 					if mode == "releases" {
 						fail()
 						return
 					}
-					io.WriteString(w, `[]`)
+					_, _ = io.WriteString(w, `[]`)
 				case r.URL.Path == "/repos/acme/widgets/pulls":
 					if mode == "pulls" {
 						fail()
 						return
 					}
-					io.WriteString(w, `[]`)
+					_, _ = io.WriteString(w, `[]`)
 				default:
 					fail()
 				}
