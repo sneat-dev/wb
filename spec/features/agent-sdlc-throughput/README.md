@@ -1252,21 +1252,21 @@ noninteractive text remains unstyled and readable.
 When `--apply` is explicit, WB persists the complete selected scope before its
 first mutation, rechecks observed repository settings before changing them,
 uses bounded parallel reads with progress gaps no longer than ten seconds, and
-changes only merge settings. Existing organization rulesets take precedence:
-WB inventories their full affected-repository scope and updates the existing
-pull-request rule while preserving all unrelated conditions, bypass actors,
-enforcement, review requirements, status checks, and other rules. Repository
-rulesets use the same preservation rule and repository settings are the
-fleet-wide fallback.
+changes only merge settings. Classic branch protection is read separately from
+rulesets, and required linear history or a merge-queue requirement blocks apply.
+Repository rulesets preserve all unrelated conditions, bypass actors,
+enforcement, review requirements, status checks, and other rules.
+Organization and enterprise rulesets take precedence and remain audit-only in
+this slice; any conflicting higher-level rule blocks repository fallback.
 
 Enterprise rulesets have highest precedence, followed by organization rulesets,
-repository rulesets, then repository merge settings. A higher-level
-required-linear-history or merge-queue rule blocks repository fallback. WB may
-change an enterprise ruleset only after the GitHub API supplies an exact affected
-organization and repository inventory and the authenticated operator can preview
-that whole scope. Otherwise it reports the blocker and leaves every level
-unchanged. Any plan/apply drift fails closed and a resumed run re-observes all
-authorities instead of trusting its old snapshot.
+repository rulesets, classic branch protection, then repository merge settings.
+WB may change an organization or enterprise ruleset only after a future
+supported implementation can deterministically evaluate its documented
+repository conditions against complete owner inventory and preview that whole
+scope. Until then it reports the blocker and leaves every level unchanged. Any
+repository-setting, ruleset, or classic-protection drift fails closed and a
+resumed run re-observes all authorities instead of trusting its old snapshot.
 
 ### AC: lessons-are-curated-off-worker-path
 

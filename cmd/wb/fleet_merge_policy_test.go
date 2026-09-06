@@ -22,7 +22,7 @@ func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
 			t.Errorf("missing --%s", name)
 		}
 	}
-	for _, phrase := range []string{"read-only", "required-linear-history", "merge-queue", "never weakens", "organization", "Enterprise"} {
+	for _, phrase := range []string{"read-only", "required-linear-history", "merge-queue", "never weakens", "organization", "enterprise"} {
 		if !strings.Contains(command.Long, phrase) {
 			t.Errorf("help does not explain %q", phrase)
 		}
@@ -61,20 +61,22 @@ func TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts(t *testi
 			return []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false,"merge_commit_title":"MERGE_MESSAGE","merge_commit_message":"PR_TITLE"}`), nil
 		case "repos/acme/app/rules/branches/main?per_page=100":
 			return []byte(`[{"type":"required_linear_history","ruleset_source_type":"Organization","ruleset_source":"acme","ruleset_id":7},{"type":"merge_queue","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":8}]`), nil
+		case "repos/acme/app/branches/main/protection":
+			return []byte(`{"required_linear_history":{"enabled":true}}`), nil
 		default:
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
 	got := inspectMergePolicyRepository(context.Background(), "acme/app")
-	if got.Disposition != "blocked" || len(got.Drift) != 4 || len(got.Conflicts) != 2 {
+	if got.Disposition != "blocked" || len(got.Drift) != 4 || len(got.Conflicts) != 3 {
 		t.Fatalf("result = %#v", got)
 	}
 }
 
 func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
-	originalDiscover, originalRead, originalReadPages, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyReadPages, mergePolicyExecute
+	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() {
-		mergePolicyDiscover, mergePolicyRead, mergePolicyReadPages, mergePolicyExecute = originalDiscover, originalRead, originalReadPages, originalExecute
+		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
 	})
 	mergePolicyDiscover = func(string, string) ([]discover.Repo, error) {
 		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
@@ -83,6 +85,9 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
 		if strings.Contains(endpoint, "/rules/branches/") {
 			return []byte(`[]`), nil
+		}
+		if strings.Contains(endpoint, "/protection") {
+			return nil, errors.New("gh: Not Found (HTTP 404)")
 		}
 		reads++
 		if reads == 1 {
@@ -120,7 +125,7 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 	}
 }
 
-func TestApplyOrganizationRulesetPreservesUnrelatedProtections(t *testing.T) {
+func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
 	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
 	mergePolicyRead = func(context.Context, string) ([]byte, error) {
@@ -139,7 +144,7 @@ func TestApplyOrganizationRulesetPreservesUnrelatedProtections(t *testing.T) {
 		}
 		return githubobserver.CommandResponse{}
 	}
-	if err := applySharedRuleset(context.Background(), mergePolicyRulesetChange{SourceType: "Organization", Source: "acme", ID: 7}); err != nil {
+	if err := applySharedRuleset(context.Background(), mergePolicyRulesetChange{SourceType: "Repository", Source: "acme/app", ID: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(input, `"required_approving_review_count":2`) || !strings.Contains(input, `"required_status_checks"`) || !strings.Contains(input, `"allowed_merge_methods":["merge"]`) {
@@ -147,5 +152,42 @@ func TestApplyOrganizationRulesetPreservesUnrelatedProtections(t *testing.T) {
 	}
 	if strings.Contains(input, `"id":7`) {
 		t.Fatalf("response-only id was sent: %s", input)
+	}
+}
+
+func TestInspectClassicProtectionTreats404AsNoneAndLinearHistoryAsConflict(t *testing.T) {
+	original := mergePolicyRead
+	t.Cleanup(func() { mergePolicyRead = original })
+	mergePolicyRead = func(context.Context, string) ([]byte, error) { return nil, errors.New("gh: Not Found (HTTP 404)") }
+	sha, conflicts, err := inspectClassicProtection(context.Background(), "acme/app", "main")
+	if err != nil || sha != "none" || len(conflicts) != 0 {
+		t.Fatalf("404 result = sha %q conflicts %#v err %v", sha, conflicts, err)
+	}
+	mergePolicyRead = func(context.Context, string) ([]byte, error) {
+		return []byte(`{"required_linear_history":{"enabled":true}}`), nil
+	}
+	_, conflicts, err = inspectClassicProtection(context.Background(), "acme/app", "main")
+	if err != nil || len(conflicts) != 1 || !strings.Contains(conflicts[0], "linear history") {
+		t.Fatalf("linear result = conflicts %#v err %v", conflicts, err)
+	}
+}
+
+func TestOrganizationRulesetIsAuditOnlyAndBlocksRepositoryFallback(t *testing.T) {
+	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
+	mergePolicyRead = func(context.Context, string) ([]byte, error) { return []byte(`{"default_branch":"main"}`), nil }
+	mutated := false
+	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{}
+	}
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{{Repository: "acme/app", DefaultBranch: "main", Disposition: "drift", ObservedSHA: digestJSON([]byte(`{"default_branch":"main"}`)), ProtectionSHA: digestJSON([]byte(`{"default_branch":"main"}`)), Rulesets: []mergePolicyRuleRef{{Type: "pull_request", SourceType: "Organization", Source: "acme", ID: 7, Methods: []string{"squash"}}}}}}
+	buildMergePolicyRulesetPlan(context.Background(), &report)
+	if len(report.Rulesets) != 1 || report.Rulesets[0].Disposition != "blocked" || !strings.Contains(report.Rulesets[0].Error, "audit-only") {
+		t.Fatalf("ruleset plan = %#v", report.Rulesets)
+	}
+	applyMergePolicy(context.Background(), &report, &bytes.Buffer{})
+	if mutated || report.Repositories[0].Disposition != "blocked" {
+		t.Fatalf("mutated=%v repository=%#v", mutated, report.Repositories[0])
 	}
 }
