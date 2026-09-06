@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 )
 
 // DefaultMachineStaleAfter matches WB's ordinary remote-machine freshness
@@ -59,12 +59,6 @@ type WorktreeReadModel interface {
 	Worktrees(context.Context, Viewer, WorktreeFilter) (Access[WorktreeTable], error)
 }
 
-// RemoteSnapshotSource is the read-only subset of remotestate.Provider needed
-// by the table provider.
-type RemoteSnapshotSource interface {
-	List(context.Context) ([]remotestate.Entry, error)
-}
-
 // MachineAccessResolver proves that one viewer may inspect one exact published
 // machine. Authentication alone is never treated as machine ownership.
 type MachineAccessResolver interface {
@@ -74,20 +68,20 @@ type MachineAccessResolver interface {
 // RemoteStateWorktreeReadModel projects existing WB machine snapshots through
 // a per-machine authorization boundary.
 type RemoteStateWorktreeReadModel struct {
-	Source     RemoteSnapshotSource
+	Store      machinesnapshot.SnapshotStore
 	Access     MachineAccessResolver
 	Now        func() time.Time
 	StaleAfter time.Duration
 }
 
 func (model RemoteStateWorktreeReadModel) Worktrees(ctx context.Context, viewer Viewer, filter WorktreeFilter) (Access[WorktreeTable], error) {
-	if model.Source == nil || model.Access == nil {
+	if model.Store == nil || model.Access == nil {
 		return Access[WorktreeTable]{}, ErrNoReadModel
 	}
 	if !viewer.Authenticated || !viewer.Member || strings.TrimSpace(viewer.UserID) == "" {
 		return Access[WorktreeTable]{}, ErrPrivateData
 	}
-	entries, err := model.Source.List(ctx)
+	records, err := model.Store.ListLatest(ctx)
 	if err != nil {
 		return Access[WorktreeTable]{}, err
 	}
@@ -100,20 +94,23 @@ func (model RemoteStateWorktreeReadModel) Worktrees(ctx context.Context, viewer 
 		staleAfter = DefaultMachineStaleAfter
 	}
 	table := WorktreeTable{Rows: []WorktreeRow{}}
-	for _, entry := range entries {
-		snapshot := entry.Snapshot
+	for _, record := range records {
+		snapshot := record.Snapshot
+		if snapshot.Validate() != nil || record.ReceivedAt.IsZero() || record.Digest == "" {
+			continue
+		}
 		allowed, err := model.Access.CanViewMachine(ctx, viewer, snapshot.Login, snapshot.Machine)
 		if err != nil {
 			return Access[WorktreeTable]{}, err
 		}
-		if !allowed || entry.Error != "" {
+		if !allowed {
 			continue
 		}
 		if snapshot.PublishedAt.After(table.GeneratedAt) {
 			table.GeneratedAt = snapshot.PublishedAt
 		}
 		for _, worktree := range snapshot.Worktrees {
-			row := worktreeRow(snapshot, worktree, now, staleAfter)
+			row := worktreeRow(snapshot, record.ReceivedAt, worktree, now, staleAfter)
 			if worktreeMatches(row, filter) {
 				table.Rows = append(table.Rows, row)
 			}
@@ -132,7 +129,7 @@ func (model RemoteStateWorktreeReadModel) Worktrees(ctx context.Context, viewer 
 	return Access[WorktreeTable]{Visibility: VisibilityPrivate, Value: table}, nil
 }
 
-func worktreeRow(snapshot remotestate.Snapshot, worktree remotestate.WorktreeState, now time.Time, staleAfter time.Duration) WorktreeRow {
+func worktreeRow(snapshot machinesnapshot.Snapshot, receivedAt time.Time, worktree machinesnapshot.Worktree, now time.Time, staleAfter time.Duration) WorktreeRow {
 	lifecycle := strings.TrimSpace(worktree.Lifecycle)
 	if lifecycle == "" {
 		lifecycle = "working"
@@ -141,7 +138,7 @@ func worktreeRow(snapshot remotestate.Snapshot, worktree remotestate.WorktreeSta
 	if ownerStatus == "" {
 		ownerStatus = "unknown"
 	}
-	attention := safeAttentionReason(worktree.Attention)
+	attention := safeAttentionReason(worktree.AttentionReason)
 	needsAttention := worktree.NeedsAttention || attention != ""
 	if ownerStatus == "orphaned" {
 		needsAttention = true
@@ -157,7 +154,7 @@ func worktreeRow(snapshot remotestate.Snapshot, worktree remotestate.WorktreeSta
 		Repository: worktree.Repository, Task: worktree.Task, Stream: worktree.Stream,
 		Branch: worktree.Branch, Status: status, Lifecycle: lifecycle,
 		OwnerStatus: ownerStatus, Owner: worktree.Owner, Machine: snapshot.Machine,
-		MachineSeenAt: snapshot.Heartbeat(), MachineStale: now.Sub(snapshot.Heartbeat()) > staleAfter,
+		MachineSeenAt: machineHeartbeat(snapshot, receivedAt), MachineStale: now.Sub(machineHeartbeat(snapshot, receivedAt)) > staleAfter,
 		PublishedAt:    snapshot.PublishedAt,
 		NeedsAttention: needsAttention, AttentionReason: attention,
 	}
@@ -170,6 +167,17 @@ func worktreeRow(snapshot remotestate.Snapshot, worktree remotestate.WorktreeSta
 		row.PullRequestURL = worktree.PullRequest.URL
 	}
 	return row
+}
+
+func machineHeartbeat(snapshot machinesnapshot.Snapshot, receivedAt time.Time) time.Time {
+	heartbeat := snapshot.PublishedAt
+	if snapshot.LastSeenAt.After(heartbeat) {
+		heartbeat = snapshot.LastSeenAt
+	}
+	if receivedAt.After(heartbeat) {
+		heartbeat = receivedAt
+	}
+	return heartbeat
 }
 
 func safeAttentionReason(reason string) string {

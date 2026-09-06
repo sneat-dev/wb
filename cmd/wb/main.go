@@ -45,6 +45,7 @@ The fastest agent workflow is:
 
   Start isolated work   wb worktree create <task> <owner/repository>
   Inspect progress      wb worktree summary <task>
+  Open fleet dashboard  wb dashboard
   Land and clean up     wb worktree land <worktree>
 
 Not sure which command matches an intent? Search the structured catalog:
@@ -135,6 +136,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newMigrateCmd(), rootGroupChange),
 		groupedRootCommand(newRunCmd(), rootGroupChange),
 		groupedRootCommand(newWorkerCmd(defaultDaemonDependencies()), rootGroupMaintain),
+		groupedRootCommand(newDashboardCmd(), rootGroupFleet),
 		groupedRootCommand(newDaemonCmd(), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
@@ -157,6 +159,7 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
+		"dashboard":    true,
 		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		"worker connect": true,

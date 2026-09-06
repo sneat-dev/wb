@@ -98,6 +98,15 @@ the historical `validation_failed` state is an operator assertion because the
 pre-mutation receipt bytes are unavailable. Normal prepare stays blocked after
 that acknowledgement and the audited rebatch path rechecks it before use.
 
+An explicit `prepare --rebatch-receipt` may replace an exact open, published,
+unlanded candidate after the target advances by proven fast-forward ancestry.
+The source set must still add a distinct branch and retain every original
+source by ancestry. Candidate/ref drift, a closed or merged PR, target rewind
+or divergence, and landed candidates remain refusals. The replacement starts
+from the freshly fetched target and its append-only acknowledgement records
+both target SHAs; the original receipt and candidate stay unchanged. An
+unpublished prepared receipt still requires an unchanged target.
+
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but
 its clean candidate is proved by the immutable Work Log base, every exact clean

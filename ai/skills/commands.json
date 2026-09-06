@@ -22,6 +22,9 @@
     "coverage": [
       "wb-fleet"
     ],
+    "dashboard": [
+      "wb-daemon"
+    ],
     "daemon": [
       "wb-daemon"
     ],

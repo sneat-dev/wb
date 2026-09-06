@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 )
 
 const maxWebhookBodyBytes = 1 << 20
@@ -20,9 +22,11 @@ type ViewerResolver interface {
 
 // HandlerOptions supplies the narrow host bindings for the public API.
 type HandlerOptions struct {
-	Service        Service
-	ViewerResolver ViewerResolver
-	AllowedOrigin  string
+	Service           Service
+	ViewerResolver    ViewerResolver
+	PublisherResolver MachinePublisherResolver
+	MachineSnapshots  *MachineSnapshotService
+	AllowedOrigin     string
 }
 
 // NewHandler returns the Workbench GitHub App API under APIPrefix. It permits
@@ -39,6 +43,8 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux.HandleFunc("GET "+APIPrefix+"/leaderboards", handler.leaderboard)
 	mux.HandleFunc("GET "+APIPrefix+"/latest-merges", handler.latestMerges)
 	mux.HandleFunc("GET "+APIPrefix+"/worktrees", handler.worktrees)
+	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.machineSnapshots)
+	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishMachineSnapshot)
 	mux.HandleFunc("GET "+APIPrefix+"/events", handler.events)
 	mux.HandleFunc("POST "+APIPrefix+"/github/webhook", handler.webhook)
 	return cors(options.AllowedOrigin, mux)
