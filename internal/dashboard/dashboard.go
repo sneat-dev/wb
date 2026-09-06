@@ -15,16 +15,19 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/runlog"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 const APISchemaVersion = 1
 
 type Options struct {
-	ProjectsRoot string
-	Version      string
-	Now          func() time.Time
-	CacheTTL     time.Duration
+	ProjectsRoot       string
+	Version            string
+	Now                func() time.Time
+	CacheTTL           time.Duration
+	InventoryIndexPath string
+	InventoryIndexTTL  time.Duration
 }
 
 type Machine struct {
@@ -42,6 +45,12 @@ type Worktree struct {
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
 }
 
+type Inventory struct {
+	SourceFingerprint string    `json:"source_fingerprint,omitempty"`
+	ObservedAt        time.Time `json:"observed_at,omitempty"`
+	CacheHit          bool      `json:"cache_hit"`
+}
+
 type Overview struct {
 	SchemaVersion int            `json:"schema_version"`
 	GeneratedAt   time.Time      `json:"generated_at"`
@@ -49,6 +58,7 @@ type Overview struct {
 	Operations    runlog.Summary `json:"operations"`
 	Worktrees     []Worktree     `json:"worktrees"`
 	Diagnostics   int            `json:"diagnostics"`
+	Inventory     Inventory      `json:"inventory"`
 }
 
 type service struct {
@@ -65,6 +75,9 @@ func NewHandler(options Options) http.Handler {
 	}
 	if options.CacheTTL <= 0 {
 		options.CacheTTL = 10 * time.Second
+	}
+	if options.InventoryIndexTTL <= 0 {
+		options.InventoryIndexTTL = time.Minute
 	}
 	server := &service{options: options}
 	mux := http.NewServeMux()
@@ -109,9 +122,25 @@ func (server *service) load(ctx context.Context) (Overview, error) {
 	if !server.cachedAt.IsZero() && now.Sub(server.cachedAt) < server.options.CacheTTL {
 		return server.cached, nil
 	}
-	overview, err := BuildOverview(ctx, server.options.ProjectsRoot, server.options.Version, now)
+	indexPath := server.options.InventoryIndexPath
+	indexPathUnavailable := false
+	if indexPath == "" {
+		if home, err := wbhome.EnsureRoot(server.options.ProjectsRoot); err == nil {
+			indexPath = filepath.Join(home, "cache", "fleet-inventory-v1.json")
+		} else {
+			indexPathUnavailable = true
+		}
+	}
+	overview, err := buildOverview(ctx, server.options.ProjectsRoot, server.options.Version, now, discover.LocalIndexOptions{
+		CachePath: indexPath,
+		MaxAge:    server.options.InventoryIndexTTL,
+		Now:       func() time.Time { return now },
+	})
 	if err != nil {
 		return Overview{}, err
+	}
+	if indexPathUnavailable {
+		overview.Diagnostics++
 	}
 	server.cached = overview
 	server.cachedAt = now
@@ -119,8 +148,12 @@ func (server *service) load(ctx context.Context) (Overview, error) {
 }
 
 // BuildOverview joins local worktree inventory with governed-command events.
-func BuildOverview(_ context.Context, projectsRoot, version string, now time.Time) (Overview, error) {
-	repositories, err := discover.ScanLocal(projectsRoot)
+func BuildOverview(ctx context.Context, projectsRoot, version string, now time.Time) (Overview, error) {
+	return buildOverview(ctx, projectsRoot, version, now, discover.LocalIndexOptions{})
+}
+
+func buildOverview(_ context.Context, projectsRoot, version string, now time.Time, indexOptions discover.LocalIndexOptions) (Overview, error) {
+	indexed, err := discover.ScanLocalIndexed(projectsRoot, indexOptions)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -129,9 +162,15 @@ func BuildOverview(_ context.Context, projectsRoot, version string, now time.Tim
 		SchemaVersion: APISchemaVersion,
 		GeneratedAt:   now.UTC(),
 		Machine:       Machine{Name: name, Version: version},
+		Diagnostics:   len(indexed.Diagnostics),
+		Inventory: Inventory{
+			SourceFingerprint: indexed.SourceFingerprint,
+			ObservedAt:        indexed.ObservedAt,
+			CacheHit:          indexed.CacheHit,
+		},
 	}
 	var events []runlog.Event
-	for _, repository := range repositories {
+	for _, repository := range indexed.Repositories {
 		root := filepath.Join(repository.Path, ".worktrees")
 		entries, readErr := os.ReadDir(root)
 		if os.IsNotExist(readErr) {
