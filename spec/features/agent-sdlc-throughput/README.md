@@ -461,6 +461,11 @@ worktree removal, WB revalidates the exact selected repository, claim, Git
 registry, and remote SHA. A cache reduces discovery work but never authorizes a
 mutation by itself.
 
+The initial implementation slice persists this fingerprinted index for the
+read-only daemon dashboard. Mutating fleet commands deliberately remain on
+fresh `ScanLocal` discovery until each write journey proves its
+exact-repository revalidation immediately before the mutation.
+
 ### Cross-machine synchronization
 
 Each registered machine runs its own local scheduler and keeps durable queue
@@ -937,7 +942,8 @@ a worktree.
 - [x] Narrow known-repository landing and cleanup inventory before subprocess
   inspection; preserve shared-root recovery and exact cleanup receipts.
 - [ ] Make every pre-orchestrator landing guard emit immediate progress and a
-  ten-second heartbeat, including local-link inventory.
+  ten-second heartbeat, including local-link inventory and `wb remote publish`
+  repository collection.
 - [ ] Add the fingerprinted local fleet-inventory index while retaining fresh
   exact-repository revalidation before every mutation.
 - [ ] Benchmark opt-in worktree recycling against fresh creation and retained
