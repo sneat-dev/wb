@@ -97,6 +97,12 @@ func (receiver Receiver) ReceiveOnce(ctx context.Context, wait time.Duration) er
 		return err
 	}
 	if len(response.Events) == 0 {
+		if response.NextCursor != cursor {
+			state.Cursor = response.NextCursor
+			if err := receiver.Cursor.saveState(state); err != nil {
+				return fmt.Errorf("persist empty repository event cursor: %w", err)
+			}
+		}
 		return nil
 	}
 	ids := make([]string, 0, len(response.Events))

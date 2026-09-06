@@ -247,6 +247,18 @@ func TestReceiveOnceAcknowledgesOnlyAfterEveryDurableEnqueue(t *testing.T) {
 	}
 }
 
+func TestReceiveOncePersistsInitialCursorWithoutAcknowledgingEmptyPoll(t *testing.T) {
+	source := &sourceFake{response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "initial-cursor", Events: nil}}
+	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
+	receiver := Receiver{Source: source, Queue: &enqueueFake{}, Cursor: cursor}
+	if err := receiver.ReceiveOnce(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cursor.Load(); err != nil || got != "initial-cursor" || len(source.acks) != 0 {
+		t.Fatalf("cursor=%q acks=%d err=%v", got, len(source.acks), err)
+	}
+}
+
 func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
 	root := t.TempDir()
 	queue, err := NewQueue(root)
