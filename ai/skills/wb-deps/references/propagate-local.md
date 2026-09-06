@@ -92,6 +92,13 @@ membership remains the link-record and merge-guard authority.
    root, while external peers such as Angular continue to resolve from the
    consumer installation. WB preflights the whole sibling graph, so a conflict
    creates no partial graph and can be corrected before retrying.
+5. Before reporting success, WB asks Node's CommonJS and ESM resolvers to walk
+   every reachable installed runtime package. A published package in pnpm's
+   isolated peer context must resolve each linked package to the same canonical
+   root as the consumer. If it retains the published singleton, WB reports the
+   exact package and dependency edge and keeps the live-link receipt available
+   for `--undo`; this fast resolver probe catches the split without a browser
+   run.
 
 Restart an already-running frontend build after the link topology changes. If
 the build still resolves the previous package target, preserve any diagnostics
