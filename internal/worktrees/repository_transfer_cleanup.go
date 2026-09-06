@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -65,8 +64,8 @@ func repositoryTransferCleanupDirectory(projectsRoot string) (string, error) {
 }
 
 func recordRepositoryTransferCleanupIntent(options RepositoryRelocateOptions, result RepositoryRelocateResult, remoteHead string, held *os.File) (repositoryTransferCleanupReceipt, string, error) {
-	var status unix.Stat_t
-	if err := unix.Fstat(int(held.Fd()), &status); err != nil {
+	device, inode, err := repositoryTransferCleanupIdentity(held)
+	if err != nil {
 		return repositoryTransferCleanupReceipt{}, "", err
 	}
 	digest := sha256.Sum256([]byte(result.SourceRepository + "\x00" + result.DestinationRepository + "\x00" + remoteHead + "\x00" + result.RetiredDestinationDir))
@@ -76,7 +75,7 @@ func recordRepositoryTransferCleanupIntent(options RepositoryRelocateOptions, re
 		DestinationRepository: result.DestinationRepository, DestinationDir: result.DestinationDir,
 		QuarantineDir: result.RetiredDestinationDir, RemoteURL: result.RemoteURL,
 		DefaultBranch: result.DefaultBranch, RemoteHead: remoteHead,
-		QuarantineDevice: uint64(status.Dev), QuarantineInode: uint64(status.Ino),
+		QuarantineDevice: device, QuarantineInode: inode,
 		Status: repositoryTransferCleanupPending, RecordedAt: options.Now().UTC(),
 	}
 	directoryPath, err := repositoryTransferCleanupDirectory(options.ProjectsRoot)
@@ -138,33 +137,6 @@ func shellQuoteRepositoryTransfer(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func retireRepositoryTransferReplacement(path string, held *os.File) error {
-	parentPath := filepath.Dir(path)
-	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = parent.Close() }()
-	name := filepath.Base(path)
-	if !directoryEntryStillMatches(parent, name, held) {
-		return fmt.Errorf("replacement quarantine changed after verification: %s", path)
-	}
-	if err := removeDirectoryContentsAt(held, path, 0); err != nil {
-		return err
-	}
-	if !directoryEntryStillMatches(parent, name, held) {
-		return fmt.Errorf("replacement quarantine changed during retirement: %s", path)
-	}
-	if err := unlinkResidueEntry(parent, parentPath, name, unix.AT_REMOVEDIR); err != nil {
-		return err
-	}
-	absent, err := noFollowChildAbsent(int(parent.Fd()), name)
-	if err != nil || !absent {
-		return fmt.Errorf("verify retired replacement quarantine %s", path)
-	}
-	return nil
-}
-
 // RecoverRepositoryTransferCleanup securely retires the exact quarantined
 // replacement clone named by an immutable WB receipt. It refuses a changed
 // path or inode and is safe to preview before applying.
@@ -200,38 +172,32 @@ func RecoverRepositoryTransferCleanup(ctx context.Context, options RepositoryTra
 		return result, err
 	}
 	defer func() { _ = parent.Close() }()
-	fd, err := unix.Openat(int(parent.Fd()), filepath.Base(receipt.QuarantineDir), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	held, absent, err := openRepositoryTransferCleanupQuarantine(parent, filepath.Dir(receipt.QuarantineDir), filepath.Base(receipt.QuarantineDir))
 	if err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			outcome, verifyErr := absentRepositoryTransferCleanupOutcome(ctx, receipt)
-			if verifyErr != nil {
-				result.Reason = verifyErr.Error()
-				return result, nil
-			}
-			result.Eligible = true
-			result.Outcome = outcome
-			if !options.Apply {
-				result.Reason = "replacement quarantine is absent; append " + outcome + " terminal evidence"
-				return result, nil
-			}
-			completed, completeErr := recordRepositoryTransferCleanupTerminal(options.ProjectsRoot, receipt, outcome, time.Now().UTC())
-			if completeErr != nil {
-				return result, completeErr
-			}
-			result.ReceiptPath = completed
-			result.Applied = true
-			return result, nil
-		}
 		return result, err
 	}
-	held := os.NewFile(uintptr(fd), receipt.QuarantineDir)
-	if held == nil {
-		_ = unix.Close(fd)
-		return result, fmt.Errorf("open replacement quarantine")
+	if absent {
+		outcome, verifyErr := absentRepositoryTransferCleanupOutcome(ctx, receipt)
+		if verifyErr != nil {
+			result.Reason = verifyErr.Error()
+			return result, nil
+		}
+		result.Eligible = true
+		result.Outcome = outcome
+		if !options.Apply {
+			result.Reason = "replacement quarantine is absent; append " + outcome + " terminal evidence"
+			return result, nil
+		}
+		completed, completeErr := recordRepositoryTransferCleanupTerminal(options.ProjectsRoot, receipt, outcome, time.Now().UTC())
+		if completeErr != nil {
+			return result, completeErr
+		}
+		result.ReceiptPath = completed
+		result.Applied = true
+		return result, nil
 	}
 	defer func() { _ = held.Close() }()
-	var status unix.Stat_t
-	if err := unix.Fstat(fd, &status); err != nil || uint64(status.Dev) != receipt.QuarantineDevice || uint64(status.Ino) != receipt.QuarantineInode {
+	if !repositoryTransferCleanupIdentityMatches(held, receipt.QuarantineDevice, receipt.QuarantineInode) {
 		result.Reason = "replacement quarantine no longer matches the recorded inode"
 		return result, nil
 	}
@@ -255,10 +221,9 @@ func RecoverRepositoryTransferCleanup(ctx context.Context, options RepositoryTra
 
 func absentRepositoryTransferCleanupOutcome(ctx context.Context, receipt repositoryTransferCleanupReceipt) (string, error) {
 	if destination, err := openAbsoluteDirectoryNoFollow(receipt.DestinationDir, false); err == nil {
-		var status unix.Stat_t
-		statErr := unix.Fstat(int(destination.Fd()), &status)
+		matches := repositoryTransferCleanupIdentityMatches(destination, receipt.QuarantineDevice, receipt.QuarantineInode)
 		_ = destination.Close()
-		if statErr == nil && uint64(status.Dev) == receipt.QuarantineDevice && uint64(status.Ino) == receipt.QuarantineInode {
+		if matches {
 			return repositoryTransferCleanupRestored, nil
 		}
 	}
