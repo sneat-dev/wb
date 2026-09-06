@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -63,18 +64,21 @@ type RelocateOutcome struct {
 // path through which an active claim is corroborated. The claim itself retains
 // the original checkout path as historical identity evidence.
 type workLogRelocationIntent struct {
-	Version     int       `json:"version"`
-	Type        string    `json:"type"`
-	OperationID string    `json:"operation_id"`
-	ClaimID     string    `json:"claim_id"`
-	Task        string    `json:"task"`
-	Repository  string    `json:"repository"`
-	Branch      string    `json:"branch"`
-	HeadSHA     string    `json:"head_sha"`
-	Source      string    `json:"source"`
-	Destination string    `json:"destination"`
-	To          string    `json:"to"`
-	At          time.Time `json:"at"`
+	Version               int       `json:"version"`
+	Type                  string    `json:"type"`
+	OperationID           string    `json:"operation_id"`
+	ClaimID               string    `json:"claim_id"`
+	Task                  string    `json:"task"`
+	Repository            string    `json:"repository"`
+	Branch                string    `json:"branch"`
+	HeadSHA               string    `json:"head_sha"`
+	Source                string    `json:"source"`
+	Destination           string    `json:"destination"`
+	To                    string    `json:"to"`
+	SourceRepository      string    `json:"source_repository,omitempty"`
+	DestinationRepository string    `json:"destination_repository,omitempty"`
+	RemoteURL             string    `json:"remote_url,omitempty"`
+	At                    time.Time `json:"at"`
 }
 
 // workLogRelocationReceipt is written only after Git has registered the new
@@ -455,10 +459,19 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 	}
 	if record.Version != 1 || record.Type != wantType || !validSafeSegment(record.OperationID) || record.ClaimID != claim.ClaimID ||
 		record.Task != claim.Task || record.Repository != claim.Repository || record.Branch != claim.Branch || record.HeadSHA == "" ||
-		record.To != "local" && record.To != "shared" || record.Source == "" || record.Destination == "" || record.At.IsZero() {
+		record.To != "local" && record.To != "shared" && record.To != "repository" || record.Source == "" || record.Destination == "" || record.At.IsZero() {
 		return errors.New("record identity is incomplete or does not match immutable claim")
 	}
-	if filepath.Clean(record.Source) == filepath.Clean(record.Destination) {
+	if record.To == "repository" {
+		remote, err := gitremote.Parse(record.RemoteURL)
+		if err != nil || record.SourceRepository != claim.Repository || record.DestinationRepository == "" ||
+			record.DestinationRepository == record.SourceRepository || remote.Identity.Repository != record.DestinationRepository {
+			return errors.New("repository relocation identity is incomplete or invalid")
+		}
+	} else if record.SourceRepository != "" || record.DestinationRepository != "" || record.RemoteURL != "" {
+		return errors.New("worktree relocation unexpectedly changes repository identity")
+	}
+	if record.To != "repository" && filepath.Clean(record.Source) == filepath.Clean(record.Destination) {
 		return errors.New("record source and destination are identical")
 	}
 	return nil
@@ -486,6 +499,10 @@ func matchingPendingIntent(journal relocationJournal, claim workLogClaim, source
 }
 
 func appendRelocationIntent(home string, claim workLogClaim, source, destination, to, head string, at time.Time) (*workLogRelocationIntent, string, error) {
+	return appendRelocationIntentForRepository(home, claim, source, destination, to, head, "", "", "", at)
+}
+
+func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, at time.Time) (*workLogRelocationIntent, string, error) {
 	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {
 		return nil, "", err
@@ -513,7 +530,8 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 		return nil, "", err
 	}
 	intent := &workLogRelocationIntent{Version: 1, Type: workLogRelocationIntentType, OperationID: operationID, ClaimID: claim.ClaimID, Task: claim.Task,
-		Repository: claim.Repository, Branch: claim.Branch, HeadSHA: head, Source: filepath.Clean(source), Destination: filepath.Clean(destination), To: to, At: at}
+		Repository: claim.Repository, Branch: claim.Branch, HeadSHA: head, Source: filepath.Clean(source), Destination: filepath.Clean(destination), To: to,
+		SourceRepository: sourceRepository, DestinationRepository: destinationRepository, RemoteURL: remoteURL, At: at}
 	name := relocationIntentName(claim.ClaimID, operationID)
 	if err := writeJSONImmutableAt(receipts, name, intent, true); err != nil {
 		return nil, "", err

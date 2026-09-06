@@ -47,6 +47,7 @@ func Summary(results []Result) []SummaryGroup {
 		}),
 		group("Cloned", SummaryFinalOutcomes, status(Cloned)),
 		group("Pulled", SummaryFinalOutcomes, status(Pulled)),
+		group("Repository transferred", SummaryFinalOutcomes, status(RepositoryTransferred)),
 		group("Skipped (dirty)", SummaryFinalOutcomes, status(SkippedDirty)),
 		group("Skipped (ignored)", SummaryFinalOutcomes, status(SkippedIgnored)),
 		group("Empty remote", SummaryFinalOutcomes, status(EmptyRemote)),
@@ -65,7 +66,7 @@ func Summary(results []Result) []SummaryGroup {
 
 func needsAttention(result Result) bool {
 	switch result.Status {
-	case Diverged, NoUpstream, Unpushed, ArchivedUnlandable:
+	case Diverged, NoUpstream, Unpushed, ArchivedUnlandable, RepositoryTransferRequired:
 		return true
 	default:
 		// An archived repository that was pulled or left alone because

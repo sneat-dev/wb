@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/gitremote"
 )
 
 // Repo identifies a single repository and where it lives.
@@ -25,6 +27,12 @@ type Repo struct {
 	IsFork   bool
 	Local    bool
 	Remote   bool
+	// TransferFrom is set when this remotely listed repository is the
+	// canonical identity GitHub returns for a local clone still stored under
+	// an older owner/name path.
+	TransferFrom  string
+	DefaultBranch string
+	TransferError string
 }
 
 // Slug returns the "org/repo" identifier.
@@ -57,6 +65,99 @@ func Reconcile(local, remote []Repo) []Repo {
 	out := make([]Repo, 0, len(m))
 	for _, r := range m {
 		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug() < out[j].Slug() })
+	return out
+}
+
+// CanonicalRepository is GitHub's current identity for a possibly redirected
+// owner/name URL.
+type CanonicalRepository struct {
+	Slug          string
+	CloneURL      string
+	DefaultBranch string
+}
+
+// ResolveCanonicalRepository follows GitHub's repository redirect and returns
+// the current owner/name and transport URL for one local clone.
+func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalRepository, error) {
+	origin, err := gitops.OriginURL(repo.Path)
+	if err != nil {
+		return CanonicalRepository{}, err
+	}
+	parsed, err := gitremote.Parse(origin)
+	if err != nil || parsed.Identity.Host() != "github.com" || parsed.Identity.Repository != repo.Slug() {
+		return CanonicalRepository{}, fmt.Errorf("origin does not identify github.com/%s", repo.Slug())
+	}
+	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{Repository: repo.Slug(), Endpoint: "repos/" + repo.Slug()})
+	if err != nil {
+		return CanonicalRepository{}, err
+	}
+	var payload struct {
+		FullName      string `json:"full_name"`
+		SSHURL        string `json:"ssh_url"`
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		return CanonicalRepository{}, err
+	}
+	remote, err := gitremote.Parse(payload.SSHURL)
+	if err != nil || remote.Identity.Host() != "github.com" || remote.Identity.Repository != payload.FullName || payload.DefaultBranch == "" {
+		return CanonicalRepository{}, fmt.Errorf("GitHub returned an invalid canonical repository identity")
+	}
+	return CanonicalRepository{Slug: payload.FullName, CloneURL: payload.SSHURL, DefaultBranch: payload.DefaultBranch}, nil
+}
+
+// ReconcileTransfers folds an old-path local-only repository and its new
+// remote-only identity into one repository. This must happen before sync's
+// worker pool so no worker clones the destination while another moves source.
+func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.Context, Repo) (CanonicalRepository, error)) []Repo {
+	remoteOnly := map[string]Repo{}
+	for _, repo := range repos {
+		if repo.Remote && !repo.Local && repo.Path == "" {
+			remoteOnly[repo.Slug()] = repo
+		}
+	}
+	type candidate struct {
+		source    Repo
+		canonical CanonicalRepository
+	}
+	byTarget := map[string][]candidate{}
+	for _, repo := range repos {
+		if !repo.Local || repo.Remote || repo.Path == "" {
+			continue
+		}
+		canonical, err := resolve(ctx, repo)
+		if err != nil || canonical.Slug == repo.Slug() {
+			continue
+		}
+		if _, exists := remoteOnly[canonical.Slug]; exists {
+			byTarget[canonical.Slug] = append(byTarget[canonical.Slug], candidate{source: repo, canonical: canonical})
+		}
+	}
+	consumed := map[string]bool{}
+	var out []Repo
+	for target, candidates := range byTarget {
+		remote := remoteOnly[target]
+		consumed[target] = true
+		for _, candidate := range candidates {
+			combined := remote
+			combined.Local = true
+			combined.Path = candidate.source.Path
+			combined.TransferFrom = candidate.source.Slug()
+			combined.CloneURL = candidate.canonical.CloneURL
+			combined.DefaultBranch = candidate.canonical.DefaultBranch
+			if len(candidates) != 1 {
+				combined.TransferError = fmt.Sprintf("ambiguous transfer: %d local repositories resolve to %s", len(candidates), target)
+			}
+			out = append(out, combined)
+			consumed[candidate.source.Slug()] = true
+		}
+	}
+	for _, repo := range repos {
+		if !consumed[repo.Slug()] {
+			out = append(out, repo)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug() < out[j].Slug() })
 	return out

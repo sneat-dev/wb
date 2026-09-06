@@ -7,6 +7,7 @@ package fleetsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Status is the outcome fleetsync.Sync took for a single repo.
@@ -50,6 +52,8 @@ const (
 	// remote is read-only, so those commits can never be pushed — unlike
 	// KeptArchived, this state cannot resolve itself and needs a decision.
 	ArchivedUnlandable
+	RepositoryTransferred
+	RepositoryTransferRequired
 )
 
 func (s Status) String() string {
@@ -82,6 +86,10 @@ func (s Status) String() string {
 		return "unpushed commits"
 	case ArchivedUnlandable:
 		return "archived, holds unpushed commits"
+	case RepositoryTransferred:
+		return "repository transferred"
+	case RepositoryTransferRequired:
+		return "repository transfer required"
 	default:
 		return "unknown"
 	}
@@ -133,7 +141,8 @@ type Result struct {
 	// set only when --prune-archived actually removed (or tried to remove)
 	// it. A removal with no path here is a removal with no evidence, which
 	// this package refuses to perform.
-	ReceiptPath string
+	ReceiptPath          string
+	RepositoryRelocation *worktrees.RepositoryRelocateResult
 }
 
 // PullSummary renders the pull action independently of the final repository
@@ -200,6 +209,33 @@ func withHeadSHA(res Result) Result {
 
 func classify(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool) Result {
 	res := Result{Repo: repo, Archived: repo.Archived}
+	if repo.TransferError != "" {
+		res.Status, res.Err = Failed, errors.New(repo.TransferError)
+		return res
+	}
+	if repo.TransferFrom != "" {
+		relocated, err := worktrees.RelocateRepository(ctx, worktrees.RepositoryRelocateOptions{
+			ProjectsRoot: projectsRoot, SourceRepository: repo.TransferFrom, DestinationRepository: repo.Slug(),
+			RemoteURL: repo.CloneURL, DefaultBranch: repo.DefaultBranch, Apply: !dryRun,
+		})
+		res.RepositoryRelocation = &relocated
+		if err != nil {
+			res.Status, res.Err = Failed, err
+			return res
+		}
+		if !relocated.Eligible {
+			res.Status, res.Reason = RepositoryTransferRequired, relocated.Reason
+			return res
+		}
+		if dryRun {
+			res.Status = RepositoryTransferRequired
+			res.Reason = "dry-run: relocation is eligible but was not applied"
+			return res
+		}
+		res.Status = RepositoryTransferred
+		res.Repo.Path = relocated.DestinationDir
+		return res
+	}
 
 	if !repo.Remote || repo.IsFork {
 		res.Status = NoOp
