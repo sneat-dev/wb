@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,103 @@ func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state.MarkReady(900, time.Now())
+	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 900 }
+	deps.health = func(context.Context, string) error { return errors.New("connect: operation not permitted") }
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.Status != daemon.StatusReady || !result.ProcessManagerRunning || result.Reachable {
+		t.Fatalf("ready daemon with blocked probe = %#v", result)
+	}
+	if !strings.Contains(result.ReachabilityError, "operation not permitted") {
+		t.Fatalf("probe error = %q", result.ReachabilityError)
+	}
+	var textOutput bytes.Buffer
+	if err := writeDaemonResult(&textOutput, "text", result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"state=ready", "process_manager_running=true", "api_reachable=false", `api_probe_error="connect: operation not permitted"`} {
+		if !strings.Contains(textOutput.String(), want) {
+			t.Fatalf("text status %q does not contain %q", textOutput.String(), want)
+		}
+	}
+	var jsonOutput bytes.Buffer
+	if err := writeDaemonResult(&jsonOutput, "json", result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"process_manager_running": true`, `"reachable": false`, `"reachability_error": "connect: operation not permitted"`, `"status": "ready"`} {
+		if !strings.Contains(jsonOutput.String(), want) {
+			t.Fatalf("JSON status %q does not contain %q", jsonOutput.String(), want)
+		}
+	}
+	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	if err != nil || !found || stored.Status != daemon.StatusReady || stored.Queue.Generation != 1 {
+		t.Fatalf("probe failure mutated lifecycle state = %#v, %t, %v", stored, found, err)
+	}
+}
+
+func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+	first, err := controller.Start(context.Background(), daemonDefaultListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	originalStart := deps.start
+	deps.start = func(executable string, args []string, logPath string) (int, error) {
+		starts++
+		return originalStart(executable, args, logPath)
+	}
+	deps.health = func(context.Context, string) error { return errors.New("connect: operation not permitted") }
+
+	result, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AlreadyRunning || !result.ProcessManagerRunning || result.Reachable || starts != 0 {
+		t.Fatalf("start after blocked probe = %#v, starts=%d", result, starts)
+	}
+	if result.State.Queue.Generation != first.State.Queue.Generation {
+		t.Fatalf("queue generation changed from %d to %d", first.State.Queue.Generation, result.State.Queue.Generation)
+	}
+}
+
+func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+	first, err := controller.Start(context.Background(), daemonDefaultListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := controller.Stop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State.Status != daemon.StatusStopped || stopped.State.Queue.Generation != first.State.Queue.Generation {
+		t.Fatalf("stop = %#v", stopped)
+	}
+	restarted, err := controller.Restart(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.State.Queue.Generation != first.State.Queue.Generation+1 || restarted.State.Queue.HandoffFrom == nil {
+		t.Fatalf("restart = %#v", restarted)
+	}
+}
+
 func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) {
 	root := t.TempDir()
 	deps := daemonTestDependencies(t, root)
@@ -134,7 +232,7 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		sleep:      func(time.Duration) {},
 		version:    func() versionInfo { return versionInfo{Version: "test", Revision: "test-revision"} },
 		token:      func() (string, error) { pid++; return strings.Repeat("a", 30) + string(rune(pid)), nil },
-		health:     func(context.Context, string) bool { return true },
+		health:     func(context.Context, string) error { return nil },
 	}
 	deps.start = func(_ string, args []string, _ string) (int, error) {
 		statePath, owner := "", ""

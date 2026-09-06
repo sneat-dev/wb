@@ -313,6 +313,17 @@ commands remain daemon-free; only an explicitly daemon-backed async operation
 may request startup. The foreground `serve` path emits an alive heartbeat to
 stderr at least every ten seconds while it runs.
 
+`status` reports the persisted lifecycle state, the platform process manager's
+authoritative ownership of the recorded PID, and the loopback API probe as
+separate facts. A failed API probe includes its exact error and does not rewrite
+a supervisor-owned `ready` generation or restart it. In particular, a sandbox
+that denies loopback access can report `operation not permitted` while launchd
+still owns a healthy listener; that caller-local failure must not churn the
+queue generation. `start` remains idempotent for the same managed process even
+when its caller cannot probe the API. `stop` and `restart` are explicit and
+preserve the durable queue handoff record; genuine startup failure remains an
+error with the daemon log path.
+
 The existing loopback HTTP dashboard remains the transport in this slice.
 ConnectRPC/gRPC and MCP adapters will use the typed lifecycle/queue boundary,
 never the private state file. The lifecycle package includes a Windows process
@@ -971,6 +982,16 @@ queue generation is checkpointed, one new scheduler starts from the installed
 revision, and every queued intent is either resumed once or given an exact
 incompatible-schema disposition. No second independent scheduler dispatches
 work during the transition.
+
+### AC: daemon-status-separates-state-process-and-probe
+
+Given launchd owns the PID recorded by a `ready` daemon generation and the
+listener continues to emit heartbeats, when a sandboxed caller is denied access
+to the loopback health endpoint, then text and JSON status preserve
+`state=ready`, report `process_manager_running=true`, report
+`reachable=false` with the exact API probe error, and do not restart the daemon
+or advance its queue generation. An explicit stop followed by restart preserves
+the queue handoff and advances the generation once.
 
 ### AC: json-output-selection-is-consistent
 

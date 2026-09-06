@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,7 +113,11 @@ func launchdPID() (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	for _, line := range strings.Split(string(output), "\n") {
+	return launchdPIDFromOutput(string(output))
+}
+
+func launchdPIDFromOutput(output string) (int, bool) {
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "pid = ") {
 			continue
@@ -131,8 +134,8 @@ func daemonProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	managedPID, running := launchdPID()
+	return running && managedPID == pid
 }
 
 func stopDaemonProcess(pid int) error {

@@ -29,7 +29,9 @@ const (
 type daemonResult struct {
 	Action                  string            `json:"action"`
 	Managed                 bool              `json:"managed"`
+	ProcessManagerRunning   bool              `json:"process_manager_running"`
 	Reachable               bool              `json:"reachable"`
+	ReachabilityError       string            `json:"reachability_error,omitempty"`
 	ProvenanceMatches       bool              `json:"provenance_matches_installed"`
 	State                   daemonPublicState `json:"state,omitempty"`
 	AlreadyRunning          bool              `json:"already_running,omitempty"`
@@ -76,7 +78,7 @@ type daemonDependencies struct {
 	sleep      func(time.Duration)
 	version    func() versionInfo
 	token      func() (string, error)
-	health     func(context.Context, string) bool
+	health     func(context.Context, string) error
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -237,11 +239,17 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 	if format == "json" {
 		return writeJSONTo(out, result)
 	}
-	status := "stopped"
+	status := "absent"
 	if result.Managed {
 		status = string(result.State.Status)
 	}
-	_, err := fmt.Fprintf(out, "daemon %s: %s (reachable=%t, installed_provenance=%t)\n", result.Action, status, result.Reachable, result.ProvenanceMatches)
+	_, err := fmt.Fprintf(out, "daemon %s: state=%s, process_manager_running=%t, api_reachable=%t, installed_provenance=%t", result.Action, status, result.ProcessManagerRunning, result.Reachable, result.ProvenanceMatches)
+	if err == nil && result.ReachabilityError != "" {
+		_, err = fmt.Fprintf(out, ", api_probe_error=%q", result.ReachabilityError)
+	}
+	if err == nil {
+		_, err = fmt.Fprintln(out)
+	}
 	return err
 }
 
@@ -299,6 +307,7 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 		return result, nil
 	}
 	alive := state.PID > 0 && controller.deps.alive(state.PID)
+	result.ProcessManagerRunning = alive
 	if !alive && (state.Status == daemon.StatusReady || state.Status == daemon.StatusDraining) {
 		state.MarkStopped(controller.deps.now())
 		if err := controller.store.Save(state); err != nil {
@@ -306,7 +315,13 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 		}
 		result.State = publicDaemonState(state)
 	}
-	result.Reachable = alive && controller.deps.health(ctx, state.Listen)
+	if alive {
+		if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
+			result.Reachable = true
+		} else {
+			result.ReachabilityError = healthErr.Error()
+		}
+	}
 	current, err := controller.provenance()
 	if err != nil {
 		return daemonResult{}, err
@@ -332,9 +347,15 @@ func (controller daemonController) Start(ctx context.Context, listen string) (da
 	if err != nil {
 		return daemonResult{}, err
 	}
-	if found && state.Status == daemon.StatusReady && state.PID > 0 && controller.deps.alive(state.PID) && controller.deps.health(ctx, state.Listen) && state.Listen == listen {
+	if found && state.Status == daemon.StatusReady && state.PID > 0 && controller.deps.alive(state.PID) && state.Listen == listen {
 		if state.Provenance.SameBinary(current) {
-			return daemonResult{Action: "start", Managed: true, Reachable: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true}, nil
+			result := daemonResult{Action: "start", Managed: true, ProcessManagerRunning: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true}
+			if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
+				result.Reachable = true
+			} else {
+				result.ReachabilityError = healthErr.Error()
+			}
+			return result, nil
 		}
 		if _, err := controller.stop(ctx, state); err != nil {
 			return daemonResult{}, fmt.Errorf("handoff daemon from %s to installed %s: %w", state.Provenance.Version, current.Version, err)
@@ -481,8 +502,8 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 		if loadErr != nil {
 			return daemonResult{}, loadErr
 		}
-		if found && state.OwnerToken == token && state.Status == daemon.StatusReady && state.PID == pid && controller.deps.health(ctx, listen) {
-			return daemonResult{Action: action, Managed: true, Reachable: true, ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff}, nil
+		if found && state.OwnerToken == token && state.Status == daemon.StatusReady && state.PID == pid && controller.deps.health(ctx, listen) == nil {
+			return daemonResult{Action: action, Managed: true, ProcessManagerRunning: true, Reachable: true, ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff}, nil
 		}
 		controller.deps.sleep(50 * time.Millisecond)
 	}
@@ -560,19 +581,22 @@ func daemonOwnerToken() (string, error) {
 	}
 	return hex.EncodeToString(bytes), nil
 }
-func daemonHealthy(ctx context.Context, listen string) bool {
+func daemonHealthy(ctx context.Context, listen string) error {
 	requestCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://"+listen+"/api/v1/health", nil)
 	if err != nil {
-		return false
+		return err
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return false
+		return err
 	}
 	defer func() { _ = response.Body.Close() }()
-	return response.StatusCode == http.StatusOK
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned %s", response.Status)
+	}
+	return nil
 }
 func requireLoopbackAddress(address string) error {
 	host, _, err := net.SplitHostPort(address)
