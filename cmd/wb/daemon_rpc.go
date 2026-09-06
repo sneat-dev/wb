@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -65,8 +66,19 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 	if err != nil {
 		return nil, err
 	}
-	if _, err := client.GetDaemonInfo(ctx, connect.NewRequest(&daemonv1.GetDaemonInfoRequest{})); err != nil {
-		return nil, fmt.Errorf("connect to authenticated local daemon: %w", err)
+	deadline := time.Now().Add(time.Second)
+	var probeErr error
+	for {
+		if _, probeErr = client.GetDaemonInfo(ctx, connect.NewRequest(&daemonv1.GetDaemonInfoRequest{})); probeErr == nil {
+			return client, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("connect to authenticated local daemon: %w", probeErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("connect to authenticated local daemon: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	return client, nil
 }
