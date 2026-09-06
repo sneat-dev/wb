@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type testReadModel struct{ visibility Visibility }
@@ -30,18 +31,31 @@ func (model testReadModel) LatestMerges(context.Context, Viewer, int) (Access[[]
 }
 
 type testDeliveries struct {
-	claimed bool
-	wakeups []Wakeup
+	claimed   bool
+	committed bool
+	wakeups   []Wakeup
 }
 
 func (store *testDeliveries) HasDelivery(_ context.Context, _ string) (bool, error) {
-	return store.claimed, nil
+	return store.committed, nil
 }
-func (store *testDeliveries) CommitDeliveryAndWakeup(_ context.Context, _ string, wakeup Wakeup) (bool, error) {
-	if store.claimed {
+func (store *testDeliveries) ClaimDelivery(_ context.Context, _ string) (bool, error) {
+	if store.claimed || store.committed {
 		return false, nil
 	}
 	store.claimed = true
+	return true, nil
+}
+func (store *testDeliveries) ReleaseDelivery(_ context.Context, _ string) error {
+	store.claimed = false
+	return nil
+}
+func (store *testDeliveries) CommitDeliveryAndWakeup(_ context.Context, _ string, wakeup Wakeup) (bool, error) {
+	if store.committed {
+		return false, nil
+	}
+	store.committed = true
+	store.claimed = false
 	store.wakeups = append(store.wakeups, wakeup)
 	return true, nil
 }
@@ -50,6 +64,30 @@ type testReader struct{ deliveries []WebhookDelivery }
 
 func (reader *testReader) Refresh(_ context.Context, delivery WebhookDelivery) error {
 	reader.deliveries = append(reader.deliveries, delivery)
+	return nil
+}
+func (reader *testReader) RefreshProjection(context.Context, WebhookDelivery) (ProjectionSnapshot, error) {
+	return ProjectionSnapshot{
+		Repositories:  []ProjectionDocument{{Scope: ScopeRepository, ID: "github.com/sneat-dev/wb", DisplayName: "wb", UpdatedAt: time.Unix(1, 0)}},
+		Organizations: []ProjectionDocument{{Scope: ScopeOrganization, ID: "github.com/sneat-dev", DisplayName: "sneat-dev", UpdatedAt: time.Unix(1, 0)}},
+		LatestMerges:  []LatestMerge{{Repository: "github.com/sneat-dev/wb", PullRequest: 1}},
+	}, nil
+}
+
+type testProjectionWriter struct {
+	repositories, organizations, merges int
+}
+
+func (writer *testProjectionWriter) WriteRepositories(context.Context, string, []ProjectionDocument) error {
+	writer.repositories++
+	return nil
+}
+func (writer *testProjectionWriter) WriteOrganizations(context.Context, string, []ProjectionDocument) error {
+	writer.organizations++
+	return nil
+}
+func (writer *testProjectionWriter) WriteLatestMerges(context.Context, string, []LatestMerge) error {
+	writer.merges++
 	return nil
 }
 
@@ -120,10 +158,9 @@ func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 	secret := []byte("webhook-secret")
 	store := &testDeliveries{}
 	reader := &testReader{}
+	writer := &testProjectionWriter{}
 	handler := NewHandler(HandlerOptions{Service: Service{
-		WebhookSecret:       secret,
-		Deliveries:          store,
-		AuthoritativeReader: reader,
+		Projector: &ProjectionEngine{WebhookSecret: secret, Deliveries: store, Reader: reader, Writer: writer, AuthoritativeReader: reader},
 	}})
 	body := `{"repository":{"full_name":"sneat-dev/wb"}}`
 	request := httptest.NewRequest(http.MethodPost, APIPrefix+"/github/webhook", strings.NewReader(body))
@@ -143,6 +180,9 @@ func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 	if len(store.wakeups) != 1 || store.wakeups[0].Key != "sneat-dev/wb" {
 		t.Fatalf("wakeups = %#v", store.wakeups)
 	}
+	if writer.repositories != 1 || writer.organizations != 1 || writer.merges != 1 {
+		t.Fatalf("projection writes = %d/%d/%d", writer.repositories, writer.organizations, writer.merges)
+	}
 
 	duplicateRequest := httptest.NewRequest(http.MethodPost, APIPrefix+"/github/webhook", strings.NewReader(body))
 	duplicateRequest.Header = request.Header.Clone()
@@ -154,10 +194,10 @@ func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 }
 
 func TestWebhookRejectsUnsignedPayload(t *testing.T) {
+	store := &testDeliveries{}
+	reader := &testReader{}
 	handler := NewHandler(HandlerOptions{Service: Service{
-		WebhookSecret:       []byte("secret"),
-		Deliveries:          &testDeliveries{},
-		AuthoritativeReader: &testReader{},
+		Projector: &ProjectionEngine{WebhookSecret: []byte("secret"), Deliveries: store, Reader: reader, Writer: &testProjectionWriter{}, AuthoritativeReader: reader},
 	}})
 	request := httptest.NewRequest(http.MethodPost, APIPrefix+"/github/webhook", strings.NewReader(`{}`))
 	request.Header.Set("X-GitHub-Delivery", "delivery-1")

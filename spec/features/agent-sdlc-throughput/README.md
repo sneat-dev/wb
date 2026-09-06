@@ -868,6 +868,11 @@ a worktree.
   webhooks, interest-scoped daemon wakeups, durable cursors, and reconciliation
   polling; support attributed-public free delivery, a small evaluation
   allowance, and paid private or unattributed repositories.
+- [ ] Add the WB-owned deterministic projection engine behind the relay: an
+  authoritative refresh produces validated repository and organization
+  snapshots, idempotent durable writes are keyed by delivery ID, public latest
+  merges are replaced coherently, and the delivery ledger commits only after
+  projection writes succeed.
 - [ ] Bind the hosted provider to a durable Workbench read model, Firebase
   viewer resolution, delivery ledger, authoritative GitHub refresh, and event
   journal; keep the Sneat Go host limited to narrow composition adapters.
@@ -1019,6 +1024,17 @@ free mode. A private or unattributed repository uses an available evaluation
 allowance or paid entitlement. Without either, the signed delivery is persisted
 and acknowledged once with `not_entitled`, no daemon is woken, and the decision
 can be audited by installation and repository identity.
+
+### AC: github-delivery-projects-authoritative-snapshot-once
+
+Given a signed GitHub App delivery, when the provider has not seen its delivery
+ID, then it performs the authoritative refresh, validates repository and
+organization projection documents plus latest-merge records, applies the
+snapshot through delivery-keyed idempotent durable writer operations, and only
+then commits one coalesced wakeup. A redelivery or concurrent duplicate does no
+second refresh or write. A refresh, validation, or write failure leaves the
+delivery uncommitted so GitHub retry can recover it. Hosts supply the reader
+and writer adapters; WB does not import Firebase, Firestore, or GitHub clients.
 
 ### AC: telemetry-supports-causal-analysis
 

@@ -35,6 +35,7 @@ jobs:
             required:
               - '**/*_windows.go'
               - 'cmd/wb/**'
+              - 'api/githubapp/**'
               - 'internal/session/**'
               - 'go.mod'
               - 'go.sum'
@@ -265,6 +266,8 @@ jobs:
         run: >-
           go test ./internal/session
           -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
+      - name: Test GitHub App provider contract
+        run: go test ./api/githubapp -count=1
 
   test:
     # This job only combines results. Keep its name aligned with the required
