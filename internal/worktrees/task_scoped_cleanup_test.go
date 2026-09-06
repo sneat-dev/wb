@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -41,5 +42,37 @@ func TestTaskScopedLocalLayoutSkipsUnrelatedRepositories(t *testing.T) {
 	}
 	if len(layouts) != 1 || filepath.Clean(layouts[0].WorktreesRoot) != filepath.Join(target, ".worktrees") {
 		t.Fatalf("task-scoped layouts = %#v, want only %s", layouts, filepath.Join(target, ".worktrees"))
+	}
+}
+
+func TestTaskScopedLocalLayoutSkipsUnscopedLifecycleStages(t *testing.T) {
+	root := t.TempDir()
+	stage := filepath.Join(root, ".wb-retired-stage-0123456789abcdef0123456789abcdef")
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	layout := wbhome.Layout{WorktreesRoot: root, Local: true}
+	reporter := &listProgressReporter{}
+
+	_, diagnostics, artifacts, err := listCanonicalLocalLayout(
+		context.Background(), t.TempDir(), t.TempDir(), layout,
+		map[string]bool{"requested-task": true}, "", "", "", false, 1, reporter, inspectPolicy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 0 || len(artifacts) != 0 {
+		t.Fatalf("named inventory returned unrelated stage: diagnostics=%#v artifacts=%#v", diagnostics, artifacts)
+	}
+
+	_, diagnostics, artifacts, err = listCanonicalLocalLayout(
+		context.Background(), t.TempDir(), t.TempDir(), layout,
+		nil, "", "", "", false, 1, reporter, inspectPolicy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 0 || len(artifacts) != 1 || artifacts[0].Path != stage {
+		t.Fatalf("fleet inventory lost lifecycle stage: diagnostics=%#v artifacts=%#v", diagnostics, artifacts)
 	}
 }

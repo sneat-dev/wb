@@ -1295,6 +1295,14 @@ func listCanonicalLocalLayout(
 	for _, entry := range entries {
 		path := filepath.Join(layout.WorktreesRoot, entry.Name())
 		if artifact, internal := inspectLifecycleArtifact(ctx, layout.WorktreesRoot, "", path, entry); internal {
+			// A repository-local stage has no task identity. A named inventory
+			// cannot act on it and must not make every requested task inherit
+			// unrelated recovery output. Fleet inventory still reports these
+			// stages, and RecoverRetiredStages remains their explicit recovery
+			// path.
+			if len(tasks) > 0 {
+				continue
+			}
 			// Local placement has no task namespace between .worktrees and the
 			// checkout. An active sibling stage may be between mkdir and git
 			// worktree add, so it cannot be retired without its authoritative
