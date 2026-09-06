@@ -439,6 +439,9 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 		{name: "@acme/core", version: "1.0.0", dependencies: `"peerDependencies":{"@acme/auth-core":"1.0.0"}`},
 		{name: "@acme/auth-core", version: "1.0.0", dependencies: `"peerDependencies":{"@angular/core":"^18.0.0"}`},
 	}
+	if err := os.WriteFile(filepath.Join(consumer, "package.json"), []byte(`{"name":"consumer","dependencies":{"@acme/app":"1.0.0","@acme/core":"1.0.0","@acme/auth-core":"1.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	original := make(map[string]string, len(packages))
 	installed := make(map[string]string, len(packages))
 	for _, pkg := range packages {
@@ -446,8 +449,11 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 		if err := os.MkdirAll(store, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		manifest := fmt.Sprintf(`{"name":%q,"version":%q,%s}`, pkg.name, pkg.version, pkg.dependencies)
+		manifest := fmt.Sprintf(`{"name":%q,"version":%q,"main":"index.js",%s}`, pkg.name, pkg.version, pkg.dependencies)
 		if err := os.WriteFile(filepath.Join(store, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(store, "index.js"), []byte("module.exports = {};\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
@@ -477,8 +483,11 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 	dists := make(map[string]string, len(packages))
 	for _, pkg := range packages {
 		dist := t.TempDir()
-		manifest := fmt.Sprintf(`{"name":%q,"version":"1.0.0-dev",%s}`, pkg.name, pkg.dependencies)
+		manifest := fmt.Sprintf(`{"name":%q,"version":"1.0.0-dev","main":"index.js",%s}`, pkg.name, pkg.dependencies)
 		if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dist, "index.js"), []byte("module.exports = {};\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		dists[pkg.name] = dist
@@ -553,6 +562,78 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 		if fileExists(linkAppliedMarkerPath(consumer, pkg.name)) || fileExists(stages[pkg.name]) {
 			t.Fatalf("undo left recovery artefacts for %s", pkg.name)
 		}
+	}
+}
+
+// A bundler resolves imports from the physical package that contains them,
+// not only from the application root or packages WB staged. pnpm gives a
+// published dependent its own peer context, so that context can retain the
+// published singleton after the root has been linked to an unpublished build.
+// The local-link operation must detect that split before reporting success.
+func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testing.T) {
+	consumer := t.TempDir()
+	if err := os.WriteFile(filepath.Join(consumer, "package.json"), []byte(`{
+		"name":"consumer",
+		"dependencies":{"@acme/contactus":"1.0.0","@acme/core":"1.0.0"}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	publishedCore := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	writePackage := func(dir, manifest string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.js"), []byte("module.exports = {};\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePackage(publishedCore, `{"name":"@acme/core","version":"1.0.0","main":"index.js"}`)
+
+	contactus := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+contactus@1.0.0_@acme+core@1.0.0", "node_modules", "@acme", "contactus")
+	writePackage(contactus, `{"name":"@acme/contactus","version":"1.0.0","main":"index.js","peerDependencies":{"@acme/core":"^1.0.0"}}`)
+	linkRelative := func(target, source string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		relative, err := filepath.Rel(filepath.Dir(target), source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(relative, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootCore := filepath.Join(consumer, "node_modules", "@acme", "core")
+	rootContactus := filepath.Join(consumer, "node_modules", "@acme", "contactus")
+	linkRelative(rootCore, publishedCore)
+	linkRelative(rootContactus, contactus)
+	linkRelative(filepath.Join(filepath.Dir(contactus), "core"), publishedCore)
+
+	dist := t.TempDir()
+	writePackage(dist, `{"name":"@acme/core","version":"1.1.0-dev","main":"index.js"}`)
+	node := ExecNode{Timeout: 30 * time.Second}
+	if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := node.Unlink(context.Background(), consumer, "@acme/core"); err != nil {
+			t.Errorf("undo linked core: %v", err)
+		}
+	}()
+
+	err := node.LinkSiblings(context.Background(), consumer, []string{"@acme/core"})
+	if err == nil ||
+		!strings.Contains(err.Error(), "@acme/contactus@1.0.0") ||
+		!strings.Contains(err.Error(), "@acme/core") ||
+		!strings.Contains(err.Error(), "createRequire.resolve+import.meta.resolve") ||
+		!strings.Contains(err.Error(), "after checking 4 installed packages") {
+		t.Fatalf("runtime graph error = %v, want the published dependent and split singleton", err)
 	}
 }
 

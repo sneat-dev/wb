@@ -721,6 +721,14 @@ preflight the complete sibling graph before changing it, and leave external
 peers in the consumer's installed dependency context. A failed preflight MUST
 create no partial sibling graph, and retry after the conflict is corrected MUST
 succeed without changing tracked configuration.
+Before reporting the link successful, WB MUST also walk the consumer's actual
+installed runtime dependency graph with Node's CommonJS and ESM resolvers. Every
+reachable installed package that declares a linked identity MUST resolve it to
+the same canonical package root as the consumer. This includes published pnpm
+packages outside the provider: their isolated peer context can otherwise retain
+the published singleton while the application uses WB's staged singleton. A
+split identity MUST fail the operation and name the declaring package and edge;
+the recorded live link and its exact `--undo` recovery remain authoritative.
 WB MUST NOT silently delete framework build caches when the link topology
 changes. A running frontend build must be restarted; if its resolver cache
 retains the prior target, the operator explicitly clears that generated cache
@@ -1904,6 +1912,19 @@ consumer's installed peer context; a conflicting sibling path is refused before
 any sibling edge is created; retry succeeds after that conflict is removed; and
 undo restores every original pnpm symlink while removing every WB stage and
 marker.
+
+### AC: npm-installed-runtime-graph-has-no-split-linked-identity
+
+**Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
+
+**Given** a pnpm consumer whose root uses WB's staged `core`, while a reachable
+published package has an isolated peer-context edge to the published `core`
+**When** WB reconciles the provider siblings
+**Then** Node's `createRequire(...).resolve()` and `import.meta.resolve()` walk
+the installed graph from the consumer manifest, compare canonical package
+roots, and refuse the operation with the published package and `core` edge
+instead of reporting a locally linked success; no browser suite is required to
+detect the split, and the live-link receipt continues to require exact undo.
 
 ### AC: verify-reports-every-consumer-single-worker
 

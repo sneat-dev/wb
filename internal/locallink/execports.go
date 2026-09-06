@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -776,8 +777,211 @@ func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packa
 		}
 		created = append(created, link)
 	}
+	if err := node.verifyRuntimeGraph(ctx, consumerDir, packageNames); err != nil {
+		return err
+	}
 	return nil
 }
+
+type runtimeGraphProbe struct {
+	Visited    int                    `json:"visited"`
+	Mismatches []runtimeGraphMismatch `json:"mismatches"`
+	Error      string                 `json:"error"`
+}
+
+type runtimeGraphMismatch struct {
+	From         string `json:"from"`
+	Dependency   string `json:"dependency"`
+	Resolver     string `json:"resolver"`
+	ResolvedRoot string `json:"resolved_root"`
+	ExpectedRoot string `json:"expected_root"`
+}
+
+// verifyRuntimeGraph asks Node's own CommonJS and ESM resolvers to walk the
+// consumer's installed runtime graph. Checking only the application root and
+// packages staged by WB misses pnpm peer contexts: an already-published package
+// can keep resolving a singleton such as @angular/core or @sneat/core to its
+// published physical package while the application resolves WB's staged one.
+// Bundlers follow that physical edge and emit two token identities.
+func (node ExecNode) verifyRuntimeGraph(ctx context.Context, consumerDir string, packageNames []string) error {
+	linked, err := json.Marshal(dedupe(packageNames))
+	if err != nil {
+		return fmt.Errorf("encode linked npm identities for runtime graph verification: %w", err)
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		return fmt.Errorf("node is required to verify the linked npm runtime graph: %w", err)
+	}
+	timeout := node.Timeout
+	if timeout <= 0 {
+		timeout = defaultCommandTimeout
+	}
+	bounded, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(bounded, "node", "--experimental-import-meta-resolve", "--input-type=module", "-")
+	command.Dir = consumerDir
+	command.Env = append(console.Env(), "WB_LINKED_PACKAGES="+string(linked))
+	command.Stdin = strings.NewReader(nodeRuntimeGraphProbeScript)
+	output, runErr := command.CombinedOutput()
+	if runErr != nil {
+		if bounded.Err() != nil && ctx.Err() == nil {
+			return fmt.Errorf("verify linked npm runtime graph timed out after %s: %s", timeout, strings.TrimSpace(string(output)))
+		}
+		return fmt.Errorf("verify linked npm runtime graph with node: %w: %s", runErr, strings.TrimSpace(string(output)))
+	}
+	var probe runtimeGraphProbe
+	if err := json.Unmarshal(output, &probe); err != nil {
+		return fmt.Errorf("parse linked npm runtime graph result: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if probe.Error != "" {
+		return fmt.Errorf("verify linked npm runtime graph: %s", probe.Error)
+	}
+	if len(probe.Mismatches) == 0 {
+		return nil
+	}
+	type mismatchSummary struct {
+		mismatch  runtimeGraphMismatch
+		resolvers []string
+	}
+	byEdge := make(map[string]*mismatchSummary, len(probe.Mismatches))
+	for _, mismatch := range probe.Mismatches {
+		key := strings.Join([]string{mismatch.From, mismatch.Dependency, mismatch.ResolvedRoot, mismatch.ExpectedRoot}, "\x00")
+		summary := byEdge[key]
+		if summary == nil {
+			summary = &mismatchSummary{mismatch: mismatch}
+			byEdge[key] = summary
+		}
+		if !slices.Contains(summary.resolvers, mismatch.Resolver) {
+			summary.resolvers = append(summary.resolvers, mismatch.Resolver)
+		}
+	}
+	keys := make([]string, 0, len(byEdge))
+	for key := range byEdge {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	const maximumReportedRuntimeSplits = 8
+	details := make([]string, 0, min(len(keys), maximumReportedRuntimeSplits)+1)
+	for _, key := range keys[:min(len(keys), maximumReportedRuntimeSplits)] {
+		summary := byEdge[key]
+		sort.Strings(summary.resolvers)
+		details = append(details, fmt.Sprintf("%s resolves %s through %s to %s, want %s",
+			summary.mismatch.From, summary.mismatch.Dependency, strings.Join(summary.resolvers, "+"),
+			summary.mismatch.ResolvedRoot, summary.mismatch.ExpectedRoot))
+	}
+	if remaining := len(keys) - len(details); remaining > 0 {
+		details = append(details, fmt.Sprintf("and %d more split edges", remaining))
+	}
+	return fmt.Errorf("linked npm runtime graph contains split package identities after checking %d installed packages: %s",
+		probe.Visited, strings.Join(details, "; "))
+}
+
+const nodeRuntimeGraphProbeScript = `
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const result = { visited: 0, mismatches: [], error: "" };
+try {
+  const linked = new Set(JSON.parse(process.env.WB_LINKED_PACKAGES || "[]"));
+  const workspace = fs.realpathSync.native(process.cwd());
+  const rootManifest = path.join(workspace, "package.json");
+  const expected = new Map();
+
+  function manifestAt(manifest) {
+    return JSON.parse(fs.readFileSync(manifest, "utf8"));
+  }
+  function packageRoot(entry, packageName) {
+    if (!entry || entry.startsWith("node:")) return "";
+    let current = entry.startsWith("file:") ? fileURLToPath(entry) : entry;
+    current = fs.realpathSync.native(current);
+    if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+    for (;;) {
+      const manifest = path.join(current, "package.json");
+      if (fs.existsSync(manifest)) {
+        try {
+          if (manifestAt(manifest).name === packageName) return fs.realpathSync.native(current);
+        } catch {}
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return "";
+      current = parent;
+    }
+  }
+  function resolveFrom(manifest, packageName) {
+    const resolutions = [];
+    const requireFrom = createRequire(manifest);
+	for (const specifier of [packageName, packageName + "/package.json"]) {
+	  try {
+		const root = packageRoot(requireFrom.resolve(specifier), packageName);
+		if (root) { resolutions.push({ resolver: "createRequire.resolve", root }); break; }
+	  } catch {}
+	}
+	for (const specifier of [packageName, packageName + "/package.json"]) {
+	  try {
+		const root = packageRoot(import.meta.resolve(specifier, pathToFileURL(manifest).href), packageName);
+		if (root) { resolutions.push({ resolver: "import.meta.resolve", root }); break; }
+	  } catch {}
+	}
+    return resolutions.filter((item) => item.root);
+  }
+  function displayPath(value) {
+    const relative = path.relative(workspace, value);
+    return relative && !relative.startsWith("..") ? relative : value;
+  }
+
+  for (const packageName of linked) {
+    const roots = resolveFrom(rootManifest, packageName);
+    if (roots.length === 0) throw new Error("consumer root cannot resolve linked package " + packageName);
+    expected.set(packageName, roots[0].root);
+    for (const resolution of roots) {
+      if (resolution.root !== roots[0].root) {
+        result.mismatches.push({
+          from: "consumer root", dependency: packageName, resolver: resolution.resolver,
+          resolved_root: displayPath(resolution.root), expected_root: displayPath(roots[0].root),
+        });
+      }
+    }
+  }
+
+  const queue = [rootManifest];
+  const visited = new Set();
+  while (queue.length > 0) {
+    const manifest = fs.realpathSync.native(queue.shift());
+    if (visited.has(manifest)) continue;
+    visited.add(manifest);
+    result.visited += 1;
+    const pkg = manifestAt(manifest);
+    const label = pkg.name ? pkg.name + (pkg.version ? "@" + pkg.version : "") : displayPath(path.dirname(manifest));
+    const dependencies = {
+      ...(pkg.dependencies || {}),
+      ...(pkg.optionalDependencies || {}),
+      ...(pkg.peerDependencies || {}),
+    };
+    for (const packageName of Object.keys(dependencies).sort()) {
+      const resolutions = resolveFrom(manifest, packageName);
+      if (linked.has(packageName)) {
+        const want = expected.get(packageName);
+        for (const resolution of resolutions) {
+          if (resolution.root !== want) {
+            result.mismatches.push({
+              from: label, dependency: packageName, resolver: resolution.resolver,
+              resolved_root: displayPath(resolution.root), expected_root: displayPath(want),
+            });
+          }
+        }
+      }
+      if (resolutions.length > 0) {
+        const dependencyManifest = path.join(resolutions[0].root, "package.json");
+        if (fs.existsSync(dependencyManifest)) queue.push(dependencyManifest);
+      }
+    }
+  }
+} catch (error) {
+  result.error = error instanceof Error ? error.message : String(error);
+}
+process.stdout.write(JSON.stringify(result));
+`
 
 func samePath(base, actual, want string) bool {
 	if !filepath.IsAbs(actual) {
