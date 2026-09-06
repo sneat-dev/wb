@@ -58,6 +58,20 @@ credentials, or aggregation credentials. Sneat Go can bind those through its
 wire-only adapter once the corresponding durable store and membership service
 are configured.
 
+## Firestore adapter schema
+
+The host may bind `FirestoreProjectionStore`, `FirestoreProjectionWriter`, and
+`FirestoreProjectionDeliveryStore` through the small `FirestoreBackend` seam.
+Projection documents live in `workbench_projections/{ProjectionKey(scope,id)}`;
+series and leaderboards use `workbench_series` and `workbench_leaderboards`;
+the public merge snapshot is `workbench_latest_merges/public`. Delivery state
+uses `workbench_deliveries/{deliveryID}`, projection write markers use
+`workbench_projection_deliveries/{deliveryID}`, and coalesced wakeups use
+`workbench_wakeups/{wakeupKey}`. Delivery claims carry a bounded lease and
+expire into retryable work. Hosts supply the actual Firestore client and
+transaction implementation; this package contains no Firebase or Firestore
+SDK dependency.
+
 ## Projection delivery boundary
 
 The projector uses a `ProjectionDeliveryStore` claim before refresh. The claim

@@ -873,6 +873,9 @@ a worktree.
   snapshots, idempotent durable writes are keyed by delivery ID, public latest
   merges are replaced coherently, and the delivery ledger commits only after
   projection writes succeed.
+- [ ] Bind the provider ports to a durable Firestore adapter with documented
+  collection keys, idempotent projection writes, atomic leased delivery claims,
+  retryable release, and coalesced wakeups; keep the Firestore SDK in the host.
 - [ ] Bind the hosted provider to a durable Workbench read model, Firebase
   viewer resolution, delivery ledger, authoritative GitHub refresh, and event
   journal; keep the Sneat Go host limited to narrow composition adapters.
@@ -1035,6 +1038,16 @@ then commits one coalesced wakeup. A redelivery or concurrent duplicate does no
 second refresh or write. A refresh, validation, or write failure leaves the
 delivery uncommitted so GitHub retry can recover it. Hosts supply the reader
 and writer adapters; WB does not import Firebase, Firestore, or GitHub clients.
+
+### AC: github-firestore-adapter-contract
+
+Given a host Firestore client implements the narrow backend seam, then
+projection reads and writes use the documented Workbench collection and stable
+hashed subject keys, public latest merges use one replaceable snapshot, and
+delivery claims are atomic with a bounded recoverable lease. A live claim blocks
+duplicates, an expired or released claim can retry, and commit records the
+delivery plus one coalesced wakeup transactionally. The provider package stays
+portable and has no cloud SDK dependency.
 
 ### AC: telemetry-supports-causal-analysis
 
