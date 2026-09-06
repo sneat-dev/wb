@@ -76,9 +76,12 @@ func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
 
 func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	command := newPRLandCmd()
+	if got := command.Flags().Lookup("merge-method").DefValue; got != "merge" {
+		t.Fatalf("--merge-method default = %q, want merge", got)
+	}
 	for _, wanted := range []string{
 		"CLEANUP IS THE DEFAULT",
-		"SQUASH IS THE DEFAULT",
+		"MERGE COMMIT IS THE DEFAULT",
 		"--keep-commits",
 		"--reason",
 		"made from the diff",
@@ -98,6 +101,30 @@ func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	// opts out of it. A --cleanup flag reintroduces the measured failure.
 	if command.Flags().Lookup("cleanup") != nil {
 		t.Fatal("cleanup is the default; an opt-in --cleanup is the failure this verb exists to fix")
+	}
+}
+
+func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
+	for _, method := range []string{"", "merge", "rebase"} {
+		name := method
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			command := newPRLandCmd()
+			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
+				t.Fatal(err)
+			}
+			if method != "" {
+				if err := command.Flags().Set("merge-method", method); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := command.RunE(command, []string{"acme/app#7"})
+			if err == nil || !strings.Contains(err.Error(), "explicit --merge-method squash") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 

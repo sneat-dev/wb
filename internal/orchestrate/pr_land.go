@@ -70,9 +70,12 @@ type PullRequestLandOptions struct {
 	// is a later phase; until it exists this value is recorded verbatim on the
 	// receipt so the approval is at least attributable.
 	ApprovedBy string
-	// MergeMethod is squash by default: one reviewed change, one commit.
+	// MergeMethod is merge by default: preserve commits and the reviewed PR boundary.
 	MergeMethod string
-	// Subject overrides the squash commit subject. The default is the pull
+	// MergeMethodExplicit distinguishes an operator-selected method from the merge
+	// default. KeepCommits requires an explicitly selected squash hybrid.
+	MergeMethodExplicit bool
+	// Subject overrides the explicit squash commit subject. The default is the pull
 	// request's own title, which is the thing GitHub will otherwise replace
 	// with the branch's first commit subject.
 	Subject string
@@ -206,12 +209,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return PullRequestLandResult{}, fmt.Errorf("repository is required (owner/repository#number)")
 	}
 	if options.MergeMethod == "" {
-		options.MergeMethod = "squash"
+		options.MergeMethod = "merge"
 	}
 	switch options.MergeMethod {
 	case "squash", "merge", "rebase":
 	default:
 		return PullRequestLandResult{}, fmt.Errorf("unsupported merge method %q; use squash, merge, or rebase", options.MergeMethod)
+	}
+	if strings.TrimSpace(options.Subject) != "" && options.MergeMethod != "squash" {
+		return PullRequestLandResult{}, fmt.Errorf("--subject requires --merge-method squash")
+	}
+	if len(options.KeepCommits) > 0 && (!options.MergeMethodExplicit || options.MergeMethod != "squash") {
+		return PullRequestLandResult{}, fmt.Errorf("--keep-commits requires explicit --merge-method squash")
 	}
 	result := PullRequestLandResult{
 		SchemaVersion: 1,
@@ -223,7 +232,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			"gh pr view " + number + " --repo " + options.Repository,
 			"gh api repos/" + options.Repository + "/pulls/" + number + "/files",
 			"gh pr checks " + number + " --repo " + options.Repository + "  (repeated until settled)",
-			"gh pr merge " + number + " --repo " + options.Repository + " --squash --subject …",
+			manualPullRequestMergeCommand(options.Repository, number, options.MergeMethod),
 			"gh api repos/" + options.Repository + "/pulls/" + number + "  (verify merged)",
 			"gh api repos/" + options.Repository + "/compare/…  (verify the merge is on the base)",
 			"gh api --method DELETE repos/" + options.Repository + "/git/refs/heads/…",
@@ -435,6 +444,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if options.beforeMerge != nil {
 		options.beforeMerge()
 	}
+	result.ManualEquivalent[3] = manualPullRequestMergeCommand(options.Repository, number, mergeMethod)
 	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
 	merge, refusal, err := mergePullRequest(ctx, options.Repository, number, head, mergeMethod, subject, body)
 	if err != nil {
@@ -535,6 +545,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
+}
+
+func manualPullRequestMergeCommand(repository, number, method string) string {
+	return "gh pr merge " + number + " --repo " + repository + " --" + method
 }
 
 // pullRequestLandWaitSlice selects the next bounded slice from a user-facing
