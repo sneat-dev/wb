@@ -23,12 +23,13 @@ var ErrProjectionNotFound = errors.New("workbench projection not found")
 // Workbench-owned projector. Public responses require PublicOptIn; private
 // responses require the host membership resolver below.
 type ProjectionDocument struct {
-	Scope       Scope     `json:"scope" firestore:"scope"`
-	ID          string    `json:"id" firestore:"id"`
-	DisplayName string    `json:"display_name" firestore:"display_name"`
-	Summary     Summary   `json:"summary" firestore:"summary"`
-	UpdatedAt   time.Time `json:"updated_at" firestore:"updated_at"`
-	PublicOptIn bool      `json:"public_opt_in" firestore:"public_opt_in"`
+	Scope             Scope              `json:"scope" firestore:"scope"`
+	ID                string             `json:"id" firestore:"id"`
+	DisplayName       string             `json:"display_name" firestore:"display_name"`
+	Summary           Summary            `json:"summary" firestore:"summary"`
+	UpdatedAt         time.Time          `json:"updated_at" firestore:"updated_at"`
+	PublicOptIn       bool               `json:"public_opt_in" firestore:"public_opt_in"`
+	PublicEligibility *PublicEligibility `json:"public_eligibility,omitempty" firestore:"public_eligibility,omitempty"`
 }
 
 type SeriesDocument struct {
@@ -87,6 +88,20 @@ func ValidateProjectionDocument(document ProjectionDocument) error {
 	}
 	if document.UpdatedAt.IsZero() {
 		return errors.New("projection updated_at is required")
+	}
+	if document.PublicOptIn {
+		if document.Scope != ScopeRepository {
+			return errors.New("only repository projections may be publicly opted in")
+		}
+		if document.PublicEligibility == nil {
+			return errors.New("public projection eligibility evidence is required")
+		}
+		if document.PublicEligibility.Repository != document.ID {
+			return errors.New("public projection eligibility repository must match projection ID")
+		}
+		if err := ValidatePublicEligibility(*document.PublicEligibility); err != nil {
+			return fmt.Errorf("invalid public projection eligibility: %w", err)
+		}
 	}
 	return nil
 }
