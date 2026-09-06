@@ -8,13 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
-	"github.com/sneat-dev/wb/internal/remotestate"
-	remotestatehub "github.com/sneat-dev/wb/internal/remotestate/hub"
 )
 
 var (
@@ -111,34 +108,4 @@ func (service MachineSnapshotService) List(ctx context.Context, publisher Machin
 	}
 	machinesnapshot.SortPublished(visible)
 	return machinesnapshot.ListResponse{Snapshots: visible}, nil
-}
-
-// StoredSnapshotSource adapts durable hosted snapshots to the established
-// RemoteStateWorktreeReadModel input. Per-viewer authorization remains in that
-// read model; this adapter only removes invalid records and preserves errors.
-type StoredSnapshotSource struct {
-	Store machinesnapshot.SnapshotStore
-}
-
-func (source StoredSnapshotSource) List(ctx context.Context) ([]remotestate.Entry, error) {
-	if source.Store == nil {
-		return nil, ErrNoReadModel
-	}
-	records, err := source.Store.ListLatest(ctx)
-	if err != nil {
-		return nil, err
-	}
-	entries := make([]remotestate.Entry, 0, len(records))
-	for _, record := range records {
-		if err := record.Snapshot.Validate(); err != nil {
-			entries = append(entries, remotestate.Entry{
-				Snapshot: remotestate.Snapshot{Login: record.Snapshot.Login, Machine: record.Snapshot.Machine},
-				Error:    err.Error(),
-			})
-			continue
-		}
-		entries = append(entries, remotestatehub.Entry(record))
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Snapshot.Key() < entries[j].Snapshot.Key() })
-	return entries, nil
 }

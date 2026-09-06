@@ -54,11 +54,12 @@ the authenticated login.
 The hosted model is an allowlist containing the table's repository, task,
 stream, branch, lifecycle/owner, pull-request, activity, and attention fields.
 It cannot encode local paths, projects roots, commit SHAs or subjects, prompts,
-credentials, repository diagnostics, or command output. The
-`StoredSnapshotSource` adapter feeds these records to
-`RemoteStateWorktreeReadModel` without reconstructing local-only fields.
+credentials, repository diagnostics, or command output.
+`RemoteStateWorktreeReadModel` consumes the public
+`machinesnapshot.SnapshotStore` directly and projects rows without importing
+or reconstructing any WB CLI remote-state type.
 The durable adapter uses
-`workbench_machine_snapshots/{machinesnapshot.SnapshotKey(login,machine)}`.
+`machinesnapshot.Collection/{machinesnapshot.SnapshotKey(login,machine)}`.
 Each document is exactly `machinesnapshot.StoredSnapshot`: the allowlisted
 `snapshot` map plus server `received_at` and payload `digest`. The key is a
 `machine_`-prefixed SHA-256 of the validated login, a NUL delimiter, and the

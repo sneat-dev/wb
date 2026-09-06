@@ -22,6 +22,8 @@ const (
 	SchemaVersion = 1
 	// SnapshotPath is the authenticated endpoint used by the CLI and hub host.
 	SnapshotPath = "/v0/workbench/machines/snapshot"
+	// Collection is the authoritative durable collection for hosted records.
+	Collection = "workbench_machine_snapshots"
 
 	MaxWorktrees      = 5000
 	MaxIdentityLength = 128

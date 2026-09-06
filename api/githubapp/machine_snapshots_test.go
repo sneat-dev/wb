@@ -144,7 +144,7 @@ func TestMachineSnapshotHTTPFailsClosedAndBoundsPayload(t *testing.T) {
 	}
 }
 
-func TestMachineSnapshotListIsLoginScopedAndFeedsWorktreeReadModel(t *testing.T) {
+func TestMachineSnapshotListIsLoginScoped(t *testing.T) {
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	store := &memoryMachineSnapshotStore{records: map[string]machinesnapshot.StoredSnapshot{}}
 	alice := validHostedSnapshot()
@@ -156,15 +156,6 @@ func TestMachineSnapshotListIsLoginScopedAndFeedsWorktreeReadModel(t *testing.T)
 	listed, err := service.List(context.Background(), MachinePublisher{Login: "alice", Machine: "laptop"})
 	if err != nil || len(listed.Snapshots) != 1 || listed.Snapshots[0].Snapshot.Login != "alice" {
 		t.Fatalf("listed = %+v, %v", listed, err)
-	}
-	entries, err := (StoredSnapshotSource{Store: store}).List(context.Background())
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("entries = %+v, %v", entries, err)
-	}
-	for _, entry := range entries {
-		if entry.Snapshot.ProjectsRoot != "" || entry.Snapshot.Worktrees[0].Dir != "" || entry.Snapshot.Worktrees[0].HeadSHA != "" {
-			t.Fatalf("source exposed local state: %+v", entry)
-		}
 	}
 }
 
