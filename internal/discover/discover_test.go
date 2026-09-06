@@ -1,10 +1,25 @@
 package discover
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.T) {
+	repos := Reconcile(
+		[]Repo{{Org: "oldco", Name: "app", Path: "/projects/oldco/app"}},
+		[]Repo{{Org: "newco", Name: "renamed", CloneURL: "git@github.com:newco/renamed.git"}},
+	)
+	got := ReconcileTransfers(context.Background(), repos, func(context.Context, Repo) (CanonicalRepository, error) {
+		return CanonicalRepository{Slug: "newco/renamed", CloneURL: "git@github.com:newco/renamed.git", DefaultBranch: "main"}, nil
+	})
+	if len(got) != 1 || got[0].Slug() != "newco/renamed" || got[0].TransferFrom != "oldco/app" ||
+		got[0].Path != "/projects/oldco/app" || !got[0].Local || !got[0].Remote || got[0].DefaultBranch != "main" {
+		t.Fatalf("reconciled transfer = %#v", got)
+	}
+}
 
 // installFakeGhRepoView writes a fake `gh` on PATH that answers `gh repo view
 // <slug> --json isArchived --jq .isArchived` with the given stdout, or fails
