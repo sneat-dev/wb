@@ -1,6 +1,9 @@
 package hub
 
 import (
+	"sort"
+	"strings"
+
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
@@ -11,7 +14,8 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 		SchemaVersion: machinesnapshot.SchemaVersion,
 		Login:         source.Login, Machine: source.Machine,
 		PublishedAt: source.PublishedAt, LastSeenAt: source.LastSeenAt,
-		Worktrees: make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
+		Repositories: hostedRepositories(source.KnownRepositories),
+		Worktrees:    make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
 	}
 	for _, sourceWorktree := range source.Worktrees {
 		result.Worktrees = append(result.Worktrees, machinesnapshot.Worktree{
@@ -39,7 +43,8 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		SchemaVersion: remotestate.SchemaVersion,
 		Login:         stored.Snapshot.Login, Machine: stored.Snapshot.Machine,
 		PublishedAt: stored.Snapshot.PublishedAt, LastSeenAt: lastSeenAt,
-		Worktrees: make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
+		KnownRepositories: remoteRepositories(stored.Snapshot.Repositories),
+		Worktrees:         make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
 	}
 	for _, worktree := range stored.Snapshot.Worktrees {
 		snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{
@@ -51,6 +56,31 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		})
 	}
 	return remotestate.Entry{Snapshot: snapshot}
+}
+
+func hostedRepositories(source []string) []string {
+	seen := make(map[string]bool, len(source))
+	result := make([]string, 0, len(source))
+	for _, repository := range source {
+		canonical := repository
+		if !strings.HasPrefix(canonical, "github.com/") {
+			canonical = "github.com/" + canonical
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			result = append(result, canonical)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func remoteRepositories(source []string) []string {
+	result := make([]string, len(source))
+	for index, repository := range source {
+		result[index] = strings.TrimPrefix(repository, "github.com/")
+	}
+	return result
 }
 
 func hostedPullRequest(value *remotestate.PullRequestState) *machinesnapshot.PullRequest {

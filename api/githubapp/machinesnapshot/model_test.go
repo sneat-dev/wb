@@ -55,6 +55,16 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 		t.Fatalf("oversized worktrees err = %v", err)
 	}
 	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Repositories = []string{"github.com/zeta/tools", "github.com/acme/widgets"}
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("unsorted repositories err = %v", err)
+	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Repositories = []string{"acme/widgets"}
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("noncanonical repository err = %v", err)
+	}
+	snapshot = validSnapshot(time.Now().UTC())
 	snapshot.Worktrees[0].AttentionReason = "/Users/alice/private output"
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("unsafe attention err = %v", err)
@@ -78,6 +88,7 @@ func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {
 func validSnapshot(at time.Time) Snapshot {
 	return Snapshot{
 		SchemaVersion: SchemaVersion, Login: "alice", Machine: "laptop", PublishedAt: at,
+		Repositories: []string{"github.com/acme/widgets"},
 		Worktrees: []Worktree{{
 			Task: "dashboard", Repository: "acme/widgets", Branch: "feature/dashboard",
 			PullRequest: &PullRequest{Number: 1, URL: "https://github.com/acme/widgets/pull/1"},

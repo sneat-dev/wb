@@ -26,6 +26,7 @@ const (
 	Collection = "workbench_machine_snapshots"
 
 	MaxWorktrees      = 5000
+	MaxRepositories   = 5000
 	MaxIdentityLength = 128
 	MaxRepositoryLen  = 256
 	MaxTaskLength     = 256
@@ -51,14 +52,17 @@ var (
 )
 
 // Snapshot is the complete allowlist of machine state that may cross the
-// hosted boundary. It intentionally has no path, projects root, commit SHA,
-// repository diagnostics, prompts, credentials, or command output.
+// hosted boundary. Repositories are canonical identities used as routing
+// candidates, never authorization. The snapshot intentionally has no path,
+// projects root, commit SHA, repository diagnostics, prompts, credentials, or
+// command output.
 type Snapshot struct {
 	SchemaVersion int        `json:"schema_version" firestore:"schema_version"`
 	Login         string     `json:"login" firestore:"login"`
 	Machine       string     `json:"machine" firestore:"machine"`
 	PublishedAt   time.Time  `json:"published_at" firestore:"published_at"`
 	LastSeenAt    time.Time  `json:"last_seen_at,omitempty" firestore:"last_seen_at,omitempty"`
+	Repositories  []string   `json:"repositories" firestore:"repositories"`
 	Worktrees     []Worktree `json:"worktrees" firestore:"worktrees"`
 }
 
@@ -132,6 +136,8 @@ func ResolveLatest(current *StoredSnapshot, candidate StoredSnapshot) (StoreResu
 
 // Receipt is the server response to one publish attempt.
 type Receipt struct {
+	IdentityID  string    `json:"identity_id,omitempty"`
+	MachineID   string    `json:"machine_id,omitempty"`
 	Login       string    `json:"login"`
 	Machine     string    `json:"machine"`
 	PublishedAt time.Time `json:"published_at"`
@@ -168,10 +174,32 @@ func (snapshot Snapshot) Validate() error {
 	if len(snapshot.Worktrees) > MaxWorktrees {
 		return fmt.Errorf("%w: worktrees exceeds %d entries", ErrInvalidSnapshot, MaxWorktrees)
 	}
+	if len(snapshot.Repositories) > MaxRepositories {
+		return fmt.Errorf("%w: repositories exceeds %d entries", ErrInvalidSnapshot, MaxRepositories)
+	}
+	for index, repository := range snapshot.Repositories {
+		if err := validateCanonicalRepository(repository); err != nil {
+			return fmt.Errorf("%w: repositories[%d]: %v", ErrInvalidSnapshot, index, err)
+		}
+		if index > 0 && snapshot.Repositories[index-1] >= repository {
+			return fmt.Errorf("%w: repositories must be sorted and deduplicated", ErrInvalidSnapshot)
+		}
+	}
 	for index, worktree := range snapshot.Worktrees {
 		if err := worktree.validate(); err != nil {
 			return fmt.Errorf("%w: worktrees[%d]: %v", ErrInvalidSnapshot, index, err)
 		}
+	}
+	return nil
+}
+
+func validateCanonicalRepository(repository string) error {
+	if len(repository) == 0 || len(repository) > MaxRepositoryLen || !strings.HasPrefix(repository, "github.com/") {
+		return errors.New("repository must be a bounded github.com/owner/repository identity")
+	}
+	parts := strings.Split(strings.TrimPrefix(repository, "github.com/"), "/")
+	if len(parts) != 2 || !safeRepositoryPart.MatchString(parts[0]) || !safeRepositoryPart.MatchString(parts[1]) {
+		return errors.New("repository must be a bounded github.com/owner/repository identity")
 	}
 	return nil
 }
@@ -300,4 +328,6 @@ func SortPublished(snapshots []PublishedSnapshot) {
 }
 
 // Key identifies a hosted machine record.
-func (snapshot Snapshot) Key() string { return snapshot.Login + "/" + snapshot.Machine }
+func (snapshot Snapshot) Key() string {
+	return snapshot.Login + "/" + snapshot.Machine
+}
