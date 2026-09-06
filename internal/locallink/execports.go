@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -659,6 +660,136 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		}
 	}
 	return clearStagedLink(stage, marker)
+}
+
+type siblingStage struct {
+	name  string
+	stage string
+}
+
+type siblingEdge struct {
+	from string
+	to   string
+}
+
+// LinkSiblings makes staged packages resolve their declared runtime siblings
+// to the corresponding staged identities. The edges live inside the untracked
+// stage directories, so removing any package stage removes its edges too and
+// leaves the installed pnpm topology available for exact undo.
+func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error {
+	stages := make(map[string]siblingStage, len(packageNames))
+	for _, packageName := range packageNames {
+		if _, already := stages[packageName]; already {
+			continue
+		}
+		target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
+		marker := linkAppliedMarkerPath(consumerDir, packageName)
+		contents, err := os.ReadFile(marker)
+		if err != nil {
+			return fmt.Errorf("read staged sibling marker for %s: %w", packageName, err)
+		}
+		stage, err := validateStagedLinkPath(consumerDir, target, strings.TrimSpace(string(contents)))
+		if err != nil {
+			return fmt.Errorf("validate staged sibling %s: %w", packageName, err)
+		}
+		stages[packageName] = siblingStage{name: packageName, stage: stage}
+	}
+
+	var edges []siblingEdge
+	for _, current := range stages {
+		manifest := filepath.Join(current.stage, "package.json")
+		contents, err := os.ReadFile(manifest)
+		if err != nil {
+			return fmt.Errorf("read staged package manifest for %s: %w", current.name, err)
+		}
+		var parsed struct {
+			Dependencies         map[string]string `json:"dependencies"`
+			PeerDependencies     map[string]string `json:"peerDependencies"`
+			OptionalDependencies map[string]string `json:"optionalDependencies"`
+		}
+		if err := json.Unmarshal(contents, &parsed); err != nil {
+			return fmt.Errorf("parse staged package manifest for %s: %w", current.name, err)
+		}
+		for dependency := range parsed.Dependencies {
+			if _, staged := stages[dependency]; staged {
+				edges = append(edges, siblingEdge{from: current.name, to: dependency})
+			}
+		}
+		for dependency := range parsed.PeerDependencies {
+			if _, staged := stages[dependency]; staged {
+				edges = append(edges, siblingEdge{from: current.name, to: dependency})
+			}
+		}
+		for dependency := range parsed.OptionalDependencies {
+			if _, staged := stages[dependency]; staged {
+				edges = append(edges, siblingEdge{from: current.name, to: dependency})
+			}
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].from != edges[j].from {
+			return edges[i].from < edges[j].from
+		}
+		return edges[i].to < edges[j].to
+	})
+
+	// Preflight every edge before creating one. This makes a partial failure
+	// retryable without leaving a half-reconciled sibling graph.
+	for _, edge := range edges {
+		from, to := stages[edge.from], stages[edge.to]
+		link := filepath.Join(from.stage, "node_modules", filepath.FromSlash(edge.to))
+		if info, err := os.Lstat(link); err == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("refuse to replace existing staged sibling path %s", link)
+			}
+			actual, readErr := os.Readlink(link)
+			if readErr != nil {
+				return fmt.Errorf("read existing staged sibling path %s: %w", link, readErr)
+			}
+			if !samePath(filepath.Dir(link), actual, to.stage) {
+				return fmt.Errorf("staged sibling path %s points to %q, want %s", link, actual, to.stage)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect staged sibling path %s: %w", link, err)
+		}
+	}
+
+	var created []string
+	for _, edge := range edges {
+		from, to := stages[edge.from], stages[edge.to]
+		link := filepath.Join(from.stage, "node_modules", filepath.FromSlash(edge.to))
+		if fileExists(link) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			removeSiblingEdges(created)
+			return fmt.Errorf("create staged sibling parent for %s: %w", edge.to, err)
+		}
+		relative, err := filepath.Rel(filepath.Dir(link), to.stage)
+		if err != nil {
+			removeSiblingEdges(created)
+			return fmt.Errorf("resolve staged sibling %s from %s: %w", edge.to, edge.from, err)
+		}
+		if err := os.Symlink(relative, link); err != nil {
+			removeSiblingEdges(created)
+			return fmt.Errorf("link staged sibling %s into %s: %w", edge.to, edge.from, err)
+		}
+		created = append(created, link)
+	}
+	return nil
+}
+
+func samePath(base, actual, want string) bool {
+	if !filepath.IsAbs(actual) {
+		actual = filepath.Join(base, actual)
+	}
+	return filepath.Clean(actual) == filepath.Clean(want)
+}
+
+func removeSiblingEdges(paths []string) {
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
 }
 
 func validateStagedLinkPath(consumerDir, target, stage string) (string, error) {

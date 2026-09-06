@@ -49,22 +49,23 @@ func (git *fakeGit) ExcludedPatterns(_ context.Context, dir string) ([]string, e
 // fakeNode records every build and link, and can fail the frozen install so
 // the lockfile-baseline requirement is provable.
 type fakeNode struct {
-	installErr   map[string]error
-	unlinkErr    map[string]error
-	order        []string
-	installed    []string
-	builds       int
-	buildRoots   []string
-	packageDirs  []string
-	buildErr     error
-	dist         string
-	linked       map[string]string
-	unlinked     []string
-	previousReal string
+	installErr    map[string]error
+	unlinkErr     map[string]error
+	order         []string
+	installed     []string
+	builds        int
+	buildRoots    []string
+	packageDirs   []string
+	buildErr      error
+	dist          string
+	linked        map[string]string
+	unlinked      []string
+	previousReal  string
+	siblingGroups map[string][]string
 }
 
 func newFakeNode() *fakeNode {
-	return &fakeNode{installErr: map[string]error{}, dist: "/cache/dist", linked: map[string]string{}}
+	return &fakeNode{installErr: map[string]error{}, dist: "/cache/dist", linked: map[string]string{}, siblingGroups: map[string][]string{}}
 }
 
 func (node *fakeNode) FrozenInstall(_ context.Context, dir string) error {
@@ -107,6 +108,11 @@ func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string)
 	if err := os.Remove(linkAppliedMarkerPath(consumerDir, packageName)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	return nil
+}
+
+func (node *fakeNode) LinkSiblings(_ context.Context, consumerDir string, packageNames []string) error {
+	node.siblingGroups[consumerDir] = append([]string(nil), packageNames...)
 	return nil
 }
 
@@ -414,6 +420,9 @@ func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
 	}
 	if fixture.node.linked[consumerWorkspace+" @acme/core"] != fixture.node.dist {
 		t.Fatalf("linked = %v, want link in nested consumer workspace", fixture.node.linked)
+	}
+	if got := fixture.node.siblingGroups[consumerWorkspace]; len(got) != 1 || got[0] != "@acme/core" {
+		t.Fatalf("sibling groups = %v, want the staged package in the nested workspace", fixture.node.siblingGroups)
 	}
 	link := result.Consumers[0].Links[0]
 	if link.Workspace != "frontend" || len(link.Artifacts) == 0 || link.Artifacts[0] != "frontend/node_modules/@acme/core" {

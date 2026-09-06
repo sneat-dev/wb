@@ -43,6 +43,15 @@ type Node interface {
 	Unlink(ctx context.Context, consumerDir, packageName string) error
 }
 
+// SiblingLinker wires runtime dependency edges between packages that WB has
+// staged from the same provider. It is optional so injected test nodes and
+// other Node implementations can keep the existing link contract. Peer
+// dependencies whose names are not staged siblings stay outside this surface:
+// they must continue to resolve from the consumer's installed peer context.
+type SiblingLinker interface {
+	LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error
+}
+
 // NodeLinkResult reports every generated path relative to the npm workspace.
 type NodeLinkResult struct {
 	Previous  string

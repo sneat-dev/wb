@@ -2,6 +2,7 @@ package locallink
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -425,6 +426,163 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 	if fileExists(linkedTarget) {
 		t.Error("the staged peer-context package survived undo")
 	}
+}
+
+func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *testing.T) {
+	consumer := t.TempDir()
+	packages := []struct {
+		name         string
+		version      string
+		dependencies string
+	}{
+		{name: "@acme/app", version: "1.0.0", dependencies: `"peerDependencies":{"@acme/core":"1.0.0","@angular/core":"^18.0.0"}`},
+		{name: "@acme/core", version: "1.0.0", dependencies: `"peerDependencies":{"@acme/auth-core":"1.0.0"}`},
+		{name: "@acme/auth-core", version: "1.0.0", dependencies: `"peerDependencies":{"@angular/core":"^18.0.0"}`},
+	}
+	original := make(map[string]string, len(packages))
+	installed := make(map[string]string, len(packages))
+	for _, pkg := range packages {
+		store := filepath.Join(consumer, "node_modules", ".pnpm", pnpmStoreKey(pkg.name, pkg.version), "node_modules", filepath.FromSlash(filepath.Dir(pkg.name)), filepath.Base(pkg.name))
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		manifest := fmt.Sprintf(`{"name":%q,"version":%q,%s}`, pkg.name, pkg.version, pkg.dependencies)
+		if err := os.WriteFile(filepath.Join(store, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		relative, err := filepath.Rel(filepath.Dir(target), store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(relative, target); err != nil {
+			t.Fatal(err)
+		}
+		original[pkg.name] = relative
+		installed[pkg.name] = store
+	}
+
+	angular := filepath.Join(consumer, "node_modules", "@angular", "core")
+	if err := os.MkdirAll(angular, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(angular, "package.json"), []byte(`{"name":"@angular/core","version":"18.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	dists := make(map[string]string, len(packages))
+	for _, pkg := range packages {
+		dist := t.TempDir()
+		manifest := fmt.Sprintf(`{"name":%q,"version":"1.0.0-dev",%s}`, pkg.name, pkg.dependencies)
+		if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dists[pkg.name] = dist
+		if _, err := node.Link(context.Background(), consumer, pkg.name, dist); err != nil {
+			t.Fatalf("link %s: %v", pkg.name, err)
+		}
+	}
+
+	stages := make(map[string]string, len(packages))
+	for _, pkg := range packages {
+		marker := linkAppliedMarkerPath(consumer, pkg.name)
+		contents, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stages[pkg.name] = strings.TrimSpace(string(contents))
+	}
+	conflict := filepath.Join(stages["@acme/core"], "node_modules", "@acme", "auth-core")
+	if err := os.MkdirAll(filepath.Dir(conflict), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflict, []byte("unexpected"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.LinkSiblings(context.Background(), consumer, []string{"@acme/app", "@acme/core", "@acme/auth-core"}); err == nil {
+		t.Fatal("sibling reconciliation succeeded despite a conflicting staged path")
+	}
+	if _, err := os.Lstat(filepath.Join(stages["@acme/app"], "node_modules", "@acme", "core")); !os.IsNotExist(err) {
+		t.Fatalf("failed reconciliation partially created app sibling edge: %v", err)
+	}
+	if err := os.Remove(conflict); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.LinkSiblings(context.Background(), consumer, []string{"@acme/app", "@acme/core", "@acme/auth-core"}); err != nil {
+		t.Fatalf("retry sibling reconciliation: %v", err)
+	}
+
+	appCore := resolveNodePackage(t, stages["@acme/app"], "@acme/core")
+	consumerCore := resolveNodePackage(t, consumer, "@acme/core")
+	stagedCore := resolvePath(t, stages["@acme/core"])
+	if appCore != consumerCore || appCore != stagedCore {
+		t.Fatalf("app/core identity = %s, consumer/core = %s, staged core = %s", appCore, consumerCore, stages["@acme/core"])
+	}
+	coreAuth := resolveNodePackage(t, stages["@acme/core"], "@acme/auth-core")
+	consumerAuth := resolveNodePackage(t, consumer, "@acme/auth-core")
+	stagedAuth := resolvePath(t, stages["@acme/auth-core"])
+	if coreAuth != consumerAuth || coreAuth != stagedAuth {
+		t.Fatalf("core/auth identity = %s, consumer/auth = %s, staged auth = %s", coreAuth, consumerAuth, stages["@acme/auth-core"])
+	}
+	if got := resolveNodePackage(t, stages["@acme/auth-core"], "@angular/core"); got != resolvePath(t, angular) {
+		t.Fatalf("external peer identity = %s, want consumer-installed %s", got, angular)
+	}
+
+	for _, pkg := range packages {
+		if err := node.Unlink(context.Background(), consumer, pkg.name); err != nil {
+			t.Fatalf("undo %s: %v", pkg.name, err)
+		}
+		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
+		got, err := os.Readlink(target)
+		if err != nil || got != original[pkg.name] {
+			t.Fatalf("undo %s restored %q, want %q (err %v)", pkg.name, got, original[pkg.name], err)
+		}
+		if _, err := os.Stat(filepath.Join(installed[pkg.name], "package.json")); err != nil {
+			t.Fatalf("published %s disappeared after undo: %v", pkg.name, err)
+		}
+	}
+	for _, pkg := range packages {
+		if fileExists(linkAppliedMarkerPath(consumer, pkg.name)) || fileExists(stages[pkg.name]) {
+			t.Fatalf("undo left recovery artefacts for %s", pkg.name)
+		}
+	}
+}
+
+func pnpmStoreKey(name, version string) string {
+	return strings.Replace(name, "/", "+", 1) + "@" + version
+}
+
+func resolveNodePackage(t *testing.T, start, name string) string {
+	t.Helper()
+	for dir := filepath.Clean(start); ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		if _, err := os.Stat(candidate); err == nil {
+			resolved, err := filepath.EvalSymlinks(candidate)
+			if err != nil {
+				t.Fatalf("resolve %s from %s: %v", name, start, err)
+			}
+			return filepath.Clean(resolved)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	t.Fatalf("could not resolve %s from %s", name, start)
+	return ""
+}
+
+func resolvePath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve path %s: %v", path, err)
+	}
+	return filepath.Clean(resolved)
 }
 
 func TestExecNodeLinkRejectsInstalledPackageSymlinkOutsideConsumer(t *testing.T) {
