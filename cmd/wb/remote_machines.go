@@ -21,7 +21,7 @@ func newRemoteMachinesCmd() *cobra.Command {
 			return runRemoteMachines(defaultRemoteDeps(), projectsRoot, stale, jsonOut, os.Stdout)
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print rows as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().DurationVar(&stale, "stale", 24*time.Hour, "flag machines whose snapshot is older than this")
 	return cmd
 }

@@ -539,10 +539,11 @@ future bidirectional operator controls such as cancel or reprioritize.
 `wb monitor` is the terminal view over that same source and supports repository,
 task, operation, session, severity, and `--since` filters.
 `wb monitor --format=jsonl` emits the stable machine stream; bounded snapshots
-use `--format=json`, and human output is `--format=text`. Every WB command uses
-the shared Cobra `--format=<text|json|jsonl>` contract for presentation; the
-cutover removes command-local `--json` booleans and other output-format variants
-from help, specifications, skills, capabilities, and tests in the same release.
+use `--format=json`, and human output is `--format=text`. Every WB command that
+offers JSON output accepts the shared Cobra `--format=<text|json|jsonl>`
+contract for presentation. `--json` remains an exact shortcut for
+`--format=json`; command-local output-format variants other than that shortcut
+are removed from help, specifications, skills, capabilities, and tests.
 Commands that write an artifact retain `--output` or a more specific artifact
 path flag rather than overloading `--format`. JSONC is reserved for human-edited
 configuration, never command output or receipts. A bare `--` separator is reserved for commands that
@@ -970,6 +971,15 @@ queue generation is checkpointed, one new scheduler starts from the installed
 revision, and every queued intent is either resumed once or given an exact
 incompatible-schema disposition. No second independent scheduler dispatches
 work during the transition.
+
+### AC: json-output-selection-is-consistent
+
+Given any WB command that offers `--json`, its help also lists `--format`;
+when the command runs with `--format=json`, it emits the same unstyled,
+machine-readable output as `--json`; and its default `--format=text` output
+remains concise and readable with terminal styling where appropriate. A bare
+`--` still ends WB flag parsing for `wb run` and `wb exec`, so forwarded child
+arguments named `--format` or `--json` remain untouched.
 
 ### AC: formatting-follows-the-edit
 

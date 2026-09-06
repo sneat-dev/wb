@@ -143,7 +143,7 @@ func newHooksCheckCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "explicit hooks policy (default: global + repository policies)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&fleet, "fleet", false, "process every local repository under --projects-root")
 	return cmd
 }
@@ -444,7 +444,7 @@ func newHooksMetricsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&metricsFile, "file", "", "hook events JSONL file")
 	cmd.Flags().StringVar(&repository, "repo", "", "only repositories containing this text")
 	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to chart")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable summary JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
 
@@ -506,7 +506,7 @@ wb hooks measure . --days 30 --json`,
 	cmd.Flags().StringVar(&metricsFile, "file", "", "hook events JSONL file")
 	cmd.Flags().StringVar(&repository, "repo", "", "only repositories containing this text")
 	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to price")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the machine-readable profile delta")
+	addJSONFormatFlags(cmd, &jsonOut)
 	setDiscoveryTerms(cmd, "hooks measure profile delta cost budget stream branch saving commit push duration")
 	return cmd
 }

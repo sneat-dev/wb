@@ -403,6 +403,7 @@
               "path": "wb ci audit",
               "flags": [
                 "--fleet",
+                "--format",
                 "--json",
                 "--strict"
               ],
@@ -421,6 +422,7 @@
               "contains": [
                 "--strict",
                 "--fleet",
+                "--format",
                 "--json"
               ]
             }
@@ -3567,6 +3569,7 @@
               "flags": [
                 "--config",
                 "--fleet",
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -3585,6 +3588,7 @@
               "contains": [
                 "--config",
                 "--fleet",
+                "--format",
                 "--json"
               ]
             }
@@ -3744,6 +3748,7 @@
                 "--config",
                 "--days",
                 "--file",
+                "--format",
                 "--json",
                 "--repo"
               ],
@@ -3837,6 +3842,7 @@
                 "--config",
                 "--days",
                 "--file",
+                "--format",
                 "--json",
                 "--repo"
               ],
@@ -3855,6 +3861,7 @@
               "contains": [
                 "--days",
                 "--repo",
+                "--format",
                 "--json"
               ]
             }
@@ -4369,6 +4376,7 @@
               "path": "wb remote claim",
               "flags": [
                 "--force",
+                "--format",
                 "--json",
                 "--note",
                 "--stale",
@@ -4442,6 +4450,7 @@
             {
               "path": "wb remote claims",
               "flags": [
+                "--format",
                 "--json",
                 "--stale"
               ],
@@ -4506,6 +4515,7 @@
             {
               "path": "wb remote machines",
               "flags": [
+                "--format",
                 "--json",
                 "--stale"
               ],
@@ -4522,6 +4532,7 @@
             {
               "command": "wb remote machines --help",
               "contains": [
+                "--format",
                 "--json",
                 "--stale"
               ]
@@ -4570,6 +4581,7 @@
               "path": "wb remote publish",
               "flags": [
                 "--dry-run",
+                "--format",
                 "--json",
                 "--parallel"
               ],
@@ -4588,6 +4600,7 @@
               "command": "wb remote publish --help",
               "contains": [
                 "--dry-run",
+                "--format",
                 "--json",
                 "<login>/<machine>"
               ]
@@ -4636,6 +4649,7 @@
               "path": "wb remote release",
               "flags": [
                 "--force",
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -4705,6 +4719,7 @@
             {
               "path": "wb remote status",
               "flags": [
+                "--format",
                 "--json",
                 "--machine",
                 "--stale"
@@ -5240,6 +5255,7 @@
                 "--config",
                 "--days",
                 "--history",
+                "--format",
                 "--json",
                 "--list"
               ],
@@ -7674,6 +7690,7 @@
             {
               "path": "wb version",
               "flags": [
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -7689,6 +7706,7 @@
             {
               "command": "wb version --help",
               "contains": [
+                "--format",
                 "--json",
                 "build revision"
               ]
