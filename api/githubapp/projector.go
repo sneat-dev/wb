@@ -92,9 +92,9 @@ func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDeli
 		if committed {
 			return
 		}
-		// Preserve the original refresh/write failure; the durable claim
-		// implementation records any release failure for operator repair.
-		_ = engine.Deliveries.ReleaseDelivery(ctx, delivery.ID)
+		if releaseErr := engine.Deliveries.ReleaseDelivery(ctx, delivery.ID); releaseErr != nil {
+			processErr = errors.Join(processErr, fmt.Errorf("release failed projection delivery claim: %w", releaseErr))
+		}
 	}()
 	if err := engine.AuthoritativeReader.Refresh(ctx, delivery); err != nil {
 		return false, fmt.Errorf("refresh authoritative GitHub state: %w", err)

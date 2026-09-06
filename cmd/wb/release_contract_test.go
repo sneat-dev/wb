@@ -206,6 +206,11 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	assert("Windows validation prerequisites", windows["needs"], []any{"windows-scope", "validation-reuse"})
 	assert("Windows validation reuse condition", strings.Join(strings.Fields(fmt.Sprint(windows["if"])), " "),
 		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
+	assert("Windows validation commands", workflowContractTestCommands(t, windows), []string{
+		"go build ./...",
+		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
+		"go test ./api/githubapp -count=1",
+	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
 	if !ok {
 		t.Fatal("eligibility job missing")

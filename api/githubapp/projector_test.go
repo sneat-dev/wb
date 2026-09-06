@@ -245,6 +245,18 @@ func TestProjectionEngineProcessPropagatesPhaseErrors(t *testing.T) {
 	}
 }
 
+func TestProjectionEngineReportsClaimReleaseFailureWithProjectionFailure(t *testing.T) {
+	engine, store, _ := newProjector()
+	store.releaseErr = errors.New("release")
+	projectionErr := errors.New("projection")
+	engine.Reader = projectorReader{err: projectionErr}
+	delivery := WebhookDelivery{ID: "delivery-release", Event: "push", Payload: []byte("payload")}
+	_, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload))
+	if !errors.Is(err, projectionErr) || !strings.Contains(err.Error(), "release failed projection delivery claim") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 type projectorSelectiveWriter struct{ orgErr, mergeErr error }
 
 func (w projectorSelectiveWriter) WriteRepositories(context.Context, string, []ProjectionDocument) error {
