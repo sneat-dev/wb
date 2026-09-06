@@ -104,6 +104,13 @@ A read-only September 4, 2026 scan found:
 | WB local-link progress landing | 6 min 17 s | Candidate CI consumed 5 min 27 s; exact-repository preflight cleanup took 10.5 s and terminal cleanup took about 34 s. The release smoke emitted immediately, heartbeated at 10 s, and finished the local-link preflight at 10.35 s. |
 | WB local-link progress main/release CI | 6 min 1 s | Fourteen exact-main checks passed and published WB v0.96.3. |
 | Shared self-update provider landing | 2 min | Exact candidate CI consumed 1 min 34 s; merge and remote verification took under 4 s; terminal cleanup took about 22 s. |
+| Sneat Go PR #1070 first consumer | Prior `main` (`7286108c…`): 9 min 33 s Go CI, 15 min 37 s end to end, 21 min 28 s aggregate runner. Merge commit `3649e98ac974c5049fdfbd6ecfa51584c4017c3a`: 5 min 1 s Go CI, 8 min 13 s end to end, 8 min 1 s aggregate runner. | Reuse reduced wall time about 47% and aggregate runner time about 63%. Exact job steps skipped lint, tests, coverage, Coveralls, and Java/Node/Firebase setup while the exact-main build, artifact, deploy, health, and Chatwright smoke passed. |
+
+Sneat Go PR #1070 is the first measured consumer evidence for
+`pr-land-syncs-and-main-reuses-exact-validation`: the merge-commit receipt is
+`3649e98ac974c5049fdfbd6ecfa51584c4017c3a`, and the passing deployment path
+retained build and production smoke proof while omitting only work already
+covered by the reusable exact validation receipt.
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -1231,6 +1238,35 @@ observation without requiring another agent call. Each retry appears in stderr
 with attempt/max, cause, and delay. Given the same request returns `401`, an
 ordinary `403`, or exact-head drift, WB makes one attempt and returns the
 terminal failure unchanged.
+
+### AC: tooling-friendly-merge-policy-is-auditable-before-apply
+
+Given a fleet whose repositories have mixed merge settings and whose effective
+default-branch rules include repository, organization, and enterprise rulesets,
+when the operator runs `wb fleet merge-policy`, WB reads every selected
+repository and reports the desired merge-commit-only settings, repository drift,
+and every required-linear-history, merge-queue, or pull-request-method conflict
+without mutation. `--format=json` and `--json` emit the same versioned report;
+noninteractive text remains unstyled and readable.
+
+When `--apply` is explicit, WB persists the complete selected scope before its
+first mutation, rechecks observed repository settings before changing them,
+uses bounded parallel reads with progress gaps no longer than ten seconds, and
+changes only merge settings. Existing organization rulesets take precedence:
+WB inventories their full affected-repository scope and updates the existing
+pull-request rule while preserving all unrelated conditions, bypass actors,
+enforcement, review requirements, status checks, and other rules. Repository
+rulesets use the same preservation rule and repository settings are the
+fleet-wide fallback.
+
+Enterprise rulesets have highest precedence, followed by organization rulesets,
+repository rulesets, then repository merge settings. A higher-level
+required-linear-history or merge-queue rule blocks repository fallback. WB may
+change an enterprise ruleset only after the GitHub API supplies an exact affected
+organization and repository inventory and the authenticated operator can preview
+that whole scope. Otherwise it reports the blocker and leaves every level
+unchanged. Any plan/apply drift fails closed and a resumed run re-observes all
+authorities instead of trusting its old snapshot.
 
 ### AC: lessons-are-curated-off-worker-path
 

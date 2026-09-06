@@ -1,0 +1,710 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/spf13/cobra"
+)
+
+const mergePolicySchemaVersion = 1
+
+type mergePolicyOptions struct {
+	apply     bool
+	parallel  int
+	json      bool
+	reportDir string
+	resume    bool
+}
+
+type mergePolicyReport struct {
+	SchemaVersion int                        `json:"schema_version"`
+	Mode          string                     `json:"mode"`
+	Desired       mergePolicyDesired         `json:"desired"`
+	Repositories  []mergePolicyRepository    `json:"repositories"`
+	Rulesets      []mergePolicyRulesetChange `json:"rulesets,omitempty"`
+	Summary       mergePolicySummary         `json:"summary"`
+	ReportPath    string                     `json:"report_path,omitempty"`
+}
+
+type mergePolicyDesired struct {
+	AllowMergeCommit bool   `json:"allow_merge_commit"`
+	AllowSquashMerge bool   `json:"allow_squash_merge"`
+	AllowRebaseMerge bool   `json:"allow_rebase_merge"`
+	MergeCommitTitle string `json:"merge_commit_title"`
+	MergeCommitBody  string `json:"merge_commit_message"`
+}
+
+var desiredMergePolicy = mergePolicyDesired{true, false, false, "PR_TITLE", "PR_BODY"}
+
+type mergePolicyRepository struct {
+	Repository    string               `json:"repository"`
+	DefaultBranch string               `json:"default_branch,omitempty"`
+	Disposition   string               `json:"disposition"`
+	Drift         []string             `json:"drift,omitempty"`
+	Conflicts     []string             `json:"conflicts,omitempty"`
+	Rulesets      []mergePolicyRuleRef `json:"rulesets,omitempty"`
+	ObservedSHA   string               `json:"observed_sha,omitempty"`
+	Error         string               `json:"error,omitempty"`
+}
+
+type mergePolicyRuleRef struct {
+	Type       string   `json:"type"`
+	SourceType string   `json:"source_type"`
+	Source     string   `json:"source"`
+	ID         int64    `json:"id"`
+	Methods    []string `json:"allowed_merge_methods,omitempty"`
+}
+
+type mergePolicyRulesetChange struct {
+	SourceType           string   `json:"source_type"`
+	Source               string   `json:"source"`
+	ID                   int64    `json:"id"`
+	Repositories         []string `json:"selected_repositories"`
+	AffectedRepositories []string `json:"affected_repositories,omitempty"`
+	Disposition          string   `json:"disposition"`
+	ObservedSHA          string   `json:"observed_sha,omitempty"`
+	Error                string   `json:"error,omitempty"`
+}
+
+type mergePolicySummary struct {
+	Inspected int `json:"inspected"`
+	Compliant int `json:"compliant"`
+	Drift     int `json:"drift"`
+	Blocked   int `json:"blocked"`
+	Errors    int `json:"errors"`
+	Applied   int `json:"applied"`
+}
+
+type githubRepositoryPolicy struct {
+	DefaultBranch      string `json:"default_branch"`
+	AllowMergeCommit   bool   `json:"allow_merge_commit"`
+	AllowSquashMerge   bool   `json:"allow_squash_merge"`
+	AllowRebaseMerge   bool   `json:"allow_rebase_merge"`
+	MergeCommitTitle   string `json:"merge_commit_title"`
+	MergeCommitMessage string `json:"merge_commit_message"`
+}
+
+type githubEffectiveRule struct {
+	Type              string          `json:"type"`
+	RulesetSourceType string          `json:"ruleset_source_type"`
+	RulesetSource     string          `json:"ruleset_source"`
+	RulesetID         int64           `json:"ruleset_id"`
+	Parameters        json.RawMessage `json:"parameters"`
+}
+
+var (
+	mergePolicyAuthUser   = discover.AuthUser
+	mergePolicyMemberOrgs = discover.MemberOrgs
+	mergePolicyListRemote = discover.ListRemote
+	mergePolicyDiscover   = func(root, filter string) ([]discover.Repo, error) {
+		return discoverRemoteMergePolicyFleet(filter, extraOrgs)
+	}
+	mergePolicyRead = func(ctx context.Context, endpoint string) ([]byte, error) {
+		return githubobserver.Read(ctx, "", "api", endpoint)
+	}
+	mergePolicyReadPages = func(ctx context.Context, endpoint string) ([][]byte, error) {
+		pages, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{Endpoint: endpoint}, 0)
+		if err != nil {
+			return nil, err
+		}
+		bodies := make([][]byte, 0, len(pages))
+		for _, page := range pages {
+			bodies = append(bodies, page.Body)
+		}
+		return bodies, nil
+	}
+	mergePolicyExecute = func(ctx context.Context, args ...string) githubobserver.CommandResponse {
+		return githubobserver.Execute(ctx, "", args...)
+	}
+)
+
+func newFleetMergePolicyCmd() *cobra.Command {
+	options := mergePolicyOptions{parallel: 4}
+	command := &cobra.Command{
+		Use:   "merge-policy",
+		Short: "Audit or apply merge-commit policy across GitHub repositories",
+		Long: `Audit GitHub repository merge settings and effective default-branch rules.
+
+The desired policy enables merge commits only and asks GitHub to use the pull
+request title and body for the merge commit. Audit is the default and is
+read-only. --apply is explicit: WB first inventories the exact selected scope,
+writes the durable plan, then changes only merge settings.
+
+Effective required-linear-history and merge-queue rules are conflicts because
+they can make merge commits impossible. WB reports them and never weakens those
+protections. An existing organization pull-request ruleset is updated once for
+all selected repositories only after WB inventories every repository it affects.
+Enterprise rulesets are inventoried but remain fail-closed until GitHub can
+provide an exact affected-repository scope for the authenticated account.
+
+Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
+2 invalid usage.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if options.parallel < 1 || options.parallel > 16 {
+				return usageError("--parallel must be between 1 and 16")
+			}
+			if options.resume && (!options.apply || strings.TrimSpace(options.reportDir) == "") {
+				return usageError("--resume requires --apply and --report-dir")
+			}
+			report, err := runMergePolicy(command.Context(), options, command.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			if options.json {
+				if err := writeJSONTo(command.OutOrStdout(), report); err != nil {
+					return err
+				}
+			} else if err := printMergePolicyReport(command.OutOrStdout(), report); err != nil {
+				return err
+			}
+			if report.Summary.Drift+report.Summary.Blocked+report.Summary.Errors > 0 {
+				return &exitError{code: exitFindings, message: "merge-policy findings remain; see the report above"}
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&options.apply, "apply", false, "apply the exact planned merge policy; audit is the default")
+	command.Flags().IntVar(&options.parallel, "parallel", 4, "maximum GitHub repositories to inspect concurrently (1-16)")
+	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/merge-policy)")
+	command.Flags().BoolVar(&options.resume, "resume", false, "resume into an existing --report-dir after interruption; all decisions are re-observed")
+	addJSONFormatFlags(command, &options.json)
+	return command
+}
+
+func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io.Writer) (mergePolicyReport, error) {
+	var inspected, total atomic.Int64
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Fprintf(progress, "merge-policy: working; inspected %d/%d repositories\n", inspected.Load(), total.Load())
+			case <-heartbeatDone:
+				return
+			}
+		}
+	}()
+	if options.resume {
+		if _, err := os.Stat(filepath.Join(options.reportDir, "merge-policy.json")); err != nil {
+			return mergePolicyReport{}, fmt.Errorf("resume merge-policy report: %w", err)
+		}
+	}
+	repos, err := mergePolicyDiscover(projectsRoot, filterFlag)
+	if err != nil {
+		return mergePolicyReport{}, err
+	}
+	selected := make([]discover.Repo, 0, len(repos))
+	for _, repo := range repos {
+		if repo.Remote && !repo.Archived {
+			selected = append(selected, repo)
+		}
+	}
+	total.Store(int64(len(selected)))
+	report := mergePolicyReport{SchemaVersion: mergePolicySchemaVersion, Mode: "audit", Desired: desiredMergePolicy}
+	if options.apply {
+		report.Mode = "apply"
+	}
+	report.Repositories = make([]mergePolicyRepository, len(selected))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for worker := 0; worker < options.parallel; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				report.Repositories[index] = inspectMergePolicyRepository(ctx, selected[index].Slug())
+				inspected.Add(1)
+			}
+		}()
+	}
+	for index := range selected {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+	buildMergePolicyRulesetPlan(ctx, &report)
+	summarizeMergePolicy(&report)
+	if options.apply {
+		path, err := mergePolicyReportPath(options.reportDir)
+		if err != nil {
+			return report, err
+		}
+		report.ReportPath = path
+		if err := persistMergePolicyReport(report); err != nil {
+			return report, err
+		}
+		fmt.Fprintf(progress, "merge-policy: planned %d repositories and %d shared rulesets; report %s\n", len(report.Repositories), len(report.Rulesets), path)
+		applyMergePolicy(ctx, &report, progress)
+		summarizeMergePolicy(&report)
+		if err := persistMergePolicyReport(report); err != nil {
+			return report, err
+		}
+	} else if strings.TrimSpace(options.reportDir) != "" {
+		path, err := mergePolicyReportPath(options.reportDir)
+		if err != nil {
+			return report, err
+		}
+		report.ReportPath = path
+		if err := persistMergePolicyReport(report); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func discoverRemoteMergePolicyFleet(filter string, explicitOwners []string) ([]discover.Repo, error) {
+	owners := map[string]bool{}
+	user, err := mergePolicyAuthUser()
+	if err != nil {
+		return nil, fmt.Errorf("resolve authenticated GitHub owner: %w", err)
+	}
+	owners[user] = true
+	orgs, err := mergePolicyMemberOrgs()
+	if err != nil {
+		return nil, fmt.Errorf("list authenticated GitHub organizations: %w", err)
+	}
+	for _, org := range orgs {
+		owners[org] = true
+	}
+	for _, owner := range explicitOwners {
+		if owner = strings.TrimSpace(owner); owner != "" {
+			owners[owner] = true
+		}
+	}
+	names := make([]string, 0, len(owners))
+	for owner := range owners {
+		names = append(names, owner)
+	}
+	sort.Strings(names)
+	var repos []discover.Repo
+	for _, owner := range names {
+		listed, err := mergePolicyListRemote(owner)
+		if err != nil {
+			return nil, fmt.Errorf("list GitHub repositories for %s: %w", owner, err)
+		}
+		for _, repo := range listed {
+			if filter == "" || strings.Contains(repo.Slug(), filter) {
+				repo.Remote = true
+				repos = append(repos, repo)
+			}
+		}
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Slug() < repos[j].Slug() })
+	return repos, nil
+}
+
+func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyRepository {
+	result := mergePolicyRepository{Repository: slug}
+	body, err := mergePolicyRead(ctx, "repos/"+slug)
+	if err != nil {
+		result.Disposition, result.Error = "error", err.Error()
+		return result
+	}
+	var policy githubRepositoryPolicy
+	if err := json.Unmarshal(body, &policy); err != nil {
+		result.Disposition, result.Error = "error", "decode repository settings: "+err.Error()
+		return result
+	}
+	result.DefaultBranch = policy.DefaultBranch
+	result.ObservedSHA = digestJSON(body)
+	if !policy.AllowMergeCommit {
+		result.Drift = append(result.Drift, "allow_merge_commit=false")
+	}
+	if policy.AllowSquashMerge {
+		result.Drift = append(result.Drift, "allow_squash_merge=true")
+	}
+	if policy.AllowRebaseMerge {
+		result.Drift = append(result.Drift, "allow_rebase_merge=true")
+	}
+	if policy.MergeCommitTitle != desiredMergePolicy.MergeCommitTitle {
+		result.Drift = append(result.Drift, "merge_commit_title="+policy.MergeCommitTitle)
+	}
+	if policy.MergeCommitMessage != desiredMergePolicy.MergeCommitBody {
+		result.Drift = append(result.Drift, "merge_commit_message="+policy.MergeCommitMessage)
+	}
+	rulesBody, err := mergePolicyRead(ctx, "repos/"+slug+"/rules/branches/"+policy.DefaultBranch+"?per_page=100")
+	if err != nil {
+		result.Disposition, result.Error = "error", "read effective rules: "+err.Error()
+		return result
+	}
+	var rules []githubEffectiveRule
+	if err := json.Unmarshal(rulesBody, &rules); err != nil {
+		result.Disposition, result.Error = "error", "decode effective rules: "+err.Error()
+		return result
+	}
+	for _, rule := range rules {
+		ref := mergePolicyRuleRef{Type: rule.Type, SourceType: rule.RulesetSourceType, Source: rule.RulesetSource, ID: rule.RulesetID}
+		switch rule.Type {
+		case "required_linear_history":
+			result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "requires linear history"))
+		case "merge_queue":
+			result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "requires the merge queue"))
+		case "pull_request":
+			var parameters struct {
+				AllowedMergeMethods []string `json:"allowed_merge_methods"`
+			}
+			_ = json.Unmarshal(rule.Parameters, &parameters)
+			ref.Methods = parameters.AllowedMergeMethods
+			if len(parameters.AllowedMergeMethods) == 0 {
+				result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "did not report allowed merge methods"))
+			} else if !mergeOnly(parameters.AllowedMergeMethods) {
+				if strings.EqualFold(rule.RulesetSourceType, "Organization") || strings.EqualFold(rule.RulesetSourceType, "Repository") {
+					result.Drift = append(result.Drift, describeRuleConflict(rule, "allows "+strings.Join(parameters.AllowedMergeMethods, ",")+" instead of merge"))
+				} else {
+					result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "does not allow merge commits"))
+				}
+			}
+		}
+		if rule.RulesetID != 0 {
+			result.Rulesets = append(result.Rulesets, ref)
+		}
+	}
+	switch {
+	case len(result.Conflicts) > 0:
+		result.Disposition = "blocked"
+	case len(result.Drift) > 0:
+		result.Disposition = "drift"
+	default:
+		result.Disposition = "compliant"
+	}
+	return result
+}
+
+func describeRuleConflict(rule githubEffectiveRule, detail string) string {
+	return fmt.Sprintf("%s ruleset %d (%s): %s", strings.ToLower(rule.RulesetSourceType), rule.RulesetID, rule.RulesetSource, detail)
+}
+
+func buildMergePolicyRulesetPlan(ctx context.Context, report *mergePolicyReport) {
+	selectedRepositories := map[string]bool{}
+	for _, repo := range report.Repositories {
+		selectedRepositories[repo.Repository] = true
+	}
+	byKey := map[string]*mergePolicyRulesetChange{}
+	for _, repo := range report.Repositories {
+		for _, ref := range repo.Rulesets {
+			if ref.Type != "pull_request" || mergeOnly(ref.Methods) {
+				continue
+			}
+			key := fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)
+			change := byKey[key]
+			if change == nil {
+				change = &mergePolicyRulesetChange{SourceType: ref.SourceType, Source: ref.Source, ID: ref.ID, Disposition: "planned"}
+				byKey[key] = change
+			}
+			change.Repositories = append(change.Repositories, repo.Repository)
+		}
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		change := byKey[key]
+		sort.Strings(change.Repositories)
+		for _, selected := range report.Repositories {
+			if !containsSorted(change.Repositories, selected.Repository) {
+				continue
+			}
+			if len(selected.Conflicts) > 0 {
+				change.Disposition = "blocked"
+				change.Error = "selected repository has required-linear-history or merge-queue conflict; no shared policy was changed"
+				break
+			}
+		}
+		if change.Disposition == "blocked" {
+			report.Rulesets = append(report.Rulesets, *change)
+			continue
+		}
+		if strings.EqualFold(change.SourceType, "Enterprise") {
+			change.Disposition = "blocked"
+			change.Error = "enterprise rulesets require an exact independently enumerable affected-repository scope; no ruleset was changed"
+		} else if strings.EqualFold(change.SourceType, "Organization") {
+			pages, err := mergePolicyReadPages(ctx, fmt.Sprintf("orgs/%s/rulesets/%d/repositories?per_page=100", change.Source, change.ID))
+			if err != nil {
+				change.Disposition, change.Error = "blocked", "inventory affected repositories: "+err.Error()
+			} else {
+				for _, body := range pages {
+					var repos []struct {
+						FullName string `json:"full_name"`
+					}
+					if err := json.Unmarshal(body, &repos); err != nil {
+						change.Disposition, change.Error = "blocked", "decode affected repositories: "+err.Error()
+						break
+					}
+					for _, repo := range repos {
+						change.AffectedRepositories = append(change.AffectedRepositories, repo.FullName)
+					}
+				}
+				sort.Strings(change.AffectedRepositories)
+				for _, repository := range change.AffectedRepositories {
+					if !selectedRepositories[repository] {
+						change.Disposition = "blocked"
+						change.Error = "organization ruleset affects repositories outside the selected fleet; inspect the full affected scope before apply"
+						break
+					}
+				}
+			}
+		}
+		if change.Disposition != "blocked" {
+			endpoint := fmt.Sprintf("repos/%s/rulesets/%d", change.Source, change.ID)
+			if strings.EqualFold(change.SourceType, "Organization") {
+				endpoint = fmt.Sprintf("orgs/%s/rulesets/%d", change.Source, change.ID)
+			}
+			body, err := mergePolicyRead(ctx, endpoint)
+			if err != nil {
+				change.Disposition, change.Error = "blocked", "snapshot ruleset before apply: "+err.Error()
+			} else {
+				change.ObservedSHA = digestJSON(body)
+			}
+		}
+		report.Rulesets = append(report.Rulesets, *change)
+	}
+}
+
+func applyMergePolicy(ctx context.Context, report *mergePolicyReport, progress io.Writer) {
+	// Validate every repository lease before the first mutation. A shared
+	// ruleset may affect several repositories, so discovering repository drift
+	// after changing it would leave a partially applied plan.
+	for index := range report.Repositories {
+		repo := &report.Repositories[index]
+		if repo.Disposition != "drift" {
+			continue
+		}
+		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
+		if err != nil || digestJSON(fresh) != repo.ObservedSHA {
+			repo.Disposition = "blocked"
+			repo.Conflicts = append(repo.Conflicts, "repository settings changed after planning; rerun the audit")
+		}
+	}
+	blockedRulesets := map[string]bool{}
+	for index := range report.Rulesets {
+		change := &report.Rulesets[index]
+		key := fmt.Sprintf("%s/%s/%d", strings.ToLower(change.SourceType), change.Source, change.ID)
+		if change.Disposition == "blocked" {
+			blockedRulesets[key] = true
+			continue
+		}
+		for _, repository := range change.Repositories {
+			for _, repo := range report.Repositories {
+				if repo.Repository == repository && (repo.Disposition == "blocked" || repo.Disposition == "error") {
+					change.Disposition = "blocked"
+					change.Error = "a repository in the shared ruleset scope changed or is blocked; no shared policy was changed"
+					blockedRulesets[key] = true
+				}
+			}
+		}
+		if change.Disposition == "blocked" {
+			continue
+		}
+		if err := applySharedRuleset(ctx, *change); err != nil {
+			change.Disposition, change.Error = "error", err.Error()
+			blockedRulesets[key] = true
+		} else {
+			change.Disposition = "applied"
+		}
+	}
+	for index := range report.Repositories {
+		repo := &report.Repositories[index]
+		if repo.Disposition == "compliant" || repo.Disposition == "error" || len(repo.Conflicts) > 0 {
+			continue
+		}
+		blocked := false
+		for _, ref := range repo.Rulesets {
+			if blockedRulesets[fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)] {
+				blocked = true
+			}
+		}
+		if blocked {
+			repo.Disposition = "blocked"
+			repo.Conflicts = append(repo.Conflicts, "shared ruleset update was not safe or supported")
+			continue
+		}
+		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
+		if err != nil || digestJSON(fresh) != repo.ObservedSHA {
+			repo.Disposition = "blocked"
+			repo.Conflicts = append(repo.Conflicts, "repository settings changed after planning; rerun the audit")
+			continue
+		}
+		response := mergePolicyExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository,
+			"-F", "allow_merge_commit=true", "-F", "allow_squash_merge=false", "-F", "allow_rebase_merge=false",
+			"-f", "merge_commit_title=PR_TITLE", "-f", "merge_commit_message=PR_BODY")
+		if response.Err != nil {
+			repo.Disposition = "error"
+			repo.Error = githubCommandMessage(response)
+			continue
+		}
+		repo.Disposition = "applied"
+		repo.Drift = nil
+		fmt.Fprintf(progress, "merge-policy: applied %s\n", repo.Repository)
+	}
+}
+
+func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) error {
+	endpoint := fmt.Sprintf("repos/%s/rulesets/%d", change.Source, change.ID)
+	if strings.EqualFold(change.SourceType, "Organization") {
+		endpoint = fmt.Sprintf("orgs/%s/rulesets/%d", change.Source, change.ID)
+	}
+	body, err := mergePolicyRead(ctx, endpoint)
+	if err != nil {
+		return err
+	}
+	if change.ObservedSHA != "" && digestJSON(body) != change.ObservedSHA {
+		return fmt.Errorf("ruleset changed after planning; rerun the audit")
+	}
+	var full map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		return err
+	}
+	rules, ok := full["rules"].([]any)
+	if !ok {
+		return fmt.Errorf("ruleset response has no rules")
+	}
+	changed := false
+	for _, value := range rules {
+		rule, ok := value.(map[string]any)
+		if !ok || rule["type"] != "pull_request" {
+			continue
+		}
+		parameters, ok := rule["parameters"].(map[string]any)
+		if !ok {
+			parameters = map[string]any{}
+			rule["parameters"] = parameters
+		}
+		parameters["allowed_merge_methods"] = []string{"merge"}
+		changed = true
+	}
+	if !changed {
+		return fmt.Errorf("ruleset has no pull_request rule")
+	}
+	// Response-only fields are not accepted by GitHub's update endpoint.
+	for _, key := range []string{"id", "node_id", "source", "source_type", "_links", "created_at", "updated_at", "current_user_can_bypass"} {
+		delete(full, key)
+	}
+	payload, err := json.Marshal(full)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp("", "wb-merge-policy-ruleset-*.json")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(payload); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	response := mergePolicyExecute(ctx, "api", "--method", "PUT", endpoint, "--input", name)
+	if response.Err != nil {
+		return fmt.Errorf("update %s ruleset %d: %s", strings.ToLower(change.SourceType), change.ID, githubCommandMessage(response))
+	}
+	return nil
+}
+
+func summarizeMergePolicy(report *mergePolicyReport) {
+	report.Summary = mergePolicySummary{Inspected: len(report.Repositories)}
+	for _, repo := range report.Repositories {
+		switch repo.Disposition {
+		case "compliant":
+			report.Summary.Compliant++
+		case "applied":
+			report.Summary.Applied++
+		case "drift":
+			report.Summary.Drift++
+		case "blocked":
+			report.Summary.Blocked++
+		case "error":
+			report.Summary.Errors++
+		}
+	}
+}
+
+func mergePolicyReportPath(explicit string) (string, error) {
+	dir := strings.TrimSpace(explicit)
+	if dir == "" {
+		home, err := wbhome.EnsureRoot(projectsRoot)
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, "reports", "merge-policy", time.Now().UTC().Format("20060102T150405.000000000Z"))
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "merge-policy.json"), nil
+}
+
+func persistMergePolicyReport(report mergePolicyReport) error {
+	payload, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	payload = append(payload, '\n')
+	return os.WriteFile(report.ReportPath, payload, 0o600)
+}
+
+func printMergePolicyReport(out io.Writer, report mergePolicyReport) error {
+	fmt.Fprintf(out, "Merge policy: %s\n", report.Mode)
+	fmt.Fprintf(out, "  %d repositories · %d compliant · %d drift · %d blocked · %d errors · %d applied\n", report.Summary.Inspected, report.Summary.Compliant, report.Summary.Drift, report.Summary.Blocked, report.Summary.Errors, report.Summary.Applied)
+	for _, repo := range report.Repositories {
+		detail := strings.Join(append(append([]string{}, repo.Drift...), repo.Conflicts...), "; ")
+		if repo.Error != "" {
+			detail = repo.Error
+		}
+		if detail == "" {
+			detail = "merge commits only; PR title + PR body"
+		}
+		fmt.Fprintf(out, "  %-9s %-42s %s\n", repo.Disposition, repo.Repository, detail)
+	}
+	for _, rule := range report.Rulesets {
+		fmt.Fprintf(out, "  %-9s %s ruleset %d (%d selected, %d affected) %s\n", rule.Disposition, strings.ToLower(rule.SourceType), rule.ID, len(rule.Repositories), len(rule.AffectedRepositories), rule.Error)
+	}
+	if report.ReportPath != "" {
+		fmt.Fprintf(out, "Report: %s\n", report.ReportPath)
+	}
+	return nil
+}
+
+func mergeOnly(values []string) bool { return len(values) == 1 && values[0] == "merge" }
+func containsSorted(values []string, want string) bool {
+	index := sort.SearchStrings(values, want)
+	return index < len(values) && values[index] == want
+}
+func digestJSON(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
+func githubCommandMessage(response githubobserver.CommandResponse) string {
+	value := strings.TrimSpace(string(response.Stderr))
+	if value == "" {
+		value = strings.TrimSpace(string(response.Stdout))
+	}
+	if value == "" && response.Err != nil {
+		value = response.Err.Error()
+	}
+	return value
+}

@@ -54,8 +54,9 @@ For conflict-free receipt-backed automation, read
 
 **When the work is already on GitHub as one pull request and it is ready to
 land, use [`wb pr land`](references/pr-land.md) instead** — it verifies the head
-and its checks, squashes with an aggregated message, proves the merge reached
-the base, deletes the branch, and retires the worktree, all as one verb.
+and its checks, creates a merge commit by default, proves the merge reached the
+base, deletes the branch, and retires the worktree, all as one verb. Explicit
+`--merge-method squash` and `--merge-method rebase` remain available.
 **Never run `gh pr merge` by hand**: that is the measured root cause of sixty
 abandoned worktrees, because the cleanup that should follow it never ran.
 

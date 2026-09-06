@@ -393,8 +393,9 @@ func TestLandRefusesADraftAndAFailedCheck(t *testing.T) {
 // subject, and every source commit named in the body.
 func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	fixture := newLandFixture(t, "feature/aggregate", "go.mod", "go.sum")
-
-	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	result, err := LandPullRequest(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +404,7 @@ func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	}
 	arguments := fixture.readState(t, "merge-args")
 	if !strings.Contains(arguments, "merge_method=squash") {
-		t.Fatalf("squash is the default landing route: %q", arguments)
+		t.Fatalf("explicit squash landing route: %q", arguments)
 	}
 	if !strings.Contains(arguments, "commit_title=feat: the change (#7)") {
 		t.Fatalf("the subject must be the pull request title, not the branch's first commit: %q", arguments)
@@ -418,6 +419,40 @@ func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	}
 	if strings.Contains(arguments, "## Details") {
 		t.Fatalf("the body summary must stop at the first heading:\n%s", arguments)
+	}
+}
+
+func TestLandDefaultsToMergeCommit(t *testing.T) {
+	fixture := newLandFixture(t, "feature/merge-default", "go.mod")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", result.Outcome, result.Reason)
+	}
+	arguments := fixture.readState(t, "merge-args")
+	if !strings.Contains(arguments, "merge_method=merge") {
+		t.Fatalf("merge commit must be the default landing route: %q", arguments)
+	}
+	if strings.Contains(arguments, "commit_title=") || strings.Contains(arguments, "commit_message=") {
+		t.Fatalf("default merge must defer to repository PR-title/PR-body policy: %q", arguments)
+	}
+}
+
+func TestLandPreservesExplicitRebaseMethod(t *testing.T) {
+	fixture := newLandFixture(t, "feature/rebase-explicit", "go.mod")
+	options := landOptions(fixture)
+	options.MergeMethod = "rebase"
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", result.Outcome, result.Reason)
+	}
+	if arguments := fixture.readState(t, "merge-args"); !strings.Contains(arguments, "merge_method=rebase") {
+		t.Fatalf("explicit rebase method was not preserved: %q", arguments)
 	}
 }
 

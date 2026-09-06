@@ -3183,6 +3183,18 @@
       "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
     },
     {
+      "id": "wb.fleet.merge-policy",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet merge-policy", "flags": ["--apply", "--format", "--json", "--parallel", "--report-dir", "--resume"], "modes": ["Audit is read-only and reports repository setting drift plus effective required-linear-history, merge-queue, and pull-request-method conflicts.", "The desired repository policy enables merge commits only with PR_TITLE and PR_BODY.", "Apply persists the selected plan before mutation, rechecks repository settings, and never weakens unrelated protections.", "Existing organization and repository pull-request rulesets preserve unrelated fields; enterprise rulesets fail closed until their exact affected repository scope can be inventoried.", "Repository reads are bounded by --parallel and emit progress at least every ten seconds; --resume re-observes live authorities.", "Exit 0 compliant or fully applied, 1 drift/conflict/error, 2 usage."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet merge-policy --help", "contains": ["read-only", "--apply", "--parallel", "--format", "--json", "required-linear-history", "merge-queue", "never weakens"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/merge-policy.md", "marker": "# Audit and apply GitHub merge policy", "examples": ["wb fleet merge-policy --filter sneat-dev/wb", "wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift", "kind": "integration"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyOrganizationRulesetPreservesUnrelatedProtections", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Organization ruleset apply is the safe shared-policy vertical slice; enterprise rulesets are inventoried and fail closed until GitHub can enumerate the full affected repository scope."
+    },
+    {
       "id": "wb.fleet.overview",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
@@ -4289,7 +4301,7 @@
                 "Cleanup is the default: the task's worktree is retired and its claim released unless --keep is passed, because the measured failure was an opt-in cleanup that was never passed",
                 "Every GitHub call goes through gh api with an endpoint, and pagination follows GitHub's own link header, so the verb works against the installed gh 2.45 rather than requiring --slurp or gh pr checks --json",
                 "The head SHA is sent as a merge lease, so a branch that moved after its checks were observed is refused by GitHub itself rather than landed unverified",
-                "Squash is the default and the message is built: the subject is the pull request title, and the body carries the summary, one line per source commit, the pull request number and the review reference",
+                "Merge commit is the default and preserves the reviewed branch commits; explicit --merge-method squash retains the aggregated title/body contract and explicit rebase remains available",
                 "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
                 "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
@@ -4313,7 +4325,7 @@
               "command": "wb pr land --help",
               "contains": [
                 "CLEANUP IS THE DEFAULT",
-                "SQUASH IS THE DEFAULT",
+                "MERGE COMMIT IS THE DEFAULT",
                 "--keep-commits",
                 "--reason",
                 "made from the diff",
@@ -4353,6 +4365,11 @@
             {
               "path": "internal/orchestrate/pr_land_test.go",
               "name": "TestLandRefusesADraftAndAFailedCheck",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandDefaultsToMergeCommit",
               "kind": "integration"
             },
             {

@@ -76,9 +76,12 @@ func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
 
 func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	command := newPRLandCmd()
+	if got := command.Flags().Lookup("merge-method").DefValue; got != "merge" {
+		t.Fatalf("--merge-method default = %q, want merge", got)
+	}
 	for _, wanted := range []string{
 		"CLEANUP IS THE DEFAULT",
-		"SQUASH IS THE DEFAULT",
+		"MERGE COMMIT IS THE DEFAULT",
 		"--keep-commits",
 		"--reason",
 		"made from the diff",

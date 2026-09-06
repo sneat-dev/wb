@@ -47,12 +47,11 @@ installed.
 CLEANUP IS THE DEFAULT. The task's worktree is retired and its claim released
 unless --keep is passed. An opt-in cleanup is a cleanup that does not happen.
 
-SQUASH IS THE DEFAULT, and the squash message AGGREGATES the branch: the
-subject is the pull request's title — GitHub otherwise substitutes the branch's
-first commit subject, which is how a "wip(...)" message lands on main and
-cannot be corrected without rewriting history — and the body carries the pull
-request's summary, one line per source commit, the pull request number, and the
-review that authorized it.
+MERGE COMMIT IS THE DEFAULT. It keeps the reviewed commits and records the pull
+request boundary without rewriting either. Use --merge-method squash when one
+aggregated commit is intentional; WB then builds its subject and body from the
+pull request and source commits rather than accepting an accidental first
+commit message. Explicit --merge-method rebase remains available.
 
 --keep-commits <sha>[,<sha>...] --reason "<text>" is the exception: wb rebuilds
 the branch so those commits land as their own commits, in order, with the rest
@@ -157,10 +156,10 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	}
 	command.Flags().BoolVar(&keep, "keep", false, "retain the task's worktree and claim instead of retiring them")
 	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file or a comment URL")
-	command.Flags().StringVar(&subject, "subject", "", "override the squash subject (default: the pull request title)")
+	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
 	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land as their own commits; requires --reason")
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
-	command.Flags().StringVar(&mergeMethod, "merge-method", "squash", "squash, merge, or rebase")
+	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
