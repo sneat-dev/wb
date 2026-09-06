@@ -77,24 +77,37 @@ chat update as proof that a remote action completed.
 | Tokens | Deterministic plans, receipts, and extracted failures give an agent a small factual input instead of a full log or repeated investigation. | No token count is claimed here; the reduction is qualitative until measured. |
 | Cognitive load | Claims, checkpoints, and exact target/head identities make ownership and recovery visible. | The team still needs to choose scope, quality gates, and landing authority. |
 
+Money follows from measured avoided usage, not from a universal WB price claim:
+
+```text
+estimated saving =
+  avoided CI runner hours × the user's runner rate
+  + avoided attended waiting hours × the user's actual labor rate
+  + avoided agent tokens × the user's actual model rate
+```
+
+Keep those inputs separate and show them beside the estimate. The current
+evidence supports time and compute reductions; it does not yet support one
+currency figure that applies to every user, machine, repository, or model.
+
 ## Maintained evidence
 
 Only measured results or clearly marked estimates belong here. Add the command,
 receipt, date, and limitation when refreshing a row; do not turn one sample into
 a fleet-wide claim.
 
-| Date | Evidence | Result | Method/source | Limitation |
-| --- | --- | --- | --- | --- |
-| 2026-09-04 | Local WB push validation | 501 push attempts consumed about 23.4 machine-hours in 30 days; p50 94.2 seconds, p90 422.8 seconds, p95 602.4 seconds | Read-only WB hook-event scan recorded in the Agent SDLC Throughput feature | Historical local activity; mixes repositories and change sizes and does not equal human attention time. |
-| 2026-09-04 | Local WB commit checks | p50 76 milliseconds, p90 407 milliseconds, p95 787 milliseconds | The same read-only hook-event scan | Historical local activity; supports keeping focused formatting and static feedback near edits, not removing it. |
-| 2026-09-04 | Laptop and VM lifecycle completion | Laptop: 2,126 claims, 84.57% sealed. VM: 383 claims, 78.07% sealed. | Redacted WB Work Log analysis | A sealed claim is lifecycle evidence, not proof that the delivered change was valuable. |
-| 2026-09-06 | Focused WB tests | Under 1.5 seconds | Focused local WB test command recorded during the SDLC work | Local developer-machine sample; not comparable to a full GitHub Actions matrix. |
-| 2026-09-06 | Focused Go coverage cache reuse | First covered package run: 0.319 seconds. An identical second run with a different coverprofile path reported `(cached)` after WB removed its default `-count=1`. | One fresh `GOCACHE`, then two focused covered-package runs with unchanged source and distinct coverprofile outputs. | One package and local toolchain; cache reuse depends on unchanged source and does not predict full-suite or remote CI timing. |
-| 2026-09-06 | Broad WB PR CI | About 5–6.5 minutes | One observed broad GitHub PR CI cycle | One workflow/run shape; queue time and cache state can change it. |
-| 2026-09-06 | Sneat Go exact-tree validation reuse | Wall time about 47% lower; aggregate runner time about 63% lower | Earlier baseline: Go CI 9m33, end-to-end 15m37, aggregate 21m28. Reuse result: 5m01, 8m13, 8m01. See [Sneat Go PR #1070](https://github.com/sneat-co/sneat-go/pull/1070). | One repository and workflow configuration; reuse is valid only for the exact landed tree and receipt contract. |
-| 2026-09-06 | WB landing inventory | About 30–39 seconds per repository-wide worktree inventory; one redundant third scan cost about 28 seconds | Landing Work Log timing samples | Inventory cost varies with worktree count and storage performance. |
-| 2026-09-06 | Five-organization merge-policy rollout | 159 repositories inspected; volatile GitHub metadata fingerprinting was exposed and fixed | WB merge-policy rollout report | Scope was selected organizations, not the entire GitHub account; this is a correctness finding as well as a scale sample. |
-| 2026-09-06 | Durable daemon handoff | Sandbox bridge, durable queue, and restart handoff demonstrated; progress cadence set to 10 seconds | WB daemon/handoff receipts | This establishes recoverability and visibility, not an aggregate speed percentage. |
+| Date | Class | Evidence | Result | Traceable source | Limitation |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-04 | Baseline opportunity | Local WB push validation | 501 push attempts consumed about 23.4 machine-hours in 30 days; p50 94.2 seconds, p90 422.8 seconds, p95 602.4 seconds | [Agent SDLC Throughput measured baseline](../spec/features/agent-sdlc-throughput/README.md#measured-baseline) | Historical local activity; mixes repositories and change sizes and does not equal human attention time. |
+| 2026-09-04 | Baseline safeguard | Local WB commit checks | p50 76 milliseconds, p90 407 milliseconds, p95 787 milliseconds | [Agent SDLC Throughput measured baseline](../spec/features/agent-sdlc-throughput/README.md#measured-baseline) | Historical local activity; supports keeping focused formatting and static feedback near edits, not removing it. |
+| 2026-09-04 | Baseline opportunity | Laptop and VM lifecycle completion | Laptop: 2,126 claims, 84.57% sealed. VM: 383 claims, 78.07% sealed. | [Agent SDLC Throughput measured baseline](../spec/features/agent-sdlc-throughput/README.md#measured-baseline) | A sealed claim is lifecycle evidence, not proof that the delivered change was valuable. |
+| 2026-09-06 | Mechanism evidence | Focused WB tests | Under 1.5 seconds | Named focused test receipts summarized in the [feature evidence](../spec/features/agent-sdlc-throughput/README.md#measured-baseline) | Local developer-machine samples; not comparable to a full GitHub Actions matrix. |
+| 2026-09-06 | Realized local reuse | Focused Go coverage cache reuse | First covered package run: 0.319 seconds. An identical second run with a different coverprofile path reported `(cached)` after WB removed its default `-count=1`. | Executable contract: [`TestGoCoverageArgumentsKeepTestResultCacheEnabled`](../internal/quality/go_test_shards_test.go) | One package and local toolchain; cache reuse depends on unchanged source and does not predict full-suite or remote CI timing. |
+| 2026-09-06 | Remote cost sample | Broad WB PR CI | Required checks passed in 4 minutes 54 seconds; coverage dominated at 4 minutes 35 seconds. | [GitHub Actions run 33918379694](https://github.com/sneat-dev/wb/actions/runs/33918379694) | One workflow/run shape; queue time and cache state can change it. |
+| 2026-09-06 | Realized remote reuse | Sneat Go exact-tree validation reuse | Go CI wall time fell from 9m33 to 5m01, about 47%; aggregate runner time fell from 21m28 to 8m01, about 63%. | Baseline `main` SHA `7286108c4e5dc40b14309a196c9d446c5ff51418`: [Go CI](https://github.com/sneat-co/sneat-go/actions/runs/34016094340), [deploy](https://github.com/sneat-co/sneat-go/actions/runs/34016497358). Result merge SHA `3649e98ac974c5049fdfbd6ecfa51584c4017c3a`: [Go CI](https://github.com/sneat-co/sneat-go/actions/runs/34019703409), [deploy](https://github.com/sneat-co/sneat-go/actions/runs/34019923016), [PR #1070](https://github.com/sneat-co/sneat-go/pull/1070). | One repository and workflow configuration. The exact-tree reuse path skipped lint, tests, coverage, Coveralls, and Java/Node/Firebase setup, but workflow changes or external cache state may also affect timing. |
+| 2026-09-06 | Baseline opportunity | WB landing inventory | About 30–39 seconds per repository-wide worktree inventory; one redundant third scan cost about 28 seconds. | Private landing Work Log timings summarized in the [feature evidence](../spec/features/agent-sdlc-throughput/README.md#measured-baseline) | Inventory cost varies with worktree count and storage performance. |
+| 2026-09-06 | Scale and correctness evidence | Five-organization merge-policy rollout | 159 repositories inspected; volatile GitHub metadata fingerprinting was exposed and fixed. | Durable report `tooling-friendly-five-orgs-apply-v01092-20260906/merge-policy.json` and [Agent SDLC Throughput feature](../spec/features/agent-sdlc-throughput/README.md) | Scope was selected organizations, not the entire GitHub account; this is not a measured saving. |
+| 2026-09-06 | Capability evidence | Durable daemon handoff | Sandbox bridge, durable queue, and restart handoff demonstrated; progress cadence set to 10 seconds. | [WB PR #424](https://github.com/sneat-dev/wb/pull/424) | This establishes recoverability and visibility, not an aggregate speed percentage. |
 
 The current operational contracts are documented in the [CLI flag
 matrix](cli-flag-matrix.md) and the machine-readable
@@ -111,13 +124,13 @@ first, then update the corresponding narrative and reusable proof point here.
 Use the evidence with its limit attached. These are starting points, not
 marketing claims that apply to every repository.
 
-| Surface | Reusable line | Evidence to link or show |
-| --- | --- | --- |
-| Landing page | “Reuse a successful validation for the exact tree that landed, instead of rebuilding the same code.” | The Sneat Go before/after timings and exact-tree receipt. |
-| Article | “A worktree is useful only when its branch, owner, target, and recovery record stay together.” | A claimed-worktree journey and durable checkpoint example. |
-| Tweet | “One exact CI receipt beats a chain of ‘looks green’ messages.” | Exact head/target receipt and bounded failure detail. |
-| YouTube | “Watch several streams finish without sharing one checkout; integrate compatible work once.” | The 3–7 stream journey and target-refresh avoidance. |
-| TikTok script | “The slow part is often repeating proof, not writing the fix.” | Focused local gate versus a broad CI cycle, with the stated limits. |
+| Surface | Self-contained starting point |
+| --- | --- |
+| Landing page | “In one Sneat Go workflow, exact-tree validation reuse cut Go CI wall time from 9m33 to 5m01 and aggregate runner time from 21m28 to 8m01. That is one repository result, valid only when the landed tree and receipt match exactly.” Link [Sneat Go PR #1070](https://github.com/sneat-co/sneat-go/pull/1070). |
+| Article | “A 30-day local scan found 501 WB push attempts consuming about 23.4 machine-hours, while focused commit checks stayed below 787 milliseconds at p95. The opportunity is to retain fast edit feedback and remove repeated broad validation; this historical sample mixes repositories and change sizes.” Link the [measured baseline](../spec/features/agent-sdlc-throughput/README.md#measured-baseline). |
+| Tweet | “One unchanged covered Go package ran in 0.319s, then returned `(cached)` even with a different coverprofile output. WB stopped adding `-count=1` by default; this proves local cache reuse for that package, not a fleet-wide speedup.” Link the [executable contract](../internal/quality/go_test_shards_test.go). |
+| YouTube | “The WB workflow gives 3–7 parallel streams isolated worktrees, bounded machine capacity, exact-head CI receipts, and one integration path. Demonstrate the full journey; do not attach a speed percentage until the run records it.” Link the [Agent SDLC Throughput feature](../spec/features/agent-sdlc-throughput/README.md). |
+| TikTok script | “We found one WB landing scanned the same repository-wide worktree inventory a third time, costing about 28 seconds. The lesson is measurable: optimize repeated coordination steps after proving they are redundant. Storage and worktree counts change the result.” Link the [measured baseline](../spec/features/agent-sdlc-throughput/README.md#measured-baseline). |
 
 ## How to keep this page credible
 
