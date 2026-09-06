@@ -70,7 +70,7 @@ func (reader *testReader) RefreshProjection(context.Context, WebhookDelivery) (P
 	return ProjectionSnapshot{
 		Repositories:  []ProjectionDocument{{Scope: ScopeRepository, ID: "github.com/sneat-dev/wb", DisplayName: "wb", UpdatedAt: time.Unix(1, 0)}},
 		Organizations: []ProjectionDocument{{Scope: ScopeOrganization, ID: "github.com/sneat-dev", DisplayName: "sneat-dev", UpdatedAt: time.Unix(1, 0)}},
-		LatestMerges:  []LatestMerge{{Repository: "github.com/sneat-dev/wb", PullRequest: 1}},
+		LatestMerges:  &RepositoryLatestMerges{Repository: "github.com/sneat-dev/wb", PublicOptIn: true, Entries: []LatestMerge{{Repository: "github.com/sneat-dev/wb", PullRequest: 1}}},
 	}, nil
 }
 
@@ -86,7 +86,7 @@ func (writer *testProjectionWriter) WriteOrganizations(context.Context, string, 
 	writer.organizations++
 	return nil
 }
-func (writer *testProjectionWriter) WriteLatestMerges(context.Context, string, []LatestMerge) error {
+func (writer *testProjectionWriter) WriteLatestMerges(context.Context, string, RepositoryLatestMerges) error {
 	writer.merges++
 	return nil
 }

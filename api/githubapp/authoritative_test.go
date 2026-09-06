@@ -78,7 +78,7 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 	if len(snapshot.Organizations) != 0 {
 		t.Fatalf("organizations = %#v", snapshot.Organizations)
 	}
-	if len(snapshot.LatestMerges) != 1 || snapshot.LatestMerges[0].PullRequest != 9 {
+	if snapshot.LatestMerges == nil || !snapshot.LatestMerges.PublicOptIn || snapshot.LatestMerges.Repository != "github.com/acme/widgets" || len(snapshot.LatestMerges.Entries) != 1 || snapshot.LatestMerges.Entries[0].PullRequest != 9 {
 		t.Fatalf("merges = %#v", snapshot.LatestMerges)
 	}
 }
@@ -136,7 +136,7 @@ func TestGitHubRESTProjectionReaderHTTPFailures(t *testing.T) {
 
 func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
-	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\nhttps://sneat.work/bench\n"))
+	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\n[Dashboard](https://sneat.work/bench)\n"))
 	for _, mode := range []string{"repository", "identity", "commits", "badsha", "readme-error", "encoding", "base64", "content-error", "nooptin", "open", "merged", "releases", "negative", "default", "pulls"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +212,7 @@ func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 					}
 					_, _ = io.WriteString(w, `[]`)
 				case r.URL.Path == "/repos/acme/widgets/pulls":
-					if mode == "pulls" {
+					if mode == "pulls" || mode == "nooptin" {
 						fail()
 						return
 					}
@@ -223,13 +223,16 @@ func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 			}))
 			defer server.Close()
 			reader := GitHubRESTProjectionReader{HTTP: server.Client(), Tokens: fixedGitHubToken{}, APIBase: server.URL, Now: func() time.Time { return time.Unix(1, 0) }}
-			_, err := reader.RefreshAuthoritativeProjection(context.Background(), WebhookDelivery{Repository: "github.com/acme/widgets"})
+			snapshot, err := reader.RefreshAuthoritativeProjection(context.Background(), WebhookDelivery{Repository: "github.com/acme/widgets"})
 			wantError := mode != "nooptin" && mode != "negative" && mode != "org-empty"
 			if wantError && err == nil {
 				t.Fatal("expected reader failure")
 			}
 			if !wantError && err != nil {
 				t.Fatalf("reader error = %v", err)
+			}
+			if mode == "nooptin" && (snapshot.LatestMerges == nil || snapshot.LatestMerges.PublicOptIn || len(snapshot.LatestMerges.Entries) != 0) {
+				t.Fatalf("private latest merges = %#v", snapshot.LatestMerges)
 			}
 		})
 	}

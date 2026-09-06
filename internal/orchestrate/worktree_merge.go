@@ -2297,28 +2297,6 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	if receipt.PullRequest == "" {
 		return errors.New("published handoff has no pull request")
 	}
-	viewOutput, err := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
-		"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
-	if err != nil {
-		return fmt.Errorf("read published pull-request identity: %w", err)
-	}
-	var view struct {
-		State       string `json:"state"`
-		HeadRefOID  string `json:"headRefOid"`
-		BaseRefName string `json:"baseRefName"`
-	}
-	if err := json.Unmarshal([]byte(viewOutput), &view); err != nil {
-		return fmt.Errorf("decode published pull-request identity: %w", err)
-	}
-	if view.State != "OPEN" {
-		return fmt.Errorf("published pull request %s is %s, not open", receipt.PullRequest, view.State)
-	}
-	if view.BaseRefName != receipt.Target {
-		return fmt.Errorf("published pull-request base %s does not match target %s", view.BaseRefName, receipt.Target)
-	}
-	if view.HeadRefOID != receipt.Candidate.SHA {
-		return fmt.Errorf("published pull-request head %s does not match preserved candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
-	}
 	remote, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree,
 		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
@@ -2327,7 +2305,53 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	if !strings.HasPrefix(strings.TrimSpace(remote), receipt.Candidate.SHA+"\t") {
 		return fmt.Errorf("published candidate ref %s does not match preserved candidate %s", receipt.Candidate.Branch, receipt.Candidate.SHA)
 	}
-	return nil
+
+	const maxHeadObservations = 4
+	delay := 2 * time.Second
+	if options.CheckPollInterval > 0 && options.CheckPollInterval < delay {
+		delay = options.CheckPollInterval
+	}
+	for observation := 1; observation <= maxHeadObservations; observation++ {
+		viewOutput, readErr := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
+			"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
+		if readErr != nil {
+			return fmt.Errorf("read published pull-request identity: %w", readErr)
+		}
+		var view struct {
+			State       string `json:"state"`
+			HeadRefOID  string `json:"headRefOid"`
+			BaseRefName string `json:"baseRefName"`
+		}
+		if unmarshalErr := json.Unmarshal([]byte(viewOutput), &view); unmarshalErr != nil {
+			return fmt.Errorf("decode published pull-request identity: %w", unmarshalErr)
+		}
+		if view.State != "OPEN" {
+			return fmt.Errorf("published pull request %s is %s, not open", receipt.PullRequest, view.State)
+		}
+		if view.BaseRefName != receipt.Target {
+			return fmt.Errorf("published pull-request base %s does not match target %s", view.BaseRefName, receipt.Target)
+		}
+		if view.HeadRefOID == receipt.Candidate.SHA {
+			return nil
+		}
+		stalePredecessor := receipt.PushGate != nil && receipt.PushGate.Status == "passed" &&
+			receipt.PushGate.LocalSHA == receipt.Candidate.SHA && receipt.PushGate.PreviousRemoteSHA != "" &&
+			receipt.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA && view.HeadRefOID == receipt.PushGate.PreviousRemoteSHA
+		if !stalePredecessor || observation == maxHeadObservations {
+			return fmt.Errorf("published pull-request head %s does not match preserved candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
+		}
+		reportWorktreeMergeProgress(options.Progress, "verify_pull_request_head", progress.Waiting,
+			fmt.Sprintf("GitHub still reports published predecessor %s; observation %d/%d, retrying in %s",
+				shortMergeRevision(view.HeadRefOID), observation, maxHeadObservations, delay))
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for published pull-request head %s: %w", receipt.Candidate.SHA, ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return errors.New("published pull-request head verification exhausted without an observation")
 }
 
 func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int) (string, error) {
