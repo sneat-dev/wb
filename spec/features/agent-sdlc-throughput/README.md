@@ -26,6 +26,13 @@ primary operating model is one orchestrator with three to seven concurrent
 author/research streams on a four-vCPU VM. Agents may remain numerous while WB
 admits no more CPU-heavy work than the machine can sustain.
 
+Prepare callers may opt into three nested validation budgets: an overall
+prepare deadline, a logical-check deadline, and a process-isolated Go shard
+attempt deadline. They are explicit controls: existing `--timeout` behavior
+and zero-valued new flags remain unchanged. On a four-vCPU machine, start with
+`--prepare-timeout=30m --check-timeout=12m --shard-attempt-timeout=5m` and tune
+from durable receipt evidence rather than making those values implicit defaults.
+
 This Feature coordinates existing lifecycle, stream, quality, merge, and Work
 Log contracts. It does not weaken canonical-clone immutability or create a
 second ownership, receipt, cache, or recovery system.
@@ -837,6 +844,9 @@ a worktree.
 - [ ] Add the per-user daemon with durable async intents, three CPU units on a
   four-vCPU host, fair queuing, deduplication, supersession, and controlled
   version draining/restart.
+- [ ] Prove daemon queue handoff end to end: enqueue asynchronously, survive
+  caller exit, accept work for the next generation while draining, restart,
+  resume each intent once, and terminalize its cleanup receipt.
 - [ ] Make `wb worktree land` consume focused receipts and escalate only
   actionable failures or semantic decisions.
 - [ ] Add debounced provider-to-consumer dependency waves with one downstream
@@ -847,8 +857,14 @@ a worktree.
   webhooks, interest-scoped daemon wakeups, durable cursors, and reconciliation
   polling; support attributed-public free delivery, a small evaluation
   allowance, and paid private or unattributed repositories.
+- [ ] Bind the hosted provider to a durable Workbench read model, Firebase
+  viewer resolution, delivery ledger, authoritative GitHub refresh, and event
+  journal; keep the Sneat Go host limited to narrow composition adapters.
 - [ ] Batch lesson observations through a compact asynchronous SpecScore
   curator without loading the unenforced backlog into worker context.
+- [ ] Link SpecScore Features and acceptance criteria to CodeGrapher symbols,
+  tests, coverage, and dependent repositories, with WB validating changed
+  public-contract impact during the landing journey.
 - [ ] Add the read-only dashboard at `https://sneat.work/bench/dashboard` in
   `sneat-co/workbench-web` over the typed daemon API, then the thin MCP adapter
   after CLI/API receipts stabilize.
@@ -860,6 +876,9 @@ a worktree.
 - [ ] Add receipt-backed charts for lead time, concurrency, latency,
   dependency waves, token/cost efficiency, and outcomes, with equivalent tables
   and consistent repository/user/machine/model/time/task filters.
+- [ ] Add provider-backed 7-day, 30-day, 90-day, and all-time query semantics,
+  plus resumable SSE updates; until then scoped pages must label data as
+  aggregate and never imply a time range the provider did not supply.
 - [ ] Add opt-in public and membership-scoped organization leaderboards for
   usage, landed/review contribution, saved CI/dependency/cleanup work, and token
   efficiency, with explicit time windows and quality context.

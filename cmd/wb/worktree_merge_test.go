@@ -35,7 +35,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
@@ -46,6 +46,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	prepare, _, err := command.Find([]string{"prepare"})
 	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
 		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
+	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if prepare.Flags().Lookup(flag) == nil {
+			t.Errorf("merge prepare is missing --%s", flag)
+		}
 	}
 	if route := command.Flags().Lookup("route"); route == nil || route.DefValue != "auto" {
 		t.Fatalf("--route = %#v, want auto", route)
@@ -70,6 +75,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	land, _, err := command.Find([]string{"land"})
 	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
 		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
+	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if land.Flags().Lookup(flag) != nil {
+			t.Errorf("merge land must not expose --%s", flag)
+		}
 	}
 	ack, _, err := command.Find([]string{"acknowledge-landed-failed"})
 	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {

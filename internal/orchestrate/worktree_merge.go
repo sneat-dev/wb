@@ -127,6 +127,15 @@ type WorktreeMergeValidationIdentity struct {
 	Validators       map[string]string `json:"validators,omitempty"`
 }
 
+// WorktreeMergeValidationTimeouts retains explicit validation limits on a
+// prepared candidate so a later land/resume repeats the same validation policy.
+// The overall prepare deadline is intentionally not retained: it bounds one
+// caller's operation rather than the candidate's validation contract.
+type WorktreeMergeValidationTimeouts struct {
+	Check        time.Duration `json:"check_timeout,omitempty"`
+	ShardAttempt time.Duration `json:"shard_attempt_timeout,omitempty"`
+}
+
 // WorktreeMergeForwardRepairReceipt preserves the exact landed attempt whose
 // failed target CI required a new forward repair. The active lane reuses its
 // candidate and receipt instead of abandoning either or pretending the prior
@@ -163,6 +172,7 @@ type WorktreeMergeReceipt struct {
 	Validation            quality.VerificationReport          `json:"validation,omitempty"`
 	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
 	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
+	ValidationTimeouts    *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
 	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
 	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
@@ -202,25 +212,39 @@ type WorktreeMergeLandOptions struct {
 }
 
 type WorktreeMergePrepareOptions struct {
-	ProjectsRoot      string
-	Sources           []string
-	Target            string
-	Model             string
-	AgentRuntime      string
-	AgentID           string
-	Initiator         string
-	CLI               string
-	Provider          string
-	Timeout           time.Duration
-	Retry             int
-	Progress          progress.Reporter
-	ProgressRequested bool
+	ProjectsRoot string
+	Sources      []string
+	Target       string
+	Model        string
+	AgentRuntime string
+	AgentID      string
+	Initiator    string
+	CLI          string
+	Provider     string
+	Timeout      time.Duration
+	Retry        int
+	// PrepareTimeout bounds one prepare invocation. Zero leaves preparation
+	// unbounded apart from the existing command timeout.
+	PrepareTimeout time.Duration
+	// CheckTimeout bounds one logical candidate or baseline validation check.
+	// Zero retains the existing per-command behavior.
+	CheckTimeout time.Duration
+	// ShardAttemptTimeout bounds one process-isolated Go test shard attempt.
+	// Zero retains the existing --timeout behavior for shard attempts.
+	ShardAttemptTimeout time.Duration
+	Progress            progress.Reporter
+	ProgressRequested   bool
 	// RebatchReceipt is an immutable, still-unlanded prepared receipt whose
 	// sources are being replaced additively and/or extended in this prepare.
 	RebatchReceipt string
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (WorktreeMergeReceipt, error) {
+	if options.PrepareTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, options.PrepareTimeout)
+		defer cancel()
+	}
 	reportWorktreeMergeProgress(options.Progress, "inspect_sources", progress.Started, "validating source worktrees and target")
 	projectsRoot, err := filepath.Abs(strings.TrimSpace(options.ProjectsRoot))
 	if err != nil || strings.TrimSpace(options.ProjectsRoot) == "" {
@@ -590,17 +614,19 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		SchemaVersion: WorktreeMergeSchemaVersion,
 		ID:            operation, Lane: lane, Phase: WorktreeMergePhasePrepare, Status: WorktreeMergePreparing,
 		Repository: repository, Target: target, TargetSHA: candidate.BaseSHA,
-		Sources:         sources,
-		Candidate:       WorktreeMergeCandidate{Task: operation, Worktree: candidate.WorktreeDir, Branch: candidate.Branch},
-		SourceRefreshes: refreshes,
-		ResumeArgs:      worktreeMergePrepareResumeArgs(receiptPath, options.ProgressRequested),
-		ReceiptPath:     receiptPath, CreatedAt: createdAt, UpdatedAt: now,
+		Sources:            sources,
+		Candidate:          WorktreeMergeCandidate{Task: operation, Worktree: candidate.WorktreeDir, Branch: candidate.Branch},
+		ValidationTimeouts: worktreeMergeValidationTimeouts(options.CheckTimeout, options.ShardAttemptTimeout),
+		SourceRefreshes:    refreshes,
+		ResumeArgs:         worktreeMergePrepareResumeArgs(receiptPath, options.ProgressRequested),
+		ReceiptPath:        receiptPath, CreatedAt: createdAt, UpdatedAt: now,
 	}
 	if rebatch != nil {
 		receipt.RebatchOf = rebatch.ReceiptPath
 		receipt.RebatchedCandidates = []WorktreeMergeCandidate{rebatch.OriginalCandidate}
 	}
 	if prior != nil {
+		receipt.ValidationTimeouts = prior.ValidationTimeouts
 		receipt.Route = prior.Route
 		receipt.Cleanup = prior.Cleanup
 		receipt.OnFailure = prior.OnFailure
@@ -693,7 +719,8 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	// Validate both the exact target baseline and the integrated candidate.
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+	checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, validationErr)
 	}
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
@@ -714,6 +741,20 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	reportWorktreeMergeProgress(options.Progress, "prepared", progress.Completed, receipt.ReceiptPath)
 	return receipt, nil
+}
+
+func worktreeMergeValidationTimeouts(check, shardAttempt time.Duration) *WorktreeMergeValidationTimeouts {
+	if check <= 0 && shardAttempt <= 0 {
+		return nil
+	}
+	return &WorktreeMergeValidationTimeouts{Check: check, ShardAttempt: shardAttempt}
+}
+
+func receiptWorktreeMergeValidationTimeouts(receipt WorktreeMergeReceipt) (time.Duration, time.Duration) {
+	if receipt.ValidationTimeouts == nil {
+		return 0, 0
+	}
+	return receipt.ValidationTimeouts.Check, receipt.ValidationTimeouts.ShardAttempt
 }
 
 // LandWorktreeMerge resumes a prepared receipt from its first incomplete
@@ -802,7 +843,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		if recovered {
 			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				// Keep retry truthful: the resolved head is present in the
 				// validation report, but it is not a prepared candidate until
 				// that validation succeeds. A later resume must recover and
@@ -837,7 +879,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if receipt.Status != WorktreeMergePreparing {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("advanced conflict candidate %s is %s without a completed exact validation", receipt.Candidate.SHA, receipt.Status))
 		}
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("advanced conflict candidate validation failed: %w", validationErr))
 		}
 		receipt.Status = WorktreeMergePrepared
@@ -1019,7 +1062,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_rebased_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr))
 		}
 	}
@@ -1030,7 +1074,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		if !reusable {
 			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
@@ -2039,18 +2084,34 @@ func reportWorktreeMergeQualityProgress(reporter progress.Reporter) func(quality
 	}
 	return func(event quality.Progress) {
 		var state progress.State
-		if event.State == quality.ProgressStarted {
+		if event.State == quality.ProgressStarted || event.State == quality.ProgressRetrying {
 			state = progress.Started
+			if event.State == quality.ProgressRetrying {
+				state = progress.Running
+			}
 		} else if event.Status == quality.StatusFailed {
 			state = progress.Failed
 		} else {
 			state = progress.Completed
 		}
-		detail := strings.TrimSpace(event.Command)
-		if event.Status != "" {
-			detail += ": " + string(event.Status)
+		parts := make([]string, 0, 4)
+		if event.Check != "" {
+			parts = append(parts, string(event.Check))
 		}
-		progress.Report(reporter, progress.Event{Operation: "worktree_merge", Phase: "validate_candidate", State: state, Detail: detail})
+		if command := strings.TrimSpace(event.Command); command != "" {
+			parts = append(parts, command)
+		}
+		if detail := strings.TrimSpace(event.Detail); detail != "" && detail != strings.TrimSpace(event.Command) {
+			parts = append(parts, detail)
+		}
+		if event.Attempts > 0 {
+			parts = append(parts, fmt.Sprintf("attempt %d", event.Attempts))
+		}
+		if event.Status != "" {
+			parts = append(parts, string(event.Status))
+		}
+		progress.Report(reporter, progress.Event{Operation: "worktree_merge", Phase: "validate_candidate", State: state,
+			Detail: strings.Join(parts, ": "), Completed: event.Completed, Total: event.Total})
 	}
 }
 
@@ -2527,7 +2588,7 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	if err != nil {
 		return receipt, err
 	}
-	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, timeout, retry, nil); validationErr != nil {
+	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, timeout, retry, 0, 0, nil); validationErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("forward revert candidate validation failed: %w", validationErr))
 	}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
@@ -2540,9 +2601,10 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 // candidate cannot regress a red target, so the expensive target snapshot is
 // evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
-func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
+func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration, reporter progress.Reporter) error {
 	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
-		Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter),
+		Timeout: timeout, Retry: retry, CheckTimeout: checkTimeout, ShardAttemptTimeout: shardAttemptTimeout,
+		Progress: reportWorktreeMergeQualityProgress(reporter),
 	})
 	if err != nil {
 		return fmt.Errorf("load candidate quality policy: %w", err)
@@ -2570,7 +2632,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return nil
 	}
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
-	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry, checkTimeout, shardAttemptTimeout)
 	if err != nil {
 		return fmt.Errorf("capture exact target validation baseline after candidate failure: %w", err)
 	}
@@ -2664,7 +2726,7 @@ func fileSHA256(path string) (string, error) {
 // a temporary archive rather than trusting a mutable canonical checkout. This
 // keeps the baseline tied to receipt.TargetSHA even while a candidate is being
 // rebased for target drift.
-func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, targetSHA string, timeout time.Duration, retry int) (quality.VerificationReport, error) {
+func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, targetSHA string, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration) (quality.VerificationReport, error) {
 	targetSHA = strings.TrimSpace(targetSHA)
 	if targetSHA == "" {
 		return quality.VerificationReport{}, errors.New("target SHA is required for validation baseline")
@@ -2690,7 +2752,7 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err := configureWorktreeMergeBaselineRemote(ctx, repositoryDir, snapshot, timeout, retry); err != nil {
 		return quality.VerificationReport{}, err
 	}
-	runOptions, err := quality.RepositoryRunOptions(snapshot, quality.RunOptions{Timeout: timeout, Retry: retry})
+	runOptions, err := quality.RepositoryRunOptions(snapshot, quality.RunOptions{Timeout: timeout, Retry: retry, CheckTimeout: checkTimeout, ShardAttemptTimeout: shardAttemptTimeout})
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
 	}
