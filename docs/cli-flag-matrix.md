@@ -9,7 +9,7 @@ their own `wb <command> --help` and remain scoped to that command.
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`acknowledge-stranded-landing`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
+acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -30,7 +30,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 |---|---:|---:|---:|---:|
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
-| `daemon serve` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |
@@ -55,18 +55,19 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
-| `worktree list`, `cleanup`, `gc`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree end` | yes | rejected | rejected | yes |
-| `worktree land` (`worktree merge` alias), `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-stranded-landing`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
+| `worktree land` (`worktree merge` alias), `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
+| `plugin list`, `codegrapher status`, `install`, `update` | rejected | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |

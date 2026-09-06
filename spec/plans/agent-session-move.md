@@ -32,7 +32,7 @@ AI harness; the final smoke test may exercise `hetzner-vm1` explicitly.
 
 ### Task 1: Add stable session identity and durable handoff state
 
-**Verifies:** agent-session-move#ac:failed-or-retried-delivery-is-idempotent
+**Verifies:** agent-session-move#ac:failed-or-retried-delivery-is-idempotent, agent-session-move#ac:exec-safe-session-registration
 **Status:** complete
 
 Extend session registration with a stable WB session ID, machine, lineage,

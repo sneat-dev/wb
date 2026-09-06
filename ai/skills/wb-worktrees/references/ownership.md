@@ -39,8 +39,17 @@ wb worktree create <task> --mode agent --model <exact-model> \
 
 Use `$PPID` from the harness tool-call shell. Never use `$$`: that is the
 intermediate shell and would leave claims attached to a process that exits
-immediately. A deliberate human operation must opt into `--mode manual` and
-provide `--initiator <human>`.
+immediately. If the shell tail-execs its final command, WB may see a Codex
+app-server as its direct parent; WB accepts that parent only when kernel
+process evidence confirms the `codex` executable and `app-server` role. To
+keep the shell alive for older builds, use:
+
+```sh
+wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"
+```
+
+Registering WB's own PID remains rejected. A deliberate human operation must
+opt into `--mode manual` and provide `--initiator <human>`.
 
 `$PPID` from a harness tool call is the agent process itself. WB then resolves
 later writes by matching its own ancestors against registered sessions — which

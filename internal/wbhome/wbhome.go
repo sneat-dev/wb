@@ -145,7 +145,7 @@ evidence, and command reports. Do not delete this directory or its contents
 manually, even when no WB command is running. Use WB lifecycle commands so
 recovery and audit evidence is preserved.
 
-Learn more about the WB CLI at https://sneat.dev/workbench.
+Learn more about the WB CLI at https://sneat.work/bench.
 `
 
 // SeedReadme writes README.md into home if one isn't already there. An

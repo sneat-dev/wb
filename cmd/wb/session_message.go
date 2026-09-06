@@ -13,8 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/spf13/cobra"
-	"golang.org/x/sys/unix"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"

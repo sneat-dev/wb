@@ -244,7 +244,7 @@ func defaultDependencies(projectsRoot string) (dependencies, error) {
 		},
 		now: func() time.Time { return time.Now().UTC() }, pollInterval: 25 * time.Millisecond, startTimeout: 30 * time.Second,
 		verifyPinned:  verifyPinnedWorktree,
-		processStatus: func(pid int) error { return syscall.Kill(pid, 0) },
+		processStatus: processStatus,
 	}, nil
 }
 
@@ -794,7 +794,7 @@ func validateAbandonment(
 func proveProcessDead(deps dependencies, pid int) error {
 	probe := deps.processStatus
 	if probe == nil {
-		probe = func(pid int) error { return syscall.Kill(pid, 0) }
+		probe = processStatus
 	}
 	err := probe(pid)
 	if errors.Is(err, syscall.ESRCH) {

@@ -33,7 +33,7 @@ func newCampaignProgress(out io.Writer, enabled bool, operation string) *campaig
 
 func newCampaignProgressWithHeartbeat(out io.Writer, enabled bool, operation string, heartbeat time.Duration) *campaignProgress {
 	return &campaignProgress{
-		live: newLiveProgress(out, enabled), operation: operation,
+		live: newLiveProgressWithHeartbeat(out, enabled, 0), operation: operation,
 		heartbeat: heartbeat, done: make(chan struct{}), stopped: make(chan struct{}),
 	}
 }
@@ -76,6 +76,10 @@ func (p *campaignProgress) report(event progress.Event) {
 		return
 	}
 	p.last = message
+	if event.State == progress.Completed {
+		phase := strings.ReplaceAll(event.Phase, "_", " ")
+		p.last = p.operation + ": alive; last completed " + phase
+	}
 	p.live.update(message)
 }
 

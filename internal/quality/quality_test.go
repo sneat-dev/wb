@@ -376,6 +376,26 @@ func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *te
 	}
 }
 
+func TestBoundedCoverageParallelismLeavesOneEffectiveCPUForOtherAgents(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                       string
+		requested, jobs, cpu, want int
+	}{
+		{name: "four core host", requested: 8, jobs: 17, cpu: 4, want: 3},
+		{name: "single core host", requested: 8, jobs: 17, cpu: 1, want: 1},
+		{name: "request below cpu limit", requested: 2, jobs: 17, cpu: 8, want: 2},
+		{name: "jobs below cpu limit", requested: 8, jobs: 2, cpu: 8, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := boundedCoverageParallelism(tc.requested, tc.jobs, tc.cpu); got != tc.want {
+				t.Fatalf("boundedCoverageParallelism(%d, %d, %d) = %d, want %d", tc.requested, tc.jobs, tc.cpu, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
@@ -463,6 +483,40 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	}
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
+	}
+}
+
+func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := runVerification(context.Background(), RunOptions{Timeout: time.Second, Retry: 1, CheckTimeout: 10 * time.Millisecond}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || entry.Attempts != 1 || !strings.Contains(entry.Detail, "check timed out after 10ms") {
+		t.Fatalf("check deadline result = %+v", entry)
+	}
+}
+
+func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || strings.Contains(entry.Detail, "check timed out") {
+		t.Fatalf("parent deadline did not win: %+v", entry)
 	}
 }
 

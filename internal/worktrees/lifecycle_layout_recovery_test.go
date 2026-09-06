@@ -58,7 +58,7 @@ func TestListRetainsClaimedSharedWorktreeAfterUserRootChanges(t *testing.T) {
 	}
 }
 
-func TestLocalStageIsReportedAndBlocksItsPhysicalTask(t *testing.T) {
+func TestFleetInventoryReportsLocalStageAndBlocksItsPhysicalTask(t *testing.T) {
 	fixture := newGitFixture(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -75,7 +75,7 @@ func TestLocalStageIsReportedAndBlocksItsPhysicalTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
-		ProjectsRoot: fixture.projectsRoot, Task: "local-stage", Workers: 1,
+		ProjectsRoot: fixture.projectsRoot, Workers: 1,
 	})
 	if err != nil {
 		t.Fatal(err)

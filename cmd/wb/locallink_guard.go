@@ -219,6 +219,7 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 func refuseLinkedWorktreesOfRepository(repository string) error {
 	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
+		Filter:       repository,
 	})
 	if err != nil {
 		return err

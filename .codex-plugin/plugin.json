@@ -6,7 +6,7 @@
     "name": "Sneat.dev",
     "url": "https://sneat.dev"
   },
-  "homepage": "https://wb.sneat.dev",
+  "homepage": "https://sneat.work/bench",
   "repository": "https://github.com/sneat-dev/wb",
   "license": "MIT",
   "keywords": [
@@ -28,7 +28,7 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://wb.sneat.dev",
+    "websiteURL": "https://sneat.work/bench",
     "defaultPrompt": [
       "Use the shared $wb-change workflow for implementation work; its completion contract is authoritative.",
       "Use $wb-dependency-campaign for coordinated dependency releases and $wb-merge for dedicated merger work."

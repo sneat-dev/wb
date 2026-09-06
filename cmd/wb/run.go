@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/process"
@@ -72,13 +73,13 @@ wb run --history --days 7`,
 				return printRunHistory(cmd, days, jsonOut)
 			}
 			if cmd.ArgsLenAtDash() == 0 {
-				if apply || configPath != "" || list || days != 14 || jsonOut {
-					return usageError("--apply, --config, --days, --history, --json, and --list belong to WB modes and cannot be used with run --")
+				if apply || configPath != "" || list || days != 14 || outputFormatChanged(cmd) {
+					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
 				}
 				return runExternalCommand(cmd, args)
 			}
-			if days != 14 || jsonOut {
-				return usageError("--days and --json require --history")
+			if days != 14 || outputFormatChanged(cmd) {
+				return usageError("--days, --format=json, and --json require --history")
 			}
 			var name string
 			if len(args) == 1 {
@@ -98,7 +99,7 @@ wb run --history --days 7`,
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit history as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
 	return cmd
 }
@@ -162,13 +163,32 @@ func runExternalCommand(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: admitted %d/%d CPU units after %s\n", units, budget, waited.Round(10*time.Millisecond))
 	}
 
-	child := process.CommandContext(cmd.Context(), args[0], args[1:]...)
+	interactive := console.Interactive(cmd.ErrOrStderr(), false)
+	child := process.CommandContextInteractive(cmd.Context(), interactive, args[0], args[1:]...)
 	child.Stdin = cmd.InOrStdin()
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	child.Env = governedEnvironment(os.Environ(), recorder.OperationID, args, units)
 
-	err = child.Run()
+	if err = child.Start(); err == nil {
+		done := make(chan struct{})
+		if interactive {
+			go func() {
+				ticker := time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-ticker.C:
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
+					}
+				}
+			}()
+		}
+		err = child.Wait()
+		close(done)
+	}
 	exitCode := 0
 	if err != nil {
 		exitCode = exitFindings

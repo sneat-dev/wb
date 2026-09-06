@@ -3,6 +3,9 @@ package locallink
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -63,15 +66,115 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) > 0 {
-		sort.Strings(entries)
+	unpublished, err := unpublishedGoWorkEntries(worktree, entries)
+	if err != nil {
+		return nil, err
+	}
+	if len(unpublished) > 0 {
+		sort.Strings(unpublished)
 		found = append(found, LiveLink{
 			Source:     "go.work",
-			Detail:     fmt.Sprintf("%s/go.work carries use entries: %s", worktree, strings.Join(entries, ", ")),
+			Detail:     fmt.Sprintf("%s/go.work carries unpublished use entries: %s", worktree, strings.Join(unpublished, ", ")),
 			Sanctioned: fmt.Sprintf("wb deps propagate local --to %s --undo", worktree),
 		})
 	}
 	return found, nil
+}
+
+// unpublishedGoWorkEntries distinguishes WB's temporary dependency links from
+// a repository's committed multi-module workspace. A committed workspace entry
+// is intrinsic only when it is portable, remains inside the physical worktree,
+// and its go.mod is present in HEAD. Everything else fails closed as a local
+// dependency link.
+func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	goWorkInfo, err := os.Lstat(filepath.Join(worktree, "go.work"))
+	if err != nil || !goWorkInfo.Mode().IsRegular() {
+		return entries, nil
+	}
+	tracked, err := gitPathExistsAtHEAD(worktree, "go.work")
+	if err != nil {
+		return nil, fmt.Errorf("inspect tracked go.work in %s: %w", worktree, err)
+	}
+	if !tracked {
+		return entries, nil
+	}
+	unchanged, err := gitPathUnchangedFromHEAD(worktree, "go.work")
+	if err != nil {
+		return nil, fmt.Errorf("compare go.work with HEAD in %s: %w", worktree, err)
+	}
+	if !unchanged {
+		return entries, nil
+	}
+	realRoot, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree %s: %w", worktree, err)
+	}
+	var unpublished []string
+	for _, entry := range entries {
+		if filepath.IsAbs(entry) {
+			unpublished = append(unpublished, entry)
+			continue
+		}
+		moduleDir, err := filepath.EvalSymlinks(filepath.Join(worktree, filepath.FromSlash(entry)))
+		if err != nil || !pathWithin(realRoot, moduleDir) {
+			unpublished = append(unpublished, entry)
+			continue
+		}
+		rel, err := filepath.Rel(realRoot, moduleDir)
+		if err != nil {
+			unpublished = append(unpublished, entry)
+			continue
+		}
+		goMod := filepath.ToSlash(filepath.Join(rel, "go.mod"))
+		goModPath := filepath.Join(moduleDir, "go.mod")
+		goModInfo, err := os.Lstat(goModPath)
+		if err != nil || !goModInfo.Mode().IsRegular() || !pathWithin(realRoot, goModPath) {
+			unpublished = append(unpublished, entry)
+			continue
+		}
+		moduleTracked, err := gitPathExistsAtHEAD(worktree, goMod)
+		if err != nil {
+			return nil, fmt.Errorf("inspect workspace module %s in %s: %w", entry, worktree, err)
+		}
+		if !moduleTracked {
+			unpublished = append(unpublished, entry)
+		}
+	}
+	return unpublished, nil
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
+	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
+	err := command.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return false, nil
+	}
+	return false, err
+}
+
+func gitPathUnchangedFromHEAD(worktree, path string) (bool, error) {
+	command := exec.Command("git", "-C", worktree, "diff", "--quiet", "HEAD", "--", path)
+	err := command.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // RefusalMessage renders the refusal a landing verb prints. It names every

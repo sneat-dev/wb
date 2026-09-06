@@ -11,6 +11,7 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
@@ -18,6 +19,7 @@ wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operat
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
 wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>
+wb worktree merge prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason> --progress
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -54,6 +56,15 @@ post-target checks, and required canonical synchronization. On interruption,
 run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
+
+If a legacy landed cleanup removed every receipted worktree and local and
+remote branch but failed to retain terminal Work Log evidence, first run
+`acknowledge-missing-cleanup` without `--apply`. It re-fetches the exact remote
+target, proves the receipted landing is still contained, and checks every exact
+asset is absent. Applying with an actor and reason writes a separate immutable
+acknowledgement. A subsequent `merge resume --cleanup` revalidates the receipt,
+target ancestry, acknowledgement, and absent assets before completing. It never
+creates replacement Work Logs or weakens cleanup for live or partial assets.
 
 When post-target CI fails but a forward fix is preferable to a revert, commit
 the fix on the same preserved source and rerun `merge prepare`. WB accepts only
@@ -120,15 +131,18 @@ is dry-run by default and requires an audited actor and reason to apply. It does
 not change the failed receipt or any existing Work Log and does not itself
 supersede the receipt.
 
-When an old prepare `validation_failed` candidate did not land and diverges
-from its replacement, use `supersede-validation-failed`. It admits only the
-prepare failure state and only when the old immutable candidate claim base,
+When an old unpublished prepare `validation_failed` or `conflict` candidate did
+not land and diverges from its replacement, use `supersede-validation-failed`.
+It admits only those prepare failure states and only when the old immutable candidate claim base,
 receipt target, freshly fetched current target, and every exact clean receipted
 source are ancestors of one exact clean replacement worktree with an active
 claim. The old failed candidate itself is deliberately not required to be an
 ancestor. WB writes a receipt-hash-bound append-only supersession artifact;
 it never rewrites the failed receipt or either Work Log. Missing ancestry,
 claim identity, clean worktree, or receipt integrity refuses closed.
+If an unpublished conflict candidate has advanced to a clean strict descendant,
+WB records that observed commit in the supersession and requires the replacement
+to contain both the receipted candidate and the observed descendant.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use
@@ -149,3 +163,12 @@ claim base, target, and current source is an ancestor; it writes no merge
 receipt and never changes the historical receipt, claim, acknowledgement, or
 collision evidence. Pass its candidate only to `correct-self-supersession`;
 normal `prepare` remains blocked.
+
+When an unlanded conflict receipt still owns the lane that a replacement needs,
+use `prepare-conflict-replacement`. Pin the immutable receipt and claim, the
+fresh target, and every receipted source in receipt order. It admits only an
+unpublished clean conflict candidate; an observed strict descendant is retained
+as a required root. The command creates no receipt or acknowledgement, so pass
+the resulting candidate to `supersede-validation-failed` to append the only
+lane-releasing transition. Use `--progress` for heartbeat updates during long
+Git operations while JSON output remains stable.

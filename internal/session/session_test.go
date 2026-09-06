@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -330,6 +331,10 @@ func TestLookupIgnoresAnExitedSession(t *testing.T) {
 // Resolution must find a session registered by an ancestor, which is the whole
 // point: WB runs as a grandchild of the agent, not as the agent itself.
 func TestResolveForProcessFindsAnAncestorSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Log("Windows does not expose a portable parent PID query; no ancestor match is expected")
+		return
+	}
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getppid(), Runtime: "claude-code", Model: "m"}); err != nil {
 		t.Fatal(err)

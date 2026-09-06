@@ -125,6 +125,17 @@ type RemoteCheck struct {
 	AppID  int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 }
 
+// CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
+// It deliberately carries an excerpt rather than the raw job log so a machine
+// receipt remains compact and does not become an accidental log archive.
+type CIFailureDetail struct {
+	Check   string `json:"check" yaml:"check"`
+	RunURL  string `json:"run_url,omitempty" yaml:"run_url,omitempty"`
+	JobURL  string `json:"job_url,omitempty" yaml:"job_url,omitempty"`
+	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty"`
+	Reason  string `json:"reason,omitempty" yaml:"reason,omitempty"`
+}
+
 // RequiredRemoteCheck is GitHub's target-policy expectation. IntegrationID
 // is non-zero when a ruleset pins the context to one GitHub App; every receipt
 // must then observe the matching exact-head check-run producer, not merely a
@@ -161,7 +172,8 @@ type PullRequestWaitOptions struct {
 	StableRereadDelay time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
-	Progress func(PullRequestWaitProgress)
+	Progress          func(PullRequestWaitProgress)
+	OperationProgress progress.Reporter
 }
 
 // PullRequestWaitProgress is one completed observation inside a bounded wait.
@@ -184,21 +196,24 @@ const (
 // PullRequestWaitResult is one terminating foreground observation slice.
 // Pending means resume is required, not that the merger is finished.
 type PullRequestWaitResult struct {
-	Status                   PullRequestWaitStatus `json:"status" yaml:"status"`
-	Repository               string                `json:"repository" yaml:"repository"`
-	PullRequest              string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
-	Target                   string                `json:"target" yaml:"target"`
-	Head                     string                `json:"head" yaml:"head"`
-	ObservedHead             string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
-	ObservedTargetHead       string                `json:"observed_target_head,omitempty" yaml:"observed_target_head,omitempty"`
-	CandidateContainsTarget  bool                  `json:"candidate_contains_target,omitempty" yaml:"candidate_contains_target,omitempty"`
-	TargetContainsHead       bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
-	TargetFreshnessAuthority string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
-	Checks                   []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
-	RequiredChecks           []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
-	RequiredChecksAuthority  string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
-	StableObservations       int                   `json:"stable_observations" yaml:"stable_observations"`
-	Reason                   string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Status                     PullRequestWaitStatus `json:"status" yaml:"status"`
+	Repository                 string                `json:"repository" yaml:"repository"`
+	PullRequest                string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	Target                     string                `json:"target" yaml:"target"`
+	Head                       string                `json:"head" yaml:"head"`
+	ObservedHead               string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
+	ObservedTargetHead         string                `json:"observed_target_head,omitempty" yaml:"observed_target_head,omitempty"`
+	CandidateContainsTarget    bool                  `json:"candidate_contains_target,omitempty" yaml:"candidate_contains_target,omitempty"`
+	TargetContainsHead         bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
+	TargetFreshnessAuthority   string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
+	Checks                     []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
+	FailureDetails             []CIFailureDetail     `json:"failure_details,omitempty" yaml:"failure_details,omitempty"`
+	RequiredChecks             []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
+	RequiredChecksAuthority    string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
+	PolicyAuthorityUnavailable string                `json:"policy_authority_unavailable,omitempty" yaml:"policy_authority_unavailable,omitempty"`
+	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
+	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
+	Reason                     string                `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
 
 // Result records lifecycle state and typed adapter metadata for one repository.

@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/skills"
+	"github.com/strongo/cli-helpers/skillsync"
+	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
 )
 
 // newSkillsCmd groups everything about installing WB's own Agent Skills
@@ -46,9 +47,30 @@ it is available everywhere wb is. It runs automatically after
 // more agent context than the warning protected and made private feature builds
 // particularly noisy. A verified self-update still synchronizes skills
 // immediately, while SessionStart reports drift once when it can affect work.
-func skillsDriftMessage(dir string, status skills.Status, currentVersion string) string {
-	if !status.Installed {
+func skillsDriftMessage(dir string, status skillsync.Status, currentVersion string) string {
+	syncedVersion, installed := syncedSkillsWBVersion(status)
+	if !installed {
 		return fmt.Sprintf("wb: Agent Skills are not installed in %s -- run `wb skills sync`", dir)
 	}
-	return fmt.Sprintf("wb: Agent Skills in %s were synced by wb %s, this is wb %s -- run `wb skills sync`", dir, status.SyncedWBVersion, currentVersion)
+	return fmt.Sprintf("wb: Agent Skills in %s were synced by wb %s, this is wb %s -- run `wb skills sync`", dir, syncedVersion, currentVersion)
+}
+
+func syncedSkillsWBVersion(status skillsync.Status) (string, bool) {
+	plugin := wbSkillsPlugin.String()
+	if !status.Installed {
+		return "", false
+	}
+	if _, ok := status.Plugins[plugin]; !ok {
+		return "", false
+	}
+	version := status.SupplierCLIVersions[plugin][wbSkillsCLI.String()]
+	return version, version != ""
+}
+
+func defaultHarnessSkillsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return skillscmd.DefaultHarnesses[0].SkillsDir(home, os.Getenv), nil
 }

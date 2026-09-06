@@ -25,7 +25,7 @@ func newPRLandCmd() *cobra.Command {
 	var format, approvedBy, subject, reason, mergeMethod string
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive bool
-	var pollInterval, slice time.Duration
+	var pollInterval, totalTimeout time.Duration
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
 		Short: "Verify, land, and tidy up after one pull request",
@@ -92,14 +92,19 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
+			progress.start(repository, number, "", "")
 			// The landing guard runs before anything else, including the
 			// GitHub read: a worktree of this repository still building against
 			// an unpublished tree makes every check observation meaningless.
+			progress.live.update("pr land: local link preflight: " + repository + ": started")
 			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
 				return err
 			}
+			progress.live.update("pr land: local link preflight: " + repository + ": completed")
 			events, streamName := landingEventLog(repository)
-			progress := newCIWaitProgress(command.ErrOrStderr(), !nonInteractive)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:        repository,
 				PullRequest:       number,
@@ -111,18 +116,18 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				KeepCommits:       splitCommaSeparated(keepCommits),
 				Reason:            reason,
 				AllowUnfenced:     allowUnfenced,
-				Slice:             slice,
+				Slice:             totalTimeout,
 				CheckPollInterval: pollInterval,
 				Progress:          progress.report,
+				OperationProgress: progress.operationReporter("pr land"),
 				Events:            events,
 				Stream:            streamName,
 			})
 			if err != nil {
+				progress.fail(err)
 				return err
 			}
-			if result.Checks != nil {
-				progress.finish(*result.Checks)
-			}
+			progress.finishOperation("pr land: " + string(result.Outcome))
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -157,8 +162,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "squash", "squash, merge, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
-	command.Flags().DurationVar(&pollInterval, "poll-interval", 0, "interval between check observations")
-	command.Flags().DurationVar(&slice, "timeout", 0, "bound on this foreground wait; a pending result is resumable")
+	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
+	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
 	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump")

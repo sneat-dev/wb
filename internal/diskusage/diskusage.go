@@ -18,7 +18,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // Usage is one measured tree. ApparentBytes counts each inode's logical size

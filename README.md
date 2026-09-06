@@ -4,20 +4,48 @@ Fleet-wide operations across **your** GitHub repositories, from the
 terminal: keep every local clone in sync with GitHub, and run config-driven
 recipes across every repo that matches — no per-repo scripting.
 
-Part of the [Sneat Developer Platform](https://sneat.dev/workbench/). The CLI
+Part of [Sneat.work](https://sneat.work/bench). The CLI
 and executable stay intentionally short: `wb`.
 
-The public [wb.sneat.dev](https://wb.sneat.dev) site is tracked in
-[`website/`](website/README.md). It has its own Astro build and CI gate while
-remaining versioned beside the CLI it presents.
+The canonical public Workbench site is [sneat.work/bench](https://sneat.work/bench).
+
+## WB
+
+Public Workbench projections are opt-in from this repository's root README:
+[Workbench dashboard](https://sneat.work/bench).
 
 ## Install
+
+On macOS or Linux, install the published Homebrew cask:
+
+```sh
+brew install --cask sneat-dev/tap/wb
+```
+
+On macOS or Linux, the release installer selects the matching platform and
+architecture:
+
+```sh
+curl -fsSL https://sneat.work/bench/install/get-cli | sh
+```
+
+To build from source with Go instead:
 
 ```sh
 go install github.com/sneat-dev/wb/cmd/wb@latest
 ```
 
-A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
+On Windows, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
+an administrator PowerShell session and complete its one-time setup after any
+prompted restart. Then install the supported Linux release through WSL:
+
+```powershell
+wsl --install
+wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'
+```
+
+Native Windows releases are not currently published; the supported Windows
+path is WB running in WSL.
 
 ## Agent skills
 
@@ -71,6 +99,8 @@ wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
+wb plugin list --format=json # typed lifecycle registry for preconfigured local tools
+wb codegrapher status|install|update # inspect or manage CodeGrapher (install/update require --yes)
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
@@ -355,6 +385,12 @@ active recovery claims so the coordinated operation is retryable. A feature effo
 only after merge to `main` and removal or audited recycle of every related
 worktree and branch; a task effort has the same requirement after merge to its
 feature branch. A validated branch is not terminal.
+
+If rename stops after reserving a destination prompt but before publishing its
+first checkout claim, recover that prompt-only reservation with `wb worktree
+abort <next-task> --disposition discarded --apply`. It retains the private
+prompt archive and does not require `--remote`, because that reservation has
+no branch or remote ref to retire.
 
 Use `wb worktree abort <task> --disposition handoff|not_landed --successor
 <agent-or-session> --model <exact-successor-model-or-unknown>` or explicit
@@ -1293,6 +1329,18 @@ Repository-backed nodes link to both GitHub and
 call, import, and impact exploration beneath WB's fleet-level topology. These
 links are deterministic and passive: WB does not query CodeGrapher, publish a
 snapshot, or trigger indexing while generating a report.
+
+Install and inspect the local CodeGrapher CLI through WB's default tool plugin:
+
+```sh
+wb codegrapher status --format=json
+wb codegrapher install --yes
+wb codegrapher update --yes
+```
+
+This local-tool lifecycle does not index or synchronize a repository. A graph
+refresh will be added only after CodeGrapher can attest the exact repository
+revision it processed.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and

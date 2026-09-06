@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/worktrees"
-	"golang.org/x/sys/unix"
 )
 
 const (

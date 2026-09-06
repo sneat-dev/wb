@@ -13,3 +13,7 @@ import (
 func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, name, args...)
 }
+
+func commandContextInteractive(ctx context.Context, _ bool, name string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, name, args...)
+}

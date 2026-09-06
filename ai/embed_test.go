@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/skills"
+	"github.com/strongo/cli-helpers/skillsync"
 )
 
 // TestSkillsFSEmbedsEveryOnDiskSkill guards against the failure mode that
@@ -35,7 +35,7 @@ func TestSkillsFSEmbedsEveryOnDiskSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	discovered, err := skills.Discover(sub)
+	discovered, err := skillsync.Discover(sub)
 	if err != nil {
 		t.Fatal(err)
 	}

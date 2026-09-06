@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -329,7 +328,7 @@ func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Re
 	if err != nil {
 		return Record{}, err
 	}
-	err = directory.Sync()
+	err = syncDirectory(directory)
 	_ = directory.Close()
 	if err != nil {
 		return Record{}, err
@@ -473,11 +472,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 }
 
 func state(pid int) string {
-	if pid <= 0 {
-		return StateGone
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil || errors.Is(err, syscall.EPERM) {
+	if processAlive(pid) {
 		return StateLive
 	}
 	return StateGone

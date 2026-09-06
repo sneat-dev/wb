@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,9 @@ func buildWB(t *testing.T) string {
 		t.Fatalf("temp dir: %v", err)
 	}
 	binary := filepath.Join(directory, "wb")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		smokeBuildErr = errors.New(string(output))
@@ -204,14 +208,20 @@ func TestUnknownCommandFailsFastWithUsageExitCode(t *testing.T) {
 // an agent should never have to scrape the human version banner.
 func TestVersionJSONIsParseable(t *testing.T) {
 	t.Parallel()
-	result := runWB(t, "version", "--json")
-	if result.exitCode != exitOK {
-		t.Fatalf("exit code = %d; stderr: %s", result.exitCode, result.stderr)
-	}
-	for _, key := range []string{`"version"`, `"go"`, `"platform"`} {
-		if !strings.Contains(result.stdout, key) {
-			t.Errorf("version JSON is missing %s: %s", key, result.stdout)
+	shortcut := runWB(t, "version", "--json")
+	canonical := runWB(t, "version", "--format=json")
+	for name, result := range map[string]smokeResult{"--json": shortcut, "--format=json": canonical} {
+		if result.exitCode != exitOK {
+			t.Fatalf("%s exit code = %d; stderr: %s", name, result.exitCode, result.stderr)
 		}
+		for _, key := range []string{`"version"`, `"go"`, `"platform"`} {
+			if !strings.Contains(result.stdout, key) {
+				t.Errorf("version %s output is missing %s: %s", name, key, result.stdout)
+			}
+		}
+	}
+	if canonical.stdout != shortcut.stdout {
+		t.Errorf("--format=json output differs from --json\ncanonical: %s\nshortcut: %s", canonical.stdout, shortcut.stdout)
 	}
 }
 

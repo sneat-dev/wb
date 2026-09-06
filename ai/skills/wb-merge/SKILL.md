@@ -19,9 +19,11 @@ wb worktree merge <source-worktree...> --route auto --cleanup --format json
 `wb worktree merge`, `wb worktree merge prepare`, `wb worktree merge land` and
 `wb worktree merge resume` all **refuse before any push**
 a worktree that holds a live local link — a link recorded in stream state, or a
-`go.work` carrying a `use` entry. Such a worktree builds against an
-*unpublished* working tree, so landing it would publish a commit whose CI ran
-against something the registry never carried.
+`go.work` carrying an unpublished `use` entry. A committed `go.work` may name
+committed modules inside the same repository; WB accepts that intrinsic
+workspace. Untracked, modified, external, escaping, or untracked-module entries
+still build against an *unpublished* working tree, so landing would publish a
+commit whose CI ran against something the registry never carried.
 
 The two signals are checked independently: state alone would miss a hand-written
 `go.work`, and `go.work` alone would miss an npm link. Either one refuses, with

@@ -5,8 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/skills"
+	"github.com/strongo/cli-helpers/skillsync"
 )
 
 func newSkillsHookRunCmd() *cobra.Command {
@@ -48,12 +47,13 @@ func sessionStartAnnouncement() string {
 	if err != nil {
 		return strings.Join(lines, "\n")
 	}
-	status, err := skills.ReadStatus(dir)
+	status, err := skillsync.ReadStatus(dir)
 	if err != nil {
 		return strings.Join(lines, "\n")
 	}
 	current := collectVersion().Version
-	if status.Drifted(current) {
+	synced, installed := syncedSkillsWBVersion(status)
+	if current != "" && current != "unknown" && current != "(devel)" && (!installed || synced != current) {
 		lines = append(lines, skillsDriftMessage(dir, status, current))
 	}
 	return strings.Join(lines, "\n")

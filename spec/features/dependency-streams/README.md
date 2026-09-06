@@ -759,9 +759,12 @@ the library — is the source of truth for reversal.
 #### REQ: merge-refuses-a-linked-worktree
 
 `wb worktree merge` MUST refuse to push or land a worktree that has a live link
-recorded in stream state, or a `go.work` containing a `use` entry, and MUST name
-the offending link and the command that clears it. The refusal MUST be based on
-both signals independently: state alone would miss a hand-written `go.work`, and
+recorded in stream state, or a `go.work` containing an unpublished `use` entry,
+and MUST name the offending link and the command that clears it. A relative
+entry is intrinsic rather than unpublished only when `go.work` is unchanged
+from `HEAD`, the entry remains physically inside the repository, and the
+module's `go.mod` is also tracked in `HEAD`. The refusal MUST be based on both
+signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
@@ -1879,12 +1882,14 @@ reading the removed library worktree.
 
 **Requirements:** dependency-streams#req:merge-refuses-a-linked-worktree
 
-**Given** a consumer worktree with a live link, and separately a worktree with a
-hand-written `go.work` containing a `use` entry and no stream record
-**When** `wb worktree merge` is run on either
+**Given** a consumer worktree with a live link, separately a worktree with a
+hand-written `go.work` containing a `use` entry and no stream record, and a
+repository with a committed `go.work` whose relative entries point only to
+committed modules in that repository
+**When** `wb worktree merge` is run on each
 **Then** it refuses before any push, names the link or the `use` entry and the
 command that clears it, and no flag combination both bypasses the guard and
-pushes.
+pushes; the committed intrinsic workspace is accepted.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 
@@ -2335,7 +2340,7 @@ upload manually report artefact?"*
 
 **One data contract.** A versioned **stream report** JSON — events plus derived
 metrics, defined in **Appendix: the stream report data contract** below — is the
-single input to all four modes. The web app at `wb.sneat.dev` is a static site
+single input to all four modes. The web app at `sneat.work/bench` is a static site
 deployed like the other landings (Cloudflare) and versioned **with** the data
 contract. Redaction is identical in every mode.
 
@@ -2344,7 +2349,7 @@ Delivery order, cheapest and most private first:
 **(0) Export a file.** `wb report export <stream> [--format json|html]` writes
 **one** file: the redacted stream report, or a self-contained HTML replay of the
 shape of `stream-analytics/stream-timeline.html`. The user opens it directly, or
-drops it onto `wb.sneat.dev` ("Open a report": drag-and-drop or file picker),
+drops it onto `sneat.work/bench` ("Open a report": drag-and-drop or file picker),
 where it is parsed **in the browser** with no upload unless the user then chooses
 to publish. Sharing is sending the file. This mode needs no server and no
 account, which is why it ships first.
@@ -2353,7 +2358,7 @@ account, which is why it ships first.
 a random token, and serves the report JSON plus a live SSE event stream from the
 stream's event log. The web app reads it via
 `?source=localhost:<port>#<token>`, with a CORS allow-list of exactly
-`https://wb.sneat.dev` and localhost, and
+`https://sneat.work` and localhost, and
 `Access-Control-Allow-Private-Network: true` for Chrome's Private Network Access
 check. Because Safari and locked-down browsers may refuse a private-network
 request regardless, `--open` MUST also serve an **embedded copy** of the web app
@@ -2361,11 +2366,11 @@ as an offline fallback. Nothing leaves the machine in this mode.
 
 **(2) Published snapshot.** `wb report publish` runs the redaction pass and
 uploads to **founder-owned private storage first** (bucket plus signed links; a
-wb cloud later), yielding `wb.sneat.dev/?snapshot=<id>`. Visibility — private
+wb cloud later), yielding `sneat.work/bench/?snapshot=<id>`. Visibility — private
 link, unlisted, or public — is chosen at publish time, never inherited.
 
 **(3) Live relay.** `wb serve --publish` relays events to the cloud as they
-happen so viewers can follow on `wb.sneat.dev` — *"think twitch for AI agent
+happen so viewers can follow on `sneat.work/bench` — *"think twitch for AI agent
 sessions"*. It needs the cloud, so it is last.
 
 This supersedes the earlier one-line sharing note: the constraints that matter —

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,6 +22,9 @@ type worktreeMergeFlags struct {
 	progress                               bool
 	stopBeforeMerge                        bool
 	timeout                                time.Duration
+	prepareTimeout                         time.Duration
+	checkTimeout                           time.Duration
+	shardAttemptTimeout                    time.Duration
 	retry                                  int
 	interval                               time.Duration
 }
@@ -43,7 +45,7 @@ forward revert. If exact post-target CI fails and the same source advances with 
 forward repair, rerunning merge advances the retained candidate onto the landed target,
 records the failed landing, and opens a new repair PR without rewriting history.
 Use acknowledge-landed-failed only for an audited historical
-validation_failed or landed_post_target_ci_failed receipt whose exact candidate
+validation_failed, landed failed-validation, or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
 acknowledgement rather than rewriting the failed receipt. Use
 acknowledge-stranded-landing only for a land conflict receipt whose published
@@ -81,7 +83,55 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	return command
+}
+
+func newWorktreeMergeAcknowledgeMissingCleanupCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-missing-cleanup <merge-receipt>",
+		Short: "Acknowledge proved legacy cleanup with missing Work Log evidence",
+		Long: `Prove that an exact landed cleanup-pending receipt is contained in the
+freshly fetched remote target and that every receipted worktree and local and
+remote branch is already absent. This narrowly recovers legacy cleanup which
+did not retain terminal Work Log evidence. It writes a separate immutable
+receipt. It writes a separate immutable acknowledgement and never fabricates a Work Log or rewrites the historical
+receipt. Dry-run is the default; --apply requires --actor and --reason.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeMissingWorktreeMergeCleanup(command.Context(), orchestrate.WorktreeMergeMissingCleanupAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nlanding: %s\ncurrent-target: %s\nacknowledgement: %s\n", ack.Status, ack.ReceiptPath, ack.LandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited missing-cleanup acknowledgement")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
@@ -323,11 +373,12 @@ func newWorktreeMergeAcknowledgeLandedFailedCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "acknowledge-landed-failed <merge-receipt>",
 		Short: "Acknowledge a proved landed failure without rewriting its receipt",
-		Long: `Prove that either a validation_failed prepare receipt or a
-landed_post_target_ci_failed land receipt has its clean candidate and every
-receipted source contained in the exact current remote target, then record a
+		Long: `Prove that a validation_failed prepare receipt, a landed receipt
+with recorded failed validation, or a landed_post_target_ci_failed receipt has
+its clean candidate and every receipted source contained in the exact current remote target, then record a
 separate audited acknowledgement so a fresh forward repair can own the lane.
-Post-target CI receipts must also prove their exact failed landing. The immutable
+The landed failed-validation form may preserve source worktrees that advanced
+after landing; other forms still require their exact source heads. Post-target CI receipts must also prove their exact failed landing. The immutable
 Work Log and historical merge receipt are never rewritten. This is a dry-run by
 default; --apply requires --actor and --reason and writes only the new
 acknowledgement artifact. Any missing claim, target, ancestry, or cleanliness
@@ -493,12 +544,17 @@ func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "supersede-validation-failed <merge-receipt> <replacement-worktree>",
-		Short: "Supersede an unlanded failed prepare receipt with a proved replacement",
-		Long: `Prove that a prepare validation_failed receipt never landed and that
+		Short: "Supersede an unlanded prepare failure with a proved replacement",
+		Long: `Prove that a prepare validation_failed or conflict receipt never landed and that
 one exact clean replacement candidate contains the immutable failed-candidate
 claim base, receipt target, freshly fetched current remote target, and every
-exact clean receipted source. The failed candidate itself need not be an
-ancestor. This is a dry-run by default; --apply requires --actor and --reason
+exact clean receipted source. A receipted source may itself be the replacement
+after an ordinary clean strict-descendant repair; the replacement identity then
+binds its observed head while preserving the original source SHA. The failed candidate itself need not be an
+ancestor. When an unpublished conflict candidate has advanced to a clean strict
+descendant, the acknowledgement also binds that observed commit and the
+replacement must contain both candidate revisions. This is a dry-run by
+default; --apply requires --actor and --reason
 and writes only a separate append-only supersession acknowledgement. The
 historical merge receipt and every Work Log remain immutable. Any missing
 identity, active claim, cleanliness, receipt integrity, or ancestry proof
@@ -680,6 +736,94 @@ and --reason and creates only the new WB candidate and Work Log.`,
 	return command
 }
 
+func newWorktreeMergePrepareConflictReplacementCmd() *cobra.Command {
+	var apply, showProgress bool
+	var actor, reason, format, receiptSHA, claimSHA, targetSHA string
+	var expectedSourceSHAs []string
+	var model, runtime, agentID, cli, provider string
+	var timeout time.Duration
+	var retry int
+	command := &cobra.Command{
+		Use:   "prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...>",
+		Short: "Create one receipt-bound replacement for an unlanded conflict",
+		Long: `Create one deterministic WB-managed replacement while an unpublished
+prepare conflict still owns its merger lane. This is the narrow cycle breaker
+for a clean observed conflict-candidate descendant that needs an exact missing
+receipted source before supersede-validation-failed can free the lane. The
+caller pins the immutable receipt and claim, current target, and every exact
+receipted source SHA. WB refuses a published candidate, target drift, dirty or
+wrong source/worktree identity, or any non-descendant observation. It writes no
+merge receipt or acknowledgement; pass its clean candidate to
+supersede-validation-failed. Dry-run is the default; --apply creates only the
+new candidate and Work Log. Use --progress for stderr progress while long Git
+operations run; JSON stdout remains stable.`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			identity, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			if strings.TrimSpace(model) == "" {
+				model = identity.Model
+			}
+			if strings.TrimSpace(runtime) == "" {
+				runtime = identity.Runtime
+			}
+			if strings.TrimSpace(agentID) == "" {
+				agentID = identity.AgentID
+			}
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			campaign := newCampaignProgressWithHeartbeat(progressOutput(command.ErrOrStderr(), interactive), showProgress || interactive, "conflict replacement", universalProgressHeartbeat)
+			refresh, err := orchestrate.PrepareConflictWorktreeMergeReplacement(command.Context(), orchestrate.WorktreeMergeConflictCandidateRefreshOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Sources: args[1:], Apply: apply, Actor: actor, Reason: reason,
+				ExpectedReceiptSHA256: receiptSHA, ExpectedImmutableClaimSHA256: claimSHA, ExpectedCurrentTargetSHA: targetSHA, ExpectedSourceSHAs: expectedSourceSHAs,
+				Model: model, AgentRuntime: runtime, AgentID: agentID, Initiator: mutationInitiator(command), CLI: cli, Provider: provider,
+				SessionRequired: identity.Registered, Timeout: timeout, Retry: retry, Progress: campaign.reporter(),
+			})
+			status := refresh.Status
+			if status == "" {
+				status = "failed"
+			}
+			campaign.finish(status)
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(refresh)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "%-18s %s\n%-18s %s\n%-18s %s\n%-18s %s\n", "status:", refresh.Status, "conflict receipt:", refresh.ReceiptPath, "candidate:", refresh.Candidate.Worktree, "current target:", refresh.CurrentTargetSHA)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to create the receipt-bound replacement candidate")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "create the distinct WB-managed replacement candidate")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the immutable conflict receipt")
+	command.Flags().StringVar(&claimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable conflict candidate Work Log claim")
+	command.Flags().StringVar(&targetSHA, "expected-current-target", "", "required exact current remote target SHA")
+	command.Flags().StringSliceVar(&expectedSourceSHAs, "expected-source-sha", nil, "required expected SHA for each receipted source, in argument order")
+	command.Flags().StringVar(&model, "model", "", "model identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "agent runtime recorded in the new candidate Work Log")
+	command.Flags().StringVar(&agentID, "agent-id", "", "agent identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&cli, "cli", "wb", "CLI identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&provider, "provider", "", "routing or billing provider identity, never a credential")
+	command.Flags().BoolVar(&showProgress, "progress", false, "show progress on stderr while creating the replacement")
+	command.Flags().DurationVar(&timeout, "timeout", 8*time.Minute, "bounded Git operation timeout")
+	command.Flags().IntVar(&retry, "retry", 0, "retry transient Git command failures")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
 func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, prepare, land, cleanupDefault bool) {
 	if prepare {
 		command.Flags().StringVar(&flags.target, "target", "", "target branch; defaults to the remote default branch")
@@ -688,6 +832,9 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 		command.Flags().StringVar(&flags.agentID, "agent-id", "", "agent identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.cli, "cli", "wb", "CLI identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.provider, "provider", "", "routing or billing provider identity, never a credential")
+		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional overall prepare deadline; zero keeps the existing behavior")
+		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "optional logical validation-check deadline; zero keeps the existing behavior")
+		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "optional process-isolated Go test shard-attempt deadline; zero keeps the existing behavior")
 	}
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
@@ -719,8 +866,8 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.stopBeforeMerge && flags.cleanup {
 		return fmt.Errorf("--stop-before-merge cannot be combined with --cleanup")
 	}
-	if flags.retry < 0 || flags.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive and --retry must not be negative")
+	if flags.retry < 0 || flags.timeout <= 0 || flags.prepareTimeout < 0 || flags.checkTimeout < 0 || flags.shardAttemptTimeout < 0 {
+		return fmt.Errorf("--timeout must be positive; --prepare-timeout, --check-timeout, and --shard-attempt-timeout must not be negative; --retry must not be negative")
 	}
 	return nil
 }
@@ -728,7 +875,8 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
-		Timeout: flags.timeout, Retry: flags.retry, Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
+		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
+		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
 }
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {
@@ -740,43 +888,8 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 
 func newWorktreeMergeProgress(command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
 	interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-	out := command.ErrOrStderr()
-	heartbeat := time.Second
-	if flags.progress && !interactive {
-		out = &worktreeMergeLineWriter{out: out}
-		heartbeat = 30 * time.Second
-	}
-	return newCampaignProgressWithHeartbeat(out, flags.progress || interactive, "worktree merge", heartbeat)
-}
-
-// worktreeMergeLineWriter turns the live renderer's carriage-return updates
-// into newline-delimited diagnostics for non-terminal agent tools. Those tools
-// can otherwise buffer a healthy stage until the final newline and recreate
-// the silence --progress is meant to remove.
-type worktreeMergeLineWriter struct {
-	out     io.Writer
-	mu      sync.Mutex
-	started bool
-}
-
-func (writer *worktreeMergeLineWriter) Write(payload []byte) (int, error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	text := string(payload)
-	if strings.HasPrefix(text, "\r") {
-		text = strings.TrimPrefix(text, "\r")
-		if writer.started {
-			text = "\n" + text
-		}
-		writer.started = true
-	}
-	if text == "\n" {
-		writer.started = false
-	}
-	if _, err := io.WriteString(writer.out, text); err != nil {
-		return 0, err
-	}
-	return len(payload), nil
+	out := progressOutput(command.ErrOrStderr(), interactive)
+	return newCampaignProgressWithHeartbeat(out, true, "worktree merge", universalProgressHeartbeat)
 }
 
 func finishWorktreeMergeProgress(campaign *campaignProgress, receipt orchestrate.WorktreeMergeReceipt, err error) {

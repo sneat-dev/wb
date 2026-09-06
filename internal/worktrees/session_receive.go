@@ -13,8 +13,8 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 var errSessionReceivePinNotRegistered = errors.New("received session pin has no registered checkout")

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -714,6 +713,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 		Head:              result.Commit,
 		Slice:             slice,
 		CheckPollInterval: interval,
+		OperationProgress: options.Progress,
 	})
 	if err != nil {
 		return err
@@ -754,7 +754,8 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
 		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
-		Progress: reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+		Progress:          reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+		OperationProgress: options.Progress,
 	})
 	if err != nil {
 		return err
@@ -914,8 +915,7 @@ func operationLockMetadataPID(file *os.File, operation string) (int, bool) {
 // from a process that could still own it. A permission denial is ambiguous,
 // so recovery stays closed rather than guessing that the process is gone.
 func operationLockPIDMayBeLive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM) || !errors.Is(err, syscall.ESRCH)
+	return operationProcessMayBeLive(pid)
 }
 
 // Release retires the exact held lock inode. It is safe to call from defer and

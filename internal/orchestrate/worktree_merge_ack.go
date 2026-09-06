@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -20,18 +21,91 @@ const (
 	worktreeMergeLandedFailureAcknowledgementSuffix           = ".landed-validation-failed.ack.json"
 	worktreeMergeValidationFailureSupersessionSchemaVersion   = 1
 	worktreeMergeValidationFailureSupersessionSuffix          = ".validation-failed.superseded.ack.json"
+	worktreeMergeLegacyValidationFailureIdentitySchemaVersion = 1
+	worktreeMergeLegacyValidationFailureIdentitySuffix        = ".legacy-validation-failed.identity.ack.json"
 	worktreeMergeSelfSupersessionCorrectionSchemaVersion      = 1
 	worktreeMergeSelfSupersessionCorrectionSuffix             = ".validation-failed.self-supersession.corrected.ack.json"
 	worktreeMergePreparedRebatchSchemaVersion                 = 1
 	worktreeMergePreparedRebatchSuffix                        = ".prepared.rebatched.ack.json"
 	worktreeMergeReceiptCollisionAcknowledgementSchemaVersion = 1
 	worktreeMergeReceiptCollisionAcknowledgementSuffix        = ".receipt-collision.ack.json"
+	worktreeMergeMissingCleanupAcknowledgementSchemaVersion   = 1
+	worktreeMergeMissingCleanupAcknowledgementSuffix          = ".missing-cleanup.ack.json"
+	worktreeMergeConflictCandidateAdvanceSchemaVersion        = 1
+	worktreeMergeConflictCandidateAdvanceSuffix               = ".conflict-candidate-advanced.ack.json"
 )
 
 // linkSelfSupersessionCorrection publishes a fully synced temporary file without
 // replacing an existing correction. It is replaceable only by tests that prove
 // the concurrent create-if-absent path is fail-closed.
 var linkSelfSupersessionCorrection = os.Link
+
+// linkLegacyValidationFailureIdentity publishes a derived legacy identity
+// without replacing the historical receipt or a prior acknowledgement.
+var linkLegacyValidationFailureIdentity = os.Link
+
+// linkMissingCleanupAcknowledgement publishes audited legacy cleanup evidence
+// without replacing either the historical receipt or missing Work Logs.
+var linkMissingCleanupAcknowledgement = os.Link
+
+// linkConflictCandidateAdvance publishes the resolved conflict transition
+// without replacing the original conflict receipt. A retry either reads this
+// exact evidence or refuses a different manual resolution.
+var linkConflictCandidateAdvance = os.Link
+
+// WorktreeMergeConflictCandidateAdvance is the append-only bridge between a
+// conflict receipt's original candidate and the clean, manually resolved
+// descendant. It is written before the mutable receipt is advanced to that
+// descendant, so an interrupted resume cannot publish an unaudited head.
+type WorktreeMergeConflictCandidateAdvance struct {
+	SchemaVersion        int                    `json:"schema_version"`
+	ID                   string                 `json:"id"`
+	Status               string                 `json:"status"`
+	ReceiptPath          string                 `json:"receipt_path"`
+	AcknowledgementPath  string                 `json:"acknowledgement_path"`
+	ReceiptSHA256        string                 `json:"receipt_sha256"`
+	ReceiptID            string                 `json:"receipt_id"`
+	Lane                 string                 `json:"lane"`
+	Repository           string                 `json:"repository"`
+	Target               string                 `json:"target"`
+	ReceiptTargetSHA     string                 `json:"receipt_target_sha"`
+	CurrentTargetSHA     string                 `json:"current_target_sha"`
+	OriginalCandidate    WorktreeMergeCandidate `json:"original_candidate"`
+	AdvancedCandidateSHA string                 `json:"advanced_candidate_sha"`
+	ClaimBaseSHA         string                 `json:"claim_base_sha"`
+	Sources              []WorktreeMergeSource  `json:"sources"`
+	RecordedAt           time.Time              `json:"recorded_at"`
+}
+
+// WorktreeMergeMissingCleanupAcknowledgement records the narrow legacy case
+// where a landed receipt's exact worktrees and branches were already removed,
+// but the historical cleanup did not retain terminal Work Log evidence.
+type WorktreeMergeMissingCleanupAcknowledgement struct {
+	SchemaVersion       int                                    `json:"schema_version"`
+	ID                  string                                 `json:"id"`
+	Status              string                                 `json:"status"`
+	ReceiptPath         string                                 `json:"receipt_path"`
+	AcknowledgementPath string                                 `json:"acknowledgement_path"`
+	ReceiptSHA256       string                                 `json:"receipt_sha256"`
+	ReceiptID           string                                 `json:"receipt_id"`
+	Lane                string                                 `json:"lane"`
+	Repository          string                                 `json:"repository"`
+	Target              string                                 `json:"target"`
+	LandingSHA          string                                 `json:"landing_sha"`
+	CurrentTargetSHA    string                                 `json:"current_target_sha"`
+	Assets              []worktrees.TerminalWorkLogExpectation `json:"absent_assets"`
+	Actor               string                                 `json:"actor"`
+	Reason              string                                 `json:"reason"`
+	RecordedAt          time.Time                              `json:"recorded_at"`
+}
+
+type WorktreeMergeMissingCleanupAcknowledgementOptions struct {
+	ProjectsRoot string
+	Receipt      string
+	Apply        bool
+	Actor        string
+	Reason       string
+}
 
 // WorktreeMergeReceiptCollisionAcknowledgement is the narrowly scoped,
 // append-only recovery record for a receipt that was historically rewritten by
@@ -137,27 +211,28 @@ type WorktreeMergeLandedFailureAcknowledgementOptions struct {
 // immutable failed receipt to one clean replacement candidate without changing
 // either candidate's Work Log or the historical receipt.
 type WorktreeMergeValidationFailureSupersession struct {
-	SchemaVersion           int                    `json:"schema_version"`
-	ID                      string                 `json:"id"`
-	Status                  string                 `json:"status"`
-	ReceiptPath             string                 `json:"receipt_path"`
-	AcknowledgementPath     string                 `json:"acknowledgement_path"`
-	ReceiptID               string                 `json:"receipt_id"`
-	ReceiptSHA256           string                 `json:"receipt_sha256"`
-	ReceiptStatus           WorktreeMergeStatus    `json:"receipt_status"`
-	Lane                    string                 `json:"lane"`
-	Repository              string                 `json:"repository"`
-	Target                  string                 `json:"target"`
-	ReceiptTargetSHA        string                 `json:"receipt_target_sha"`
-	CurrentTargetSHA        string                 `json:"current_target_sha"`
-	OriginalCandidate       WorktreeMergeCandidate `json:"original_candidate"`
-	OriginalClaimBaseSHA    string                 `json:"original_claim_base_sha"`
-	Replacement             WorktreeMergeCandidate `json:"replacement"`
-	ReplacementClaimBaseSHA string                 `json:"replacement_claim_base_sha"`
-	Sources                 []WorktreeMergeSource  `json:"sources"`
-	Actor                   string                 `json:"actor"`
-	Reason                  string                 `json:"reason"`
-	RecordedAt              time.Time              `json:"recorded_at"`
+	SchemaVersion                  int                    `json:"schema_version"`
+	ID                             string                 `json:"id"`
+	Status                         string                 `json:"status"`
+	ReceiptPath                    string                 `json:"receipt_path"`
+	AcknowledgementPath            string                 `json:"acknowledgement_path"`
+	ReceiptID                      string                 `json:"receipt_id"`
+	ReceiptSHA256                  string                 `json:"receipt_sha256"`
+	ReceiptStatus                  WorktreeMergeStatus    `json:"receipt_status"`
+	Lane                           string                 `json:"lane"`
+	Repository                     string                 `json:"repository"`
+	Target                         string                 `json:"target"`
+	ReceiptTargetSHA               string                 `json:"receipt_target_sha"`
+	CurrentTargetSHA               string                 `json:"current_target_sha"`
+	OriginalCandidate              WorktreeMergeCandidate `json:"original_candidate"`
+	ObservedCandidateDescendantSHA string                 `json:"observed_candidate_descendant_sha,omitempty"`
+	OriginalClaimBaseSHA           string                 `json:"original_claim_base_sha"`
+	Replacement                    WorktreeMergeCandidate `json:"replacement"`
+	ReplacementClaimBaseSHA        string                 `json:"replacement_claim_base_sha"`
+	Sources                        []WorktreeMergeSource  `json:"sources"`
+	Actor                          string                 `json:"actor"`
+	Reason                         string                 `json:"reason"`
+	RecordedAt                     time.Time              `json:"recorded_at"`
 }
 
 type WorktreeMergeValidationFailureSupersessionOptions struct {
@@ -167,6 +242,32 @@ type WorktreeMergeValidationFailureSupersessionOptions struct {
 	Apply               bool
 	Actor               string
 	Reason              string
+}
+
+// WorktreeMergeLegacyValidationFailureIdentity records the only identity WB
+// may derive for a legacy validation_failed receipt whose writer omitted the
+// candidate SHA. The historical receipt remains immutable; every field here is
+// corroborated from its registered candidate worktree, active claim, exact
+// sources, and current remote-target observation.
+type WorktreeMergeLegacyValidationFailureIdentity struct {
+	SchemaVersion       int                    `json:"schema_version"`
+	ID                  string                 `json:"id"`
+	Status              string                 `json:"status"`
+	ReceiptPath         string                 `json:"receipt_path"`
+	AcknowledgementPath string                 `json:"acknowledgement_path"`
+	ReceiptSHA256       string                 `json:"receipt_sha256"`
+	ReceiptID           string                 `json:"receipt_id"`
+	Lane                string                 `json:"lane"`
+	Repository          string                 `json:"repository"`
+	Target              string                 `json:"target"`
+	ReceiptTargetSHA    string                 `json:"receipt_target_sha"`
+	CurrentTargetSHA    string                 `json:"current_target_sha"`
+	Candidate           WorktreeMergeCandidate `json:"candidate"`
+	ClaimBaseSHA        string                 `json:"claim_base_sha"`
+	Sources             []WorktreeMergeSource  `json:"sources"`
+	Actor               string                 `json:"actor"`
+	Reason              string                 `json:"reason"`
+	RecordedAt          time.Time              `json:"recorded_at"`
 }
 
 // WorktreeMergeSelfSupersessionCorrection is the only repair for a historical
@@ -734,7 +835,11 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		if isLandedFailedValidationReceipt(receipt) {
+			if err := validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+				return WorktreeMergeLandedFailureAcknowledgement{}, err
+			}
+		} else if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, err
 		}
 		contains, sourceErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, source.SHA, head)
@@ -797,7 +902,7 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 }
 
 // SupersedeValidationFailedWorktreeMerge proves that a clean replacement
-// candidate contains every immutable root of a failed prepare receipt. The
+// candidate contains every immutable root of an unlanded prepare failure. The
 // failed candidate itself need not be an ancestor: it may have diverged after
 // validation failed. This transition is deliberately narrower than the landed
 // acknowledgement because it never asserts that the failed candidate landed.
@@ -810,22 +915,30 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
-	if err := validateValidationFailedSupersessionReceipt(receipt, receiptPath); err != nil {
-		return WorktreeMergeValidationFailureSupersession{}, err
-	}
 	if strings.TrimSpace(options.ReplacementWorktree) == "" {
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement worktree is required")
 	}
 	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("--actor and --reason are required with --apply")
 	}
+	if receipt.Lane == "" {
+		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("receipt %s has no lane identity", receiptPath)
+	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, receipt.Lane, true)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	defer func() { _ = lock.Release() }()
+	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, err
+	}
+	receipt, legacyIdentity, legacyIdentityNeedsPersist, err := resolveValidationFailedSupersessionReceipt(ctx, options.ProjectsRoot, receipt, receiptPath, options.Actor, options.Reason)
+	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, err
+	}
 
-	originalClaim, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate)
+	originalClaim, observedCandidateDescendantSHA, err := validatePrepareFailureSupersessionCandidate(ctx, options.ProjectsRoot, receipt)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("validate failed candidate: %w", err)
 	}
@@ -836,16 +949,42 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if replacement == receipt.Candidate || replacement.SHA == receipt.Candidate.SHA {
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement candidate must be distinct from the failed receipt candidate")
 	}
-	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
-			return WorktreeMergeValidationFailureSupersession{}, err
-		}
-	}
 	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+	targetTree, err := mergeTreeRevision(ctx, replacement.Worktree, currentTarget)
+	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read current target tree: %w", err)
+	}
+	observedSourceDescendants := make([]string, 0, len(receipt.Sources))
+	for _, source := range receipt.Sources {
+		allowedDescendantSHA := ""
+		if filepath.Clean(source.Worktree) == filepath.Clean(replacement.Worktree) {
+			allowedDescendantSHA = replacement.SHA
+		} else if sourceHead, headErr := mergeRevision(ctx, source.Worktree, "HEAD"); headErr != nil {
+			return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, headErr)
+		} else if sourceHead != source.SHA {
+			allowedDescendantSHA = sourceHead
+			sourceTree, treeErr := mergeTreeRevision(ctx, source.Worktree, sourceHead)
+			if treeErr != nil {
+				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read advanced receipted source tree: %w", treeErr)
+			}
+			if sourceTree != targetTree {
+				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("advanced receipted source %s tree %s differs from landed target tree %s", source.Worktree, sourceTree, targetTree)
+			}
+			observedSourceDescendants = append(observedSourceDescendants, sourceHead)
+		}
+		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, allowedDescendantSHA); err != nil {
+			return WorktreeMergeValidationFailureSupersession{}, err
+		}
+	}
+	requiredRoots := []string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}
+	if observedCandidateDescendantSHA != "" {
+		requiredRoots = append(requiredRoots, receipt.Candidate.SHA, observedCandidateDescendantSHA)
+	}
+	requiredRoots = append(requiredRoots, observedSourceDescendants...)
+	for _, root := range append(requiredRoots, sourceSHAs(receipt.Sources)...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
@@ -864,13 +1003,13 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 		Status:        "validation_failure_superseded", ReceiptPath: receiptPath, AcknowledgementPath: ackPath,
 		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
 		Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget,
-		OriginalCandidate: receipt.Candidate, OriginalClaimBaseSHA: originalClaim.BaseSHA,
+		OriginalCandidate: receipt.Candidate, ObservedCandidateDescendantSHA: observedCandidateDescendantSHA, OriginalClaimBaseSHA: originalClaim.BaseSHA,
 		Replacement: replacement, ReplacementClaimBaseSHA: replacementClaim.BaseSHA,
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
 	ack.ID = validationFailureSupersessionID(ack)
 	if existing, readErr := readValidationFailureSupersession(ackPath, receipt); readErr == nil {
-		if existing.CurrentTargetSHA != currentTarget || existing.Replacement != replacement {
+		if existing.CurrentTargetSHA != currentTarget || existing.Replacement != replacement || existing.ObservedCandidateDescendantSHA != observedCandidateDescendantSHA {
 			return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("supersession %s binds different target or replacement evidence", ackPath)
 		}
 		return existing, nil
@@ -879,6 +1018,20 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	}
 	if !options.Apply {
 		return ack, nil
+	}
+	if legacyIdentityNeedsPersist {
+		if err := persistLegacyValidationFailureIdentity(legacyIdentity.AcknowledgementPath, *legacyIdentity); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return WorktreeMergeValidationFailureSupersession{}, err
+			}
+			existing, readErr := readLegacyValidationFailureIdentity(legacyIdentity.AcknowledgementPath, receipt, receipt.Candidate)
+			if readErr != nil || !sameLegacyValidationFailureIdentity(existing, *legacyIdentity) {
+				if readErr != nil {
+					return WorktreeMergeValidationFailureSupersession{}, readErr
+				}
+				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("legacy validation-failed identity %s binds different immutable evidence", legacyIdentity.AcknowledgementPath)
+			}
+		}
 	}
 	if err := persistValidationFailureSupersession(ackPath, ack); err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
@@ -1057,6 +1210,34 @@ func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot str
 	return view.Claim, nil
 }
 
+func validatePrepareFailureSupersessionCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (*worktrees.WorkLogClaimView, string, error) {
+	if receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed {
+		claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+		return claim, "", err
+	}
+	observedHead, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	if err != nil {
+		return nil, "", fmt.Errorf("read candidate HEAD: %w", err)
+	}
+	observedCandidate := receipt.Candidate
+	observedCandidate.SHA = observedHead
+	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, observedCandidate)
+	if err != nil {
+		return nil, "", err
+	}
+	if observedHead == receipt.Candidate.SHA {
+		return claim, "", nil
+	}
+	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, observedHead)
+	if err != nil {
+		return nil, "", fmt.Errorf("verify candidate descendant ancestry: %w", err)
+	}
+	if !contains {
+		return nil, "", fmt.Errorf("candidate HEAD %s is not a descendant of receipted candidate %s", observedHead, receipt.Candidate.SHA)
+	}
+	return claim, observedHead, nil
+}
+
 func validateValidationFailureReplacement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, replacementPath string) (WorktreeMergeCandidate, *worktrees.WorkLogClaimView, error) {
 	guard, err := worktrees.Guard(ctx, replacementPath, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
 	if err != nil {
@@ -1104,10 +1285,19 @@ func validateLandedFailureAcknowledgementReceipt(receipt WorktreeMergeReceipt, r
 		if receipt.Phase != WorktreeMergePhaseLand || receipt.LandingSHA == "" || receipt.Checks.Status != PullRequestWaitFailed || receipt.Checks.Head != receipt.LandingSHA {
 			return fmt.Errorf("receipt %s is %s without an exact failed post-target CI receipt", receiptPath, receipt.Status)
 		}
+	case WorktreeMergeLanded:
+		if !isLandedFailedValidationReceipt(receipt) {
+			return fmt.Errorf("receipt %s is %s without an exact landed failed-validation receipt", receiptPath, receipt.Status)
+		}
 	default:
-		return fmt.Errorf("receipt %s is %s, want prepare validation_failed or landed_post_target_ci_failed", receiptPath, receipt.Status)
+		return fmt.Errorf("receipt %s is %s, want prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed", receiptPath, receipt.Status)
 	}
 	return nil
+}
+
+func isLandedFailedValidationReceipt(receipt WorktreeMergeReceipt) bool {
+	return receipt.Status == WorktreeMergeLanded && receipt.Phase == WorktreeMergePhaseLand &&
+		receipt.LandingSHA != "" && receipt.LandingSHA == receipt.Candidate.SHA && receipt.Validation.Status == quality.StatusFailed
 }
 
 // validateValidationFailedSupersessionReceipt defines the immutable boundary
@@ -1121,7 +1311,7 @@ func validateValidationFailedSupersessionReceipt(receipt WorktreeMergeReceipt, r
 	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeValidationFailed || receipt.LandingSHA != "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
-		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
 		return fmt.Errorf("receipt %s lacks a complete exact validation_failed immutable identity", receiptPath)
 	}
 	for _, source := range receipt.Sources {
@@ -1132,7 +1322,157 @@ func validateValidationFailedSupersessionReceipt(receipt WorktreeMergeReceipt, r
 	return nil
 }
 
-func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
+// validatePrepareFailureSupersessionReceipt extends the existing supersession
+// boundary only to an exact unlanded prepare conflict. All immutable identity
+// requirements remain identical; the caller separately proves the original
+// candidate and replacement are clean, claimed, and fully contained.
+func validatePrepareFailureSupersessionReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
+	if receipt.Status == WorktreeMergeValidationFailed {
+		return validateValidationFailedSupersessionReceipt(receipt, receiptPath)
+	}
+	if receipt.ReceiptPath != receiptPath || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) ||
+		receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeConflict ||
+		receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository == "" || receipt.Target == "" ||
+		receipt.TargetSHA == "" || len(receipt.Sources) == 0 || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
+		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
+		receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		return fmt.Errorf("receipt %s lacks a complete exact identity; want prepare validation_failed or unpublished conflict", receiptPath)
+	}
+	for _, source := range receipt.Sources {
+		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+			return fmt.Errorf("receipt %s has an incomplete immutable source identity", receiptPath)
+		}
+	}
+	if err := validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, receipt.Sources); err != nil {
+		return fmt.Errorf("receipt %s has an invalid superseded conflict identity: %w", receiptPath, err)
+	}
+	return nil
+}
+
+// resolveValidationFailedSupersessionReceipt converts one narrowly defined
+// legacy receipt into an in-memory effective receipt. The source JSON is never
+// changed: an apply records the derived identity in its own sidecar only after
+// all replacement proof has passed.
+func resolveValidationFailedSupersessionReceipt(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, receiptPath, actor, reason string) (WorktreeMergeReceipt, *WorktreeMergeLegacyValidationFailureIdentity, bool, error) {
+	prepareFailureErr := validatePrepareFailureSupersessionReceipt(receipt, receiptPath)
+	if prepareFailureErr == nil {
+		return receipt, nil, false, nil
+	}
+	if receipt.Status != WorktreeMergeValidationFailed {
+		return WorktreeMergeReceipt{}, nil, false, prepareFailureErr
+	}
+	if err := validateLegacyValidationFailedReceiptShape(receipt, receiptPath); err != nil {
+		return WorktreeMergeReceipt{}, nil, false, err
+	}
+
+	candidate := receipt.Candidate
+	head, err := mergeRevision(ctx, candidate.Worktree, "HEAD")
+	if err != nil {
+		return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("read legacy candidate HEAD: %w", err)
+	}
+	if head != receipt.Validation.Revision {
+		return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("legacy candidate HEAD %s does not match immutable validation revision %s", head, receipt.Validation.Revision)
+	}
+	candidate.SHA = head
+	effective := receipt
+	effective.Candidate = candidate
+	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, effective, candidate)
+	if err != nil {
+		return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("corroborate legacy candidate identity: %w", err)
+	}
+	if err := requireCandidateContainsImmutableClaimBase(ctx, candidate.Worktree, claim.BaseSHA, candidate.SHA); err != nil {
+		return WorktreeMergeReceipt{}, nil, false, err
+	}
+	if contains, ancestorErr := isMergeAncestor(ctx, candidate.Worktree, receipt.TargetSHA, candidate.SHA); ancestorErr != nil || !contains {
+		if ancestorErr == nil {
+			ancestorErr = fmt.Errorf("legacy candidate %s does not contain receipt target %s", candidate.SHA, receipt.TargetSHA)
+		}
+		return WorktreeMergeReceipt{}, nil, false, ancestorErr
+	}
+	for _, source := range receipt.Sources {
+		if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, effective, source, ""); err != nil {
+			return WorktreeMergeReceipt{}, nil, false, err
+		}
+		if contains, sourceErr := isMergeAncestor(ctx, candidate.Worktree, source.SHA, candidate.SHA); sourceErr != nil || !contains {
+			if sourceErr == nil {
+				sourceErr = fmt.Errorf("legacy candidate %s does not contain receipted source %s", candidate.SHA, source.SHA)
+			}
+			return WorktreeMergeReceipt{}, nil, false, sourceErr
+		}
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, candidate.Worktree, receipt.Target)
+	if err != nil {
+		return WorktreeMergeReceipt{}, nil, false, err
+	}
+	if landed, landingErr := isMergeAncestor(ctx, candidate.Worktree, candidate.SHA, currentTarget); landingErr != nil || landed {
+		if landingErr == nil {
+			landingErr = fmt.Errorf("legacy candidate %s is already contained in current remote target %s", candidate.SHA, currentTarget)
+		}
+		return WorktreeMergeReceipt{}, nil, false, landingErr
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	if err != nil {
+		return WorktreeMergeReceipt{}, nil, false, err
+	}
+	identity := WorktreeMergeLegacyValidationFailureIdentity{
+		SchemaVersion:       worktreeMergeLegacyValidationFailureIdentitySchemaVersion,
+		Status:              "legacy_validation_failed_identity_correlated",
+		ReceiptPath:         receiptPath,
+		AcknowledgementPath: legacyValidationFailureIdentityPath(receiptPath),
+		ReceiptSHA256:       receiptHash,
+		ReceiptID:           receipt.ID,
+		Lane:                receipt.Lane,
+		Repository:          receipt.Repository,
+		Target:              receipt.Target,
+		ReceiptTargetSHA:    receipt.TargetSHA,
+		CurrentTargetSHA:    currentTarget,
+		Candidate:           candidate,
+		ClaimBaseSHA:        claim.BaseSHA,
+		Sources:             append([]WorktreeMergeSource(nil), receipt.Sources...),
+		Actor:               strings.TrimSpace(actor),
+		Reason:              strings.TrimSpace(reason),
+		RecordedAt:          time.Now().UTC(),
+	}
+	identity.ID = legacyValidationFailureIdentityID(identity)
+	if existing, readErr := readLegacyValidationFailureIdentity(identity.AcknowledgementPath, receipt, candidate); readErr == nil {
+		if existing.CurrentTargetSHA != currentTarget || existing.ClaimBaseSHA != claim.BaseSHA {
+			return WorktreeMergeReceipt{}, nil, false, fmt.Errorf("legacy validation-failed identity %s no longer matches current target or candidate claim", identity.AcknowledgementPath)
+		}
+		return effective, nil, false, nil
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return WorktreeMergeReceipt{}, nil, false, readErr
+	}
+	return effective, &identity, true, nil
+}
+
+func validateLegacyValidationFailedReceiptShape(receipt WorktreeMergeReceipt, receiptPath string) error {
+	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
+		return err
+	}
+	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeValidationFailed || receipt.LandingSHA != "" ||
+		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 ||
+		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA != "" ||
+		receipt.Validation.Repository != receipt.Repository || receipt.Validation.Path != receipt.Candidate.Worktree || receipt.Validation.Revision == "" ||
+		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		return fmt.Errorf("receipt %s is not the exact legacy validation_failed missing-candidate-SHA shape", receiptPath)
+	}
+	for _, source := range receipt.Sources {
+		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+			return fmt.Errorf("receipt %s has an incomplete immutable source identity", receiptPath)
+		}
+	}
+	return nil
+}
+
+func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string) error {
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, allowedDescendantSHA, false)
+}
+
+func validatePreservedLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, "", true)
+}
+
+func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool) error {
 	if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 		return errors.New("receipt contains an incomplete source identity")
 	}
@@ -1150,8 +1490,25 @@ func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoo
 	if err != nil {
 		return fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
-	if head != source.SHA {
-		return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
+	if allowAnyDescendant {
+		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("current HEAD %s does not descend from receipted SHA %s", head, source.SHA)
+			}
+			return fmt.Errorf("receipted source %s was rewritten after landing: %w", source.Worktree, ancestorErr)
+		}
+	} else if head != source.SHA {
+		if allowedDescendantSHA == "" || head != allowedDescendantSHA {
+			return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
+		}
+		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		if ancestorErr != nil {
+			return fmt.Errorf("verify receipted source descendant ancestry: %w", ancestorErr)
+		}
+		if !contains {
+			return fmt.Errorf("receipted source %s HEAD %s is not a descendant of %s", source.Worktree, head, source.SHA)
+		}
 	}
 	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: source.Worktree})
 	if err != nil {
@@ -1252,6 +1609,12 @@ func validationFailureSupersessionID(ack WorktreeMergeValidationFailureSupersess
 		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
 	}
+	if ack.ObservedCandidateDescendantSHA != "" {
+		_, _ = hash.Write([]byte("observed_candidate_descendant_sha"))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(ack.ObservedCandidateDescendantSHA))
+		_, _ = hash.Write([]byte{0})
+	}
 	for _, source := range ack.Sources {
 		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
 			_, _ = hash.Write([]byte(value))
@@ -1265,6 +1628,176 @@ func validationFailureSupersessionPath(receiptPath string) string {
 	return receiptPath + worktreeMergeValidationFailureSupersessionSuffix
 }
 
+func conflictCandidateAdvancePath(receiptPath string) string {
+	return receiptPath + worktreeMergeConflictCandidateAdvanceSuffix
+}
+
+func conflictCandidateAdvanceID(ack WorktreeMergeConflictCandidateAdvance) string {
+	hash := sha256.New()
+	for _, value := range []string{
+		ack.ReceiptPath, ack.ReceiptSHA256, ack.ReceiptID, ack.Lane, ack.Repository,
+		ack.Target, ack.ReceiptTargetSHA, ack.CurrentTargetSHA, ack.OriginalCandidate.Task,
+		ack.OriginalCandidate.Worktree, ack.OriginalCandidate.Branch, ack.OriginalCandidate.SHA,
+		ack.AdvancedCandidateSHA, ack.ClaimBaseSHA,
+	} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, source := range ack.Sources {
+		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandidateAdvance) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".conflict-candidate-advance-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := linkConflictCandidateAdvance(temporaryPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	return directory.Sync()
+}
+
+func readConflictCandidateAdvance(path string) (WorktreeMergeConflictCandidateAdvance, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeConflictCandidateAdvance{}, err
+	}
+	var ack WorktreeMergeConflictCandidateAdvance
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return ack, fmt.Errorf("decode conflict-candidate advance %s: %w", path, err)
+	}
+	if ack.SchemaVersion != worktreeMergeConflictCandidateAdvanceSchemaVersion ||
+		ack.Status != "conflict_candidate_advanced" || ack.AcknowledgementPath != path ||
+		ack.ReceiptPath == "" || ack.ReceiptSHA256 == "" || ack.ReceiptID == "" || ack.Lane == "" ||
+		ack.Repository == "" || ack.Target == "" || ack.ReceiptTargetSHA == "" || ack.CurrentTargetSHA == "" ||
+		ack.OriginalCandidate.Task == "" || ack.OriginalCandidate.Worktree == "" || ack.OriginalCandidate.Branch == "" || ack.OriginalCandidate.SHA == "" ||
+		ack.AdvancedCandidateSHA == "" || ack.AdvancedCandidateSHA == ack.OriginalCandidate.SHA || ack.ClaimBaseSHA == "" ||
+		len(ack.Sources) == 0 || ack.RecordedAt.IsZero() || ack.ID != conflictCandidateAdvanceID(ack) {
+		return ack, fmt.Errorf("conflict-candidate advance %s has invalid immutable identity", path)
+	}
+	return ack, nil
+}
+
+func legacyValidationFailureIdentityPath(receiptPath string) string {
+	return receiptPath + worktreeMergeLegacyValidationFailureIdentitySuffix
+}
+
+func legacyValidationFailureIdentityID(ack WorktreeMergeLegacyValidationFailureIdentity) string {
+	hash := sha256.New()
+	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ReceiptID, ack.Lane, ack.Repository, ack.Target, ack.ReceiptTargetSHA, ack.CurrentTargetSHA, ack.Candidate.Task, ack.Candidate.Worktree, ack.Candidate.Branch, ack.Candidate.SHA, ack.ClaimBaseSHA, ack.Actor, ack.Reason} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, source := range ack.Sources {
+		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func sameLegacyValidationFailureIdentity(left, right WorktreeMergeLegacyValidationFailureIdentity) bool {
+	return left.ID == right.ID && left.Status == right.Status && left.ReceiptPath == right.ReceiptPath &&
+		left.AcknowledgementPath == right.AcknowledgementPath && left.ReceiptSHA256 == right.ReceiptSHA256 &&
+		left.ReceiptID == right.ReceiptID && left.Lane == right.Lane && left.Repository == right.Repository &&
+		left.Target == right.Target && left.ReceiptTargetSHA == right.ReceiptTargetSHA && left.CurrentTargetSHA == right.CurrentTargetSHA &&
+		left.Candidate == right.Candidate && left.ClaimBaseSHA == right.ClaimBaseSHA && sameWorktreeMergeSources(left.Sources, right.Sources) &&
+		left.Actor == right.Actor && left.Reason == right.Reason
+}
+
+func persistLegacyValidationFailureIdentity(path string, ack WorktreeMergeLegacyValidationFailureIdentity) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".legacy-validation-failed-identity-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return linkLegacyValidationFailureIdentity(temporaryPath, path)
+}
+
+func readLegacyValidationFailureIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyValidationFailureIdentity, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeLegacyValidationFailureIdentity{}, err
+	}
+	var ack WorktreeMergeLegacyValidationFailureIdentity
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return WorktreeMergeLegacyValidationFailureIdentity{}, fmt.Errorf("decode legacy validation-failed identity %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergeLegacyValidationFailureIdentity{}, err
+	}
+	if ack.SchemaVersion != worktreeMergeLegacyValidationFailureIdentitySchemaVersion || ack.Status != "legacy_validation_failed_identity_correlated" ||
+		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptSHA256 != receiptHash || ack.ReceiptID != receipt.ID ||
+		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.ReceiptTargetSHA != receipt.TargetSHA ||
+		ack.Candidate != candidate || ack.ClaimBaseSHA == "" || ack.CurrentTargetSHA == "" || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
+		ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != legacyValidationFailureIdentityID(ack) {
+		return WorktreeMergeLegacyValidationFailureIdentity{}, fmt.Errorf("legacy validation-failed identity %s has invalid immutable evidence", path)
+	}
+	return ack, nil
+}
+
 func worktreeMergeReceiptSHA256(path string) (string, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -1272,6 +1805,226 @@ func worktreeMergeReceiptSHA256(path string) (string, error) {
 	}
 	digest := sha256.Sum256(contents)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// AcknowledgeMissingWorktreeMergeCleanup records independently reproducible
+// evidence for legacy cleanup which removed every exact asset but lost one or
+// more terminal Work Logs. It never creates replacement Work Log evidence.
+func AcknowledgeMissingWorktreeMergeCleanup(ctx context.Context, options WorktreeMergeMissingCleanupAcknowledgementOptions) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if receipt.Lane == "" {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s has no lane identity", receiptPath)
+	}
+	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
+	}
+	lock, err := AcquireOperationLock(options.ProjectsRoot, receipt.Lane, true)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	defer func() { _ = lock.Release() }()
+	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	ack, err := inspectMissingWorktreeMergeCleanup(ctx, options.ProjectsRoot, receipt, strings.TrimSpace(options.Actor), strings.TrimSpace(options.Reason), 0, 0)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if !options.Apply {
+		return ack, nil
+	}
+	if err := persistMissingCleanupAcknowledgement(ack.AcknowledgementPath, ack); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, err
+		}
+		existing, readErr := validateMissingCleanupAcknowledgement(ctx, options.ProjectsRoot, receipt, ack.AcknowledgementPath, 0, 0)
+		if readErr != nil {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, readErr
+		}
+		return existing, nil
+	}
+	return ack, nil
+}
+
+func inspectMissingWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, actor, reason string, timeout time.Duration, retry int) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhaseLand || receipt.Status != WorktreeMergeLanded ||
+		!receipt.Cleanup || receipt.ID == "" || receipt.Lane == "" || receipt.Repository == "" || receipt.Target == "" || receipt.LandingSHA == "" ||
+		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s is not an exact landed cleanup-pending receipt", receipt.ReceiptPath)
+	}
+	if receipt.Checks.Status != PullRequestWaitPassed || (receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out") {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s lacks completed exact checks or canonical synchronization", receipt.ReceiptPath)
+	}
+	assets, err := terminalWorkLogExpectations(receipt)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	for _, asset := range assets {
+		if _, statErr := os.Lstat(asset.Worktree); statErr == nil {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("missing-cleanup acknowledgement refuses task %s because worktree %s remains", asset.Task, asset.Worktree)
+		} else if !os.IsNotExist(statErr) {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("inspect receipted cleanup worktree %s: %w", asset.Worktree, statErr)
+		}
+	}
+	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	currentTarget, err := fetchExactMergeTarget(ctx, canonical, receipt.Target)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	contains, err := isMergeAncestor(ctx, canonical, receipt.LandingSHA, currentTarget)
+	if err != nil || !contains {
+		if err == nil {
+			err = fmt.Errorf("exact current remote target %s does not contain receipted landing %s", currentTarget, receipt.LandingSHA)
+		}
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, receipt, assets, timeout, retry); err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	ack := WorktreeMergeMissingCleanupAcknowledgement{
+		SchemaVersion: worktreeMergeMissingCleanupAcknowledgementSchemaVersion,
+		Status:        "missing_cleanup_acknowledged", ReceiptPath: receipt.ReceiptPath,
+		AcknowledgementPath: receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix,
+		ReceiptSHA256:       receiptHash, ReceiptID: receipt.ID, Lane: receipt.Lane,
+		Repository: receipt.Repository, Target: receipt.Target, LandingSHA: receipt.LandingSHA,
+		CurrentTargetSHA: currentTarget, Assets: append([]worktrees.TerminalWorkLogExpectation(nil), assets...),
+		Actor: actor, Reason: reason, RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = missingCleanupAcknowledgementID(ack)
+	return ack, nil
+}
+
+func missingCleanupAcknowledgementID(ack WorktreeMergeMissingCleanupAcknowledgement) string {
+	hash := sha256.New()
+	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ReceiptID, ack.Lane, ack.Repository, ack.Target, ack.LandingSHA, ack.CurrentTargetSHA, ack.Actor, ack.Reason} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, asset := range ack.Assets {
+		for _, value := range []string{asset.Task, asset.Repository, asset.Worktree, asset.Branch, asset.Base, asset.FinalCommit} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func sameMissingCleanupAcknowledgement(left, right WorktreeMergeMissingCleanupAcknowledgement) bool {
+	return left.ID == right.ID && left.Status == right.Status && left.ReceiptPath == right.ReceiptPath &&
+		left.AcknowledgementPath == right.AcknowledgementPath && left.ReceiptSHA256 == right.ReceiptSHA256 &&
+		left.ReceiptID == right.ReceiptID && left.Lane == right.Lane && left.Repository == right.Repository && left.Target == right.Target &&
+		left.LandingSHA == right.LandingSHA && left.CurrentTargetSHA == right.CurrentTargetSHA &&
+		sameTerminalCleanupAssets(left.Assets, right.Assets) && left.Actor == right.Actor && left.Reason == right.Reason
+}
+
+func sameTerminalCleanupAssets(left, right []worktrees.TerminalWorkLogExpectation) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func persistMissingCleanupAcknowledgement(path string, ack WorktreeMergeMissingCleanupAcknowledgement) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".missing-cleanup-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return linkMissingCleanupAcknowledgement(temporaryPath, path)
+}
+
+func readMissingCleanupAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	var ack WorktreeMergeMissingCleanupAcknowledgement
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return ack, fmt.Errorf("decode missing-cleanup acknowledgement %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return ack, err
+	}
+	expectedAssets, err := terminalWorkLogExpectations(receipt)
+	if err != nil {
+		return ack, err
+	}
+	if ack.SchemaVersion != worktreeMergeMissingCleanupAcknowledgementSchemaVersion || ack.Status != "missing_cleanup_acknowledged" ||
+		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptSHA256 != receiptHash || ack.ReceiptID != receipt.ID ||
+		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.LandingSHA != receipt.LandingSHA ||
+		ack.CurrentTargetSHA == "" || !sameTerminalCleanupAssets(ack.Assets, expectedAssets) || ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != missingCleanupAcknowledgementID(ack) {
+		return ack, fmt.Errorf("missing-cleanup acknowledgement %s has invalid immutable evidence", path)
+	}
+	return ack, nil
+}
+
+func validateMissingCleanupAcknowledgement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, path string, timeout time.Duration, retry int) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	ack, err := readMissingCleanupAcknowledgement(path, receipt)
+	if err != nil {
+		return ack, err
+	}
+	observed, err := inspectMissingWorktreeMergeCleanup(ctx, projectsRoot, receipt, ack.Actor, ack.Reason, timeout, retry)
+	if err != nil {
+		return ack, err
+	}
+	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	containsAcknowledgedTarget, ancestorErr := isMergeAncestor(ctx, canonical, ack.CurrentTargetSHA, observed.CurrentTargetSHA)
+	if ancestorErr != nil || !containsAcknowledgedTarget {
+		if ancestorErr == nil {
+			ancestorErr = fmt.Errorf("current remote target %s no longer contains acknowledged target %s", observed.CurrentTargetSHA, ack.CurrentTargetSHA)
+		}
+		return ack, ancestorErr
+	}
+	// A forward target advance is benign. Preserve and compare the exact target
+	// which the immutable acknowledgement originally observed.
+	observed.CurrentTargetSHA = ack.CurrentTargetSHA
+	observed.ID = missingCleanupAcknowledgementID(observed)
+	if !sameMissingCleanupAcknowledgement(ack, observed) {
+		return ack, fmt.Errorf("missing-cleanup acknowledgement %s no longer matches its receipt or absent assets", path)
+	}
+	return ack, nil
 }
 
 func persistValidationFailureSupersession(path string, ack WorktreeMergeValidationFailureSupersession) error {
@@ -1312,6 +2065,9 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
+	if err := validatePrepareFailureSupersessionReceipt(receipt, receipt.ReceiptPath); err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, err
+	}
 	var ack WorktreeMergeValidationFailureSupersession
 	if err := json.Unmarshal(contents, &ack); err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("decode validation-failed supersession %s: %w", path, err)
@@ -1321,13 +2077,59 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	if ack.SchemaVersion != worktreeMergeValidationFailureSupersessionSchemaVersion || ack.Status != "validation_failure_superseded" || ack.AcknowledgementPath != path ||
-		ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash || ack.ReceiptStatus != WorktreeMergeValidationFailed ||
+		ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash || ack.ReceiptStatus != receipt.Status ||
 		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.ReceiptTargetSHA != receipt.TargetSHA ||
-		ack.OriginalCandidate != receipt.Candidate || ack.OriginalClaimBaseSHA == "" || ack.CurrentTargetSHA == "" || ack.Replacement.Task == "" || ack.Replacement.Worktree == "" || ack.Replacement.Branch == "" || ack.Replacement.SHA == "" || ack.ReplacementClaimBaseSHA == "" ||
+		ack.OriginalCandidate != receipt.Candidate || (ack.ObservedCandidateDescendantSHA != "" && ((receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed) || ack.ObservedCandidateDescendantSHA == receipt.Candidate.SHA)) || ack.OriginalClaimBaseSHA == "" || ack.CurrentTargetSHA == "" || ack.Replacement.Task == "" || ack.Replacement.Worktree == "" || ack.Replacement.Branch == "" || ack.Replacement.SHA == "" || ack.ReplacementClaimBaseSHA == "" ||
 		ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) || ack.ID != validationFailureSupersessionID(ack) {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("validation-failed supersession %s has invalid immutable identity", path)
 	}
 	return ack, nil
+}
+
+// readValidationFailureSupersessionWithLegacyIdentity authenticates a
+// supersession acknowledgement against the effective candidate identity. A
+// legacy receipt omitted candidate.SHA, so the immutable identity sidecar is
+// the only permitted source for that field when the supersession is read by a
+// global lane scanner. The historical receipt is never rewritten.
+func readValidationFailureSupersessionWithLegacyIdentity(path string, receipt WorktreeMergeReceipt) (WorktreeMergeValidationFailureSupersession, WorktreeMergeReceipt, error) {
+	ack, err := readValidationFailureSupersession(path, receipt)
+	if err == nil {
+		return ack, receipt, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+	if legacyErr := validateLegacyValidationFailedReceiptShape(receipt, receipt.ReceiptPath); legacyErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+
+	identityPath := legacyValidationFailureIdentityPath(receipt.ReceiptPath)
+	contents, readErr := os.ReadFile(identityPath)
+	if readErr != nil {
+		// A legacy receipt with a supersession acknowledgement requires its
+		// identity sidecar. Do not retain os.ErrNotExist here: the caller uses
+		// that sentinel only for an absent supersession acknowledgement.
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("read legacy validation-failed identity %s: %v", identityPath, readErr)
+	}
+	var identity WorktreeMergeLegacyValidationFailureIdentity
+	if readErr := json.Unmarshal(contents, &identity); readErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("decode legacy validation-failed identity %s: %w", identityPath, readErr)
+	}
+	candidate := identity.Candidate
+	if candidate.Task != receipt.Candidate.Task || filepath.Clean(candidate.Worktree) != filepath.Clean(receipt.Candidate.Worktree) ||
+		candidate.Branch != receipt.Candidate.Branch || candidate.SHA == "" || candidate.SHA != receipt.Validation.Revision {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("legacy validation-failed identity %s has mismatched candidate identity", identityPath)
+	}
+	if _, readErr := readLegacyValidationFailureIdentity(identityPath, receipt, candidate); readErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, readErr
+	}
+	effective := receipt
+	effective.Candidate = candidate
+	ack, err = readValidationFailureSupersession(path, effective)
+	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+	return ack, effective, nil
 }
 
 // hasValidationFailureSupersession refuses to treat a historical self-
@@ -1335,7 +2137,7 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 // live receipt, claim, source, target, and candidate evidence.
 func hasValidationFailureSupersession(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
 	ackPath := validationFailureSupersessionPath(receipt.ReceiptPath)
-	ack, err := readValidationFailureSupersession(ackPath, receipt)
+	ack, effectiveReceipt, err := readValidationFailureSupersessionWithLegacyIdentity(ackPath, receipt)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -1343,7 +2145,7 @@ func hasValidationFailureSupersession(ctx context.Context, projectsRoot string, 
 		return false, err
 	}
 	if ack.Replacement == ack.OriginalCandidate {
-		if correctionErr := validateSelfSupersessionCorrection(ctx, projectsRoot, receipt, ack); correctionErr != nil {
+		if correctionErr := validateSelfSupersessionCorrection(ctx, projectsRoot, effectiveReceipt, ack); correctionErr != nil {
 			if errors.Is(correctionErr, os.ErrNotExist) {
 				return false, fmt.Errorf("validation-failed supersession %s is a self-supersession and requires an append-only correction", ackPath)
 			}
@@ -1378,8 +2180,16 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 	if err != nil {
 		return fmt.Errorf("validate corrected self-supersession replacement: %w", err)
 	}
-	if replacement != correction.CorrectedReplacement || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
+	if replacement.Task != correction.CorrectedReplacement.Task || filepath.Clean(replacement.Worktree) != filepath.Clean(correction.CorrectedReplacement.Worktree) ||
+		replacement.Branch != correction.CorrectedReplacement.Branch || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
 		return errors.New("corrected self-supersession replacement identity or claim base no longer matches recorded evidence")
+	}
+	containsRecordedReplacement, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, correction.CorrectedReplacement.SHA, replacement.SHA)
+	if ancestorErr != nil {
+		return fmt.Errorf("verify corrected self-supersession replacement ancestry: %w", ancestorErr)
+	}
+	if !containsRecordedReplacement {
+		return errors.New("corrected self-supersession replacement does not retain its recorded replacement commit")
 	}
 	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, replacement.Worktree, receipt); err != nil {
 		return fmt.Errorf("validate corrected self-supersession historical source: %w", err)
@@ -1389,9 +2199,15 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 		return err
 	}
 	if currentTarget != supersession.CurrentTargetSHA || currentTarget != correction.CurrentTargetSHA {
-		return fmt.Errorf("corrected self-supersession target drifted from recorded %s to %s", correction.CurrentTargetSHA, currentTarget)
+		containsRecordedTarget, targetAncestorErr := isMergeAncestor(ctx, replacement.Worktree, correction.CurrentTargetSHA, currentTarget)
+		if targetAncestorErr != nil {
+			return fmt.Errorf("verify corrected self-supersession target ancestry: %w", targetAncestorErr)
+		}
+		if !containsRecordedTarget {
+			return fmt.Errorf("corrected self-supersession target %s is not a descendant of recorded target %s", currentTarget, correction.CurrentTargetSHA)
+		}
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
+	for _, root := range append([]string{correction.CorrectedReplacement.SHA, originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {

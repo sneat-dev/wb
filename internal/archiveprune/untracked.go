@@ -16,8 +16,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 const untrackedMaxDepth = 128

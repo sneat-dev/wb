@@ -37,11 +37,13 @@ That recursive auto-discovery only reaches a session working inside this
 repository. A session orchestrating any other repository, with `wb` installed
 globally, gets none of it -- there is no checkout of `sneat-dev/wb` to
 recurse into. `wb skills sync` (`wb-skills`) is the separate mechanism for
-that case: it embeds these same skills in the `wb` binary itself and installs
-them into each harness's own skills directory (`~/.claude/skills`,
-`~/.cursor/skills`, `~/.codex/skills`), so they resolve in every project.
-`wb self-update` runs it automatically; `wb` warns on stderr when the two
-drift apart.
+that case. It passes the immutable plugin revision embedded in the installed
+binary to `github.com/strongo/cli-helpers/skillsync`, which owns target
+selection, locking, verified legacy-marker import, plugin-scoped ownership,
+and crash-safe replacement. Ordinary sync is offline and matched to the
+installed CLI; `--newer-compatible` is the only mode that may query for a newer
+compatible published plugin revision. `wb self-update` runs the matched sync
+automatically, and the SessionStart hook reports version drift once.
 
 ## Completion contract
 

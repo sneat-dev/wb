@@ -87,7 +87,11 @@ func fakeGHOnPath(t *testing.T, withGH bool, openBranch string) string {
 // (the tier: 0, 1, or 2) and combined output.
 func runPushTier(t *testing.T, repo, stdin, path string) (exitCode int, output string) {
 	t.Helper()
-	binary := buildWB(t)
+	return runPushTierBinary(t, buildWB(t), repo, stdin, path)
+}
+
+func runPushTierBinary(t *testing.T, binary, repo, stdin, path string) (exitCode int, output string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), smokeDeadline)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "hooks", "push-tier")
@@ -212,8 +216,9 @@ func TestPushTierCLISixFoundationalScenarios(t *testing.T) {
 func TestPushTierCLINeverBlocksOnMissingGH(t *testing.T) {
 	repo := pushTierTestRepo(t)
 	offlinePath := fakeGHOnPath(t, false, "")
+	binary := buildWB(t)
 	started := time.Now()
-	code, _ := runPushTier(t, repo, refLine("refs/heads/no-pr", fakeOID('a'), "refs/heads/no-pr", zeroOID()), offlinePath)
+	code, _ := runPushTierBinary(t, binary, repo, refLine("refs/heads/no-pr", fakeOID('a'), "refs/heads/no-pr", zeroOID()), offlinePath)
 	elapsed := time.Since(started)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)

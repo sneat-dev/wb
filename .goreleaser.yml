@@ -88,30 +88,10 @@ homebrew_casks:
     ids:
       - wb
     description: "wb — the Sneat workbench CLI: fleet-wide GitHub repo sync and config-driven recipes."
-    homepage: https://sneat.dev/workbench/
+    homepage: https://sneat.work/bench
     license: MIT
     repository:
       owner: sneat-dev
       name: homebrew-tap
       branch: main
       token: "{{ .Env.GORELEASER_GITHUB_TOKEN }}"
-    # The released binary is unsigned and un-notarised, so a cask install
-    # leaves com.apple.quarantine on it and macOS refuses to execute it —
-    # the process parks at _dyld_start with libSystem never mapped, which
-    # presents as an indefinite hang with no output, no error and no exit
-    # code rather than as a permission failure. Every macOS install of
-    # v0.13.0 and earlier was unusable this way; see issue #24.
-    #
-    # Clearing the attribute at install time is GoReleaser's documented
-    # remedy. Notarising the binaries would be stronger and would make this
-    # unnecessary — this hook is the cheap fix, not the right one.
-    #
-    # Note this cannot repair an ALREADY-installed copy: Gatekeeper caches
-    # its deny verdict, and replacing the file at the same path does not
-    # clear it. Existing installs must reinstall or build from source.
-    hooks:
-      post:
-        install: |
-          if system_command "/usr/bin/xattr", args: ["-h"], print_stderr: false
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/wb"]
-          end

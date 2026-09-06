@@ -370,6 +370,10 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 	if err := os.WriteFile(untracked, []byte("expensive to rebuild\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	prompt := filepath.Join(t.TempDir(), "recycle-prompt.md")
+	if err := os.WriteFile(prompt, []byte("recycle this completed task\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	outcome, err := Rename(context.Background(), RenameOptions{
 		ProjectsRoot:       fixture.projectsRoot,
@@ -377,7 +381,9 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 		NewTask:            "new-task",
 		PreserveCachePaths: []string{"node_modules"},
 		DeleteRemote:       true,
-		Apply:              true, WorkLog: WorkLogOptions{Model: "unknown"},
+		Apply:              true, WorkLog: WorkLogOptions{
+			Model: "unknown", OriginalPrompt: prompt, RequireOriginalPrompt: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -454,6 +460,66 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 		}
 	}
 	t.Fatalf("old task root has no retired lock sentinel: %#v", entries)
+}
+
+// TestRenameInterruptedPreApplyReservationIsTerminallyRecoverableAndRetryable
+// covers the exact window after a recycle has retained the new prompt but
+// before it has sealed an old claim or moved a checkout. The recovery must not
+// need --remote because no branch or remote ref was ever created for the new
+// task, and retry must reuse the source task without manual residue deletion.
+func TestRenameInterruptedPreApplyReservationIsTerminallyRecoverableAndRetryable(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "preapply-source", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(t.TempDir(), "recycle-prompt.md")
+	if err := os.WriteFile(prompt, []byte("retry this recycle after interruption\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options := RenameOptions{
+		ProjectsRoot: fixture.projectsRoot, OldTask: "preapply-source", NewTask: "preapply-destination",
+		DeleteRemote: true, Apply: true,
+		WorkLog:                  WorkLogOptions{Model: "unknown", OriginalPrompt: prompt, RequireOriginalPrompt: true},
+		afterPreApplyReservation: func() error { return errors.New("injected pre-apply interruption") },
+	}
+	if _, err := Rename(context.Background(), options); err == nil || !strings.Contains(err.Error(), "injected pre-apply interruption") {
+		t.Fatalf("pre-apply interruption error = %v", err)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("pre-apply interruption moved source worktree: %v", statErr)
+	}
+	reservations, err := findPreApplyRenameReservations(fixture.home, "preapply-destination")
+	if err != nil || len(reservations) != 1 {
+		t.Fatalf("pre-apply reservation = %#v, err=%v", reservations, err)
+	}
+
+	recovered, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "preapply-destination", Disposition: AbortDiscarded, Apply: true,
+	})
+	if err != nil || len(recovered) != 1 || !recovered[0].Applied || len(recovered[0].ReservationRuns) != 1 {
+		t.Fatalf("pre-apply abort recovery = %#v, err=%v", recovered, err)
+	}
+	if remaining, findErr := findPreApplyRenameReservations(fixture.home, "preapply-destination"); findErr != nil || len(remaining) != 1 || !remaining[0].terminalized {
+		t.Fatalf("terminalized reservation receipt = %#v, err=%v", remaining, findErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "preapply-destination")); !os.IsNotExist(statErr) {
+		t.Fatalf("pre-apply task shell remains after terminal recovery: %v", statErr)
+	}
+	recoveredRetry, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "preapply-destination", Disposition: AbortDiscarded, Apply: true,
+	})
+	if err != nil || len(recoveredRetry) != 1 || !recoveredRetry[0].Applied || len(recoveredRetry[0].ReservationRuns) != 1 {
+		t.Fatalf("idempotent pre-apply abort recovery = %#v, err=%v", recoveredRetry, err)
+	}
+
+	options.afterPreApplyReservation = nil
+	retried, err := Rename(context.Background(), options)
+	if err != nil || len(retried.Results) != 1 || !retried.Results[0].Applied {
+		t.Fatalf("retry after terminal reservation recovery = %#v, err=%v", retried, err)
+	}
 }
 
 func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *testing.T) {

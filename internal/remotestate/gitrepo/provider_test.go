@@ -82,6 +82,10 @@ func TestPublishClonesWritesCommitsAndPushes(t *testing.T) {
 			t.Fatalf("origin tree %q lacks %s", files, want)
 		}
 	}
+	readmeContents := gitIn(t, origin, "show", "main:README.md")
+	if !strings.Contains(readmeContents, "https://sneat.work/bench") {
+		t.Fatalf("published README lacks canonical Workbench URL: %s", readmeContents)
+	}
 	if msg := gitIn(t, origin, "log", "-1", "--format=%s", "main"); msg != "wb: publish alice/laptop @ 2026-08-23T12:00:00Z" {
 		t.Fatalf("commit message = %q", msg)
 	}

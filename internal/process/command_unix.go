@@ -16,7 +16,14 @@ import (
 var cancellationGrace = 250 * time.Millisecond
 
 func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	return commandContextInteractive(ctx, false, name, args...)
+}
+
+func commandContextInteractive(ctx context.Context, interactive bool, name string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(ctx, name, args...)
+	if interactive {
+		return command
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		if command.Process == nil {

@@ -9,6 +9,12 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 )
 
+var (
+	sessionRegisterCurrentPID     = os.Getpid
+	sessionRegisterParentPID      = os.Getppid
+	sessionRegisterRuntimeProcess = session.IsRuntimeProcess
+)
+
 func newSessionRegisterCmd() *cobra.Command {
 	var record session.Record
 	command := &cobra.Command{
@@ -35,7 +41,14 @@ agent, before any mutating command:
 
   wb session register --pid $PPID --runtime codex --model <exact-model>
 
-Do not substitute $$ (the intermediate shell) or let a hook guess the PID. An
+On systems where the shell tail-execs its final command, WB may see the live
+Codex app-server as its direct parent. WB accepts that parent only when its
+kernel-reported executable is codex and its process role is app-server. For a
+shell-safe form that also works with older WB builds, keep the shell alive:
+
+  wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"
+
+Do not substitute $$ (the intermediate shell) or register WB's own PID. An
 agent-mode create requires this live registration; for an intentional human
 operation use --mode manual --initiator <human> instead.
 
@@ -43,11 +56,14 @@ Registering again for the same PID replaces the record, so a session that
 corrects its model does not have to clean up after itself.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			// A hook or wrapper commonly expands $$ to the shell that launched
-			// WB. That process is short-lived and would make every later claim
-			// look orphaned. The supported shell form is $PPID, which names the
-			// live harness above that intermediate shell.
-			if record.PID == os.Getppid() {
+			// Never register WB itself: a tail-exec'd shell makes $$ become the
+			// WB PID. A live shell remains rejected, but a tail-exec'd command
+			// may make the harness the direct parent, so accept that case only
+			// when kernel process evidence identifies the declared runtime.
+			if record.PID == sessionRegisterCurrentPID() {
+				return fmt.Errorf("session PID %d is WB itself; register the live harness with --pid $PPID from its tool-call shell", record.PID)
+			}
+			if record.PID == sessionRegisterParentPID() && !sessionRegisterRuntimeProcess(record.PID, record.Runtime) {
 				return fmt.Errorf("session PID %d is the intermediate shell; register the live harness with --pid $PPID from its tool-call shell", record.PID)
 			}
 			directory, err := sessionDir()

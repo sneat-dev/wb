@@ -41,6 +41,18 @@ Session records MUST retain the machine, runtime, model, optional native
 harness ID, optional tmux name, predecessor WB session ID, and handoff ID.
 Existing PID-only records MUST remain readable.
 
+#### REQ: exec-safe-session-registration
+
+`wb session register` MUST refuse WB's own PID and a declared PID whose
+authoritative process evidence identifies an intermediate shell or wrapper.
+When a shell tail-execs the final WB command, registration MAY name the
+process that is WB's direct parent only when authoritative process evidence
+matches the declared harness runtime and role. For Codex, that evidence MUST
+identify the `codex` executable basename and the exact `app-server` role
+argument; nested configuration paths or script names MUST NOT affect the
+classification. The command documentation MUST include a shell-safe form
+that keeps the intermediate shell alive for older WB builds.
+
 #### REQ: session-target-configuration
 
 Cross-machine targets MUST be keyed by WB machine name and MUST keep courier
@@ -213,6 +225,24 @@ Scenario: Move a registered session through SSH
 Given a clean managed named branch whose exact handoff commit can be pushed and a target `hetzner-vm1` configured with `ssh.host: hetzner-vm1`
 When the registered source agent runs `wb session move --to hetzner-vm1 --via ssh` with a non-empty handover
 Then the target checks out the exact pushed commit in an isolated worktree and starts one detached tmux successor using the source harness with the handover path in its initial prompt
+
+### AC: exec-safe-session-registration
+
+**Requirements:** agent-session-move#req:stable-wb-session-identity,
+agent-session-move#req:exec-safe-session-registration
+
+Scenario: Register a tail-exec Codex app-server
+Given WB is launched as the final command of a shell and the requested PID is
+the live Codex app-server parent
+When the process evidence identifies executable basename `codex` and exact role
+`app-server`, even with nested MCP script paths in its arguments
+Then `wb session register` records the requested harness PID
+
+Scenario: Refuse an intermediate shell or WB self-registration
+Given the requested PID is the shell that launched WB or WB's own PID
+When `wb session register` is invoked
+Then WB refuses before writing a session record and explains the safe `$PPID`
+registration form
 
 ### AC: explicit-cross-harness-move
 
