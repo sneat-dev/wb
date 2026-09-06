@@ -294,34 +294,194 @@ func TestInspectClassicProtectionTreats404AsNoneAndReportsLinearHistory(t *testi
 	original := mergePolicyRead
 	t.Cleanup(func() { mergePolicyRead = original })
 	mergePolicyRead = func(context.Context, string) ([]byte, error) { return nil, errors.New("gh: Not Found (HTTP 404)") }
-	sha, linear, conflicts, err := inspectClassicProtection(context.Background(), "acme/app", "main")
-	if err != nil || sha != "none" || linear || len(conflicts) != 0 {
-		t.Fatalf("404 result = sha %q linear %v conflicts %#v err %v", sha, linear, conflicts, err)
+	inspection, unavailable, err := inspectClassicProtectionSnapshot(context.Background(), "acme/app", "main")
+	if err != nil || unavailable || inspection.ProtectionSHA != "none" || inspection.ClassicLinear || len(inspection.Conflicts) != 0 {
+		t.Fatalf("404 result = %#v unavailable %v err %v", inspection, unavailable, err)
 	}
 	mergePolicyRead = func(context.Context, string) ([]byte, error) {
 		return []byte(`{"required_linear_history":{"enabled":true}}`), nil
 	}
-	_, linear, conflicts, err = inspectClassicProtection(context.Background(), "acme/app", "main")
-	if err != nil || !linear || len(conflicts) != 0 {
-		t.Fatalf("linear result = linear %v conflicts %#v err %v", linear, conflicts, err)
+	inspection, unavailable, err = inspectClassicProtectionSnapshot(context.Background(), "acme/app", "main")
+	if err != nil || unavailable || !inspection.ClassicLinear || len(inspection.Conflicts) != 0 {
+		t.Fatalf("linear result = %#v unavailable %v err %v", inspection, unavailable, err)
 	}
 }
 
-func TestApplyClassicLinearHistoryUsesDedicatedDeleteAndRecordsPartialResult(t *testing.T) {
+func TestInspectMergePolicyCorroboratesExactPrivatePlanGate(t *testing.T) {
+	original := mergePolicyRead
+	t.Cleanup(func() { mergePolicyRead = original })
+	repositoryBody := []byte(`{"default_branch":"main","allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"merge_commit_title":"PR_TITLE","merge_commit_message":"PR_BODY"}`)
+	planGate := errors.New("gh: " + githubPolicyPlanGateMessage + " (HTTP 403)")
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch {
+		case endpoint == "repos/acme/private":
+			return repositoryBody, nil
+		case strings.HasSuffix(endpoint, "/protection"), strings.Contains(endpoint, "/rules/branches/"):
+			return nil, planGate
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	repo := inspectMergePolicyRepository(context.Background(), "acme/private")
+	if repo.Disposition != "drift" || repo.Error != "" || repo.ProtectionSHA != mergePolicyUnavailableByPlan || repo.RulesSHA != mergePolicyUnavailableByPlan {
+		t.Fatalf("repository = %#v", repo)
+	}
+}
+
+func TestInspectMergePolicyPlanGateFailsClosedUnlessExactAndCorroborated(t *testing.T) {
+	original := mergePolicyRead
+	t.Cleanup(func() { mergePolicyRead = original })
+	exact := errors.New("gh: " + githubPolicyPlanGateMessage + " (HTTP 403)")
+	cases := []struct {
+		name       string
+		protection error
+		rules      error
+	}{
+		{name: "generic forbidden", protection: errors.New("gh: Forbidden (HTTP 403)"), rules: errors.New("gh: Forbidden (HTTP 403)")},
+		{name: "changed message", protection: errors.New("gh: Upgrade your plan to enable this feature. (HTTP 403)"), rules: errors.New("gh: Upgrade your plan to enable this feature. (HTTP 403)")},
+		{name: "only classic is gated", protection: exact},
+		{name: "only effective rules are gated", protection: errors.New("gh: Not Found (HTTP 404)"), rules: exact},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch {
+				case endpoint == "repos/acme/private":
+					return []byte(`{"default_branch":"main"}`), nil
+				case strings.HasSuffix(endpoint, "/protection"):
+					if test.protection != nil {
+						return nil, test.protection
+					}
+					return []byte(`{}`), nil
+				case strings.Contains(endpoint, "/rules/branches/"):
+					if test.rules != nil {
+						return nil, test.rules
+					}
+					return []byte(`[]`), nil
+				default:
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			repo := inspectMergePolicyRepository(context.Background(), "acme/private")
+			if repo.Disposition != "error" || repo.Error == "" {
+				t.Fatalf("repository = %#v", repo)
+			}
+		})
+	}
+}
+
+func TestApplyMergePolicyRechecksPlanGateBeforePatch(t *testing.T) {
 	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
 	repositoryBody := []byte(`{"default_branch":"main"}`)
-	protectionBody := []byte(`{"required_linear_history":{"enabled":true},"required_status_checks":{"strict":true,"contexts":["CI"]},"enforce_admins":{"enabled":true}}`)
+	exact := errors.New("gh: " + githubPolicyPlanGateMessage + " (HTTP 403)")
+	classicReads := 0
 	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
-		if strings.HasSuffix(endpoint, "/protection") {
-			return protectionBody, nil
+		switch {
+		case endpoint == "repos/acme/private":
+			return repositoryBody, nil
+		case strings.HasSuffix(endpoint, "/protection"):
+			classicReads++
+			if classicReads == 1 {
+				return nil, exact
+			}
+			return nil, errors.New("gh: Forbidden (HTTP 403)")
+		case strings.Contains(endpoint, "/rules/branches/"):
+			return nil, exact
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
-		return repositoryBody, nil
+	}
+	mutated := false
+	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{}
+	}
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{{
+		Repository: "acme/private", DefaultBranch: "main", Disposition: "drift",
+		ObservedSHA: mustRepositoryPolicySHA(t, repositoryBody), ProtectionSHA: mergePolicyUnavailableByPlan, RulesSHA: mergePolicyUnavailableByPlan,
+	}}}
+	if err := applyMergePolicy(context.Background(), &report, 1, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if mutated || report.Repositories[0].Disposition != "blocked" || classicReads != 2 {
+		t.Fatalf("mutated=%v reads=%d repository=%#v", mutated, classicReads, report.Repositories[0])
+	}
+}
+
+func TestApplyMergePolicyAllowsStableCorroboratedPlanGate(t *testing.T) {
+	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
+	repositoryBody := []byte(`{"default_branch":"main"}`)
+	exact := errors.New("gh: " + githubPolicyPlanGateMessage + " (HTTP 403)")
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch {
+		case endpoint == "repos/acme/private":
+			return repositoryBody, nil
+		case strings.HasSuffix(endpoint, "/protection"), strings.Contains(endpoint, "/rules/branches/"):
+			return nil, exact
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutations := 0
+	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if got := strings.Join(args, " "); !strings.Contains(got, "--method PATCH repos/acme/private") {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + got)}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{{
+		Repository: "acme/private", DefaultBranch: "main", Disposition: "drift",
+		ObservedSHA: mustRepositoryPolicySHA(t, repositoryBody), ProtectionSHA: mergePolicyUnavailableByPlan, RulesSHA: mergePolicyUnavailableByPlan,
+	}}}
+	if err := applyMergePolicy(context.Background(), &report, 1, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 1 || report.Repositories[0].Disposition != "applied" {
+		t.Fatalf("mutations=%d repository=%#v", mutations, report.Repositories[0])
+	}
+}
+
+func TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult(t *testing.T) {
+	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
+	repositoryBody := []byte(`{"default_branch":"main"}`)
+	protectionBody := []byte(`{
+		"required_status_checks":{"url":"ignored","strict":true,"contexts":["CI"],"contexts_url":"ignored","checks":[{"context":"Build","app_id":12345},{"context":"Portable","app_id":null}]},
+		"enforce_admins":{"url":"ignored","enabled":true},
+		"required_pull_request_reviews":{"url":"ignored","dismissal_restrictions":{"url":"ignored","users":[{"login":"octocat","id":1}],"teams":[{"slug":"reviewers","id":2}],"apps":[{"slug":"review-app","id":3}]},"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":2,"require_last_push_approval":true,"bypass_pull_request_allowances":{"users":[{"login":"maintainer"}],"teams":[{"slug":"release"}],"apps":[{"slug":"release-app"}]}},
+		"restrictions":{"url":"ignored","users":[{"login":"deployer"}],"teams":[{"slug":"platform"}],"apps":[{"slug":"deploy-app"}]},
+		"required_linear_history":{"enabled":true},"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":false},"block_creations":{"enabled":true},"required_conversation_resolution":{"enabled":true},"lock_branch":{"enabled":false},"allow_fork_syncing":{"enabled":true},
+		"required_signatures":{"url":"ignored","enabled":true},"url":"ignored"
+	}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch {
+		case strings.HasSuffix(endpoint, "/protection"):
+			return protectionBody, nil
+		case strings.Contains(endpoint, "/rules/branches/"):
+			return []byte(`[]`), nil
+		default:
+			return repositoryBody, nil
+		}
 	}
 	var calls []string
+	var protectionInput []byte
 	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
 		call := strings.Join(args, " ")
 		calls = append(calls, call)
+		if strings.Contains(call, "--method PUT") {
+			for index, arg := range args {
+				if arg == "--input" && index+1 < len(args) {
+					var err error
+					protectionInput, err = os.ReadFile(args[index+1])
+					if err != nil {
+						return githubobserver.CommandResponse{Err: err}
+					}
+				}
+			}
+		}
 		if strings.Contains(call, "--method PATCH") {
 			return githubobserver.CommandResponse{Err: errors.New("patch failed")}
 		}
@@ -333,16 +493,28 @@ func TestApplyClassicLinearHistoryUsesDedicatedDeleteAndRecordsPartialResult(t *
 		Disposition:   "drift",
 		ObservedSHA:   mustRepositoryPolicySHA(t, repositoryBody),
 		ProtectionSHA: digestJSON(protectionBody),
+		RulesSHA:      digestJSON([]byte(`[]`)),
 		ClassicLinear: true,
 	}}}
 	if err := applyMergePolicy(context.Background(), &report, 1, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || !strings.Contains(calls[0], "--method DELETE repos/acme/app/branches/main/protection/required_linear_history") {
+	if len(calls) != 2 || !strings.Contains(calls[0], "--method PUT repos/acme/app/branches/main/protection --input") {
 		t.Fatalf("calls = %#v", calls)
 	}
-	if strings.Contains(calls[0], "--input") || strings.HasSuffix(calls[0], "/protection") {
-		t.Fatalf("classic protection must be changed only through the dedicated endpoint: %q", calls[0])
+	if strings.Contains(calls[0], "DELETE") || strings.Contains(calls[0], "required_linear_history") {
+		t.Fatalf("classic protection must use the full parent update, not a nested delete: %q", calls[0])
+	}
+	var got, want any
+	if err := json.Unmarshal(protectionInput, &got); err != nil {
+		t.Fatal(err)
+	}
+	expected := `{"required_status_checks":{"strict":true,"contexts":["CI"],"checks":[{"context":"Build","app_id":12345},{"context":"Portable","app_id":null}]},"enforce_admins":true,"required_pull_request_reviews":{"dismissal_restrictions":{"users":["octocat"],"teams":["reviewers"],"apps":["review-app"]},"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":2,"require_last_push_approval":true,"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["release"],"apps":["release-app"]}},"restrictions":{"users":["deployer"],"teams":["platform"],"apps":["deploy-app"]},"required_linear_history":false,"allow_force_pushes":true,"allow_deletions":false,"block_creations":true,"required_conversation_resolution":true,"lock_branch":false,"allow_fork_syncing":true}`
+	if err := json.Unmarshal([]byte(expected), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("protection payload = %s\nwant %s", protectionInput, expected)
 	}
 	persisted, err := os.ReadFile(report.ReportPath)
 	if err != nil {
@@ -419,6 +591,9 @@ func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
 	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
 	body := []byte(`{"default_branch":"main"}`)
 	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "/rules/branches/") {
+			return []byte(`[]`), nil
+		}
 		if strings.Contains(endpoint, "/protection") {
 			return nil, errors.New("gh: Not Found (HTTP 404)")
 		}
@@ -444,6 +619,7 @@ func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
 			Disposition:   "drift",
 			ObservedSHA:   mustRepositoryPolicySHA(t, body),
 			ProtectionSHA: "none",
+			RulesSHA:      digestJSON([]byte(`[]`)),
 		})
 	}
 	done := make(chan error, 1)
@@ -487,6 +663,9 @@ func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
 	})
 	body := []byte(`{"default_branch":"main"}`)
 	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "/rules/branches/") {
+			return []byte(`[]`), nil
+		}
 		if strings.Contains(endpoint, "/protection") {
 			return nil, errors.New("gh: Not Found (HTTP 404)")
 		}
@@ -525,6 +704,7 @@ func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
 			Disposition:   "drift",
 			ObservedSHA:   mustRepositoryPolicySHA(t, body),
 			ProtectionSHA: "none",
+			RulesSHA:      digestJSON([]byte(`[]`)),
 		})
 	}
 	done := make(chan error, 1)
