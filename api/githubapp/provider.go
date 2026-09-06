@@ -23,29 +23,29 @@ var ErrProjectionNotFound = errors.New("workbench projection not found")
 // Workbench-owned projector. Public responses require PublicOptIn; private
 // responses require the host membership resolver below.
 type ProjectionDocument struct {
-	Scope       Scope     `json:"scope"`
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Summary     Summary   `json:"summary"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	PublicOptIn bool      `json:"public_opt_in"`
+	Scope       Scope     `json:"scope" firestore:"scope"`
+	ID          string    `json:"id" firestore:"id"`
+	DisplayName string    `json:"display_name" firestore:"display_name"`
+	Summary     Summary   `json:"summary" firestore:"summary"`
+	UpdatedAt   time.Time `json:"updated_at" firestore:"updated_at"`
+	PublicOptIn bool      `json:"public_opt_in" firestore:"public_opt_in"`
 }
 
 type SeriesDocument struct {
-	Scope  Scope         `json:"scope"`
-	ID     string        `json:"id"`
-	Metric string        `json:"metric"`
-	Points []SeriesPoint `json:"points"`
+	Scope  Scope         `json:"scope" firestore:"scope"`
+	ID     string        `json:"id" firestore:"id"`
+	Metric string        `json:"metric" firestore:"metric"`
+	Points []SeriesPoint `json:"points" firestore:"points"`
 }
 
 type LeaderboardDocument struct {
-	Metric     string             `json:"metric"`
-	Entries    []LeaderboardEntry `json:"entries"`
-	PublicOnly bool               `json:"public_only"`
+	Metric     string             `json:"metric" firestore:"metric"`
+	Entries    []LeaderboardEntry `json:"entries" firestore:"entries"`
+	PublicOnly bool               `json:"public_only" firestore:"public_only"`
 }
 
 type PublicLatestMerges struct {
-	Entries []LatestMerge `json:"entries"`
+	Entries []LatestMerge `json:"entries" firestore:"entries"`
 }
 
 // ProjectionStore is the narrow durable persistence adapter supplied by the

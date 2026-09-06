@@ -60,11 +60,11 @@ type Link struct {
 
 // Summary is the compact dashboard card set.
 type Summary struct {
-	Repositories int `json:"repositories"`
-	OpenPulls    int `json:"open_pulls"`
-	MergedPulls  int `json:"merged_pulls"`
-	OpenIssues   int `json:"open_issues"`
-	Releases     int `json:"releases"`
+	Repositories int `json:"repositories" firestore:"repositories"`
+	OpenPulls    int `json:"open_pulls" firestore:"open_pulls"`
+	MergedPulls  int `json:"merged_pulls" firestore:"merged_pulls"`
+	OpenIssues   int `json:"open_issues" firestore:"open_issues"`
+	Releases     int `json:"releases" firestore:"releases"`
 }
 
 // Dashboard is the top-level dashboard response.
@@ -86,8 +86,8 @@ type Stat struct {
 
 // SeriesPoint can render either a graph point or a table row.
 type SeriesPoint struct {
-	At    time.Time `json:"at"`
-	Value int64     `json:"value"`
+	At    time.Time `json:"at" firestore:"at"`
+	Value int64     `json:"value" firestore:"value"`
 }
 
 // Series is a named time-series for graph and table consumers.
@@ -101,10 +101,10 @@ type Series struct {
 // LeaderboardEntry is intentionally small so public leaderboards do not leak
 // private repository names or private activity counts.
 type LeaderboardEntry struct {
-	Rank        int    `json:"rank"`
-	SubjectID   string `json:"subject_id"`
-	DisplayName string `json:"display_name"`
-	Value       int64  `json:"value"`
+	Rank        int    `json:"rank" firestore:"rank"`
+	SubjectID   string `json:"subject_id" firestore:"subject_id"`
+	DisplayName string `json:"display_name" firestore:"display_name"`
+	Value       int64  `json:"value" firestore:"value"`
 }
 
 // Leaderboard groups ranked values for a requested metric.
@@ -115,15 +115,15 @@ type Leaderboard struct {
 
 // LatestMerge gives the dashboard every navigable artifact around a merge.
 type LatestMerge struct {
-	Repository     string    `json:"repository"`
-	PullRequest    int       `json:"pull_request"`
-	MergedAt       time.Time `json:"merged_at"`
-	PullRequestURL string    `json:"pull_request_url,omitempty"`
-	IssueURL       string    `json:"issue_url,omitempty"`
-	MergeCommitSHA string    `json:"merge_commit_sha,omitempty"`
-	MergeCommitURL string    `json:"merge_commit_url,omitempty"`
-	ReleaseURL     string    `json:"release_url,omitempty"`
-	ReceiptURL     string    `json:"receipt_url,omitempty"`
+	Repository     string    `json:"repository" firestore:"repository"`
+	PullRequest    int       `json:"pull_request" firestore:"pull_request"`
+	MergedAt       time.Time `json:"merged_at" firestore:"merged_at"`
+	PullRequestURL string    `json:"pull_request_url,omitempty" firestore:"pull_request_url,omitempty"`
+	IssueURL       string    `json:"issue_url,omitempty" firestore:"issue_url,omitempty"`
+	MergeCommitSHA string    `json:"merge_commit_sha,omitempty" firestore:"merge_commit_sha,omitempty"`
+	MergeCommitURL string    `json:"merge_commit_url,omitempty" firestore:"merge_commit_url,omitempty"`
+	ReleaseURL     string    `json:"release_url,omitempty" firestore:"release_url,omitempty"`
+	ReceiptURL     string    `json:"receipt_url,omitempty" firestore:"receipt_url,omitempty"`
 }
 
 // Access wraps a read-model result with its disclosure class.
