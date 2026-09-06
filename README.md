@@ -8,6 +8,8 @@ Part of [Sneat.work](https://sneat.work/bench). The CLI
 and executable stay intentionally short: `wb`.
 
 The canonical public Workbench site is [sneat.work/bench](https://sneat.work/bench).
+For the product story, decision guide, and measured evidence, see
+[Why/when to use WB CLI? How it saves you time and money.](docs/why-use-wb.md)
 
 ## WB
 

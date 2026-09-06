@@ -9,6 +9,12 @@ same fact has already been observed for the exact revision.
 The practical promise is simple: spend people and CI time on a change once, then
 carry forward the proof needed to publish, land, recover, or explain it.
 
+The core idea is that delivery cost is larger than command runtime. It also
+includes waiting, repeating the same proof, reading logs, recovering interrupted
+work, coordinating parallel agents, and cleaning up afterward. WB is useful when
+that coordination cost is material. Keep the fast feedback close to the edit;
+move repeated, slow, and recoverable work into one governed pipeline.
+
 ## When WB helps
 
 Use WB when a change needs one or more of these:
@@ -25,6 +31,15 @@ For a small one-file change in one clean repository, ordinary Git plus that
 repository's test command is often enough. WB should not be added merely to
 wrap a command, and it cannot remove an inherently slow compile, integration
 test, review, or external approval.
+
+| Situation | Start with | Why |
+| --- | --- | --- |
+| One clean repository, one quick command, no parallel work | Ordinary Git and the repository command | Coordination costs less than introducing another lifecycle. |
+| An agent may be interrupted or replaced | WB worktree and Work Log | The next agent can resume from recorded identities and receipts. |
+| Several agents share one machine | WB worktrees plus governed runs | Isolation and CPU admission prevent checkout collisions and process stampedes. |
+| A change crosses repositories or dependency levels | WB stream or dependency campaign | Publication order, batching, and downstream state stay explicit. |
+| A PR must prove an exact head before landing | WB CI wait and receipt-backed landing | The merge decision uses remote evidence for the intended revision. |
+| The same exact tree would be validated again | WB exact-tree receipt reuse | Reuse removes duplicate work while retaining the original proof. |
 
 ## The two useful journeys
 
@@ -70,6 +85,9 @@ a fleet-wide claim.
 
 | Date | Evidence | Result | Method/source | Limitation |
 | --- | --- | --- | --- | --- |
+| 2026-09-04 | Local WB push validation | 501 push attempts consumed about 23.4 machine-hours in 30 days; p50 94.2 seconds, p90 422.8 seconds, p95 602.4 seconds | Read-only WB hook-event scan recorded in the Agent SDLC Throughput feature | Historical local activity; mixes repositories and change sizes and does not equal human attention time. |
+| 2026-09-04 | Local WB commit checks | p50 76 milliseconds, p90 407 milliseconds, p95 787 milliseconds | The same read-only hook-event scan | Historical local activity; supports keeping focused formatting and static feedback near edits, not removing it. |
+| 2026-09-04 | Laptop and VM lifecycle completion | Laptop: 2,126 claims, 84.57% sealed. VM: 383 claims, 78.07% sealed. | Redacted WB Work Log analysis | A sealed claim is lifecycle evidence, not proof that the delivered change was valuable. |
 | 2026-09-06 | Focused WB tests | Under 1.5 seconds | Focused local WB test command recorded during the SDLC work | Local developer-machine sample; not comparable to a full GitHub Actions matrix. |
 | 2026-09-06 | Focused Go coverage cache reuse | First covered package run: 0.319 seconds. An identical second run with a different coverprofile path reported `(cached)` after WB removed its default `-count=1`. | One fresh `GOCACHE`, then two focused covered-package runs with unchanged source and distinct coverprofile outputs. | One package and local toolchain; cache reuse depends on unchanged source and does not predict full-suite or remote CI timing. |
 | 2026-09-06 | Broad WB PR CI | About 5–6.5 minutes | One observed broad GitHub PR CI cycle | One workflow/run shape; queue time and cache state can change it. |
@@ -83,6 +101,10 @@ matrix](cli-flag-matrix.md) and the machine-readable
 [capability inventory](../ai/capabilities.json). Those documents describe what
 the commands promise; this page records whether a concrete run produced a
 measurable benefit.
+
+The [Agent SDLC Throughput feature](../spec/features/agent-sdlc-throughput/README.md)
+is the detailed measurement and product-decision source. Update that evidence
+first, then update the corresponding narrative and reusable proof point here.
 
 ## Reusable proof points
 
