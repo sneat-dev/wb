@@ -57,3 +57,13 @@ The provider does not choose Firestore paths, Firebase projects, GitHub
 credentials, or aggregation credentials. Sneat Go can bind those through its
 wire-only adapter once the corresponding durable store and membership service
 are configured.
+
+## Projection delivery boundary
+
+The projector uses a `ProjectionDeliveryStore` claim before refresh. The claim
+is atomic across concurrent workers, and `ReleaseDelivery` makes failed
+refreshes or writes retryable while preserving the append-only delivery audit.
+The writer receives the delivery ID with each repository, organization, and
+latest-merge batch and must make those operations idempotent. The final
+`CommitDeliveryAndWakeup` call records the terminal delivery and coalesced
+wakeup only after all projection writes succeed.

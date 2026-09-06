@@ -34,11 +34,21 @@ type ProjectionWriter interface {
 	WriteLatestMerges(context.Context, string, []LatestMerge) error
 }
 
+// ProjectionDeliveryStore extends DeliveryStore with an atomic in-flight
+// claim. ClaimDelivery returns false for a committed or currently claimed
+// delivery. ReleaseDelivery makes refresh/write failures retryable; the
+// implementation must retain its append-only audit record.
+type ProjectionDeliveryStore interface {
+	DeliveryStore
+	ClaimDelivery(context.Context, string) (bool, error)
+	ReleaseDelivery(context.Context, string) error
+}
+
 // ProjectionEngine coordinates authoritative refresh, durable projection
 // writes, and delivery receipt publication. It deliberately does not import
 // GitHub, Firebase, or Firestore clients.
 type ProjectionEngine struct {
-	Deliveries          DeliveryStore
+	Deliveries          ProjectionDeliveryStore
 	Reader              ProjectionReader
 	Writer              ProjectionWriter
 	AuthoritativeReader AuthoritativeReader
@@ -53,7 +63,7 @@ var (
 // Process verifies and applies one delivery. AuthoritativeReader is retained
 // as a required companion to ProjectionReader so hosts cannot accidentally
 // wire a projection reader that omits the existing refresh barrier.
-func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDelivery, signature string) (bool, error) {
+func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDelivery, signature string) (queued bool, processErr error) {
 	if engine.Deliveries == nil || engine.Reader == nil || engine.Writer == nil || engine.AuthoritativeReader == nil || len(engine.WebhookSecret) == 0 {
 		return false, ErrNoProjector
 	}
@@ -70,6 +80,22 @@ func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDeli
 	if seen {
 		return false, nil
 	}
+	claimed, err := engine.Deliveries.ClaimDelivery(ctx, delivery.ID)
+	if err != nil {
+		return false, err
+	}
+	if !claimed {
+		return false, nil
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		// Preserve the original refresh/write failure; the durable claim
+		// implementation records any release failure for operator repair.
+		_ = engine.Deliveries.ReleaseDelivery(ctx, delivery.ID)
+	}()
 	if err := engine.AuthoritativeReader.Refresh(ctx, delivery); err != nil {
 		return false, fmt.Errorf("refresh authoritative GitHub state: %w", err)
 	}
@@ -93,10 +119,11 @@ func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDeli
 	if key == "" {
 		key = "installation"
 	}
-	queued, err := engine.Deliveries.CommitDeliveryAndWakeup(ctx, delivery.ID, Wakeup{Key: key, Repository: delivery.Repository, Event: delivery.Event})
+	queued, err = engine.Deliveries.CommitDeliveryAndWakeup(ctx, delivery.ID, Wakeup{Key: key, Repository: delivery.Repository, Event: delivery.Event})
 	if err != nil {
 		return false, fmt.Errorf("persist delivery and coalesced wakeup: %w", err)
 	}
+	committed = true
 	return queued, nil
 }
 

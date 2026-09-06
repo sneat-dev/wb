@@ -7,24 +7,57 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type projectorDeliveryStore struct {
-	seen      bool
-	err       error
-	committed bool
-	commitErr error
+	mu         sync.Mutex
+	seen       bool
+	claimed    bool
+	err        error
+	committed  bool
+	commitErr  error
+	released   bool
+	claimErr   error
+	releaseErr error
 }
 
 func (s *projectorDeliveryStore) HasDelivery(context.Context, string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.seen, s.err
 }
+func (s *projectorDeliveryStore) ClaimDelivery(context.Context, string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claimErr != nil {
+		return false, s.claimErr
+	}
+	if s.seen || s.claimed {
+		return false, nil
+	}
+	s.claimed = true
+	return true, nil
+}
+func (s *projectorDeliveryStore) ReleaseDelivery(context.Context, string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.released = true
+	if s.releaseErr != nil {
+		return s.releaseErr
+	}
+	s.claimed = false
+	return nil
+}
 func (s *projectorDeliveryStore) CommitDeliveryAndWakeup(_ context.Context, _ string, _ Wakeup) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.commitErr != nil {
 		return false, s.commitErr
 	}
+	s.seen = true
 	s.committed = true
 	return true, nil
 }
@@ -104,6 +137,46 @@ func TestProjectionEngineProcessUsesInstallationWakeupWhenRepositoryIsAbsent(t *
 	}
 }
 
+func TestProjectionEngineClaimsConcurrentDeliveryBeforeRefresh(t *testing.T) {
+	engine, store, writer := newProjector()
+	started := make(chan struct{})
+	continueRefresh := make(chan struct{})
+	engine.Reader = blockingProjectionReader{snapshot: validProjectionSnapshot(), started: started, proceed: continueRefresh}
+	delivery := WebhookDelivery{ID: "delivery-race", Event: "push", Repository: "github.com/acme/app", Payload: []byte("payload")}
+	results := make(chan error, 2)
+	go func() {
+		_, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload))
+		results <- err
+	}()
+	<-started
+	go func() {
+		_, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload))
+		results <- err
+	}()
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	close(continueRefresh)
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	if writer.repositories != 1 || !store.committed {
+		t.Fatalf("writes = %d, committed = %v", writer.repositories, store.committed)
+	}
+}
+
+type blockingProjectionReader struct {
+	snapshot ProjectionSnapshot
+	started  chan struct{}
+	proceed  chan struct{}
+}
+
+func (r blockingProjectionReader) RefreshProjection(context.Context, WebhookDelivery) (ProjectionSnapshot, error) {
+	close(r.started)
+	<-r.proceed
+	return r.snapshot, nil
+}
+
 func TestProjectionEngineProcessRejectsDuplicateAndMissingDependencies(t *testing.T) {
 	engine, store, _ := newProjector()
 	store.seen = true
@@ -150,6 +223,7 @@ func TestProjectionEngineProcessPropagatesPhaseErrors(t *testing.T) {
 	delivery := WebhookDelivery{ID: "id", Event: "push", Payload: []byte("payload")}
 	cases := map[string]func(*ProjectionEngine){
 		"has":     func(e *ProjectionEngine) { e.Deliveries = &projectorDeliveryStore{err: errors.New("has")} },
+		"claim":   func(e *ProjectionEngine) { e.Deliveries = &projectorDeliveryStore{claimErr: errors.New("claim")} },
 		"refresh": func(e *ProjectionEngine) { e.AuthoritativeReader = projectorRefresh{err: errors.New("refresh")} },
 		"read":    func(e *ProjectionEngine) { e.Reader = projectorReader{err: errors.New("read")} },
 		"invalid": func(e *ProjectionEngine) {
