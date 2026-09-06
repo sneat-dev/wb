@@ -22,6 +22,9 @@ type worktreeMergeFlags struct {
 	progress                               bool
 	stopBeforeMerge                        bool
 	timeout                                time.Duration
+	prepareTimeout                         time.Duration
+	checkTimeout                           time.Duration
+	shardAttemptTimeout                    time.Duration
 	retry                                  int
 	interval                               time.Duration
 }
@@ -829,6 +832,9 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 		command.Flags().StringVar(&flags.agentID, "agent-id", "", "agent identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.cli, "cli", "wb", "CLI identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.provider, "provider", "", "routing or billing provider identity, never a credential")
+		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional overall prepare deadline; zero keeps the existing behavior")
+		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "optional logical validation-check deadline; zero keeps the existing behavior")
+		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "optional process-isolated Go test shard-attempt deadline; zero keeps the existing behavior")
 	}
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
@@ -860,8 +866,8 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.stopBeforeMerge && flags.cleanup {
 		return fmt.Errorf("--stop-before-merge cannot be combined with --cleanup")
 	}
-	if flags.retry < 0 || flags.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive and --retry must not be negative")
+	if flags.retry < 0 || flags.timeout <= 0 || flags.prepareTimeout < 0 || flags.checkTimeout < 0 || flags.shardAttemptTimeout < 0 {
+		return fmt.Errorf("--timeout must be positive; --prepare-timeout, --check-timeout, and --shard-attempt-timeout must not be negative; --retry must not be negative")
 	}
 	return nil
 }
@@ -869,7 +875,8 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
-		Timeout: flags.timeout, Retry: flags.retry, Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
+		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
+		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
 }
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {

@@ -213,6 +213,26 @@ func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
 	}
 }
 
+func TestRunCoverageWithOptionsUsesExplicitShardAttemptDeadline(t *testing.T) {
+	module := t.TempDir()
+	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/explicit-shard-timeout\n\ngo 1.24\n")
+	writeGoShardFixturePackage(t, module, "serial", "package serial\n", `package serial
+import ("testing"; "time")
+func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
+`)
+	started := time.Now()
+	_, attempts, err := runCoverageWithOptions(context.Background(), RunOptions{
+		Timeout: 5 * time.Second, ShardAttemptTimeout: 500 * time.Millisecond,
+		GoTestShards: 2, GoShardPackages: []string{"./serial"},
+	}, module, filepath.Join(module, "unused.cov"))
+	if err == nil || !strings.Contains(err.Error(), "timed out after 500ms") {
+		t.Fatalf("explicit shard timeout error = %v, want deadline", err)
+	}
+	if attempts != 1 || time.Since(started) > 3*time.Second {
+		t.Fatalf("explicit shard timeout attempts/duration = %d/%s, want one bounded attempt", attempts, time.Since(started))
+	}
+}
+
 func TestPlanGoTestShardsIsDeterministicCompleteAndUnique(t *testing.T) {
 	tests := []string{"TestZulu", "TestAlpha", "ExampleUsage", "FuzzDecode", "TestMiddle"}
 	want := [][]string{

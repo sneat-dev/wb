@@ -26,6 +26,13 @@ primary operating model is one orchestrator with three to seven concurrent
 author/research streams on a four-vCPU VM. Agents may remain numerous while WB
 admits no more CPU-heavy work than the machine can sustain.
 
+Prepare callers may opt into three nested validation budgets: an overall
+prepare deadline, a logical-check deadline, and a process-isolated Go shard
+attempt deadline. They are explicit controls: existing `--timeout` behavior
+and zero-valued new flags remain unchanged. On a four-vCPU machine, start with
+`--prepare-timeout=30m --check-timeout=12m --shard-attempt-timeout=5m` and tune
+from durable receipt evidence rather than making those values implicit defaults.
+
 This Feature coordinates existing lifecycle, stream, quality, merge, and Work
 Log contracts. It does not weaken canonical-clone immutability or create a
 second ownership, receipt, cache, or recovery system.

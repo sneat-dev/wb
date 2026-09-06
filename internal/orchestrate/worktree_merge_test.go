@@ -63,6 +63,21 @@ func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
 	}
 }
 
+func TestWorktreeMergeValidationTimeoutsPreserveExplicitPreparePolicy(t *testing.T) {
+	if got := worktreeMergeValidationTimeouts(0, 0); got != nil {
+		t.Fatalf("zero limits = %+v, want omitted legacy receipt field", got)
+	}
+	stored := worktreeMergeValidationTimeouts(12*time.Minute, 5*time.Minute)
+	check, shard := receiptWorktreeMergeValidationTimeouts(WorktreeMergeReceipt{ValidationTimeouts: stored})
+	if check != 12*time.Minute || shard != 5*time.Minute {
+		t.Fatalf("stored limits = %s/%s, want 12m/5m", check, shard)
+	}
+	check, shard = receiptWorktreeMergeValidationTimeouts(WorktreeMergeReceipt{})
+	if check != 0 || shard != 0 {
+		t.Fatalf("legacy receipt limits = %s/%s, want zero", check, shard)
+	}
+}
+
 func TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate(t *testing.T) {
 	fixture := newEngineFixture(t)
 	canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
@@ -607,7 +622,7 @@ func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testin
 	t.Setenv("WB_TEST_BASELINE_ORIGIN", observedOrigin)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	report, err := verifyWorktreeMergeTarget(context.Background(), fixture.repository.Slug, fixture.canonical, target, 0, 0)
+	report, err := verifyWorktreeMergeTarget(context.Background(), fixture.repository.Slug, fixture.canonical, target, 0, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

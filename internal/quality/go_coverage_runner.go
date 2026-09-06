@@ -73,7 +73,11 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 		overallCtx, cancel = context.WithTimeout(ctx, options.Timeout)
 	}
 	defer cancel()
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(overallCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, options.Timeout, options.Retry, options.Progress)
+	shardAttemptTimeout := options.Timeout
+	if options.ShardAttemptTimeout > 0 {
+		shardAttemptTimeout = options.ShardAttemptTimeout
+	}
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(overallCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, shardAttemptTimeout, options.Retry, options.Progress)
 	if overallCtx.Err() == context.DeadlineExceeded {
 		return output, attempts, fmt.Errorf("timed out after %s", options.Timeout)
 	}

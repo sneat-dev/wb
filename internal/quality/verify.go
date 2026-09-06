@@ -29,6 +29,13 @@ const (
 type RunOptions struct {
 	Timeout time.Duration
 	Retry   int
+	// CheckTimeout bounds one logical verification check, including all of its
+	// command attempts and any process-isolated Go shards. Zero leaves the
+	// existing per-command Timeout behavior unchanged.
+	CheckTimeout time.Duration
+	// ShardAttemptTimeout bounds one process-isolated Go test shard attempt.
+	// Zero retains Timeout as the shard-attempt bound when Timeout is set.
+	ShardAttemptTimeout time.Duration
 	// GoTestShards runs each explicitly named Go package in this many
 	// process-isolated shards. It is opt-in because TestMain and process-global
 	// fixtures run once per shard; callers must name packages whose contract
@@ -269,13 +276,22 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	reportQualityProgress(options, Progress{
 		Language: language, Module: module, Check: check, Command: entry.Command, State: ProgressStarted,
 	})
+	checkCtx := ctx
+	cancel := func() {}
+	if options.CheckTimeout > 0 {
+		checkCtx, cancel = context.WithTimeout(ctx, options.CheckTimeout)
+	}
+	defer cancel()
 	var output string
 	var attempts int
 	var err error
 	if shardedGoTest {
-		output, attempts, err = runShardedVerification(ctx, options, dir)
+		output, attempts, err = runShardedVerification(checkCtx, options, dir)
 	} else {
-		output, attempts, err = runWithOptions(ctx, options, dir, command[0], command[1:]...)
+		output, attempts, err = runWithOptions(checkCtx, options, dir, command[0], command[1:]...)
+	}
+	if checkCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		err = fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
 	entry.Attempts = attempts
 	if err != nil {

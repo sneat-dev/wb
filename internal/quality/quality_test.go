@@ -486,6 +486,40 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	}
 }
 
+func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := runVerification(context.Background(), RunOptions{Timeout: time.Second, Retry: 1, CheckTimeout: 10 * time.Millisecond}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || entry.Attempts != 1 || !strings.Contains(entry.Detail, "check timed out after 10ms") {
+		t.Fatalf("check deadline result = %+v", entry)
+	}
+}
+
+func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || strings.Contains(entry.Detail, "check timed out") {
+		t.Fatalf("parent deadline did not win: %+v", entry)
+	}
+}
+
 func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
