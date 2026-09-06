@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ const (
 	LandRefusalMergeRejected     = "merge-rejected"
 	LandRefusalLandingUnverified = "landing-unverified"
 	LandRefusalUnfencedTarget    = "target-has-no-strict-fence"
+	LandRefusalCanonicalSync     = "canonical-sync-blocked"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
@@ -139,8 +141,9 @@ type PullRequestLandResult struct {
 
 	Checks *PullRequestWaitResult `json:"checks,omitempty"`
 
-	BranchDeleted bool `json:"branch_deleted"`
-	LandingOnBase bool `json:"landing_on_base"`
+	BranchDeleted bool   `json:"branch_deleted"`
+	LandingOnBase bool   `json:"landing_on_base"`
+	CanonicalSync string `json:"canonical_sync,omitempty"`
 	// Commits pairs every source commit with the commit that landed it, and
 	// marks the ones kept separate. GitHub's rebase merge rewrites the SHAs, so
 	// after landing this pairing is the only way back to the originals.
@@ -485,6 +488,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return withSavings(result), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Completed, shortMergeRevision(landed.MergeCommitSHA), 0, 0)
+
+	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Started, view.Base.Ref+"@"+shortMergeRevision(landed.MergeCommitSHA), 0, 0)
+	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(options.Repository))
+	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0)
+	if err != nil {
+		result.Outcome = LandFindings
+		result.RefusalCode = LandRefusalCanonicalSync
+		result.Reason = err.Error()
+		result.SanctionedCommand = "wb sync --filter " + options.Repository
+		return withSavings(result), nil
+	}
+	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.Repository, view, landed); deleteErr != nil {

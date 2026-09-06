@@ -27,8 +27,6 @@ pulls=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls") || fallback
 pull_number=$(printf '%s' "$pulls" | jq -er '[.[] | .number] | unique | if length == 1 then .[0] else error("expected exactly one associated pull request") end') || fallback ambiguous-associated-pull-request
 pull=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pull_number") || fallback pull-unavailable
 
-base_ref=$(printf '%s' "$pull" | jq -er '.base.ref') || fallback malformed-pull
-head_ref=$(printf '%s' "$pull" | jq -er '.head.ref') || fallback malformed-pull
 head_sha=$(printf '%s' "$pull" | jq -er '.head.sha') || fallback malformed-pull
 head_repository=$(printf '%s' "$pull" | jq -er '.head.repo.full_name') || fallback malformed-pull
 if ! printf '%s' "$pull" | jq -e --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
@@ -45,7 +43,7 @@ if printf '%s' "$files" | jq -e '.[] | select(.filename | startswith(".github/")
 fi
 
 runs=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/go-ci.yml/runs" \
-  -f event=pull_request -f branch="$head_ref" -f per_page=100) || fallback workflow-runs-unavailable
+  -f event=pull_request -f per_page=100) || fallback workflow-runs-unavailable
 run=$(printf '%s' "$runs" | jq -cer --arg head "$head_sha" --arg repo "$head_repository" '
   [.workflow_runs[] | select(.event == "pull_request" and .head_sha == $head and .head_repository.full_name == $repo)]
   | sort_by(.updated_at) | last // error("no matching pull-request run")
