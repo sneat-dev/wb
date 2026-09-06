@@ -469,6 +469,17 @@ The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
 `sneat-co/workbench-web`; it remains after the scheduler, telemetry, and event
 contracts in delivery order.
 
+The WB-owned provider layer keeps the host boundary narrow. Its durable
+projection documents retain canonical GitHub subject IDs and explicit public
+opt-in state; `ProjectionKey` hashes `(scope, subject ID)` for stable document
+keys. A host supplies a `ProjectionStore` adapter for Firestore or another
+durable store, a Firebase bearer-token viewer resolver, and a GitHub
+installation membership resolver. The provider aggregates only authorized
+projection documents and fails closed when membership cannot be proven. The
+storage collection names and route-to-scope mapping are documented in
+`api/githubapp/README.md`; this slice does not invent a Firestore schema inside
+Sneat Go or claim that a read model exists before the host binds one.
+
 Each repository has a stable page at
 `https://sneat.work/bench/repo/github.com/<org>/<repo>` and each organization at
 `https://sneat.work/bench/org/github.com/<org>`. Anonymous pages include only
