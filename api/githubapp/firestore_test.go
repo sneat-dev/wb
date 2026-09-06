@@ -28,16 +28,6 @@ func (fake *firestoreFake) Get(_ context.Context, collection, id string, out any
 	}
 	return true, json.Unmarshal(raw, out)
 }
-func (fake *firestoreFake) List(_ context.Context, collection string, out any) error {
-	values := make([]json.RawMessage, 0)
-	prefix := collection + "\x00"
-	for key, raw := range fake.documents {
-		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
-			values = append(values, raw)
-		}
-	}
-	return json.Unmarshal(mustJSON(values), out)
-}
 func (fake *firestoreFake) Query(_ context.Context, collection string, equals map[string]any, limit int, out any) error {
 	fake.queries = append(fake.queries, firestoreQuery{collection: collection, equals: equals, limit: limit})
 	values := make([]json.RawMessage, 0)
@@ -146,8 +136,8 @@ func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 	if err := writer.WriteLatestMerges(ctx, "delivery-1", []LatestMerge{{Repository: record.ID, PullRequest: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fake.documents[fake.key(projectionDeliveryRecord, "delivery-1")]; !ok {
-		t.Fatal("delivery write marker missing")
+	if _, ok := fake.documents[fake.key("workbench_projection_deliveries", "delivery-1")]; ok {
+		t.Fatal("redundant projection delivery marker was written")
 	}
 	if err := writer.WriteRepositories(ctx, "delivery-1", []ProjectionDocument{{Scope: ScopeOrganization, ID: "wrong", DisplayName: "wrong", UpdatedAt: time.Unix(1, 0)}}); err == nil {
 		t.Fatal("scope mismatch accepted")
@@ -185,6 +175,9 @@ func TestFirestoreProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T
 	}
 	if committed, err := store.HasDelivery(ctx, "delivery-1"); err != nil || !committed {
 		t.Fatalf("HasDelivery = %v, %v", committed, err)
+	}
+	if _, ok := fake.documents[fake.key(wakeupCollection, wakeupDocumentID("github.com/acme/app"))]; !ok {
+		t.Fatal("wakeup was not stored under slash-safe ID")
 	}
 	if queued, err := store.CommitDeliveryAndWakeup(ctx, "delivery-1", Wakeup{Key: "github.com/acme/app"}); err != nil || queued {
 		t.Fatalf("duplicate commit = %v, %v", queued, err)

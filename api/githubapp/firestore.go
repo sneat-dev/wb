@@ -2,6 +2,8 @@ package githubapp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,10 +11,9 @@ import (
 )
 
 const (
-	deliveryCollection       = "workbench_deliveries"
-	wakeupCollection         = "workbench_wakeups"
-	projectionDeliveryRecord = "workbench_projection_deliveries"
-	latestMergesDocument     = "public"
+	deliveryCollection   = "workbench_deliveries"
+	wakeupCollection     = "workbench_wakeups"
+	latestMergesDocument = "public"
 )
 
 // FirestoreBackend is the deliberately small seam implemented by the host's
@@ -20,7 +21,6 @@ const (
 // must provide Firestore transaction semantics.
 type FirestoreBackend interface {
 	Get(context.Context, string, string, any) (bool, error)
-	List(context.Context, string, any) error
 	Query(context.Context, string, map[string]any, int, any) error
 	Set(context.Context, string, string, any) error
 	UpdateAtomic(context.Context, func(FirestoreTransaction) error) error
@@ -124,14 +124,20 @@ func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, d
 	if writer.Backend == nil {
 		return errors.New("firestore projection backend is not configured")
 	}
+	if err := validateProjectionDeliveryID(deliveryID); err != nil {
+		return err
+	}
 	if err := writer.Backend.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: records}); err != nil {
 		return err
 	}
-	return writer.markDelivery(ctx, deliveryID, "latest_merges")
+	return nil
 }
 func (writer FirestoreProjectionWriter) writeDocuments(ctx context.Context, deliveryID string, scope Scope, records []ProjectionDocument) error {
 	if writer.Backend == nil {
 		return errors.New("firestore projection backend is not configured")
+	}
+	if err := validateProjectionDeliveryID(deliveryID); err != nil {
+		return err
 	}
 	for _, document := range records {
 		if document.Scope != scope {
@@ -141,19 +147,19 @@ func (writer FirestoreProjectionWriter) writeDocuments(ctx context.Context, deli
 			return err
 		}
 	}
-	return writer.markDelivery(ctx, deliveryID, string(scope))
+	return nil
 }
-func (writer FirestoreProjectionWriter) markDelivery(ctx context.Context, deliveryID, batch string) error {
+func validateProjectionDeliveryID(deliveryID string) error {
 	if strings.TrimSpace(deliveryID) == "" {
 		return errors.New("projection delivery ID is required")
 	}
-	return writer.Backend.Set(ctx, projectionDeliveryRecord, deliveryID, map[string]string{"batch": batch})
+	return nil
 }
 
 type firestoreDeliveryRecord struct {
-	Status     string    `json:"status"`
-	LeaseUntil time.Time `json:"lease_until"`
-	Attempts   int       `json:"attempts"`
+	Status     string    `json:"status" firestore:"status"`
+	LeaseUntil time.Time `json:"lease_until" firestore:"lease_until"`
+	Attempts   int       `json:"attempts" firestore:"attempts"`
 }
 
 // FirestoreProjectionDeliveryStore provides the atomic claim and coalesced
@@ -229,7 +235,7 @@ func (store FirestoreProjectionDeliveryStore) CommitDeliveryAndWakeup(ctx contex
 		if err := tx.Set(ctx, deliveryCollection, id, record); err != nil {
 			return err
 		}
-		if err := tx.Set(ctx, wakeupCollection, wakeup.Key, wakeup); err != nil {
+		if err := tx.Set(ctx, wakeupCollection, wakeupDocumentID(wakeup.Key), wakeup); err != nil {
 			return err
 		}
 		committed = true
@@ -237,6 +243,12 @@ func (store FirestoreProjectionDeliveryStore) CommitDeliveryAndWakeup(ctx contex
 	})
 	return committed, err
 }
+
+func wakeupDocumentID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "wakeup_" + hex.EncodeToString(sum[:])
+}
+
 func (store FirestoreProjectionDeliveryStore) updateStatus(ctx context.Context, id, status string) error {
 	if store.Backend == nil {
 		return errors.New("firestore delivery backend is not configured")

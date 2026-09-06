@@ -53,9 +53,9 @@ type EventSource interface {
 
 // Wakeup is a durable, coalescible unit of refresh work.
 type Wakeup struct {
-	Key        string
-	Repository string
-	Event      string
+	Key        string `json:"key" firestore:"key"`
+	Repository string `json:"repository" firestore:"repository"`
+	Event      string `json:"event" firestore:"event"`
 }
 
 // WebhookDelivery is the verified, minimally parsed GitHub webhook envelope.
