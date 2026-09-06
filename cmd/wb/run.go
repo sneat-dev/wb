@@ -73,13 +73,13 @@ wb run --history --days 7`,
 				return printRunHistory(cmd, days, jsonOut)
 			}
 			if cmd.ArgsLenAtDash() == 0 {
-				if apply || configPath != "" || list || days != 14 || jsonOut {
-					return usageError("--apply, --config, --days, --history, --json, and --list belong to WB modes and cannot be used with run --")
+				if apply || configPath != "" || list || days != 14 || outputFormatChanged(cmd) {
+					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
 				}
 				return runExternalCommand(cmd, args)
 			}
-			if days != 14 || jsonOut {
-				return usageError("--days and --json require --history")
+			if days != 14 || outputFormatChanged(cmd) {
+				return usageError("--days, --format=json, and --json require --history")
 			}
 			var name string
 			if len(args) == 1 {
@@ -99,7 +99,7 @@ wb run --history --days 7`,
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit history as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
 	return cmd
 }

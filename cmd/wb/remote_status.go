@@ -29,7 +29,7 @@ not change the exit code.`,
 			return runRemoteStatus(defaultRemoteDeps(), projectsRoot, stale, machine, jsonOut, os.Stdout, os.Stderr)
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print entries as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().DurationVar(&stale, "stale", 24*time.Hour, "flag machines whose snapshot is older than this")
 	cmd.Flags().StringVar(&machine, "machine", "", "only this <login>/<machine>")
 	return cmd

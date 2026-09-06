@@ -550,10 +550,11 @@ future bidirectional operator controls such as cancel or reprioritize.
 `wb monitor` is the terminal view over that same source and supports repository,
 task, operation, session, severity, and `--since` filters.
 `wb monitor --format=jsonl` emits the stable machine stream; bounded snapshots
-use `--format=json`, and human output is `--format=text`. Every WB command uses
-the shared Cobra `--format=<text|json|jsonl>` contract for presentation; the
-cutover removes command-local `--json` booleans and other output-format variants
-from help, specifications, skills, capabilities, and tests in the same release.
+use `--format=json`, and human output is `--format=text`. Every WB command that
+offers JSON output accepts the shared Cobra `--format=<text|json|jsonl>`
+contract for presentation. `--json` remains an exact shortcut for
+`--format=json`; command-local output-format variants other than that shortcut
+are removed from help, specifications, skills, capabilities, and tests.
 Commands that write an artifact retain `--output` or a more specific artifact
 path flag rather than overloading `--format`. JSONC is reserved for human-edited
 configuration, never command output or receipts. A bare `--` separator is reserved for commands that
@@ -884,6 +885,11 @@ a worktree.
   snapshots, idempotent durable writes are keyed by delivery ID, public latest
   merges are replaced coherently, and the delivery ledger commits only after
   projection writes succeed.
+- [x] Add the host-neutral authoritative GitHub REST projection reader with
+  injected transport and installation-token seams, immutable root-README
+  eligibility evidence, repository/latest-merge snapshots, and a request-scoped
+  handoff that avoids duplicate refresh reads; defer organization projections
+  until installation-scoped complete aggregation is available.
 - [x] Revalidate an exact interrupted `preparing` merge candidate before any
   publication, and clear historical failure text whenever cleanup reaches a
   terminal successful receipt.
@@ -987,6 +993,15 @@ to the loopback health endpoint, then text and JSON status preserve
 or advance its queue generation. An explicit stop followed by restart preserves
 the queue handoff and advances the generation once.
 
+### AC: json-output-selection-is-consistent
+
+Given any WB command that offers `--json`, its help also lists `--format`;
+when the command runs with `--format=json`, it emits the same unstyled,
+machine-readable output as `--json`; and its default `--format=text` output
+remains concise and readable with terminal styling where appropriate. A bare
+`--` still ends WB flag parsing for `wb run` and `wb exec`, so forwarded child
+arguments named `--format` or `--json` remain untouched.
+
 ### AC: formatting-follows-the-edit
 
 Given an edit changes Go and Prettier-supported files, then only those paths are
@@ -1017,8 +1032,9 @@ merges it, when the remote landing is verified, then WB fast-forwards an
 eligible clean canonical target before deleting the source branch. When main CI
 starts after that deletion, its receipt selector finds the successful pull
 request run by exact head SHA and repository identity without depending on the
-deleted branch ref, verifies the immutable artifact, and skips the duplicate
-full validation jobs.
+deleted branch ref. The pull-request receipt publisher still runs when accepted
+optional checks were skipped, so main verifies the immutable artifact and skips
+the duplicate full validation jobs.
 
 ### AC: merge-resume-adopts-existing-exact-pull-request
 

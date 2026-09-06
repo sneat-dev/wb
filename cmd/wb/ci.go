@@ -246,7 +246,7 @@ func newCIAuditCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
 
