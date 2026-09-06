@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 const absorbedSourcePRCommentMarker = "<!-- wb:absorbed-source-pr -->"
@@ -24,7 +25,7 @@ type sourcePullRequestRemote interface {
 
 type githubSourcePullRequestRemote struct{}
 
-func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) error {
+func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
 	if receipt == nil || receipt.LandingSHA == "" || receipt.Repository == "" {
 		return nil
 	}
@@ -32,7 +33,7 @@ func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot strin
 	if err != nil {
 		return fmt.Errorf("discover absorbed source heads: %w", err)
 	}
-	return reconcileAbsorbedSourcePullRequestsWith(ctx, receipt, heads, githubSourcePullRequestRemote{}, persistWorktreeMergeReceipt)
+	return reconcileAbsorbedSourcePullRequestsWithProgress(ctx, receipt, heads, githubSourcePullRequestRemote{}, persistWorktreeMergeReceipt, reporter)
 }
 
 func absorbedSourceHeads(ctx context.Context, repository string, receipt WorktreeMergeReceipt, timeout time.Duration, retry int) ([]string, error) {
@@ -75,9 +76,22 @@ func reconcileAbsorbedSourcePullRequestsWith(
 	remote sourcePullRequestRemote,
 	persist func(WorktreeMergeReceipt) error,
 ) error {
+	return reconcileAbsorbedSourcePullRequestsWithProgress(ctx, receipt, heads, remote, persist, nil)
+}
+
+func reconcileAbsorbedSourcePullRequestsWithProgress(
+	ctx context.Context,
+	receipt *WorktreeMergeReceipt,
+	heads []string,
+	remote sourcePullRequestRemote,
+	persist func(WorktreeMergeReceipt) error,
+	reporter progress.Reporter,
+) error {
 	integrationNumber, _ := PullRequestNumber(receipt.PullRequest)
 	seen := make(map[string]bool)
-	for _, head := range heads {
+	for headIndex, head := range heads {
+		reportWorktreeMergeProgress(reporter, "reconcile_source_prs", progress.Running,
+			fmt.Sprintf("head %d/%d: %s", headIndex+1, len(heads), shortMergeRevision(head)))
 		views, err := remote.associated(ctx, receipt.Repository, head)
 		if err != nil {
 			return fmt.Errorf("discover pull requests for absorbed source %s: %w", head, err)
@@ -88,6 +102,8 @@ func reconcileAbsorbedSourcePullRequestsWith(
 				continue
 			}
 			seen[key] = true
+			reportWorktreeMergeProgress(reporter, "reconcile_source_prs", progress.Running,
+				fmt.Sprintf("PR %d from %s", view.Number, shortMergeRevision(head)))
 			reconciliation := findSourcePullRequestReconciliation(receipt, view.Number, head)
 			reconciliation.Number = view.Number
 			reconciliation.URL = view.HTMLURL

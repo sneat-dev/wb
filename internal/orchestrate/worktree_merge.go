@@ -994,7 +994,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
 		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
-		if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry); err != nil {
+		if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
 		}
 		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
@@ -1313,7 +1313,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	}
 	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
 	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
-	if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry); err != nil {
+	if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
 	}
 	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
