@@ -693,6 +693,92 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 	}
 }
 
+func TestCleanupRecoversMergedPRTargetWhileRecordedTargetStaysStale(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "stale-target", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "stale-target")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-stale-recorded-target",
+		Base:         "stale-target",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("landed through main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature into main")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mainHead := remoteBranchForTest(t, fixture.canonical, "main")
+	staleHead := remoteBranchForTest(t, fixture.canonical, "stale-target")
+	if staleHead == "" || staleHead == mainHead {
+		t.Fatalf("fixture target is not stale: stale=%s main=%s", staleHead, mainHead)
+	}
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-stale-recorded-target",
+		Base:         "main",
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Applied ||
+		planned.Results[0].Base != "main" || planned.Results[0].RecordedBase != "stale-target" ||
+		planned.Results[0].RemoteTargetSHA != mainHead || !planned.Results[0].IntegratedAtOrigin ||
+		planned.Results[0].MergedPullRequest == nil || planned.Results[0].MergedPullRequest.HeadSHA != head {
+		t.Fatalf("cleanup plan after stale recorded target = %#v", planned)
+	}
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-stale-recorded-target",
+		Base:         "main",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+		ReportDir:    filepath.Join(t.TempDir(), "audit"),
+		Now:          func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Results) != 1 || !applied.Results[0].Applied || !applied.Results[0].BranchDeleted ||
+		!applied.Results[0].RemoteDeleted || applied.Results[0].RecordedBase != "stale-target" {
+		t.Fatalf("applied cleanup after stale recorded target = %#v", applied)
+	}
+	reportContent, err := os.ReadFile(applied.ReportPath)
+	if err != nil {
+		t.Fatalf("read stale-target cleanup audit report: %v", err)
+	}
+	var report cleanupReport
+	if err := json.Unmarshal(reportContent, &report); err != nil {
+		t.Fatalf("decode stale-target cleanup audit report: %v", err)
+	}
+	if report.Phase != "applied" || len(report.Results) != 1 ||
+		report.Results[0].RecordedBase != "stale-target" || report.Results[0].Base != "main" ||
+		report.Results[0].MergedPullRequest == nil || report.Results[0].MergedPullRequest.HeadSHA != head {
+		t.Fatalf("stale-target cleanup audit report = %#v", report)
+	}
+	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists after cleanup: %v", err)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != "" {
+		t.Fatalf("remote branch still exists after cleanup: %s", got)
+	}
+}
+
 func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	const head = "0123456789012345678901234567890123456789"
