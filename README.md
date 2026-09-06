@@ -9,6 +9,11 @@ and executable stay intentionally short: `wb`.
 
 The canonical public Workbench site is [sneat.work/bench](https://sneat.work/bench).
 
+## WB
+
+Public Workbench projections are opt-in from this repository's root README:
+[Workbench dashboard](https://sneat.work/bench).
+
 ## Install
 
 On macOS or Linux, install the published Homebrew cask:

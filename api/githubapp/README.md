@@ -62,6 +62,21 @@ credentials, or aggregation credentials. Sneat Go can bind those through its
 wire-only adapter once the corresponding durable store and membership service
 are configured.
 
+## Authoritative GitHub reader
+
+`GitHubRESTProjectionReader` is the host-neutral REST adapter for webhook
+refreshes. The host injects an HTTP transport and installation token source;
+the reader parses the canonical repository from the delivery, reads the
+repository, counts pull requests and releases through the GitHub API, and
+reads the root `README.md` at the exact commit returned by the README commit
+query. Only a verified `## WB` or `## Workbench` opt-in produces public
+eligibility evidence. A reader implementing `AuthoritativeProjectionReader`
+hands the same request-scoped snapshot to the projection engine, so the
+freshness barrier and projection build do not issue duplicate GitHub reads.
+Organization projections are omitted until a host supplies an
+installation-scoped complete aggregation; a public repository count from
+`/orgs/{owner}` is not treated as an exact organization summary.
+
 ## GitHub App installation tokens
 
 `InstallationTokenSource` is the host-neutral credential boundary used by an
