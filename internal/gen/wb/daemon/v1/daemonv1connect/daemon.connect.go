@@ -48,6 +48,21 @@ const (
 	// DaemonServiceCancelOperationProcedure is the fully-qualified name of the DaemonService's
 	// CancelOperation RPC.
 	DaemonServiceCancelOperationProcedure = "/wb.daemon.v1.DaemonService/CancelOperation"
+	// DaemonServiceRegisterWorkerProcedure is the fully-qualified name of the DaemonService's
+	// RegisterWorker RPC.
+	DaemonServiceRegisterWorkerProcedure = "/wb.daemon.v1.DaemonService/RegisterWorker"
+	// DaemonServiceLeaseOperationProcedure is the fully-qualified name of the DaemonService's
+	// LeaseOperation RPC.
+	DaemonServiceLeaseOperationProcedure = "/wb.daemon.v1.DaemonService/LeaseOperation"
+	// DaemonServiceHeartbeatOperationProcedure is the fully-qualified name of the DaemonService's
+	// HeartbeatOperation RPC.
+	DaemonServiceHeartbeatOperationProcedure = "/wb.daemon.v1.DaemonService/HeartbeatOperation"
+	// DaemonServiceCompleteOperationProcedure is the fully-qualified name of the DaemonService's
+	// CompleteOperation RPC.
+	DaemonServiceCompleteOperationProcedure = "/wb.daemon.v1.DaemonService/CompleteOperation"
+	// DaemonServiceDisconnectWorkerProcedure is the fully-qualified name of the DaemonService's
+	// DisconnectWorker RPC.
+	DaemonServiceDisconnectWorkerProcedure = "/wb.daemon.v1.DaemonService/DisconnectWorker"
 )
 
 // DaemonServiceClient is a client for the wb.daemon.v1.DaemonService service.
@@ -57,6 +72,11 @@ type DaemonServiceClient interface {
 	GetOperation(context.Context, *connect.Request[v1.GetOperationRequest]) (*connect.Response[v1.Operation], error)
 	WaitOperation(context.Context, *connect.Request[v1.WaitOperationRequest]) (*connect.Response[v1.Operation], error)
 	CancelOperation(context.Context, *connect.Request[v1.CancelOperationRequest]) (*connect.Response[v1.Operation], error)
+	RegisterWorker(context.Context, *connect.Request[v1.RegisterWorkerRequest]) (*connect.Response[v1.RegisterWorkerResponse], error)
+	LeaseOperation(context.Context, *connect.Request[v1.LeaseOperationRequest]) (*connect.Response[v1.LeaseOperationResponse], error)
+	HeartbeatOperation(context.Context, *connect.Request[v1.HeartbeatOperationRequest]) (*connect.Response[v1.HeartbeatOperationResponse], error)
+	CompleteOperation(context.Context, *connect.Request[v1.CompleteOperationRequest]) (*connect.Response[v1.CompleteOperationResponse], error)
+	DisconnectWorker(context.Context, *connect.Request[v1.DisconnectWorkerRequest]) (*connect.Response[v1.DisconnectWorkerResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the wb.daemon.v1.DaemonService service. By
@@ -100,16 +120,51 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("CancelOperation")),
 			connect.WithClientOptions(opts...),
 		),
+		registerWorker: connect.NewClient[v1.RegisterWorkerRequest, v1.RegisterWorkerResponse](
+			httpClient,
+			baseURL+DaemonServiceRegisterWorkerProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RegisterWorker")),
+			connect.WithClientOptions(opts...),
+		),
+		leaseOperation: connect.NewClient[v1.LeaseOperationRequest, v1.LeaseOperationResponse](
+			httpClient,
+			baseURL+DaemonServiceLeaseOperationProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("LeaseOperation")),
+			connect.WithClientOptions(opts...),
+		),
+		heartbeatOperation: connect.NewClient[v1.HeartbeatOperationRequest, v1.HeartbeatOperationResponse](
+			httpClient,
+			baseURL+DaemonServiceHeartbeatOperationProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("HeartbeatOperation")),
+			connect.WithClientOptions(opts...),
+		),
+		completeOperation: connect.NewClient[v1.CompleteOperationRequest, v1.CompleteOperationResponse](
+			httpClient,
+			baseURL+DaemonServiceCompleteOperationProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CompleteOperation")),
+			connect.WithClientOptions(opts...),
+		),
+		disconnectWorker: connect.NewClient[v1.DisconnectWorkerRequest, v1.DisconnectWorkerResponse](
+			httpClient,
+			baseURL+DaemonServiceDisconnectWorkerProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DisconnectWorker")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
-	getDaemonInfo   *connect.Client[v1.GetDaemonInfoRequest, v1.GetDaemonInfoResponse]
-	submitOperation *connect.Client[v1.SubmitOperationRequest, v1.Operation]
-	getOperation    *connect.Client[v1.GetOperationRequest, v1.Operation]
-	waitOperation   *connect.Client[v1.WaitOperationRequest, v1.Operation]
-	cancelOperation *connect.Client[v1.CancelOperationRequest, v1.Operation]
+	getDaemonInfo      *connect.Client[v1.GetDaemonInfoRequest, v1.GetDaemonInfoResponse]
+	submitOperation    *connect.Client[v1.SubmitOperationRequest, v1.Operation]
+	getOperation       *connect.Client[v1.GetOperationRequest, v1.Operation]
+	waitOperation      *connect.Client[v1.WaitOperationRequest, v1.Operation]
+	cancelOperation    *connect.Client[v1.CancelOperationRequest, v1.Operation]
+	registerWorker     *connect.Client[v1.RegisterWorkerRequest, v1.RegisterWorkerResponse]
+	leaseOperation     *connect.Client[v1.LeaseOperationRequest, v1.LeaseOperationResponse]
+	heartbeatOperation *connect.Client[v1.HeartbeatOperationRequest, v1.HeartbeatOperationResponse]
+	completeOperation  *connect.Client[v1.CompleteOperationRequest, v1.CompleteOperationResponse]
+	disconnectWorker   *connect.Client[v1.DisconnectWorkerRequest, v1.DisconnectWorkerResponse]
 }
 
 // GetDaemonInfo calls wb.daemon.v1.DaemonService.GetDaemonInfo.
@@ -137,6 +192,31 @@ func (c *daemonServiceClient) CancelOperation(ctx context.Context, req *connect.
 	return c.cancelOperation.CallUnary(ctx, req)
 }
 
+// RegisterWorker calls wb.daemon.v1.DaemonService.RegisterWorker.
+func (c *daemonServiceClient) RegisterWorker(ctx context.Context, req *connect.Request[v1.RegisterWorkerRequest]) (*connect.Response[v1.RegisterWorkerResponse], error) {
+	return c.registerWorker.CallUnary(ctx, req)
+}
+
+// LeaseOperation calls wb.daemon.v1.DaemonService.LeaseOperation.
+func (c *daemonServiceClient) LeaseOperation(ctx context.Context, req *connect.Request[v1.LeaseOperationRequest]) (*connect.Response[v1.LeaseOperationResponse], error) {
+	return c.leaseOperation.CallUnary(ctx, req)
+}
+
+// HeartbeatOperation calls wb.daemon.v1.DaemonService.HeartbeatOperation.
+func (c *daemonServiceClient) HeartbeatOperation(ctx context.Context, req *connect.Request[v1.HeartbeatOperationRequest]) (*connect.Response[v1.HeartbeatOperationResponse], error) {
+	return c.heartbeatOperation.CallUnary(ctx, req)
+}
+
+// CompleteOperation calls wb.daemon.v1.DaemonService.CompleteOperation.
+func (c *daemonServiceClient) CompleteOperation(ctx context.Context, req *connect.Request[v1.CompleteOperationRequest]) (*connect.Response[v1.CompleteOperationResponse], error) {
+	return c.completeOperation.CallUnary(ctx, req)
+}
+
+// DisconnectWorker calls wb.daemon.v1.DaemonService.DisconnectWorker.
+func (c *daemonServiceClient) DisconnectWorker(ctx context.Context, req *connect.Request[v1.DisconnectWorkerRequest]) (*connect.Response[v1.DisconnectWorkerResponse], error) {
+	return c.disconnectWorker.CallUnary(ctx, req)
+}
+
 // DaemonServiceHandler is an implementation of the wb.daemon.v1.DaemonService service.
 type DaemonServiceHandler interface {
 	GetDaemonInfo(context.Context, *connect.Request[v1.GetDaemonInfoRequest]) (*connect.Response[v1.GetDaemonInfoResponse], error)
@@ -144,6 +224,11 @@ type DaemonServiceHandler interface {
 	GetOperation(context.Context, *connect.Request[v1.GetOperationRequest]) (*connect.Response[v1.Operation], error)
 	WaitOperation(context.Context, *connect.Request[v1.WaitOperationRequest]) (*connect.Response[v1.Operation], error)
 	CancelOperation(context.Context, *connect.Request[v1.CancelOperationRequest]) (*connect.Response[v1.Operation], error)
+	RegisterWorker(context.Context, *connect.Request[v1.RegisterWorkerRequest]) (*connect.Response[v1.RegisterWorkerResponse], error)
+	LeaseOperation(context.Context, *connect.Request[v1.LeaseOperationRequest]) (*connect.Response[v1.LeaseOperationResponse], error)
+	HeartbeatOperation(context.Context, *connect.Request[v1.HeartbeatOperationRequest]) (*connect.Response[v1.HeartbeatOperationResponse], error)
+	CompleteOperation(context.Context, *connect.Request[v1.CompleteOperationRequest]) (*connect.Response[v1.CompleteOperationResponse], error)
+	DisconnectWorker(context.Context, *connect.Request[v1.DisconnectWorkerRequest]) (*connect.Response[v1.DisconnectWorkerResponse], error)
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -183,6 +268,36 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("CancelOperation")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceRegisterWorkerHandler := connect.NewUnaryHandler(
+		DaemonServiceRegisterWorkerProcedure,
+		svc.RegisterWorker,
+		connect.WithSchema(daemonServiceMethods.ByName("RegisterWorker")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceLeaseOperationHandler := connect.NewUnaryHandler(
+		DaemonServiceLeaseOperationProcedure,
+		svc.LeaseOperation,
+		connect.WithSchema(daemonServiceMethods.ByName("LeaseOperation")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceHeartbeatOperationHandler := connect.NewUnaryHandler(
+		DaemonServiceHeartbeatOperationProcedure,
+		svc.HeartbeatOperation,
+		connect.WithSchema(daemonServiceMethods.ByName("HeartbeatOperation")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceCompleteOperationHandler := connect.NewUnaryHandler(
+		DaemonServiceCompleteOperationProcedure,
+		svc.CompleteOperation,
+		connect.WithSchema(daemonServiceMethods.ByName("CompleteOperation")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDisconnectWorkerHandler := connect.NewUnaryHandler(
+		DaemonServiceDisconnectWorkerProcedure,
+		svc.DisconnectWorker,
+		connect.WithSchema(daemonServiceMethods.ByName("DisconnectWorker")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/wb.daemon.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DaemonServiceGetDaemonInfoProcedure:
@@ -195,6 +310,16 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceWaitOperationHandler.ServeHTTP(w, r)
 		case DaemonServiceCancelOperationProcedure:
 			daemonServiceCancelOperationHandler.ServeHTTP(w, r)
+		case DaemonServiceRegisterWorkerProcedure:
+			daemonServiceRegisterWorkerHandler.ServeHTTP(w, r)
+		case DaemonServiceLeaseOperationProcedure:
+			daemonServiceLeaseOperationHandler.ServeHTTP(w, r)
+		case DaemonServiceHeartbeatOperationProcedure:
+			daemonServiceHeartbeatOperationHandler.ServeHTTP(w, r)
+		case DaemonServiceCompleteOperationProcedure:
+			daemonServiceCompleteOperationHandler.ServeHTTP(w, r)
+		case DaemonServiceDisconnectWorkerProcedure:
+			daemonServiceDisconnectWorkerHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -222,4 +347,24 @@ func (UnimplementedDaemonServiceHandler) WaitOperation(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) CancelOperation(context.Context, *connect.Request[v1.CancelOperationRequest]) (*connect.Response[v1.Operation], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.CancelOperation is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RegisterWorker(context.Context, *connect.Request[v1.RegisterWorkerRequest]) (*connect.Response[v1.RegisterWorkerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.RegisterWorker is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) LeaseOperation(context.Context, *connect.Request[v1.LeaseOperationRequest]) (*connect.Response[v1.LeaseOperationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.LeaseOperation is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) HeartbeatOperation(context.Context, *connect.Request[v1.HeartbeatOperationRequest]) (*connect.Response[v1.HeartbeatOperationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.HeartbeatOperation is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CompleteOperation(context.Context, *connect.Request[v1.CompleteOperationRequest]) (*connect.Response[v1.CompleteOperationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.CompleteOperation is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DisconnectWorker(context.Context, *connect.Request[v1.DisconnectWorkerRequest]) (*connect.Response[v1.DisconnectWorkerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("wb.daemon.v1.DaemonService.DisconnectWorker is not implemented"))
 }

@@ -579,6 +579,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
+	queue.StartLeaseRecovery(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

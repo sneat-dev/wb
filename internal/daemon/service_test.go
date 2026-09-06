@@ -70,7 +70,8 @@ func TestDaemonServiceRejectsIdempotencyPayloadMismatch(t *testing.T) {
 		IdempotencyKey: "same-key", WorkingDirectory: root, Argv: []string{"echo", "hello"},
 		CpuUnits: 2, LocalRawCommand: true, Environment: map[string]string{"NO_COLOR": "1"},
 	}
-	if _, err := service.SubmitOperation(context.Background(), connect.NewRequest(base)); err != nil {
+	submitted, err := service.SubmitOperation(context.Background(), connect.NewRequest(base))
+	if err != nil {
 		t.Fatal(err)
 	}
 	checks := []*daemonv1.SubmitOperationRequest{
@@ -85,6 +86,7 @@ func TestDaemonServiceRejectsIdempotencyPayloadMismatch(t *testing.T) {
 			t.Fatalf("payload mismatch error = %v", err)
 		}
 	}
+	_ = waitForTestOperation(t, service, submitted.Msg)
 }
 
 func TestDaemonServiceRejectsOversizedRequestFields(t *testing.T) {
