@@ -28,7 +28,7 @@ task worktrees, and publishes one snapshot keyed <login>/<machine>.
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the snapshot; publish nothing")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the publish report as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().IntVar(&parallel, "parallel", 8, "max concurrent repository scans")
 	return cmd
 }

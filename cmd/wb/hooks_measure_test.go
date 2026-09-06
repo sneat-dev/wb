@@ -41,13 +41,25 @@ func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
 			Hook: "pre-push", Action: "push-attempt", Outcome: "passed", DurationMS: 60000, Branch: "feature/y"},
 	})
 
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"hooks", "measure", ".", "--file", path, "--json", "--non-interactive"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("exit code = %d; stderr=%s", code, stderr.String())
-	}
+	outputs := make(map[string][]byte)
 	var delta hooks.ProfileDelta
-	if err := json.Unmarshal(stdout.Bytes(), &delta); err != nil {
-		t.Fatalf("parse %q: %v", stdout.String(), err)
+	for name, flag := range map[string][]string{
+		"canonical": {"--format=json"},
+		"shortcut":  {"--json"},
+	} {
+		var stdout, stderr bytes.Buffer
+		args := []string{"hooks", "measure", ".", "--file", path, "--non-interactive"}
+		args = append(args, flag...)
+		if code := run(args, &stdout, &stderr); code != exitOK {
+			t.Fatalf("%s exit code = %d; stderr=%s", name, code, stderr.String())
+		}
+		outputs[name] = stdout.Bytes()
+		if err := json.Unmarshal(stdout.Bytes(), &delta); err != nil {
+			t.Fatalf("parse %s output %q: %v", name, stdout.String(), err)
+		}
+	}
+	if !bytes.Equal(outputs["canonical"], outputs["shortcut"]) {
+		t.Errorf("--format=json output differs from --json\ncanonical: %s\nshortcut: %s", outputs["canonical"], outputs["shortcut"])
 	}
 	if delta.Commit.Runs != 1 || delta.Commit.MaxDurationMS != 800 {
 		t.Errorf("commit = %#v", delta.Commit)

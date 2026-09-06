@@ -25,7 +25,7 @@ and do not change the exit code.`,
 			return runRemoteClaims(defaultRemoteDeps(), projectsRoot, stale, jsonOut, os.Stdout)
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print rows as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().DurationVar(&stale, "stale", 24*time.Hour, "a claim's holder is stale once their snapshot is older than this")
 	return cmd
 }

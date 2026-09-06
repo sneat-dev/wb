@@ -242,6 +242,33 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 	}
 }
 
+func TestEveryJSONShortcutHasCanonicalFormatFlag(t *testing.T) {
+	for _, path := range subcommandPaths(newRootCmd(), nil) {
+		command, _, err := newRootCmd().Find(path)
+		if err != nil {
+			t.Fatalf("find wb %s: %v", strings.Join(path, " "), err)
+		}
+		if command.Flags().Lookup("json") == nil {
+			continue
+		}
+		if command.Flags().Lookup("format") == nil {
+			t.Errorf("wb %s offers --json without canonical --format", strings.Join(path, " "))
+		}
+	}
+}
+
+func TestRunSeparatorPreservesChildOutputFlags(t *testing.T) {
+	t.Setenv("WB_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	args := []string{"run", "--", "/usr/bin/printf", "%s|%s", "--format=json", "--json"}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d; stderr: %s", code, stderr.String())
+	}
+	if got, want := stdout.String(), "--format=json|--json"; got != want {
+		t.Errorf("forwarded output = %q, want %q", got, want)
+	}
+}
+
 // TestExitCodeForHonoursACommandsOwnCode proves the coded path is wired, not
 // just the usage path. Before this change main discarded exitError.code and
 // exited 1 for everything, so a command that chose a different code was
