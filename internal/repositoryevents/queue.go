@@ -324,7 +324,12 @@ func (queue *Queue) finish(id, detail string, runErr error) {
 		item.Progress = detail
 		item.RetryAt = time.Time{}
 	}
-	_ = queue.persist(item)
+	if err := queue.persist(item); err != nil {
+		item.State = "queued"
+		item.Error = "persist repository event completion: " + err.Error()
+		item.Progress = "completion persistence failed; retry pending"
+		item.RetryAt = item.UpdatedAt.Add(queue.retryDelay)
+	}
 	queue.notifyLocked()
 	if queue.progress != nil {
 		queue.progress("repository event " + id + ": " + item.Progress)

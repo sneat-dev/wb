@@ -68,6 +68,8 @@ failed durable enqueue MUST leave the whole provider batch unacknowledged.
 Event IDs MUST deduplicate identical deliveries across retries. A reused ID
 with different content MUST fail. Queue jobs, pending acknowledgements, and the
 last acknowledged cursor MUST survive daemon restart and executable handoff.
+The provider MUST treat replay of the same exact machine/cursor/event-ID
+acknowledgement as idempotent.
 
 #### REQ: progress-during-long-operations
 
@@ -90,8 +92,9 @@ repository identity.
 
 A default-branch event MUST enqueue the existing throttled WB sync operation
 asynchronously. It MAY fast-forward a clean canonical checkout through WB's
-safe sync logic. It MUST NOT force, reset, stash, discard dirty state, switch a
-canonical checkout's branch, or update an active feature worktree.
+safe sync logic only after its configured origin identifies the event's exact
+GitHub repository. It MUST NOT force, reset, stash, discard dirty state, switch
+a canonical checkout's branch, or update an active feature worktree.
 
 #### REQ: rename-preserves-active-work
 

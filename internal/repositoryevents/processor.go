@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -19,6 +20,7 @@ type SyncProcessor struct {
 	ProjectsRoot string
 	relocate     func(context.Context, worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error)
 	sync         func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result
+	verifyOrigin func(string, string) error
 }
 
 func (processor SyncProcessor) Process(ctx context.Context, event repositoryevent.Event) (string, error) {
@@ -62,6 +64,13 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 		if err != nil || !gitInfo.IsDir() {
 			return "", errors.New("repository event target is not a canonical Git checkout")
 		}
+		verifyOrigin := processor.verifyOrigin
+		if verifyOrigin == nil {
+			verifyOrigin = verifyGitHubOrigin
+		}
+		if err := verifyOrigin(path, event.Repository); err != nil {
+			return "", err
+		}
 		tracking, err := gitops.Tracking(path)
 		if err != nil {
 			return "", err
@@ -96,4 +105,17 @@ func repositoryParts(repository string) (string, string) {
 
 func githubSSHURL(repository string) string {
 	return "git@github.com:" + strings.TrimPrefix(repository, "github.com/") + ".git"
+}
+
+func verifyGitHubOrigin(path, repository string) error {
+	origin, err := gitops.OriginURL(path)
+	if err != nil {
+		return err
+	}
+	remote, err := gitremote.Parse(origin)
+	expected := strings.TrimPrefix(repository, "github.com/")
+	if err != nil || remote.Identity.Host() != "github.com" || !strings.EqualFold(remote.Identity.Repository, expected) {
+		return fmt.Errorf("canonical checkout origin does not identify %s", repository)
+	}
+	return nil
 }

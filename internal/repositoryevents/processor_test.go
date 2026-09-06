@@ -37,7 +37,8 @@ func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) 
 	runGit(t, seed, "push", "origin", "main")
 
 	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-sync", Repository: "github.com/acme/app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonDefaultBranchUpdated}
-	detail, err := (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event)
+	processor := localSyncProcessor(projects)
+	detail, err := processor.Process(context.Background(), event)
 	if err != nil || detail != "pulled" {
 		t.Fatalf("sync = %q, %v", detail, err)
 	}
@@ -50,7 +51,7 @@ func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) 
 	}
 	writeCommit(t, seed, "three")
 	runGit(t, seed, "push", "origin", "main")
-	detail, err = (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event)
+	detail, err = processor.Process(context.Background(), event)
 	if err != nil || detail != "skipped (dirty)" {
 		t.Fatalf("dirty sync = %q, %v", detail, err)
 	}
@@ -100,7 +101,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 	queue.acquire = func(context.Context) (func(), error) { return func() {}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go queue.Run(ctx, SyncProcessor{ProjectsRoot: projects}, nil)
+	go queue.Run(ctx, localSyncProcessor(projects), nil)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		queue.mu.Lock()
@@ -158,6 +159,7 @@ func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
 	writeCommit(t, oldPath, "one")
 	processor := SyncProcessor{
 		ProjectsRoot: projects,
+		verifyOrigin: func(string, string) error { return nil },
 		relocate: func(_ context.Context, _ worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error) {
 			if err := os.Rename(oldPath, newPath); err != nil {
 				t.Fatal(err)
@@ -175,6 +177,27 @@ func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
 	if detail, err := processor.Process(context.Background(), event); err != nil || detail != "relocated; pulled" {
 		t.Fatalf("rename process = %q, %v", detail, err)
 	}
+}
+
+func TestSyncProcessorRejectsMismatchedCanonicalOrigin(t *testing.T) {
+	projects := t.TempDir()
+	path := filepath.Join(projects, "acme", "app")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, path, "init", "-b", "main")
+	runGit(t, path, "config", "user.email", "test@example.com")
+	runGit(t, path, "config", "user.name", "Test")
+	writeCommit(t, path, "one")
+	runGit(t, path, "remote", "add", "origin", "git@github.com:other/repository.git")
+	event := receiverEvent("event-wrong-origin")
+	if _, err := (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event); err == nil || !strings.Contains(err.Error(), "does not identify") {
+		t.Fatalf("mismatched origin error = %v", err)
+	}
+}
+
+func localSyncProcessor(projects string) SyncProcessor {
+	return SyncProcessor{ProjectsRoot: projects, verifyOrigin: func(string, string) error { return nil }}
 }
 
 func writeCommit(t *testing.T, directory, value string) {

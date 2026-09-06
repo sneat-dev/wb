@@ -172,6 +172,10 @@ type AckRequest struct {
 	EventIDs []string `json:"event_ids"`
 }
 
+// Acknowledge is idempotent for one exact authenticated machine, cursor, and
+// event-ID set. A daemon persists this complete request before sending it and
+// may replay it when a response or the following cursor write is interrupted.
+
 func (request AckRequest) Validate() error {
 	if request.Version != ContractVersion {
 		return fmt.Errorf("repository event acknowledgement version must be %d", ContractVersion)
