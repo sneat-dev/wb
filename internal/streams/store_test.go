@@ -240,3 +240,54 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 		t.Fatalf("unreadable = %#v, want only the truncated stream record surfaced to the caller", unreadable)
 	}
 }
+
+func TestRepositoryStreamScopesFutureSchemaToItsIndexedRepositories(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":2,"members":[{"repository":"acme/member"}],"linked_consumers":[{"repository":"acme/linked"}],"future_detail":{"value":true}}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 0 {
+		t.Fatalf("unrelated repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+	if _, held, unreadable, err := store.RepositoryStream("acme/linked"); err != nil || held || len(unreadable) != 1 {
+		t.Fatalf("indexed repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+	if _, held, unreadable, err := store.RepositoryStream("acme/member"); err != nil || held || len(unreadable) != 1 {
+		t.Fatalf("member repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+}
+
+func TestRepositoryStreamKeepsIncompleteFutureMembershipUnreadable(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":2,"members":[{"future_repository":"acme/app"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 1 {
+		t.Fatalf("incomplete index: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+}
+
+func TestRepositoryStreamKeepsUnknownFutureSchemaUnreadable(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":3,"members":[{"repository":"acme/other"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 1 {
+		t.Fatalf("unknown schema: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+}
