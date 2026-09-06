@@ -876,8 +876,10 @@ a worktree.
 - [x] Revalidate an exact interrupted `preparing` merge candidate before any
   publication, and clear historical failure text whenever cleanup reaches a
   terminal successful receipt.
-- [ ] Reuse an exact successful PR-CI validation receipt during landing instead
+- [x] Reuse an exact successful PR-CI validation receipt during landing instead
   of running the same broad local coverage gate again.
+- [x] Make `wb pr land` fast-forward an eligible clean canonical checkout to
+  the exact remote landing before branch retirement and cleanup report success.
 - [ ] Adopt an existing exact-head pull request into the merge receipt instead
   of opening a duplicate PR and triggering a duplicate CI run.
 - [ ] Bind the provider ports to a durable Firestore adapter with documented
@@ -986,6 +988,16 @@ proves the exact candidate still contains the receipted target and every source,
 runs the candidate validation again, and persists `prepared` before opening or
 advancing any remote ref. A terminal successful cleanup receipt has an empty
 current failure field while retaining historical failure evidence elsewhere.
+
+### AC: pr-land-syncs-and-main-reuses-exact-validation
+
+Given an exact-head pull request passed its full validation and `wb pr land`
+merges it, when the remote landing is verified, then WB fast-forwards an
+eligible clean canonical target before deleting the source branch. When main CI
+starts after that deletion, its receipt selector finds the successful pull
+request run by exact head SHA and repository identity without depending on the
+deleted branch ref, verifies the immutable artifact, and skips the duplicate
+full validation jobs.
 
 ### AC: merger-agent-is-exceptional
 

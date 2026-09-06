@@ -80,6 +80,14 @@ assert_output "$select_output" 'candidate=true'
 assert_output "$select_output" 'run_id=44'
 assert_output "$select_output" 'pull_number=17'
 
+deleted_branch_output=$temp/deleted-branch.output
+PATH="$root/.github/scripts/testdata/ci-validation-reuse:$PATH" \
+  CI_REUSE_FIXTURE_DIR="$root/.github/scripts/testdata/ci-validation-reuse" CI_REUSE_BRANCH_DELETED=1 \
+  GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main GITHUB_REPOSITORY=sneat-dev/wb GITHUB_SHA=landed-sha \
+  sh "$root/.github/scripts/ci-reuse-select.sh" "$deleted_branch_output"
+assert_output "$deleted_branch_output" 'candidate=true'
+assert_output "$deleted_branch_output" 'run_id=44'
+
 policy_output=$temp/policy.output
 PATH="$root/.github/scripts/testdata/ci-validation-reuse:$PATH" \
   CI_REUSE_FIXTURE_DIR="$root/.github/scripts/testdata/ci-validation-reuse" CI_REUSE_FILES=files-policy.json \

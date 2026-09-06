@@ -6,7 +6,12 @@ case "$*" in
   *"/commits/"*"/pulls"*) cat "$fixture/pulls.json" ;;
   *"/pulls/"*"/files"*) cat "$fixture/${CI_REUSE_FILES:-files.json}" ;;
   *"/pulls/"*) cat "$fixture/${CI_REUSE_PULL:-pull.json}" ;;
-  *"/actions/workflows/go-ci.yml/runs"*) cat "$fixture/runs.json" ;;
+  *"/actions/workflows/go-ci.yml/runs"*)
+    if [ "${CI_REUSE_BRANCH_DELETED:-}" = 1 ] && printf '%s' "$*" | grep -q 'branch='; then
+      printf '%s\n' '{"workflow_runs":[]}'
+    else
+      cat "$fixture/runs.json"
+    fi ;;
   *"/actions/runs/"*"/artifacts"*) cat "$fixture/artifacts.json" ;;
   *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
 esac

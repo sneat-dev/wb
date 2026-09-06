@@ -314,6 +314,12 @@ func TestLandMechanicalBumpNeedsNoApproval(t *testing.T) {
 	if result.MergeSHA == "" || !result.LandingOnBase {
 		t.Fatalf("landing evidence = %#v", result)
 	}
+	if result.CanonicalSync != "fast_forwarded" {
+		t.Fatalf("canonical sync = %q, want fast_forwarded", result.CanonicalSync)
+	}
+	if canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); canonicalHead != result.MergeSHA {
+		t.Fatalf("canonical HEAD = %s, want exact landing %s", canonicalHead, result.MergeSHA)
+	}
 	if !result.BranchDeleted {
 		t.Fatal("the source branch must be retired by the landing that made it redundant")
 	}
