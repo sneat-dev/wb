@@ -31,7 +31,7 @@ func newVersionCmd() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON")
+	addJSONFormatFlags(command, &asJSON)
 	return command
 }
 
