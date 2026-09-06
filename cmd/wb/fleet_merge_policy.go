@@ -679,8 +679,12 @@ func persistMergePolicyReport(report mergePolicyReport) error {
 }
 
 func printMergePolicyReport(out io.Writer, report mergePolicyReport) error {
-	fmt.Fprintf(out, "Merge policy: %s\n", report.Mode)
-	fmt.Fprintf(out, "  %d repositories · %d compliant · %d drift · %d blocked · %d errors · %d applied\n", report.Summary.Inspected, report.Summary.Compliant, report.Summary.Drift, report.Summary.Blocked, report.Summary.Errors, report.Summary.Applied)
+	if _, err := fmt.Fprintf(out, "Merge policy: %s\n", report.Mode); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "  %d repositories · %d compliant · %d drift · %d blocked · %d errors · %d applied\n", report.Summary.Inspected, report.Summary.Compliant, report.Summary.Drift, report.Summary.Blocked, report.Summary.Errors, report.Summary.Applied); err != nil {
+		return err
+	}
 	for _, repo := range report.Repositories {
 		detail := strings.Join(append(append([]string{}, repo.Drift...), repo.Conflicts...), "; ")
 		if repo.Error != "" {
@@ -689,13 +693,19 @@ func printMergePolicyReport(out io.Writer, report mergePolicyReport) error {
 		if detail == "" {
 			detail = "merge commits only; PR title + PR body"
 		}
-		fmt.Fprintf(out, "  %-9s %-42s %s\n", repo.Disposition, repo.Repository, detail)
+		if _, err := fmt.Fprintf(out, "  %-9s %-42s %s\n", repo.Disposition, repo.Repository, detail); err != nil {
+			return err
+		}
 	}
 	for _, rule := range report.Rulesets {
-		fmt.Fprintf(out, "  %-9s %s ruleset %d (%d selected) %s\n", rule.Disposition, strings.ToLower(rule.SourceType), rule.ID, len(rule.Repositories), rule.Error)
+		if _, err := fmt.Fprintf(out, "  %-9s %s ruleset %d (%d selected) %s\n", rule.Disposition, strings.ToLower(rule.SourceType), rule.ID, len(rule.Repositories), rule.Error); err != nil {
+			return err
+		}
 	}
 	if report.ReportPath != "" {
-		fmt.Fprintf(out, "Report: %s\n", report.ReportPath)
+		if _, err := fmt.Fprintf(out, "Report: %s\n", report.ReportPath); err != nil {
+			return err
+		}
 	}
 	return nil
 }
