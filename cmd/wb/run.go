@@ -46,7 +46,8 @@ WB while preserving its standard streams and exit code.
 Recipe mode is a dry-run by default; --apply lands the recipe. Command mode
 records privacy-safe receipts and admits CPU-heavy work against a machine-wide
 CPUCount-1 budget. It is synchronous by default; --async submits through the
-authenticated durable local daemon queue.`,
+authenticated durable local daemon queue for a sandboxed wb worker connect
+process to execute.`,
 		Example: `# Discover configured recipes
 wb run --list
 
@@ -86,7 +87,7 @@ wb run --history --days 7`,
 					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
 				}
 				if async {
-					return submitDaemonOperation(cmd, daemonDeps, args)
+					return submitWorkerOperation(cmd, daemonDeps, args)
 				}
 				return runExternalCommand(cmd, args)
 			}
@@ -111,7 +112,7 @@ wb run --history --days 7`,
 	}
 	setDiscoveryTerms(cmd, "run recipe reusable fleet change apply dry run automation repeat command")
 	cmd.Flags().BoolVar(&apply, "apply", false, "commit & push changes (default: dry-run report)")
-	cmd.Flags().BoolVar(&async, "async", false, "submit command to the durable local daemon queue and return its receipt")
+	cmd.Flags().BoolVar(&async, "async", false, "submit for a sandboxed worker and return the durable queue receipt")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")

@@ -51,7 +51,7 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 	var cpuUnits uint32
 	var wait, jsonOut bool
 	command := &cobra.Command{
-		Use: "submit -- <command> [args...]", Short: "Submit a command to the authenticated durable local queue",
+		Use: "submit -- <command> [args...]", Short: "Submit a trusted raw command for the daemon process to execute",
 		Args: func(command *cobra.Command, args []string) error {
 			if command.ArgsLenAtDash() != 0 || len(args) == 0 {
 				return usageError("command is required after --")
@@ -244,12 +244,9 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 	return nil
 }
 
-func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args []string) error {
+func submitWorkerOperation(command *cobra.Command, deps daemonDependencies, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return err
-	}
-	if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
 		return err
 	}
 	client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
@@ -257,7 +254,7 @@ func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args
 		return err
 	}
 	response, err := client.SubmitOperation(command.Context(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: cwd, Argv: args, LocalRawCommand: true,
+		WorkingDirectory: cwd, Argv: args,
 	}))
 	if err != nil {
 		return err

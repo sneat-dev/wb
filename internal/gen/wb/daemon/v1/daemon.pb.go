@@ -503,6 +503,11 @@ type Operation struct {
 	Error                 string                 `protobuf:"bytes,16,opt,name=error,proto3" json:"error,omitempty"`
 	StdoutTail            []byte                 `protobuf:"bytes,17,opt,name=stdout_tail,json=stdoutTail,proto3" json:"stdout_tail,omitempty"`
 	StderrTail            []byte                 `protobuf:"bytes,18,opt,name=stderr_tail,json=stderrTail,proto3" json:"stderr_tail,omitempty"`
+	WorkerId              string                 `protobuf:"bytes,19,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration      string                 `protobuf:"bytes,20,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	LastProgressUnixMilli int64                  `protobuf:"varint,21,opt,name=last_progress_unix_milli,json=lastProgressUnixMilli,proto3" json:"last_progress_unix_milli,omitempty"`
+	LeaseExpiresUnixMilli int64                  `protobuf:"varint,22,opt,name=lease_expires_unix_milli,json=leaseExpiresUnixMilli,proto3" json:"lease_expires_unix_milli,omitempty"`
+	Progress              string                 `protobuf:"bytes,23,opt,name=progress,proto3" json:"progress,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -663,6 +668,825 @@ func (x *Operation) GetStderrTail() []byte {
 	return nil
 }
 
+func (x *Operation) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *Operation) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *Operation) GetLastProgressUnixMilli() int64 {
+	if x != nil {
+		return x.LastProgressUnixMilli
+	}
+	return 0
+}
+
+func (x *Operation) GetLeaseExpiresUnixMilli() int64 {
+	if x != nil {
+		return x.LeaseExpiresUnixMilli
+	}
+	return 0
+}
+
+func (x *Operation) GetProgress() string {
+	if x != nil {
+		return x.Progress
+	}
+	return ""
+}
+
+type RegisterWorkerRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId        string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Build           string                 `protobuf:"bytes,2,opt,name=build,proto3" json:"build,omitempty"`
+	ProtocolVersion uint32                 `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Os              string                 `protobuf:"bytes,4,opt,name=os,proto3" json:"os,omitempty"`
+	Arch            string                 `protobuf:"bytes,5,opt,name=arch,proto3" json:"arch,omitempty"`
+	CpuCapacity     uint32                 `protobuf:"varint,6,opt,name=cpu_capacity,json=cpuCapacity,proto3" json:"cpu_capacity,omitempty"`
+	PermittedRoots  []string               `protobuf:"bytes,7,rep,name=permitted_roots,json=permittedRoots,proto3" json:"permitted_roots,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RegisterWorkerRequest) Reset() {
+	*x = RegisterWorkerRequest{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterWorkerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterWorkerRequest) ProtoMessage() {}
+
+func (x *RegisterWorkerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterWorkerRequest.ProtoReflect.Descriptor instead.
+func (*RegisterWorkerRequest) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *RegisterWorkerRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *RegisterWorkerRequest) GetBuild() string {
+	if x != nil {
+		return x.Build
+	}
+	return ""
+}
+
+func (x *RegisterWorkerRequest) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *RegisterWorkerRequest) GetOs() string {
+	if x != nil {
+		return x.Os
+	}
+	return ""
+}
+
+func (x *RegisterWorkerRequest) GetArch() string {
+	if x != nil {
+		return x.Arch
+	}
+	return ""
+}
+
+func (x *RegisterWorkerRequest) GetCpuCapacity() uint32 {
+	if x != nil {
+		return x.CpuCapacity
+	}
+	return 0
+}
+
+func (x *RegisterWorkerRequest) GetPermittedRoots() []string {
+	if x != nil {
+		return x.PermittedRoots
+	}
+	return nil
+}
+
+type WorkerRegistration struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId              string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration      string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	SchedulerGeneration   string                 `protobuf:"bytes,3,opt,name=scheduler_generation,json=schedulerGeneration,proto3" json:"scheduler_generation,omitempty"`
+	HeartbeatMilliseconds uint32                 `protobuf:"varint,4,opt,name=heartbeat_milliseconds,json=heartbeatMilliseconds,proto3" json:"heartbeat_milliseconds,omitempty"`
+	LeaseMilliseconds     uint32                 `protobuf:"varint,5,opt,name=lease_milliseconds,json=leaseMilliseconds,proto3" json:"lease_milliseconds,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *WorkerRegistration) Reset() {
+	*x = WorkerRegistration{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerRegistration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerRegistration) ProtoMessage() {}
+
+func (x *WorkerRegistration) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerRegistration.ProtoReflect.Descriptor instead.
+func (*WorkerRegistration) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *WorkerRegistration) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetSchedulerGeneration() string {
+	if x != nil {
+		return x.SchedulerGeneration
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetHeartbeatMilliseconds() uint32 {
+	if x != nil {
+		return x.HeartbeatMilliseconds
+	}
+	return 0
+}
+
+func (x *WorkerRegistration) GetLeaseMilliseconds() uint32 {
+	if x != nil {
+		return x.LeaseMilliseconds
+	}
+	return 0
+}
+
+type RegisterWorkerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Registration  *WorkerRegistration    `protobuf:"bytes,1,opt,name=registration,proto3" json:"registration,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterWorkerResponse) Reset() {
+	*x = RegisterWorkerResponse{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterWorkerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterWorkerResponse) ProtoMessage() {}
+
+func (x *RegisterWorkerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterWorkerResponse.ProtoReflect.Descriptor instead.
+func (*RegisterWorkerResponse) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RegisterWorkerResponse) GetRegistration() *WorkerRegistration {
+	if x != nil {
+		return x.Registration
+	}
+	return nil
+}
+
+type LeaseOperationRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId         string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	WaitMilliseconds uint32                 `protobuf:"varint,3,opt,name=wait_milliseconds,json=waitMilliseconds,proto3" json:"wait_milliseconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *LeaseOperationRequest) Reset() {
+	*x = LeaseOperationRequest{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaseOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaseOperationRequest) ProtoMessage() {}
+
+func (x *LeaseOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaseOperationRequest.ProtoReflect.Descriptor instead.
+func (*LeaseOperationRequest) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *LeaseOperationRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *LeaseOperationRequest) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *LeaseOperationRequest) GetWaitMilliseconds() uint32 {
+	if x != nil {
+		return x.WaitMilliseconds
+	}
+	return 0
+}
+
+type WorkerAssignment struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId              string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration      string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	SchedulerGeneration   string                 `protobuf:"bytes,3,opt,name=scheduler_generation,json=schedulerGeneration,proto3" json:"scheduler_generation,omitempty"`
+	LeaseId               string                 `protobuf:"bytes,4,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	LeaseExpiresUnixMilli int64                  `protobuf:"varint,5,opt,name=lease_expires_unix_milli,json=leaseExpiresUnixMilli,proto3" json:"lease_expires_unix_milli,omitempty"`
+	OperationId           string                 `protobuf:"bytes,6,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	WorkingDirectory      string                 `protobuf:"bytes,7,opt,name=working_directory,json=workingDirectory,proto3" json:"working_directory,omitempty"`
+	Argv                  []string               `protobuf:"bytes,8,rep,name=argv,proto3" json:"argv,omitempty"`
+	CpuUnits              uint32                 `protobuf:"varint,9,opt,name=cpu_units,json=cpuUnits,proto3" json:"cpu_units,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *WorkerAssignment) Reset() {
+	*x = WorkerAssignment{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerAssignment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerAssignment) ProtoMessage() {}
+
+func (x *WorkerAssignment) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerAssignment.ProtoReflect.Descriptor instead.
+func (*WorkerAssignment) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *WorkerAssignment) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetSchedulerGeneration() string {
+	if x != nil {
+		return x.SchedulerGeneration
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetLeaseExpiresUnixMilli() int64 {
+	if x != nil {
+		return x.LeaseExpiresUnixMilli
+	}
+	return 0
+}
+
+func (x *WorkerAssignment) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetWorkingDirectory() string {
+	if x != nil {
+		return x.WorkingDirectory
+	}
+	return ""
+}
+
+func (x *WorkerAssignment) GetArgv() []string {
+	if x != nil {
+		return x.Argv
+	}
+	return nil
+}
+
+func (x *WorkerAssignment) GetCpuUnits() uint32 {
+	if x != nil {
+		return x.CpuUnits
+	}
+	return 0
+}
+
+type LeaseOperationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Assignment    *WorkerAssignment      `protobuf:"bytes,1,opt,name=assignment,proto3" json:"assignment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaseOperationResponse) Reset() {
+	*x = LeaseOperationResponse{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaseOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaseOperationResponse) ProtoMessage() {}
+
+func (x *LeaseOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaseOperationResponse.ProtoReflect.Descriptor instead.
+func (*LeaseOperationResponse) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *LeaseOperationResponse) GetAssignment() *WorkerAssignment {
+	if x != nil {
+		return x.Assignment
+	}
+	return nil
+}
+
+type HeartbeatOperationRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId         string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	OperationId      string                 `protobuf:"bytes,3,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	LeaseId          string                 `protobuf:"bytes,4,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	Progress         string                 `protobuf:"bytes,5,opt,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HeartbeatOperationRequest) Reset() {
+	*x = HeartbeatOperationRequest{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatOperationRequest) ProtoMessage() {}
+
+func (x *HeartbeatOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatOperationRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatOperationRequest) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *HeartbeatOperationRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *HeartbeatOperationRequest) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *HeartbeatOperationRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *HeartbeatOperationRequest) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
+}
+
+func (x *HeartbeatOperationRequest) GetProgress() string {
+	if x != nil {
+		return x.Progress
+	}
+	return ""
+}
+
+type HeartbeatOperationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Operation     *Operation             `protobuf:"bytes,1,opt,name=operation,proto3" json:"operation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatOperationResponse) Reset() {
+	*x = HeartbeatOperationResponse{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatOperationResponse) ProtoMessage() {}
+
+func (x *HeartbeatOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatOperationResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatOperationResponse) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *HeartbeatOperationResponse) GetOperation() *Operation {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
+type CompleteOperationRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId         string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	OperationId      string                 `protobuf:"bytes,3,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	LeaseId          string                 `protobuf:"bytes,4,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	ExitCode         int32                  `protobuf:"varint,5,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	StdoutTail       []byte                 `protobuf:"bytes,6,opt,name=stdout_tail,json=stdoutTail,proto3" json:"stdout_tail,omitempty"`
+	StderrTail       []byte                 `protobuf:"bytes,7,opt,name=stderr_tail,json=stderrTail,proto3" json:"stderr_tail,omitempty"`
+	Error            string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CompleteOperationRequest) Reset() {
+	*x = CompleteOperationRequest{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompleteOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompleteOperationRequest) ProtoMessage() {}
+
+func (x *CompleteOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompleteOperationRequest.ProtoReflect.Descriptor instead.
+func (*CompleteOperationRequest) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *CompleteOperationRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *CompleteOperationRequest) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+func (x *CompleteOperationRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *CompleteOperationRequest) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
+}
+
+func (x *CompleteOperationRequest) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *CompleteOperationRequest) GetStdoutTail() []byte {
+	if x != nil {
+		return x.StdoutTail
+	}
+	return nil
+}
+
+func (x *CompleteOperationRequest) GetStderrTail() []byte {
+	if x != nil {
+		return x.StderrTail
+	}
+	return nil
+}
+
+func (x *CompleteOperationRequest) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type CompleteOperationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Operation     *Operation             `protobuf:"bytes,1,opt,name=operation,proto3" json:"operation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompleteOperationResponse) Reset() {
+	*x = CompleteOperationResponse{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompleteOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompleteOperationResponse) ProtoMessage() {}
+
+func (x *CompleteOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompleteOperationResponse.ProtoReflect.Descriptor instead.
+func (*CompleteOperationResponse) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *CompleteOperationResponse) GetOperation() *Operation {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
+type DisconnectWorkerRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId         string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerGeneration string                 `protobuf:"bytes,2,opt,name=worker_generation,json=workerGeneration,proto3" json:"worker_generation,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DisconnectWorkerRequest) Reset() {
+	*x = DisconnectWorkerRequest{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectWorkerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectWorkerRequest) ProtoMessage() {}
+
+func (x *DisconnectWorkerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectWorkerRequest.ProtoReflect.Descriptor instead.
+func (*DisconnectWorkerRequest) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *DisconnectWorkerRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *DisconnectWorkerRequest) GetWorkerGeneration() string {
+	if x != nil {
+		return x.WorkerGeneration
+	}
+	return ""
+}
+
+type DisconnectWorkerResponse struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	RecoveryRequiredOperations uint32                 `protobuf:"varint,1,opt,name=recovery_required_operations,json=recoveryRequiredOperations,proto3" json:"recovery_required_operations,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *DisconnectWorkerResponse) Reset() {
+	*x = DisconnectWorkerResponse{}
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectWorkerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectWorkerResponse) ProtoMessage() {}
+
+func (x *DisconnectWorkerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wb_daemon_v1_daemon_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectWorkerResponse.ProtoReflect.Descriptor instead.
+func (*DisconnectWorkerResponse) Descriptor() ([]byte, []int) {
+	return file_wb_daemon_v1_daemon_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *DisconnectWorkerResponse) GetRecoveryRequiredOperations() uint32 {
+	if x != nil {
+		return x.RecoveryRequiredOperations
+	}
+	return 0
+}
+
 var File_wb_daemon_v1_daemon_proto protoreflect.FileDescriptor
 
 const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
@@ -694,7 +1518,7 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\fafter_cursor\x18\x02 \x01(\tR\vafterCursor\x12+\n" +
 	"\x11wait_milliseconds\x18\x03 \x01(\rR\x10waitMilliseconds\";\n" +
 	"\x16CancelOperationRequest\x12!\n" +
-	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\xbc\x05\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\x94\a\n" +
 	"\tOperation\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12!\n" +
 	"\foperation_id\x18\x02 \x01(\tR\voperationId\x12'\n" +
@@ -717,7 +1541,72 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\vstdout_tail\x18\x11 \x01(\fR\n" +
 	"stdoutTail\x12\x1f\n" +
 	"\vstderr_tail\x18\x12 \x01(\fR\n" +
-	"stderrTail*^\n" +
+	"stderrTail\x12\x1b\n" +
+	"\tworker_id\x18\x13 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x14 \x01(\tR\x10workerGeneration\x127\n" +
+	"\x18last_progress_unix_milli\x18\x15 \x01(\x03R\x15lastProgressUnixMilli\x127\n" +
+	"\x18lease_expires_unix_milli\x18\x16 \x01(\x03R\x15leaseExpiresUnixMilli\x12\x1a\n" +
+	"\bprogress\x18\x17 \x01(\tR\bprogress\"\xe5\x01\n" +
+	"\x15RegisterWorkerRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x14\n" +
+	"\x05build\x18\x02 \x01(\tR\x05build\x12)\n" +
+	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion\x12\x0e\n" +
+	"\x02os\x18\x04 \x01(\tR\x02os\x12\x12\n" +
+	"\x04arch\x18\x05 \x01(\tR\x04arch\x12!\n" +
+	"\fcpu_capacity\x18\x06 \x01(\rR\vcpuCapacity\x12'\n" +
+	"\x0fpermitted_roots\x18\a \x03(\tR\x0epermittedRoots\"\xf7\x01\n" +
+	"\x12WorkerRegistration\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\x121\n" +
+	"\x14scheduler_generation\x18\x03 \x01(\tR\x13schedulerGeneration\x125\n" +
+	"\x16heartbeat_milliseconds\x18\x04 \x01(\rR\x15heartbeatMilliseconds\x12-\n" +
+	"\x12lease_milliseconds\x18\x05 \x01(\rR\x11leaseMilliseconds\"^\n" +
+	"\x16RegisterWorkerResponse\x12D\n" +
+	"\fregistration\x18\x01 \x01(\v2 .wb.daemon.v1.WorkerRegistrationR\fregistration\"\x8e\x01\n" +
+	"\x15LeaseOperationRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\x12+\n" +
+	"\x11wait_milliseconds\x18\x03 \x01(\rR\x10waitMilliseconds\"\xe4\x02\n" +
+	"\x10WorkerAssignment\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\x121\n" +
+	"\x14scheduler_generation\x18\x03 \x01(\tR\x13schedulerGeneration\x12\x19\n" +
+	"\blease_id\x18\x04 \x01(\tR\aleaseId\x127\n" +
+	"\x18lease_expires_unix_milli\x18\x05 \x01(\x03R\x15leaseExpiresUnixMilli\x12!\n" +
+	"\foperation_id\x18\x06 \x01(\tR\voperationId\x12+\n" +
+	"\x11working_directory\x18\a \x01(\tR\x10workingDirectory\x12\x12\n" +
+	"\x04argv\x18\b \x03(\tR\x04argv\x12\x1b\n" +
+	"\tcpu_units\x18\t \x01(\rR\bcpuUnits\"X\n" +
+	"\x16LeaseOperationResponse\x12>\n" +
+	"\n" +
+	"assignment\x18\x01 \x01(\v2\x1e.wb.daemon.v1.WorkerAssignmentR\n" +
+	"assignment\"\xbf\x01\n" +
+	"\x19HeartbeatOperationRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\x12!\n" +
+	"\foperation_id\x18\x03 \x01(\tR\voperationId\x12\x19\n" +
+	"\blease_id\x18\x04 \x01(\tR\aleaseId\x12\x1a\n" +
+	"\bprogress\x18\x05 \x01(\tR\bprogress\"S\n" +
+	"\x1aHeartbeatOperationResponse\x125\n" +
+	"\toperation\x18\x01 \x01(\v2\x17.wb.daemon.v1.OperationR\toperation\"\x97\x02\n" +
+	"\x18CompleteOperationRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\x12!\n" +
+	"\foperation_id\x18\x03 \x01(\tR\voperationId\x12\x19\n" +
+	"\blease_id\x18\x04 \x01(\tR\aleaseId\x12\x1b\n" +
+	"\texit_code\x18\x05 \x01(\x05R\bexitCode\x12\x1f\n" +
+	"\vstdout_tail\x18\x06 \x01(\fR\n" +
+	"stdoutTail\x12\x1f\n" +
+	"\vstderr_tail\x18\a \x01(\fR\n" +
+	"stderrTail\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\"R\n" +
+	"\x19CompleteOperationResponse\x125\n" +
+	"\toperation\x18\x01 \x01(\v2\x17.wb.daemon.v1.OperationR\toperation\"c\n" +
+	"\x17DisconnectWorkerRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12+\n" +
+	"\x11worker_generation\x18\x02 \x01(\tR\x10workerGeneration\"\\\n" +
+	"\x18DisconnectWorkerResponse\x12@\n" +
+	"\x1crecovery_required_operations\x18\x01 \x01(\rR\x1arecoveryRequiredOperations*^\n" +
 	"\vDaemonState\x12\x1c\n" +
 	"\x18DAEMON_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12DAEMON_STATE_READY\x10\x01\x12\x19\n" +
@@ -729,13 +1618,18 @@ const file_wb_daemon_v1_daemon_proto_rawDesc = "" +
 	"\x19OPERATION_STATE_SUCCEEDED\x10\x03\x12\x1a\n" +
 	"\x16OPERATION_STATE_FAILED\x10\x04\x12\x1d\n" +
 	"\x19OPERATION_STATE_CANCELLED\x10\x05\x12%\n" +
-	"!OPERATION_STATE_RECOVERY_REQUIRED\x10\x062\xb1\x03\n" +
+	"!OPERATION_STATE_RECOVERY_REQUIRED\x10\x062\xa7\a\n" +
 	"\rDaemonService\x12Z\n" +
 	"\rGetDaemonInfo\x12\".wb.daemon.v1.GetDaemonInfoRequest\x1a#.wb.daemon.v1.GetDaemonInfoResponse\"\x00\x12R\n" +
 	"\x0fSubmitOperation\x12$.wb.daemon.v1.SubmitOperationRequest\x1a\x17.wb.daemon.v1.Operation\"\x00\x12L\n" +
 	"\fGetOperation\x12!.wb.daemon.v1.GetOperationRequest\x1a\x17.wb.daemon.v1.Operation\"\x00\x12N\n" +
 	"\rWaitOperation\x12\".wb.daemon.v1.WaitOperationRequest\x1a\x17.wb.daemon.v1.Operation\"\x00\x12R\n" +
-	"\x0fCancelOperation\x12$.wb.daemon.v1.CancelOperationRequest\x1a\x17.wb.daemon.v1.Operation\"\x00B<Z:github.com/sneat-dev/wb/internal/gen/wb/daemon/v1;daemonv1b\x06proto3"
+	"\x0fCancelOperation\x12$.wb.daemon.v1.CancelOperationRequest\x1a\x17.wb.daemon.v1.Operation\"\x00\x12]\n" +
+	"\x0eRegisterWorker\x12#.wb.daemon.v1.RegisterWorkerRequest\x1a$.wb.daemon.v1.RegisterWorkerResponse\"\x00\x12]\n" +
+	"\x0eLeaseOperation\x12#.wb.daemon.v1.LeaseOperationRequest\x1a$.wb.daemon.v1.LeaseOperationResponse\"\x00\x12i\n" +
+	"\x12HeartbeatOperation\x12'.wb.daemon.v1.HeartbeatOperationRequest\x1a(.wb.daemon.v1.HeartbeatOperationResponse\"\x00\x12f\n" +
+	"\x11CompleteOperation\x12&.wb.daemon.v1.CompleteOperationRequest\x1a'.wb.daemon.v1.CompleteOperationResponse\"\x00\x12c\n" +
+	"\x10DisconnectWorker\x12%.wb.daemon.v1.DisconnectWorkerRequest\x1a&.wb.daemon.v1.DisconnectWorkerResponse\"\x00B<Z:github.com/sneat-dev/wb/internal/gen/wb/daemon/v1;daemonv1b\x06proto3"
 
 var (
 	file_wb_daemon_v1_daemon_proto_rawDescOnce sync.Once
@@ -750,38 +1644,64 @@ func file_wb_daemon_v1_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_wb_daemon_v1_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wb_daemon_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_wb_daemon_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_wb_daemon_v1_daemon_proto_goTypes = []any{
-	(DaemonState)(0),               // 0: wb.daemon.v1.DaemonState
-	(OperationState)(0),            // 1: wb.daemon.v1.OperationState
-	(*GetDaemonInfoRequest)(nil),   // 2: wb.daemon.v1.GetDaemonInfoRequest
-	(*GetDaemonInfoResponse)(nil),  // 3: wb.daemon.v1.GetDaemonInfoResponse
-	(*SubmitOperationRequest)(nil), // 4: wb.daemon.v1.SubmitOperationRequest
-	(*GetOperationRequest)(nil),    // 5: wb.daemon.v1.GetOperationRequest
-	(*WaitOperationRequest)(nil),   // 6: wb.daemon.v1.WaitOperationRequest
-	(*CancelOperationRequest)(nil), // 7: wb.daemon.v1.CancelOperationRequest
-	(*Operation)(nil),              // 8: wb.daemon.v1.Operation
-	nil,                            // 9: wb.daemon.v1.SubmitOperationRequest.EnvironmentEntry
+	(DaemonState)(0),                   // 0: wb.daemon.v1.DaemonState
+	(OperationState)(0),                // 1: wb.daemon.v1.OperationState
+	(*GetDaemonInfoRequest)(nil),       // 2: wb.daemon.v1.GetDaemonInfoRequest
+	(*GetDaemonInfoResponse)(nil),      // 3: wb.daemon.v1.GetDaemonInfoResponse
+	(*SubmitOperationRequest)(nil),     // 4: wb.daemon.v1.SubmitOperationRequest
+	(*GetOperationRequest)(nil),        // 5: wb.daemon.v1.GetOperationRequest
+	(*WaitOperationRequest)(nil),       // 6: wb.daemon.v1.WaitOperationRequest
+	(*CancelOperationRequest)(nil),     // 7: wb.daemon.v1.CancelOperationRequest
+	(*Operation)(nil),                  // 8: wb.daemon.v1.Operation
+	(*RegisterWorkerRequest)(nil),      // 9: wb.daemon.v1.RegisterWorkerRequest
+	(*WorkerRegistration)(nil),         // 10: wb.daemon.v1.WorkerRegistration
+	(*RegisterWorkerResponse)(nil),     // 11: wb.daemon.v1.RegisterWorkerResponse
+	(*LeaseOperationRequest)(nil),      // 12: wb.daemon.v1.LeaseOperationRequest
+	(*WorkerAssignment)(nil),           // 13: wb.daemon.v1.WorkerAssignment
+	(*LeaseOperationResponse)(nil),     // 14: wb.daemon.v1.LeaseOperationResponse
+	(*HeartbeatOperationRequest)(nil),  // 15: wb.daemon.v1.HeartbeatOperationRequest
+	(*HeartbeatOperationResponse)(nil), // 16: wb.daemon.v1.HeartbeatOperationResponse
+	(*CompleteOperationRequest)(nil),   // 17: wb.daemon.v1.CompleteOperationRequest
+	(*CompleteOperationResponse)(nil),  // 18: wb.daemon.v1.CompleteOperationResponse
+	(*DisconnectWorkerRequest)(nil),    // 19: wb.daemon.v1.DisconnectWorkerRequest
+	(*DisconnectWorkerResponse)(nil),   // 20: wb.daemon.v1.DisconnectWorkerResponse
+	nil,                                // 21: wb.daemon.v1.SubmitOperationRequest.EnvironmentEntry
 }
 var file_wb_daemon_v1_daemon_proto_depIdxs = []int32{
-	0, // 0: wb.daemon.v1.GetDaemonInfoResponse.state:type_name -> wb.daemon.v1.DaemonState
-	9, // 1: wb.daemon.v1.SubmitOperationRequest.environment:type_name -> wb.daemon.v1.SubmitOperationRequest.EnvironmentEntry
-	1, // 2: wb.daemon.v1.Operation.state:type_name -> wb.daemon.v1.OperationState
-	2, // 3: wb.daemon.v1.DaemonService.GetDaemonInfo:input_type -> wb.daemon.v1.GetDaemonInfoRequest
-	4, // 4: wb.daemon.v1.DaemonService.SubmitOperation:input_type -> wb.daemon.v1.SubmitOperationRequest
-	5, // 5: wb.daemon.v1.DaemonService.GetOperation:input_type -> wb.daemon.v1.GetOperationRequest
-	6, // 6: wb.daemon.v1.DaemonService.WaitOperation:input_type -> wb.daemon.v1.WaitOperationRequest
-	7, // 7: wb.daemon.v1.DaemonService.CancelOperation:input_type -> wb.daemon.v1.CancelOperationRequest
-	3, // 8: wb.daemon.v1.DaemonService.GetDaemonInfo:output_type -> wb.daemon.v1.GetDaemonInfoResponse
-	8, // 9: wb.daemon.v1.DaemonService.SubmitOperation:output_type -> wb.daemon.v1.Operation
-	8, // 10: wb.daemon.v1.DaemonService.GetOperation:output_type -> wb.daemon.v1.Operation
-	8, // 11: wb.daemon.v1.DaemonService.WaitOperation:output_type -> wb.daemon.v1.Operation
-	8, // 12: wb.daemon.v1.DaemonService.CancelOperation:output_type -> wb.daemon.v1.Operation
-	8, // [8:13] is the sub-list for method output_type
-	3, // [3:8] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: wb.daemon.v1.GetDaemonInfoResponse.state:type_name -> wb.daemon.v1.DaemonState
+	21, // 1: wb.daemon.v1.SubmitOperationRequest.environment:type_name -> wb.daemon.v1.SubmitOperationRequest.EnvironmentEntry
+	1,  // 2: wb.daemon.v1.Operation.state:type_name -> wb.daemon.v1.OperationState
+	10, // 3: wb.daemon.v1.RegisterWorkerResponse.registration:type_name -> wb.daemon.v1.WorkerRegistration
+	13, // 4: wb.daemon.v1.LeaseOperationResponse.assignment:type_name -> wb.daemon.v1.WorkerAssignment
+	8,  // 5: wb.daemon.v1.HeartbeatOperationResponse.operation:type_name -> wb.daemon.v1.Operation
+	8,  // 6: wb.daemon.v1.CompleteOperationResponse.operation:type_name -> wb.daemon.v1.Operation
+	2,  // 7: wb.daemon.v1.DaemonService.GetDaemonInfo:input_type -> wb.daemon.v1.GetDaemonInfoRequest
+	4,  // 8: wb.daemon.v1.DaemonService.SubmitOperation:input_type -> wb.daemon.v1.SubmitOperationRequest
+	5,  // 9: wb.daemon.v1.DaemonService.GetOperation:input_type -> wb.daemon.v1.GetOperationRequest
+	6,  // 10: wb.daemon.v1.DaemonService.WaitOperation:input_type -> wb.daemon.v1.WaitOperationRequest
+	7,  // 11: wb.daemon.v1.DaemonService.CancelOperation:input_type -> wb.daemon.v1.CancelOperationRequest
+	9,  // 12: wb.daemon.v1.DaemonService.RegisterWorker:input_type -> wb.daemon.v1.RegisterWorkerRequest
+	12, // 13: wb.daemon.v1.DaemonService.LeaseOperation:input_type -> wb.daemon.v1.LeaseOperationRequest
+	15, // 14: wb.daemon.v1.DaemonService.HeartbeatOperation:input_type -> wb.daemon.v1.HeartbeatOperationRequest
+	17, // 15: wb.daemon.v1.DaemonService.CompleteOperation:input_type -> wb.daemon.v1.CompleteOperationRequest
+	19, // 16: wb.daemon.v1.DaemonService.DisconnectWorker:input_type -> wb.daemon.v1.DisconnectWorkerRequest
+	3,  // 17: wb.daemon.v1.DaemonService.GetDaemonInfo:output_type -> wb.daemon.v1.GetDaemonInfoResponse
+	8,  // 18: wb.daemon.v1.DaemonService.SubmitOperation:output_type -> wb.daemon.v1.Operation
+	8,  // 19: wb.daemon.v1.DaemonService.GetOperation:output_type -> wb.daemon.v1.Operation
+	8,  // 20: wb.daemon.v1.DaemonService.WaitOperation:output_type -> wb.daemon.v1.Operation
+	8,  // 21: wb.daemon.v1.DaemonService.CancelOperation:output_type -> wb.daemon.v1.Operation
+	11, // 22: wb.daemon.v1.DaemonService.RegisterWorker:output_type -> wb.daemon.v1.RegisterWorkerResponse
+	14, // 23: wb.daemon.v1.DaemonService.LeaseOperation:output_type -> wb.daemon.v1.LeaseOperationResponse
+	16, // 24: wb.daemon.v1.DaemonService.HeartbeatOperation:output_type -> wb.daemon.v1.HeartbeatOperationResponse
+	18, // 25: wb.daemon.v1.DaemonService.CompleteOperation:output_type -> wb.daemon.v1.CompleteOperationResponse
+	20, // 26: wb.daemon.v1.DaemonService.DisconnectWorker:output_type -> wb.daemon.v1.DisconnectWorkerResponse
+	17, // [17:27] is the sub-list for method output_type
+	7,  // [7:17] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_wb_daemon_v1_daemon_proto_init() }
@@ -795,7 +1715,7 @@ func file_wb_daemon_v1_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wb_daemon_v1_daemon_proto_rawDesc), len(file_wb_daemon_v1_daemon_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

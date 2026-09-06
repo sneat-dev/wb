@@ -345,6 +345,27 @@ named-pipe endpoint abstraction and fail closed until the native named-pipe
 listener/client adapter is enabled; there is no TCP fallback. Remote HTTPS,
 MCP, and dashboard streaming are outside this slice.
 
+Normal daemon-backed agent jobs execute only in a long-lived `wb worker
+connect` process started inside the caller or harness sandbox. The worker
+registers a stable caller-supplied ID, exact WB build and protocol, OS and
+architecture, CPU capacity, and one or more explicit canonical roots. The
+daemon journals and schedules the request but never receives the worker's
+environment or launches its process. It leases compatible queued work to a
+worker whose capacity and roots admit it. The worker independently resolves
+and checks the assigned working directory before execution, inherits its own
+sandbox and environment, emits progress and renews the lease every five
+seconds, bounds returned output, and completes the durable receipt.
+
+A reconnect with the same stable worker ID creates a new worker generation and
+moves any operation still leased to the previous generation to
+`recovery_required`. An expired heartbeat or explicit disconnect does the same.
+Queued jobs remain queued across daemon generations and are leased after a
+compatible worker reconnects. The Windows client and listener retain the
+current-user named-pipe endpoint abstraction and fail closed while that native
+adapter is unavailable; no TCP fallback is permitted. The administrator-owned
+WB v0.105.0 raw-execution policy remains available only through `wb daemon
+operation submit` as a trusted recovery fallback.
+
 The four-vCPU default has three CPU units, preserving one core for interactive
 work:
 
@@ -1020,10 +1041,10 @@ the queue handoff and advances the generation once.
 
 ### AC: local-async-queue-survives-lifecycle-handoff
 
-Given an authenticated local caller submits an operation through
-`wb run --async` or `wb daemon operation submit`, when the caller exits and the
-daemon restarts while its protected external administrator policy remains
-valid, then a queued operation resumes under the new lifecycle queue generation
+Given an authenticated local caller submits a trusted raw operation through
+`wb daemon operation submit`, when the caller exits and the daemon restarts
+while its protected external administrator policy remains valid, then a queued
+operation resumes under the new lifecycle queue generation
 and a previously running operation reports `recovery_required` without
 automatic re-execution. If that policy is missing, malformed, symlinked,
 in-project, incorrectly permissioned, or revoked, new submissions are denied
@@ -1035,6 +1056,19 @@ loopback dashboard cannot reach the mutation handlers, arbitrary environment
 keys are rejected, idempotency keys reject changed cwd/argv/environment/CPU
 payloads, request sizes are bounded, and the lifecycle authentication token
 appears in neither process arguments nor operation receipts.
+
+### AC: sandbox-worker-owns-normal-daemon-execution
+
+Given `wb run --async` submits a normal job and no administrator raw-execution
+policy exists, when a compatible `wb worker connect` process registers from
+inside the harness sandbox with an explicit canonical root and CPU capacity,
+then the daemon persists the secret-free intent, leases it to that exact worker
+generation, the worker independently refuses a cwd outside its permitted roots,
+and an admitted job emits progress at least every ten seconds and ends with a
+bounded durable receipt. If the daemon restarts, queued work is leased after
+reconnect; if the worker disconnects, misses its lease heartbeat, or reconnects
+under a new generation while work is running, that work becomes
+`recovery_required` and is never executed twice.
 
 ### AC: json-output-selection-is-consistent
 

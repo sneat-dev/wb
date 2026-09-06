@@ -61,7 +61,7 @@ func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
 	}
 }
 
-func TestRunAsyncReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
+func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
 	previousRoot := projectsRoot
@@ -74,8 +74,8 @@ func TestRunAsyncReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}
-	command := newRunCmdWithDaemonDependencies(deps)
-	command.SetArgs([]string{"--async", "--", "/bin/echo", "hello"})
+	command := newDaemonOperationSubmitCmd(deps)
+	command.SetArgs([]string{"--", "/bin/echo", "hello"})
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)

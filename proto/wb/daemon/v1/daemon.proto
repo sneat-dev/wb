@@ -10,6 +10,11 @@ service DaemonService {
   rpc GetOperation(GetOperationRequest) returns (Operation) {}
   rpc WaitOperation(WaitOperationRequest) returns (Operation) {}
   rpc CancelOperation(CancelOperationRequest) returns (Operation) {}
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse) {}
+  rpc LeaseOperation(LeaseOperationRequest) returns (LeaseOperationResponse) {}
+  rpc HeartbeatOperation(HeartbeatOperationRequest) returns (HeartbeatOperationResponse) {}
+  rpc CompleteOperation(CompleteOperationRequest) returns (CompleteOperationResponse) {}
+  rpc DisconnectWorker(DisconnectWorkerRequest) returns (DisconnectWorkerResponse) {}
 }
 
 message GetDaemonInfoRequest {}
@@ -81,4 +86,89 @@ message Operation {
   string error = 16;
   bytes stdout_tail = 17;
   bytes stderr_tail = 18;
+  string worker_id = 19;
+  string worker_generation = 20;
+  int64 last_progress_unix_milli = 21;
+  int64 lease_expires_unix_milli = 22;
+  string progress = 23;
+}
+
+message RegisterWorkerRequest {
+  string worker_id = 1;
+  string build = 2;
+  uint32 protocol_version = 3;
+  string os = 4;
+  string arch = 5;
+  uint32 cpu_capacity = 6;
+  repeated string permitted_roots = 7;
+}
+
+message WorkerRegistration {
+  string worker_id = 1;
+  string worker_generation = 2;
+  string scheduler_generation = 3;
+  uint32 heartbeat_milliseconds = 4;
+  uint32 lease_milliseconds = 5;
+}
+
+message RegisterWorkerResponse {
+  WorkerRegistration registration = 1;
+}
+
+message LeaseOperationRequest {
+  string worker_id = 1;
+  string worker_generation = 2;
+  uint32 wait_milliseconds = 3;
+}
+
+message WorkerAssignment {
+  string worker_id = 1;
+  string worker_generation = 2;
+  string scheduler_generation = 3;
+  string lease_id = 4;
+  int64 lease_expires_unix_milli = 5;
+  string operation_id = 6;
+  string working_directory = 7;
+  repeated string argv = 8;
+  uint32 cpu_units = 9;
+}
+
+message LeaseOperationResponse {
+  WorkerAssignment assignment = 1;
+}
+
+message HeartbeatOperationRequest {
+  string worker_id = 1;
+  string worker_generation = 2;
+  string operation_id = 3;
+  string lease_id = 4;
+  string progress = 5;
+}
+
+message HeartbeatOperationResponse {
+  Operation operation = 1;
+}
+
+message CompleteOperationRequest {
+  string worker_id = 1;
+  string worker_generation = 2;
+  string operation_id = 3;
+  string lease_id = 4;
+  int32 exit_code = 5;
+  bytes stdout_tail = 6;
+  bytes stderr_tail = 7;
+  string error = 8;
+}
+
+message CompleteOperationResponse {
+  Operation operation = 1;
+}
+
+message DisconnectWorkerRequest {
+  string worker_id = 1;
+  string worker_generation = 2;
+}
+
+message DisconnectWorkerResponse {
+  uint32 recovery_required_operations = 1;
 }

@@ -18,10 +18,19 @@ wb run --history --days 7
 
 Synchronous command mode preserves standard streams and the child exit code.
 `--async` submits through the authenticated durable local daemon and returns a
-JSON operation receipt. Raw daemon execution is disabled unless an
-administrator has created the protected external mode-0600 policy described by
-`wb run --async`'s refusal; agents and WB commands must not create that policy.
-The daemon rechecks it at submission and launch. CPU-heavy work shares a cross-process budget of
+JSON operation receipt. Start a long-lived worker from inside the same harness
+sandbox before submitting daemon-backed work:
+
+```sh
+wb worker connect --id <stable-worker-id> --root <canonical-projects-root>
+```
+
+The daemon schedules and journals normal jobs; the worker independently checks
+the assigned cwd, inherits the harness environment and sandbox, renews its
+lease every five seconds, and executes the command. Secrets in the worker's
+environment never enter the daemon request. The external administrator policy
+is only for the trusted `wb daemon operation submit` raw fallback; agents and
+WB commands must not create it. CPU-heavy work shares a cross-process budget of
 `CPUCount-1`; WB leaves one logical CPU for the harness and OS and exports the
 admitted units to supported tools. `wb run --history` summarizes privacy-safe
 wall and CPU cost from the current worktree without exposing raw arguments or
