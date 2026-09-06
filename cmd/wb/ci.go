@@ -195,6 +195,15 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 				return err
 			}
 		}
+		for _, annotation := range detail.Annotations {
+			location := fmt.Sprintf("%s:%d", annotation.Path, annotation.StartLine)
+			if annotation.EndLine > annotation.StartLine {
+				location += fmt.Sprintf("-%d", annotation.EndLine)
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "annotation: %s: %s\n", location, annotation.Message); err != nil {
+				return err
+			}
+		}
 		if detail.Excerpt != "" {
 			if _, err := fmt.Fprintf(command.OutOrStdout(), "failed-step tail:\n%s\n", detail.Excerpt); err != nil {
 				return err

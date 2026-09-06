@@ -788,7 +788,7 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	pending := false
 	for _, check := range response.CheckRuns {
 		bucket := checkRunBucket(check.Status, check.Conclusion)
-		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Link: check.HTMLURL, AppID: check.App.ID})
+		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -938,21 +938,43 @@ type githubCheckRun struct {
 	} `json:"app"`
 }
 
-const maxFailedJobLogLines = 24
+const (
+	maxFailedJobLogLines      = 24
+	maxFailedCheckAnnotations = 12
+	maxFailureAnnotationPath  = 512
+	maxFailureAnnotationText  = 1024
+)
+
+type githubCheckRunAnnotation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Message   string `json:"message"`
+}
 
 // failedCheckDetails obtains one compact failed-step tail for each failed
 // Actions job. Third-party check runs retain their precise link and an honest
 // explanation rather than pretending their logs are available through Actions.
 func failedCheckDetails(ctx context.Context, repository string, checks []RemoteCheck) []CIFailureDetail {
 	details := make([]CIFailureDetail, 0)
+	seenAnnotations := map[string]bool{}
 	for _, check := range checks {
 		if check.Bucket != "fail" && check.Bucket != "cancel" {
 			continue
 		}
 		detail := CIFailureDetail{Check: check.Name, JobURL: check.Link}
+		annotations, annotationErr := failedCheckAnnotations(ctx, repository, check.CheckRunID, seenAnnotations)
+		if len(annotations) > 0 {
+			detail.Annotations = annotations
+			details = append(details, detail)
+			continue
+		}
 		runID, jobID, ok := githubActionsRunAndJob(check.Link)
 		if !ok {
 			detail.Reason = "GitHub Actions run/job identifiers were not available for this check"
+			if annotationErr != nil {
+				detail.Reason = "retrieve failed check annotations: " + annotationErr.Error() + "; " + detail.Reason
+			}
 			details = append(details, detail)
 			continue
 		}
@@ -967,6 +989,9 @@ func failedCheckDetails(ctx context.Context, repository string, checks []RemoteC
 					detail.Reason = "retrieve failed-job log: GitHub command exited non-zero"
 				}
 			}
+			if annotationErr != nil {
+				detail.Reason = "retrieve failed check annotations: " + annotationErr.Error() + "; " + detail.Reason
+			}
 			details = append(details, detail)
 			continue
 		}
@@ -977,6 +1002,53 @@ func failedCheckDetails(ctx context.Context, repository string, checks []RemoteC
 		details = append(details, detail)
 	}
 	return details
+}
+
+// failedCheckAnnotations uses the terminal check-run endpoint, which GitHub
+// makes available before an Actions workflow has completed and published job
+// logs. A successful nonempty response is preferred to log retrieval so the
+// caller can render a precise failure immediately.
+func failedCheckAnnotations(ctx context.Context, repository string, checkRunID int64, seen map[string]bool) ([]CIFailureAnnotation, error) {
+	if checkRunID <= 0 {
+		return nil, nil
+	}
+	endpoint := fmt.Sprintf("repos/%s/check-runs/%d/annotations?per_page=100", repository, checkRunID)
+	body, err := githubGet(ctx, "", repository, "", "", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var raw []githubCheckRunAnnotation
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode check-run annotations: %w", err)
+	}
+	annotations := make([]CIFailureAnnotation, 0, min(len(raw), maxFailedCheckAnnotations))
+	for _, value := range raw {
+		path := compactFailureAnnotation(value.Path, maxFailureAnnotationPath)
+		message := compactFailureAnnotation(value.Message, maxFailureAnnotationText)
+		if path == "" || value.StartLine <= 0 || message == "" {
+			continue
+		}
+		annotation := CIFailureAnnotation{Path: path, StartLine: value.StartLine, EndLine: value.EndLine, Message: message}
+		key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", annotation.Path, annotation.StartLine, annotation.EndLine, annotation.Message)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		annotations = append(annotations, annotation)
+		if len(annotations) == maxFailedCheckAnnotations {
+			break
+		}
+	}
+	return annotations, nil
+}
+
+func compactFailureAnnotation(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func githubActionsRunAndJob(rawURL string) (runID, jobID string, ok bool) {
