@@ -2307,21 +2307,6 @@ func preflightWorkLogSeal(home, worktree, finalCommit string) error {
 	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
 }
 
-// preflightWorkLogClaimReadOnly corroborates a Work Log claim without
-// migrating a legacy projection. Cleanup planning must remain read-only; apply
-// repeats preflightWorkLogSeal while holding the task lock before terminalizing
-// the claim or deleting Git state.
-func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) error {
-	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
-	if errors.Is(err, errWorkLogProjectionNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
-}
-
 // preflightWorkLogSealForCleanup keeps ordinary Work Log corroboration intact
 // while recognizing one historical repository-transfer shape. Older WB
 // releases could move a repository after its GitHub transfer without the
