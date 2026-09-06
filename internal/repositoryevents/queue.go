@@ -21,22 +21,37 @@ import (
 const queueSchema = 1
 
 type job struct {
-	Schema      int                   `json:"schema"`
-	Sequence    uint64                `json:"sequence"`
-	Event       repositoryevent.Event `json:"event"`
-	EventDigest string                `json:"event_digest"`
-	State       string                `json:"state"`
-	Attempts    int                   `json:"attempts"`
-	Progress    string                `json:"progress,omitempty"`
-	Error       string                `json:"error,omitempty"`
-	QueuedAt    time.Time             `json:"queued_at"`
-	UpdatedAt   time.Time             `json:"updated_at"`
-	RetryAt     time.Time             `json:"retry_at,omitempty"`
-	Supersedes  []string              `json:"supersedes,omitempty"`
+	Schema          int                   `json:"schema"`
+	Sequence        uint64                `json:"sequence"`
+	Event           repositoryevent.Event `json:"event"`
+	EventDigest     string                `json:"event_digest"`
+	State           string                `json:"state"`
+	Attempts        int                   `json:"attempts"`
+	Progress        string                `json:"progress,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	QueuedAt        time.Time             `json:"queued_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
+	RetryAt         time.Time             `json:"retry_at,omitempty"`
+	Supersedes      []string              `json:"supersedes,omitempty"`
+	CleanupReceipt  string                `json:"cleanup_receipt,omitempty"`
+	RecoveryCommand string                `json:"recovery_command,omitempty"`
+}
+
+type ProcessState struct {
+	CleanupReceipt   string
+	RecoveryCommand  string
+	OnCleanupPending func(receiptPath, recoveryCommand string) error
+}
+
+type ProcessResult struct {
+	Detail          string
+	CleanupStateSet bool
+	CleanupReceipt  string
+	RecoveryCommand string
 }
 
 type Processor interface {
-	Process(context.Context, repositoryevent.Event) (string, error)
+	Process(context.Context, repositoryevent.Event, ProcessState) (ProcessResult, error)
 }
 
 type Queue struct {
@@ -53,6 +68,7 @@ type Queue struct {
 	activeRepos   map[string]bool
 	acquire       func(context.Context) (func(), error)
 	nextSequence  uint64
+	beforePersist func(*job) error
 }
 
 func NewQueue(projectsRoot string) (*Queue, error) {
@@ -124,6 +140,9 @@ func validateJobRecord(item job) error {
 		if repositoryevent.ValidateEventID(id) != nil || id == item.Event.ID {
 			return errors.New("invalid repository event supersession")
 		}
+	}
+	if (item.CleanupReceipt == "") != (item.RecoveryCommand == "") || len(item.CleanupReceipt) > 4096 || len(item.RecoveryCommand) > 8192 {
+		return errors.New("invalid repository transfer cleanup state")
 	}
 	return nil
 }
@@ -279,7 +298,7 @@ func (queue *Queue) runClaimed(ctx context.Context, processor Processor, id stri
 	defer close(done)
 	release, err := queue.acquire(ctx)
 	if err != nil {
-		queue.finish(id, "", err)
+		queue.finish(id, ProcessResult{}, err)
 		return
 	}
 	defer release()
@@ -293,26 +312,58 @@ func (queue *Queue) runClaimed(ctx context.Context, processor Processor, id stri
 	item.UpdatedAt = queue.now()
 	if err := queue.persist(item); err != nil {
 		queue.mu.Unlock()
-		queue.finish(id, "", err)
+		queue.finish(id, ProcessResult{}, err)
 		return
 	}
 	event := item.Event
+	state := ProcessState{
+		CleanupReceipt:  item.CleanupReceipt,
+		RecoveryCommand: item.RecoveryCommand,
+		OnCleanupPending: func(receiptPath, recoveryCommand string) error {
+			return queue.checkpointCleanup(id, receiptPath, recoveryCommand)
+		},
+	}
 	queue.mu.Unlock()
-	detail, runErr := processor.Process(ctx, event)
-	queue.finish(id, detail, runErr)
+	result, runErr := processor.Process(ctx, event, state)
+	queue.finish(id, result, runErr)
 }
 
-func (queue *Queue) finish(id, detail string, runErr error) {
+func (queue *Queue) checkpointCleanup(id, receiptPath, recoveryCommand string) error {
+	if receiptPath == "" || recoveryCommand == "" || len(receiptPath) > 4096 || len(recoveryCommand) > 8192 {
+		return errors.New("invalid repository transfer cleanup checkpoint")
+	}
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	item := queue.jobs[id]
+	if item == nil || item.State != "running" {
+		return errors.New("repository event is not running")
+	}
+	previousReceipt, previousCommand := item.CleanupReceipt, item.RecoveryCommand
+	item.CleanupReceipt, item.RecoveryCommand = receiptPath, recoveryCommand
+	item.Progress = "repository transfer cleanup checkpointed"
+	item.UpdatedAt = queue.now()
+	if err := queue.persist(item); err != nil {
+		item.CleanupReceipt, item.RecoveryCommand = previousReceipt, previousCommand
+		return fmt.Errorf("persist repository transfer cleanup checkpoint: %w", err)
+	}
+	return nil
+}
+
+func (queue *Queue) finish(id string, result ProcessResult, runErr error) {
+	queue.mu.Lock()
+	item := queue.jobs[id]
 	if item == nil {
+		queue.mu.Unlock()
 		return
 	}
-	for _, alias := range repositoryAliases(item.Event) {
-		delete(queue.activeRepos, alias)
-	}
+	checkpointReceipt, checkpointCommand := item.CleanupReceipt, item.RecoveryCommand
 	item.UpdatedAt = queue.now()
+	if result.CleanupStateSet && (result.CleanupReceipt == "") != (result.RecoveryCommand == "") {
+		runErr = errors.Join(runErr, errors.New("processor returned incomplete repository transfer cleanup state"))
+	} else if result.CleanupStateSet {
+		item.CleanupReceipt = result.CleanupReceipt
+		item.RecoveryCommand = result.RecoveryCommand
+	}
 	if runErr != nil {
 		item.State = "queued"
 		item.Error = runErr.Error()
@@ -321,18 +372,28 @@ func (queue *Queue) finish(id, detail string, runErr error) {
 	} else {
 		item.State = "succeeded"
 		item.Error = ""
-		item.Progress = detail
+		item.Progress = result.Detail
 		item.RetryAt = time.Time{}
+		item.CleanupReceipt = ""
+		item.RecoveryCommand = ""
 	}
 	if err := queue.persist(item); err != nil {
 		item.State = "queued"
 		item.Error = "persist repository event completion: " + err.Error()
 		item.Progress = "completion persistence failed; retry pending"
 		item.RetryAt = item.UpdatedAt.Add(queue.retryDelay)
+		item.CleanupReceipt = checkpointReceipt
+		item.RecoveryCommand = checkpointCommand
+	}
+	for _, alias := range repositoryAliases(item.Event) {
+		delete(queue.activeRepos, alias)
 	}
 	queue.notifyLocked()
-	if queue.progress != nil {
-		queue.progress("repository event " + id + ": " + item.Progress)
+	progress := queue.progress
+	message := "repository event " + id + ": " + item.Progress
+	queue.mu.Unlock()
+	if progress != nil {
+		progress(message)
 	}
 }
 
@@ -417,6 +478,11 @@ func (queue *Queue) heartbeat(ctx context.Context, id string, done <-chan struct
 }
 
 func (queue *Queue) persist(item *job) error {
+	if queue.beforePersist != nil {
+		if err := queue.beforePersist(item); err != nil {
+			return err
+		}
+	}
 	raw, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
 		return err

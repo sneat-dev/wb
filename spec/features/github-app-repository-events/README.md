@@ -101,9 +101,13 @@ a canonical checkout's branch, or update an active feature worktree.
 A rename event MUST carry both canonical identities and use the previous
 identity for machine discovery. Local directory reconciliation MUST preserve
 the old path whenever the shared guarded relocation operation cannot repair all
-canonical and linked-worktree references safely. Until that shared operation is
-available, the daemon MUST keep the rename job queued for retry rather than
-implementing a second directory-moving path.
+canonical and linked-worktree references safely. If a disposable destination
+needs cleanup, the queue MUST durably store the exact cleanup receipt and
+recovery command before the source repository moves. A failed checkpoint MUST
+restore the destination and leave the source unmoved. A retry MUST call the
+shared cleanup recovery operation with that exact receipt before declaring the
+event successful, including when the quarantine is already absent and only
+terminal evidence remains to be appended.
 
 ## Acceptance Criteria
 
@@ -113,8 +117,9 @@ implementing a second directory-moving path.
 
 Contract tests reject local paths, unsafe refs, unsupported reasons, duplicate
 IDs, mismatched cursors, and unbounded requests. Provider integration tests
-prove that signed webhook translation routes only through the intersection of
-machine inventory and exact-user GitHub installation entitlement.
+in the private provider prove that signed webhook translation routes only
+through the intersection of machine inventory and exact-user GitHub
+installation entitlement.
 
 ### AC: acknowledged-only-after-durable-queue
 
@@ -135,7 +140,9 @@ A local Git integration test advances a bare remote, receives the event, and
 observes a fast-forward of the clean canonical checkout. The same test then
 makes the checkout dirty and observes that a later event leaves both HEAD and
 the dirty file unchanged. Rename coverage proves the event remains retryable
-until WB's shared guarded relocation operation can process it.
+until WB's shared guarded relocation operation can process it, and that the
+exact pending cleanup receipt survives restart and completes before the event
+succeeds.
 
 ## Open Questions
 

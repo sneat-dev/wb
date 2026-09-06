@@ -57,7 +57,13 @@ type concurrencyProcessor struct {
 	maxActiveTotal int
 }
 
-func (processor *concurrencyProcessor) Process(_ context.Context, event repositoryevent.Event) (string, error) {
+type processorFunc func(context.Context, repositoryevent.Event, ProcessState) (ProcessResult, error)
+
+func (process processorFunc) Process(ctx context.Context, event repositoryevent.Event, state ProcessState) (ProcessResult, error) {
+	return process(ctx, event, state)
+}
+
+func (processor *concurrencyProcessor) Process(_ context.Context, event repositoryevent.Event, _ ProcessState) (ProcessResult, error) {
 	processor.mu.Lock()
 	processor.activeByRepo[event.Repository]++
 	processor.activeTotal++
@@ -74,7 +80,7 @@ func (processor *concurrencyProcessor) Process(_ context.Context, event reposito
 	processor.activeByRepo[event.Repository]--
 	processor.activeTotal--
 	processor.mu.Unlock()
-	return "pulled", nil
+	return ProcessResult{Detail: "pulled"}, nil
 }
 
 func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *testing.T) {
@@ -151,7 +157,7 @@ func TestQueueOrdersOldPushRenameAndNewPushAcrossCaseInsensitiveAliases(t *testi
 	if blocked := queue.claimNext(); blocked != nil {
 		t.Fatalf("claimed across old-name alias: %+v", blocked)
 	}
-	queue.finish(oldPush.ID, "pulled", nil)
+	queue.finish(oldPush.ID, ProcessResult{Detail: "pulled"}, nil)
 	second := queue.claimNext()
 	if second == nil || second.Event.ID != rename.ID {
 		t.Fatalf("second claim = %+v", second)
@@ -159,7 +165,7 @@ func TestQueueOrdersOldPushRenameAndNewPushAcrossCaseInsensitiveAliases(t *testi
 	if blocked := queue.claimNext(); blocked != nil {
 		t.Fatalf("claimed across rename aliases: %+v", blocked)
 	}
-	queue.finish(rename.ID, "relocated", nil)
+	queue.finish(rename.ID, ProcessResult{Detail: "relocated"}, nil)
 	third := queue.claimNext()
 	if third == nil || third.Event.ID != newPush.ID {
 		t.Fatalf("third claim = %+v", third)
@@ -291,5 +297,85 @@ func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
 	changed.TargetSHA = "0123456789abcdef0123456789abcdef01234567"
 	if _, err := restarted.Enqueue(context.Background(), changed); err == nil {
 		t.Fatal("conflicting duplicate event was accepted")
+	}
+}
+
+func TestQueuePersistsExactTransferCleanupStateBeforeRetry(t *testing.T) {
+	root := t.TempDir()
+	queue, err := NewQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := receiverEvent("event-cleanup-pending")
+	if _, err := queue.Enqueue(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if claimed := queue.claimNext(); claimed == nil || claimed.Event.ID != event.ID {
+		t.Fatalf("claim = %+v", claimed)
+	}
+	receipt := filepath.Join(root, ".wb", "reports", "repository-transfers", "pending.json")
+	command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
+	queue.finish(event.ID, ProcessResult{CleanupStateSet: true, CleanupReceipt: receipt, RecoveryCommand: command}, errors.New("cleanup pending"))
+	restarted, err := NewQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := restarted.jobs[event.ID]
+	if job.State != "queued" || job.CleanupReceipt != receipt || job.RecoveryCommand != command {
+		t.Fatalf("restarted cleanup job = %+v", job)
+	}
+}
+
+func TestCompletionPersistenceFailureReleasesWorkerAndRetainsCleanupAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	queue, err := NewQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := receiverEvent("event-completion-persist-failure")
+	if _, err := queue.Enqueue(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if claimed := queue.claimNext(); claimed == nil || claimed.Event.ID != event.ID {
+		t.Fatalf("claim = %+v", claimed)
+	}
+	receipt := filepath.Join(root, ".wb", "reports", "repository-transfers", "pending.json")
+	command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
+	if err := queue.checkpointCleanup(event.ID, receipt, command); err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	queue.beforePersist = func(item *job) error {
+		if !failed && item.State == "succeeded" {
+			failed = true
+			return errors.New("forced completion persistence failure")
+		}
+		return nil
+	}
+	released := false
+	queue.acquire = func(context.Context) (func(), error) {
+		return func() { released = true }, nil
+	}
+	processor := processorFunc(func(_ context.Context, _ repositoryevent.Event, state ProcessState) (ProcessResult, error) {
+		if state.CleanupReceipt != receipt || state.RecoveryCommand != command {
+			t.Fatalf("process state = %+v", state)
+		}
+		return ProcessResult{Detail: "pulled", CleanupStateSet: true}, nil
+	})
+	queue.runClaimed(context.Background(), processor, event.ID)
+	if !failed || !released || queue.activeRepos[normalizeRepository(event.Repository)] {
+		t.Fatalf("failed=%t released=%t active=%v", failed, released, queue.activeRepos)
+	}
+	item := queue.jobs[event.ID]
+	if item.State != "queued" || item.CleanupReceipt != receipt || item.RecoveryCommand != command {
+		t.Fatalf("in-memory retry = %+v", item)
+	}
+	restarted, err := NewQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = restarted.jobs[event.ID]
+	if item.State != "queued" || item.CleanupReceipt != receipt || item.RecoveryCommand != command {
+		t.Fatalf("restarted retry = %+v", item)
 	}
 }

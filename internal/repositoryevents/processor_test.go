@@ -2,6 +2,7 @@ package repositoryevents
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,9 +39,9 @@ func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) 
 
 	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-sync", Repository: "github.com/acme/app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonDefaultBranchUpdated}
 	processor := localSyncProcessor(projects)
-	detail, err := processor.Process(context.Background(), event)
-	if err != nil || detail != "pulled" {
-		t.Fatalf("sync = %q, %v", detail, err)
+	result, err := processor.Process(context.Background(), event, ProcessState{})
+	if err != nil || result.Detail != "pulled" {
+		t.Fatalf("sync = %+v, %v", result, err)
 	}
 	second := strings.TrimSpace(runGit(t, canonical, "rev-parse", "HEAD"))
 	if first == second {
@@ -51,9 +52,9 @@ func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) 
 	}
 	writeCommit(t, seed, "three")
 	runGit(t, seed, "push", "origin", "main")
-	detail, err = processor.Process(context.Background(), event)
-	if err != nil || detail != "skipped (dirty)" {
-		t.Fatalf("dirty sync = %q, %v", detail, err)
+	result, err = processor.Process(context.Background(), event, ProcessState{})
+	if err != nil || result.Detail != "skipped (dirty)" {
+		t.Fatalf("dirty sync = %+v, %v", result, err)
 	}
 	if got := strings.TrimSpace(runGit(t, canonical, "rev-parse", "HEAD")); got != second {
 		t.Fatalf("dirty canonical moved from %s to %s", second, got)
@@ -138,7 +139,7 @@ func TestSyncProcessorLeavesUnsafeRenameQueuedFromSharedGuard(t *testing.T) {
 		}
 		return worktrees.RepositoryRelocateResult{Reason: "worktree has local changes"}, nil
 	}}
-	if _, err := processor.Process(context.Background(), event); err == nil || !strings.Contains(err.Error(), "worktree has local changes") {
+	if _, err := processor.Process(context.Background(), event, ProcessState{}); err == nil || !strings.Contains(err.Error(), "worktree has local changes") {
 		t.Fatalf("rename error = %v", err)
 	}
 	if _, err := os.Stat(oldPath); err != nil {
@@ -174,8 +175,136 @@ func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
 		},
 	}
 	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-rename", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
-	if detail, err := processor.Process(context.Background(), event); err != nil || detail != "relocated; pulled" {
-		t.Fatalf("rename process = %q, %v", detail, err)
+	if result, err := processor.Process(context.Background(), event, ProcessState{}); err != nil || result.Detail != "relocated; pulled" {
+		t.Fatalf("rename process = %+v, %v", result, err)
+	}
+}
+
+func TestSyncProcessorPersistsAndRecoversExactPendingTransferCleanup(t *testing.T) {
+	projects := t.TempDir()
+	oldPath := filepath.Join(projects, "acme", "old-app")
+	newPath := filepath.Join(projects, "acme", "new-app")
+	if err := os.MkdirAll(oldPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, oldPath, "init", "-b", "main")
+	runGit(t, oldPath, "config", "user.email", "test@example.com")
+	runGit(t, oldPath, "config", "user.name", "Test")
+	writeCommit(t, oldPath, "one")
+	receipt := filepath.Join(projects, ".wb", "reports", "repository-transfers", "pending.json")
+	command := "wb repo transfer cleanup --receipt " + receipt + " --apply"
+	processor := SyncProcessor{
+		ProjectsRoot: projects,
+		verifyOrigin: func(string, string) error { return nil },
+		relocate: func(_ context.Context, _ worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error) {
+			if err := os.Rename(oldPath, newPath); err != nil {
+				t.Fatal(err)
+			}
+			return worktrees.RepositoryRelocateResult{Applied: true, CleanupPending: true, ReplacementCleanupReceipt: receipt, RecoveryCommand: command, Reason: "cleanup evidence_pending"}, nil
+		},
+		recoverCleanup: func(_ context.Context, options worktrees.RepositoryTransferCleanupOptions) (worktrees.RepositoryTransferCleanupResult, error) {
+			if options.ProjectsRoot != projects || options.ReceiptPath != receipt || !options.Apply {
+				t.Fatalf("cleanup options = %+v", options)
+			}
+			return worktrees.RepositoryTransferCleanupResult{Eligible: true, Applied: true, Outcome: "retired"}, nil
+		},
+		sync: func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result {
+			return fleetsync.Result{Status: fleetsync.Pulled}
+		},
+	}
+	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-cleanup", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
+	pending, err := processor.Process(context.Background(), event, ProcessState{})
+	if err == nil || pending.CleanupReceipt != receipt || pending.RecoveryCommand != command {
+		t.Fatalf("pending result = %+v, %v", pending, err)
+	}
+	completed, err := processor.Process(context.Background(), event, ProcessState{CleanupReceipt: pending.CleanupReceipt, RecoveryCommand: pending.RecoveryCommand})
+	if err != nil || completed.Detail != "pulled" || completed.CleanupReceipt != "" {
+		t.Fatalf("completed result = %+v, %v", completed, err)
+	}
+}
+
+func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
+	projects, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_HOME", filepath.Join(projects, ".wb"))
+	remoteRoot := filepath.Join(t.TempDir(), "remotes")
+	oldRemote := filepath.Join(remoteRoot, "acme", "old-app.git")
+	newRemote := filepath.Join(remoteRoot, "acme", "new-app.git")
+	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "", "init", "--bare", oldRemote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	runGit(t, "", "clone", oldRemote, seed)
+	runGit(t, seed, "config", "user.email", "test@example.com")
+	runGit(t, seed, "config", "user.name", "Test")
+	runGit(t, seed, "switch", "-c", "main")
+	writeCommit(t, seed, "one")
+	runGit(t, seed, "push", "-u", "origin", "main")
+	runGit(t, oldRemote, "symbolic-ref", "HEAD", "refs/heads/main")
+	oldPath := filepath.Join(projects, "acme", "old-app")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "", "clone", oldRemote, oldPath)
+	if err := os.Rename(oldRemote, newRemote); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(projects, "acme", "new-app")
+	runGit(t, "", "clone", newRemote, newPath)
+
+	queue, err := NewQueue(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-checkpoint-failure", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
+	if _, err := queue.Enqueue(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if claimed := queue.claimNext(); claimed == nil || claimed.Event.ID != event.ID {
+		t.Fatalf("claim = %+v", claimed)
+	}
+	forced := true
+	queue.beforePersist = func(item *job) error {
+		if forced && item.CleanupReceipt != "" {
+			forced = false
+			return errors.New("forced cleanup checkpoint failure")
+		}
+		return nil
+	}
+	queue.acquire = func(context.Context) (func(), error) { return func() {}, nil }
+	processor := SyncProcessor{
+		ProjectsRoot: projects,
+		relocate: func(ctx context.Context, options worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error) {
+			options.RemoteURL = newRemote
+			return worktrees.RelocateRepository(ctx, options)
+		},
+	}
+	queue.runClaimed(context.Background(), processor, event.ID)
+	if forced {
+		t.Fatalf("cleanup checkpoint persistence was not attempted: %+v", queue.jobs[event.ID])
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("source moved after failed checkpoint: %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("replacement was not restored after failed checkpoint: %v", err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(projects, "acme", ".wb-replaced-new-app-*")); err != nil || len(matches) != 0 {
+		t.Fatalf("replacement quarantine remains: %v, %v", matches, err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(projects, ".wb", "reports", "repository-transfers", "*-cleanup-restored.json")); err != nil || len(matches) != 1 {
+		t.Fatalf("restored terminal evidence = %v, %v", matches, err)
+	}
+	restarted, err := NewQueue(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := restarted.jobs[event.ID]
+	if item == nil || item.State != "queued" || item.CleanupReceipt != "" || !strings.Contains(item.Error, "forced cleanup checkpoint failure") {
+		t.Fatalf("restarted job = %+v", item)
 	}
 }
 
@@ -191,7 +320,7 @@ func TestSyncProcessorRejectsMismatchedCanonicalOrigin(t *testing.T) {
 	writeCommit(t, path, "one")
 	runGit(t, path, "remote", "add", "origin", "git@github.com:other/repository.git")
 	event := receiverEvent("event-wrong-origin")
-	if _, err := (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event); err == nil || !strings.Contains(err.Error(), "does not identify") {
+	if _, err := (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event, ProcessState{}); err == nil || !strings.Contains(err.Error(), "does not identify") {
 		t.Fatalf("mismatched origin error = %v", err)
 	}
 }

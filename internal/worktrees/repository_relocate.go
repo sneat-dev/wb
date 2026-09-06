@@ -26,6 +26,10 @@ type RepositoryRelocateOptions struct {
 	DefaultBranch         string
 	Apply                 bool
 	Now                   func() time.Time
+	// OnCleanupPending durably checkpoints the exact immutable cleanup receipt
+	// before WB moves the source repository. Returning an error aborts the move
+	// and restores the quarantined destination clone.
+	OnCleanupPending func(receiptPath, recoveryCommand string) error
 	// beforeReplacementRetirement is a test-only seam after the transferred
 	// repository is fully verified and before WB retires the exact disposable
 	// destination clone held in quarantine.
@@ -248,6 +252,11 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 			return errors.Join(cause, fmt.Errorf("record restored replacement: %w", receiptErr))
 		}
 		return cause
+	}
+	if replacement != nil && options.OnCleanupPending != nil {
+		if err := options.OnCleanupPending(result.ReplacementCleanupReceipt, result.RecoveryCommand); err != nil {
+			return result, restoreReplacement(fmt.Errorf("checkpoint replacement cleanup: %w", err))
+		}
 	}
 	moved, err := moveRenameDirectory(result.SourceDir, result.DestinationDir, nil)
 	if err != nil {
