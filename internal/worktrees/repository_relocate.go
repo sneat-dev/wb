@@ -26,21 +26,34 @@ type RepositoryRelocateOptions struct {
 	DefaultBranch         string
 	Apply                 bool
 	Now                   func() time.Time
+	// beforeReplacementRetirement is a test-only seam after the transferred
+	// repository is fully verified and before WB retires the exact disposable
+	// destination clone held in quarantine.
+	beforeReplacementRetirement func() error
+	// beforeReplacementCleanupCompleted is a test-only seam after secure
+	// retirement but before its immutable terminal evidence is appended.
+	beforeReplacementCleanupCompleted func() error
 }
 
 type RepositoryRelocateResult struct {
-	SourceRepository      string   `json:"source_repository"`
-	DestinationRepository string   `json:"destination_repository"`
-	SourceDir             string   `json:"source_dir"`
-	DestinationDir        string   `json:"destination_dir"`
-	RemoteURL             string   `json:"remote_url"`
-	DefaultBranch         string   `json:"default_branch"`
-	Worktrees             []string `json:"worktrees,omitempty"`
-	ReceiptPaths          []string `json:"receipt_paths,omitempty"`
-	RetiredDestinationDir string   `json:"retired_destination_dir,omitempty"`
-	Eligible              bool     `json:"eligible"`
-	Applied               bool     `json:"applied"`
-	Reason                string   `json:"reason,omitempty"`
+	SourceRepository          string   `json:"source_repository"`
+	DestinationRepository     string   `json:"destination_repository"`
+	SourceDir                 string   `json:"source_dir"`
+	DestinationDir            string   `json:"destination_dir"`
+	RemoteURL                 string   `json:"remote_url"`
+	SourceFetchURL            string   `json:"source_fetch_url"`
+	SourcePushURL             string   `json:"source_push_url"`
+	DefaultBranch             string   `json:"default_branch"`
+	Worktrees                 []string `json:"worktrees,omitempty"`
+	ReceiptPaths              []string `json:"receipt_paths,omitempty"`
+	RetiredDestinationDir     string   `json:"retired_destination_dir,omitempty"`
+	ReplacementCleanupReceipt string   `json:"replacement_cleanup_receipt,omitempty"`
+	ReplacementCleanupStatus  string   `json:"replacement_cleanup_status,omitempty"`
+	CleanupPending            bool     `json:"cleanup_pending,omitempty"`
+	RecoveryCommand           string   `json:"recovery_command,omitempty"`
+	Eligible                  bool     `json:"eligible"`
+	Applied                   bool     `json:"applied"`
+	Reason                    string   `json:"reason,omitempty"`
 }
 
 type repositoryRelocateWorktree struct {
@@ -107,6 +120,8 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	if err != nil || parsedSource.Identity.Repository != options.SourceRepository {
 		return result, fmt.Errorf("source origin does not identify %s", options.SourceRepository)
 	}
+	result.SourceFetchURL = fetchURLs[0]
+	result.SourcePushURL = pushURLs[0]
 
 	worktrees, err := repositoryRelocateWorktrees(ctx, result.SourceDir, result.DestinationDir)
 	if err != nil {
@@ -138,6 +153,11 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	if destinationExists {
 		if reason := disposableDestinationReason(ctx, result.DestinationDir, options, expectedRemoteHead); reason != "" {
 			result.Reason = "destination is not safely replaceable: " + reason
+			return result, nil
+		}
+		result.RetiredDestinationDir = filepath.Join(filepath.Dir(result.DestinationDir), ".wb-replaced-"+filepath.Base(result.DestinationDir)+"-"+expectedRemoteHead[:12])
+		if _, statErr := os.Lstat(result.RetiredDestinationDir); !errors.Is(statErr, os.ErrNotExist) {
+			result.Reason = "replacement quarantine already exists: " + result.RetiredDestinationDir
 			return result, nil
 		}
 	}
@@ -193,23 +213,45 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		}
 		entry.intent = intent
 	}
+	var replacement *os.File
+	var cleanupIntent repositoryTransferCleanupReceipt
 	if destinationExists {
-		result.RetiredDestinationDir = filepath.Join(filepath.Dir(result.DestinationDir), ".wb-replaced-"+filepath.Base(result.DestinationDir)+"-"+expectedRemoteHead[:12])
-		if _, statErr := os.Lstat(result.RetiredDestinationDir); !errors.Is(statErr, os.ErrNotExist) {
-			return result, fmt.Errorf("replacement quarantine already exists: %s", result.RetiredDestinationDir)
-		}
 		retired, retireErr := moveRenameDirectory(result.DestinationDir, result.RetiredDestinationDir, nil)
 		if retireErr != nil {
-			return result, fmt.Errorf("preserve disposable destination: %w", retireErr)
+			return result, fmt.Errorf("temporarily quarantine disposable destination: %w", retireErr)
 		}
-		_ = retired.Close()
+		replacement = retired
+		defer func() { _ = replacement.Close() }()
+		cleanupIntent, result.ReplacementCleanupReceipt, err = recordRepositoryTransferCleanupIntent(options, result, expectedRemoteHead, replacement)
+		if err != nil {
+			restored, restoreErr := moveRenameDirectory(result.RetiredDestinationDir, result.DestinationDir, nil)
+			if restored != nil {
+				_ = restored.Close()
+			}
+			return result, errors.Join(fmt.Errorf("record replacement cleanup intent: %w", err), restoreErr)
+		}
+		result.ReplacementCleanupStatus = repositoryTransferCleanupPending
+		result.RecoveryCommand = repositoryTransferCleanupCommand(options.ProjectsRoot, result.ReplacementCleanupReceipt)
+	}
+	restoreReplacement := func(cause error) error {
+		if replacement == nil {
+			return cause
+		}
+		restored, restoreErr := moveRenameDirectory(result.RetiredDestinationDir, result.DestinationDir, nil)
+		if restored != nil {
+			_ = restored.Close()
+		}
+		if restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore quarantined destination: %w", restoreErr))
+		}
+		if _, receiptErr := recordRepositoryTransferCleanupTerminal(options.ProjectsRoot, cleanupIntent, repositoryTransferCleanupRestored, options.Now().UTC()); receiptErr != nil {
+			return errors.Join(cause, fmt.Errorf("record restored replacement: %w", receiptErr))
+		}
+		return cause
 	}
 	moved, err := moveRenameDirectory(result.SourceDir, result.DestinationDir, nil)
 	if err != nil {
-		if result.RetiredDestinationDir != "" {
-			_, _ = moveRenameDirectory(result.RetiredDestinationDir, result.DestinationDir, nil)
-		}
-		return result, fmt.Errorf("move canonical repository: %w", err)
+		return result, restoreReplacement(fmt.Errorf("move canonical repository: %w", err))
 	}
 	_ = moved.Close()
 	rollback := func(cause error) error {
@@ -221,10 +263,7 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 			oldPaths = append(oldPaths, entry.source)
 		}
 		_, _ = git(ctx, result.SourceDir, append([]string{"worktree", "repair"}, oldPaths...)...)
-		if result.RetiredDestinationDir != "" {
-			_, _ = moveRenameDirectory(result.RetiredDestinationDir, result.DestinationDir, nil)
-		}
-		return cause
+		return restoreReplacement(cause)
 	}
 	if _, err := git(ctx, result.DestinationDir, "remote", "set-url", "origin", options.RemoteURL); err != nil {
 		return result, rollback(err)
@@ -264,6 +303,36 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		}
 	}
 	result.Applied = true
+	if replacement != nil {
+		if options.beforeReplacementRetirement != nil {
+			if err := options.beforeReplacementRetirement(); err != nil {
+				result.CleanupPending = true
+				result.Reason = "repository transfer completed; replacement cleanup_pending: " + err.Error()
+				return result, nil
+			}
+		}
+		if err := retireRepositoryTransferReplacement(result.RetiredDestinationDir, replacement); err != nil {
+			result.CleanupPending = true
+			result.Reason = "repository transfer completed; replacement cleanup_pending: " + err.Error()
+			return result, nil
+		}
+		if options.beforeReplacementCleanupCompleted != nil {
+			if err := options.beforeReplacementCleanupCompleted(); err != nil {
+				result.CleanupPending = true
+				result.Reason = "repository transfer and replacement retirement completed; cleanup evidence_pending: " + err.Error()
+				return result, nil
+			}
+		}
+		completedPath, err := recordRepositoryTransferCleanupCompleted(options.ProjectsRoot, cleanupIntent, options.Now().UTC())
+		if err != nil {
+			result.CleanupPending = true
+			result.Reason = "repository transfer and replacement retirement completed; cleanup evidence_pending: " + err.Error()
+			return result, nil
+		}
+		result.ReplacementCleanupReceipt = completedPath
+		result.ReplacementCleanupStatus = repositoryTransferCleanupRetired
+		result.RecoveryCommand = ""
+	}
 	return result, nil
 }
 

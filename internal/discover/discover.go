@@ -22,7 +22,7 @@ type Repo struct {
 	Org      string
 	Name     string
 	Path     string // local working-tree path; empty if not cloned locally
-	CloneURL string // ssh URL from GitHub; empty if only known locally
+	CloneURL string // transport URL from GitHub; empty if only known locally
 	Archived bool
 	IsFork   bool
 	Local    bool
@@ -95,27 +95,27 @@ func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalReposi
 	}
 	var payload struct {
 		FullName      string `json:"full_name"`
-		SSHURL        string `json:"ssh_url"`
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := json.Unmarshal(response.Body, &payload); err != nil {
 		return CanonicalRepository{}, err
 	}
-	remote, err := gitremote.Parse(payload.SSHURL)
+	canonicalURL := "https://github.com/" + payload.FullName
+	remote, err := gitremote.Parse(canonicalURL)
 	if err != nil || remote.Identity.Host() != "github.com" || remote.Identity.Repository != payload.FullName || payload.DefaultBranch == "" {
 		return CanonicalRepository{}, fmt.Errorf("GitHub returned an invalid canonical repository identity")
 	}
-	return CanonicalRepository{Slug: payload.FullName, CloneURL: payload.SSHURL, DefaultBranch: payload.DefaultBranch}, nil
+	return CanonicalRepository{Slug: payload.FullName, CloneURL: canonicalURL, DefaultBranch: payload.DefaultBranch}, nil
 }
 
 // ReconcileTransfers folds an old-path local-only repository and its new
 // remote-only identity into one repository. This must happen before sync's
 // worker pool so no worker clones the destination while another moves source.
 func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.Context, Repo) (CanonicalRepository, error)) []Repo {
-	remoteOnly := map[string]Repo{}
+	remoteTargets := map[string]Repo{}
 	for _, repo := range repos {
-		if repo.Remote && !repo.Local && repo.Path == "" {
-			remoteOnly[repo.Slug()] = repo
+		if repo.Remote {
+			remoteTargets[repo.Slug()] = repo
 		}
 	}
 	type candidate struct {
@@ -131,14 +131,14 @@ func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.
 		if err != nil || canonical.Slug == repo.Slug() {
 			continue
 		}
-		if _, exists := remoteOnly[canonical.Slug]; exists {
+		if _, exists := remoteTargets[canonical.Slug]; exists {
 			byTarget[canonical.Slug] = append(byTarget[canonical.Slug], candidate{source: repo, canonical: canonical})
 		}
 	}
 	consumed := map[string]bool{}
 	var out []Repo
 	for target, candidates := range byTarget {
-		remote := remoteOnly[target]
+		remote := remoteTargets[target]
 		consumed[target] = true
 		for _, candidate := range candidates {
 			combined := remote

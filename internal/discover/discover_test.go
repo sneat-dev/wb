@@ -21,6 +21,25 @@ func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.
 	}
 }
 
+func TestReconcileTransfersFoldsAnExistingDestinationClone(t *testing.T) {
+	repos := Reconcile(
+		[]Repo{
+			{Org: "oldco", Name: "app", Path: "/projects/oldco/app"},
+			{Org: "newco", Name: "renamed", Path: "/projects/newco/renamed"},
+		},
+		[]Repo{{Org: "newco", Name: "renamed", CloneURL: "git@github.com:newco/renamed.git"}},
+	)
+	got := ReconcileTransfers(context.Background(), repos, func(_ context.Context, repo Repo) (CanonicalRepository, error) {
+		if repo.Slug() == "oldco/app" {
+			return CanonicalRepository{Slug: "newco/renamed", CloneURL: "git@github.com:newco/renamed.git", DefaultBranch: "main"}, nil
+		}
+		return CanonicalRepository{Slug: repo.Slug()}, nil
+	})
+	if len(got) != 1 || got[0].TransferFrom != "oldco/app" || got[0].Path != "/projects/oldco/app" {
+		t.Fatalf("reconciled duplicate destination = %#v", got)
+	}
+}
+
 // installFakeGhRepoView writes a fake `gh` on PATH that answers `gh repo view
 // <slug> --json isArchived --jq .isArchived` with the given stdout, or fails
 // the invocation entirely when ok is false — simulating GitHub being
