@@ -1189,17 +1189,32 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("candidate push failed without force: %w", err))
 		}
 		reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
-		title, body, err := worktreeMergePRText(ctx, receipt)
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		receipt.PullRequest, err = openPullRequest(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, title, body,
-			Options{Timeout: options.Timeout, Retry: options.Retry})
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		reportWorktreeMergeProgress(options.Progress, "open_pull_request", progress.Completed, receipt.PullRequest)
 		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		receipt.PullRequest, err = findExactOpenWorktreeMergePullRequest(ctx, receipt)
+		if err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		}
+		if receipt.PullRequest != "" {
+			if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("verify adopted pull request: %w", err))
+			}
+			reportWorktreeMergeProgress(options.Progress, "adopt_pull_request", progress.Completed, receipt.PullRequest)
+		} else {
+			title, body, textErr := worktreeMergePRText(ctx, receipt)
+			if textErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, textErr)
+			}
+			receipt.PullRequest, err = openPullRequest(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, title, body,
+				Options{Timeout: options.Timeout, Retry: options.Retry})
+			if err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			reportWorktreeMergeProgress(options.Progress, "open_pull_request", progress.Completed, receipt.PullRequest)
+		}
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			return receipt, err
@@ -2228,6 +2243,50 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 		return "", false, fmt.Errorf("merged pull request omitted its time or server merge-result commit")
 	}
 	return view.MergeCommit.OID, true, nil
+}
+
+// findExactOpenWorktreeMergePullRequest discovers an already-open pull request
+// through GitHub's immutable commit association. Every mutable identity field
+// must still match the prepared candidate before WB adopts it.
+func findExactOpenWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt) (string, error) {
+	output, err := githubRead(ctx, receipt.Candidate.Worktree, "api", "--paginate",
+		"repos/"+receipt.Repository+"/commits/"+receipt.Candidate.SHA+"/pulls")
+	if err != nil {
+		return "", fmt.Errorf("query pull requests for exact candidate %s: %w", receipt.Candidate.SHA, err)
+	}
+	var views []struct {
+		HTMLURL string `json:"html_url"`
+		State   string `json:"state"`
+		Head    struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := json.Unmarshal([]byte(output), &views); err != nil {
+		return "", fmt.Errorf("decode pull requests for exact candidate %s: %w", receipt.Candidate.SHA, err)
+	}
+	var matched string
+	for _, view := range views {
+		if !strings.EqualFold(view.State, "open") || view.Head.SHA != receipt.Candidate.SHA ||
+			view.Head.Ref != receipt.Candidate.Branch || view.Head.Repo.FullName != receipt.Repository ||
+			view.Base.Ref != receipt.Target {
+			continue
+		}
+		if strings.TrimSpace(view.HTMLURL) == "" {
+			return "", errors.New("exact candidate pull request omitted its URL")
+		}
+		if matched != "" && matched != view.HTMLURL {
+			return "", fmt.Errorf("exact candidate has multiple matching open pull requests: %s and %s", matched, view.HTMLURL)
+		}
+		matched = view.HTMLURL
+	}
+	return matched, nil
 }
 
 // verifyPublishedWorktreeMergePullRequest proves the exact remote handoff
