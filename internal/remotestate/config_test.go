@@ -2,6 +2,7 @@ package remotestate
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,27 @@ func TestLoadConfigReadsRemoteSectionAndDefaults(t *testing.T) {
 	}
 	if cfg.RepoOwner() != "sneat-dev" || cfg.RepoName() != "wb-state" {
 		t.Fatalf("owner/name = %q/%q", cfg.RepoOwner(), cfg.RepoName())
+	}
+}
+
+func TestLoadConfigReadsHTTPSHubAndUsesPrivacySafeDefault(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	path := writeConfig(t, fmt.Sprintf("remote:\n  provider: hub\n  url: https://wb-github-app.sneat.dev\n  token_file: '%s'\n  machine: vm-1\n", tokenFile))
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "hub" || cfg.URL != "https://wb-github-app.sneat.dev" || cfg.TokenFile != tokenFile || cfg.Publish.Unpushed != RedactUnpushed {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestLoadConfigIncompleteHubShowsHubSnippet(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, "remote:\n  provider: hub\n  machine: vm-1\n"))
+	var unconfigured *UnconfiguredError
+	if !errors.As(err, &unconfigured) || !strings.Contains(err.Error(), "https://wb-github-app.sneat.dev") ||
+		!strings.Contains(err.Error(), "token_file") {
+		t.Fatalf("err = %v, want hub configuration guidance", err)
 	}
 }
 
@@ -59,6 +81,9 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 		"repo owner traversal":     "remote:\n  repo: ../x\n  machine: m\n",
 		"repo name traversal":      "remote:\n  repo: a/..\n  machine: m\n",
 		"repo too many separators": "remote:\n  repo: a/b/c\n  machine: m\n",
+		"hub insecure URL":         "remote:\n  provider: hub\n  url: http://hub.example\n  token_file: /private/token\n  machine: m\n",
+		"hub URL credential":       "remote:\n  provider: hub\n  url: https://user:secret@hub.example\n  token_file: /private/token\n  machine: m\n",
+		"hub relative token":       "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: token\n  machine: m\n",
 	} {
 		if _, err := LoadConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("%s: expected validation error", name)

@@ -9,6 +9,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -39,6 +40,10 @@ func openRemote(cfg remotestate.Config, projectsRoot string) (remotestate.Provid
 			ClonePath: filepath.Join(projectsRoot, cfg.RepoOwner(), cfg.RepoName()),
 			CloneURL:  "git@github.com:" + cfg.Repo + ".git",
 		}), nil
+	case "hub":
+		return hub.New(hub.Options{
+			BaseURL: cfg.URL, Machine: cfg.Machine, TokenFile: cfg.TokenFile,
+		})
 	default:
 		return nil, &exitError{code: exitUsage, message: "remote.provider " + cfg.Provider + " is not supported"}
 	}
@@ -65,6 +70,10 @@ func newRemoteCmd() *cobra.Command {
 configured in ~/.config/wb/wb.yaml:
 
 ` + remotestate.ConfigSnippet + `
+
+For the authenticated outbound HTTPS hub:
+
+` + remotestate.HubConfigSnippet + `
 
   wb remote publish    scan this machine and publish its snapshot
   wb remote status     cross-machine worklist from the store
