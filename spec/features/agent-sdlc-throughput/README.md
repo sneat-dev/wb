@@ -1244,9 +1244,10 @@ terminal failure unchanged.
 Given a fleet whose repositories have mixed merge settings and whose effective
 default-branch rules include repository, organization, and enterprise rulesets,
 when the operator runs `wb fleet merge-policy`, WB reads every selected
-repository and reports the desired merge-commit-only settings, repository drift,
-and every required-linear-history, merge-queue, or pull-request-method conflict
-without mutation. `--format=json` and `--json` emit the same versioned report;
+repository and reports the desired merge-commit-only settings, repository-owned
+required-linear-history and pull-request-method drift, and every higher-level
+required-linear-history, merge-queue, or pull-request-method conflict without
+mutation. `--format=json` and `--json` emit the same versioned report;
 noninteractive text remains unstyled and readable.
 
 When `--apply` is explicit, WB persists the complete selected scope before its
@@ -1254,11 +1255,15 @@ first mutation, rechecks observed repository settings before changing them,
 uses bounded parallel reads and repository-setting mutations with progress gaps
 no longer than nine seconds, and changes only merge settings. Shared ruleset
 mutation remains serialized. Classic branch protection is read separately from
-rulesets, and required linear history or a merge-queue requirement blocks apply.
+rulesets. Apply removes repository-owned required linear history through the
+dedicated classic-protection endpoint, removes only the corresponding repository
+ruleset rule, and preserves all other protection fields and rules. A merge-queue
+requirement or a higher-level linear-history rule blocks apply.
 The default parallelism is WB's current CPU budget (logical CPU count minus one,
 with a minimum of one); explicit `--parallel` remains authoritative.
 Repository rulesets preserve all unrelated conditions, bypass actors,
-enforcement, review requirements, status checks, and other rules.
+enforcement, review requirements, status checks, and other rules while their
+pull-request rule is set to merge-only.
 Organization and enterprise rulesets take precedence and remain audit-only in
 this slice; any conflicting higher-level rule blocks repository fallback.
 

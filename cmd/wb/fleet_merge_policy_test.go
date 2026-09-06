@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -73,7 +74,7 @@ func TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts(t *testi
 		}
 	}
 	got := inspectMergePolicyRepository(context.Background(), "acme/app")
-	if got.Disposition != "blocked" || len(got.Drift) != 4 || len(got.Conflicts) != 3 {
+	if got.Disposition != "blocked" || len(got.Drift) != 5 || len(got.Conflicts) != 2 || !got.ClassicLinear {
 		t.Fatalf("result = %#v", got)
 	}
 }
@@ -134,7 +135,7 @@ func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
 	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
 	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
 	mergePolicyRead = func(context.Context, string) ([]byte, error) {
-		return []byte(`{"id":7,"name":"default","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI"}]}},{"type":"pull_request","parameters":{"required_approving_review_count":2,"allowed_merge_methods":["squash","rebase"]}}],"bypass_actors":[]}`), nil
+		return []byte(`{"id":7,"name":"default","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI"}]}},{"type":"required_linear_history"},{"type":"pull_request","parameters":{"required_approving_review_count":2,"allowed_merge_methods":["squash","rebase"]}}],"bypass_actors":[]}`), nil
 	}
 	var input string
 	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
@@ -158,22 +159,137 @@ func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
 	if strings.Contains(input, `"id":7`) {
 		t.Fatalf("response-only id was sent: %s", input)
 	}
+	if strings.Contains(input, `"required_linear_history"`) {
+		t.Fatalf("repository linear-history rule was preserved: %s", input)
+	}
 }
 
-func TestInspectClassicProtectionTreats404AsNoneAndLinearHistoryAsConflict(t *testing.T) {
+func TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift(t *testing.T) {
+	original := mergePolicyRead
+	t.Cleanup(func() { mergePolicyRead = original })
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"main","allow_merge_commit":true,"allow_squash_merge":false,"allow_rebase_merge":false,"merge_commit_title":"PR_TITLE","merge_commit_message":"PR_BODY"}`), nil
+		case "repos/acme/app/branches/main/protection":
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		case "repos/acme/app/rules/branches/main?per_page=100":
+			return []byte(`[{"type":"required_linear_history","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7}]`), nil
+		case "repos/acme/app/rulesets/7":
+			return []byte(`{"id":7,"rules":[{"type":"required_linear_history"}]}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	repo := inspectMergePolicyRepository(context.Background(), "acme/app")
+	if repo.Disposition != "drift" || len(repo.Conflicts) != 0 || len(repo.Rulesets) != 1 {
+		t.Fatalf("repository = %#v", repo)
+	}
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{repo}}
+	buildMergePolicyRulesetPlan(context.Background(), &report)
+	if len(report.Rulesets) != 1 || report.Rulesets[0].Disposition != "planned" || report.Rulesets[0].ObservedSHA == "" {
+		t.Fatalf("ruleset plan = %#v", report.Rulesets)
+	}
+}
+
+func TestInspectClassicProtectionTreats404AsNoneAndReportsLinearHistory(t *testing.T) {
 	original := mergePolicyRead
 	t.Cleanup(func() { mergePolicyRead = original })
 	mergePolicyRead = func(context.Context, string) ([]byte, error) { return nil, errors.New("gh: Not Found (HTTP 404)") }
-	sha, conflicts, err := inspectClassicProtection(context.Background(), "acme/app", "main")
-	if err != nil || sha != "none" || len(conflicts) != 0 {
-		t.Fatalf("404 result = sha %q conflicts %#v err %v", sha, conflicts, err)
+	sha, linear, conflicts, err := inspectClassicProtection(context.Background(), "acme/app", "main")
+	if err != nil || sha != "none" || linear || len(conflicts) != 0 {
+		t.Fatalf("404 result = sha %q linear %v conflicts %#v err %v", sha, linear, conflicts, err)
 	}
 	mergePolicyRead = func(context.Context, string) ([]byte, error) {
 		return []byte(`{"required_linear_history":{"enabled":true}}`), nil
 	}
-	_, conflicts, err = inspectClassicProtection(context.Background(), "acme/app", "main")
-	if err != nil || len(conflicts) != 1 || !strings.Contains(conflicts[0], "linear history") {
-		t.Fatalf("linear result = conflicts %#v err %v", conflicts, err)
+	_, linear, conflicts, err = inspectClassicProtection(context.Background(), "acme/app", "main")
+	if err != nil || !linear || len(conflicts) != 0 {
+		t.Fatalf("linear result = linear %v conflicts %#v err %v", linear, conflicts, err)
+	}
+}
+
+func TestApplyClassicLinearHistoryUsesDedicatedDeleteAndRecordsPartialResult(t *testing.T) {
+	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
+	repositoryBody := []byte(`{"default_branch":"main"}`)
+	protectionBody := []byte(`{"required_linear_history":{"enabled":true},"required_status_checks":{"strict":true,"contexts":["CI"]},"enforce_admins":{"enabled":true}}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.HasSuffix(endpoint, "/protection") {
+			return protectionBody, nil
+		}
+		return repositoryBody, nil
+	}
+	var calls []string
+	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		if strings.Contains(call, "--method PATCH") {
+			return githubobserver.CommandResponse{Err: errors.New("patch failed")}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	report := mergePolicyReport{ReportPath: filepath.Join(t.TempDir(), "merge-policy.json"), Repositories: []mergePolicyRepository{{
+		Repository:    "acme/app",
+		DefaultBranch: "main",
+		Disposition:   "drift",
+		ObservedSHA:   digestJSON(repositoryBody),
+		ProtectionSHA: digestJSON(protectionBody),
+		ClassicLinear: true,
+	}}}
+	if err := applyMergePolicy(context.Background(), &report, 1, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "--method DELETE repos/acme/app/branches/main/protection/required_linear_history") {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if strings.Contains(calls[0], "--input") || strings.HasSuffix(calls[0], "/protection") {
+		t.Fatalf("classic protection must be changed only through the dedicated endpoint: %q", calls[0])
+	}
+	persisted, err := os.ReadFile(report.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(persisted), "removed_classic_required_linear_history") || report.Repositories[0].Disposition != "error" {
+		t.Fatalf("partial receipt = %s repository=%#v", persisted, report.Repositories[0])
+	}
+}
+
+func TestRunMergePolicyResumeCarriesPartialActions(t *testing.T) {
+	originalDiscover, originalRead, originalExecute := mergePolicyDiscover, mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() {
+		mergePolicyDiscover, mergePolicyRead, mergePolicyExecute = originalDiscover, originalRead, originalExecute
+	})
+	reportDir := t.TempDir()
+	path := filepath.Join(reportDir, "merge-policy.json")
+	previous := mergePolicyReport{ReportPath: path, Repositories: []mergePolicyRepository{{Repository: "acme/app", AppliedActions: []string{"removed_classic_required_linear_history"}}}}
+	if err := persistMergePolicyReport(previous); err != nil {
+		t.Fatal(err)
+	}
+	mergePolicyDiscover = func(string, string) ([]discover.Repo, error) {
+		return []discover.Repo{{Org: "acme", Name: "app", Remote: true}}, nil
+	}
+	repositoryBody := []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch {
+		case strings.Contains(endpoint, "/rules/branches/"):
+			return []byte(`[]`), nil
+		case strings.HasSuffix(endpoint, "/protection"):
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		default:
+			return repositoryBody, nil
+		}
+	}
+	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		return githubobserver.CommandResponse{}
+	}
+	report, err := runMergePolicy(context.Background(), mergePolicyOptions{apply: true, resume: true, parallel: 1, reportDir: reportDir}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := report.Repositories[0].AppliedActions
+	if !slices.Contains(actions, "removed_classic_required_linear_history") || !slices.Contains(actions, "updated_repository_merge_settings") {
+		t.Fatalf("resumed actions = %#v", actions)
 	}
 }
 

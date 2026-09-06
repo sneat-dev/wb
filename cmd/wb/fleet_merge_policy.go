@@ -54,15 +54,17 @@ type mergePolicyDesired struct {
 var desiredMergePolicy = mergePolicyDesired{true, false, false, "PR_TITLE", "PR_BODY"}
 
 type mergePolicyRepository struct {
-	Repository    string               `json:"repository"`
-	DefaultBranch string               `json:"default_branch,omitempty"`
-	Disposition   string               `json:"disposition"`
-	Drift         []string             `json:"drift,omitempty"`
-	Conflicts     []string             `json:"conflicts,omitempty"`
-	Rulesets      []mergePolicyRuleRef `json:"rulesets,omitempty"`
-	ObservedSHA   string               `json:"observed_sha,omitempty"`
-	ProtectionSHA string               `json:"protection_sha,omitempty"`
-	Error         string               `json:"error,omitempty"`
+	Repository     string               `json:"repository"`
+	DefaultBranch  string               `json:"default_branch,omitempty"`
+	Disposition    string               `json:"disposition"`
+	Drift          []string             `json:"drift,omitempty"`
+	Conflicts      []string             `json:"conflicts,omitempty"`
+	Rulesets       []mergePolicyRuleRef `json:"rulesets,omitempty"`
+	ObservedSHA    string               `json:"observed_sha,omitempty"`
+	ProtectionSHA  string               `json:"protection_sha,omitempty"`
+	ClassicLinear  bool                 `json:"classic_required_linear_history,omitempty"`
+	AppliedActions []string             `json:"applied_actions,omitempty"`
+	Error          string               `json:"error,omitempty"`
 }
 
 type mergePolicyRuleRef struct {
@@ -138,12 +140,12 @@ request title and body for the merge commit. Audit is the default and is
 read-only. --apply is explicit: WB first inventories the exact selected scope,
 writes the durable plan, then changes only merge settings.
 
-Effective required-linear-history and merge-queue rules are conflicts because
-they can make merge commits impossible. WB reports them and never weakens those
-protections. Existing organization and enterprise pull-request rulesets are
-reported as higher-level authorities and remain audit-only in this slice;
-repository fallback is refused when either one conflicts. Existing repository
-rulesets can be updated while preserving their unrelated fields.
+Repository-owned required-linear-history policy is desired drift: apply removes
+the dedicated classic setting and the corresponding repository ruleset rule
+while preserving every other protection; WB never weakens unrelated protection.
+Existing merge-queue rules remain preserved blockers.
+Existing organization and enterprise rulesets are higher-level authorities and remain
+audit-only in this slice; repository fallback is refused when either conflicts.
 
 Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 2 invalid usage.`,
@@ -182,6 +184,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 
 func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io.Writer) (mergePolicyReport, error) {
 	var inspected, total atomic.Int64
+	resumedActions := map[string][]string{}
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
 	go func() {
@@ -197,8 +200,16 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 		}
 	}()
 	if options.resume {
-		if _, err := os.Stat(filepath.Join(options.reportDir, "merge-policy.json")); err != nil {
+		payload, err := os.ReadFile(filepath.Join(options.reportDir, "merge-policy.json"))
+		if err != nil {
 			return mergePolicyReport{}, fmt.Errorf("resume merge-policy report: %w", err)
+		}
+		var previous mergePolicyReport
+		if err := json.Unmarshal(payload, &previous); err != nil {
+			return mergePolicyReport{}, fmt.Errorf("decode resume merge-policy report: %w", err)
+		}
+		for _, repo := range previous.Repositories {
+			resumedActions[repo.Repository] = append([]string(nil), repo.AppliedActions...)
 		}
 	}
 	repos, err := mergePolicyDiscover(projectsRoot, filterFlag)
@@ -234,6 +245,11 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 	}
 	close(jobs)
 	wg.Wait()
+	for index := range report.Repositories {
+		for _, action := range resumedActions[report.Repositories[index].Repository] {
+			report.Repositories[index].AppliedActions = appendUnique(report.Repositories[index].AppliedActions, action)
+		}
+	}
 	buildMergePolicyRulesetPlan(ctx, &report)
 	summarizeMergePolicy(&report)
 	if options.apply {
@@ -338,12 +354,16 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 	if policy.MergeCommitMessage != desiredMergePolicy.MergeCommitBody {
 		result.Drift = append(result.Drift, "merge_commit_message="+policy.MergeCommitMessage)
 	}
-	protectionSHA, protectionConflicts, err := inspectClassicProtection(ctx, slug, policy.DefaultBranch)
+	protectionSHA, classicLinear, protectionConflicts, err := inspectClassicProtection(ctx, slug, policy.DefaultBranch)
 	if err != nil {
 		result.Disposition, result.Error = "error", err.Error()
 		return result
 	}
 	result.ProtectionSHA = protectionSHA
+	result.ClassicLinear = classicLinear
+	if classicLinear {
+		result.Drift = append(result.Drift, "classic branch protection requires linear history")
+	}
 	result.Conflicts = append(result.Conflicts, protectionConflicts...)
 	rulesBody, err := mergePolicyRead(ctx, "repos/"+slug+"/rules/branches/"+policy.DefaultBranch+"?per_page=100")
 	if err != nil {
@@ -359,7 +379,11 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 		ref := mergePolicyRuleRef{Type: rule.Type, SourceType: rule.RulesetSourceType, Source: rule.RulesetSource, ID: rule.RulesetID}
 		switch rule.Type {
 		case "required_linear_history":
-			result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "requires linear history"))
+			if strings.EqualFold(rule.RulesetSourceType, "Repository") {
+				result.Drift = append(result.Drift, describeRuleConflict(rule, "requires linear history"))
+			} else {
+				result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "requires linear history"))
+			}
 		case "merge_queue":
 			result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "requires the merge queue"))
 		case "pull_request":
@@ -371,7 +395,7 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 			if len(parameters.AllowedMergeMethods) == 0 {
 				result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "did not report allowed merge methods"))
 			} else if !mergeOnly(parameters.AllowedMergeMethods) {
-				if strings.EqualFold(rule.RulesetSourceType, "Organization") || strings.EqualFold(rule.RulesetSourceType, "Repository") {
+				if strings.EqualFold(rule.RulesetSourceType, "Repository") {
 					result.Drift = append(result.Drift, describeRuleConflict(rule, "allows "+strings.Join(parameters.AllowedMergeMethods, ",")+" instead of merge"))
 				} else {
 					result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "does not allow merge commits"))
@@ -393,14 +417,14 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 	return result
 }
 
-func inspectClassicProtection(ctx context.Context, slug, branch string) (string, []string, error) {
+func inspectClassicProtection(ctx context.Context, slug, branch string) (string, bool, []string, error) {
 	endpoint := "repos/" + slug + "/branches/" + url.PathEscape(branch) + "/protection"
 	body, err := mergePolicyRead(ctx, endpoint)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "http 404") {
-			return "none", nil, nil
+			return "none", false, nil, nil
 		}
-		return "", nil, fmt.Errorf("read classic branch protection: %w", err)
+		return "", false, nil, fmt.Errorf("read classic branch protection: %w", err)
 	}
 	var protection struct {
 		RequiredLinearHistory *struct {
@@ -414,16 +438,14 @@ func inspectClassicProtection(ctx context.Context, slug, branch string) (string,
 		} `json:"merge_queue"`
 	}
 	if err := json.Unmarshal(body, &protection); err != nil {
-		return "", nil, fmt.Errorf("decode classic branch protection: %w", err)
+		return "", false, nil, fmt.Errorf("decode classic branch protection: %w", err)
 	}
 	var conflicts []string
-	if protection.RequiredLinearHistory != nil && protection.RequiredLinearHistory.Enabled {
-		conflicts = append(conflicts, "classic branch protection requires linear history")
-	}
+	linearHistory := protection.RequiredLinearHistory != nil && protection.RequiredLinearHistory.Enabled
 	if (protection.RequiredMergeQueue != nil && protection.RequiredMergeQueue.Enabled) || (protection.MergeQueue != nil && protection.MergeQueue.Enabled) {
 		conflicts = append(conflicts, "classic branch protection requires the merge queue")
 	}
-	return digestJSON(body), conflicts, nil
+	return digestJSON(body), linearHistory, conflicts, nil
 }
 
 func describeRuleConflict(rule githubEffectiveRule, detail string) string {
@@ -434,7 +456,7 @@ func buildMergePolicyRulesetPlan(ctx context.Context, report *mergePolicyReport)
 	byKey := map[string]*mergePolicyRulesetChange{}
 	for _, repo := range report.Repositories {
 		for _, ref := range repo.Rulesets {
-			if ref.Type != "pull_request" || mergeOnly(ref.Methods) {
+			if (ref.Type != "pull_request" || mergeOnly(ref.Methods)) && ref.Type != "required_linear_history" {
 				continue
 			}
 			key := fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)
@@ -443,7 +465,10 @@ func buildMergePolicyRulesetPlan(ctx context.Context, report *mergePolicyReport)
 				change = &mergePolicyRulesetChange{SourceType: ref.SourceType, Source: ref.Source, ID: ref.ID, Disposition: "planned"}
 				byKey[key] = change
 			}
-			change.Repositories = append(change.Repositories, repo.Repository)
+			if !containsSorted(change.Repositories, repo.Repository) {
+				change.Repositories = append(change.Repositories, repo.Repository)
+				sort.Strings(change.Repositories)
+			}
 		}
 	}
 	keys := make([]string, 0, len(byKey))
@@ -505,7 +530,7 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 			continue
 		}
 		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
-		protectionSHA, _, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
+		protectionSHA, _, _, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
 		if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA {
 			repo.Disposition = "blocked"
 			repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
@@ -548,8 +573,9 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 		parallel = 1
 	}
 	type repositoryResult struct {
-		index int
-		repo  mergePolicyRepository
+		index         int
+		repo          mergePolicyRepository
+		checkpointErr error
 	}
 	eligible := make([]int, 0, len(report.Repositories))
 	results := make(chan repositoryResult, len(report.Repositories))
@@ -560,9 +586,19 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 		}
 		eligible = append(eligible, index)
 	}
+	var checkpointMu sync.Mutex
+	checkpointRepository := func(index int, repo mergePolicyRepository) error {
+		checkpointMu.Lock()
+		defer checkpointMu.Unlock()
+		report.Repositories[index] = repo
+		return checkpoint()
+	}
 	launch := func(index int) {
 		go func() {
-			results <- repositoryResult{index: index, repo: applyRepositoryMergePolicy(ctx, report.Repositories[index], blockedRulesets)}
+			repo, err := applyRepositoryMergePolicy(ctx, report.Repositories[index], blockedRulesets, func(repo mergePolicyRepository) error {
+				return checkpointRepository(index, repo)
+			})
+			results <- repositoryResult{index: index, repo: repo, checkpointErr: err}
 		}()
 	}
 	next, inFlight := 0, 0
@@ -575,11 +611,13 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 	for inFlight > 0 {
 		result := <-results
 		inFlight--
-		report.Repositories[result.index] = result.repo
+		if result.checkpointErr != nil && firstCheckpointErr == nil {
+			firstCheckpointErr = result.checkpointErr
+		}
 		if result.repo.Disposition == "applied" {
 			_, _ = fmt.Fprintf(progress, "merge-policy: applied %s\n", result.repo.Repository)
 		}
-		if err := checkpoint(); err != nil && firstCheckpointErr == nil {
+		if err := checkpointRepository(result.index, result.repo); err != nil && firstCheckpointErr == nil {
 			firstCheckpointErr = err
 		}
 		if firstCheckpointErr == nil && next < len(eligible) {
@@ -591,20 +629,34 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 	return firstCheckpointErr
 }
 
-func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository, blockedRulesets map[string]bool) mergePolicyRepository {
+func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository, blockedRulesets map[string]bool, checkpoint func(mergePolicyRepository) error) (mergePolicyRepository, error) {
 	for _, ref := range repo.Rulesets {
 		if blockedRulesets[fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)] {
 			repo.Disposition = "blocked"
 			repo.Conflicts = append(repo.Conflicts, "shared ruleset update was not safe or supported")
-			return repo
+			return repo, nil
 		}
 	}
 	fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
-	protectionSHA, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
+	protectionSHA, classicLinear, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
 	if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
 		repo.Disposition = "blocked"
 		repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
-		return repo
+		return repo, nil
+	}
+	if classicLinear {
+		endpoint := "repos/" + repo.Repository + "/branches/" + url.PathEscape(repo.DefaultBranch) + "/protection/required_linear_history"
+		response := mergePolicyExecute(ctx, "api", "--method", "DELETE", endpoint)
+		if response.Err != nil {
+			repo.Disposition = "error"
+			repo.Error = "remove classic required linear history: " + githubCommandMessage(response)
+			return repo, nil
+		}
+		repo.ClassicLinear = false
+		repo.AppliedActions = appendUnique(repo.AppliedActions, "removed_classic_required_linear_history")
+		if err := checkpoint(repo); err != nil {
+			return repo, err
+		}
 	}
 	response := mergePolicyExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository,
 		"-F", "allow_merge_commit=true", "-F", "allow_squash_merge=false", "-F", "allow_rebase_merge=false",
@@ -612,11 +664,12 @@ func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository,
 	if response.Err != nil {
 		repo.Disposition = "error"
 		repo.Error = githubCommandMessage(response)
-		return repo
+		return repo, nil
 	}
 	repo.Disposition = "applied"
 	repo.Drift = nil
-	return repo
+	repo.AppliedActions = appendUnique(repo.AppliedActions, "updated_repository_merge_settings")
+	return repo, nil
 }
 
 func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) error {
@@ -640,9 +693,19 @@ func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) er
 		return fmt.Errorf("ruleset response has no rules")
 	}
 	changed := false
+	updatedRules := make([]any, 0, len(rules))
 	for _, value := range rules {
 		rule, ok := value.(map[string]any)
-		if !ok || rule["type"] != "pull_request" {
+		if !ok {
+			updatedRules = append(updatedRules, value)
+			continue
+		}
+		if rule["type"] == "required_linear_history" {
+			changed = true
+			continue
+		}
+		updatedRules = append(updatedRules, value)
+		if rule["type"] != "pull_request" {
 			continue
 		}
 		parameters, ok := rule["parameters"].(map[string]any)
@@ -654,8 +717,9 @@ func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) er
 		changed = true
 	}
 	if !changed {
-		return fmt.Errorf("ruleset has no pull_request rule")
+		return fmt.Errorf("ruleset has no required-linear-history or pull-request policy to change")
 	}
+	full["rules"] = updatedRules
 	// Response-only fields are not accepted by GitHub's update endpoint.
 	for _, key := range []string{"id", "node_id", "source", "source_type", "_links", "created_at", "updated_at", "current_user_can_bypass"} {
 		delete(full, key)
@@ -765,6 +829,14 @@ func printMergePolicyReport(out io.Writer, report mergePolicyReport) error {
 }
 
 func mergeOnly(values []string) bool { return len(values) == 1 && values[0] == "merge" }
+func appendUnique(values []string, value string) []string {
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
 func containsSorted(values []string, want string) bool {
 	index := sort.SearchStrings(values, want)
 	return index < len(values) && values[index] == want
