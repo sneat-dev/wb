@@ -51,6 +51,9 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 	}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
 		for _, parent := range fields[2:] {
 			heads[parent] = true
 		}
