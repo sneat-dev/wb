@@ -32,3 +32,25 @@ The sequenced `EventSource` is also the terminal-monitoring source: filter by
 `repo`, `task`, `operation`, `session`, `severity`, `after`, and RFC 3339
 `since`. `wb monitor --format=jsonl` consumes this same sequence; `wb log tail` can be
 an alias, but immutable Work Logs are never used as a mutable event queue.
+
+## Provider storage boundary
+
+The host-neutral provider in `provider.go` implements `ReadModel` over a
+`ProjectionStore`; the host supplies the durable adapter. Projection documents
+use the `workbench_projections` collection, with `scope` and the canonical
+GitHub subject ID (`github.com/<org>` or `github.com/<org>/<repo>`) retained in
+the document. `ProjectionKey` derives a stable SHA-256 document ID so slashes
+cannot alter storage hierarchy. Series, leaderboard, and latest-merge records
+use the corresponding named collections and typed store methods.
+
+Repository projections are anonymous only when `public_opt_in` is true. For a
+private projection the host's `MembershipResolver` must prove that the
+Firebase-authenticated `Viewer.UserID` maps to an installed GitHub identity
+with access to that exact organization or repository. Browser headers and
+GitHub repository visibility are never accepted as membership evidence. A
+missing resolver or failed membership check fails closed as private data.
+
+The provider does not choose Firestore paths, Firebase projects, GitHub
+credentials, or aggregation credentials. Sneat Go can bind those through its
+wire-only adapter once the corresponding durable store and membership service
+are configured.
