@@ -1518,6 +1518,35 @@ func TestMissingCleanupAcknowledgementFailsClosedAfterReceiptTamper(t *testing.T
 	}
 }
 
+func TestMissingCleanupAcknowledgementReleasesLaneWithoutReceiptResume(t *testing.T) {
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	intent := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, Cleanup: true, OnFailure: "stop"}
+	retainWorktreeMergeLandIntent(&landed, &intent)
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	if err := os.Remove(terminalWorkLogPath(claims[landed.Sources[0].Task])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Apply: true,
+		Actor: "reviewer", Reason: "legacy cleanup removed assets before terminal evidence was retained",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The acknowledgement is terminal evidence in its own right. A fresh
+	// prepare must not require a cosmetic resume that rewrites the old receipt.
+	next := createMergeSource(t, fixture, "after-ack-without-resume", "feature/after-ack-without-resume", "next.txt", "next\n")
+	prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{next.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil || prepared.Status != WorktreeMergePrepared {
+		t.Fatalf("prepare after acknowledgement without receipt resume = %+v err=%v", prepared, err)
+	}
+}
+
 func TestMissingCleanupAcknowledgementRefusesRemoteTargetRewind(t *testing.T) {
 	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
 	intent := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, Cleanup: true, OnFailure: "stop"}
