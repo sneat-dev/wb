@@ -49,13 +49,13 @@ func TestQualityProgressShowsShardedGoTestJobAndDenominator(t *testing.T) {
 	})
 	progress.report(quality.Progress{
 		Language: "go", Module: ".", Command: "go test", Detail: "cmd/wb shard 2/8",
-		State: quality.ProgressCompleted, Status: quality.StatusPassed, Completed: 2, Total: 17,
+		State: quality.ProgressCompleted, Status: quality.StatusPassed, Attempts: 2, Completed: 2, Total: 17,
 	})
 
 	rendered := out.String()
 	for _, want := range []string{
 		"go test jobs 1/17; cmd/wb shard 2/8: started",
-		"go test jobs 2/17; cmd/wb shard 2/8: passed",
+		"go test jobs 2/17; cmd/wb shard 2/8 (attempt 2): passed",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("progress output missing %q: %q", want, rendered)

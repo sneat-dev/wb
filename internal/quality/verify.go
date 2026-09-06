@@ -78,6 +78,7 @@ type ProgressState string
 
 const (
 	ProgressStarted             ProgressState = "started"
+	ProgressRetrying            ProgressState = "retrying"
 	ProgressCompleted           ProgressState = "completed"
 	ProgressRepositoryCompleted ProgressState = "repository_completed"
 )

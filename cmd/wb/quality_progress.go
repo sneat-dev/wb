@@ -47,10 +47,14 @@ func (progress *qualityProgress) report(event quality.Progress) {
 		if event.State == quality.ProgressCompleted {
 			state = string(event.Status)
 		}
+		detail := event.Detail
+		if event.Attempts > 0 {
+			detail = fmt.Sprintf("%s (attempt %d)", detail, event.Attempts)
+		}
 		progress.live.update(fmt.Sprintf(
 			"%s: %d/%d repositories completed; go test jobs %d/%d; %s: %s",
 			progress.operation, progress.completed, progress.total,
-			event.Completed, event.Total, event.Detail, state,
+			event.Completed, event.Total, detail, state,
 		))
 		return
 	}

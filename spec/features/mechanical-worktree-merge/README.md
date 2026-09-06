@@ -199,6 +199,13 @@ remote merge, or canonical synchronization, rerunning the receipt's resume
 command continues from the first incomplete boundary without duplicating a
 worktree, push, pull request, merge, or cleanup.
 
+When `merge resume --stop-before-merge` sees the exact clean candidate HEAD,
+target and baseline revisions, source heads, quality policy, and toolchain
+identity recorded by prepare, it reuses that terminal validation evidence
+without rerunning the checks. Missing or inconsistent identity, cleanliness,
+candidate, target, or source evidence invalidates reuse and requires fresh
+validation before publication.
+
 ### AC: every-pre-landing-failure-preserves-work
 
 Given a dirty source, merge conflict, validation failure, unknown policy,

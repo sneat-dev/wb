@@ -39,6 +39,12 @@ func TestPrepareValidationFailedWorktreeMergeSealPreservesTargetTreeAndHistorica
 	runEngineGit(t, alternateTargetWorktree, "add", "target.txt")
 	runEngineGit(t, alternateTargetWorktree, "commit", "-m", "test: replace historical branch tip")
 	runEngineGit(t, alternateTargetWorktree, "push", "--force", "origin", "HEAD:main")
+	runEngineGit(t, source.WorktreeDir, "fetch", "origin", "main")
+	runEngineGit(t, source.WorktreeDir, "merge", "--no-edit", "origin/main")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+	runEngineGit(t, alternateTargetWorktree, "merge", "--squash", advancedSource)
+	runEngineGit(t, alternateTargetWorktree, "commit", "-m", "test: squash land advanced source")
+	runEngineGit(t, alternateTargetWorktree, "push", "--force", "origin", "HEAD:main")
 	currentTarget := strings.TrimSpace(runEngineGit(t, alternateTargetWorktree, "rev-parse", "HEAD"))
 	targetTree := strings.TrimSpace(runEngineGit(t, alternateTargetWorktree, "rev-parse", "HEAD^{tree}"))
 	if contains, err := isMergeAncestor(context.Background(), fixture.canonical, receipt.TargetSHA, currentTarget); err != nil || contains {
@@ -89,6 +95,9 @@ func TestPrepareValidationFailedWorktreeMergeSealPreservesTargetTreeAndHistorica
 		if contains, err := isMergeAncestor(context.Background(), seal.Candidate.Worktree, root.SHA, seal.Candidate.SHA); err != nil || !contains {
 			t.Fatalf("seal does not contain %s %s: contains=%t err=%v", root.Kind, root.SHA, contains, err)
 		}
+	}
+	if contains, err := isMergeAncestor(context.Background(), seal.Candidate.Worktree, advancedSource, seal.Candidate.SHA); err != nil || !contains {
+		t.Fatalf("seal does not contain advanced source %s: contains=%t err=%v", advancedSource, contains, err)
 	}
 	if err := requireCleanMergeWorktree(context.Background(), seal.Candidate.Worktree); err != nil {
 		t.Fatal(err)
