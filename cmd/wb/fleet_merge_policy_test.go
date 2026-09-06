@@ -509,7 +509,7 @@ func TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResul
 	if err := json.Unmarshal(protectionInput, &got); err != nil {
 		t.Fatal(err)
 	}
-	expected := `{"required_status_checks":{"strict":true,"contexts":["CI"],"checks":[{"context":"Build","app_id":12345},{"context":"Portable","app_id":null}]},"enforce_admins":true,"required_pull_request_reviews":{"dismissal_restrictions":{"users":["octocat"],"teams":["reviewers"],"apps":["review-app"]},"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":2,"require_last_push_approval":true,"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["release"],"apps":["release-app"]}},"restrictions":{"users":["deployer"],"teams":["platform"],"apps":["deploy-app"]},"required_linear_history":false,"allow_force_pushes":true,"allow_deletions":false,"block_creations":true,"required_conversation_resolution":true,"lock_branch":false,"allow_fork_syncing":true}`
+	expected := `{"required_status_checks":{"strict":true,"checks":[{"context":"Build","app_id":12345},{"context":"Portable","app_id":null}]},"enforce_admins":true,"required_pull_request_reviews":{"dismissal_restrictions":{"users":["octocat"],"teams":["reviewers"],"apps":["review-app"]},"dismiss_stale_reviews":true,"require_code_owner_reviews":true,"required_approving_review_count":2,"require_last_push_approval":true,"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["release"],"apps":["release-app"]}},"restrictions":{"users":["deployer"],"teams":["platform"],"apps":["deploy-app"]},"required_linear_history":false,"allow_force_pushes":true,"allow_deletions":false,"block_creations":true,"required_conversation_resolution":true,"lock_branch":false,"allow_fork_syncing":true}`
 	if err := json.Unmarshal([]byte(expected), &want); err != nil {
 		t.Fatal(err)
 	}
@@ -522,6 +522,27 @@ func TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResul
 	}
 	if !strings.Contains(string(persisted), "removed_classic_required_linear_history") || report.Repositories[0].Disposition != "error" {
 		t.Fatalf("partial receipt = %s repository=%#v", persisted, report.Repositories[0])
+	}
+}
+
+func TestClassicProtectionUpdatePayloadUsesContextsOnlyWithoutChecks(t *testing.T) {
+	payload, err := classicProtectionUpdatePayload([]byte(`{"required_status_checks":{"strict":true,"contexts":["Legacy CI"]},"required_linear_history":{"enabled":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := decoded["required_status_checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("required status checks = %#v", decoded["required_status_checks"])
+	}
+	if _, found := status["checks"]; found {
+		t.Fatalf("context-only protection emitted mutually exclusive checks: %s", payload)
+	}
+	if got := status["contexts"]; !reflect.DeepEqual(got, []any{"Legacy CI"}) {
+		t.Fatalf("contexts = %#v", got)
 	}
 }
 

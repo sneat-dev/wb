@@ -858,7 +858,7 @@ func classicProtectionUpdatePayload(body []byte) ([]byte, error) {
 	}
 	type requiredStatusChecks struct {
 		Strict   bool                  `json:"strict"`
-		Contexts []string              `json:"contexts"`
+		Contexts []string              `json:"contexts,omitempty"`
 		Checks   []requiredStatusCheck `json:"checks,omitempty"`
 	}
 	type pullRequestReviews struct {
@@ -884,9 +884,13 @@ func classicProtectionUpdatePayload(body []byte) ([]byte, error) {
 	}
 	result := update{RequiredLinearHistory: false}
 	if observed.RequiredStatusChecks != nil {
-		checks := &requiredStatusChecks{Strict: observed.RequiredStatusChecks.Strict, Contexts: append([]string(nil), observed.RequiredStatusChecks.Contexts...)}
-		for _, check := range observed.RequiredStatusChecks.Checks {
-			checks.Checks = append(checks.Checks, requiredStatusCheck{Context: check.Context, AppID: check.AppID})
+		checks := &requiredStatusChecks{Strict: observed.RequiredStatusChecks.Strict}
+		if len(observed.RequiredStatusChecks.Checks) > 0 {
+			for _, check := range observed.RequiredStatusChecks.Checks {
+				checks.Checks = append(checks.Checks, requiredStatusCheck{Context: check.Context, AppID: check.AppID})
+			}
+		} else {
+			checks.Contexts = append([]string(nil), observed.RequiredStatusChecks.Contexts...)
 		}
 		result.RequiredStatusChecks = checks
 	}
