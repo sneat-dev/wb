@@ -178,6 +178,34 @@ func TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog(t *testing.T) {
 	}
 }
 
+func TestGCDeletesProvedOlderRemoteRefForLandedLocalHead(t *testing.T) {
+	fixture, result, _, mergedAt := prepareMergedTask(t, "gc-older-remote")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "later.txt"), []byte("landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "later.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "landed later")
+	localHead := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", localHead, "-m", "merge later")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+
+	outcome, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness, ProjectsRoot: fixture.projectsRoot,
+		Tasks: []string{"gc-older-remote"}, Apply: true, DeleteRemote: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, outcome, "gc-older-remote"); !entry.Applied || !entry.RemoteHeadAncestorOfHead {
+		t.Fatalf("gc older remote = %#v", entry)
+	}
+	if remoteHead, remoteErr := remoteBranchHead(context.Background(), fixture.canonical, result.Branch); remoteErr != nil || remoteHead != "" {
+		t.Fatalf("remote head after gc = %q err=%v", remoteHead, remoteErr)
+	}
+}
+
 func TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand(t *testing.T) {
 	fixture := newGitFixture(t)
 	dirty, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{

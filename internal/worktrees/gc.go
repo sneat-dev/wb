@@ -112,23 +112,24 @@ type GCEntry struct {
 	// checkout with no manifest is *unknown*, not unmanaged, because failing
 	// open into a destructive suggestion on missing evidence is exactly the
 	// mistake this field exists to prevent.
-	Management        string           `json:"management"`
-	HeadSHA           string           `json:"head_sha"`
-	RemoteHeadSHA     string           `json:"remote_head_sha,omitempty"`
-	Class             string           `json:"class"`
-	Eligible          bool             `json:"eligible"`
-	Applied           bool             `json:"applied"`
-	Reason            string           `json:"reason,omitempty"`
-	Evidence          []string         `json:"evidence,omitempty"`
-	SanctionedCommand string           `json:"sanctioned_command,omitempty"`
-	Owner             string           `json:"owner,omitempty"`
-	OwnerState        string           `json:"owner_state,omitempty"`
-	CreatedAt         time.Time        `json:"created_at,omitempty"`
-	AgeSeconds        int64            `json:"age_seconds,omitempty"`
-	TTLSeconds        int64            `json:"ttl_seconds,omitempty"`
-	Expired           bool             `json:"expired,omitempty"`
-	PullRequest       *PullRequest     `json:"pull_request,omitempty"`
-	Landing           *LandingEvidence `json:"landing,omitempty"`
+	Management               string           `json:"management"`
+	HeadSHA                  string           `json:"head_sha"`
+	RemoteHeadSHA            string           `json:"remote_head_sha,omitempty"`
+	RemoteHeadAncestorOfHead bool             `json:"remote_head_ancestor_of_head,omitempty"`
+	Class                    string           `json:"class"`
+	Eligible                 bool             `json:"eligible"`
+	Applied                  bool             `json:"applied"`
+	Reason                   string           `json:"reason,omitempty"`
+	Evidence                 []string         `json:"evidence,omitempty"`
+	SanctionedCommand        string           `json:"sanctioned_command,omitempty"`
+	Owner                    string           `json:"owner,omitempty"`
+	OwnerState               string           `json:"owner_state,omitempty"`
+	CreatedAt                time.Time        `json:"created_at,omitempty"`
+	AgeSeconds               int64            `json:"age_seconds,omitempty"`
+	TTLSeconds               int64            `json:"ttl_seconds,omitempty"`
+	Expired                  bool             `json:"expired,omitempty"`
+	PullRequest              *PullRequest     `json:"pull_request,omitempty"`
+	Landing                  *LandingEvidence `json:"landing,omitempty"`
 	// Warnings carry facts that used to be refusals. A branch renamed since its
 	// claim is the one that mattered: refusing on a name check while the same
 	// output admits landing evidence is commit-based asked an operator to
@@ -293,7 +294,8 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		Task: result.Task, Repository: result.Repository, WorktreeDir: result.WorktreeDir,
 		WorktreesRoot: result.WorktreesRoot, Branch: result.Branch, Detached: result.Detached,
 		HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
-		Owner: result.Owner, OwnerState: result.OwnerState,
+		RemoteHeadAncestorOfHead: result.RemoteHeadAncestorOfHead,
+		Owner:                    result.Owner, OwnerState: result.OwnerState,
 		CreatedAt: result.CreatedAt, AgeSeconds: result.AgeSeconds,
 		TTLSeconds: result.TTLSeconds, Expired: result.Expired,
 		Landing: result.Landing,
@@ -478,13 +480,13 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			OlderThan:       options.OlderThan,
 			TTL:             options.TTL,
 			ResidueDepth:    options.ResidueDepth,
-			// A remote branch is only retired when it still points exactly at
-			// this head. A landed branch carrying residue has a remote head at
-			// the landing instead, and force-with-lease would refuse — correctly,
-			// and after the local removal already happened.
-			DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA == entry.HeadSHA,
-			Workers:      1,
-			Now:          options.Now,
+			// Retire an exact matching remote or a proved older ancestor of an
+			// already-landed local head. Cleanup leases the independently observed
+			// remote SHA, so ref drift still refuses before local removal.
+			DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
+				(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
+			Workers: 1,
+			Now:     options.Now,
 			// One sweep writes one receipt tree, with a directory per retired
 			// checkout. Letting each delegated cleanup pick its own timestamped
 			// default would make two repositories retired in the same instant

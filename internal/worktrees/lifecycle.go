@@ -239,20 +239,21 @@ type PullRequest struct {
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {
-	Task                 string `json:"task"`
-	Repository           string `json:"repository"`
-	CanonicalDir         string `json:"canonical_dir"`
-	WorktreeDir          string `json:"worktree_dir"`
-	WorktreesRoot        string `json:"worktrees_root"`
-	Branch               string `json:"branch"`
-	Base                 string `json:"base"`
-	HeadSHA              string `json:"head_sha"`
-	RemoteHeadSHA        string `json:"remote_head_sha,omitempty"`
-	RemoteTargetSHA      string `json:"remote_target_sha,omitempty"`
-	IntegratedAtOrigin   bool   `json:"integrated_at_origin"`
-	RebaseMergedAtOrigin bool   `json:"rebase_merged_at_origin,omitempty"`
-	AbsorbedAtOrigin     bool   `json:"absorbed_at_origin,omitempty"`
-	AbsorbedBySHA        string `json:"absorbed_by_sha,omitempty"`
+	Task                     string `json:"task"`
+	Repository               string `json:"repository"`
+	CanonicalDir             string `json:"canonical_dir"`
+	WorktreeDir              string `json:"worktree_dir"`
+	WorktreesRoot            string `json:"worktrees_root"`
+	Branch                   string `json:"branch"`
+	Base                     string `json:"base"`
+	HeadSHA                  string `json:"head_sha"`
+	RemoteHeadSHA            string `json:"remote_head_sha,omitempty"`
+	RemoteHeadAncestorOfHead bool   `json:"remote_head_ancestor_of_head,omitempty"`
+	RemoteTargetSHA          string `json:"remote_target_sha,omitempty"`
+	IntegratedAtOrigin       bool   `json:"integrated_at_origin"`
+	RebaseMergedAtOrigin     bool   `json:"rebase_merged_at_origin,omitempty"`
+	AbsorbedAtOrigin         bool   `json:"absorbed_at_origin,omitempty"`
+	AbsorbedBySHA            string `json:"absorbed_by_sha,omitempty"`
 	// SupersededAtOrigin records an explicitly reviewed split-branch
 	// terminalization. It deliberately does not set IntegratedAtOrigin: the
 	// original head did not land as a whole.
@@ -2611,8 +2612,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
 						return err
 					}
-					if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
-						return fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
+					if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.RemoteHeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
+						return fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.RemoteHeadSHA, err)
 					}
 					return nil
 				}()
@@ -3486,6 +3487,19 @@ func inspectLifecycleWorktree(
 			if err != nil {
 				return ListResult{}, err
 			}
+			if result.RemoteHeadSHA != "" && result.RemoteHeadSHA != head {
+				objectType, objectErr := git(ctx, canonical, "cat-file", "-t", result.RemoteHeadSHA)
+				if objectErr != nil {
+					if !isUnfetchedGitObjectError(objectErr) {
+						return ListResult{}, objectErr
+					}
+				} else if strings.TrimSpace(objectType) == "commit" {
+					result.RemoteHeadAncestorOfHead, err = isAncestor(ctx, canonical, result.RemoteHeadSHA, head)
+					if err != nil {
+						return ListResult{}, err
+					}
+				}
+			}
 		}
 		if !result.IntegratedAtOrigin {
 			result.RebaseMergedAtOrigin, err = rebaseMergedPullRequestIntegrated(ctx, canonical, head, result.RemoteTargetSHA, result.MergedPullRequest)
@@ -3528,6 +3542,17 @@ func inspectLifecycleWorktree(
 		}
 	}
 	return result, nil
+}
+
+func isUnfetchedGitObjectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not a valid commit name") ||
+		strings.Contains(message, "bad object") ||
+		strings.Contains(message, "unknown revision") ||
+		strings.Contains(message, "could not get object info")
 }
 
 // applyWorktreeAge records who holds a checkout and how long it has been
@@ -4260,7 +4285,7 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 			entry.AbsorbedByRejection
 	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
-	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA:
+	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA && !entry.RemoteHeadAncestorOfHead:
 		return false, "remote branch advanced after the merged pull request"
 	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
 		return false, "merged pull request is newer than the cleanup safety window"
