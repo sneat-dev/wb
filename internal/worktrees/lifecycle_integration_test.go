@@ -779,6 +779,79 @@ func TestCleanupRecoversMergedPRTargetWhileRecordedTargetStaysStale(t *testing.T
 	}
 }
 
+func TestCleanupRefusesOpenExactHeadPRWhileMergedPRRecoversStaleTarget(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "stale-target", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "stale-target")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-open-pr-with-recovered-target",
+		Base:         "stale-target",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("landed through main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature into main")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installOpenAndMergedExactHeadPullRequestFixture(t, head, "stale-target", "main", mergedAt)
+
+	assertRefused := func(t *testing.T, outcome CleanupOutcome) {
+		t.Helper()
+		if len(outcome.Results) != 1 || outcome.Results[0].Eligible || outcome.Results[0].Applied ||
+			outcome.Results[0].Base != "main" || outcome.Results[0].RecordedBase != "stale-target" ||
+			outcome.Results[0].OpenPullRequest == nil || outcome.Results[0].OpenPullRequest.Number != 31 ||
+			outcome.Results[0].MergedPullRequest == nil || outcome.Results[0].MergedPullRequest.Number != 32 ||
+			!strings.Contains(outcome.Results[0].Reason, "open pull request") {
+			t.Fatalf("cleanup with open and merged exact-head PRs = %#v", outcome)
+		}
+		if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+			t.Fatalf("worktree with open pull request was removed: %v", statErr)
+		}
+		if !gitRefExists(fixture.canonical, "refs/heads/"+result.Branch) {
+			t.Fatal("branch with open pull request was removed")
+		}
+		if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != head {
+			t.Fatalf("remote branch with open pull request = %s; want %s", got, head)
+		}
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-open-pr-with-recovered-target",
+		Base:         "main",
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefused(t, planned)
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-open-pr-with-recovered-target",
+		Base:         "main",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefused(t, applied)
+}
+
 func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	const head = "0123456789012345678901234567890123456789"
@@ -2085,6 +2158,43 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, openBase, mergedBase string, mergedAt time.Time) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := `#!/bin/sh
+set -eu
+if [ "$1 $2" != "api --paginate" ]; then
+    echo "unexpected gh command: $*" >&2
+    exit 2
+fi
+printf '%s\n' "$WB_TEST_PULLS"
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pulls := []map[string]any{
+		{
+			"number": 31, "html_url": "https://github.com/acme/app/pull/31", "state": "open",
+			"head": map[string]any{"ref": "feature/test", "sha": head},
+			"base": map[string]any{"ref": openBase, "sha": ""},
+		},
+		{
+			"number": 32, "html_url": "https://github.com/acme/app/pull/32", "state": "closed",
+			"merged_at": mergedAt.Format(time.RFC3339), "merge_commit_sha": "",
+			"head": map[string]any{"ref": "feature/test", "sha": head},
+			"base": map[string]any{"ref": mergedBase, "sha": ""},
+		},
+	}
+	payload, err := json.Marshal(pulls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_PULLS", string(payload))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

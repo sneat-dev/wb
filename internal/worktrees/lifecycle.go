@@ -3788,7 +3788,11 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 		}
 		pullRequest.MergeSHA = candidate.MergeCommitSHA
 		if strings.EqualFold(candidate.State, "OPEN") {
-			if candidate.Base.Ref != base || candidate.Head.SHA != head {
+			// An open PR for the exact immutable head is a cleanup veto on
+			// every base. Target recovery may find a separate merged PR and
+			// switch the integration check to that PR's base, but it must not
+			// hide live review state for the same source commit.
+			if candidate.Head.SHA != head {
 				continue
 			}
 			if open == nil || candidate.Number > open.Number {
