@@ -69,6 +69,9 @@ type WebhookDelivery struct {
 // Service applies disclosure policy around a Workbench read model and processes
 // signed GitHub App webhook deliveries.
 type Service struct {
+	// Projector is the only supported webhook processor. The legacy fields
+	// below remain source-compatible for hosts migrating their composition.
+	Projector           *ProjectionEngine
 	ReadModel           ReadModel
 	Deliveries          DeliveryStore
 	AuthoritativeReader AuthoritativeReader
@@ -218,36 +221,14 @@ func lastEventID(cursor uint64, events []Event) uint64 {
 	return events[len(events)-1].ID
 }
 
-// ProcessWebhook verifies a signed delivery, cheap-checks its durable receipt,
-// refreshes GitHub authoritatively, then atomically records the delivery and
-// persists one coalesced wakeup. Failed refreshes leave no delivery receipt, so
-// GitHub retries remain safe; a race is resolved by the atomic final commit.
+// ProcessWebhook delegates webhook processing to the claim-safe projection
+// engine. Hosts without a configured projector fail closed; the legacy fields
+// are retained only so migrating compositions remain source-compatible.
 func (service Service) ProcessWebhook(ctx context.Context, delivery WebhookDelivery, signature string) (bool, error) {
-	if service.Deliveries == nil || service.AuthoritativeReader == nil || len(service.WebhookSecret) == 0 {
+	if service.Projector == nil {
 		return false, ErrNoWebhook
 	}
-	if strings.TrimSpace(delivery.ID) == "" || strings.TrimSpace(delivery.Event) == "" {
-		return false, errors.New("delivery ID and event are required")
-	}
-	if !verifySignature(service.WebhookSecret, delivery.Payload, signature) {
-		return false, errors.New("webhook signature is invalid")
-	}
-	seen, err := service.Deliveries.HasDelivery(ctx, delivery.ID)
-	if err != nil || seen {
-		return false, err
-	}
-	if err := service.AuthoritativeReader.Refresh(ctx, delivery); err != nil {
-		return false, fmt.Errorf("refresh authoritative GitHub state: %w", err)
-	}
-	key := strings.TrimSpace(delivery.Repository)
-	if key == "" {
-		key = "installation"
-	}
-	queued, err := service.Deliveries.CommitDeliveryAndWakeup(ctx, delivery.ID, Wakeup{Key: key, Repository: delivery.Repository, Event: delivery.Event})
-	if err != nil {
-		return false, fmt.Errorf("persist delivery and coalesced wakeup: %w", err)
-	}
-	return queued, nil
+	return service.Projector.Process(ctx, delivery, signature)
 }
 
 func disclose[T any](viewer Viewer, value Access[T]) (T, error) {
