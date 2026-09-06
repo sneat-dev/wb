@@ -167,6 +167,24 @@ func TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup(t *t
 	}
 }
 
+func TestCollisionPreparingReceiptWithPublishedFieldsCannotBeAcknowledged(t *testing.T) {
+	_, receipt, options := collisionAcknowledgementFixture(t)
+	receipt.PullRequest = "41"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.ExpectedReceiptSHA256 = receiptHash
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited historical prepare receipt collision"
+	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err == nil || !strings.Contains(err.Error(), "not an exact unlanded preparing collision shape") {
+		t.Fatalf("preparing receipt with published fields acknowledgement error = %v", err)
+	}
+}
+
 func TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite(t *testing.T) {
 	_, receipt, options := collisionAcknowledgementFixture(t)
 	options.ExpectedCandidateSHA = strings.Repeat("f", 40)
