@@ -3490,7 +3490,10 @@ func inspectLifecycleWorktree(
 			if result.RemoteHeadSHA != "" && result.RemoteHeadSHA != head {
 				result.RemoteHeadAncestorOfHead, err = isAncestor(ctx, canonical, result.RemoteHeadSHA, head)
 				if err != nil {
-					return ListResult{}, err
+					if !isUnfetchedGitObjectError(err) {
+						return ListResult{}, err
+					}
+					result.RemoteHeadAncestorOfHead = false
 				}
 			}
 		}
@@ -3535,6 +3538,16 @@ func inspectLifecycleWorktree(
 		}
 	}
 	return result, nil
+}
+
+func isUnfetchedGitObjectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not a valid commit name") ||
+		strings.Contains(message, "bad object") ||
+		strings.Contains(message, "unknown revision")
 }
 
 // applyWorktreeAge records who holds a checkout and how long it has been
