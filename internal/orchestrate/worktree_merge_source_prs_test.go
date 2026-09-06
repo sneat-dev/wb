@@ -2,16 +2,18 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
 
 type fakeSourcePullRequestRemote struct {
-	byHead   map[string][]PullRequestView
-	comments map[int]bool
-	closed   map[int]int
-	posted   map[int]int
+	byHead     map[string][]PullRequestView
+	comments   map[int]bool
+	closed     map[int]int
+	posted     map[int]int
+	commentErr error
 }
 
 func (fake *fakeSourcePullRequestRemote) associated(_ context.Context, _ string, head string) ([]PullRequestView, error) {
@@ -23,6 +25,9 @@ func (fake *fakeSourcePullRequestRemote) hasComment(_ context.Context, _ string,
 }
 
 func (fake *fakeSourcePullRequestRemote) comment(_ context.Context, _ string, number int, body string) error {
+	if fake.commentErr != nil {
+		return fake.commentErr
+	}
 	if !strings.Contains(body, absorbedSourcePRCommentMarker) {
 		return nil
 	}
@@ -72,6 +77,25 @@ func TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce(t *testing.T) {
 	}
 	if remote.closed[7] != 1 || remote.posted[7] != 1 {
 		t.Fatalf("retry repeated mutation: closed=%d posted=%d", remote.closed[7], remote.posted[7])
+	}
+}
+
+func TestReconcileAbsorbedSourcePullRequestCommentFailureLeavesItOpen(t *testing.T) {
+	const source = "1111111111111111111111111111111111111111"
+	remote := &fakeSourcePullRequestRemote{
+		byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
+		comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}, commentErr: errors.New("comment unavailable"),
+	}
+	receipt := WorktreeMergeReceipt{
+		Repository: "acme/app", Target: "main", PullRequest: "https://github.com/acme/app/pull/9",
+		LandingSHA: "2222222222222222222222222222222222222222",
+	}
+	err := reconcileAbsorbedSourcePullRequestsWith(context.Background(), &receipt, []string{source}, remote, func(WorktreeMergeReceipt) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "comment unavailable") {
+		t.Fatalf("error = %v, want comment failure", err)
+	}
+	if remote.closed[7] != 0 {
+		t.Fatalf("comment failure closed the source pull request %d time(s)", remote.closed[7])
 	}
 }
 

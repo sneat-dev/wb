@@ -114,6 +114,28 @@ func reconcileAbsorbedSourcePullRequestsWith(
 			if reconciliation.Closed && reconciliation.Commented {
 				continue
 			}
+			if !reconciliation.Commented {
+				commented, err := remote.hasComment(ctx, receipt.Repository, view.Number, absorbedSourcePRCommentMarker)
+				if err != nil {
+					return fmt.Errorf("inspect absorbed source pull request comments %s: %w", view.HTMLURL, err)
+				}
+				if !commented {
+					absorber := "the WB batch"
+					if receipt.PullRequest != "" {
+						absorber = receipt.PullRequest
+					}
+					body := absorbedSourcePRCommentMarker + "\nWB verified that exact head `" + head + "` was absorbed by " + absorber +
+						" and that landing `" + receipt.LandingSHA + "` is on `" + receipt.Target + "`. No additional merge is needed."
+					if err := remote.comment(ctx, receipt.Repository, view.Number, body); err != nil {
+						return fmt.Errorf("comment on absorbed source pull request %s: %w", view.HTMLURL, err)
+					}
+				}
+				reconciliation.Commented = true
+				reconciliation.UpdatedAt = time.Now().UTC()
+				if err := persist(*receipt); err != nil {
+					return err
+				}
+			}
 			if strings.EqualFold(view.State, "open") && !reconciliation.Closed {
 				if err := remote.close(ctx, receipt.Repository, view.Number); err != nil {
 					return fmt.Errorf("close absorbed source pull request %s: %w", view.HTMLURL, err)
@@ -129,26 +151,10 @@ func reconcileAbsorbedSourcePullRequestsWith(
 				reconciliation.Closed = true
 				reconciliation.Outcome = "already_closed"
 				reconciliation.Reason = "exact source pull request was already closed when the batch landing was reconciled"
-			}
-			commented, err := remote.hasComment(ctx, receipt.Repository, view.Number, absorbedSourcePRCommentMarker)
-			if err != nil {
-				return fmt.Errorf("inspect absorbed source pull request comments %s: %w", view.HTMLURL, err)
-			}
-			if !commented {
-				absorber := "the WB batch"
-				if receipt.PullRequest != "" {
-					absorber = receipt.PullRequest
+				reconciliation.UpdatedAt = time.Now().UTC()
+				if err := persist(*receipt); err != nil {
+					return err
 				}
-				body := absorbedSourcePRCommentMarker + "\nWB verified that exact head `" + head + "` was absorbed by " + absorber +
-					" and that landing `" + receipt.LandingSHA + "` is on `" + receipt.Target + "`. No additional merge is needed."
-				if err := remote.comment(ctx, receipt.Repository, view.Number, body); err != nil {
-					return fmt.Errorf("comment on absorbed source pull request %s: %w", view.HTMLURL, err)
-				}
-			}
-			reconciliation.Commented = true
-			reconciliation.UpdatedAt = time.Now().UTC()
-			if err := persist(*receipt); err != nil {
-				return err
 			}
 		}
 	}
