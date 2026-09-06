@@ -449,7 +449,9 @@ func sameRelocationBinding(intent workLogRelocationIntent, receipt workLogReloca
 	return intent.OperationID == receipt.OperationID && intent.ClaimID == receipt.ClaimID && intent.Task == receipt.Task &&
 		intent.Repository == receipt.Repository && intent.Branch == receipt.Branch && intent.HeadSHA == receipt.HeadSHA &&
 		intent.To == receipt.To && filepath.Clean(intent.Source) == filepath.Clean(receipt.Source) &&
-		filepath.Clean(intent.Destination) == filepath.Clean(receipt.Destination)
+		filepath.Clean(intent.Destination) == filepath.Clean(receipt.Destination) &&
+		intent.SourceRepository == receipt.SourceRepository && intent.DestinationRepository == receipt.DestinationRepository &&
+		intent.RemoteURL == receipt.RemoteURL
 }
 
 func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim, intent bool) error {
@@ -459,13 +461,19 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 	}
 	if record.Version != 1 || record.Type != wantType || !validSafeSegment(record.OperationID) || record.ClaimID != claim.ClaimID ||
 		record.Task != claim.Task || record.Repository != claim.Repository || record.Branch != claim.Branch || record.HeadSHA == "" ||
-		record.To != "local" && record.To != "shared" && record.To != "repository" || record.Source == "" || record.Destination == "" || record.At.IsZero() {
+		record.To != "local" && record.To != "shared" && record.To != "repository" || !canonicalRelocationPath(record.Source) ||
+		!canonicalRelocationPath(record.Destination) || record.At.IsZero() {
 		return errors.New("record identity is incomplete or does not match immutable claim")
 	}
 	if record.To == "repository" {
+		if _, _, err := splitRepository(record.SourceRepository); err != nil {
+			return errors.New("repository relocation source identity is invalid")
+		}
+		if _, _, err := splitRepository(record.DestinationRepository); err != nil {
+			return errors.New("repository relocation destination identity is invalid")
+		}
 		remote, err := gitremote.Parse(record.RemoteURL)
-		if err != nil || record.SourceRepository != claim.Repository || record.DestinationRepository == "" ||
-			record.DestinationRepository == record.SourceRepository || remote.Identity.Repository != record.DestinationRepository {
+		if err != nil || record.DestinationRepository == record.SourceRepository || remote.Identity.Repository != record.DestinationRepository {
 			return errors.New("repository relocation identity is incomplete or invalid")
 		}
 	} else if record.SourceRepository != "" || record.DestinationRepository != "" || record.RemoteURL != "" {
@@ -475,6 +483,10 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 		return errors.New("record source and destination are identical")
 	}
 	return nil
+}
+
+func canonicalRelocationPath(path string) bool {
+	return filepath.IsAbs(path) && path == filepath.Clean(path)
 }
 
 func matchingPendingIntent(journal relocationJournal, claim workLogClaim, source, destination, to, branch, head string) (*workLogRelocationIntent, string, error) {
@@ -589,15 +601,23 @@ func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRel
 	return &receipt, filepath.Join(runPath, "relocations", name), nil
 }
 
-func latestRelocationReceipt(home string, claim workLogClaim, destination string) (*workLogRelocationReceipt, string, error) {
+type workLogRelocationResolution struct {
+	receipt     *workLogRelocationReceipt
+	receiptPath string
+	repository  string
+	worktree    string
+}
+
+func latestRelocationResolution(home string, claim workLogClaim, destination string) (workLogRelocationResolution, error) {
+	resolution := workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}
 	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {
-		return nil, "", err
+		return resolution, err
 	}
 	defer func() { _ = run.Close() }()
 	journal, err := openRelocationJournal(run, runPath, claim)
 	if err != nil {
-		return nil, "", err
+		return resolution, err
 	}
 	ordered := make([]workLogRelocationReceipt, 0, len(journal.receipts))
 	for _, receipt := range journal.receipts {
@@ -609,20 +629,44 @@ func latestRelocationReceipt(home string, claim workLogClaim, destination string
 		}
 		return ordered[i].At.Before(ordered[j].At)
 	})
-	current := filepath.Clean(claim.Worktree)
-	var latest *workLogRelocationReceipt
 	for _, receipt := range ordered {
-		if filepath.Clean(receipt.Source) != current {
-			return nil, "", fmt.Errorf("relocation receipt %s does not continue the immutable claim path", receipt.OperationID)
+		if filepath.Clean(receipt.Source) != resolution.worktree {
+			return resolution, fmt.Errorf("relocation receipt %s does not continue the immutable claim path", receipt.OperationID)
 		}
-		current = filepath.Clean(receipt.Destination)
+		if receipt.To == "repository" {
+			if receipt.SourceRepository != resolution.repository {
+				return resolution, fmt.Errorf("repository relocation receipt %s does not continue the immutable claim repository", receipt.OperationID)
+			}
+			resolution.repository = receipt.DestinationRepository
+		}
+		resolution.worktree = filepath.Clean(receipt.Destination)
 		copy := receipt
-		latest = &copy
+		resolution.receipt = &copy
+		resolution.receiptPath = journal.paths[receipt.OperationID+"/receipt"]
 	}
-	if latest == nil || current != filepath.Clean(destination) {
-		return nil, "", nil
+	if resolution.receipt == nil || resolution.worktree != filepath.Clean(destination) {
+		return workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}, nil
 	}
-	return latest, journal.paths[latest.OperationID+"/receipt"], nil
+	return resolution, nil
+}
+
+func latestRelocationReceipt(home string, claim workLogClaim, destination string) (*workLogRelocationReceipt, string, error) {
+	resolution, err := latestRelocationResolution(home, claim, destination)
+	return resolution.receipt, resolution.receiptPath, err
+}
+
+func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string) error {
+	for _, push := range []bool{false, true} {
+		urls, err := exactOriginURLs(ctx, worktree, push)
+		if err != nil || len(urls) != 1 {
+			return fmt.Errorf("relocated repository origin is ambiguous")
+		}
+		remote, err := gitremote.Parse(urls[0])
+		if err != nil || remote.Identity.Repository != repository {
+			return fmt.Errorf("relocated repository origin does not identify %s", repository)
+		}
+	}
+	return nil
 }
 
 func pendingRelocationIntent(home string, claim workLogClaim, destination, branch, head string) (*workLogRelocationIntent, string, error) {

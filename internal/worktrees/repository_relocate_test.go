@@ -22,7 +22,6 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
-	gitTest(t, fixture.canonical, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "transfer-live", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
@@ -33,6 +32,14 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "feature.txt"), []byte("transferred feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, created[0].WorktreeDir, "add", "feature.txt")
+	gitTest(t, created[0].WorktreeDir, "commit", "-m", "transferred feature")
+	featureHead := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
+	gitTest(t, fixture.canonical, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
 	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +87,10 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	if err != nil || claimAfter.ClaimID != claimBefore.ClaimID || claimAfter.Repository != "acme/app" {
 		t.Fatalf("relocated claim = %#v, err=%v", claimAfter, err)
 	}
+	view, _, err := LogShow(context.Background(), fixture.projectsRoot, movedWorktree)
+	if err != nil || view.Claim == nil || view.Claim.Repository != "newco/renamed" || view.Claim.Worktree != movedWorktree {
+		t.Fatalf("resolved transferred Work Log view = %#v, err=%v", view.Claim, err)
+	}
 	for _, push := range []bool{false, true} {
 		urls, err := exactOriginURLs(context.Background(), destination, push)
 		if err != nil || len(urls) != 1 || urls[0] != newRemote {
@@ -90,6 +101,32 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	if common != filepath.Join(destination, ".git") {
 		t.Fatalf("linked worktree common dir = %s", common)
 	}
+	gitTest(t, destination, "merge", "--no-ff", created[0].Branch, "-m", "merge transferred feature")
+	gitTest(t, destination, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.September, 6, 18, 48, 12, 0, time.UTC)
+	installTransferredPullRequestFixture(t, created[0].Branch, featureHead, mergedAt)
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "transfer-live", Base: "main", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil || len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Repository != "newco/renamed" ||
+		planned.Results[0].WorktreeDir != movedWorktree || planned.Results[0].MergedPullRequest == nil || planned.Results[0].MergedPullRequest.Number != 8 {
+		t.Fatalf("transferred merged cleanup plan = %#v, err=%v", planned, err)
+	}
+}
+
+func installTransferredPullRequestFixture(t *testing.T, branch, head string, mergedAt time.Time) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := "#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\nprintf '%s\\n' \"$WB_TEST_TRANSFERRED_PULL\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := `[{"number":8,"html_url":"https://github.com/newco/renamed/pull/8","state":"closed","merged_at":"` + mergedAt.Format(time.RFC3339) + `","head":{"ref":"` + branch + `","sha":"` + head + `"},"base":{"ref":"main","sha":""},"merge_commit_sha":""}]`
+	t.Setenv("WB_TEST_TRANSFERRED_PULL", payload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestRelocateRepositoryReturnsResumableCleanupPending(t *testing.T) {
