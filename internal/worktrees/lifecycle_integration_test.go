@@ -1321,6 +1321,37 @@ func TestCleanupAcceptsOlderRemoteBranchWhenLocalHeadAlreadyLanded(t *testing.T)
 	}
 }
 
+func TestCleanupReportsUnfetchedRemoteTipAsIneligible(t *testing.T) {
+	fixture, result, _, mergedAt := prepareMergedTask(t, "cleanup-unfetched-remote")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+	other := filepath.Join(t.TempDir(), "other")
+	gitTest(t, filepath.Dir(other), "clone", fixture.remote, other)
+	configureGitUser(t, other)
+	gitTest(t, other, "checkout", result.Branch)
+	if err := os.WriteFile(filepath.Join(other, "remote-only.txt"), []byte("remote only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, other, "add", "remote-only.txt")
+	gitTest(t, other, "commit", "-m", "remote only")
+	gitTest(t, other, "push", "origin", result.Branch)
+	listed, listErr := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "cleanup-unfetched-remote", GitHub: true})
+	if listErr != nil || len(listed.Results) != 1 {
+		t.Fatalf("unfetched remote inventory results=%#v diagnostics=%#v err=%v", listed.Results, listed.Diagnostics, listErr)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-unfetched-remote", Base: "main",
+		OlderThan: 0, Now: func() time.Time { return mergedAt.Add(48 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		!strings.Contains(planned.Results[0].Reason, "remote branch advanced") {
+		t.Fatalf("unfetched remote cleanup = %#v", planned.Results)
+	}
+}
+
 // TestCleanupFilterExcludesMismatchedCandidateOutsideSelection is the
 // regression test for the "matchups renamed to competios" defect: a
 // worktree whose on-disk repository-name segment no longer matches its

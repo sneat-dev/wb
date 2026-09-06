@@ -480,10 +480,9 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			OlderThan:       options.OlderThan,
 			TTL:             options.TTL,
 			ResidueDepth:    options.ResidueDepth,
-			// A remote branch is only retired when it still points exactly at
-			// this head. A landed branch carrying residue has a remote head at
-			// the landing instead, and force-with-lease would refuse — correctly,
-			// and after the local removal already happened.
+			// Retire an exact matching remote or a proved older ancestor of an
+			// already-landed local head. Cleanup leases the independently observed
+			// remote SHA, so ref drift still refuses before local removal.
 			DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
 				(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
 			Workers: 1,
