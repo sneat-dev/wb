@@ -5,15 +5,17 @@ Workbench dashboard at `https://sneat.work/bench`. The service is mounted by
 the existing Sneat Go Cloud Run executable at `https://wb-github-app.sneat.dev`.
 It is not a separate service.
 
-The host supplies three narrow ports:
+The host supplies narrow ports:
 
 1. `ReadModel`, which records a repository's explicit public opt-in (including
    its README-linked free-eligibility declaration) before it returns anonymous
    data. Private subjects require an authenticated member and are rendered as
    `404` for every other caller.
-2. `DeliveryStore`, backed by durable storage, which atomically claims GitHub
+2. `WorktreeReadModel`, whose remote-state provider requires an authenticated
+   member plus `MachineAccessResolver` approval for every exact publisher.
+3. `DeliveryStore`, backed by durable storage, which atomically claims GitHub
    delivery IDs and persists coalesced wakeups.
-3. `AuthoritativeReader`, which refreshes GitHub App state before a webhook can
+4. `AuthoritativeReader`, which refreshes GitHub App state before a webhook can
    enqueue work. Cached data is never enough to authorize an action.
 
 The API provides the dashboard summary, repository/organization/user stats,
@@ -21,6 +23,19 @@ time series usable as tables or graphs, leaderboards, and latest merges with
 pull request, issue, merge commit, release, and Workbench receipt URLs.
 The stats route uses a remainder wildcard so canonical IDs such as
 `github.com/acme/app` round-trip without dropping path segments.
+
+`GET /v0/workbench/worktrees` returns one private row per published worktree on
+the exact machines authorized for the viewer. Query parameters are `machine`,
+`repository`, `status`, `stream`, `task`, and boolean `needs_attention`.
+`status` matches the displayed combined status, lifecycle, or owner status so
+operators can select `attention`, `review`, `merged`, `active`, or `orphaned`
+without knowing which underlying state supplied it. Rows include the machine,
+repository, task and stream, branch, lifecycle and owner state, optional pull
+request, publish and last-activity times, and an attention reason. They never
+include the snapshot's local path, projects root, prompt, or commit subject.
+Each row also repeats the machine's effective heartbeat and staleness. An
+offline machine's last authorized rows remain visible; the default stale window
+is 24 hours and a provider may configure it without changing stored snapshots.
 
 `GET /v0/workbench/events` is the default server-to-browser transport. It is
 resumable SSE: `after` (or `Last-Event-ID`) replays durable events with strictly

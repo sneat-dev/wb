@@ -547,6 +547,33 @@ storage collection names and route-to-scope mapping are documented in
 `api/githubapp/README.md`; this slice does not invent a Firestore schema inside
 Sneat Go or claim that a read model exists before the host binds one.
 
+### Consolidated worktree table journey
+
+1. **Start — publish from each development machine.** The laptop and VM each
+   publish a timestamped WB snapshot containing their current managed
+   worktrees. **Observable good result:** the provider has one immutable
+   machine-labelled observation per publisher; a worktree carries repository,
+   task and stream, branch, lifecycle and owner state, optional pull-request
+   evidence, last activity, and an explicit attention reason, while local
+   checkout paths remain local-only recovery data. A machine that stops
+   publishing remains visible with its last snapshot time, effective heartbeat,
+   and a stale label rather than being misreported as an empty machine.
+2. **Middle — open the signed-in dashboard.** The browser requests
+   `GET /v0/workbench/worktrees`; WB resolves the Firebase viewer and the host
+   proves access to each exact machine before its rows enter the response.
+   **Observable good result:** the table has one row per authorized published
+   worktree across both machines, identifies the machine in its own column,
+   links a known pull request, and returns `404` without enumerating machine or
+   repository names when viewer or machine authorization is absent.
+3. **End — narrow the operational question.** The user filters by machine,
+   repository, combined lifecycle/owner status, stream, task, or
+   `needs_attention`. **Observable good result:** the provider returns only the
+   matching rows in stable repository/machine/task order, preserves the newest
+   authorized publish time, and each attention row explains the action needed.
+   Clearing filters restores the same authorized cross-machine inventory; it
+   never broadens access and never returns an absolute path, projects root,
+   prompt, or local commit subject.
+
 Each repository has a stable page at
 `https://sneat.work/bench/repo/github.com/<org>/<repo>` and each organization at
 `https://sneat.work/bench/org/github.com/<org>`. Anonymous pages include only
@@ -1027,6 +1054,19 @@ then both machines fetch the exact landed SHA. A clean idle canonical checkout
 fast-forwards promptly; a busy or dirty canonical checkout records a pending
 update and advances only after its local writer lease clears. Existing feature
 worktrees are unchanged, and duplicate delivery creates no duplicate mutation.
+
+### AC: authorized-machines-form-one-private-worktree-table
+
+Given a signed-in member has authorized laptop and VM snapshots plus an
+unauthorized machine exists, when the dashboard lists worktrees and applies
+machine, repository, status, stream, task, and needs-attention filters, then
+only authorized rows are returned in stable repository/machine/task order with
+their branch, lifecycle, owner status, optional pull request, published and last
+activity times, machine heartbeat and staleness, and attention reason. Anonymous
+viewers, missing machine-access bindings, and access failures fail closed
+without reading or naming private
+snapshots. No response contains a local absolute path, projects root, prompt,
+or local commit subject.
 
 ### AC: changed-tree-invalidates-result
 
