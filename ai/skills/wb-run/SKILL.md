@@ -11,16 +11,18 @@ without changing agent instructions:
 
 ```sh
 wb run -- go test ./internal/worktrees -run TestCreate
+wb run --async -- go test ./internal/worktrees -run TestCreate
 wb run -- git status --short
 wb run --history --days 7
 ```
 
-Command mode preserves standard streams and the child exit code. CPU-heavy work
-shares a cross-process budget of `CPUCount-1`; WB leaves one logical CPU for the
-harness and OS and exports the admitted units to supported tools. `wb run
---history` summarizes privacy-safe wall and CPU cost from the current worktree
-without exposing raw arguments or output. The local daemon will become the
-normal submission path; the filesystem lease is its worker-level safety belt.
+Synchronous command mode preserves standard streams and the child exit code.
+`--async` submits through the authenticated durable local daemon and returns a
+JSON operation receipt. CPU-heavy work shares a cross-process budget of
+`CPUCount-1`; WB leaves one logical CPU for the harness and OS and exports the
+admitted units to supported tools. `wb run --history` summarizes privacy-safe
+wall and CPU cost from the current worktree without exposing raw arguments or
+output. The filesystem lease remains the worker-level safety belt.
 
 Use a recipe instead of re-reading and editing the same files repository by
 repository.

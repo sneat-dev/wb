@@ -32,6 +32,7 @@ const (
 
 type record struct {
 	Schema      int                 `json:"schema"`
+	Generation  string              `json:"scheduler_generation"`
 	Operation   *daemonv1.Operation `json:"operation"`
 	WorkingDir  string              `json:"working_directory"`
 	Argv        []string            `json:"argv"`
@@ -54,26 +55,32 @@ type Service struct {
 	byKey      map[string]string
 	active     map[string]active
 	changed    chan struct{}
+	persist    func(*record) error
 }
 
-func NewService(projectsRoot, build string) (*Service, error) {
+func NewService(projectsRoot, build, generation string) (*Service, error) {
 	directory := filepath.Join(projectsRoot, ".wb", "runtime", "daemon", "operations")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
 	}
-	generation, err := randomID("wbg-")
-	if err != nil {
-		return nil, err
+	if generation == "" {
+		var err error
+		generation, err = randomID("wbg-")
+		if err != nil {
+			return nil, err
+		}
 	}
 	service := &Service{
 		projects: projectsRoot, directory: directory, build: build,
 		generation: generation, records: map[string]*record{},
 		byKey: map[string]string{}, active: map[string]active{}, changed: make(chan struct{}),
 	}
+	service.persist = service.persistRecord
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return nil, fmt.Errorf("read daemon operation store: %w", err)
 	}
+	queued := make([]string, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -86,7 +93,7 @@ func NewService(projectsRoot, build string) (*Service, error) {
 		if err := json.Unmarshal(contents, &item); err != nil {
 			return nil, fmt.Errorf("parse daemon operation %s: %w", entry.Name(), err)
 		}
-		if item.Schema > QueueSchema || item.Operation == nil || item.Operation.OperationId == "" {
+		if item.Schema != QueueSchema || item.Operation == nil || item.Operation.OperationId == "" {
 			return nil, fmt.Errorf("daemon operation %s has unsupported or incomplete schema", entry.Name())
 		}
 		service.records[item.Operation.OperationId] = &item
@@ -103,8 +110,11 @@ func NewService(projectsRoot, build string) (*Service, error) {
 				return nil, err
 			}
 		case daemonv1.OperationState_OPERATION_STATE_QUEUED:
-			go service.execute(item.Operation.OperationId)
+			queued = append(queued, item.Operation.OperationId)
 		}
+	}
+	for _, id := range queued {
+		go service.execute(id)
 	}
 	return service, nil
 }
@@ -134,6 +144,10 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("argv must not contain NUL bytes"))
 		}
 	}
+	environment, err := allowedEnvironment(input.Environment)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	service.mu.Lock()
 	if input.IdempotencyKey != "" {
 		if id := service.byKey[input.IdempotencyKey]; id != "" {
@@ -155,7 +169,7 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 		ArgumentCount: uint32(len(input.Argv)), CpuUnits: input.CpuUnits,
 		SubmittedUnixMilli: now.UnixMilli(),
 	}
-	item := &record{Schema: QueueSchema, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: input.Environment}
+	item := &record{Schema: QueueSchema, Generation: service.generation, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: environment}
 	service.records[id] = item
 	if input.IdempotencyKey != "" {
 		service.byKey[input.IdempotencyKey] = id
@@ -221,15 +235,17 @@ func (service *Service) CancelOperation(_ context.Context, request *connect.Requ
 	if terminal(item.Operation.State) {
 		return connect.NewResponse(cloneOperation(item.Operation)), nil
 	}
-	if running := service.active[item.Operation.OperationId]; running.cancel != nil {
-		running.cancel()
-	}
+	previous := cloneOperation(item.Operation)
 	item.Operation.State = daemonv1.OperationState_OPERATION_STATE_CANCELLED
 	item.Operation.Error = "cancelled by caller"
 	item.Operation.FinishedUnixMilli = time.Now().UnixMilli()
 	item.Operation.Cursor = nextCursor(item.Operation.Cursor)
 	if err := service.persistLocked(item); err != nil {
+		item.Operation = previous
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if running := service.active[item.Operation.OperationId]; running.cancel != nil {
+		running.cancel()
 	}
 	service.notifyLocked()
 	return connect.NewResponse(cloneOperation(item.Operation)), nil
@@ -275,15 +291,22 @@ func (service *Service) execute(id string) {
 		return
 	}
 	item.Operation.State = daemonv1.OperationState_OPERATION_STATE_RUNNING
+	item.Generation = service.generation
 	item.Operation.CpuUnits = uint32(units)
 	item.Operation.QueueWaitMilliseconds = waited.Milliseconds()
 	item.Operation.StartedUnixMilli = time.Now().UnixMilli()
 	item.Operation.Cursor = nextCursor(item.Operation.Cursor)
-	_ = service.persistLocked(item)
+	if err := service.persistLocked(item); err != nil {
+		delete(service.active, id)
+		service.markPersistenceFailureLocked(item, "persist running transition", err)
+		service.notifyLocked()
+		service.mu.Unlock()
+		return
+	}
 	service.notifyLocked()
 	argv := append([]string(nil), item.Argv...)
 	workingDir := item.WorkingDir
-	environment := cloneMap(item.Environment)
+	environment := governedChildEnvironment(os.Environ(), item.Environment, id, units)
 	service.mu.Unlock()
 
 	var stdout, stderr tailBuffer
@@ -291,8 +314,7 @@ func (service *Service) execute(id string) {
 	child.Dir = workingDir
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	child.Env = mergeEnvironment(os.Environ(), environment)
-	started := time.Now()
+	child.Env = environment
 	err = child.Run()
 	exitCode := 0
 	state := daemonv1.OperationState_OPERATION_STATE_SUCCEEDED
@@ -305,7 +327,6 @@ func (service *Service) execute(id string) {
 		}
 	}
 	service.finish(id, state, exitCode, stdout.Bytes(), stderr.Bytes(), waited, err)
-	_ = started
 }
 
 func (service *Service) finish(id string, state daemonv1.OperationState, exitCode int, stdout, stderr []byte, waited time.Duration, runErr error) {
@@ -333,24 +354,53 @@ func (service *Service) finish(id string, state daemonv1.OperationState, exitCod
 		item.Operation.Error = runErr.Error()
 	}
 	item.Operation.Cursor = nextCursor(item.Operation.Cursor)
-	_ = service.persistLocked(item)
+	if err := service.persistLocked(item); err != nil {
+		service.markPersistenceFailureLocked(item, "persist terminal transition", err)
+	}
 	service.notifyLocked()
 }
 
 func (service *Service) persistLocked(item *record) error {
+	return service.persist(item)
+}
+
+func (service *Service) persistRecord(item *record) error {
 	contents, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode daemon operation: %w", err)
 	}
 	path := filepath.Join(service.directory, item.Operation.OperationId+".json")
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
 		return fmt.Errorf("write daemon operation: %w", err)
+	}
+	if _, err := file.Write(contents); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write daemon operation: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync daemon operation: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close daemon operation: %w", err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		return fmt.Errorf("publish daemon operation: %w", err)
 	}
 	return nil
+}
+
+func (service *Service) markPersistenceFailureLocked(item *record, transition string, persistErr error) {
+	item.Operation.State = daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED
+	item.Operation.Error = transition + ": " + persistErr.Error()
+	item.Operation.FinishedUnixMilli = time.Now().UnixMilli()
+	item.Operation.Cursor = nextCursor(item.Operation.Cursor)
+	// A transient failure can still preserve the explicit recovery disposition.
+	// If storage remains unavailable, the in-memory result reports the failure
+	// and the on-disk RUNNING record becomes recovery-required on next startup.
+	_ = service.persist(item)
 }
 
 func (service *Service) notifyLocked() {
@@ -407,12 +457,33 @@ func classify(argv []string) string {
 	return tool
 }
 
-func cloneMap(input map[string]string) map[string]string {
-	output := make(map[string]string, len(input))
+var durableEnvironmentAllowlist = map[string]bool{
+	"CI": true, "COLORTERM": true, "NO_COLOR": true, "TERM": true,
+}
+
+func allowedEnvironment(input map[string]string) (map[string]string, error) {
+	result := make(map[string]string, len(input))
 	for key, value := range input {
-		output[key] = value
+		if !durableEnvironmentAllowlist[key] {
+			return nil, fmt.Errorf("environment override %q is not allowed in durable operations", key)
+		}
+		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, fmt.Errorf("environment override %q has an invalid value", key)
+		}
+		result[key] = value
 	}
-	return output
+	return result, nil
+}
+
+func governedChildEnvironment(base []string, additions map[string]string, operationID string, units int) []string {
+	result := mergeEnvironment(base, additions)
+	result = mergeEnvironment(result, map[string]string{
+		"GOMAXPROCS":      fmt.Sprint(units),
+		"NX_PARALLEL":     fmt.Sprint(units),
+		"WB_CPU_UNITS":    fmt.Sprint(units),
+		"WB_OPERATION_ID": operationID,
+	})
+	return result
 }
 
 func mergeEnvironment(base []string, additions map[string]string) []string {
@@ -437,7 +508,7 @@ func (buffer *tailBuffer) Write(contents []byte) (int, error) {
 	_, _ = buffer.Buffer.Write(contents)
 	if buffer.Len() > outputTailLimit {
 		kept := append([]byte(nil), buffer.Bytes()[buffer.Len()-outputTailLimit:]...)
-		buffer.Buffer.Reset()
+		buffer.Reset()
 		_, _ = buffer.Buffer.Write(kept)
 	}
 	return written, nil

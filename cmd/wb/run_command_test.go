@@ -48,6 +48,17 @@ func TestRunCommandRejectsRecipeFlags(t *testing.T) {
 	}
 }
 
+func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--async", "recipe-name"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--async requires command mode") {
+		t.Errorf("stderr does not explain async command mode: %s", stderr.String())
+	}
+}
+
 func TestGovernedEnvironmentCapsChildParallelism(t *testing.T) {
 	t.Setenv("GOFLAGS", "-mod=readonly")
 	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "test", "./..."}, 2)

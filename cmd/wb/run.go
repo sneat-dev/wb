@@ -26,6 +26,7 @@ import (
 func newRunCmd() *cobra.Command {
 	var (
 		apply      bool
+		async      bool
 		configPath string
 		days       int
 		history    bool
@@ -38,9 +39,10 @@ func newRunCmd() *cobra.Command {
 		Long: `Run a configured fleet recipe, or use -- to execute one command through
 WB while preserving its standard streams and exit code.
 
-Recipe mode is a dry-run by default; --apply lands the recipe. Command mode is
-synchronous, records privacy-safe receipts, and admits CPU-heavy work against a
-machine-wide CPUCount-1 budget.`,
+Recipe mode is a dry-run by default; --apply lands the recipe. Command mode
+records privacy-safe receipts and admits CPU-heavy work against a machine-wide
+CPUCount-1 budget. It is synchronous by default; --async submits through the
+authenticated durable local daemon queue.`,
 		Example: `# Discover configured recipes
 wb run --list
 
@@ -50,6 +52,9 @@ wb run refresh-ci --apply
 
 # Run a command through WB
 wb run -- go test ./internal/worktrees -run TestCreate
+
+# Submit without waiting; inspect with wb daemon operation get/wait/cancel
+wb run --async -- go test ./internal/worktrees -run TestCreate
 
 # Inspect command cost in this worktree
 wb run --history --days 7`,
@@ -67,8 +72,8 @@ wb run --history --days 7`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if history {
-				if apply || configPath != "" || list {
-					return usageError("--apply, --config, and --list cannot be used with --history")
+				if apply || async || configPath != "" || list {
+					return usageError("--apply, --async, --config, and --list cannot be used with --history")
 				}
 				return printRunHistory(cmd, days, jsonOut)
 			}
@@ -76,7 +81,13 @@ wb run --history --days 7`,
 				if apply || configPath != "" || list || days != 14 || outputFormatChanged(cmd) {
 					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
 				}
+				if async {
+					return submitDaemonOperation(cmd, defaultDaemonDependencies(), args)
+				}
 				return runExternalCommand(cmd, args)
+			}
+			if async {
+				return usageError("--async requires command mode with run --")
 			}
 			if days != 14 || outputFormatChanged(cmd) {
 				return usageError("--days, --format=json, and --json require --history")
@@ -96,6 +107,7 @@ wb run --history --days 7`,
 	}
 	setDiscoveryTerms(cmd, "run recipe reusable fleet change apply dry run automation repeat command")
 	cmd.Flags().BoolVar(&apply, "apply", false, "commit & push changes (default: dry-run report)")
+	cmd.Flags().BoolVar(&async, "async", false, "submit command to the durable local daemon queue and return its receipt")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")

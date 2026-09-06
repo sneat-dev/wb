@@ -306,12 +306,13 @@ an update never starts a previously absent daemon.
 
 The lifecycle record is private local state, atomically written with a schema
 version, fenced queue generation, owner provenance/token, and predecessor
-handoff. This MVP does not yet dispatch asynchronous jobs, but the scheduler
-MUST attach every queued job to that durable queue generation and either resume
-it once or report an incompatible-schema disposition after handoff. Ordinary
-commands remain daemon-free; only an explicitly daemon-backed async operation
-may request startup. The foreground `serve` path emits an alive heartbeat to
-stderr at least every ten seconds while it runs.
+handoff. `wb run --async -- <argv>` and `wb daemon operation submit` dispatch
+through the durable queue; `get`, `wait`, and `cancel` address the returned
+operation ID. Queued jobs resume under the next lifecycle generation. A job
+that was running at process exit becomes `recovery_required` rather than being
+executed twice. Ordinary commands remain daemon-free; only an explicitly
+daemon-backed async operation may request startup. The foreground `serve` path
+emits an alive heartbeat to stderr at least every ten seconds while it runs.
 
 `status` reports the persisted lifecycle state, the platform process manager's
 authoritative ownership of the recorded PID, and the loopback API probe as
@@ -324,12 +325,14 @@ when its caller cannot probe the API. `stop` and `restart` are explicit and
 preserve the durable queue handoff record; genuine startup failure remains an
 error with the daemon log path.
 
-The existing loopback HTTP dashboard remains the transport in this slice.
-ConnectRPC/gRPC and MCP adapters will use the typed lifecycle/queue boundary,
-never the private state file. The lifecycle package includes a Windows process
-boundary, but existing Unix-only WB packages prevent a Windows binary today;
-port those dependencies before enabling the per-user Service Control
-Manager/task supervisor with this same contract.
+The loopback HTTP dashboard remains read-only. Operation mutations use
+ConnectRPC on a separate mode-0600 Unix socket and require the private lifecycle
+owner token, which is not passed in process arguments or operation receipts.
+Only a small, explicitly allowlisted set of non-secret display/CI environment
+values can enter a durable operation record. Windows builds retain the same
+named-pipe endpoint abstraction and fail closed until the native named-pipe
+listener/client adapter is enabled; there is no TCP fallback. Remote HTTPS,
+MCP, and dashboard streaming are outside this slice.
 
 The four-vCPU default has three CPU units, preserving one core for interactive
 work:
@@ -871,6 +874,10 @@ a worktree.
   long-running command and daemon operation.
 - [ ] Persist command telemetry for queue, subprocess, cache, CPU, memory,
   retries, CI, landing, cleanup, and saved agent calls/tokens.
+- [x] Add the first authenticated local async queue slice: durable protobuf
+  receipts, submit/get/wait/cancel, bounded output, CPU admission, POSIX Unix
+  socket transport, restart recovery fencing, and a fail-closed Windows
+  named-pipe endpoint abstraction.
 - [ ] Add the per-user daemon with durable async intents, three CPU units on a
   four-vCPU host, fair queuing, deduplication, supersession, and controlled
   version draining/restart.
@@ -999,6 +1006,19 @@ to the loopback health endpoint, then text and JSON status preserve
 `reachable=false` with the exact API probe error, and do not restart the daemon
 or advance its queue generation. An explicit stop followed by restart preserves
 the queue handoff and advances the generation once.
+
+### AC: local-async-queue-survives-lifecycle-handoff
+
+Given an authenticated local caller submits an operation through
+`wb run --async` or `wb daemon operation submit`, when the caller exits and the
+daemon restarts, then a queued operation resumes under the new lifecycle queue
+generation and a previously running operation reports `recovery_required`
+without automatic re-execution. Every state transition is published to the
+mode-0600 durable store before execution crosses that boundary; a persistence
+failure prevents launch or returns an explicit recovery disposition. The
+loopback dashboard cannot reach the mutation handlers, arbitrary environment
+keys are rejected, and the lifecycle authentication token appears in neither
+process arguments nor operation receipts.
 
 ### AC: json-output-selection-is-consistent
 
