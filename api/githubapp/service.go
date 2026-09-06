@@ -69,14 +69,10 @@ type WebhookDelivery struct {
 // Service applies disclosure policy around a Workbench read model and processes
 // signed GitHub App webhook deliveries.
 type Service struct {
-	// Projector is the only supported webhook processor. The legacy fields
-	// below remain source-compatible for hosts migrating their composition.
-	Projector           *ProjectionEngine
-	ReadModel           ReadModel
-	Deliveries          DeliveryStore
-	AuthoritativeReader AuthoritativeReader
-	WebhookSecret       []byte
-	Events              EventSource
+	// Projector is the only supported webhook processor.
+	Projector *ProjectionEngine
+	ReadModel ReadModel
+	Events    EventSource
 }
 
 func (service Service) Dashboard(ctx context.Context, viewer Viewer) (Dashboard, error) {
