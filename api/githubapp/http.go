@@ -38,6 +38,7 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux.HandleFunc("GET "+APIPrefix+"/series", handler.series)
 	mux.HandleFunc("GET "+APIPrefix+"/leaderboards", handler.leaderboard)
 	mux.HandleFunc("GET "+APIPrefix+"/latest-merges", handler.latestMerges)
+	mux.HandleFunc("GET "+APIPrefix+"/worktrees", handler.worktrees)
 	mux.HandleFunc("GET "+APIPrefix+"/events", handler.events)
 	mux.HandleFunc("POST "+APIPrefix+"/github/webhook", handler.webhook)
 	return cors(options.AllowedOrigin, mux)
@@ -120,6 +121,36 @@ func (handler apiHandler) latestMerges(writer http.ResponseWriter, request *http
 	}
 	value, err := handler.options.Service.LatestMerges(request.Context(), viewer, limit)
 	writeResult(writer, value, err)
+}
+
+func (handler apiHandler) worktrees(writer http.ResponseWriter, request *http.Request) {
+	viewer, ok := resolveViewer(writer, request, handler.viewer)
+	if !ok {
+		return
+	}
+	filter, err := worktreeFilter(request)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "needs_attention_must_be_boolean")
+		return
+	}
+	value, err := handler.options.Service.WorktreeTable(request.Context(), viewer, filter)
+	writeResult(writer, value, err)
+}
+
+func worktreeFilter(request *http.Request) (WorktreeFilter, error) {
+	filter := WorktreeFilter{
+		Machine: request.URL.Query().Get("machine"), Repository: request.URL.Query().Get("repository"),
+		Status: request.URL.Query().Get("status"), Stream: request.URL.Query().Get("stream"),
+		Task: request.URL.Query().Get("task"),
+	}
+	if raw := request.URL.Query().Get("needs_attention"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return WorktreeFilter{}, err
+		}
+		filter.NeedsAttention = &value
+	}
+	return filter, nil
 }
 
 func (handler apiHandler) events(writer http.ResponseWriter, request *http.Request) {
