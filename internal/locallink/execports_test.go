@@ -435,7 +435,7 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 		version      string
 		dependencies string
 	}{
-		{name: "@acme/app", version: "1.0.0", dependencies: `"peerDependencies":{"@acme/core":"1.0.0","@angular/core":"^18.0.0"}`},
+		{name: "@acme/app", version: "1.0.0", dependencies: `"dependencies":{"@acme/core":"1.0.0"},"optionalDependencies":{"@acme/auth-core":"1.0.0"},"peerDependencies":{"@angular/core":"^18.0.0"}`},
 		{name: "@acme/core", version: "1.0.0", dependencies: `"peerDependencies":{"@acme/auth-core":"1.0.0"}`},
 		{name: "@acme/auth-core", version: "1.0.0", dependencies: `"peerDependencies":{"@angular/core":"^18.0.0"}`},
 	}
@@ -527,6 +527,10 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 	stagedAuth := resolvePath(t, stages["@acme/auth-core"])
 	if coreAuth != consumerAuth || coreAuth != stagedAuth {
 		t.Fatalf("core/auth identity = %s, consumer/auth = %s, staged auth = %s", coreAuth, consumerAuth, stages["@acme/auth-core"])
+	}
+	appAuth := resolveNodePackage(t, stages["@acme/app"], "@acme/auth-core")
+	if appAuth != consumerAuth || appAuth != stagedAuth {
+		t.Fatalf("app/auth identity = %s, consumer/auth = %s, staged auth = %s", appAuth, consumerAuth, stages["@acme/auth-core"])
 	}
 	if got := resolveNodePackage(t, stages["@acme/auth-core"], "@angular/core"); got != resolvePath(t, angular) {
 		t.Fatalf("external peer identity = %s, want consumer-installed %s", got, angular)

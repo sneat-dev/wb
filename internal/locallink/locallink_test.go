@@ -3,6 +3,7 @@ package locallink
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,49 @@ func (node *refreshThenFailNode) Build(context.Context, string, string) (string,
 		return "", errors.New("provider rebuild failed")
 	}
 	return node.dist, nil
+}
+
+// engineExecNode keeps the Engine journey deterministic while using the real
+// filesystem Link, LinkSiblings, and Unlink implementations. The only seams
+// are the provider build output and the frozen-install proof. Its first
+// sibling call injects a staged conflict so the Engine's applied receipt and
+// retry path are exercised through the production orchestration.
+type engineExecNode struct {
+	ExecNode
+	dists           map[string]string
+	failSiblingOnce bool
+	siblingCalls    int
+	conflictPath    string
+}
+
+func (node *engineExecNode) FrozenInstall(context.Context, string) error { return nil }
+
+func (node *engineExecNode) Build(_ context.Context, _, packageDir string) (string, error) {
+	dist := node.dists[packageDir]
+	if dist == "" {
+		return "", fmt.Errorf("missing test build output for %s", packageDir)
+	}
+	return dist, nil
+}
+
+func (node *engineExecNode) LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error {
+	node.siblingCalls++
+	if node.failSiblingOnce {
+		node.failSiblingOnce = false
+		contents, err := os.ReadFile(linkAppliedMarkerPath(consumerDir, "@acme/core"))
+		if err != nil {
+			return err
+		}
+		stage := strings.TrimSpace(string(contents))
+		node.conflictPath = filepath.Join(stage, "node_modules", "@acme", "auth-core")
+		if err := os.MkdirAll(filepath.Dir(node.conflictPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(node.conflictPath, []byte("conflicting staged path\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return node.ExecNode.LinkSiblings(ctx, consumerDir, packageNames)
 }
 
 func newFakeVerifier() *fakeVerifier {
@@ -444,6 +488,195 @@ func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
 	}
 	if live, err := HasLiveLink(fixture.store, fixture.consumer); err != nil || len(live) != 0 {
 		t.Fatalf("merge guard survived undo: %#v (err %v)", live, err)
+	}
+}
+
+func TestEngineRealPnpmSiblingFailureRetryAndUndoJourney(t *testing.T) {
+	type packageSpec struct {
+		name         string
+		directory    string
+		version      string
+		dependencies string
+	}
+	packages := []packageSpec{
+		{
+			name:         "@acme/app",
+			directory:    "libs/app",
+			version:      "1.0.0",
+			dependencies: `"dependencies":{"@acme/core":"1.0.0"},"optionalDependencies":{"@acme/auth-core":"1.0.0"},"peerDependencies":{"@angular/core":"^18.0.0"}`,
+		},
+		{
+			name:         "@acme/core",
+			directory:    "libs/core",
+			version:      "1.0.0",
+			dependencies: `"peerDependencies":{"@acme/auth-core":"1.0.0"}`,
+		},
+		{
+			name:         "@acme/auth-core",
+			directory:    "libs/auth-core",
+			version:      "1.0.0",
+			dependencies: `"peerDependencies":{"@angular/core":"^18.0.0"}`,
+		},
+	}
+	base := t.TempDir()
+	libraryFiles := map[string]string{"package.json": `{"private":true}`}
+	consumerFiles := map[string]string{
+		"package.json": `{"name":"consumer","dependencies":{"@acme/app":"1.0.0","@acme/auth-core":"1.0.0","@acme/core":"1.0.0"}}`,
+	}
+	for _, pkg := range packages {
+		libraryFiles[filepath.ToSlash(filepath.Join(pkg.directory, "package.json"))] = fmt.Sprintf(`{"name":%q,"version":%q}`, pkg.name, pkg.version)
+	}
+	library := writeTree(t, filepath.Join(base, "library"), libraryFiles)
+	consumer := writeTree(t, filepath.Join(base, "consumer"), consumerFiles)
+
+	original := map[string]string{}
+	installed := map[string]string{}
+	for _, pkg := range packages {
+		storePackage := filepath.Join(consumer, "node_modules", ".pnpm", pnpmStoreKey(pkg.name, pkg.version), "node_modules", filepath.FromSlash(filepath.Dir(pkg.name)), filepath.Base(pkg.name))
+		if err := os.MkdirAll(storePackage, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(storePackage, "package.json"), []byte(fmt.Sprintf(`{"name":%q,"version":%q}`, pkg.name, pkg.version)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		relative, err := filepath.Rel(filepath.Dir(target), storePackage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(relative, target); err != nil {
+			t.Fatal(err)
+		}
+		original[pkg.name] = relative
+		installed[pkg.name] = storePackage
+	}
+	angular := filepath.Join(consumer, "node_modules", "@angular", "core")
+	if err := os.MkdirAll(angular, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(angular, "package.json"), []byte(`{"name":"@angular/core","version":"18.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dists := map[string]string{}
+	for _, pkg := range packages {
+		dist := filepath.Join(t.TempDir(), "dist")
+		if err := os.MkdirAll(dist, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(fmt.Sprintf(`{"name":%q,"version":"1.0.0-dev",%s}`, pkg.name, pkg.dependencies)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dists[filepath.Join(library, filepath.FromSlash(pkg.directory))] = dist
+	}
+
+	store := streams.OpenAt(filepath.Join(base, "wb-home", "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name: "fixture",
+		Members: []streams.Member{
+			{Repository: "acme/library", Role: streams.RoleLibrary, Worktree: library, Branch: "stream/fixture", Base: "main"},
+			{Repository: "acme/app", Role: streams.RoleConsumer, Worktree: consumer, Branch: "stream/fixture", Base: "main"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	git := newFakeGit()
+	node := &engineExecNode{
+		ExecNode:        ExecNode{CacheRoot: filepath.Join(base, "cache"), ContentHash: git.hash, Timeout: time.Second},
+		dists:           dists,
+		failSiblingOnce: true,
+	}
+	engine := &Engine{
+		Store: store, Git: git, Node: node, CacheRoot: filepath.Join(base, "cache"),
+		Now: func() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) },
+	}
+
+	first, err := engine.Run(context.Background(), Options{Library: library, Consumers: []string{consumer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Failed() || len(first.Consumers) != 1 || len(first.Consumers[0].Links) != len(packages) {
+		t.Fatalf("first link = %#v, want sibling reconciliation failure with all applied links", first.Consumers)
+	}
+	if !strings.Contains(strings.Join(first.Consumers[0].Errors, " "), "refuse to replace existing staged sibling path") {
+		t.Fatalf("first errors = %v, want the exact sibling conflict", first.Consumers[0].Errors)
+	}
+	if node.siblingCalls != 1 || node.conflictPath == "" || !fileExists(node.conflictPath) {
+		t.Fatalf("sibling failure receipt = calls:%d conflict:%q exists:%t", node.siblingCalls, node.conflictPath, fileExists(node.conflictPath))
+	}
+	appStage := strings.TrimSpace(readFile(t, linkAppliedMarkerPath(consumer, "@acme/app")))
+	if _, err := os.Lstat(filepath.Join(appStage, "node_modules", "@acme", "core")); !os.IsNotExist(err) {
+		t.Fatalf("failed Engine reconciliation left an app sibling edge: %v", err)
+	}
+	stream, err := store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, ok := stream.Member("acme/app")
+	if !ok || len(member.Links) != len(packages) {
+		t.Fatalf("first receipt = %#v, want all package links retained", member.Links)
+	}
+	for _, link := range member.Links {
+		if link.State != streams.LinkStateApplied {
+			t.Fatalf("first receipt link = %#v, want applied recovery state", link)
+		}
+	}
+
+	second, err := engine.Run(context.Background(), Options{Library: library, Consumers: []string{consumer}})
+	if err != nil || second.Failed() {
+		t.Fatalf("retry = %#v, err = %v", second.Consumers, err)
+	}
+	if node.siblingCalls != 2 {
+		t.Fatalf("retry receipt = calls:%d, want one failed and one successful sibling reconciliation", node.siblingCalls)
+	}
+	stages := map[string]string{}
+	for _, pkg := range packages {
+		stages[pkg.name] = strings.TrimSpace(readFile(t, linkAppliedMarkerPath(consumer, pkg.name)))
+	}
+	conflictInfo, err := os.Lstat(node.conflictPath)
+	if err != nil || conflictInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("retry conflict path = %s, want the reconciled sibling symlink: %v", node.conflictPath, err)
+	}
+	if got := resolveNodePackage(t, stages["@acme/app"], "@acme/core"); got != resolvePath(t, stages["@acme/core"]) {
+		t.Fatalf("retry app/core identity = %s, want %s", got, stages["@acme/core"])
+	}
+	if got := resolveNodePackage(t, stages["@acme/app"], "@acme/auth-core"); got != resolvePath(t, stages["@acme/auth-core"]) {
+		t.Fatalf("retry app/auth identity = %s, want %s", got, stages["@acme/auth-core"])
+	}
+	if got := resolveNodePackage(t, stages["@acme/core"], "@acme/auth-core"); got != resolvePath(t, stages["@acme/auth-core"]) {
+		t.Fatalf("retry core/auth identity = %s, want %s", got, stages["@acme/auth-core"])
+	}
+	if got := resolveNodePackage(t, stages["@acme/auth-core"], "@angular/core"); got != resolvePath(t, angular) {
+		t.Fatalf("retry external peer identity = %s, want consumer-installed %s", got, angular)
+	}
+
+	undo, err := engine.Run(context.Background(), Options{Consumers: []string{consumer}, Undo: true})
+	if err != nil || undo.Failed() {
+		t.Fatalf("undo = %#v, err = %v", undo.Consumers, err)
+	}
+	for _, pkg := range packages {
+		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
+		got, err := os.Readlink(target)
+		if err != nil || got != original[pkg.name] {
+			t.Fatalf("undo %s restored %q, want %q (err %v)", pkg.name, got, original[pkg.name], err)
+		}
+		if _, err := os.Stat(filepath.Join(installed[pkg.name], "package.json")); err != nil {
+			t.Fatalf("undo removed published %s: %v", pkg.name, err)
+		}
+		if fileExists(linkAppliedMarkerPath(consumer, pkg.name)) || fileExists(stages[pkg.name]) {
+			t.Fatalf("undo left recovery artefacts for %s", pkg.name)
+		}
+	}
+	stream, err = store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ = stream.Member("acme/app")
+	if len(member.Links) != 0 {
+		t.Fatalf("undo receipt = %#v, want no live links", member.Links)
 	}
 }
 
