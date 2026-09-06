@@ -65,17 +65,19 @@ func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
 	tests := []struct {
 		name     string
 		subjects []string
+		sources  int
 		want     string
 	}{
-		{name: "single commit", subjects: []string{"fix(worktree): retain exact receipt"}, want: "fix(worktree): retain exact receipt"},
-		{name: "feature wins over fixes", subjects: []string{"fix: repair cleanup", "feat(worktree): add mechanical merge", "Merge branch 'main'"}, want: "feat: merge 2 worktree candidates into main"},
-		{name: "breaking marker is retained", subjects: []string{"feat!: replace merge receipt schema", "fix: repair cleanup"}, want: "feat!: merge 2 worktree candidates into main"},
-		{name: "fix wins over metadata", subjects: []string{"docs: explain merge", "fix(ci): retain release signal"}, want: "fix: merge 2 worktree candidates into main"},
-		{name: "untyped fallback remains releasable", subjects: []string{"Merge branch 'one'", "Update generated files"}, want: "fix: merge 2 worktree candidates into main"},
+		{name: "single commit", subjects: []string{"fix(worktree): retain exact receipt"}, sources: 1, want: "fix(worktree): retain exact receipt"},
+		{name: "single source uses original purpose", subjects: []string{"fix: address review", "Merge remote-tracking branch 'origin/main'", "fix: reconcile source pull requests"}, sources: 1, want: "fix: reconcile source pull requests"},
+		{name: "feature summarizes related changes", subjects: []string{"fix: repair cleanup", "feat(worktree): add mechanical merge", "Merge branch 'main'"}, sources: 2, want: "feat: add mechanical merge and 1 related change"},
+		{name: "breaking marker is retained", subjects: []string{"feat!: replace merge receipt schema", "fix: repair cleanup"}, sources: 2, want: "feat!: replace merge receipt schema and 1 related change"},
+		{name: "fix wins over metadata", subjects: []string{"docs: explain merge", "fix(ci): retain release signal"}, sources: 2, want: "fix: retain release signal and 1 related change"},
+		{name: "untyped fallback remains releasable", subjects: []string{"Merge branch 'one'", "Update generated files"}, sources: 2, want: "fix: apply 2 related changes"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := worktreeMergePRTitle(test.subjects, 2, "main"); got != test.want {
+			if got := worktreeMergePRTitle(test.subjects, test.sources); got != test.want {
 				t.Fatalf("title = %q, want %q", got, test.want)
 			}
 		})

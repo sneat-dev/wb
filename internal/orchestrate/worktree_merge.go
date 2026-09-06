@@ -2009,7 +2009,7 @@ func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (str
 			subjects = append(subjects, line)
 		}
 	}
-	title := worktreeMergePRTitle(subjects, len(receipt.Sources), receipt.Target)
+	title := worktreeMergePRTitle(subjects, len(receipt.Sources))
 	var body strings.Builder
 	fmt.Fprintf(&body, "Mechanically prepared by `wb worktree merge` from exact source heads.\n\n")
 	for _, source := range receipt.Sources {
@@ -2027,12 +2027,23 @@ func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (str
 
 var conventionalWorktreeMergeSubject = regexp.MustCompile(`^([[:alpha:]]+)(\([^)]*\))?(!)?:[[:space:]]+`)
 
-func worktreeMergePRTitle(subjects []string, sourceCount int, target string) string {
+func worktreeMergePRTitle(subjects []string, sourceCount int) string {
 	if len(subjects) == 1 {
 		return subjects[0]
 	}
+	if sourceCount == 1 {
+		// Git log is newest first. The oldest non-merge subject normally states
+		// the source effort's purpose; later commits are review and CI repairs.
+		for index := len(subjects) - 1; index >= 0; index-- {
+			subject := strings.TrimSpace(subjects[index])
+			if subject != "" && !strings.HasPrefix(subject, "Merge ") {
+				return subject
+			}
+		}
+	}
 	type choice struct {
 		prefix   string
+		summary  string
 		priority int
 	}
 	selected := choice{prefix: "fix:", priority: 1}
@@ -2043,7 +2054,7 @@ func worktreeMergePRTitle(subjects []string, sourceCount int, target string) str
 		}
 		kind := strings.ToLower(match[1])
 		breaking := match[3] == "!"
-		candidate := choice{prefix: kind + ":", priority: 2}
+		candidate := choice{prefix: kind + ":", summary: strings.TrimSpace(strings.TrimPrefix(subject, match[0])), priority: 2}
 		switch {
 		case breaking:
 			candidate.prefix, candidate.priority = kind+"!:", 5
@@ -2056,7 +2067,14 @@ func worktreeMergePRTitle(subjects []string, sourceCount int, target string) str
 			selected = candidate
 		}
 	}
-	return fmt.Sprintf("%s merge %d worktree candidates into %s", selected.prefix, sourceCount, target)
+	if selected.summary == "" {
+		return fmt.Sprintf("%s apply %d related changes", selected.prefix, sourceCount)
+	}
+	related := "changes"
+	if sourceCount == 2 {
+		related = "change"
+	}
+	return fmt.Sprintf("%s %s and %d related %s", selected.prefix, selected.summary, sourceCount-1, related)
 }
 
 func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
