@@ -488,7 +488,7 @@ func runWithOptions(ctx context.Context, options RunOptions, dir, name string, a
 		if timedOut {
 			err = fmt.Errorf("timed out after %s", options.Timeout)
 		}
-		if err == nil || attempts > options.Retry {
+		if err == nil || attempts > options.Retry || ctx.Err() != nil {
 			return output, attempts, err
 		}
 	}
