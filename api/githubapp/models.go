@@ -42,14 +42,13 @@ type Viewer struct {
 	UserID        string
 }
 
-// PublicEligibility is the auditable opt-in record required before a
-// repository can appear in unauthenticated results. READMEURL may point to the
-// repository's free-eligibility declaration; it is not inferred from a public
-// GitHub repository alone.
+// PublicEligibility is the auditable root-README opt-in record required before
+// a repository can appear in unauthenticated results. It is not inferred from
+// GitHub repository visibility alone.
 type PublicEligibility struct {
 	Repository string    `json:"repository"`
 	READMEURL  string    `json:"readme_url"`
-	GrantedAt  time.Time `json:"granted_at"`
+	VerifiedAt time.Time `json:"verified_at"`
 }
 
 // Link is a canonical GitHub, release, or Workbench receipt reference.

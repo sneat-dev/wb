@@ -52,7 +52,11 @@ func (membership providerMembership) Member(context.Context, Viewer, Scope, stri
 }
 
 func providerDocument(public bool) ProjectionDocument {
-	return ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "acme/widgets", UpdatedAt: time.Unix(10, 0), PublicOptIn: public, Summary: Summary{Repositories: 1, OpenPulls: 2, MergedPulls: 3, OpenIssues: 4, Releases: 5}}
+	document := ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "acme/widgets", UpdatedAt: time.Unix(10, 0), PublicOptIn: public, Summary: Summary{Repositories: 1, OpenPulls: 2, MergedPulls: 3, OpenIssues: 4, Releases: 5}}
+	if public {
+		document.PublicEligibility = &PublicEligibility{Repository: document.ID, READMEURL: "https://github.com/acme/widgets/blob/main/README.md", VerifiedAt: time.Unix(9, 0)}
+	}
+	return document
 }
 
 func TestProjectionKeyAndValidation(t *testing.T) {
@@ -64,7 +68,7 @@ func TestProjectionKeyAndValidation(t *testing.T) {
 	if err := ValidateProjectionDocument(valid); err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []ProjectionDocument{{}, {Scope: Scope("bad"), ID: "x", DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", DisplayName: "x"}} {
+	for _, invalid := range []ProjectionDocument{{}, {Scope: Scope("bad"), ID: "x", DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", DisplayName: "x"}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true}, {Scope: ScopeOrganization, ID: "github.com/acme", DisplayName: "acme", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme", READMEURL: "https://github.com/acme/blob/main/README.md", VerifiedAt: time.Now()}}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme/other", READMEURL: "https://github.com/acme/other/blob/main/README.md", VerifiedAt: time.Now()}}} {
 		if err := ValidateProjectionDocument(invalid); err == nil {
 			t.Errorf("ValidateProjectionDocument(%#v) returned nil", invalid)
 		}
