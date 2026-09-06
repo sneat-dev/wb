@@ -881,7 +881,7 @@ a worktree.
   of running the same broad local coverage gate again.
 - [x] Make `wb pr land` fast-forward an eligible clean canonical checkout to
   the exact remote landing before branch retirement and cleanup report success.
-- [ ] Adopt an existing exact-head pull request into the merge receipt instead
+- [x] Adopt an existing exact-head pull request into the merge receipt instead
   of opening a duplicate PR and triggering a duplicate CI run.
 - [ ] Bind the provider ports to a durable Firestore adapter with documented
   collection keys, idempotent projection writes, atomic leased delivery claims,
@@ -1006,8 +1006,18 @@ merges it, when the remote landing is verified, then WB fast-forwards an
 eligible clean canonical target before deleting the source branch. When main CI
 starts after that deletion, its receipt selector finds the successful pull
 request run by exact head SHA and repository identity without depending on the
-deleted branch ref, verifies the immutable artifact, and skips the duplicate
-full validation jobs.
+deleted branch ref. The pull-request receipt publisher still runs when accepted
+optional checks were skipped, so main verifies the immutable artifact and skips
+the duplicate full validation jobs.
+
+### AC: merge-resume-adopts-existing-exact-pull-request
+
+Given the prepared candidate ref already has an open pull request whose head
+SHA, head ref, base branch, and repository exactly match the receipt, when WB
+publishes or resumes the pull-request route, then WB discovers that pull
+request from GitHub's immutable commit association, verifies its exact remote
+identity, records it in the merge receipt, and does not create another pull
+request or duplicate its CI run.
 
 ### AC: merger-agent-is-exceptional
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -870,6 +871,70 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	}
 	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
 		t.Fatalf("remote descendant = %q, want %s", got, descendant)
+	}
+}
+
+func TestResumeWorktreeMergeAdoptsExistingExactHeadPullRequest(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "existing-pr-source", "feature/existing-pr", "existing-pr.txt", "candidate\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_EXISTING_PR_JSON", fmt.Sprintf(
+		`[{"html_url":"https://example.test/acme/app/pull/41","state":"open","head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`,
+		receipt.Candidate.Branch, receipt.Candidate.SHA))
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("WB_TEST_GH_LOG", logPath)
+	var events []progress.Event
+
+	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Progress: func(event progress.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatalf("adopt exact-head pull request: receipt=%+v err=%v", published, err)
+	}
+	if published.Status != WorktreeMergePublished || published.PullRequest != "https://example.test/acme/app/pull/41" ||
+		published.PublishedCandidateSHA != receipt.Candidate.SHA {
+		t.Fatalf("adopted handoff receipt = %+v", published)
+	}
+	logContents, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	logText := string(logContents)
+	if !strings.Contains(logText, "api --paginate repos/acme/app/commits/"+receipt.Candidate.SHA+"/pulls") ||
+		!strings.Contains(logText, "pr view https://example.test/acme/app/pull/41") {
+		t.Fatalf("existing pull request was not authoritatively discovered and verified:\n%s", logText)
+	}
+	for _, forbidden := range []string{"pr create", "pr list"} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("exact pull-request adoption invoked %q:\n%s", forbidden, logText)
+		}
+	}
+	foundAdoption := false
+	for _, event := range events {
+		if event.Phase == "adopt_pull_request" && event.State == progress.Completed && event.Detail == published.PullRequest {
+			foundAdoption = true
+		}
+	}
+	if !foundAdoption {
+		t.Fatalf("progress omitted exact pull-request adoption: %+v", events)
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if persisted.Status != WorktreeMergePublished || persisted.PullRequest != published.PullRequest ||
+		persisted.PublishedCandidateSHA != receipt.Candidate.SHA {
+		t.Fatalf("persisted adopted handoff = %+v", persisted)
 	}
 }
 
@@ -2974,7 +3039,7 @@ case "$*" in
     merge_base="$(git --git-dir="$WB_TEST_REMOTE" merge-base "$base" "$candidate")"
     if git --git-dir="$WB_TEST_REMOTE" merge-base --is-ancestor "$base" "$candidate"; then status="ahead"; else status="diverged"; fi
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
-  'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
+  'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' "${WB_TEST_EXISTING_PR_JSON:-[]}" ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
