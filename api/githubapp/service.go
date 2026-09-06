@@ -72,6 +72,7 @@ type Service struct {
 	// Projector is the only supported webhook processor.
 	Projector *ProjectionEngine
 	ReadModel ReadModel
+	Worktrees WorktreeReadModel
 	Events    EventSource
 }
 
@@ -126,6 +127,19 @@ func (service Service) LatestMerges(ctx context.Context, viewer Viewer, limit in
 	value, err := service.ReadModel.LatestMerges(ctx, viewer, limit)
 	if err != nil {
 		return nil, err
+	}
+	return disclose(viewer, value)
+}
+
+// WorktreeTable returns one privacy-safe row per published worktree on the
+// machines the host authorizes for this viewer.
+func (service Service) WorktreeTable(ctx context.Context, viewer Viewer, filter WorktreeFilter) (WorktreeTable, error) {
+	if service.Worktrees == nil {
+		return WorktreeTable{}, ErrNoReadModel
+	}
+	value, err := service.Worktrees.Worktrees(ctx, viewer, filter)
+	if err != nil {
+		return WorktreeTable{}, err
 	}
 	return disclose(viewer, value)
 }

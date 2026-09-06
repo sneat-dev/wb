@@ -154,8 +154,9 @@ func TestBuildSummaryOmitsCleanTracking(t *testing.T) {
 }
 
 func TestBuildCarriesWorktrees(t *testing.T) {
+	lastCommit := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
 	wts := []worktrees.ListResult{
-		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z", OwnerState: "active"},
+		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z", OwnerState: "active", Owner: "codex", LastCommit: lastCommit, OpenPullRequest: &worktrees.PullRequest{Number: 17, URL: "https://github.com/acme/z/pull/17", State: "open"}},
 		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/a", OwnerState: "orphaned"},
 		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", WorktreeDir: "/wt/task-1/acme/m", OwnerState: "unknown"},
 	}
@@ -167,9 +168,9 @@ func TestBuildCarriesWorktrees(t *testing.T) {
 	// that each worktree's owner state (active/orphaned/unknown liveness of
 	// its owning session) survives Build unchanged.
 	expected := []WorktreeState{
-		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", Dir: "/wt/task-1/acme/m", OwnerState: "unknown"},
-		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/a", OwnerState: "orphaned"},
-		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/z", OwnerState: "active"},
+		{Task: "task-1", Stream: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", Dir: "/wt/task-1/acme/m", Lifecycle: "working", OwnerState: "unknown"},
+		{Task: "task-7", Stream: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/a", Lifecycle: "working", OwnerState: "orphaned", NeedsAttention: true, Attention: "owner session is no longer active"},
+		{Task: "task-7", Stream: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/z", Lifecycle: "review", OwnerState: "active", Owner: "codex", LastActivityAt: lastCommit, PullRequest: &PullRequestState{Number: 17, URL: "https://github.com/acme/z/pull/17", State: "open"}},
 	}
 	if !reflect.DeepEqual(snap.Worktrees, expected) {
 		t.Fatalf("Worktrees mismatch:\n got: %+v\nwant: %+v", snap.Worktrees, expected)
