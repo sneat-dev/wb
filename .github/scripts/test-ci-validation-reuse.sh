@@ -42,6 +42,10 @@ if ! awk '/name: Download selected validation receipt/{found=1} found && /contin
   printf 'download fallback must continue to verification\n' >&2
   exit 1
 fi
+if ! grep -Fq "if: \${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' }}" "$root/.github/workflows/go-ci.yml"; then
+  printf 'receipt publication must override skipped-dependency propagation\n' >&2
+  exit 1
+fi
 
 mismatch_receipt=$temp/mismatch.json
 jq '.tested_tree = "wrong-tree"' "$valid_receipt" > "$mismatch_receipt"

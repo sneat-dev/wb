@@ -325,7 +325,9 @@ jobs:
 
   validation-receipt:
     name: Publish validation receipt
-    if: github.event_name == 'pull_request' && needs.test.result == 'success'
+    # `test` deliberately accepts skipped optional jobs. Use !cancelled() so
+    # GitHub evaluates this result instead of propagating an ancestor skip.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' }}
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 2
