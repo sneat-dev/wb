@@ -57,6 +57,24 @@ func record(t *testing.T, name string) { t.Helper(); f, err := os.OpenFile(os.Ge
 	}
 }
 
+func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
+	profile := filepath.Join("tmp", "coverage.out")
+	for name, arguments := range map[string][]string{
+		"unsharded": goCoverageArguments(profile),
+		"shard":     goCoverageArguments(profile, "./internal/worktrees", "-run", "^(TestOne|TestTwo)$"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			joined := strings.Join(arguments, " ")
+			if strings.Contains(joined, "-count=1") {
+				t.Fatalf("default coverage disables Go test-result caching: %s", joined)
+			}
+			if !strings.Contains(joined, "-coverprofile="+profile) {
+				t.Fatalf("coverage profile missing from %s", joined)
+			}
+		})
+	}
+}
+
 func TestVerifyWithRepositoryPolicyUsesShardedGoTest(t *testing.T) {
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/verify-shards\n\ngo 1.24\n")
