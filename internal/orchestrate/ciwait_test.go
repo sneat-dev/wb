@@ -38,6 +38,14 @@ func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
 	}
 }
 
+func TestCompactFailureAnnotationIsSingleLineAndBounded(t *testing.T) {
+	t.Parallel()
+	got := compactFailureAnnotation("  first\nsecond\tthird  ", 14)
+	if got != "first second …" {
+		t.Fatalf("compact annotation = %q", got)
+	}
+}
+
 func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
 	checks := []RemoteCheck{
 		{Name: "build", Bucket: "pass", Link: "https://example.test/build", AppID: 22},
