@@ -20,6 +20,8 @@ func TestWorkerExecutesNormalQueueWithoutRawAdministratorPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
 	operation := submitWorkerTestOperation(t, service, root, "worker-normal", "sandbox-worker")
 	if operation.State != daemonv1.OperationState_OPERATION_STATE_QUEUED {
 		t.Fatalf("submitted operation = %#v", operation)
@@ -29,6 +31,7 @@ func TestWorkerExecutesNormalQueueWithoutRawAdministratorPolicy(t *testing.T) {
 	if assignment.OperationId != operation.OperationId || assignment.WorkingDirectory != root || len(assignment.Argv) == 0 {
 		t.Fatalf("assignment = %#v", assignment)
 	}
+	now = now.Add(time.Second)
 	heartbeat, err := service.HeartbeatOperation(context.Background(), connect.NewRequest(&daemonv1.HeartbeatOperationRequest{
 		WorkerId: registration.WorkerId, WorkerGeneration: registration.WorkerGeneration,
 		OperationId: assignment.OperationId, LeaseId: assignment.LeaseId, Progress: "running tests",
