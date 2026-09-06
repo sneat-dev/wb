@@ -156,12 +156,13 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 		return exitFindings
 	}
 	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
-	discovered = len(repos)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "discovery error:", err)
 		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, reportOut, errOut)
 		return 1
 	}
+	repos = discover.ReconcileTransfers(ctx, repos, discover.ResolveCanonicalRepository)
+	discovered = len(repos)
 
 	var results []fleetsync.Result
 	if len(repos) == 0 {
@@ -316,7 +317,7 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result, pruneArchived b
 	groups := fleetsync.Summary(results)
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "━━━ Summary ━━━")
-	printCount := func(label string, count int) { _, _ = fmt.Fprintf(out, "%-20s%d\n", label, count) }
+	printCount := func(label string, count int) { _, _ = fmt.Fprintf(out, "%-24s%d\n", label, count) }
 	var section fleetsync.SummarySection
 	for _, group := range groups {
 		if group.Section != section {
@@ -335,6 +336,8 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result, pruneArchived b
 		case r.Status == fleetsync.ArchivedUnlandable:
 			_, _ = fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
 				r.Repo.Slug(), r.Detail.Summary())
+		case r.Status == fleetsync.RepositoryTransferRequired:
+			_, _ = fmt.Fprintf(out, "  ! %s → %s — %s\n", r.Repo.TransferFrom, r.Repo.Slug(), r.Reason)
 		case r.ArchivedNotPruned:
 			_, _ = fmt.Fprintf(out, "  ! %s — archived; not pruned (pass --prune-archived to enable cleanup)\n", r.Repo.Slug())
 		}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
+	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -102,10 +103,10 @@ func (provider *Provider) Publish(ctx context.Context, source remotestate.Snapsh
 		return remotestate.PublishResult{}, err
 	}
 	var receipt machinesnapshot.Receipt
-	if err := provider.doJSON(ctx, http.MethodPost, snapshot, &receipt); err != nil {
+	if err := provider.doJSON(ctx, http.MethodPost, machinesnapshot.SnapshotPath, snapshot, &receipt); err != nil {
 		return remotestate.PublishResult{}, fmt.Errorf("publish hosted snapshot: %w", err)
 	}
-	if receipt.Login != snapshot.Login || receipt.Machine != snapshot.Machine ||
+	if receipt.Machine != snapshot.Machine ||
 		receipt.PublishedAt != snapshot.PublishedAt || receipt.ReceivedAt.IsZero() {
 		return remotestate.PublishResult{}, errors.New("hub returned a receipt for a different publisher")
 	}
@@ -115,7 +116,7 @@ func (provider *Provider) Publish(ctx context.Context, source remotestate.Snapsh
 // List returns the authenticated login's privacy-safe machine snapshots.
 func (provider *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
 	var response machinesnapshot.ListResponse
-	if err := provider.doJSON(ctx, http.MethodGet, nil, &response); err != nil {
+	if err := provider.doJSON(ctx, http.MethodGet, machinesnapshot.SnapshotPath, nil, &response); err != nil {
 		return nil, fmt.Errorf("list hosted snapshots: %w", err)
 	}
 	machinesnapshot.SortPublished(response.Snapshots)
@@ -145,7 +146,48 @@ func (provider *Provider) Claims(context.Context) ([]remotestate.ClaimEntry, err
 	return nil, ErrClaimsUnsupported
 }
 
-func (provider *Provider) doJSON(ctx context.Context, method string, input, output any) error {
+func (provider *Provider) PollRepositoryEvents(ctx context.Context, cursor string, limit int, wait time.Duration) (repositoryevent.PollResponse, error) {
+	if err := repositoryevent.ValidateCursor(cursor, false); err != nil {
+		return repositoryevent.PollResponse{}, err
+	}
+	if limit < 1 || limit > repositoryevent.MaxLimit {
+		return repositoryevent.PollResponse{}, fmt.Errorf("repository event limit must be between 1 and %d", repositoryevent.MaxLimit)
+	}
+	if wait < 0 || wait > repositoryevent.MaxWaitSeconds*time.Second {
+		return repositoryevent.PollResponse{}, fmt.Errorf("repository event wait must be between 0 and %d seconds", repositoryevent.MaxWaitSeconds)
+	}
+	query := url.Values{}
+	query.Set("cursor", cursor)
+	query.Set("limit", fmt.Sprint(limit))
+	query.Set("wait_seconds", fmt.Sprint(int(wait/time.Second)))
+	var response repositoryevent.PollResponse
+	if err := provider.doJSON(ctx, http.MethodGet, repositoryevent.EventsPath+"?"+query.Encode(), nil, &response); err != nil {
+		return repositoryevent.PollResponse{}, fmt.Errorf("poll repository events: %w", err)
+	}
+	if err := response.Validate(cursor); err != nil {
+		return repositoryevent.PollResponse{}, err
+	}
+	if len(response.Events) > limit {
+		return repositoryevent.PollResponse{}, errors.New("hub returned more repository events than requested")
+	}
+	return response, nil
+}
+
+func (provider *Provider) AckRepositoryEvents(ctx context.Context, request repositoryevent.AckRequest) (repositoryevent.AckResponse, error) {
+	if err := request.Validate(); err != nil {
+		return repositoryevent.AckResponse{}, err
+	}
+	var response repositoryevent.AckResponse
+	if err := provider.doJSON(ctx, http.MethodPost, repositoryevent.AckPath, request, &response); err != nil {
+		return repositoryevent.AckResponse{}, fmt.Errorf("acknowledge repository events: %w", err)
+	}
+	if response.Version != repositoryevent.ContractVersion || response.Cursor != request.Cursor {
+		return repositoryevent.AckResponse{}, errors.New("hub returned a repository event acknowledgement for a different cursor")
+	}
+	return response, nil
+}
+
+func (provider *Provider) doJSON(ctx context.Context, method, path string, input, output any) error {
 	var payload []byte
 	var err error
 	if input != nil {
@@ -159,7 +201,7 @@ func (provider *Provider) doJSON(ctx context.Context, method string, input, outp
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		request, err := http.NewRequestWithContext(ctx, method, provider.baseURL+machinesnapshot.SnapshotPath, bytes.NewReader(payload))
+		request, err := http.NewRequestWithContext(ctx, method, provider.baseURL+path, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
@@ -170,14 +212,27 @@ func (provider *Provider) doJSON(ctx context.Context, method string, input, outp
 		}
 		response, requestErr := provider.client.Do(request)
 		if requestErr == nil && response.StatusCode >= 200 && response.StatusCode < 300 {
-			decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
-			decodeErr := decoder.Decode(output)
+			raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 			closeErr := response.Body.Close()
-			if decodeErr != nil {
-				return fmt.Errorf("decode successful hub response: %w", decodeErr)
+			if readErr != nil {
+				return fmt.Errorf("read successful hub response: %w", readErr)
+			}
+			if len(raw) > maxResponseBytes {
+				return fmt.Errorf("successful hub response exceeds %d bytes", maxResponseBytes)
 			}
 			if closeErr != nil {
 				return fmt.Errorf("close successful hub response: %w", closeErr)
+			}
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			if err := decoder.Decode(output); err != nil {
+				return fmt.Errorf("decode successful hub response: %w", err)
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+				if err == nil {
+					err = errors.New("multiple JSON values")
+				}
+				return fmt.Errorf("decode successful hub response: trailing data: %w", err)
 			}
 			return nil
 		}

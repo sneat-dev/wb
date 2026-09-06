@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
+	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -48,8 +49,9 @@ func TestProviderPublishesPrivacySafeSnapshotAndRetriesGatewayFailure(t *testing
 	}
 	result, err := provider.Publish(context.Background(), remotestate.Snapshot{
 		Login: "alice", Machine: "laptop", PublishedAt: at,
-		ProjectsRoot: "/Users/alice/private",
-		Repositories: []remotestate.RepositoryState{{Path: "/Users/alice/private/acme/widgets", Unpushed: []string{"private subject"}}},
+		ProjectsRoot:      "/Users/alice/private",
+		KnownRepositories: []string{"Acme/Widgets", "acme/widgets"},
+		Repositories:      []remotestate.RepositoryState{{Path: "/Users/alice/private/acme/widgets", Unpushed: []string{"private subject"}}},
 		Worktrees: []remotestate.WorktreeState{{
 			Task: "dashboard", Repository: "acme/widgets", Branch: "feature/dashboard",
 			Dir: "/Users/alice/private/.worktrees/dashboard", HeadSHA: "secret-sha",
@@ -66,6 +68,46 @@ func TestProviderPublishesPrivacySafeSnapshotAndRetriesGatewayFailure(t *testing
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("published body contains %q: %s", forbidden, raw)
 		}
+	}
+	if len(published.Repositories) != 1 || published.Repositories[0] != "github.com/acme/widgets" {
+		t.Fatalf("published repositories = %+v", published.Repositories)
+	}
+}
+
+func TestProviderPollsAndAcknowledgesRepositoryEventsWithStrictBounds(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
+		}
+		switch request.URL.RequestURI() {
+		case repositoryevent.EventsPath + "?cursor=before&limit=1&wait_seconds=25":
+			return response(http.StatusOK, `{"version":1,"cursor":"before","next_cursor":"after","events":[{"version":1,"id":"delivery-1:default","repository":"github.com/acme/app","ref":"refs/heads/main","reason":"default_branch_updated"}]}`), nil
+		case repositoryevent.AckPath:
+			return response(http.StatusOK, `{"version":1,"cursor":"after"}`), nil
+		default:
+			t.Fatalf("request URI = %q", request.URL.RequestURI())
+			return nil, nil
+		}
+	})}
+	provider, err := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "token", Client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll, err := provider.PollRepositoryEvents(context.Background(), "before", 1, 25*time.Second)
+	if err != nil || len(poll.Events) != 1 {
+		t.Fatalf("poll = %+v, %v", poll, err)
+	}
+	ack := repositoryevent.AckRequest{Version: repositoryevent.ContractVersion, Cursor: poll.NextCursor, EventIDs: []string{poll.Events[0].ID}}
+	if _, err := provider.AckRepositoryEvents(context.Background(), ack); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d", requests)
+	}
+	if _, err := provider.PollRepositoryEvents(context.Background(), "", repositoryevent.MaxLimit+1, 0); err == nil || requests != 2 {
+		t.Fatalf("unbounded request error=%v requests=%d", err, requests)
 	}
 }
 
@@ -107,6 +149,26 @@ func TestProviderRejectsInsecureOrAmbiguousConfiguration(t *testing.T) {
 		if _, err := New(options); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+func TestProviderRejectsOversizedOrTrailingSuccessfulResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"oversized": strings.Repeat(" ", maxResponseBytes) + "{}",
+		"trailing":  `{"snapshots":[]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(http.StatusOK, body), nil
+			})}
+			provider, err := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "token", Client: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.List(context.Background()); err == nil {
+				t.Fatal("invalid successful response was accepted")
+			}
+		})
 	}
 }
 

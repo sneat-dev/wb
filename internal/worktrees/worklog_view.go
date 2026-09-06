@@ -33,10 +33,13 @@ type PromptRecord struct {
 // continue work. It never includes the archived prompt body; that lives in
 // OriginalPrompt / Prompts.
 type WorkLogClaimView struct {
-	EffortID        string    `json:"effort_id"`
-	RunID           string    `json:"run_id"`
-	ClaimID         string    `json:"claim_id"`
-	Task            string    `json:"task,omitempty"`
+	EffortID string `json:"effort_id"`
+	RunID    string `json:"run_id"`
+	ClaimID  string `json:"claim_id"`
+	Task     string `json:"task,omitempty"`
+	// Repository and Worktree are the current identity resolved through
+	// append-only relocation receipts. ClaimPath still points to the unchanged
+	// immutable claim that anchors that history.
 	Repository      string    `json:"repository"`
 	Worktree        string    `json:"worktree"`
 	Branch          string    `json:"branch"`
@@ -146,9 +149,15 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 	if homeErr != nil {
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
 	} else if claim, _, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {
+		resolvedRepository, resolvedWorktree := claim.Repository, claim.Worktree
+		if filepath.Clean(root) != filepath.Clean(claim.Worktree) {
+			if resolution, resolutionErr := latestRelocationResolution(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
+				resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
+			}
+		}
 		view.Claim = &WorkLogClaimView{
 			EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
-			Task: claim.Task, Repository: claim.Repository, Worktree: claim.Worktree,
+			Task: claim.Task, Repository: resolvedRepository, Worktree: resolvedWorktree,
 			Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
 			Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
 			Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,

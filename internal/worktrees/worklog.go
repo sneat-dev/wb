@@ -2472,17 +2472,26 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 // move is not a new task or claim.
 func corroborateClaimAtPath(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
-		receipt, _, err := latestRelocationReceipt(home, claim, worktree)
+		resolution, err := latestRelocationResolution(home, claim, worktree)
 		if err != nil {
 			return err
 		}
-		if receipt == nil {
+		if resolution.receipt == nil {
 			intent, _, intentErr := pendingRelocationIntent(home, claim, worktree, claim.Branch, finalCommit)
 			if intentErr != nil {
 				return intentErr
 			}
 			if intent == nil {
 				return fmt.Errorf("private work-log claim identity/path mismatch")
+			}
+			if intent.To == "repository" {
+				if err := corroborateRepositoryRelocation(context.Background(), worktree, intent.DestinationRepository); err != nil {
+					return err
+				}
+			}
+		} else if resolution.repository != claim.Repository {
+			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository); err != nil {
+				return err
 			}
 		}
 		return corroborateRelocatedClaim(worktree, finalCommit, projection, claim)

@@ -5101,6 +5101,72 @@
       "notes": "Repo status never scans the projects-root fleet; use wb fleet status for that worklist."
     },
     {
+      "id": "wb.repo.transfer.cleanup",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb repo transfer cleanup",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json",
+                "--receipt"
+              ],
+              "modes": [
+                "Plans from an immutable pending receipt by default and securely retires only the exact identity-bound replacement quarantine with --apply.",
+                "Fails closed when the receipt, repository identity, quarantine identity, or platform deletion guarantee cannot be corroborated."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb repo transfer cleanup --help",
+              "contains": [
+                "--receipt",
+                "--apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "The durable recovery command is emitted directly by repository transfer processing; a standalone operator runbook is not yet published."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/repo_transfer_test.go",
+              "name": "TestRepoTransferCleanupRequiresReceiptAsUsage",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/repository_relocate_test.go",
+              "name": "TestRelocateRepositoryReturnsResumableCleanupPending",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/repository_relocate_test.go",
+              "name": "TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerifiesOrigin",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cleanup receipts remain append-only. Unix retirement is descriptor-relative; native Windows records stable handle identity and preserves the quarantine when an equally strong deletion primitive is unavailable."
+    },
+    {
       "id": "wb.root.filter",
       "feature_refs": [
         "docs/cli-flag-matrix.md"

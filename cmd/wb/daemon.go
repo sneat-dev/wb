@@ -18,6 +18,10 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
+	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/remotestate/hub"
+	"github.com/sneat-dev/wb/internal/repositoryevents"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 const (
@@ -670,6 +674,9 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
 	queue.StartLeaseRecovery(ctx)
+	if err := startRepositoryEventReceiver(ctx, projectsRoot, command.ErrOrStderr()); err != nil {
+		_, _ = fmt.Fprintln(command.ErrOrStderr(), "repository event receiver disabled:", err)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -691,6 +698,35 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		return nil
 	}
 	return err
+}
+
+func startRepositoryEventReceiver(ctx context.Context, projectsRoot string, out io.Writer) error {
+	eventQueue, err := repositoryevents.NewQueue(projectsRoot)
+	if err != nil {
+		return err
+	}
+	progress := func(message string) { _, _ = fmt.Fprintln(out, message) }
+	go eventQueue.Run(ctx, repositoryevents.SyncProcessor{ProjectsRoot: projectsRoot}, progress)
+
+	config, err := remotestate.LoadConfig(wbconfig.DefaultPath())
+	if err != nil {
+		var unconfigured *remotestate.UnconfiguredError
+		if errors.As(err, &unconfigured) {
+			return nil
+		}
+		return err
+	}
+	if config.Provider != "hub" {
+		return nil
+	}
+	provider, err := hub.New(hub.Options{BaseURL: config.URL, Machine: config.Machine, TokenFile: config.TokenFile})
+	if err != nil {
+		return err
+	}
+	cursorPath := filepath.Join(projectsRoot, ".wb", "runtime", "daemon", "repository-events", "cursor.json")
+	receiver := repositoryevents.Receiver{Source: provider, Queue: eventQueue, Cursor: repositoryevents.CursorStore{Path: cursorPath}, Progress: progress}
+	go receiver.Run(ctx)
+	return nil
 }
 
 func daemonHeartbeat(out io.Writer, ctx context.Context, address string) {

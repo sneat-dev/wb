@@ -15,6 +15,7 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	snapshot := FromRemoteSnapshot(remotestate.Snapshot{
 		Login: "alice", Machine: "laptop", PublishedAt: at,
 		ProjectsRoot: "/Users/alice/private", WBVersion: "secret-build",
+		KnownRepositories: []string{"zeta/tools", "acme/widgets", "acme/widgets"},
 		Repositories: []remotestate.RepositoryState{{
 			Repository: "acme/widgets", Path: "/Users/alice/private/acme/widgets",
 			Summary: "private command output", Unpushed: []string{"private commit subject"},
@@ -40,6 +41,9 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	if !strings.Contains(text, `"repository":"acme/widgets"`) || !strings.Contains(text, `"number":7`) {
 		t.Fatalf("hosted snapshot lost dashboard fields: %s", text)
 	}
+	if !strings.Contains(text, `"repositories":["github.com/acme/widgets","github.com/zeta/tools"]`) {
+		t.Fatalf("hosted snapshot lost sorted canonical repository enrollment: %s", text)
+	}
 	if snapshot.Worktrees[0].AttentionReason != machinesnapshot.AttentionReviewRequired {
 		t.Fatalf("attention reason = %q", snapshot.Worktrees[0].AttentionReason)
 	}
@@ -47,6 +51,9 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	converted := Entry(machinesnapshot.StoredSnapshot{Snapshot: snapshot, ReceivedAt: receivedAt})
 	if converted.Snapshot.ProjectsRoot != "" || converted.Snapshot.Worktrees[0].Dir != "" || converted.Snapshot.Worktrees[0].HeadSHA != "" {
 		t.Fatalf("read-model adapter restored local data: %+v", converted.Snapshot)
+	}
+	if got := strings.Join(converted.Snapshot.KnownRepositories, ","); got != "acme/widgets,zeta/tools" {
+		t.Fatalf("known repositories = %q", got)
 	}
 	if !converted.Snapshot.Heartbeat().Equal(receivedAt) {
 		t.Fatalf("heartbeat = %s, want server receipt %s", converted.Snapshot.Heartbeat(), receivedAt)

@@ -49,6 +49,7 @@ type Snapshot struct {
 	WBVersion           string            `yaml:"wb_version" json:"wb_version"`
 	ProjectsRoot        string            `yaml:"projects_root" json:"projects_root"`
 	RepositoriesScanned int               `yaml:"repositories_scanned" json:"repositories_scanned"`
+	KnownRepositories   []string          `yaml:"known_repositories,omitempty" json:"known_repositories,omitempty"`
 	Repositories        []RepositoryState `yaml:"repositories" json:"repositories"`
 	Worktrees           []WorktreeState   `yaml:"worktrees" json:"worktrees"`
 }
@@ -161,8 +162,10 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 	snap.SchemaVersion = SchemaVersion
 	snap.RepositoriesScanned = len(repos)
 	snap.Repositories = make([]RepositoryState, 0)
+	snap.KnownRepositories = make([]string, 0, len(repos))
 	snap.Worktrees = make([]WorktreeState, 0, len(wts))
 	for _, in := range repos {
+		snap.KnownRepositories = append(snap.KnownRepositories, in.Repository)
 		if in.Err != nil {
 			snap.Repositories = append(snap.Repositories, RepositoryState{Repository: in.Repository, Path: in.Path, Status: StatusError, Error: in.Err.Error()})
 			continue
@@ -195,6 +198,7 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 		}
 		snap.Repositories = append(snap.Repositories, state)
 	}
+	sort.Strings(snap.KnownRepositories)
 	sort.Slice(snap.Repositories, func(i, j int) bool { return snap.Repositories[i].Repository < snap.Repositories[j].Repository })
 	for _, wt := range wts {
 		stream := worktrees.ParentEffort(wt.Task)
