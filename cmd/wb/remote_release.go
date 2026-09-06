@@ -26,7 +26,7 @@ too.`,
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "release the claim even if another login/machine holds it")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the release outcome as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
 
