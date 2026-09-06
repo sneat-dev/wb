@@ -118,12 +118,12 @@ type LatestMerge struct {
 	Repository     string    `json:"repository" firestore:"repository"`
 	PullRequest    int       `json:"pull_request" firestore:"pull_request"`
 	MergedAt       time.Time `json:"merged_at" firestore:"merged_at"`
-	PullRequestURL string    `json:"pull_request_url,omitempty"`
-	IssueURL       string    `json:"issue_url,omitempty"`
-	MergeCommitSHA string    `json:"merge_commit_sha,omitempty"`
-	MergeCommitURL string    `json:"merge_commit_url,omitempty"`
-	ReleaseURL     string    `json:"release_url,omitempty"`
-	ReceiptURL     string    `json:"receipt_url,omitempty"`
+	PullRequestURL string    `json:"pull_request_url,omitempty" firestore:"pull_request_url,omitempty"`
+	IssueURL       string    `json:"issue_url,omitempty" firestore:"issue_url,omitempty"`
+	MergeCommitSHA string    `json:"merge_commit_sha,omitempty" firestore:"merge_commit_sha,omitempty"`
+	MergeCommitURL string    `json:"merge_commit_url,omitempty" firestore:"merge_commit_url,omitempty"`
+	ReleaseURL     string    `json:"release_url,omitempty" firestore:"release_url,omitempty"`
+	ReceiptURL     string    `json:"receipt_url,omitempty" firestore:"receipt_url,omitempty"`
 }
 
 // Access wraps a read-model result with its disclosure class.
