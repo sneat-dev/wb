@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package wb.daemon.v1;
+
+option go_package = "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1;daemonv1";
+
+service DaemonService {
+  rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse) {}
+  rpc SubmitOperation(SubmitOperationRequest) returns (Operation) {}
+  rpc GetOperation(GetOperationRequest) returns (Operation) {}
+  rpc WaitOperation(WaitOperationRequest) returns (Operation) {}
+  rpc CancelOperation(CancelOperationRequest) returns (Operation) {}
+}
+
+message GetDaemonInfoRequest {}
+
+message GetDaemonInfoResponse {
+  string build = 1;
+  uint32 protocol_version = 2;
+  uint32 queue_schema = 3;
+  string scheduler_generation = 4;
+  DaemonState state = 5;
+  uint32 cpu_budget = 6;
+}
+
+enum DaemonState {
+  DAEMON_STATE_UNSPECIFIED = 0;
+  DAEMON_STATE_READY = 1;
+  DAEMON_STATE_DRAINING = 2;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_QUEUED = 1;
+  OPERATION_STATE_RUNNING = 2;
+  OPERATION_STATE_SUCCEEDED = 3;
+  OPERATION_STATE_FAILED = 4;
+  OPERATION_STATE_CANCELLED = 5;
+  OPERATION_STATE_RECOVERY_REQUIRED = 6;
+}
+
+message SubmitOperationRequest {
+  string idempotency_key = 1;
+  string working_directory = 2;
+  repeated string argv = 3;
+  map<string, string> environment = 4;
+  uint32 cpu_units = 5;
+  bool local_raw_command = 6;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+}
+
+message WaitOperationRequest {
+  string operation_id = 1;
+  string after_cursor = 2;
+  uint32 wait_milliseconds = 3;
+}
+
+message CancelOperationRequest {
+  string operation_id = 1;
+}
+
+message Operation {
+  uint32 schema_version = 1;
+  string operation_id = 2;
+  string idempotency_key = 3;
+  OperationState state = 4;
+  string cursor = 5;
+  string command_kind = 6;
+  string args_sha256 = 7;
+  uint32 argument_count = 8;
+  uint32 cpu_units = 9;
+  int32 exit_code = 10;
+  int64 submitted_unix_milli = 11;
+  int64 started_unix_milli = 12;
+  int64 finished_unix_milli = 13;
+  int64 queue_wait_milliseconds = 14;
+  int64 wall_milliseconds = 15;
+  string error = 16;
+  bytes stdout_tail = 17;
+  bytes stderr_tail = 18;
+}
