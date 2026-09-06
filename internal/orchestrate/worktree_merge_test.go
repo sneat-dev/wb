@@ -16,6 +16,50 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+func TestReportWorktreeMergeQualityProgressPreservesShardProgress(t *testing.T) {
+	var events []progress.Event
+	reporter := reportWorktreeMergeQualityProgress(func(event progress.Event) {
+		events = append(events, event)
+	})
+	reporter(quality.Progress{
+		Check: quality.CheckTest, Command: "go test", Detail: "internal/worktrees shard 2/8",
+		State: quality.ProgressStarted, Completed: 3, Total: 17,
+	})
+	reporter(quality.Progress{
+		Check: quality.CheckTest, Command: "go test", Detail: "internal/worktrees shard 2/8 attempt 2 failed; retrying",
+		State: quality.ProgressRetrying, Status: quality.StatusFailed, Attempts: 2,
+		Completed: 3, Total: 17,
+	})
+	reporter(quality.Progress{
+		Check: quality.CheckTest, Command: "go test", Detail: "internal/worktrees shard 2/8",
+		State: quality.ProgressCompleted, Status: quality.StatusPassed, Attempts: 2,
+		Completed: 4, Total: 17,
+	})
+
+	if len(events) != 3 {
+		t.Fatalf("progress events = %#v, want 3", events)
+	}
+	started, retrying, completed := events[0], events[1], events[2]
+	if started.Phase != "validate_candidate" || started.State != progress.Started || started.Completed != 3 || started.Total != 17 {
+		t.Fatalf("started progress = %#v", started)
+	}
+	if started.Detail != "test: go test: internal/worktrees shard 2/8" {
+		t.Fatalf("started detail = %q", started.Detail)
+	}
+	if retrying.State != progress.Running || retrying.Completed != 3 || retrying.Total != 17 {
+		t.Fatalf("retrying progress = %#v", retrying)
+	}
+	if retrying.Detail != "test: go test: internal/worktrees shard 2/8 attempt 2 failed; retrying: attempt 2: failed" {
+		t.Fatalf("retrying detail = %q", retrying.Detail)
+	}
+	if completed.State != progress.Completed || completed.Completed != 4 || completed.Total != 17 {
+		t.Fatalf("completed progress = %#v", completed)
+	}
+	if completed.Detail != "test: go test: internal/worktrees shard 2/8: attempt 2: passed" {
+		t.Fatalf("completed detail = %q", completed.Detail)
+	}
+}
+
 func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
 	tests := []struct {
 		name     string

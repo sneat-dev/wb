@@ -2084,18 +2084,34 @@ func reportWorktreeMergeQualityProgress(reporter progress.Reporter) func(quality
 	}
 	return func(event quality.Progress) {
 		var state progress.State
-		if event.State == quality.ProgressStarted {
+		if event.State == quality.ProgressStarted || event.State == quality.ProgressRetrying {
 			state = progress.Started
+			if event.State == quality.ProgressRetrying {
+				state = progress.Running
+			}
 		} else if event.Status == quality.StatusFailed {
 			state = progress.Failed
 		} else {
 			state = progress.Completed
 		}
-		detail := strings.TrimSpace(event.Command)
-		if event.Status != "" {
-			detail += ": " + string(event.Status)
+		parts := make([]string, 0, 4)
+		if event.Check != "" {
+			parts = append(parts, string(event.Check))
 		}
-		progress.Report(reporter, progress.Event{Operation: "worktree_merge", Phase: "validate_candidate", State: state, Detail: detail})
+		if command := strings.TrimSpace(event.Command); command != "" {
+			parts = append(parts, command)
+		}
+		if detail := strings.TrimSpace(event.Detail); detail != "" && detail != strings.TrimSpace(event.Command) {
+			parts = append(parts, detail)
+		}
+		if event.Attempts > 0 {
+			parts = append(parts, fmt.Sprintf("attempt %d", event.Attempts))
+		}
+		if event.Status != "" {
+			parts = append(parts, string(event.Status))
+		}
+		progress.Report(reporter, progress.Event{Operation: "worktree_merge", Phase: "validate_candidate", State: state,
+			Detail: strings.Join(parts, ": "), Completed: event.Completed, Total: event.Total})
 	}
 }
 
