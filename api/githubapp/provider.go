@@ -33,20 +33,20 @@ type ProjectionDocument struct {
 }
 
 type SeriesDocument struct {
-	Scope  Scope         `json:"scope"`
-	ID     string        `json:"id"`
-	Metric string        `json:"metric"`
-	Points []SeriesPoint `json:"points"`
+	Scope  Scope         `json:"scope" firestore:"scope"`
+	ID     string        `json:"id" firestore:"id"`
+	Metric string        `json:"metric" firestore:"metric"`
+	Points []SeriesPoint `json:"points" firestore:"points"`
 }
 
 type LeaderboardDocument struct {
-	Metric     string             `json:"metric"`
-	Entries    []LeaderboardEntry `json:"entries"`
-	PublicOnly bool               `json:"public_only"`
+	Metric     string             `json:"metric" firestore:"metric"`
+	Entries    []LeaderboardEntry `json:"entries" firestore:"entries"`
+	PublicOnly bool               `json:"public_only" firestore:"public_only"`
 }
 
 type PublicLatestMerges struct {
-	Entries []LatestMerge `json:"entries"`
+	Entries []LatestMerge `json:"entries" firestore:"entries"`
 }
 
 // ProjectionStore is the narrow durable persistence adapter supplied by the

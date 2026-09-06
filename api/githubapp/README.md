@@ -19,6 +19,8 @@ The host supplies three narrow ports:
 The API provides the dashboard summary, repository/organization/user stats,
 time series usable as tables or graphs, leaderboards, and latest merges with
 pull request, issue, merge commit, release, and Workbench receipt URLs.
+The stats route uses a remainder wildcard so canonical IDs such as
+`github.com/acme/app` round-trip without dropping path segments.
 
 `GET /v0/workbench/events` is the default server-to-browser transport. It is
 resumable SSE: `after` (or `Last-Event-ID`) replays durable events with strictly
@@ -39,7 +41,9 @@ The host-neutral provider in `provider.go` implements `ReadModel` over a
 `ProjectionStore`; the host supplies the durable adapter. Projection documents
 use the `workbench_projections` collection, with `scope` and the canonical
 GitHub subject ID (`github.com/<org>` or `github.com/<org>/<repo>`) retained in
-the document. `ProjectionKey` derives a stable SHA-256 document ID so slashes
+the document. Webhook envelopes are normalized to the same
+`github.com/<org>/<repo>` form before wakeups or projection refreshes.
+`ProjectionKey` derives a stable SHA-256 document ID so slashes
 cannot alter storage hierarchy. Series, leaderboard, and latest-merge records
 use the corresponding named collections and typed store methods. The public
 latest-merges method is intentionally typed to return public-only entries.
@@ -57,6 +61,20 @@ The provider does not choose Firestore paths, Firebase projects, GitHub
 credentials, or aggregation credentials. Sneat Go can bind those through its
 wire-only adapter once the corresponding durable store and membership service
 are configured.
+
+## Firestore adapter schema
+
+The host may bind `FirestoreProjectionStore`, `FirestoreProjectionWriter`, and
+`FirestoreProjectionDeliveryStore` through the small `FirestoreBackend` seam.
+Projection documents live in `workbench_projections/{ProjectionKey(scope,id)}`;
+series and leaderboards use `workbench_series` and `workbench_leaderboards`;
+the public merge snapshot is `workbench_latest_merges/public`. Delivery state
+uses `workbench_deliveries/{deliveryID}`, and coalesced wakeups use
+`workbench_wakeups/{sha256(wakeupKey)}` while retaining the canonical key in
+the wakeup body. Delivery claims carry a bounded lease and expire into
+retryable work. Hosts supply the actual Firestore client and
+transaction implementation; this package contains no Firebase or Firestore
+SDK dependency.
 
 ## Projection delivery boundary
 
