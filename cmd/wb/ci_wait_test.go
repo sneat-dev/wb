@@ -1242,6 +1242,9 @@ func writeCIWaitExecutable(t *testing.T, path, contents string) {
 	// this test. Reusing the real per-user observer cache lets another test or
 	// WB process supply a fresh cached response for the same acme/app fixture.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Sharded package tests are separate processes. Isolate WB's private state
+	// too, so a concurrent shard cannot supply or replace observer evidence.
+	t.Setenv("WB_HOME", t.TempDir())
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
