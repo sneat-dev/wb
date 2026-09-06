@@ -122,6 +122,7 @@ var (
 	mergePolicyExecute = func(ctx context.Context, args ...string) githubobserver.CommandResponse {
 		return githubobserver.Execute(ctx, "", args...)
 	}
+	mergePolicyPersist = persistMergePolicyReport
 )
 
 func newFleetMergePolicyCmd() *cobra.Command {
@@ -172,7 +173,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 		},
 	}
 	command.Flags().BoolVar(&options.apply, "apply", false, "apply the exact planned merge policy; audit is the default")
-	command.Flags().IntVar(&options.parallel, "parallel", defaultParallel, "maximum GitHub repositories to inspect concurrently (1-16; default: WB CPU budget)")
+	command.Flags().IntVar(&options.parallel, "parallel", defaultParallel, "maximum GitHub repositories to inspect or apply concurrently (1-16; default: WB CPU budget)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/merge-policy)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "resume into an existing --report-dir after interruption; all decisions are re-observed")
 	addJSONFormatFlags(command, &options.json)
@@ -184,7 +185,7 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 	heartbeatDone := make(chan struct{})
 	defer close(heartbeatDone)
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(9 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -247,7 +248,9 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 		if _, err := fmt.Fprintf(progress, "merge-policy: planned %d repositories and %d shared rulesets; report %s\n", len(report.Repositories), len(report.Rulesets), path); err != nil {
 			return report, fmt.Errorf("write merge-policy plan progress: %w", err)
 		}
-		applyMergePolicy(ctx, &report, progress)
+		if err := applyMergePolicy(ctx, &report, options.parallel, progress); err != nil {
+			return report, err
+		}
 		summarizeMergePolicy(&report)
 		if err := persistMergePolicyReport(report); err != nil {
 			return report, err
@@ -485,7 +488,14 @@ func buildMergePolicyRulesetPlan(ctx context.Context, report *mergePolicyReport)
 	}
 }
 
-func applyMergePolicy(ctx context.Context, report *mergePolicyReport, progress io.Writer) {
+func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel int, progress io.Writer) error {
+	checkpoint := func() error {
+		if report.ReportPath == "" {
+			return nil
+		}
+		summarizeMergePolicy(report)
+		return mergePolicyPersist(*report)
+	}
 	// Validate every repository lease before the first mutation. A shared
 	// ruleset may affect several repositories, so discovering repository drift
 	// after changing it would leave a partially applied plan.
@@ -527,42 +537,86 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, progress i
 		} else {
 			change.Disposition = "applied"
 		}
+		if err := checkpoint(); err != nil {
+			return err
+		}
 	}
+	if err := checkpoint(); err != nil {
+		return err
+	}
+	if parallel < 1 {
+		parallel = 1
+	}
+	type repositoryResult struct {
+		index int
+		repo  mergePolicyRepository
+	}
+	eligible := make([]int, 0, len(report.Repositories))
+	results := make(chan repositoryResult, len(report.Repositories))
 	for index := range report.Repositories {
-		repo := &report.Repositories[index]
+		repo := report.Repositories[index]
 		if repo.Disposition == "compliant" || repo.Disposition == "error" || len(repo.Conflicts) > 0 {
 			continue
 		}
-		blocked := false
-		for _, ref := range repo.Rulesets {
-			if blockedRulesets[fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)] {
-				blocked = true
-			}
+		eligible = append(eligible, index)
+	}
+	launch := func(index int) {
+		go func() {
+			results <- repositoryResult{index: index, repo: applyRepositoryMergePolicy(ctx, report.Repositories[index], blockedRulesets)}
+		}()
+	}
+	next, inFlight := 0, 0
+	for next < len(eligible) && inFlight < parallel {
+		launch(eligible[next])
+		next++
+		inFlight++
+	}
+	var firstCheckpointErr error
+	for inFlight > 0 {
+		result := <-results
+		inFlight--
+		report.Repositories[result.index] = result.repo
+		if result.repo.Disposition == "applied" {
+			_, _ = fmt.Fprintf(progress, "merge-policy: applied %s\n", result.repo.Repository)
 		}
-		if blocked {
+		if err := checkpoint(); err != nil && firstCheckpointErr == nil {
+			firstCheckpointErr = err
+		}
+		if firstCheckpointErr == nil && next < len(eligible) {
+			launch(eligible[next])
+			next++
+			inFlight++
+		}
+	}
+	return firstCheckpointErr
+}
+
+func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository, blockedRulesets map[string]bool) mergePolicyRepository {
+	for _, ref := range repo.Rulesets {
+		if blockedRulesets[fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)] {
 			repo.Disposition = "blocked"
 			repo.Conflicts = append(repo.Conflicts, "shared ruleset update was not safe or supported")
-			continue
+			return repo
 		}
-		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
-		protectionSHA, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
-		if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
-			repo.Disposition = "blocked"
-			repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
-			continue
-		}
-		response := mergePolicyExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository,
-			"-F", "allow_merge_commit=true", "-F", "allow_squash_merge=false", "-F", "allow_rebase_merge=false",
-			"-f", "merge_commit_title=PR_TITLE", "-f", "merge_commit_message=PR_BODY")
-		if response.Err != nil {
-			repo.Disposition = "error"
-			repo.Error = githubCommandMessage(response)
-			continue
-		}
-		repo.Disposition = "applied"
-		repo.Drift = nil
-		_, _ = fmt.Fprintf(progress, "merge-policy: applied %s\n", repo.Repository)
 	}
+	fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
+	protectionSHA, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
+	if err != nil || protectionErr != nil || digestJSON(fresh) != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
+		repo.Disposition = "blocked"
+		repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
+		return repo
+	}
+	response := mergePolicyExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository,
+		"-F", "allow_merge_commit=true", "-F", "allow_squash_merge=false", "-F", "allow_rebase_merge=false",
+		"-f", "merge_commit_title=PR_TITLE", "-f", "merge_commit_message=PR_BODY")
+	if response.Err != nil {
+		repo.Disposition = "error"
+		repo.Error = githubCommandMessage(response)
+		return repo
+	}
+	repo.Disposition = "applied"
+	repo.Drift = nil
+	return repo
 }
 
 func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) error {

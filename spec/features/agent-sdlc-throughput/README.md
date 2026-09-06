@@ -1251,11 +1251,12 @@ noninteractive text remains unstyled and readable.
 
 When `--apply` is explicit, WB persists the complete selected scope before its
 first mutation, rechecks observed repository settings before changing them,
-uses bounded parallel reads with progress gaps no longer than ten seconds, and
-changes only merge settings. Classic branch protection is read separately from
+uses bounded parallel reads and repository-setting mutations with progress gaps
+no longer than nine seconds, and changes only merge settings. Shared ruleset
+mutation remains serialized. Classic branch protection is read separately from
 rulesets, and required linear history or a merge-queue requirement blocks apply.
-The default read parallelism is WB's current CPU budget (logical CPU count minus
-one, with a minimum of one); explicit `--parallel` remains authoritative.
+The default parallelism is WB's current CPU budget (logical CPU count minus one,
+with a minimum of one); explicit `--parallel` remains authoritative.
 Repository rulesets preserve all unrelated conditions, bypass actors,
 enforcement, review requirements, status checks, and other rules.
 Organization and enterprise rulesets take precedence and remain audit-only in
@@ -1269,6 +1270,8 @@ repository conditions against complete owner inventory and preview that whole
 scope. Until then it reports the blocker and leaves every level unchanged. Any
 repository-setting, ruleset, or classic-protection drift fails closed and a
 resumed run re-observes all authorities instead of trusting its old snapshot.
+The durable report is checkpointed after every mutation so partial progress
+remains visible across interruption.
 
 ### AC: lessons-are-curated-off-worker-path
 

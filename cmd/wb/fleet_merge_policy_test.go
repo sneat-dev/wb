@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -188,8 +191,155 @@ func TestOrganizationRulesetIsAuditOnlyAndBlocksRepositoryFallback(t *testing.T)
 	if len(report.Rulesets) != 1 || report.Rulesets[0].Disposition != "blocked" || !strings.Contains(report.Rulesets[0].Error, "audit-only") {
 		t.Fatalf("ruleset plan = %#v", report.Rulesets)
 	}
-	applyMergePolicy(context.Background(), &report, &bytes.Buffer{})
+	if err := applyMergePolicy(context.Background(), &report, 1, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
 	if mutated || report.Repositories[0].Disposition != "blocked" {
 		t.Fatalf("mutated=%v repository=%#v", mutated, report.Repositories[0])
+	}
+}
+
+func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
+	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
+	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
+	body := []byte(`{"default_branch":"main"}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "/protection") {
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		}
+		return body, nil
+	}
+	entered := make(chan struct{}, 3)
+	release := make(chan struct{})
+	var active, maximum atomic.Int64
+	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		current := active.Add(1)
+		for observed := maximum.Load(); current > observed && !maximum.CompareAndSwap(observed, current); observed = maximum.Load() {
+		}
+		entered <- struct{}{}
+		<-release
+		active.Add(-1)
+		return githubobserver.CommandResponse{}
+	}
+	report := mergePolicyReport{ReportPath: filepath.Join(t.TempDir(), "merge-policy.json")}
+	for index := range 3 {
+		report.Repositories = append(report.Repositories, mergePolicyRepository{
+			Repository:    fmt.Sprintf("acme/app-%d", index),
+			DefaultBranch: "main",
+			Disposition:   "drift",
+			ObservedSHA:   digestJSON(body),
+			ProtectionSHA: "none",
+		})
+	}
+	done := make(chan error, 1)
+	go func() { done <- applyMergePolicy(context.Background(), &report, 2, &bytes.Buffer{}) }()
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("two repository mutations did not run concurrently")
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatal("--parallel 2 allowed a third repository mutation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := maximum.Load(); got != 2 {
+		t.Fatalf("maximum concurrent mutations = %d, want 2", got)
+	}
+	persisted, err := os.ReadFile(report.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint mergePolicyReport
+	if err := json.Unmarshal(persisted, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Summary.Applied != 3 {
+		t.Fatalf("checkpoint applied = %d, want 3", checkpoint.Summary.Applied)
+	}
+}
+
+func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
+	originalRead, originalExecute, originalPersist := mergePolicyRead, mergePolicyExecute, mergePolicyPersist
+	t.Cleanup(func() {
+		mergePolicyRead, mergePolicyExecute, mergePolicyPersist = originalRead, originalExecute, originalPersist
+	})
+	body := []byte(`{"default_branch":"main"}`)
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if strings.Contains(endpoint, "/protection") {
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		}
+		return body, nil
+	}
+	started := make(chan string, 3)
+	releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{})
+	mergePolicyExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		command := strings.Join(args, " ")
+		switch {
+		case strings.Contains(command, "repos/acme/app-0"):
+			started <- "app-0"
+			<-releaseFirst
+		case strings.Contains(command, "repos/acme/app-1"):
+			started <- "app-1"
+			<-releaseSecond
+		default:
+			started <- "app-2"
+		}
+		return githubobserver.CommandResponse{}
+	}
+	checkpointFailed := make(chan struct{})
+	var persistCalls atomic.Int64
+	mergePolicyPersist = func(mergePolicyReport) error {
+		if persistCalls.Add(1) == 2 {
+			close(checkpointFailed)
+			return errors.New("checkpoint unavailable")
+		}
+		return nil
+	}
+	report := mergePolicyReport{ReportPath: "injected-checkpoint"}
+	for index := range 3 {
+		report.Repositories = append(report.Repositories, mergePolicyRepository{
+			Repository:    fmt.Sprintf("acme/app-%d", index),
+			DefaultBranch: "main",
+			Disposition:   "drift",
+			ObservedSHA:   digestJSON(body),
+			ProtectionSHA: "none",
+		})
+	}
+	done := make(chan error, 1)
+	go func() { done <- applyMergePolicy(context.Background(), &report, 2, &bytes.Buffer{}) }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("initial bounded mutations did not start")
+		}
+	}
+	close(releaseFirst)
+	select {
+	case <-checkpointFailed:
+	case <-time.After(time.Second):
+		t.Fatal("injected checkpoint failure was not observed")
+	}
+	select {
+	case repository := <-started:
+		t.Fatalf("repository %s started after checkpoint failure", repository)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseSecond)
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "checkpoint unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	if report.Repositories[2].Disposition != "drift" {
+		t.Fatalf("unadmitted repository = %#v", report.Repositories[2])
+	}
+	if got := persistCalls.Load(); got != 3 {
+		t.Fatalf("checkpoint calls = %d, want initial, failed, and drained retry", got)
 	}
 }

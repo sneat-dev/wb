@@ -21,8 +21,10 @@ wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply
 wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply --resume
 ```
 
-By default the GitHub read pool uses WB's CPU budget (logical CPU count minus
-one, with a minimum of one). Set `--parallel` explicitly to override that bound.
+By default the GitHub read and repository-apply pools use WB's CPU budget
+(logical CPU count minus one, with a minimum of one). Set `--parallel`
+explicitly to override that bound. Shared rulesets remain serialized, and the
+report is checkpointed after every mutation for truthful resume.
 
 Existing repository pull-request rulesets preserve their unrelated conditions,
 bypass actors, review requirements, checks, enforcement, and rules.
