@@ -259,7 +259,7 @@ type ListResult struct {
 	AbsorbedAtOrigin         bool   `json:"absorbed_at_origin,omitempty"`
 	AbsorbedBySHA            string `json:"absorbed_by_sha,omitempty"`
 	// RecordedBase preserves the immutable manifest/claim target in a cleanup
-	// receipt when an exact orchestrator landing proof authorizes another target.
+	// receipt when exact landing evidence authorizes another target.
 	RecordedBase string `json:"recorded_base,omitempty"`
 	// SupersededAtOrigin records an explicitly reviewed split-branch
 	// terminalization. It deliberately does not set IntegratedAtOrigin: the
@@ -3474,6 +3474,9 @@ func inspectLifecycleWorktree(
 			if err != nil {
 				return ListResult{}, err
 			}
+			if result.RecordedBase == "" {
+				result.RecordedBase = base
+			}
 			result.Base = integrationBase
 			result.HeadUnknownToRemote = !known
 			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, integrationBase, head)
@@ -3485,6 +3488,28 @@ func inspectLifecycleWorktree(
 			}
 			result.HeadUnknownToRemote = !known
 			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
+			integratedIntoRecordedTarget, integrationErr := isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
+			if integrationErr != nil {
+				return ListResult{}, integrationErr
+			}
+			// A live recorded target can remain behind after the exact worktree
+			// head was merged directly into another branch. Widen only when the
+			// recorded target contains neither the head nor an exact-head merged
+			// PR, and GitHub supplies one unambiguous merged target for that exact
+			// head. The freshly fetched replacement still passes every ordinary
+			// containment and tree check below; unrelated or ambiguous PRs grant
+			// no cleanup authority.
+			if !integratedIntoRecordedTarget && result.MergedPullRequest == nil && result.RecordedBase == "" {
+				if recoveredBase, ok := mergedPullRequestTarget(ctx, pullRequests, head, base); ok {
+					result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, recoveredBase)
+					if err != nil {
+						return ListResult{}, err
+					}
+					result.RecordedBase = base
+					integrationBase = recoveredBase
+					result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, recoveredBase, head)
+				}
+			}
 		}
 		base = integrationBase
 		result.Base = base
@@ -3763,7 +3788,11 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 		}
 		pullRequest.MergeSHA = candidate.MergeCommitSHA
 		if strings.EqualFold(candidate.State, "OPEN") {
-			if candidate.Base.Ref != base || candidate.Head.SHA != head {
+			// An open PR for the exact immutable head is a cleanup veto on
+			// every base. Target recovery may find a separate merged PR and
+			// switch the integration check to that PR's base, but it must not
+			// hide live review state for the same source commit.
+			if candidate.Head.SHA != head {
 				continue
 			}
 			if open == nil || candidate.Number > open.Number {
@@ -3784,8 +3813,8 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 	return open, merged
 }
 
-// mergedPullRequestTarget returns the target branch of an exact-head merged
-// PR when the recorded lifecycle target no longer exists. It deliberately
+// mergedPullRequestTarget returns the replacement target branch of an exact-head
+// merged PR when the recorded lifecycle target is missing or stale. It deliberately
 // refuses ambiguity: two merged PRs for the same head targeting different
 // branches do not identify which remote target should authorize cleanup.
 func mergedPullRequestTarget(ctx context.Context, pullRequests []githubPullRequest, head, recordedBase string) (string, bool) {
