@@ -57,6 +57,13 @@ run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
 
+After a verified batch landing, WB uses the exact source commits preserved in
+the candidate merge graph to find their pull requests. It closes an open source
+pull request only when its current head still equals that exact commit and its
+base repository and branch still equal the landed target. The landing receipt
+records the observation, and an idempotently marked comment links the source PR
+to the batch PR and landing commit. An advanced head or changed base stays open.
+
 If a legacy landed cleanup removed every receipted worktree and local and
 remote branch but failed to retain terminal Work Log evidence, first run
 `acknowledge-missing-cleanup` without `--apply`. It re-fetches the exact remote

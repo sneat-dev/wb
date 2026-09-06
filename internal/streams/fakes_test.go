@@ -189,7 +189,7 @@ func newFakeHub() *fakeHub {
 	}
 }
 
-func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, title, _ string) (PullRequest, error) {
+func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, title, body string) (PullRequest, error) {
 	if err := hub.createErr[dir]; err != nil {
 		return PullRequest{}, err
 	}
@@ -197,7 +197,7 @@ func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, t
 	pullRequest := PullRequest{
 		Number: hub.nextNumber,
 		URL:    fmt.Sprintf("https://example.test/pull/%d", hub.nextNumber),
-		Title:  title, Head: head, Base: base, Draft: true, State: "OPEN",
+		Title:  title, Body: body, Head: head, Base: base, Draft: true, State: "OPEN",
 	}
 	hub.created = append(hub.created, pullRequest)
 	hub.byBranch[dir+" "+head] = pullRequest

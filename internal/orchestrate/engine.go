@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -686,6 +687,9 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 		if existing := strings.TrimSpace(string(output)); existing != "" {
 			return existing, nil
 		}
+	}
+	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
+		body = prmeta.Append(body, prmeta.Provenance{Effort: manifest.EffortID})
 	}
 	created, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
 	if err != nil {
