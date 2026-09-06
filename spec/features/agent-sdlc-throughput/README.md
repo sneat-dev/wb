@@ -868,11 +868,18 @@ a worktree.
   webhooks, interest-scoped daemon wakeups, durable cursors, and reconciliation
   polling; support attributed-public free delivery, a small evaluation
   allowance, and paid private or unattributed repositories.
-- [ ] Add the WB-owned deterministic projection engine behind the relay: an
+- [x] Add the WB-owned deterministic projection engine behind the relay: an
   authoritative refresh produces validated repository and organization
   snapshots, idempotent durable writes are keyed by delivery ID, public latest
   merges are replaced coherently, and the delivery ledger commits only after
   projection writes succeed.
+- [x] Revalidate an exact interrupted `preparing` merge candidate before any
+  publication, and clear historical failure text whenever cleanup reaches a
+  terminal successful receipt.
+- [ ] Reuse an exact successful PR-CI validation receipt during landing instead
+  of running the same broad local coverage gate again.
+- [ ] Adopt an existing exact-head pull request into the merge receipt instead
+  of opening a duplicate PR and triggering a duplicate CI run.
 - [ ] Bind the provider ports to a durable Firestore adapter with documented
   collection keys, idempotent projection writes, atomic leased delivery claims,
   retryable release, and coalesced wakeups; keep the Firestore SDK in the host.
@@ -970,6 +977,15 @@ orchestrator runs `wb worktree land`, WB prepares one candidate, runs only
 missing validation, lands through a permitted route, proves remote target and
 post-target checks, synchronizes an eligible canonical checkout, and
 terminalizes or recycles every source without another deterministic agent call.
+
+### AC: interrupted-prepare-cannot-skip-validation
+
+Given preparation stops after persisting an integrated candidate SHA but before
+persisting its completed validation receipt, when landing resumes, then WB
+proves the exact candidate still contains the receipted target and every source,
+runs the candidate validation again, and persists `prepared` before opening or
+advancing any remote ref. A terminal successful cleanup receipt has an empty
+current failure field while retaining historical failure evidence elsewhere.
 
 ### AC: merger-agent-is-exceptional
 
