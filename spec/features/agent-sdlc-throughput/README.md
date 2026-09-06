@@ -1028,6 +1028,18 @@ allowance or paid entitlement. Without either, the signed delivery is persisted
 and acknowledged once with `not_entitled`, no daemon is woken, and the decision
 can be audited by installation and repository identity.
 
+### AC: public-readme-opt-in-is-auditable-and-narrow
+
+Given an authoritative GitHub App refresh reads a repository root `README.md`,
+when an exact `## WB` or `## Workbench` section contains a Markdown or autolink
+to `https://sneat.work/bench`, including a dashboard or repository subpath,
+then WB records public eligibility with the canonical `github.com/<org>/<repo>`
+identity, canonical GitHub root-README URL pinned to an exact 40-hex commit SHA,
+and verification time. Links outside that section, in fenced code, or with a
+query or fragment do not opt in. A projection can set
+`public_opt_in` only when it carries valid eligibility evidence for that same
+repository; missing, mismatched, or non-canonical evidence fails validation.
+
 ### AC: github-delivery-projects-authoritative-snapshot-once
 
 Given a signed GitHub App delivery, when the provider has not seen its delivery
