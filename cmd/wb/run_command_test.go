@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/runlog"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -45,6 +47,48 @@ func TestRunCommandRejectsRecipeFlags(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "belong to WB modes") {
 		t.Errorf("stderr does not explain the incompatible flag: %s", stderr.String())
+	}
+}
+
+func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--async", "recipe-name"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--async requires command mode") {
+		t.Errorf("stderr does not explain async command mode: %s", stderr.String())
+	}
+}
+
+func TestRunAsyncReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
+	root := t.TempDir()
+	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
+	previousRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousRoot })
+	t.Chdir(root)
+
+	deps := daemonTestDependencies(t, root)
+	deps.rawPolicy = func(root string) (bool, string, error) {
+		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
+		return allowed, policyPath, err
+	}
+	command := newRunCmdWithDaemonDependencies(deps)
+	command.SetArgs([]string{"--async", "--", "/bin/echo", "hello"})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("expected raw execution policy denial")
+	}
+	want := "an administrator must create " + policyPath + " with mode 0600 and contents {\"version\":1,\"allow_raw_daemon_execution\":true}"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("async denial = %v, want %q", err, want)
+	}
+	if _, statErr := os.Stat(policyPath); !os.IsNotExist(statErr) {
+		t.Fatalf("CLI wrote raw execution policy: %v", statErr)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
+	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 )
 
 const (
@@ -79,6 +80,7 @@ type daemonDependencies struct {
 	version    func() versionInfo
 	token      func() (string, error)
 	health     func(context.Context, string) error
+	rawPolicy  func(string) (bool, string, error)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -92,6 +94,14 @@ func defaultDaemonDependencies() daemonDependencies {
 		version:    collectVersion,
 		token:      daemonOwnerToken,
 		health:     daemonHealthy,
+		rawPolicy: func(root string) (bool, string, error) {
+			path, err := daemon.RawExecutionPolicyPath()
+			if err != nil {
+				return false, "", err
+			}
+			allowed, err := daemon.LoadRawExecutionPolicy(path, root)
+			return allowed, path, err
+		},
 	}
 }
 
@@ -99,21 +109,20 @@ func newDaemonCmd() *cobra.Command { return newDaemonCmdWithDependencies(default
 
 func newDaemonCmdWithDependencies(deps daemonDependencies) *cobra.Command {
 	command := &cobra.Command{Use: "daemon", Short: "Operate WB's local loopback dashboard and scheduler lifecycle"}
-	command.AddCommand(newDaemonServeCmd(deps), newDaemonStartCmd(deps), newDaemonStatusCmd(deps), newDaemonStopCmd(deps), newDaemonRestartCmd(deps))
+	command.AddCommand(newDaemonServeCmd(deps), newDaemonStartCmd(deps), newDaemonStatusCmd(deps), newDaemonStopCmd(deps), newDaemonRestartCmd(deps), newDaemonOperationCmd(deps))
 	return command
 }
 
 func newDaemonServeCmd(deps daemonDependencies) *cobra.Command {
-	var listenAddress, stateFile, ownerToken string
+	var listenAddress, stateFile string
 	command := &cobra.Command{
 		Use: "serve", Short: "Serve the read-only dashboard and API on a loopback address",
 		Long: `Serve WB's embedded operations dashboard and versioned read-only API.
 
 The listener is loopback-only. Publish it to registered machines through a
 protected Cloudflare Tunnel or another authenticated reverse proxy; do not bind
-the daemon directly to a public interface. The HTTP dashboard is the lifecycle
-MVP transport; future ConnectRPC/gRPC and MCP adapters consume the same durable
-queue lifecycle contract rather than this state file.`,
+the daemon directly to a public interface. Mutating operation RPCs are served
+only through the separately authenticated local transport.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireLoopbackAddress(listenAddress); err != nil {
@@ -122,8 +131,14 @@ queue lifecycle contract rather than this state file.`,
 			if stateFile == "" {
 				stateFile = daemonStatePath(projectsRoot)
 			}
-			if ownerToken == "" {
-				var err error
+			state, found, err := (daemon.Store{Path: stateFile}).Load()
+			if err != nil {
+				return err
+			}
+			ownerToken := ""
+			if found && state.Status == daemon.StatusStarting {
+				ownerToken = state.OwnerToken
+			} else {
 				ownerToken, err = deps.token()
 				if err != nil {
 					return err
@@ -134,9 +149,7 @@ queue lifecycle contract rather than this state file.`,
 	}
 	command.Flags().StringVar(&listenAddress, "listen", daemonDefaultListen, "loopback listen address")
 	command.Flags().StringVar(&stateFile, "lifecycle-state", "", "private lifecycle state path (used by daemon start)")
-	command.Flags().StringVar(&ownerToken, "owner-token", "", "private lifecycle owner token (used by daemon start)")
 	_ = command.Flags().MarkHidden("lifecycle-state")
-	_ = command.Flags().MarkHidden("owner-token")
 	return command
 }
 
@@ -486,7 +499,7 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 	if err := controller.store.Save(starting); err != nil {
 		return daemonResult{}, err
 	}
-	args := []string{"--projects-root", controller.root, "daemon", "serve", "--listen", listen, "--lifecycle-state", controller.store.Path, "--owner-token", token}
+	args := []string{"--projects-root", controller.root, "daemon", "serve", "--listen", listen, "--lifecycle-state", controller.store.Path}
 	pid, err := controller.deps.start(provenance.Executable, args, daemonLogPath(controller.root))
 	if err != nil {
 		starting.MarkStopped(controller.deps.now())
@@ -528,6 +541,24 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	if !found || state.OwnerToken != ownerToken {
 		state = daemon.NewStarting(optionalDaemonState(state, found), address, provenance, ownerToken, deps.now())
 	}
+	localListener, err := listenDaemonLocal(projectsRoot)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	defer func() { _ = localListener.Close() }()
+	rawExecutionPolicyPath, err := daemon.RawExecutionPolicyPath()
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("resolve daemon raw-execution policy: %w", err)
+	}
+	queue, err := daemon.NewService(projectsRoot, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
+		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, projectsRoot)
+	})
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("load durable daemon queue: %w", err)
+	}
 	state.Listen, state.Provenance = address, provenance
 	state.MarkReady(os.Getpid(), deps.now())
 	if err := store.Save(state); err != nil {
@@ -542,6 +573,10 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		}
 	}()
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{ProjectsRoot: projectsRoot, Version: collectVersion().Version}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
+	rpcMux := http.NewServeMux()
+	rpcMux.Handle(rpcPath, authenticatedDaemonHandler(ownerToken, rpcHandler))
+	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
 	go func() {
@@ -549,14 +584,18 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
+		_ = rpcServer.Shutdown(shutdown)
 	}()
 	go daemonHeartbeat(command.ErrOrStderr(), ctx, address)
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "WB dashboard: http://%s\n", listener.Addr()); err != nil {
 		_ = listener.Close()
 		return err
 	}
-	err = server.Serve(listener)
-	if errors.Is(err, http.ErrServerClosed) {
+	errorsCh := make(chan error, 2)
+	go func() { errorsCh <- server.Serve(listener) }()
+	go func() { errorsCh <- rpcServer.Serve(localListener) }()
+	err = <-errorsCh
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}
 	return err

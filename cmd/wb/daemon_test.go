@@ -146,6 +146,26 @@ func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T
 	}
 }
 
+func TestDaemonStartKeepsOwnerTokenOutOfProcessArguments(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	originalStart := deps.start
+	deps.start = func(executable string, args []string, logPath string) (int, error) {
+		for _, argument := range args {
+			if strings.Contains(argument, strings.Repeat("a", 30)) {
+				t.Fatalf("owner token leaked in daemon argv: %q", args)
+			}
+			if argument == "--owner-token" {
+				t.Fatalf("owner-token flag leaked in daemon argv: %q", args)
+			}
+		}
+		return originalStart(executable, args, logPath)
+	}
+	if _, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
 	root := t.TempDir()
 	deps := daemonTestDependencies(t, root)
@@ -233,19 +253,19 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		version:    func() versionInfo { return versionInfo{Version: "test", Revision: "test-revision"} },
 		token:      func() (string, error) { pid++; return strings.Repeat("a", 30) + string(rune(pid)), nil },
 		health:     func(context.Context, string) error { return nil },
+		rawPolicy: func(string) (bool, string, error) {
+			return true, "test-policy", nil
+		},
 	}
 	deps.start = func(_ string, args []string, _ string) (int, error) {
-		statePath, owner := "", ""
+		statePath := ""
 		for index := range args {
 			if args[index] == "--lifecycle-state" && index+1 < len(args) {
 				statePath = args[index+1]
 			}
-			if args[index] == "--owner-token" && index+1 < len(args) {
-				owner = args[index+1]
-			}
 		}
 		state, ok, err := (daemon.Store{Path: statePath}).Load()
-		if err != nil || !ok || state.OwnerToken != owner {
+		if err != nil || !ok || state.OwnerToken == "" {
 			t.Fatalf("starting state = %#v, %t, %v", state, ok, err)
 		}
 		alive[pid] = true

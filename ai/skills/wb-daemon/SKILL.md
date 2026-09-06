@@ -16,6 +16,30 @@ wb daemon restart --if-running
 
 For foreground debugging, run `wb daemon serve`.
 
+Submit long-running local work without blocking the caller, then inspect or
+control it through the same authenticated local queue. Raw command submission
+is disabled by default. An administrator may opt in by creating
+`~/.config/wb/daemon-raw-exec.json` outside the projects root with mode `0600`
+and exactly this policy:
+
+```json
+{"version":1,"allow_raw_daemon_execution":true}
+```
+
+Agents and WB commands must never create or enable this policy. The daemon
+revalidates it for every submission and immediately before launching queued
+work, so deleting or invalidating it revokes permission without a restart.
+
+```sh
+wb daemon operation submit --format json -- go test ./internal/worktrees
+wb daemon operation get <operation-id> --format json
+wb daemon operation wait <operation-id> --timeout 15m
+wb daemon operation cancel <operation-id>
+```
+
+`wb run --async -- <command>` is the short submission form. It returns a JSON
+receipt immediately; use the operation ID with the commands above.
+
 The default URL is `http://127.0.0.1:8766`. Keep the daemon on loopback. To
 reach it from another registered machine, route that local endpoint through a
 Cloudflare Tunnel protected by Cloudflare Access service authentication.
@@ -26,13 +50,14 @@ queue owner record to the installed executable. `stop` and `restart` preserve
 that handoff record; `restart --if-running` is safe for the verified
 self-update path because it never starts a daemon that was absent.
 
-The current local lifecycle transport is loopback HTTP. The future ConnectRPC/
-gRPC and MCP adapters consume the same typed queue lifecycle contract; they do
-not read the lifecycle state file. The lifecycle package has a Windows process
-boundary, but WB's existing Unix-only packages currently prevent a Windows
-binary; port those dependencies before enabling a per-user Service Control
-Manager supervisor.
+The dashboard stays on read-only loopback HTTP. Mutating operation RPCs use a
+separate mode-0600 Unix socket plus the private lifecycle owner token. Windows
+builds expose the equivalent named-pipe endpoint contract and refuse rather
+than falling back to TCP until the native adapter is enabled.
 
-The MVP has no remote mutation endpoint. Use the dashboard and `/api/v1/*`
-read models for machine, worktree, and governed-command visibility; continue to
-perform mutations through local WB commands.
+There is no remote mutation endpoint. The queue accepts only local raw command
+submissions after the protected host opt-in, persists bounded output and command
+digests, and rejects arbitrary environment overrides. Reusing an idempotency key
+with different cwd, argv, environment, or CPU units is rejected. Use the
+dashboard and `/api/v1/*` read models for machine, worktree, and
+governed-command visibility.

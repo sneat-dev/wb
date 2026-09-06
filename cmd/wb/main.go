@@ -157,6 +157,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
 		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
 		"ci audit":             true,
