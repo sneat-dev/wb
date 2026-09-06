@@ -349,16 +349,14 @@ func (engine *Engine) linkConsumer(
 	// applied. A failed package stays intent-only and is therefore excluded from
 	// reconciliation; its recorded link remains undoable for recovery.
 	if len(appliedNpm) == len(npmDeclarations) {
-		if linker, ok := engine.Node.(SiblingLinker); ok {
-			for workspace, names := range npmLinkGroups(appliedNpm) {
-				workspaceDir, workspaceErr := workspacePath(consumer, workspace)
-				if workspaceErr != nil {
-					outcome.Errors = append(outcome.Errors, workspaceErr.Error())
-					continue
-				}
-				if linkErr := linker.LinkSiblings(ctx, workspaceDir, names); linkErr != nil {
-					outcome.Errors = append(outcome.Errors, linkErr.Error())
-				}
+		for workspace, names := range npmLinkGroups(appliedNpm) {
+			workspaceDir, workspaceErr := workspacePath(consumer, workspace)
+			if workspaceErr != nil {
+				outcome.Errors = append(outcome.Errors, workspaceErr.Error())
+				continue
+			}
+			if linkErr := engine.Node.LinkSiblings(ctx, workspaceDir, names); linkErr != nil {
+				outcome.Errors = append(outcome.Errors, linkErr.Error())
 			}
 		}
 	}
