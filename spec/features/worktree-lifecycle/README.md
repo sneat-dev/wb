@@ -247,6 +247,32 @@ branch-unchanged checks through the removal boundary. Missing metadata, target
 drift, source advancement, non-containment, or unequal trees MUST refuse the
 one candidate. Commit messages, PR titles, and branch names are not evidence.
 
+#### REQ: absorbed-source-pr-reconciliation
+
+After a batch candidate is authoritatively landed on its target, WB MUST
+reconcile every source pull request whose exact head is preserved in the
+candidate's merge graph. It MUST read GitHub's commit-to-pull-request index,
+require the pull request's current head to equal that exact source commit, and
+require its base repository and branch to equal the landed target. WB MAY then
+close the source pull request as absorbed and record the exact source, batch
+pull request, and landing commit in both an idempotently marked comment and the
+append-only landing receipt.
+
+An advanced head, changed base, partial integration, or unverified landing MUST
+leave the source pull request open and record the refusal. A retry MUST neither
+repeat the close nor duplicate the comment. A pull request merely closed
+without merge or absorption evidence MUST remain preserved; closed state alone
+never authorizes worktree cleanup.
+
+#### REQ: pull-request-effort-identity
+
+Every pull request created by WB MUST include its stable WB effort identifier
+in the visible body and in a versioned machine-readable marker. A stream pull
+request MUST also include its stream identifier. WB MUST NOT publish a local
+worktree path, because that path is machine-specific and may change after a
+supported relocation. It MUST NOT duplicate the source branch as WB metadata,
+because GitHub already stores and exposes the exact pull-request head branch.
+
 #### REQ: coordinated-task-safety
 
 If any repository in a task is ineligible, cleanup MUST mark every repository
@@ -520,7 +546,7 @@ without the opt-in performs no remote access at all.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:absorbed-source-pr-reconciliation, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -533,6 +559,7 @@ rejected while a live rebase is accepted only transiently; prior-release hooks
 remain compatible without persisting an ephemeral executable; an exact rescue
 branch passes the real managed pre-push hook while any differently named ref
 using the same attestation refuses; dry runs preserve state; exact merged heads can be cleaned;
+an exact source PR absorbed by a verified batch landing is closed and commented once while an advanced-head or changed-base PR stays open;
 dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
 with comparison guards; a named terminal apply without `--remote` is refused
 while the observed origin branch still exists and completes when that branch is

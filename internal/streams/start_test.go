@@ -58,6 +58,9 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 		if pullRequest.Base != "main" {
 			t.Errorf("pull request %d targets %q, want main", pullRequest.Number, pullRequest.Base)
 		}
+		if !strings.Contains(pullRequest.Body, "WB stream: `checkout-rewrite`") {
+			t.Errorf("pull request %d body lacks WB stream identity: %q", pullRequest.Number, pullRequest.Body)
+		}
 	}
 
 	// The state is WB-owned and outside every repository: no member worktree

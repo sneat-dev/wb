@@ -105,6 +105,19 @@ type WorktreeMergeSourceRefresh struct {
 	Sources    []WorktreeMergeSource `json:"sources"`
 }
 
+type WorktreeMergeSourcePullRequestReconciliation struct {
+	Number       int       `json:"number"`
+	URL          string    `json:"url"`
+	SourceSHA    string    `json:"source_sha"`
+	ObservedSHA  string    `json:"observed_sha,omitempty"`
+	ObservedBase string    `json:"observed_base,omitempty"`
+	Outcome      string    `json:"outcome"`
+	Commented    bool      `json:"commented,omitempty"`
+	Closed       bool      `json:"closed,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type WorktreeMergePushGateReceipt struct {
 	Remote            string    `json:"remote"`
 	RemoteRef         string    `json:"remote_ref"`
@@ -151,36 +164,37 @@ type WorktreeMergeForwardRepairReceipt struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                                 `json:"schema_version"`
-	ID                    string                              `json:"id"`
-	Lane                  string                              `json:"lane"`
-	Phase                 WorktreeMergePhase                  `json:"phase"`
-	Status                WorktreeMergeStatus                 `json:"status"`
-	Repository            string                              `json:"repository"`
-	Target                string                              `json:"target"`
-	TargetSHA             string                              `json:"target_sha"`
-	Sources               []WorktreeMergeSource               `json:"sources"`
-	Candidate             WorktreeMergeCandidate              `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt         `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt         `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision          `json:"route,omitempty"`
-	PullRequest           string                              `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                              `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                              `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                              `json:"landing_sha,omitempty"`
-	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
-	Validation            quality.VerificationReport          `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
-	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
-	ValidationTimeouts    *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
-	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
-	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
-	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
-	Cleanup               bool                                `json:"cleanup_requested"`
-	OnFailure             string                              `json:"on_failure,omitempty"`
-	CleanupReports        []string                            `json:"cleanup_reports,omitempty"`
-	CleanedTasks          []string                            `json:"cleaned_tasks,omitempty"`
-	SourceRefreshes       []WorktreeMergeSourceRefresh        `json:"source_refreshes,omitempty"`
+	SchemaVersion         int                                            `json:"schema_version"`
+	ID                    string                                         `json:"id"`
+	Lane                  string                                         `json:"lane"`
+	Phase                 WorktreeMergePhase                             `json:"phase"`
+	Status                WorktreeMergeStatus                            `json:"status"`
+	Repository            string                                         `json:"repository"`
+	Target                string                                         `json:"target"`
+	TargetSHA             string                                         `json:"target_sha"`
+	Sources               []WorktreeMergeSource                          `json:"sources"`
+	Candidate             WorktreeMergeCandidate                         `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt                    `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt                    `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision                     `json:"route,omitempty"`
+	PullRequest           string                                         `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                                         `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                                         `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                                         `json:"landing_sha,omitempty"`
+	CanonicalSync         string                                         `json:"canonical_sync,omitempty"`
+	Validation            quality.VerificationReport                     `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport                     `json:"baseline_validation,omitempty"`
+	ValidationIdentity    *WorktreeMergeValidationIdentity               `json:"validation_identity,omitempty"`
+	ValidationTimeouts    *WorktreeMergeValidationTimeouts               `json:"validation_timeouts,omitempty"`
+	Checks                PullRequestWaitResult                          `json:"checks,omitempty"`
+	PushGate              *WorktreeMergePushGateReceipt                  `json:"push_gate,omitempty"`
+	ForwardRepairs        []WorktreeMergeForwardRepairReceipt            `json:"forward_repairs,omitempty"`
+	Cleanup               bool                                           `json:"cleanup_requested"`
+	OnFailure             string                                         `json:"on_failure,omitempty"`
+	CleanupReports        []string                                       `json:"cleanup_reports,omitempty"`
+	CleanedTasks          []string                                       `json:"cleaned_tasks,omitempty"`
+	SourceRefreshes       []WorktreeMergeSourceRefresh                   `json:"source_refreshes,omitempty"`
+	SourcePullRequests    []WorktreeMergeSourcePullRequestReconciliation `json:"source_pull_requests,omitempty"`
 	// RebatchOf binds this candidate to an immutable prepared receipt whose
 	// source set was safely expanded. The old receipt is never rewritten.
 	RebatchOf           string                   `json:"rebatch_of,omitempty"`
@@ -979,6 +993,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 		}
 		reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
+		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
+		if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
+		}
+		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
 		receipt.Status = WorktreeMergeLanded
 		receipt.Cleanup = receipt.Cleanup || options.Cleanup
 		receipt.UpdatedAt = time.Now().UTC()
@@ -1293,6 +1312,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, err
 	}
 	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
+	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
+	if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
+	}
+	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
 	if !receipt.Cleanup {
 		reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
 		return receipt, nil
@@ -1985,7 +2009,7 @@ func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (str
 			subjects = append(subjects, line)
 		}
 	}
-	title := worktreeMergePRTitle(subjects, len(receipt.Sources), receipt.Target)
+	title := worktreeMergePRTitle(subjects, len(receipt.Sources))
 	var body strings.Builder
 	fmt.Fprintf(&body, "Mechanically prepared by `wb worktree merge` from exact source heads.\n\n")
 	for _, source := range receipt.Sources {
@@ -2003,12 +2027,23 @@ func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (str
 
 var conventionalWorktreeMergeSubject = regexp.MustCompile(`^([[:alpha:]]+)(\([^)]*\))?(!)?:[[:space:]]+`)
 
-func worktreeMergePRTitle(subjects []string, sourceCount int, target string) string {
+func worktreeMergePRTitle(subjects []string, sourceCount int) string {
 	if len(subjects) == 1 {
 		return subjects[0]
 	}
+	if sourceCount == 1 {
+		// Git log is newest first. The oldest non-merge subject normally states
+		// the source effort's purpose; later commits are review and CI repairs.
+		for index := len(subjects) - 1; index >= 0; index-- {
+			subject := strings.TrimSpace(subjects[index])
+			if subject != "" && !strings.HasPrefix(subject, "Merge ") {
+				return subject
+			}
+		}
+	}
 	type choice struct {
 		prefix   string
+		summary  string
 		priority int
 	}
 	selected := choice{prefix: "fix:", priority: 1}
@@ -2019,7 +2054,7 @@ func worktreeMergePRTitle(subjects []string, sourceCount int, target string) str
 		}
 		kind := strings.ToLower(match[1])
 		breaking := match[3] == "!"
-		candidate := choice{prefix: kind + ":", priority: 2}
+		candidate := choice{prefix: kind + ":", summary: strings.TrimSpace(strings.TrimPrefix(subject, match[0])), priority: 2}
 		switch {
 		case breaking:
 			candidate.prefix, candidate.priority = kind+"!:", 5
@@ -2032,7 +2067,14 @@ func worktreeMergePRTitle(subjects []string, sourceCount int, target string) str
 			selected = candidate
 		}
 	}
-	return fmt.Sprintf("%s merge %d worktree candidates into %s", selected.prefix, sourceCount, target)
+	if selected.summary == "" {
+		return fmt.Sprintf("%s apply %d related changes", selected.prefix, sourceCount)
+	}
+	related := "changes"
+	if sourceCount == 2 {
+		related = "change"
+	}
+	return fmt.Sprintf("%s %s and %d related %s", selected.prefix, selected.summary, sourceCount-1, related)
 }
 
 func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {

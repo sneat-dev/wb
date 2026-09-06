@@ -7098,7 +7098,8 @@
     {
       "id": "wb.stream.start",
       "feature_refs": [
-        "spec/features/dependency-streams/README.md"
+        "spec/features/dependency-streams/README.md",
+        "spec/features/worktree-lifecycle/README.md"
       ],
       "since": "unreleased",
       "surfaces": {
@@ -7124,6 +7125,7 @@
               ],
               "modes": [
                 "Creates one worktree per repository on branch stream/<name> through the existing wb worktree create path, each with a DRAFT pull request to its base",
+                "Writes the WB effort and stream identifiers into each pull-request body as visible text and versioned machine-readable provenance",
                 "The first repository is the library unless --library names another; the role is recorded because propagation direction is not symmetric",
                 "Every fence runs before the first side effect: name validation, the one-open-stream-per-repository refusal, and the fleet readiness checks",
                 "Readiness per member: wb hooks check, an npm provider-identity scan, a red-base check, and a stream-PR concurrency check for cancel-in-progress",
@@ -10474,6 +10476,7 @@
       "id": "wb.worktree.merge",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/worktree-lifecycle/README.md",
         "spec/features/modern-cli-help-discovery/README.md"
       ],
       "since": "unreleased",
@@ -10504,7 +10507,8 @@
               ],
               "modes": [
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
-                "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup."
+                "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup.",
+                "After a verified batch landing, reconciles an absorbed source pull request only when its exact current head, base repository, and base branch still match the landing evidence."
               ]
             }
           ],
@@ -10556,6 +10560,21 @@
               "path": "cmd/wb/help_discovery_test.go",
               "name": "TestPrimaryWorktreeHelpContainsCopyableExamples",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_source_prs_test.go",
+              "name": "TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_source_prs_test.go",
+              "name": "TestReconcileAbsorbedSourcePullRequestRefusesDriftedIdentity",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/prmeta/prmeta_test.go",
+              "name": "TestAppendAddsStableEffortAndStreamWithoutBranchOrWorktree",
+              "kind": "unit"
             }
           ],
           "limitation": null

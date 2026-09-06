@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/prmeta"
 )
 
 // Refusal is a guard that fired. It carries the stable code a caller branches
@@ -647,7 +649,7 @@ func (engine *Engine) setMember(name, repository string, mutate func(*Member)) (
 }
 
 func streamPullRequestBody(name string, role Role) string {
-	return strings.Join([]string{
+	body := strings.Join([]string{
 		"Draft stream pull request for `" + Branch(name) + "` (" + string(role) + ").",
 		"",
 		"It stays a draft until the stream lands: it exists so CI runs on every push to the",
@@ -657,6 +659,7 @@ func streamPullRequestBody(name string, role Role) string {
 		"Consume the library through `wb deps propagate local`; the orchestrator runs",
 		"`wb deps propagate remote` at the end. End with `wb worktree end`.",
 	}, "\n")
+	return prmeta.Append(body, prmeta.Provenance{Effort: name, Stream: name})
 }
 
 func streamExistsRefusal(name string) *Refusal {
