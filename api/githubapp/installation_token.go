@@ -92,7 +92,7 @@ func (source InstallationTokenSource) Token(ctx context.Context, delivery Webhoo
 	if response == nil || response.Body == nil {
 		return "", errors.New("request github installation token: empty response")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("request github installation token: status %d", response.StatusCode)
 	}
