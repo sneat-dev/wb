@@ -996,8 +996,9 @@ merges it, when the remote landing is verified, then WB fast-forwards an
 eligible clean canonical target before deleting the source branch. When main CI
 starts after that deletion, its receipt selector finds the successful pull
 request run by exact head SHA and repository identity without depending on the
-deleted branch ref, verifies the immutable artifact, and skips the duplicate
-full validation jobs.
+deleted branch ref. The pull-request receipt publisher still runs when accepted
+optional checks were skipped, so main verifies the immutable artifact and skips
+the duplicate full validation jobs.
 
 ### AC: merge-resume-adopts-existing-exact-pull-request
 
