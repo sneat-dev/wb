@@ -53,6 +53,10 @@
     "run": [
       "wb-run"
     ],
+    "worker": [
+      "wb-daemon",
+      "wb-run"
+    ],
     "self-update": [
       "wb-install"
     ],

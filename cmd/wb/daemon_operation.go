@@ -31,6 +31,7 @@ type daemonOperationResult struct {
 	QueueWaitMilliseconds int64  `json:"queue_wait_milliseconds,omitempty"`
 	WallMilliseconds      int64  `json:"wall_milliseconds,omitempty"`
 	Error                 string `json:"error,omitempty"`
+	TargetWorkerID        string `json:"target_worker_id,omitempty"`
 	StdoutTail            string `json:"stdout_tail,omitempty"`
 	StderrTail            string `json:"stderr_tail,omitempty"`
 }
@@ -51,7 +52,7 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 	var cpuUnits uint32
 	var wait, jsonOut bool
 	command := &cobra.Command{
-		Use: "submit -- <command> [args...]", Short: "Submit a command to the authenticated durable local queue",
+		Use: "submit -- <command> [args...]", Short: "Submit a trusted raw command for the daemon process to execute",
 		Args: func(command *cobra.Command, args []string) error {
 			if command.ArgsLenAtDash() != 0 || len(args) == 0 {
 				return usageError("command is required after --")
@@ -217,12 +218,18 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 		StartedUnixMilli: operation.StartedUnixMilli, FinishedUnixMilli: operation.FinishedUnixMilli,
 		QueueWaitMilliseconds: operation.QueueWaitMilliseconds, WallMilliseconds: operation.WallMilliseconds,
 		Error: operation.Error, StdoutTail: string(operation.StdoutTail), StderrTail: string(operation.StderrTail),
+		TargetWorkerID: operation.TargetWorkerId,
 	}
 	if format == "json" {
 		return writeJSONTo(out, result)
 	}
 	if _, err := fmt.Fprintf(out, "operation %s: state=%s, cursor=%s, cpu_units=%d", result.OperationID, result.State, result.Cursor, result.CPUUnits); err != nil {
 		return err
+	}
+	if result.TargetWorkerID != "" {
+		if _, err := fmt.Fprintf(out, ", target_worker=%s", result.TargetWorkerID); err != nil {
+			return err
+		}
 	}
 	if result.FinishedUnixMilli != 0 {
 		if _, err := fmt.Fprintf(out, ", exit_code=%d", result.ExitCode); err != nil {
@@ -244,12 +251,9 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 	return nil
 }
 
-func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args []string) error {
+func submitWorkerOperation(command *cobra.Command, deps daemonDependencies, targetWorkerID string, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return err
-	}
-	if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
 		return err
 	}
 	client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
@@ -257,7 +261,7 @@ func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args
 		return err
 	}
 	response, err := client.SubmitOperation(command.Context(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: cwd, Argv: args, LocalRawCommand: true,
+		WorkingDirectory: cwd, Argv: args, TargetWorkerId: targetWorkerID,
 	}))
 	if err != nil {
 		return err
