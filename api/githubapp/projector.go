@@ -23,6 +23,13 @@ type ProjectionReader interface {
 	RefreshProjection(context.Context, WebhookDelivery) (ProjectionSnapshot, error)
 }
 
+// AuthoritativeProjectionReader combines the freshness barrier and projection
+// read for readers that can carry one request-scoped GitHub snapshot across the
+// provider boundary. This avoids issuing the same REST reads twice.
+type AuthoritativeProjectionReader interface {
+	RefreshAuthoritativeProjection(context.Context, WebhookDelivery) (ProjectionSnapshot, error)
+}
+
 // ProjectionWriter durably applies a complete authoritative snapshot. Every
 // method is keyed by deliveryID and must be idempotent: a crash after a write
 // and before DeliveryStore commits is safe to retry. Implementations should
@@ -96,10 +103,15 @@ func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDeli
 			processErr = errors.Join(processErr, fmt.Errorf("release failed projection delivery claim: %w", releaseErr))
 		}
 	}()
-	if err := engine.AuthoritativeReader.Refresh(ctx, delivery); err != nil {
-		return false, fmt.Errorf("refresh authoritative GitHub state: %w", err)
+	var snapshot ProjectionSnapshot
+	if reader, ok := engine.Reader.(AuthoritativeProjectionReader); ok {
+		snapshot, err = reader.RefreshAuthoritativeProjection(ctx, delivery)
+	} else {
+		if err := engine.AuthoritativeReader.Refresh(ctx, delivery); err != nil {
+			return false, fmt.Errorf("refresh authoritative GitHub state: %w", err)
+		}
+		snapshot, err = engine.Reader.RefreshProjection(ctx, delivery)
 	}
-	snapshot, err := engine.Reader.RefreshProjection(ctx, delivery)
 	if err != nil {
 		return false, fmt.Errorf("build authoritative projections: %w", err)
 	}
