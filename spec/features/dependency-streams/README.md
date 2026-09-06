@@ -713,6 +713,14 @@ linking: linking directly to the provider's dist makes Node resolve Angular and
 other peer dependencies from the provider, creating duplicate framework
 singletons and incompatible private types. WB MUST preserve the original
 installed package and MUST NOT modify pnpm's global content-addressable store.
+When the provider publishes several packages used in the same consumer
+workspace, every staged package MUST resolve its declared staged siblings to
+the same staged identities used by the consumer root. WB MUST derive those
+edges from `dependencies`, `peerDependencies`, and `optionalDependencies`,
+preflight the complete sibling graph before changing it, and leave external
+peers in the consumer's installed dependency context. A failed preflight MUST
+create no partial sibling graph, and retry after the conflict is corrected MUST
+succeed without changing tracked configuration.
 WB MUST NOT silently delete framework build caches when the link topology
 changes. A running frontend build must be restarted; if its resolver cache
 retains the prior target, the operator explicitly clears that generated cache
@@ -1881,6 +1889,21 @@ library is built once with that workspace's own build target and linked from its
 dist into the declaring workspace's `node_modules`; `pnpm-workspace.yaml`
 and every `package.json` are byte-identical to their committed contents; and no
 override, alias, or `workspace:` entry is introduced anywhere in tracked config.
+
+### AC: npm-staged-siblings-share-one-runtime-identity
+
+**Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
+
+**Given** a pnpm consumer using staged `app`, `core`, and `auth-core` packages,
+where app declares core, core declares auth-core, and the packages share an
+external Angular peer
+**When** WB links all provider packages into the consumer workspace
+**Then** imports from both the consumer root and every staged sibling resolve
+core and auth-core to the same staged paths; Angular resolves from the
+consumer's installed peer context; a conflicting sibling path is refused before
+any sibling edge is created; retry succeeds after that conflict is removed; and
+undo restores every original pnpm symlink while removing every WB stage and
+marker.
 
 ### AC: verify-reports-every-consumer-single-worker
 
