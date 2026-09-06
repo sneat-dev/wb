@@ -27,6 +27,11 @@ type sessionParkOutput struct {
 	ParkedSessionID string `json:"parked_session_id"`
 	Status          string `json:"status"`
 	MemberCount     int    `json:"member_count"`
+	// WBSessionID names the parked source session, and RegisteredAtPark says
+	// whether park had to register it first. A caller that never ran
+	// `wb session register` learns its own identity from exactly here.
+	WBSessionID      string `json:"wb_session_id"`
+	RegisteredAtPark bool   `json:"registered_at_park"`
 }
 
 var captureParkedSessionAggregate = worktrees.CaptureParkedSessionAggregate
@@ -59,23 +64,30 @@ func writeParkJudgmentChecklist(command *cobra.Command, lead string) {
 }
 
 func newSessionParkCmd() *cobra.Command {
-	var contextFile, format string
+	var contextFile, format, runtime, model, wbSessionID string
+	var pid int
 	var overrideSecrets []string
 	command := &cobra.Command{
 		Use:   "park",
-		Short: "Suspend this registered session with an auditable whole-session checkpoint",
-		Args:  cobra.NoArgs,
+		Short: "Suspend this agent session with an auditable whole-session checkpoint",
+		Long: `Suspend this agent session with an auditable whole-session checkpoint.
+
+Registration is not a precondition. If no session is registered for the calling
+process, park registers one first from what it can observe — the agent PID from
+--pid, WB_AGENT_PID, or the nearest recognised harness above this process; the
+runtime and model from --runtime/--model or the WB_AGENT_* environment; the
+machine from this hostname — records ` + "`registered_at_park`" + ` on both the session and
+its own output, and continues. A runtime or model WB was neither told nor able
+to observe is recorded as "unknown"; missing metadata never refuses a park.
+
+  wb session park --context-file <file>
+
+--wb-session-id parks an already-registered session instead, and never creates
+a registration.`,
+		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
-			}
-			dir, err := sessionDirForRead()
-			if err != nil {
-				return err
-			}
-			source, ok := session.ResolveForProcess(dir, os.Getpid())
-			if !ok {
-				return fmt.Errorf("session park requires a live registered source session")
 			}
 			body, err := readParkContext(command, contextFile)
 			if err != nil {
@@ -97,6 +109,20 @@ func newSessionParkCmd() *cobra.Command {
 			// must run, and can only refuse, before that point: the write is
 			// the damage, not a later commit or push of it.
 			secretWarnings, err := scanContinuationForSecrets(overrides, secretscan.Segment{Name: "continuation", Content: []byte(continuation)})
+			if err != nil {
+				return err
+			}
+			// Session resolution runs only once the continuation is accepted.
+			// A park-time registration is a durable write, and a park refused
+			// for a missing or secret-bearing continuation must leave no trace
+			// of itself — the same reason the scan precedes the store.
+			dir, err := sessionDir()
+			if err != nil {
+				return err
+			}
+			source, registeredAtPark, err := session.ResolveOrRegisterForProcess(dir, os.Getpid(), session.AutoRegisterHints{
+				PID: pid, Runtime: runtime, Model: model, WBSessionID: wbSessionID,
+			})
 			if err != nil {
 				return err
 			}
@@ -149,7 +175,8 @@ func newSessionParkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), MemberCount: len(owned)}
+			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), MemberCount: len(owned),
+				WBSessionID: source.WBSessionID, RegisteredAtPark: registeredAtPark}
 			printSecretScanAdvisories(command, secretWarnings)
 			// The continuation is immutable once parked, so this is a
 			// verification prompt rather than an invitation to edit: a
@@ -160,12 +187,23 @@ func newSessionParkCmd() *cobra.Command {
 				enc.SetIndent("", "  ")
 				return enc.Encode(out)
 			}
+			if registeredAtPark {
+				if _, err := fmt.Fprintf(command.OutOrStdout(),
+					"registered_at_park: this session was not registered, so park registered it as %s (pid %d, runtime %s, model %s)\n",
+					source.WBSessionID, source.PID, source.Runtime, source.Model); err != nil {
+					return err
+				}
+			}
 			_, err = fmt.Fprintf(command.OutOrStdout(), "parked session %s with %d owned worktrees; resume with wb session resume %s\n", id, len(owned), id)
 			return err
 		},
 	}
 	command.Flags().StringVar(&contextFile, "context-file", "", "bounded agent-authored continuation file, or - for stdin")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().IntVar(&pid, "pid", 0, "process id of the agent session, used only when park has to register it")
+	command.Flags().StringVar(&runtime, "runtime", "", "harness running the agent, used only when park has to register it")
+	command.Flags().StringVar(&model, "model", "", "model identifier driving the session, used only when park has to register it")
+	command.Flags().StringVar(&wbSessionID, "wb-session-id", "", "park this already-registered WB session instead of resolving one from this process")
 	command.Flags().StringArrayVar(&overrideSecrets, secretOverrideFlagName, nil, secretOverrideFlagHelp)
 	return command
 }
