@@ -1070,6 +1070,10 @@ func TestLandWorktreeMergeCleanupTerminalizesExactRepositoryAssets(t *testing.T)
 	candidateWorktree := receipt.Candidate.Worktree
 	installWorktreeMergeDirectGH(t)
 	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	receipt.Failure = "obsolete cleanup refusal"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
 	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto, Cleanup: true,
 		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
@@ -1077,13 +1081,43 @@ func TestLandWorktreeMergeCleanupTerminalizesExactRepositoryAssets(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if landed.Status != WorktreeMergeComplete || len(landed.CleanedTasks) != 2 || len(landed.CleanupReports) != 2 {
+	if landed.Status != WorktreeMergeComplete || landed.Failure != "" || len(landed.CleanedTasks) != 2 || len(landed.CleanupReports) != 2 {
 		t.Fatalf("terminal cleanup receipt = %+v", landed)
 	}
 	for _, path := range []string{source.WorktreeDir, candidateWorktree} {
 		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 			t.Fatalf("cleaned worktree still exists at %s: %v", path, statErr)
 		}
+	}
+}
+
+func TestLandWorktreeMergeRevalidatesInterruptedPreparingCandidate(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "interrupted-prepare-source", "feature/interrupted-prepare", "change.txt", "change\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Status = WorktreeMergePreparing
+	receipt.Validation = quality.VerificationReport{}
+	receipt.BaselineValidation = quality.VerificationReport{}
+	receipt.ValidationIdentity = nil
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Validation.Status != quality.StatusPassed || landed.Validation.Revision != receipt.Candidate.SHA {
+		t.Fatalf("interrupted candidate was published without exact validation: %+v", landed.Validation)
 	}
 }
 

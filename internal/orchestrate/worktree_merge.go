@@ -861,6 +861,23 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
 		}
 	}
+	if receipt.Status == WorktreeMergePreparing {
+		if err := validatePreparingWorktreeMergeCandidate(ctx, receipt); err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		}
+		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("interrupted candidate validation failed: %w", validationErr))
+		}
+		receipt.Status = WorktreeMergePrepared
+		receipt.Failure = ""
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
+	}
 	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 	if advanceErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
@@ -994,6 +1011,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
 		receipt.Status = WorktreeMergeComplete
+		receipt.Failure = ""
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			return receipt, err
@@ -1274,6 +1292,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	}
 	reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
 	receipt.Status = WorktreeMergeComplete
+	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
@@ -3444,6 +3463,43 @@ func validateExactPreparingWorktreeMergeReceipt(ctx context.Context, receipt Wor
 	}
 	if strings.TrimSpace(remote) != "" {
 		return errors.New("receipt candidate was published")
+	}
+	return nil
+}
+
+// validatePreparingWorktreeMergeCandidate closes the interruption window
+// between persisting an integrated candidate SHA and persisting its completed
+// validation receipt. Landing may resume that exact candidate, but it must
+// prove the complete source/target graph before rerunning validation.
+func validatePreparingWorktreeMergeCandidate(ctx context.Context, receipt WorktreeMergeReceipt) error {
+	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePreparing || receipt.Candidate.SHA == "" {
+		return errors.New("receipt has no exact interrupted preparing candidate")
+	}
+	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
+		return fmt.Errorf("interrupted candidate is not clean: %w", err)
+	}
+	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	if err != nil {
+		return fmt.Errorf("read interrupted candidate head: %w", err)
+	}
+	if head != receipt.Candidate.SHA {
+		return fmt.Errorf("interrupted candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
+	}
+	containsTarget, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.TargetSHA, head)
+	if err != nil || !containsTarget {
+		if err == nil {
+			err = fmt.Errorf("candidate %s does not contain target %s", head, receipt.TargetSHA)
+		}
+		return fmt.Errorf("verify interrupted candidate target: %w", err)
+	}
+	for _, source := range receipt.Sources {
+		containsSource, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, source.SHA, head)
+		if ancestorErr != nil || !containsSource {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("candidate %s does not contain source %s", head, source.SHA)
+			}
+			return fmt.Errorf("verify interrupted candidate source %s: %w", source.Branch, ancestorErr)
+		}
 	}
 	return nil
 }
