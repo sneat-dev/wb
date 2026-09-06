@@ -80,6 +80,7 @@ type daemonDependencies struct {
 	version    func() versionInfo
 	token      func() (string, error)
 	health     func(context.Context, string) error
+	rawPolicy  func(string) (bool, string, error)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -93,6 +94,14 @@ func defaultDaemonDependencies() daemonDependencies {
 		version:    collectVersion,
 		token:      daemonOwnerToken,
 		health:     daemonHealthy,
+		rawPolicy: func(root string) (bool, string, error) {
+			path, err := daemon.RawExecutionPolicyPath()
+			if err != nil {
+				return false, "", err
+			}
+			allowed, err := daemon.LoadRawExecutionPolicy(path, root)
+			return allowed, path, err
+		},
 	}
 }
 
@@ -538,7 +547,14 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		return err
 	}
 	defer func() { _ = localListener.Close() }()
-	queue, err := daemon.NewService(projectsRoot, collectVersion().Version, fmt.Sprint(state.Queue.Generation))
+	rawExecutionPolicyPath, err := daemon.RawExecutionPolicyPath()
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("resolve daemon raw-execution policy: %w", err)
+	}
+	queue, err := daemon.NewService(projectsRoot, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
+		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, projectsRoot)
+	})
 	if err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("load durable daemon queue: %w", err)

@@ -17,7 +17,18 @@ wb daemon restart --if-running
 For foreground debugging, run `wb daemon serve`.
 
 Submit long-running local work without blocking the caller, then inspect or
-control it through the same authenticated local queue:
+control it through the same authenticated local queue. Raw command submission
+is disabled by default. An administrator may opt in by creating
+`~/.config/wb/daemon-raw-exec.json` outside the projects root with mode `0600`
+and exactly this policy:
+
+```json
+{"version":1,"allow_raw_daemon_execution":true}
+```
+
+Agents and WB commands must never create or enable this policy. The daemon
+revalidates it for every submission and immediately before launching queued
+work, so deleting or invalidating it revokes permission without a restart.
 
 ```sh
 wb daemon operation submit --format json -- go test ./internal/worktrees
@@ -45,6 +56,8 @@ builds expose the equivalent named-pipe endpoint contract and refuse rather
 than falling back to TCP until the native adapter is enabled.
 
 There is no remote mutation endpoint. The queue accepts only local raw command
-submissions, persists bounded output and command digests, and rejects arbitrary
-environment overrides. Use the dashboard and `/api/v1/*` read models for
-machine, worktree, and governed-command visibility.
+submissions after the protected host opt-in, persists bounded output and command
+digests, and rejects arbitrary environment overrides. Reusing an idempotency key
+with different cwd, argv, environment, or CPU units is rejected. Use the
+dashboard and `/api/v1/*` read models for machine, worktree, and
+governed-command visibility.

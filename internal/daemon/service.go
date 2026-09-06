@@ -25,14 +25,18 @@ import (
 )
 
 const (
-	ProtocolVersion = 1
-	QueueSchema     = 1
-	outputTailLimit = 64 << 10
+	ProtocolVersion       = 1
+	QueueSchema           = 1
+	outputTailLimit       = 64 << 10
+	maxIdempotencyKeySize = 256
+	maxArgumentCount      = 1024
+	maxArgumentBytes      = 128 << 10
 )
 
 type record struct {
 	Schema      int                 `json:"schema"`
 	Generation  string              `json:"scheduler_generation"`
+	RequestSHA  string              `json:"request_sha256"`
 	Operation   *daemonv1.Operation `json:"operation"`
 	WorkingDir  string              `json:"working_directory"`
 	Argv        []string            `json:"argv"`
@@ -56,9 +60,13 @@ type Service struct {
 	active     map[string]active
 	changed    chan struct{}
 	persist    func(*record) error
+	authorize  func() error
 }
 
-func NewService(projectsRoot, build, generation string) (*Service, error) {
+func NewService(projectsRoot, build, generation string, authorizeRaw func() error) (*Service, error) {
+	if authorizeRaw == nil {
+		authorizeRaw = func() error { return errors.New("raw daemon execution authorization is not configured") }
+	}
 	directory := filepath.Join(projectsRoot, ".wb", "runtime", "daemon", "operations")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
@@ -73,7 +81,7 @@ func NewService(projectsRoot, build, generation string) (*Service, error) {
 	service := &Service{
 		projects: projectsRoot, directory: directory, build: build,
 		generation: generation, records: map[string]*record{},
-		byKey: map[string]string{}, active: map[string]active{}, changed: make(chan struct{}),
+		byKey: map[string]string{}, active: map[string]active{}, changed: make(chan struct{}), authorize: authorizeRaw,
 	}
 	service.persist = service.persistRecord
 	entries, err := os.ReadDir(directory)
@@ -98,6 +106,9 @@ func NewService(projectsRoot, build, generation string) (*Service, error) {
 		}
 		service.records[item.Operation.OperationId] = &item
 		if item.Operation.IdempotencyKey != "" {
+			if item.RequestSHA == "" {
+				item.RequestSHA = requestDigest(item.WorkingDir, item.Argv, item.Environment, item.Operation.CpuUnits)
+			}
 			service.byKey[item.Operation.IdempotencyKey] = item.Operation.OperationId
 		}
 		switch item.Operation.State {
@@ -110,6 +121,16 @@ func NewService(projectsRoot, build, generation string) (*Service, error) {
 				return nil, err
 			}
 		case daemonv1.OperationState_OPERATION_STATE_QUEUED:
+			if authorizeErr := service.authorize(); authorizeErr != nil {
+				item.Operation.State = daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED
+				item.Operation.Error = "raw daemon execution authorization failed before queued work could resume: " + authorizeErr.Error()
+				item.Operation.Cursor = nextCursor(item.Operation.Cursor)
+				item.Operation.FinishedUnixMilli = time.Now().UnixMilli()
+				if err := service.persistLocked(&item); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			queued = append(queued, item.Operation.OperationId)
 		}
 	}
@@ -130,16 +151,30 @@ func (service *Service) GetDaemonInfo(_ context.Context, _ *connect.Request[daem
 
 func (service *Service) SubmitOperation(_ context.Context, request *connect.Request[daemonv1.SubmitOperationRequest]) (*connect.Response[daemonv1.Operation], error) {
 	input := request.Msg
+	if err := service.authorize(); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("raw daemon execution authorization failed: %w", err))
+	}
 	if !input.LocalRawCommand {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("raw commands are accepted only on the local daemon channel"))
 	}
 	if len(input.Argv) == 0 || strings.TrimSpace(input.Argv[0]) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("argv must name a command"))
 	}
+	if len(input.IdempotencyKey) > maxIdempotencyKeySize {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("idempotency_key exceeds %d bytes", maxIdempotencyKeySize))
+	}
+	if len(input.Argv) > maxArgumentCount {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("argv exceeds %d arguments", maxArgumentCount))
+	}
 	if !filepath.IsAbs(input.WorkingDirectory) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("working_directory must be absolute"))
 	}
+	argumentBytes := 0
 	for _, argument := range input.Argv {
+		argumentBytes += len(argument)
+		if argumentBytes > maxArgumentBytes {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("argv exceeds %d aggregate bytes", maxArgumentBytes))
+		}
 		if strings.IndexByte(argument, 0) >= 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("argv must not contain NUL bytes"))
 		}
@@ -148,10 +183,16 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	requestSHA := requestDigest(input.WorkingDirectory, input.Argv, environment, input.CpuUnits)
 	service.mu.Lock()
 	if input.IdempotencyKey != "" {
 		if id := service.byKey[input.IdempotencyKey]; id != "" {
-			operation := cloneOperation(service.records[id].Operation)
+			existing := service.records[id]
+			if existing.RequestSHA != requestSHA {
+				service.mu.Unlock()
+				return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("idempotency key belongs to a different operation payload"))
+			}
+			operation := cloneOperation(existing.Operation)
 			service.mu.Unlock()
 			return connect.NewResponse(operation), nil
 		}
@@ -169,7 +210,7 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 		ArgumentCount: uint32(len(input.Argv)), CpuUnits: input.CpuUnits,
 		SubmittedUnixMilli: now.UnixMilli(),
 	}
-	item := &record{Schema: QueueSchema, Generation: service.generation, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: environment}
+	item := &record{Schema: QueueSchema, Generation: service.generation, RequestSHA: requestSHA, Operation: operation, WorkingDir: input.WorkingDirectory, Argv: append([]string(nil), input.Argv...), Environment: environment}
 	service.records[id] = item
 	if input.IdempotencyKey != "" {
 		service.byKey[input.IdempotencyKey] = id
@@ -282,6 +323,10 @@ func (service *Service) execute(id string) {
 		return
 	}
 	defer lease.Release()
+	if authorizeErr := service.authorize(); authorizeErr != nil {
+		service.failAuthorization(id, authorizeErr)
+		return
+	}
 
 	service.mu.Lock()
 	item = service.records[id]
@@ -327,6 +372,25 @@ func (service *Service) execute(id string) {
 		}
 	}
 	service.finish(id, state, exitCode, stdout.Bytes(), stderr.Bytes(), waited, err)
+}
+
+func (service *Service) failAuthorization(id string, authorizeErr error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	item := service.records[id]
+	if item == nil || item.Operation.State != daemonv1.OperationState_OPERATION_STATE_QUEUED {
+		delete(service.active, id)
+		return
+	}
+	delete(service.active, id)
+	item.Operation.State = daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED
+	item.Operation.Error = "raw daemon execution authorization failed immediately before launch: " + authorizeErr.Error()
+	item.Operation.FinishedUnixMilli = time.Now().UnixMilli()
+	item.Operation.Cursor = nextCursor(item.Operation.Cursor)
+	if err := service.persistLocked(item); err != nil {
+		service.markPersistenceFailureLocked(item, "persist authorization failure", err)
+	}
+	service.notifyLocked()
 }
 
 func (service *Service) finish(id string, state daemonv1.OperationState, exitCode int, stdout, stderr []byte, waited time.Duration, runErr error) {
@@ -442,6 +506,22 @@ func nextCursor(cursor string) string {
 
 func digest(argv []string) string {
 	encoded, _ := json.Marshal(argv)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func requestDigest(workingDirectory string, argv []string, environment map[string]string, cpuUnits uint32) string {
+	encoded, _ := json.Marshal(struct {
+		WorkingDirectory string            `json:"working_directory"`
+		Argv             []string          `json:"argv"`
+		Environment      map[string]string `json:"environment,omitempty"`
+		CPUUnits         uint32            `json:"cpu_units,omitempty"`
+	}{
+		WorkingDirectory: workingDirectory,
+		Argv:             argv,
+		Environment:      environment,
+		CPUUnits:         cpuUnits,
+	})
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }

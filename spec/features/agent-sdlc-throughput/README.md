@@ -308,11 +308,12 @@ The lifecycle record is private local state, atomically written with a schema
 version, fenced queue generation, owner provenance/token, and predecessor
 handoff. `wb run --async -- <argv>` and `wb daemon operation submit` dispatch
 through the durable queue; `get`, `wait`, and `cancel` address the returned
-operation ID. Queued jobs resume under the next lifecycle generation. A job
-that was running at process exit becomes `recovery_required` rather than being
-executed twice. Ordinary commands remain daemon-free; only an explicitly
-daemon-backed async operation may request startup. The foreground `serve` path
-emits an alive heartbeat to stderr at least every ten seconds while it runs.
+operation ID. Queued jobs resume under the next lifecycle generation only while
+the external raw-execution policy remains valid. A job that was running at
+process exit becomes `recovery_required` rather than being executed twice.
+Ordinary commands remain daemon-free; only an explicitly daemon-backed async
+operation may request startup. The foreground `serve` path emits an alive
+heartbeat to stderr at least every ten seconds while it runs.
 
 `status` reports the persisted lifecycle state, the platform process manager's
 authoritative ownership of the recorded PID, and the loopback API probe as
@@ -328,6 +329,16 @@ error with the daemon log path.
 The loopback HTTP dashboard remains read-only. Operation mutations use
 ConnectRPC on a separate mode-0600 Unix socket and require the private lifecycle
 owner token, which is not passed in process arguments or operation receipts.
+Raw command execution remains disabled by default even for an authenticated
+local caller. It requires an administrator-created mode-0600 policy under the
+OS account's configuration directory, outside the agent-writable projects
+root; WB has no command or startup path that creates or enables it. The daemon
+itself re-reads the policy for every submission and immediately before launch,
+so missing, malformed, symlinked, in-project, incorrectly permissioned, or
+revoked policy fails closed. A queued command denied at restart or launch moves
+to `recovery_required` without execution. Idempotency equality binds the key to
+cwd, argv, allowlisted environment, and requested CPU units; a changed payload
+is rejected, and key/argv sizes are bounded before persistence.
 Only a small, explicitly allowlisted set of non-secret display/CI environment
 values can enter a durable operation record. Windows builds retain the same
 named-pipe endpoint abstraction and fail closed until the native named-pipe
@@ -876,8 +887,8 @@ a worktree.
   retries, CI, landing, cleanup, and saved agent calls/tokens.
 - [x] Add the first authenticated local async queue slice: durable protobuf
   receipts, submit/get/wait/cancel, bounded output, CPU admission, POSIX Unix
-  socket transport, restart recovery fencing, and a fail-closed Windows
-  named-pipe endpoint abstraction.
+  socket transport, default-deny administrator policy, restart/revocation
+  recovery fencing, and a fail-closed Windows named-pipe endpoint abstraction.
 - [ ] Add the per-user daemon with durable async intents, three CPU units on a
   four-vCPU host, fair queuing, deduplication, supersession, and controlled
   version draining/restart.
@@ -1011,14 +1022,19 @@ the queue handoff and advances the generation once.
 
 Given an authenticated local caller submits an operation through
 `wb run --async` or `wb daemon operation submit`, when the caller exits and the
-daemon restarts, then a queued operation resumes under the new lifecycle queue
-generation and a previously running operation reports `recovery_required`
-without automatic re-execution. Every state transition is published to the
+daemon restarts while its protected external administrator policy remains
+valid, then a queued operation resumes under the new lifecycle queue generation
+and a previously running operation reports `recovery_required` without
+automatic re-execution. If that policy is missing, malformed, symlinked,
+in-project, incorrectly permissioned, or revoked, new submissions are denied
+and queued work becomes `recovery_required` before launch. WB never creates or
+enables the policy. Every state transition is published to the
 mode-0600 durable store before execution crosses that boundary; a persistence
 failure prevents launch or returns an explicit recovery disposition. The
 loopback dashboard cannot reach the mutation handlers, arbitrary environment
-keys are rejected, and the lifecycle authentication token appears in neither
-process arguments nor operation receipts.
+keys are rejected, idempotency keys reject changed cwd/argv/environment/CPU
+payloads, request sizes are bounded, and the lifecycle authentication token
+appears in neither process arguments nor operation receipts.
 
 ### AC: json-output-selection-is-consistent
 

@@ -39,7 +39,7 @@ func TestDaemonLocalTransportRequiresTokenAndProtectsSocket(t *testing.T) {
 	if permissions := info.Mode().Perm(); permissions != 0o600 {
 		t.Fatalf("socket permissions = %o", permissions)
 	}
-	service, err := daemon.NewService(root, "test-build", "9")
+	service, err := daemon.NewService(root, "test-build", "9", func() error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		service, err := daemon.NewService(root, "test-build", fmt.Sprint(state.Queue.Generation))
+		service, err := daemon.NewService(root, "test-build", fmt.Sprint(state.Queue.Generation), func() error { return nil })
 		if err != nil {
 			_ = listener.Close()
 			return 0, err

@@ -24,6 +24,10 @@ import (
 )
 
 func newRunCmd() *cobra.Command {
+	return newRunCmdWithDaemonDependencies(defaultDaemonDependencies())
+}
+
+func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Command {
 	var (
 		apply      bool
 		async      bool
@@ -82,7 +86,7 @@ wb run --history --days 7`,
 					return usageError("--apply, --config, --days, --format, --history, --json, and --list belong to WB modes and cannot be used with run --")
 				}
 				if async {
-					return submitDaemonOperation(cmd, defaultDaemonDependencies(), args)
+					return submitDaemonOperation(cmd, daemonDeps, args)
 				}
 				return runExternalCommand(cmd, args)
 			}

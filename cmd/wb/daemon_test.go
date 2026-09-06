@@ -253,6 +253,9 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		version:    func() versionInfo { return versionInfo{Version: "test", Revision: "test-revision"} },
 		token:      func() (string, error) { pid++; return strings.Repeat("a", 30) + string(rune(pid)), nil },
 		health:     func(context.Context, string) error { return nil },
+		rawPolicy: func(string) (bool, string, error) {
+			return true, "test-policy", nil
+		},
 	}
 	deps.start = func(_ string, args []string, _ string) (int, error) {
 		statePath := ""

@@ -67,6 +67,9 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
+				return err
+			}
 			client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
 			if err != nil {
 				return err
@@ -246,6 +249,9 @@ func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args
 	if err != nil {
 		return err
 	}
+	if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
+		return err
+	}
 	client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
 	if err != nil {
 		return err
@@ -257,4 +263,19 @@ func submitDaemonOperation(command *cobra.Command, deps daemonDependencies, args
 		return err
 	}
 	return writeDaemonOperation(command.OutOrStdout(), "json", response.Msg)
+}
+
+func requireDaemonRawExecutionPolicy(deps daemonDependencies, root string) error {
+	check := deps.rawPolicy
+	if check == nil {
+		check = defaultDaemonDependencies().rawPolicy
+	}
+	allowed, path, err := check(root)
+	if err != nil {
+		return fmt.Errorf("load daemon raw-execution policy: %w", err)
+	}
+	if allowed {
+		return nil
+	}
+	return fmt.Errorf("raw daemon execution is disabled; an administrator must create %s with mode 0600 and contents {\"version\":1,\"allow_raw_daemon_execution\":true}", path)
 }

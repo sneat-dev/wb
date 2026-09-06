@@ -1370,12 +1370,12 @@
       "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation submit", "flags": ["--cpu-units", "--format", "--idempotency-key", "--json", "--wait"], "modes": ["Submits raw argv only through the authenticated local transport and returns a digest-bound receipt"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation submit", "flags": ["--cpu-units", "--format", "--idempotency-key", "--json", "--wait"], "modes": ["After an external administrator opt-in, submits bounded raw argv only through the authenticated local transport and returns a payload-bound receipt"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb daemon operation submit --help", "contains": ["--cpu-units", "--idempotency-key", "--wait", "command"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation submit --format json -- go test ./internal/worktrees"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt", "kind": "integration"}], "limitation": null}
       },
-      "notes": "POSIX uses a mode-0600 Unix socket. Windows exposes the named-pipe endpoint contract and fails closed until the native adapter is enabled. Arbitrary environment overrides are rejected before persistence."
+      "notes": "Raw execution defaults to denied and the daemon revalidates an administrator-owned external mode-0600 policy at submission and launch. POSIX uses a mode-0600 Unix socket. Windows exposes the named-pipe endpoint contract and fails closed until the native adapter is enabled. Arbitrary environment overrides and idempotency payload mismatches are rejected before persistence."
     },
     {
       "id": "wb.daemon.operation.wait",
@@ -5326,7 +5326,7 @@
               ],
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
-                "With --async, submits argv through the authenticated durable local queue and returns a JSON operation receipt without waiting.",
+                "With --async and an external administrator opt-in, submits bounded argv through the authenticated durable local queue and returns a JSON operation receipt without waiting; otherwise reports the exact policy action without writing it.",
                 "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
