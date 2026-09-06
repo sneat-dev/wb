@@ -1506,6 +1506,47 @@
       "notes": "The loopback MVP preserves the durable handoff record while draining."
     },
     {
+      "id": "wb.dashboard",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb dashboard",
+            "flags": ["--format", "--json", "--local"],
+            "modes": [
+              "Opens the hosted cross-machine dashboard in the platform browser by default.",
+              "--local starts or reuses the loopback daemon and opens its local dashboard.",
+              "JSON and non-interactive invocations return the resolved URL without launching a browser."
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb dashboard --help", "contains": ["hosted cross-machine", "--format", "--json", "--local"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb dashboard", "wb dashboard --local", "wb dashboard --format=json"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardOpensHostedURL", "kind": "unit"},
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardJSONDoesNotOpenBrowser", "kind": "unit"},
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardLocalStartsDaemonAndOpensItsURL", "kind": "unit"},
+            {"path": "cmd/wb/browser_test.go", "name": "TestBrowserCommandUsesPlatformMechanism", "kind": "unit"}
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The hosted and local dashboards share a short human entry point while machine callers receive a side-effect-free URL receipt."
+    },
+    {
       "id": "wb.deps.bump",
       "feature_refs": [],
       "since": "existing",
