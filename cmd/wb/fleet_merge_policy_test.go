@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
 func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
@@ -30,8 +32,8 @@ func TestFleetMergePolicyHelpAndFlags(t *testing.T) {
 	if got := command.Flags().Lookup("apply").DefValue; got != "false" {
 		t.Fatalf("--apply default = %s", got)
 	}
-	if got := command.Flags().Lookup("parallel").DefValue; got != "4" {
-		t.Fatalf("--parallel default = %s", got)
+	if got, want := command.Flags().Lookup("parallel").DefValue, strconv.Itoa(runqueue.Budget()); got != want {
+		t.Fatalf("--parallel default = %s, want WB CPU budget %s", got, want)
 	}
 }
 

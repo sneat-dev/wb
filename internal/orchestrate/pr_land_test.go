@@ -417,6 +417,9 @@ func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	if strings.Contains(arguments, "Co-Authored-By") {
 		t.Fatalf("trailers are provenance, not information about the change:\n%s", arguments)
 	}
+	if got := result.ManualEquivalent[3]; !strings.HasSuffix(got, "--squash") {
+		t.Fatalf("manual squash equivalent = %q", got)
+	}
 	if strings.Contains(arguments, "## Details") {
 		t.Fatalf("the body summary must stop at the first heading:\n%s", arguments)
 	}
@@ -454,11 +457,40 @@ func TestLandPreservesExplicitRebaseMethod(t *testing.T) {
 	if arguments := fixture.readState(t, "merge-args"); !strings.Contains(arguments, "merge_method=rebase") {
 		t.Fatalf("explicit rebase method was not preserved: %q", arguments)
 	}
+	if got := result.ManualEquivalent[3]; !strings.HasSuffix(got, "--rebase") {
+		t.Fatalf("manual rebase equivalent = %q", got)
+	}
+}
+
+func TestLandRequiresExplicitSquashForKeepCommits(t *testing.T) {
+	fixture := newLandFixture(t, "feature/keep-method", "go.mod")
+	for _, testCase := range []struct {
+		name     string
+		method   string
+		explicit bool
+	}{
+		{name: "default merge", method: "merge"},
+		{name: "explicit merge", method: "merge", explicit: true},
+		{name: "explicit rebase", method: "rebase", explicit: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			options := landOptions(fixture)
+			options.MergeMethod = testCase.method
+			options.MergeMethodExplicit = testCase.explicit
+			options.KeepCommits = []string{fixture.commitSHAs[0]}
+			options.Reason = "it must stand alone"
+			if _, err := LandPullRequest(context.Background(), options); err == nil || !strings.Contains(err.Error(), "explicit --merge-method squash") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
 }
 
 func TestLandRefusesKeepCommitsWithoutAReason(t *testing.T) {
 	fixture := newLandFixture(t, "feature/keep", "go.mod", "go.sum")
 	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	options.MergeMethodExplicit = true
 	options.KeepCommits = []string{fixture.commitSHAs[0]}
 
 	result, err := LandPullRequest(context.Background(), options)
@@ -476,6 +508,8 @@ func TestLandRefusesKeepCommitsWithoutAReason(t *testing.T) {
 func TestLandRefusesAKeptCommitThatIsNotOnTheBranch(t *testing.T) {
 	fixture := newLandFixture(t, "feature/keep-unknown", "go.mod")
 	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	options.MergeMethodExplicit = true
 	options.KeepCommits = []string{strings.Repeat("b", 40)}
 	options.Reason = "it is worth its own commit"
 

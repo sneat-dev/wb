@@ -1254,6 +1254,8 @@ first mutation, rechecks observed repository settings before changing them,
 uses bounded parallel reads with progress gaps no longer than ten seconds, and
 changes only merge settings. Classic branch protection is read separately from
 rulesets, and required linear history or a merge-queue requirement blocks apply.
+The default read parallelism is WB's current CPU budget (logical CPU count minus
+one, with a minimum of one); explicit `--parallel` remains authoritative.
 Repository rulesets preserve all unrelated conditions, bypass actors,
 enforcement, review requirements, status checks, and other rules.
 Organization and enterprise rulesets take precedence and remain audit-only in

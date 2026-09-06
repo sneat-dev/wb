@@ -104,6 +104,30 @@ func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	}
 }
 
+func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
+	for _, method := range []string{"", "merge", "rebase"} {
+		name := method
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			command := newPRLandCmd()
+			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
+				t.Fatal(err)
+			}
+			if method != "" {
+				if err := command.Flags().Set("merge-method", method); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := command.RunE(command, []string{"acme/app#7"})
+			if err == nil || !strings.Contains(err.Error(), "explicit --merge-method squash") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 	got := splitCommaSeparated([]string{"a,b", " c ", "", "d,,e"})
 	want := []string{"a", "b", "c", "d", "e"}

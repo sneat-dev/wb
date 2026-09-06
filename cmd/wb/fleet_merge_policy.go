@@ -18,6 +18,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/spf13/cobra"
 )
@@ -124,7 +125,8 @@ var (
 )
 
 func newFleetMergePolicyCmd() *cobra.Command {
-	options := mergePolicyOptions{parallel: 4}
+	defaultParallel := runqueue.Budget()
+	options := mergePolicyOptions{parallel: defaultParallel}
 	command := &cobra.Command{
 		Use:   "merge-policy",
 		Short: "Audit or apply merge-commit policy across GitHub repositories",
@@ -170,7 +172,7 @@ Exit codes: 0 compliant/applied, 1 drift, conflicts, or inspection errors,
 		},
 	}
 	command.Flags().BoolVar(&options.apply, "apply", false, "apply the exact planned merge policy; audit is the default")
-	command.Flags().IntVar(&options.parallel, "parallel", 4, "maximum GitHub repositories to inspect concurrently (1-16)")
+	command.Flags().IntVar(&options.parallel, "parallel", defaultParallel, "maximum GitHub repositories to inspect concurrently (1-16; default: WB CPU budget)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/merge-policy)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "resume into an existing --report-dir after interruption; all decisions are re-observed")
 	addJSONFormatFlags(command, &options.json)
@@ -187,7 +189,7 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Fprintf(progress, "merge-policy: working; inspected %d/%d repositories\n", inspected.Load(), total.Load())
+				_, _ = fmt.Fprintf(progress, "merge-policy: working; inspected %d/%d repositories\n", inspected.Load(), total.Load())
 			case <-heartbeatDone:
 				return
 			}
@@ -242,7 +244,9 @@ func runMergePolicy(ctx context.Context, options mergePolicyOptions, progress io
 		if err := persistMergePolicyReport(report); err != nil {
 			return report, err
 		}
-		fmt.Fprintf(progress, "merge-policy: planned %d repositories and %d shared rulesets; report %s\n", len(report.Repositories), len(report.Rulesets), path)
+		if _, err := fmt.Fprintf(progress, "merge-policy: planned %d repositories and %d shared rulesets; report %s\n", len(report.Repositories), len(report.Rulesets), path); err != nil {
+			return report, fmt.Errorf("write merge-policy plan progress: %w", err)
+		}
 		applyMergePolicy(ctx, &report, progress)
 		summarizeMergePolicy(&report)
 		if err := persistMergePolicyReport(report); err != nil {
@@ -557,7 +561,7 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, progress i
 		}
 		repo.Disposition = "applied"
 		repo.Drift = nil
-		fmt.Fprintf(progress, "merge-policy: applied %s\n", repo.Repository)
+		_, _ = fmt.Fprintf(progress, "merge-policy: applied %s\n", repo.Repository)
 	}
 }
 
@@ -611,13 +615,15 @@ func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) er
 		return err
 	}
 	name := temp.Name()
-	defer os.Remove(name)
+	defer func() {
+		_ = os.Remove(name)
+	}()
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return err
 	}
 	if _, err := temp.Write(payload); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return err
 	}
 	if err := temp.Close(); err != nil {

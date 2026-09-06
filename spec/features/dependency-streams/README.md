@@ -431,8 +431,11 @@ the folded bodies.
 
 #### REQ: keeping-a-commit-separate-is-reasoned-and-must-build
 
-An agent MAY keep specific commits out of the aggregate:
-`--keep-commits <sha>[,<sha>...] --reason "<text>"`. WB MUST then rebase the
+An agent MAY keep specific commits out of an explicitly selected squash:
+`--merge-method squash --keep-commits <sha>[,<sha>...] --reason "<text>"`.
+WB MUST refuse `--keep-commits` with the default merge method, explicit merge,
+or explicit rebase; merge already preserves all reviewed commits and rebase is
+a different landing contract. WB MUST then rebase the
 pull request so the kept commits land as their **own commits, in their original
 relative order**, with everything else squashed into one aggregated commit, and
 MUST record the source→landed SHA pairs in the stream ledger — a rebase landing
@@ -1715,7 +1718,7 @@ and `--force` proceeds with the reason recorded.
 **Requirements:** dependency-streams#req:the-squash-message-aggregates-the-source-commits, dependency-streams#req:keeping-a-commit-separate-is-reasoned-and-must-build
 
 **Given** a reviewed pull request whose branch carries five commits
-**When** it is landed with `--keep-commits <two of those shas> --reason "…"`
+**When** it is landed with `--merge-method squash --keep-commits <two of those shas> --reason "…"`
 **Then** the base receives **three** commits — the two kept ones, in their
 original relative order, and one aggregated commit whose body lists the other
 three by short SHA and subject and carries the reason; the ledger records each
@@ -2435,7 +2438,7 @@ their raw commits kept — was superseded by the founder's 2026-09-06 tooling
 policy: merge commit by default. The merge commit preserves the reviewed pull
 request boundary and its commits. Explicit `--merge-method squash` retains the
 aggregated-message contract, while explicit rebase and reasoned
-`--keep-commits … --reason …` remain available.)*
+`--merge-method squash --keep-commits … --reason …` remain available.)*
 
 *(The former question 4 — whether own-library bumps keep flowing through
 Renovate — is **resolved**. Founder, 2026-09-03: "Yes, renovate should bump deps

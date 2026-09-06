@@ -57,10 +57,13 @@ without a merge commit is the repository's deliberate exception.
 
 ```sh
 wb pr land sneat-co/sneat-go#1041 --approved-by review.md \
-  --keep-commits 4f2a1c9 --reason "the migration must be revertable on its own"
+  --merge-method squash --keep-commits 4f2a1c9 \
+  --reason "the migration must be revertable on its own"
 ```
 
-wb rebuilds the branch so the named commits land as their own commits, in their
+This hybrid requires an explicit `--merge-method squash`; merge already keeps
+every reviewed commit, while rebase selects a different landing contract. wb
+rebuilds the branch so the named commits land as their own commits, in their
 original relative order, with everything else squashed into one aggregated
 commit that records the reason. The rewritten SHAs are paired with their source
 SHAs on the receipt, because a rebase merge rewrites every commit and that
