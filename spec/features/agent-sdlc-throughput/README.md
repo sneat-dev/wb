@@ -875,8 +875,9 @@ a worktree.
   projection writes succeed.
 - [x] Add the host-neutral authoritative GitHub REST projection reader with
   injected transport and installation-token seams, immutable root-README
-  eligibility evidence, repository/organization/latest-merge snapshots, and a
-  request-scoped handoff that avoids duplicate refresh reads.
+  eligibility evidence, repository/latest-merge snapshots, and a request-scoped
+  handoff that avoids duplicate refresh reads; defer organization projections
+  until installation-scoped complete aggregation is available.
 - [x] Revalidate an exact interrupted `preparing` merge candidate before any
   publication, and clear historical failure text whenever cleanup reaches a
   terminal successful receipt.

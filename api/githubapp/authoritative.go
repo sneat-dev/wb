@@ -40,11 +40,6 @@ type githubRepository struct {
 	OpenIssues    int    `json:"open_issues_count"`
 	HTMLURL       string `json:"html_url"`
 }
-type githubOrganization struct {
-	Login       string `json:"login"`
-	PublicRepos int    `json:"public_repos"`
-	HTMLURL     string `json:"html_url"`
-}
 type githubSearch struct {
 	Total int `json:"total_count"`
 }
@@ -127,24 +122,14 @@ func (reader GitHubRESTProjectionReader) RefreshAuthoritativeProjection(ctx cont
 	if public {
 		document.PublicEligibility = &eligibility
 	}
-	var org githubOrganization
-	err = reader.get(ctx, token, "/orgs/"+url.PathEscape(owner), &org)
-	if err != nil {
-		return ProjectionSnapshot{}, fmt.Errorf("read github organization: %w", err)
-	}
-	orgID := "github.com/" + org.Login
-	if org.Login == "" {
-		orgID = "github.com/" + owner
-	}
-	// The organization endpoint exposes public_repos, not the installation's
-	// complete repository set. Omitting aggregate counts avoids presenting a
-	// partial public count as an exact organization projection.
-	orgDoc := ProjectionDocument{Scope: ScopeOrganization, ID: orgID, DisplayName: owner, UpdatedAt: updated}
 	merges, err := reader.latestMerges(ctx, token, owner, repo)
 	if err != nil {
 		return ProjectionSnapshot{}, fmt.Errorf("read latest merges: %w", err)
 	}
-	return ProjectionSnapshot{Repositories: []ProjectionDocument{document}, Organizations: []ProjectionDocument{orgDoc}, LatestMerges: merges}, nil
+	// Organization projections are intentionally omitted until the host can
+	// supply an installation-scoped complete repository aggregation. A zero
+	// valued organization summary would incorrectly claim exact zero counts.
+	return ProjectionSnapshot{Repositories: []ProjectionDocument{document}, LatestMerges: merges}, nil
 }
 
 var errNoPublicOptIn = errors.New("repository has no public Workbench opt-in")

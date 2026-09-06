@@ -28,6 +28,17 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) Do(request *http.Request) (*http.Response, error) { return fn(request) }
 
+func TestWorkbenchRootREADMEProvidesPublicOptIn(t *testing.T) {
+	if _, err := VerifyPublicEligibility(
+		"github.com/sneat-dev/wb",
+		"https://github.com/sneat-dev/wb/blob/0123456789abcdef0123456789abcdef01234567/README.md",
+		"## WB\n\nPublic Workbench projections are opt-in from this repository's root README: [Workbench dashboard](https://sneat.work/bench).\n",
+		time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("root README opt-in rejected: %v", err)
+	}
+}
+
 func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\n[Dashboard](https://sneat.work/bench)\n"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,8 +56,6 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 			io.WriteString(w, `{"total_count":7}`)
 		case r.URL.Path == "/repos/acme/widgets/releases":
 			io.WriteString(w, `[{"html_url":"https://github.com/acme/widgets/releases/tag/v1"}]`)
-		case r.URL.Path == "/orgs/acme":
-			io.WriteString(w, `{"login":"acme","public_repos":12,"html_url":"https://github.com/acme"}`)
 		case r.URL.Path == "/repos/acme/widgets/pulls":
 			io.WriteString(w, `[{"number":9,"merged_at":"2026-09-06T03:00:00Z","html_url":"https://github.com/acme/widgets/pull/9","merge_commit_sha":"abcdef"},{"number":8,"merged_at":null}]`)
 		default:
@@ -66,7 +75,7 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 	if snapshot.Repositories[0].PublicEligibility == nil || !strings.Contains(snapshot.Repositories[0].PublicEligibility.READMEURL, "/0123456789abcdef0123456789abcdef01234567/") {
 		t.Fatalf("eligibility = %#v", snapshot.Repositories[0].PublicEligibility)
 	}
-	if len(snapshot.Organizations) != 1 || snapshot.Organizations[0].ID != "github.com/acme" || snapshot.Organizations[0].Summary != (Summary{}) {
+	if len(snapshot.Organizations) != 0 {
 		t.Fatalf("organizations = %#v", snapshot.Organizations)
 	}
 	if len(snapshot.LatestMerges) != 1 || snapshot.LatestMerges[0].PullRequest != 9 {
@@ -128,7 +137,7 @@ func TestGitHubRESTProjectionReaderHTTPFailures(t *testing.T) {
 func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\nhttps://sneat.work/bench\n"))
-	for _, mode := range []string{"repository", "identity", "commits", "badsha", "readme-error", "encoding", "base64", "content-error", "nooptin", "open", "merged", "releases", "negative", "default", "organization", "org-empty", "pulls"} {
+	for _, mode := range []string{"repository", "identity", "commits", "badsha", "readme-error", "encoding", "base64", "content-error", "nooptin", "open", "merged", "releases", "negative", "default", "pulls"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -202,16 +211,6 @@ func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
 						return
 					}
 					io.WriteString(w, `[]`)
-				case r.URL.Path == "/orgs/acme":
-					if mode == "organization" {
-						fail()
-						return
-					}
-					login := "acme"
-					if mode == "org-empty" {
-						login = ""
-					}
-					io.WriteString(w, `{"login":"`+login+`","public_repos":12}`)
 				case r.URL.Path == "/repos/acme/widgets/pulls":
 					if mode == "pulls" {
 						fail()
