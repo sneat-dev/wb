@@ -25,6 +25,11 @@ import (
 
 const mergePolicySchemaVersion = 1
 
+const (
+	mergePolicyUnavailableByPlan = "unavailable_by_plan"
+	githubPolicyPlanGateMessage  = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+)
+
 type mergePolicyOptions struct {
 	apply        bool
 	includeUser  bool
@@ -65,6 +70,7 @@ type mergePolicyRepository struct {
 	Rulesets       []mergePolicyRuleRef `json:"rulesets,omitempty"`
 	ObservedSHA    string               `json:"observed_sha,omitempty"`
 	ProtectionSHA  string               `json:"protection_sha,omitempty"`
+	RulesSHA       string               `json:"rules_sha,omitempty"`
 	ClassicLinear  bool                 `json:"classic_required_linear_history,omitempty"`
 	AppliedActions []string             `json:"applied_actions,omitempty"`
 	Error          string               `json:"error,omitempty"`
@@ -112,6 +118,67 @@ type githubEffectiveRule struct {
 	RulesetSource     string          `json:"ruleset_source"`
 	RulesetID         int64           `json:"ruleset_id"`
 	Parameters        json.RawMessage `json:"parameters"`
+}
+
+type githubClassicProtection struct {
+	RequiredStatusChecks *struct {
+		Strict   bool     `json:"strict"`
+		Contexts []string `json:"contexts"`
+		Checks   []struct {
+			Context string `json:"context"`
+			AppID   *int64 `json:"app_id"`
+		} `json:"checks"`
+	} `json:"required_status_checks"`
+	EnforceAdmins              *githubEnabledSetting `json:"enforce_admins"`
+	RequiredPullRequestReviews *struct {
+		DismissalRestrictions        *githubProtectionActors `json:"dismissal_restrictions"`
+		DismissStaleReviews          bool                    `json:"dismiss_stale_reviews"`
+		RequireCodeOwnerReviews      bool                    `json:"require_code_owner_reviews"`
+		RequiredApprovingReviewCount int                     `json:"required_approving_review_count"`
+		RequireLastPushApproval      bool                    `json:"require_last_push_approval"`
+		BypassPullRequestAllowances  *githubProtectionActors `json:"bypass_pull_request_allowances"`
+	} `json:"required_pull_request_reviews"`
+	Restrictions                   *githubProtectionActors `json:"restrictions"`
+	RequiredLinearHistory          *githubEnabledSetting   `json:"required_linear_history"`
+	RequiredMergeQueue             *githubEnabledSetting   `json:"required_merge_queue"`
+	MergeQueue                     *githubEnabledSetting   `json:"merge_queue"`
+	AllowForcePushes               *githubEnabledSetting   `json:"allow_force_pushes"`
+	AllowDeletions                 *githubEnabledSetting   `json:"allow_deletions"`
+	BlockCreations                 *githubEnabledSetting   `json:"block_creations"`
+	RequiredConversationResolution *githubEnabledSetting   `json:"required_conversation_resolution"`
+	LockBranch                     *githubEnabledSetting   `json:"lock_branch"`
+	AllowForkSyncing               *githubEnabledSetting   `json:"allow_fork_syncing"`
+}
+
+type githubEnabledSetting struct {
+	Enabled bool `json:"enabled"`
+}
+
+type githubProtectionActors struct {
+	Users []struct {
+		Login string `json:"login"`
+	} `json:"users"`
+	Teams []struct {
+		Slug string `json:"slug"`
+	} `json:"teams"`
+	Apps []struct {
+		Slug string `json:"slug"`
+	} `json:"apps"`
+}
+
+type githubProtectionActorNames struct {
+	Users []string `json:"users"`
+	Teams []string `json:"teams"`
+	Apps  []string `json:"apps"`
+}
+
+type mergePolicyBranchInspection struct {
+	ProtectionSHA string
+	RulesSHA      string
+	ClassicBody   []byte
+	ClassicLinear bool
+	Conflicts     []string
+	Rules         []githubEffectiveRule
 }
 
 var (
@@ -405,28 +472,19 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 	if policy.MergeCommitMessage != desiredMergePolicy.MergeCommitBody {
 		result.Drift = append(result.Drift, "merge_commit_message="+policy.MergeCommitMessage)
 	}
-	protectionSHA, classicLinear, protectionConflicts, err := inspectClassicProtection(ctx, slug, policy.DefaultBranch)
+	branchPolicy, err := inspectMergePolicyBranch(ctx, slug, policy.DefaultBranch)
 	if err != nil {
 		result.Disposition, result.Error = "error", err.Error()
 		return result
 	}
-	result.ProtectionSHA = protectionSHA
-	result.ClassicLinear = classicLinear
-	if classicLinear {
+	result.ProtectionSHA = branchPolicy.ProtectionSHA
+	result.RulesSHA = branchPolicy.RulesSHA
+	result.ClassicLinear = branchPolicy.ClassicLinear
+	if branchPolicy.ClassicLinear {
 		result.Drift = append(result.Drift, "classic branch protection requires linear history")
 	}
-	result.Conflicts = append(result.Conflicts, protectionConflicts...)
-	rulesBody, err := mergePolicyRead(ctx, "repos/"+slug+"/rules/branches/"+policy.DefaultBranch+"?per_page=100")
-	if err != nil {
-		result.Disposition, result.Error = "error", "read effective rules: "+err.Error()
-		return result
-	}
-	var rules []githubEffectiveRule
-	if err := json.Unmarshal(rulesBody, &rules); err != nil {
-		result.Disposition, result.Error = "error", "decode effective rules: "+err.Error()
-		return result
-	}
-	for _, rule := range rules {
+	result.Conflicts = append(result.Conflicts, branchPolicy.Conflicts...)
+	for _, rule := range branchPolicy.Rules {
 		ref := mergePolicyRuleRef{Type: rule.Type, SourceType: rule.RulesetSourceType, Source: rule.RulesetSource, ID: rule.RulesetID}
 		switch rule.Type {
 		case "required_linear_history":
@@ -468,35 +526,69 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 	return result
 }
 
-func inspectClassicProtection(ctx context.Context, slug, branch string) (string, bool, []string, error) {
+func inspectMergePolicyBranch(ctx context.Context, slug, branch string) (mergePolicyBranchInspection, error) {
+	inspection, classicUnavailable, err := inspectClassicProtectionSnapshot(ctx, slug, branch)
+	if err != nil {
+		return mergePolicyBranchInspection{}, fmt.Errorf("read classic branch protection: %w", err)
+	}
+	rulesBody, rulesErr := mergePolicyRead(ctx, "repos/"+slug+"/rules/branches/"+branch+"?per_page=100")
+	rulesUnavailable := isGitHubPolicyPlanGate(rulesErr)
+	if classicUnavailable != rulesUnavailable {
+		return mergePolicyBranchInspection{}, fmt.Errorf("GitHub policy availability was not corroborated by classic protection and effective rules")
+	}
+	if classicUnavailable {
+		inspection.RulesSHA = mergePolicyUnavailableByPlan
+		return inspection, nil
+	}
+	if rulesErr != nil {
+		return mergePolicyBranchInspection{}, fmt.Errorf("read effective rules: %w", rulesErr)
+	}
+	if err := json.Unmarshal(rulesBody, &inspection.Rules); err != nil {
+		return mergePolicyBranchInspection{}, fmt.Errorf("decode effective rules: %w", err)
+	}
+	inspection.RulesSHA = digestJSON(rulesBody)
+	return inspection, nil
+}
+
+func inspectClassicProtectionSnapshot(ctx context.Context, slug, branch string) (mergePolicyBranchInspection, bool, error) {
 	endpoint := "repos/" + slug + "/branches/" + url.PathEscape(branch) + "/protection"
 	body, err := mergePolicyRead(ctx, endpoint)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "http 404") {
-			return "none", false, nil, nil
+			return mergePolicyBranchInspection{ProtectionSHA: "none"}, false, nil
 		}
-		return "", false, nil, fmt.Errorf("read classic branch protection: %w", err)
+		if isGitHubPolicyPlanGate(err) {
+			return mergePolicyBranchInspection{ProtectionSHA: mergePolicyUnavailableByPlan}, true, nil
+		}
+		return mergePolicyBranchInspection{}, false, err
 	}
-	var protection struct {
-		RequiredLinearHistory *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"required_linear_history"`
-		RequiredMergeQueue *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"required_merge_queue"`
-		MergeQueue *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"merge_queue"`
-	}
+	var protection githubClassicProtection
 	if err := json.Unmarshal(body, &protection); err != nil {
-		return "", false, nil, fmt.Errorf("decode classic branch protection: %w", err)
+		return mergePolicyBranchInspection{}, false, fmt.Errorf("decode classic branch protection: %w", err)
 	}
 	var conflicts []string
 	linearHistory := protection.RequiredLinearHistory != nil && protection.RequiredLinearHistory.Enabled
 	if (protection.RequiredMergeQueue != nil && protection.RequiredMergeQueue.Enabled) || (protection.MergeQueue != nil && protection.MergeQueue.Enabled) {
 		conflicts = append(conflicts, "classic branch protection requires the merge queue")
 	}
-	return digestJSON(body), linearHistory, conflicts, nil
+	return mergePolicyBranchInspection{
+		ProtectionSHA: digestJSON(body),
+		ClassicBody:   append([]byte(nil), body...),
+		ClassicLinear: linearHistory,
+		Conflicts:     conflicts,
+	}, false, nil
+}
+
+func isGitHubPolicyPlanGate(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	if !strings.Contains(message, "HTTP 403") {
+		return false
+	}
+	return strings.Contains(message, "gh: "+githubPolicyPlanGateMessage+" (HTTP 403)") ||
+		strings.Contains(message, `"message":"`+githubPolicyPlanGateMessage+`"`)
 }
 
 func describeRuleConflict(rule githubEffectiveRule, detail string) string {
@@ -582,10 +674,11 @@ func applyMergePolicy(ctx context.Context, report *mergePolicyReport, parallel i
 		}
 		fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
 		_, freshSHA, decodeErr := decodeRepositoryPolicy(fresh)
-		protectionSHA, _, _, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
-		if err != nil || decodeErr != nil || protectionErr != nil || freshSHA != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA {
+		branchPolicy, policyErr := inspectMergePolicyBranch(ctx, repo.Repository, repo.DefaultBranch)
+		if err != nil || decodeErr != nil || policyErr != nil || freshSHA != repo.ObservedSHA ||
+			branchPolicy.ProtectionSHA != repo.ProtectionSHA || (repo.RulesSHA != "" && branchPolicy.RulesSHA != repo.RulesSHA) {
 			repo.Disposition = "blocked"
-			repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
+			repo.Conflicts = append(repo.Conflicts, "repository settings, classic protection, or effective rules changed after planning; rerun the audit")
 		}
 	}
 	blockedRulesets := map[string]bool{}
@@ -691,18 +784,18 @@ func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository,
 	}
 	fresh, err := mergePolicyRead(ctx, "repos/"+repo.Repository)
 	_, freshSHA, decodeErr := decodeRepositoryPolicy(fresh)
-	protectionSHA, classicLinear, conflicts, protectionErr := inspectClassicProtection(ctx, repo.Repository, repo.DefaultBranch)
-	if err != nil || decodeErr != nil || protectionErr != nil || freshSHA != repo.ObservedSHA || protectionSHA != repo.ProtectionSHA || len(conflicts) > 0 {
+	branchPolicy, policyErr := inspectMergePolicyBranch(ctx, repo.Repository, repo.DefaultBranch)
+	if err != nil || decodeErr != nil || policyErr != nil || freshSHA != repo.ObservedSHA ||
+		branchPolicy.ProtectionSHA != repo.ProtectionSHA || (repo.RulesSHA != "" && branchPolicy.RulesSHA != repo.RulesSHA) || len(branchPolicy.Conflicts) > 0 {
 		repo.Disposition = "blocked"
-		repo.Conflicts = append(repo.Conflicts, "repository settings or classic protection changed after planning; rerun the audit")
+		repo.Conflicts = append(repo.Conflicts, "repository settings, classic protection, or effective rules changed after planning; rerun the audit")
 		return repo, nil
 	}
-	if classicLinear {
-		endpoint := "repos/" + repo.Repository + "/branches/" + url.PathEscape(repo.DefaultBranch) + "/protection/required_linear_history"
-		response := mergePolicyExecute(ctx, "api", "--method", "DELETE", endpoint)
-		if response.Err != nil {
+	if branchPolicy.ClassicLinear {
+		endpoint := "repos/" + repo.Repository + "/branches/" + url.PathEscape(repo.DefaultBranch) + "/protection"
+		if err := applyClassicProtectionWithoutLinearHistory(ctx, endpoint, branchPolicy.ClassicBody); err != nil {
 			repo.Disposition = "error"
-			repo.Error = "remove classic required linear history: " + githubCommandMessage(response)
+			repo.Error = "remove classic required linear history: " + err.Error()
 			return repo, nil
 		}
 		repo.ClassicLinear = false
@@ -724,6 +817,136 @@ func applyRepositoryMergePolicy(ctx context.Context, repo mergePolicyRepository,
 	repo.AppliedActions = appendUnique(repo.AppliedActions, "updated_repository_merge_settings")
 	return repo, nil
 }
+
+func applyClassicProtectionWithoutLinearHistory(ctx context.Context, endpoint string, body []byte) error {
+	payload, err := classicProtectionUpdatePayload(body)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp("", "wb-merge-policy-protection-*.json")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(payload); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	response := mergePolicyExecute(ctx, "api", "--method", "PUT", endpoint, "--input", name)
+	if response.Err != nil {
+		return fmt.Errorf("%s", githubCommandMessage(response))
+	}
+	return nil
+}
+
+func classicProtectionUpdatePayload(body []byte) ([]byte, error) {
+	var observed githubClassicProtection
+	if err := json.Unmarshal(body, &observed); err != nil {
+		return nil, fmt.Errorf("decode classic branch protection for update: %w", err)
+	}
+	type requiredStatusCheck struct {
+		Context string `json:"context"`
+		AppID   *int64 `json:"app_id"`
+	}
+	type requiredStatusChecks struct {
+		Strict   bool                  `json:"strict"`
+		Contexts []string              `json:"contexts,omitempty"`
+		Checks   []requiredStatusCheck `json:"checks,omitempty"`
+	}
+	type pullRequestReviews struct {
+		DismissalRestrictions        *githubProtectionActorNames `json:"dismissal_restrictions,omitempty"`
+		DismissStaleReviews          bool                        `json:"dismiss_stale_reviews"`
+		RequireCodeOwnerReviews      bool                        `json:"require_code_owner_reviews"`
+		RequiredApprovingReviewCount int                         `json:"required_approving_review_count"`
+		RequireLastPushApproval      bool                        `json:"require_last_push_approval"`
+		BypassPullRequestAllowances  *githubProtectionActorNames `json:"bypass_pull_request_allowances,omitempty"`
+	}
+	type update struct {
+		RequiredStatusChecks           *requiredStatusChecks       `json:"required_status_checks"`
+		EnforceAdmins                  *bool                       `json:"enforce_admins"`
+		RequiredPullRequestReviews     *pullRequestReviews         `json:"required_pull_request_reviews"`
+		Restrictions                   *githubProtectionActorNames `json:"restrictions"`
+		RequiredLinearHistory          bool                        `json:"required_linear_history"`
+		AllowForcePushes               *bool                       `json:"allow_force_pushes,omitempty"`
+		AllowDeletions                 *bool                       `json:"allow_deletions,omitempty"`
+		BlockCreations                 *bool                       `json:"block_creations,omitempty"`
+		RequiredConversationResolution *bool                       `json:"required_conversation_resolution,omitempty"`
+		LockBranch                     *bool                       `json:"lock_branch,omitempty"`
+		AllowForkSyncing               *bool                       `json:"allow_fork_syncing,omitempty"`
+	}
+	result := update{RequiredLinearHistory: false}
+	if observed.RequiredStatusChecks != nil {
+		checks := &requiredStatusChecks{Strict: observed.RequiredStatusChecks.Strict}
+		if len(observed.RequiredStatusChecks.Checks) > 0 {
+			for _, check := range observed.RequiredStatusChecks.Checks {
+				checks.Checks = append(checks.Checks, requiredStatusCheck{Context: check.Context, AppID: check.AppID})
+			}
+		} else {
+			checks.Contexts = append([]string(nil), observed.RequiredStatusChecks.Contexts...)
+		}
+		result.RequiredStatusChecks = checks
+	}
+	if observed.EnforceAdmins != nil {
+		result.EnforceAdmins = boolPointer(observed.EnforceAdmins.Enabled)
+	}
+	if observed.RequiredPullRequestReviews != nil {
+		reviews := observed.RequiredPullRequestReviews
+		result.RequiredPullRequestReviews = &pullRequestReviews{
+			DismissalRestrictions:        protectionActorNames(reviews.DismissalRestrictions),
+			DismissStaleReviews:          reviews.DismissStaleReviews,
+			RequireCodeOwnerReviews:      reviews.RequireCodeOwnerReviews,
+			RequiredApprovingReviewCount: reviews.RequiredApprovingReviewCount,
+			RequireLastPushApproval:      reviews.RequireLastPushApproval,
+			BypassPullRequestAllowances:  protectionActorNames(reviews.BypassPullRequestAllowances),
+		}
+	}
+	result.Restrictions = protectionActorNames(observed.Restrictions)
+	result.AllowForcePushes = enabledSettingValue(observed.AllowForcePushes)
+	result.AllowDeletions = enabledSettingValue(observed.AllowDeletions)
+	result.BlockCreations = enabledSettingValue(observed.BlockCreations)
+	result.RequiredConversationResolution = enabledSettingValue(observed.RequiredConversationResolution)
+	result.LockBranch = enabledSettingValue(observed.LockBranch)
+	result.AllowForkSyncing = enabledSettingValue(observed.AllowForkSyncing)
+	return json.Marshal(result)
+}
+
+func protectionActorNames(actors *githubProtectionActors) *githubProtectionActorNames {
+	if actors == nil {
+		return nil
+	}
+	result := &githubProtectionActorNames{
+		Users: make([]string, 0, len(actors.Users)),
+		Teams: make([]string, 0, len(actors.Teams)),
+		Apps:  make([]string, 0, len(actors.Apps)),
+	}
+	for _, user := range actors.Users {
+		result.Users = append(result.Users, user.Login)
+	}
+	for _, team := range actors.Teams {
+		result.Teams = append(result.Teams, team.Slug)
+	}
+	for _, app := range actors.Apps {
+		result.Apps = append(result.Apps, app.Slug)
+	}
+	return result
+}
+
+func enabledSettingValue(setting *githubEnabledSetting) *bool {
+	if setting == nil {
+		return nil
+	}
+	return boolPointer(setting.Enabled)
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 func applySharedRuleset(ctx context.Context, change mergePolicyRulesetChange) error {
 	if !strings.EqualFold(change.SourceType, "Repository") {
