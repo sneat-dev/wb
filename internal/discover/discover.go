@@ -22,7 +22,7 @@ type Repo struct {
 	Org      string
 	Name     string
 	Path     string // local working-tree path; empty if not cloned locally
-	CloneURL string // ssh URL from GitHub; empty if only known locally
+	CloneURL string // transport URL from GitHub; empty if only known locally
 	Archived bool
 	IsFork   bool
 	Local    bool
@@ -95,17 +95,17 @@ func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalReposi
 	}
 	var payload struct {
 		FullName      string `json:"full_name"`
-		SSHURL        string `json:"ssh_url"`
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := json.Unmarshal(response.Body, &payload); err != nil {
 		return CanonicalRepository{}, err
 	}
-	remote, err := gitremote.Parse(payload.SSHURL)
+	canonicalURL := "https://github.com/" + payload.FullName
+	remote, err := gitremote.Parse(canonicalURL)
 	if err != nil || remote.Identity.Host() != "github.com" || remote.Identity.Repository != payload.FullName || payload.DefaultBranch == "" {
 		return CanonicalRepository{}, fmt.Errorf("GitHub returned an invalid canonical repository identity")
 	}
-	return CanonicalRepository{Slug: payload.FullName, CloneURL: payload.SSHURL, DefaultBranch: payload.DefaultBranch}, nil
+	return CanonicalRepository{Slug: payload.FullName, CloneURL: canonicalURL, DefaultBranch: payload.DefaultBranch}, nil
 }
 
 // ReconcileTransfers folds an old-path local-only repository and its new
