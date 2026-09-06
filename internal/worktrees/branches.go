@@ -182,6 +182,16 @@ type branchSweepOptions struct {
 	AbsorbedBy string
 }
 
+// Leave one second of scheduling margin below the public ten-second ceiling.
+const branchRepositoryHeartbeatInterval = 9 * time.Second
+
+type branchRepositoryInspection func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string)
+
+type branchRepositoryInspectionResult struct {
+	entries    []BranchEntry
+	diagnostic string
+}
+
 func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOutcome, error) {
 	started := time.Now()
 	sweep := branchSweepOptions{
@@ -270,7 +280,10 @@ func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOption
 	total := len(repositories)
 	for index, repository := range repositories {
 		reportBranchProgress(sweep.Progress, index+1, total, repository.Slug())
-		repositoryEntries, diagnostic := inspectRepositoryBranches(ctx, repository, sweep, inUse)
+		repositoryEntries, diagnostic := inspectRepositoryBranchesWithHeartbeat(
+			ctx, repository, sweep, inUse, index+1, total,
+			branchRepositoryHeartbeatInterval, inspectRepositoryBranches,
+		)
 		entries = append(entries, repositoryEntries...)
 		if diagnostic != "" {
 			diagnostics = append(diagnostics, diagnostic)
@@ -278,6 +291,37 @@ func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOption
 	}
 	reportBranchSummary(sweep.Progress, tallyDispositions(entries), time.Since(start))
 	return entries, diagnostics, paths, nil
+}
+
+func inspectRepositoryBranchesWithHeartbeat(
+	ctx context.Context,
+	repository discover.Repo,
+	sweep branchSweepOptions,
+	inUse map[string]string,
+	index, total int,
+	interval time.Duration,
+	inspect branchRepositoryInspection,
+) ([]BranchEntry, string) {
+	if sweep.Progress == nil || interval <= 0 {
+		return inspect(ctx, repository, sweep, inUse)
+	}
+	result := make(chan branchRepositoryInspectionResult, 1)
+	started := time.Now()
+	go func() {
+		entries, diagnostic := inspect(ctx, repository, sweep, inUse)
+		result <- branchRepositoryInspectionResult{entries: entries, diagnostic: diagnostic}
+	}()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case inspected := <-result:
+			return inspected.entries, inspected.diagnostic
+		case <-ticker.C:
+			_, _ = fmt.Fprintf(sweep.Progress, "[%d/%d] still scanning %s (%s)\n",
+				index, total, repository.Slug(), time.Since(started).Round(time.Second))
+		}
+	}
 }
 
 func discoverBranchRepositories(projectsRoot, filter string) ([]discover.Repo, error) {
