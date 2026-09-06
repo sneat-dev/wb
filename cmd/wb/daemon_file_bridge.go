@@ -269,13 +269,21 @@ func (server *daemonFileBridgeServer) scan() error {
 				server.cleanupCompleted(filepath.Join(server.requests, name), responsePath, filepath.Join(server.inflight, name), now)
 				continue
 			}
-			server.quarantine(id, responsePath, "response")
-			server.quarantine(id, filepath.Join(server.requests, name), "request")
+			if err := server.quarantine(id, responsePath, "response"); err != nil {
+				return err
+			}
+			if err := server.quarantine(id, filepath.Join(server.requests, name), "request"); err != nil {
+				return err
+			}
 			server.writeError(id, server.generation, response.TargetWorkerID, errors.New("recovery_required: an existing response failed authentication; the mutation was not replayed"))
 			continue
 		} else if !os.IsNotExist(err) {
-			server.quarantine(id, responsePath, "response")
-			server.quarantine(id, filepath.Join(server.requests, name), "request")
+			if err := server.quarantine(id, responsePath, "response"); err != nil {
+				return err
+			}
+			if err := server.quarantine(id, filepath.Join(server.requests, name), "request"); err != nil {
+				return err
+			}
 			server.writeError(id, server.generation, "", errors.New("recovery_required: an unreadable response was quarantined; the mutation was not replayed"))
 			continue
 		}
@@ -409,7 +417,9 @@ func (server *daemonFileBridgeServer) process(id string) {
 		return
 	}
 	if err := verifyDaemonFileEnvelope(request, server.key); err != nil {
-		server.quarantine(id, requestPath, "request")
+		if quarantineErr := server.quarantine(id, requestPath, "request"); quarantineErr != nil {
+			return
+		}
 		server.writeError(id, server.generation, request.TargetWorkerID, fmt.Errorf("recovery_required: request authentication failed and was not replayed: %w", err))
 		return
 	}
