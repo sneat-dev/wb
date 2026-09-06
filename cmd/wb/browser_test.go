@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestBrowserCommandUsesPlatformMechanism(t *testing.T) {
 	t.Parallel()
@@ -20,5 +23,19 @@ func TestBrowserCommandUsesPlatformMechanism(t *testing.T) {
 	}
 	if _, _, err := browserCommand("plan9", "/tmp/report.html"); err == nil {
 		t.Fatal("unsupported platform was accepted")
+	}
+}
+
+func TestBrowserTargetPreservesWebURLsAndResolvesFiles(t *testing.T) {
+	const dashboard = "https://sneat.work/bench/dashboard/?machine=vm"
+	if got, err := browserTarget(dashboard); err != nil || got != dashboard {
+		t.Fatalf("browserTarget(web) = %q, %v", got, err)
+	}
+	got, err := browserTarget("report.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) || filepath.Base(got) != "report.html" {
+		t.Fatalf("browserTarget(file) = %q", got)
 	}
 }

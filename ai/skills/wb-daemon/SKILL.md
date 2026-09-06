@@ -5,6 +5,16 @@ description: Serve and inspect WB's local operations API and web dashboard. Use 
 
 # WB daemon
 
+Open the hosted cross-machine dashboard in the platform browser:
+
+```sh
+wb dashboard
+```
+
+Use `wb dashboard --local` to start or reuse this machine's daemon and open its
+loopback view. `wb dashboard --format=json` and non-interactive invocations
+return the resolved URL without launching a browser.
+
 Start and inspect the local read-only API and embedded dashboard:
 
 ```sh

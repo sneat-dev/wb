@@ -461,6 +461,11 @@ worktree removal, WB revalidates the exact selected repository, claim, Git
 registry, and remote SHA. A cache reduces discovery work but never authorizes a
 mutation by itself.
 
+The initial implementation slice persists this fingerprinted index for the
+read-only daemon dashboard. Mutating fleet commands deliberately remain on
+fresh `ScanLocal` discovery until each write journey proves its
+exact-repository revalidation immediately before the mutation.
+
 ### Cross-machine synchronization
 
 Each registered machine runs its own local scheduler and keeps durable queue
@@ -536,6 +541,12 @@ The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
 `sneat-co/workbench-web`; it remains after the scheduler, telemetry, and event
 contracts in delivery order.
 
+`wb dashboard` opens that hosted cross-machine view in the platform browser.
+`wb dashboard --local` starts or reuses the current machine's loopback daemon
+and opens its local view. Non-interactive and `--format=json` invocations return
+the resolved URL without launching a browser, so agents and scripts can discover
+the same surface without a desktop side effect.
+
 The WB-owned provider layer keeps the host boundary narrow. Its durable
 projection documents retain canonical GitHub subject IDs and explicit public
 opt-in state; `ProjectionKey` hashes `(scope, subject ID)` for stable document
@@ -546,6 +557,33 @@ projection documents and fails closed when membership cannot be proven. The
 storage collection names and route-to-scope mapping are documented in
 `api/githubapp/README.md`; this slice does not invent a Firestore schema inside
 Sneat Go or claim that a read model exists before the host binds one.
+
+### Consolidated worktree table journey
+
+1. **Start — publish from each development machine.** The laptop and VM each
+   publish a timestamped WB snapshot containing their current managed
+   worktrees. **Observable good result:** the provider has one immutable
+   machine-labelled observation per publisher; a worktree carries repository,
+   task and stream, branch, lifecycle and owner state, optional pull-request
+   evidence, last activity, and an explicit attention reason, while local
+   checkout paths remain local-only recovery data. A machine that stops
+   publishing remains visible with its last snapshot time, effective heartbeat,
+   and a stale label rather than being misreported as an empty machine.
+2. **Middle — open the signed-in dashboard.** The browser requests
+   `GET /v0/workbench/worktrees`; WB resolves the Firebase viewer and the host
+   proves access to each exact machine before its rows enter the response.
+   **Observable good result:** the table has one row per authorized published
+   worktree across both machines, identifies the machine in its own column,
+   links a known pull request, and returns `404` without enumerating machine or
+   repository names when viewer or machine authorization is absent.
+3. **End — narrow the operational question.** The user filters by machine,
+   repository, combined lifecycle/owner status, stream, task, or
+   `needs_attention`. **Observable good result:** the provider returns only the
+   matching rows in stable repository/machine/task order, preserves the newest
+   authorized publish time, and each attention row explains the action needed.
+   Clearing filters restores the same authorized cross-machine inventory; it
+   never broadens access and never returns an absolute path, projects root,
+   prompt, or local commit subject.
 
 Each repository has a stable page at
 `https://sneat.work/bench/repo/github.com/<org>/<repo>` and each organization at
@@ -910,7 +948,8 @@ a worktree.
 - [x] Narrow known-repository landing and cleanup inventory before subprocess
   inspection; preserve shared-root recovery and exact cleanup receipts.
 - [ ] Make every pre-orchestrator landing guard emit immediate progress and a
-  ten-second heartbeat, including local-link inventory.
+  ten-second heartbeat, including local-link inventory and `wb remote publish`
+  repository collection.
 - [ ] Add the fingerprinted local fleet-inventory index while retaining fresh
   exact-repository revalidation before every mutation.
 - [ ] Benchmark opt-in worktree recycling against fresh creation and retained
@@ -1027,6 +1066,19 @@ then both machines fetch the exact landed SHA. A clean idle canonical checkout
 fast-forwards promptly; a busy or dirty canonical checkout records a pending
 update and advances only after its local writer lease clears. Existing feature
 worktrees are unchanged, and duplicate delivery creates no duplicate mutation.
+
+### AC: authorized-machines-form-one-private-worktree-table
+
+Given a signed-in member has authorized laptop and VM snapshots plus an
+unauthorized machine exists, when the dashboard lists worktrees and applies
+machine, repository, status, stream, task, and needs-attention filters, then
+only authorized rows are returned in stable repository/machine/task order with
+their branch, lifecycle, owner status, optional pull request, published and last
+activity times, machine heartbeat and staleness, and attention reason. Anonymous
+viewers, missing machine-access bindings, and access failures fail closed
+without reading or naming private
+snapshots. No response contains a local absolute path, projects root, prompt,
+or local commit subject.
 
 ### AC: changed-tree-invalidates-result
 
