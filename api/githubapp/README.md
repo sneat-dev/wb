@@ -17,6 +17,10 @@ The host supplies narrow ports:
    delivery IDs and persists coalesced wakeups.
 4. `AuthoritativeReader`, which refreshes GitHub App state before a webhook can
    enqueue work. Cached data is never enough to authorize an action.
+5. `MachinePublisherResolver`, which resolves an authenticated daemon
+   credential to one exact login/machine pair, and a durable
+   `hub.SnapshotStore`, which atomically retains the latest validated record for
+   that pair.
 
 The API provides the dashboard summary, repository/organization/user stats,
 time series usable as tables or graphs, leaderboards, and latest merges with
@@ -36,6 +40,31 @@ include the snapshot's local path, projects root, prompt, or commit subject.
 Each row also repeats the machine's effective heartbeat and staleness. An
 offline machine's last authorized rows remain visible; the default stale window
 is 24 hours and a provider may configure it without changing stored snapshots.
+
+`POST /v0/workbench/machines/snapshot` accepts only the separate hosted
+snapshot schema. The resolver authenticates first, and the request login and
+machine must exactly match its result. JSON decoding rejects unknown fields and
+the body is capped at 1 MiB. The service validates bounded strings and at most
+5,000 worktrees, computes a payload digest, stamps server receipt time, and
+calls the store's atomic latest-record operation. Identical retries return the
+original receipt without writing; older and same-time conflicting payloads
+cannot replace current state. `GET` on the same path returns only snapshots for
+the authenticated login.
+
+The hosted model is an allowlist containing the table's repository, task,
+stream, branch, lifecycle/owner, pull-request, activity, and attention fields.
+It cannot encode local paths, projects roots, commit SHAs or subjects, prompts,
+credentials, repository diagnostics, or command output.
+`RemoteStateWorktreeReadModel` consumes the public
+`machinesnapshot.SnapshotStore` directly and projects rows without importing
+or reconstructing any WB CLI remote-state type.
+The durable adapter uses
+`machinesnapshot.Collection/{machinesnapshot.SnapshotKey(login,machine)}`.
+Each document is exactly `machinesnapshot.StoredSnapshot`: the allowlisted
+`snapshot` map plus server `received_at` and payload `digest`. The key is a
+`machine_`-prefixed SHA-256 of the validated login, a NUL delimiter, and the
+validated machine; the source identity remains inside the document for
+transaction verification.
 
 `GET /v0/workbench/events` is the default server-to-browser transport. It is
 resumable SSE: `after` (or `Last-Event-ID`) replays durable events with strictly

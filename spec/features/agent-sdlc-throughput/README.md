@@ -585,6 +585,37 @@ Sneat Go or claim that a read model exists before the host binds one.
    never broadens access and never returns an absolute path, projects root,
    prompt, or local commit subject.
 
+### Authenticated machine snapshot transport journey
+
+1. **Start — configure one outbound publisher.** A user selects the `hub`
+   remote provider, an HTTPS origin, a unique local machine name, and an
+   absolute private token-file path; an embedding host may inject the same
+   credential directly. There is no anonymous or HTTP fallback. **Observable
+   good result:** WB validates the provider before network access, reads a
+   rotatable token without printing it, and binds the outbound snapshot to the
+   configured machine.
+2. **Middle — publish the allowlisted observation.** WB converts its rich local
+   scan into hosted schema version 1 before serialization and sends it to
+   `POST /v0/workbench/machines/snapshot`. The host resolves the credential to
+   one exact login and machine independently of request headers and rejects any
+   payload identity mismatch. **Observable good result:** the bounded request
+   contains only repository, task/stream, branch, lifecycle/owner status,
+   optional pull-request link, activity time, and attention fields. Unknown or
+   overlarge input is rejected before storage; absolute paths, projects roots,
+   commit SHAs and subjects, prompts, credentials, repository diagnostics, and
+   command output never cross or enter the durable snapshot port.
+3. **End — retain one current durable row source per machine.** The server
+   stamps receipt time and atomically compares the validated payload digest and
+   publisher time with the existing login/machine record. **Observable good
+   result:** a byte-identical retry returns the original receipt without a
+   second write, a newer observation replaces the current record, and delayed
+   or conflicting observations cannot regress it. The store adapter supplies
+   `RemoteStateWorktreeReadModel`; authorized dashboard reads keep the latest
+   observation for offline machines and calculate staleness from its
+   server-received heartbeat. Transient network and 429/502/503/504 responses
+   receive a small bounded retry, while authentication and validation failures
+   return immediately.
+
 Each repository has a stable page at
 `https://sneat.work/bench/repo/github.com/<org>/<repo>` and each organization at
 `https://sneat.work/bench/org/github.com/<org>`. Anonymous pages include only
@@ -1079,6 +1110,19 @@ viewers, missing machine-access bindings, and access failures fail closed
 without reading or naming private
 snapshots. No response contains a local absolute path, projects root, prompt,
 or local commit subject.
+
+### AC: authenticated-hosted-snapshot-is-private-and-idempotent
+
+Given an enrolled publisher credential is bound by the host to login `alice`
+and machine `laptop`, when WB publishes hosted snapshot schema version 1, then
+the durable record is keyed to that exact identity and stamped with server
+receipt time. Repeating the identical payload performs no second write; a newer
+published observation replaces it; an older or same-time conflicting payload
+does not. A missing publisher resolver, identity mismatch, unsupported schema,
+unknown field, overlarge body, HTTP endpoint, or absent credential fails closed.
+Neither persisted records nor list responses contain absolute paths, projects
+roots, commit SHAs or subjects, prompts, credentials, repository diagnostics,
+or command output.
 
 ### AC: changed-tree-invalidates-result
 

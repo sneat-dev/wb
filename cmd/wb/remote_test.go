@@ -15,7 +15,20 @@ import (
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/remotestate/hub"
 )
+
+func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
+	provider, err := openRemote(remotestate.Config{
+		Provider: "hub", URL: "https://hub.example", TokenFile: "/private/token", Machine: "laptop",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := provider.(*hub.Provider); !ok {
+		t.Fatalf("provider = %T, want *hub.Provider", provider)
+	}
+}
 
 func remoteGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
