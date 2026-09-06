@@ -218,6 +218,9 @@ func (handler apiHandler) webhook(writer http.ResponseWriter, request *http.Requ
 	}
 	if json.Unmarshal(payload, &envelope) == nil {
 		delivery.Repository = envelope.Repository.FullName
+		if delivery.Repository != "" && !strings.HasPrefix(delivery.Repository, "github.com/") {
+			delivery.Repository = "github.com/" + delivery.Repository
+		}
 	}
 	accepted, processErr := handler.options.Service.ProcessWebhook(request.Context(), delivery, request.Header.Get("X-Hub-Signature-256"))
 	if processErr != nil {
@@ -252,6 +255,7 @@ func cors(allowedOrigin string, next http.Handler) http.Handler {
 		}
 		if origin == allowedOrigin {
 			writer.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			writer.Header().Set("Access-Control-Allow-Credentials", "true")
 			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		}

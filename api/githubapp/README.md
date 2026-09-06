@@ -39,7 +39,9 @@ The host-neutral provider in `provider.go` implements `ReadModel` over a
 `ProjectionStore`; the host supplies the durable adapter. Projection documents
 use the `workbench_projections` collection, with `scope` and the canonical
 GitHub subject ID (`github.com/<org>` or `github.com/<org>/<repo>`) retained in
-the document. `ProjectionKey` derives a stable SHA-256 document ID so slashes
+the document. Webhook envelopes are normalized to the same
+`github.com/<org>/<repo>` form before wakeups or projection refreshes.
+`ProjectionKey` derives a stable SHA-256 document ID so slashes
 cannot alter storage hierarchy. Series, leaderboard, and latest-merge records
 use the corresponding named collections and typed store methods. The public
 latest-merges method is intentionally typed to return public-only entries.

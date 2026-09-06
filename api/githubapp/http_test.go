@@ -119,6 +119,9 @@ func TestHandlerReturnsPublicDashboardAndExactCORS(t *testing.T) {
 	if got := response.Header().Get("Access-Control-Allow-Origin"); got != UIOrigin {
 		t.Errorf("allow origin = %q, want %q", got, UIOrigin)
 	}
+	if got := response.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("allow credentials = %q, want true", got)
+	}
 	if !strings.Contains(response.Body.String(), `"repositories":3`) {
 		t.Errorf("response omitted dashboard summary: %s", response.Body.String())
 	}
@@ -154,6 +157,24 @@ func TestHandlerRejectsUnapprovedCORSPreflight(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsCredentialedCORSPreflightOnlyForUIOrigin(t *testing.T) {
+	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPublic}}})
+	request := httptest.NewRequest(http.MethodOptions, APIPrefix+"/dashboard", nil)
+	request.Header.Set("Origin", UIOrigin)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("allowed preflight = %d, credentials %q", response.Code, response.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	disallowed := httptest.NewRequest(http.MethodGet, APIPrefix+"/dashboard", nil)
+	disallowed.Header.Set("Origin", "https://attacker.example")
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, disallowed)
+	if blocked.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("disallowed origin received credentials header: %q", blocked.Header().Get("Access-Control-Allow-Credentials"))
+	}
+}
+
 func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 	secret := []byte("webhook-secret")
 	store := &testDeliveries{}
@@ -177,7 +198,7 @@ func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 	if len(reader.deliveries) != 1 {
 		t.Fatalf("authoritative reads = %d, want 1", len(reader.deliveries))
 	}
-	if len(store.wakeups) != 1 || store.wakeups[0].Key != "sneat-dev/wb" {
+	if len(store.wakeups) != 1 || store.wakeups[0].Key != "github.com/sneat-dev/wb" {
 		t.Fatalf("wakeups = %#v", store.wakeups)
 	}
 	if writer.repositories != 1 || writer.organizations != 1 || writer.merges != 1 {
