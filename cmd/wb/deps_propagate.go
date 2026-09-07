@@ -255,6 +255,11 @@ func printPropagateLocal(command *cobra.Command, format string, result locallink
 				}
 			}
 		}
+		for _, note := range consumer.Notes {
+			if _, err := fmt.Fprintf(out, "  %s\n", note); err != nil {
+				return err
+			}
+		}
 		for _, failure := range consumer.Errors {
 			if _, err := fmt.Fprintf(out, "  ! %s\n", failure); err != nil {
 				return err

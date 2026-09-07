@@ -167,6 +167,22 @@ func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (Co
 			if removedWorkspace {
 				continue
 			}
+			stillUsed, err := goWorkStillReferencesLibrary(member.Worktree, link.Library)
+			if err != nil {
+				outcome.Errors = append(outcome.Errors, err.Error())
+				remaining = append(remaining, link)
+				continue
+			}
+			if !stillUsed {
+				// The `use` line is already gone — a hand edit, or a rebase
+				// that dropped it. The record is the only thing left to
+				// clear; touching go.work here could delete entries this
+				// undo has no business owning.
+				outcome.Notes = append(outcome.Notes,
+					fmt.Sprintf("go.work no longer references %s; record cleared", link.Library))
+				removedWorkspace = true
+				continue
+			}
 			if err := removeGoWork(member.Worktree); err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
@@ -203,9 +219,14 @@ func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (Co
 				remaining = append(remaining, link)
 				continue
 			}
-			if err := engine.Node.Unlink(ctx, workspace, link.Identity); err != nil {
+			note, err := engine.Node.Unlink(ctx, workspace, link.Identity)
+			if err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
+				continue
+			}
+			if note != "" {
+				outcome.Notes = append(outcome.Notes, note)
 			}
 		default:
 			outcome.Errors = append(outcome.Errors, "unknown link mechanism "+string(link.Mechanism))
