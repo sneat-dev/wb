@@ -884,6 +884,50 @@ VM. It reports materialization, refresh, cache warming, contamination checks,
 and total create-to-ready time. Enabling recycle never follows from a global
 fleet average.
 
+#### Founder decisions, September 7, 2026
+
+Only completed or canceled worktrees may ever be reused. Salvaging orphaned or
+died worktrees is explicitly out of scope for now and may be revisited later.
+Pool size is configurable per repository and per WB installation. Checking a
+worktree out to the latest target may be cheaper than cleaning it up, so reset
+in place is a candidate strategy alongside rename-based recycling.
+
+#### Benchmark result, September 7, 2026 (laptop, Go repository)
+
+Run once against `sneat-dev/wb` on an 18-CPU Mac at `wb` 0.119.0, sampling only
+while the one-minute load average stayed under 10. **The result is negative: a
+warm worktree pool is not justified for Go repositories on this machine.**
+
+| Strategy | Step | Median |
+|---|---|---|
+| A: fresh create/remove | `wb worktree create` | 9.71s |
+| A: fresh create/remove | first `go build ./...` | 1.10s |
+| A: fresh create/remove | second `go build ./...` | 0.80s |
+| B: `wb worktree rename --apply` | recycle apply | failed 4/4 |
+| C: reset in place | workspace refresh | 1.79s |
+
+The guiding hypothesis was that dependency materialization dominates creation
+cost, so reusing a warm checkout would avoid it. That hypothesis does not hold
+here. `GOCACHE` and `GOMODCACHE` are machine-global and were already warm at
+roughly 53GB, so a freshly created worktree builds just as fast as a recycled
+one. Build time was between 0.8s and 1.1s under every strategy. The only real
+gap is WB's own transactional creation overhead, about 8s, which a warm pool
+would not remove because acquisition performs the same reservation, fetch,
+branch, Work Log, and dependency reconciliation work.
+
+Two defects surfaced and are tracked as `sneat-dev/wb` issue #458. Every
+`wb worktree rename --apply` failed while protecting the hook runtime path, and
+its rollback left state that no WB verb could clear. Separately, the naive
+reset-in-place strategy used `git clean -xdf`, which destroyed WB bookkeeping
+and flipped worktree ownership to unknown, so reset in place is only viable if
+it preserves that bookkeeping explicitly.
+
+Scope limits worth stating plainly. This measured one Go repository on one
+laptop. It did not measure the VM, and it did not measure an npm repository,
+where `node_modules` is per-worktree rather than machine-global and the
+materialization hypothesis may still hold. An npm measurement is the remaining
+open question before recycling is judged on its merits.
+
 ### Lessons Without Worker Context Spam
 
 Workers load only relevant compact Enforced rules selected by repository,
@@ -1041,8 +1085,13 @@ a worktree.
   repository collection.
 - [ ] Add the fingerprinted local fleet-inventory index while retaining fresh
   exact-repository revalidation before every mutation.
-- [ ] Benchmark opt-in worktree recycling against fresh creation and retained
-  dependency caches on laptop and VM; configure the policy per user/repository.
+- [x] Benchmark opt-in worktree recycling against fresh creation and retained
+  dependency caches on the laptop for a Go repository; result was negative, see
+  "Benchmark result, September 7, 2026".
+- [ ] Repeat the recycling benchmark on an npm repository and on the VM, where
+  per-worktree dependency trees may still favour a warm pool.
+- [ ] Fix `wb worktree rename --apply` and its unrecoverable failed rollback
+  (`sneat-dev/wb` issue #458) before any recycle policy can be enabled.
 - [ ] Move post-landing branch retirement, cleanup, and recycle preparation to
   durable background jobs; fast-forward the canonical target immediately and
   run released dependency waves in parallel with safe cleanup siblings.
