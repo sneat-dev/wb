@@ -259,6 +259,9 @@ type WorktreeMergeLandOptions struct {
 	// When set it is copied onto the receipt so the override is provable from
 	// the receipt itself, not only from the caller's own log.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission
+	// Lane optionally names the acquiring session for the landing-lane
+	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
+	Lane LaneGuardRequest
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -291,6 +294,9 @@ type WorktreeMergePrepareOptions struct {
 	// calling PrepareWorktreeMerge, if any. It is copied onto the new receipt
 	// so the override is provable from the receipt itself.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission
+	// Lane optionally names the acquiring session for the landing-lane
+	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
+	Lane LaneGuardRequest
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (WorktreeMergeReceipt, error) {
@@ -330,6 +336,13 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if source.Branch == target {
 			return WorktreeMergeReceipt{}, fmt.Errorf("source worktree %s is on target branch %q", source.Worktree, target)
 		}
+	}
+	// The landing-lane guard runs before any receipt is created: a different
+	// live session already driving this (repository, target) lane must be
+	// refused before this call does any work it would otherwise have to
+	// strand or re-prepare. See LaneGuardRequest.
+	if _, laneErr := acquireLandingLane(projectsRoot, repository, target, options.Lane); laneErr != nil {
+		return WorktreeMergeReceipt{}, laneErr
 	}
 	var rebatch *WorktreeMergePreparedRebatch
 	if strings.TrimSpace(options.RebatchReceipt) != "" {
@@ -896,6 +909,13 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, err
 		}
 		return receipt, nil
+	}
+	// The landing-lane guard runs before any push, merge, or check
+	// observation: a different live session already driving this
+	// (repository, target) lane must be refused before this call does more
+	// work it would otherwise have to strand. See LaneGuardRequest.
+	if _, laneErr := acquireLandingLane(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane); laneErr != nil {
+		return receipt, laneErr
 	}
 	if receipt.Candidate.Worktree == "" {
 		return receipt, fmt.Errorf("receipt %s has no prepared candidate", receiptPath)

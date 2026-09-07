@@ -24,7 +24,7 @@ func newPRCmd() *cobra.Command {
 func newPRLandCmd() *cobra.Command {
 	var format, approvedBy, subject, reason, mergeMethod string
 	var keepCommits []string
-	var keep, allowUnfenced, nonInteractive bool
+	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
@@ -67,6 +67,15 @@ never from the title, author or labels: a bot-titled bump that
 also edits a source file is not mechanical, and is refused without
 --approved-by <review-file-or-comment-url>.
 
+LANDING LANE. Only one live WB session may drive 'wb pr land' or
+'wb worktree merge' toward a given (repository, target) at a time. A
+different live session already landing here is refused, naming that session,
+its pid, and the receipt it is driving; ask it to hand off with
+'wb session request-handoff <id>', or force the issue with
+--take-over-lane --reason "<text>" (the reason is recorded on the lane and the
+receipt). A session whose registry entry is gone, or whose heartbeat has gone
+stale, is taken over automatically with a printed note.
+
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused.`,
 		Example: `# Land a green dependency bump, retiring its worktree
@@ -89,6 +98,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			}
 			if len(splitCommaSeparated(keepCommits)) > 0 && (!command.Flags().Changed("merge-method") || mergeMethod != "squash") {
 				return usageError("--keep-commits requires explicit --merge-method squash")
+			}
+			if takeOverLane && strings.TrimSpace(reason) == "" {
+				return usageError("--take-over-lane requires --reason <text>")
 			}
 			repository, number, err := splitPullRequestSelector(args[0])
 			if err != nil {
@@ -125,6 +137,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				OperationProgress:   progress.operationReporter("pr land"),
 				Events:              events,
 				Stream:              streamName,
+				Lane:                landingLaneGuardRequest("wb pr land", reason, takeOverLane),
 			})
 			if err != nil {
 				progress.fail(err)
@@ -162,14 +175,15 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file or a comment URL")
 	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
 	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
-	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
+	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone (with --keep-commits), or why a landing lane is being taken over (with --take-over-lane)")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
-	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump")
+	addLandingLaneTakeoverFlag(command, &takeOverLane)
+	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump take over lane")
 	return markLandingGuard(command, landingGuardByPullRequest)
 }
 

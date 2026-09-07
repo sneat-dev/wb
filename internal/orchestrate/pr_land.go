@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -45,6 +47,10 @@ const (
 	LandRefusalLandingUnverified = "landing-unverified"
 	LandRefusalUnfencedTarget    = "target-has-no-strict-fence"
 	LandRefusalCanonicalSync     = "canonical-sync-blocked"
+	// LandRefusalLandingLaneHeld reports that a different live WB session
+	// already owns the (repository, target) landing lane. See
+	// internal/landinglane and LaneGuardRequest.
+	LandRefusalLandingLaneHeld = "landing-lane-held"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
@@ -109,6 +115,10 @@ type PullRequestLandOptions struct {
 	// Stream names the stream this landing belongs to, when it belongs to one.
 	Stream string
 	Now    func() time.Time
+	// Lane optionally names the acquiring session for the landing-lane
+	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
+	// zero, no guard runs — existing direct callers are unaffected.
+	Lane LaneGuardRequest
 	// mergeAttempted is a test seam recording that the merge write was issued.
 	beforeMerge func()
 }
@@ -168,6 +178,10 @@ type PullRequestLandResult struct {
 	AbsorbedPolls int `json:"absorbed_polls"`
 
 	Evidence map[string]string `json:"evidence,omitempty"`
+
+	// LaneOwner is the landing-lane record this landing acquired, when the
+	// caller populated Lane. It is nil when no guard ran.
+	LaneOwner *landinglane.Record `json:"lane_owner,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -257,6 +271,29 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	result.Evidence["head"] = shortMergeRevision(view.Head.SHA)
 	result.Evidence["base"] = view.Base.Ref
 	result.Evidence["mergeable_state"] = view.MergeableState
+
+	// The landing-lane guard runs before any check wait or merge attempt: a
+	// different live session already driving this (repository, target) lane
+	// must be refused before this call spends its CI-wait budget on a target
+	// it does not own landing onto. See LaneGuardRequest. `wb pr land`
+	// carries no resumable receipt across invocations, so the lane this
+	// acquires is released unconditionally once this call returns.
+	if laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, options.Lane); laneErr != nil {
+		var conflict *landinglane.ConflictError
+		if errors.As(laneErr, &conflict) {
+			return mergeRefusal(result, landRefusal{
+				code:    LandRefusalLandingLaneHeld,
+				reason:  laneErr.Error(),
+				command: "wb session request-handoff " + conflict.Record.Owner.WBSessionID,
+			}), nil
+		}
+		return result, laneErr
+	} else if laneRecord.Owner.WBSessionID != "" {
+		result.LaneOwner = &laneRecord
+		defer func() {
+			_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
+		}()
+	}
 
 	if refusal := landPreflightRefusal(view, options.Repository, number); refusal != nil {
 		return mergeRefusal(result, *refusal), nil

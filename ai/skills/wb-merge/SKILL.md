@@ -42,6 +42,23 @@ wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
 **There is no flag that both bypasses this guard and pushes.** Do not hand-roll
 `git push` around it.
 
+## Only one landing owner per (repository, target)
+
+`wb pr land`, `wb worktree merge`, `merge prepare`, `merge land`, `merge
+resume`, and `merge revert` all acquire a durable landing-lane record for the
+(repository, target branch) before doing any work that would otherwise have to
+be re-prepared or stranded. A different live WB session already driving that
+lane is **refused**, naming that session's WB session ID, pid, runtime/model,
+how long it has held the lane, and the receipt it is driving. Ask it to hand
+off with `wb session request-handoff <id>`, or override with
+`--take-over-lane --reason <text>` (`--lane-reason` for the `worktree merge`
+family) — the reason is recorded on the lane and on the receipt. A session
+whose registry entry is gone, or whose heartbeat has gone stale (30 minutes by
+default), is taken over automatically with a printed note. The same session
+resuming or retrying simply refreshes its own lane. This is the mechanical
+enforcement of "one landing owner per repository and target branch" — see
+`[[land-work-dont-queue-it]]`.
+
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
 landing uses the repository-approved merge method, with merge commits preferred
 for ancestry-preserving tooling. See the `wb-streams` skill.
