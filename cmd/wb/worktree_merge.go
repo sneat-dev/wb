@@ -491,27 +491,35 @@ refuses closed.`,
 func newWorktreeMergeAcknowledgeAbsorbedConflictCmd() *cobra.Command {
 	var apply bool
 	var actor, reason, format string
+	var derivedPaths []string
 	command := &cobra.Command{
 		Use:   "acknowledge-absorbed-conflict <merge-receipt>",
 		Short: "Acknowledge a prepare conflict whose sources are already reachable from the target",
 		Long: `Prove, source by source, that an unpublished prepare conflict receipt's
 every receipted source is already reachable from the freshly fetched current
 remote target -- either because the receipted source SHA is a graph ancestor
-of that target, or because every path it changed relative to its merge-base
-with the target now carries an identical blob there (an unrelated later
-commit landed the same content) -- then record a separate audited
-acknowledgement so a fresh candidate can own the lane. This accepts only a
-prepare-phase conflict receipt with no published candidate and no landing
-SHA whose every receipted source worktree is already gone from disk, which is
-exactly the case neither resume nor prepare-conflict-replacement or
-supersede-validation-failed can recover: those all require an exact clean
-receipted source worktree to still exist. It never reads or requires a
-receipted source worktree, never rewrites the historical receipt or any Work
-Log, and never deletes the preserved, unpublished candidate worktree. This is
-a dry-run by default; --apply requires --actor and --reason and writes only
-the new acknowledgement artifact. A source worktree that still exists, a
-published or landed receipt, or any source whose content cannot be proved
-reachable refuses closed.`,
+of that target, or path by path relative to its merge-base with the target:
+an identical blob on the target (an unrelated later commit landed the same
+content), or, automatically for a "*.jsonl" append-only ledger path, every
+line the source added relative to the merge-base present verbatim as a line
+in the target's copy ("lines_absorbed") -- then record a separate audited
+acknowledgement so a fresh candidate can own the lane. Repeatable --derived-path audits an
+operator exclusion for one known generated-index shape,
+"spec/**/README.md" -- exactly "README.md" nested anywhere under a
+repo-root "spec/" directory -- and only when that path also exists on the
+fetched target; every other shape, or one absent from the target, refuses
+closed. This accepts only a prepare-phase conflict receipt with no published
+candidate and no landing SHA whose every receipted source worktree is
+already gone from disk, which is exactly the case neither resume nor
+prepare-conflict-replacement or supersede-validation-failed can recover:
+those all require an exact clean receipted source worktree to still exist.
+It never reads or requires a receipted source worktree, never rewrites the
+historical receipt or any Work Log, and never deletes the preserved,
+unpublished candidate worktree. This is a dry-run by default; --apply
+requires --actor and --reason and writes only the new acknowledgement
+artifact. A source worktree that still exists, a published or landed
+receipt, an invalid or absent --derived-path, or any path whose content
+cannot be proved reachable refuses closed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -523,7 +531,7 @@ reachable refuses closed.`,
 			}
 			defer releaseAdmission()
 			ack, err := orchestrate.AcknowledgeAbsorbedConflict(command.Context(), orchestrate.WorktreeMergeAbsorbedConflictAcknowledgementOptions{
-				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason, DerivedPaths: derivedPaths,
 			})
 			if err != nil {
 				return err
@@ -535,6 +543,9 @@ reachable refuses closed.`,
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate-worktree: %s\ncurrent-target: %s\nacknowledgement: %s\n",
 				ack.Status, ack.ReceiptPath, ack.CandidateWorktree, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if len(ack.ExcusedDerivedPaths) > 0 {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "excused derived paths: %s\n", strings.Join(ack.ExcusedDerivedPaths, ", "))
+			}
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			} else {
@@ -547,6 +558,7 @@ reachable refuses closed.`,
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringArrayVar(&derivedPaths, "derived-path", nil, "repeatable: audit-excuse one generated spec/**/README.md index path (must also exist on the fetched target)")
 	addMutationAdmissionFlags(command)
 	return command
 }

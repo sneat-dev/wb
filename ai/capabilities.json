@@ -10778,14 +10778,16 @@
               "flags": [
                 "--actor",
                 "--apply",
+                "--derived-path",
                 "--format",
                 "--initiator",
                 "--mode",
                 "--reason"
               ],
               "modes": [
-                "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry or by identical-blob content absorption",
-                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree"
+                "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry, path by path identical-blob content absorption, or lines-absorbed proof for a *.jsonl append-only ledger path",
+                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree",
+                "Repeatable --derived-path audits an operator exclusion for one known generated-index shape (spec/**/README.md) that also exists on the fetched target, recorded in the sidecar alongside the actor and reason"
               ]
             }
           ],
@@ -10799,6 +10801,8 @@
               "contains": [
                 "graph ancestor",
                 "identical blob",
+                "lines_absorbed",
+                "--derived-path",
                 "--apply",
                 "--actor",
                 "--initiator",
@@ -10834,12 +10838,32 @@
               "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
               "name": "TestAcknowledgeAbsorbedConflictRefusals",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictLinesAbsorbedJSONLPath",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictLinesAbsorbedRefusesMissingLine",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictDerivedPathExcusesGeneratedIndex",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictDerivedPathRefusals",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "This recovers an unpublished prepare conflict whose every receipted source worktree is already gone -- the one case neither resume nor prepare-conflict-replacement/supersede-validation-failed can reach, since both require an exact clean receipted source worktree to still exist. Containment is proved per source, either by graph ancestry against the freshly fetched target or by exact blob equality on every path the source changed relative to its merge-base with the target, and rechecked live under the lane lock at apply time. It never deletes the preserved, unpublished candidate worktree."
+      "notes": "This recovers an unpublished prepare conflict whose every receipted source worktree is already gone -- the one case neither resume nor prepare-conflict-replacement/supersede-validation-failed can reach, since both require an exact clean receipted source worktree to still exist. Containment is proved per source, path by path against the freshly fetched target: graph ancestry for the whole source, exact blob equality, a lines-absorbed proof for a *.jsonl append-only ledger path (every line the source added relative to its merge-base present verbatim as a line in the target's copy), or an operator-audited --derived-path exclusion for a generated spec/**/README.md index that also exists on the target -- and rechecked live under the lane lock at apply time. It never deletes the preserved, unpublished candidate worktree."
     },
     {
       "id": "wb.worktree.merge.acknowledge-landed-failed",

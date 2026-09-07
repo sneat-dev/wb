@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,18 +23,36 @@ const (
 // how its content was proved already reachable from the current remote
 // target: either the receipted source SHA is a direct ancestor of the
 // freshly fetched target head ("ancestor"), or every path it changed
-// relative to its merge-base with the target now carries an identical blob
-// on the target ("content_absorbed") -- typically because an unrelated later
-// commit landed the same content. MergeBaseSHA and PathCount are populated
-// only for the content_absorbed method.
+// relative to its merge-base with the target is individually proved
+// absorbed ("content_absorbed") -- typically because an unrelated later
+// commit landed the same content, or because a spec-index README.md was
+// operator-excused as a known derived-file shape. MergeBaseSHA and PathCount
+// are populated only for the content_absorbed method; PathProofs details how
+// each changed path was individually proved.
 type WorktreeMergeAbsorbedConflictSourceProof struct {
-	Task         string `json:"task"`
-	Worktree     string `json:"worktree"`
-	Branch       string `json:"branch"`
-	SHA          string `json:"sha"`
+	Task         string                                   `json:"task"`
+	Worktree     string                                   `json:"worktree"`
+	Branch       string                                   `json:"branch"`
+	SHA          string                                   `json:"sha"`
+	Method       string                                   `json:"method"`
+	MergeBaseSHA string                                   `json:"merge_base_sha,omitempty"`
+	PathCount    int                                      `json:"path_count,omitempty"`
+	PathProofs   []WorktreeMergeAbsorbedConflictPathProof `json:"path_proofs,omitempty"`
+}
+
+// WorktreeMergeAbsorbedConflictPathProof records how one path a source
+// changed relative to its merge-base with the current target was proved
+// absorbed: "blob_absorbed" (identical git blob on the target),
+// "lines_absorbed" (every line the source added to a `*.jsonl` append-only
+// ledger, relative to the merge-base, is present verbatim as a line in the
+// target's copy -- AddedLines and MatchedLines record the counts), or
+// "derived_excused" (an operator-audited `--derived-path` exclusion for a
+// known generated-index shape).
+type WorktreeMergeAbsorbedConflictPathProof struct {
+	Path         string `json:"path"`
 	Method       string `json:"method"`
-	MergeBaseSHA string `json:"merge_base_sha,omitempty"`
-	PathCount    int    `json:"path_count,omitempty"`
+	AddedLines   int    `json:"added_lines,omitempty"`
+	MatchedLines int    `json:"matched_lines,omitempty"`
 }
 
 // WorktreeMergeAbsorbedConflictAcknowledgement is a separate, append-only
@@ -66,6 +85,7 @@ type WorktreeMergeAbsorbedConflictAcknowledgement struct {
 	CandidateSHA        string                                     `json:"candidate_sha,omitempty"`
 	Sources             []WorktreeMergeSource                      `json:"sources"`
 	SourceProofs        []WorktreeMergeAbsorbedConflictSourceProof `json:"source_proofs"`
+	ExcusedDerivedPaths []string                                   `json:"excused_derived_paths,omitempty"`
 	Actor               string                                     `json:"actor"`
 	Reason              string                                     `json:"reason"`
 	RecordedAt          time.Time                                  `json:"recorded_at"`
@@ -79,6 +99,11 @@ type WorktreeMergeAbsorbedConflictAcknowledgementOptions struct {
 	Apply        bool
 	Actor        string
 	Reason       string
+	// DerivedPaths audits an operator exclusion for derived/generated files
+	// (repo-relative, repeatable) -- each must exist on the freshly fetched
+	// target and match the built-in derived-index allowlist
+	// (isAbsorbedConflictDerivedPathAllowed), or the whole call refuses.
+	DerivedPaths []string
 }
 
 // AcknowledgeAbsorbedConflict proves, for every receipted source of a
@@ -147,15 +172,19 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
+	excusedDerivedPaths, derivedPathSet, err := validateAbsorbedConflictDerivedPaths(ctx, receipt.Candidate.Worktree, currentTarget, options.DerivedPaths)
+	if err != nil {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
 	proofs := make([]WorktreeMergeAbsorbedConflictSourceProof, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
-		result, proofErr := proveAbsorbedConflictSource(ctx, receipt.Candidate.Worktree, currentTarget, source)
+		result, proofErr := proveAbsorbedConflictSource(ctx, receipt.Candidate.Worktree, currentTarget, source, derivedPathSet)
 		if proofErr != nil {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipted source %s: %w", source.Branch, proofErr)
 		}
 		proofs = append(proofs, WorktreeMergeAbsorbedConflictSourceProof{
 			Task: source.Task, Worktree: source.Worktree, Branch: source.Branch, SHA: source.SHA,
-			Method: result.method, MergeBaseSHA: result.mergeBaseSHA, PathCount: result.pathCount,
+			Method: result.method, MergeBaseSHA: result.mergeBaseSHA, PathCount: result.pathCount, PathProofs: result.pathProofs,
 		})
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
@@ -169,7 +198,7 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
 		Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget,
 		CandidateTask: receipt.Candidate.Task, CandidateWorktree: receipt.Candidate.Worktree, CandidateBranch: receipt.Candidate.Branch, CandidateSHA: receipt.Candidate.SHA,
-		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), SourceProofs: proofs,
+		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), SourceProofs: proofs, ExcusedDerivedPaths: excusedDerivedPaths,
 		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
 	ack.ID = absorbedConflictAcknowledgementID(ack)
@@ -247,15 +276,19 @@ type absorbedConflictProof struct {
 	method       string
 	mergeBaseSHA string
 	pathCount    int
+	pathProofs   []WorktreeMergeAbsorbedConflictPathProof
 }
 
 // proveAbsorbedConflictSource resolves one receipted source's commit object
 // (fetching the origin branch only if the object is not already local, since
 // the source worktree that would normally hold it is gone) and proves its
-// content already reachable from currentTarget, either by graph ancestry or
-// by exact blob equality on every path it changed relative to its
-// merge-base with currentTarget.
-func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget string, source WorktreeMergeSource) (absorbedConflictProof, error) {
+// content already reachable from currentTarget, either by graph ancestry, or
+// path by path relative to its merge-base with currentTarget: an exact blob
+// match ("blob_absorbed"), every line a `*.jsonl` append-only ledger added
+// present verbatim in the target's copy ("lines_absorbed"), or an
+// operator-audited derived-index exclusion present in derivedPaths
+// ("derived_excused").
+func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget string, source WorktreeMergeSource, derivedPaths map[string]bool) (absorbedConflictProof, error) {
 	if err := resolveAbsorbedConflictSourceObject(ctx, worktree, source); err != nil {
 		return absorbedConflictProof{}, err
 	}
@@ -279,14 +312,139 @@ func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget st
 	if len(paths) == 0 {
 		return absorbedConflictProof{}, fmt.Errorf("source changed no path relative to its merge base %s with the current target; it is neither an ancestor nor content-absorbed", mergeBase)
 	}
+	pathProofs := make([]WorktreeMergeAbsorbedConflictPathProof, 0, len(paths))
 	for _, path := range paths {
+		if derivedPaths[path] {
+			pathProofs = append(pathProofs, WorktreeMergeAbsorbedConflictPathProof{Path: path, Method: "derived_excused"})
+			continue
+		}
+		if strings.HasSuffix(path, ".jsonl") {
+			added, matched, linesErr := proveLinesAbsorbedPath(ctx, worktree, mergeBase, source.SHA, currentTarget, path)
+			if linesErr != nil {
+				return absorbedConflictProof{}, linesErr
+			}
+			pathProofs = append(pathProofs, WorktreeMergeAbsorbedConflictPathProof{Path: path, Method: "lines_absorbed", AddedLines: added, MatchedLines: matched})
+			continue
+		}
 		sourceBlob, sourcePresent := gitBlobAtPath(ctx, worktree, source.SHA, path)
 		targetBlob, targetPresent := gitBlobAtPath(ctx, worktree, currentTarget, path)
 		if sourcePresent != targetPresent || sourceBlob != targetBlob {
 			return absorbedConflictProof{}, fmt.Errorf("path %q is not content-absorbed: current target %s does not carry the exact blob source %s carries", path, currentTarget, source.SHA)
 		}
+		pathProofs = append(pathProofs, WorktreeMergeAbsorbedConflictPathProof{Path: path, Method: "blob_absorbed"})
 	}
-	return absorbedConflictProof{method: "content_absorbed", mergeBaseSHA: mergeBase, pathCount: len(paths)}, nil
+	return absorbedConflictProof{method: "content_absorbed", mergeBaseSHA: mergeBase, pathCount: len(paths), pathProofs: pathProofs}, nil
+}
+
+// proveLinesAbsorbedPath proves every line source added to path (relative to
+// mergeBase), excluding the unified-diff file header, is present verbatim as
+// a whole line in the target's copy of path. A path with zero added lines is
+// trivially absorbed. A path the source added lines to but that is absent
+// from the target refuses closed.
+func proveLinesAbsorbedPath(ctx context.Context, worktree, mergeBase, sourceSHA, targetSHA, path string) (added, matched int, err error) {
+	addedLines, err := gitDiffAddedLines(ctx, worktree, mergeBase, sourceSHA, path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("diff added lines for %q: %w", path, err)
+	}
+	if len(addedLines) == 0 {
+		return 0, 0, nil
+	}
+	targetLines, targetPresent := gitFileLines(ctx, worktree, targetSHA, path)
+	if !targetPresent {
+		return 0, 0, fmt.Errorf("path %q is not lines-absorbed: current target %s does not carry the file at all", path, targetSHA)
+	}
+	targetLineSet := make(map[string]bool, len(targetLines))
+	for _, line := range targetLines {
+		targetLineSet[line] = true
+	}
+	for _, line := range addedLines {
+		if !targetLineSet[line] {
+			return 0, 0, fmt.Errorf("path %q is not lines-absorbed: an added line is not present verbatim in the current target %s", path, targetSHA)
+		}
+	}
+	return len(addedLines), len(addedLines), nil
+}
+
+// gitDiffAddedLines returns every line added by sourceSHA to path relative
+// to mergeBase, excluding the unified-diff file header (the "+++" line) and
+// hunk metadata, with the leading "+" stripped.
+func gitDiffAddedLines(ctx context.Context, worktree, mergeBase, sourceSHA, path string) ([]string, error) {
+	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "diff", "--no-color", "-U0", mergeBase, sourceSHA, "--", path)
+	if err != nil {
+		return nil, err
+	}
+	var added []string
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		added = append(added, strings.TrimPrefix(line, "+"))
+	}
+	return added, nil
+}
+
+// gitFileLines returns revision's copy of path split into lines, or
+// present=false if the path does not exist at that revision.
+func gitFileLines(ctx context.Context, worktree, revision, path string) (lines []string, present bool) {
+	output, _, err := runCommand(ctx, 0, 0, worktree, "git", "show", revision+":"+path)
+	if err != nil {
+		return nil, false
+	}
+	trimmed := strings.TrimSuffix(output, "\n")
+	if trimmed == "" {
+		return []string{}, true
+	}
+	return strings.Split(trimmed, "\n"), true
+}
+
+// isAbsorbedConflictDerivedPathAllowed narrowly allows the one derived-index
+// shape this recovery may excuse: a generated spec/**/README.md listing
+// index, exactly "README.md" nested anywhere under a repo-root "spec/"
+// directory. Chosen over "any README.md the receipt's sources changed"
+// because that would let an operator excuse an unrelated hand-authored
+// README.md merely for appearing in this receipt; this shape check binds to
+// the generated-index location instead, regardless of receipt contents.
+func isAbsorbedConflictDerivedPathAllowed(path string) bool {
+	segments := strings.Split(path, "/")
+	if len(segments) < 2 || segments[0] != "spec" {
+		return false
+	}
+	return segments[len(segments)-1] == "README.md"
+}
+
+// validateAbsorbedConflictDerivedPaths normalizes and validates the
+// operator-supplied --derived-path exclusions: each must match the built-in
+// derived-index allowlist and must exist on the freshly fetched
+// currentTarget (a path excused this way is never permitted to be one the
+// target deleted). Returns the deduplicated, sorted, validated paths for the
+// sidecar record alongside a lookup set for per-path proof.
+func validateAbsorbedConflictDerivedPaths(ctx context.Context, worktree, currentTarget string, rawPaths []string) ([]string, map[string]bool, error) {
+	if len(rawPaths) == 0 {
+		return nil, nil, nil
+	}
+	seen := make(map[string]bool, len(rawPaths))
+	var excused []string
+	for _, raw := range rawPaths {
+		path := strings.TrimSpace(raw)
+		path = strings.TrimPrefix(path, "./")
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if !isAbsorbedConflictDerivedPathAllowed(path) {
+			return nil, nil, fmt.Errorf("--derived-path %q is not an allowed derived-index shape (spec/**/README.md)", path)
+		}
+		if _, present := gitBlobAtPath(ctx, worktree, currentTarget, path); !present {
+			return nil, nil, fmt.Errorf("--derived-path %q does not exist on the current target %s", path, currentTarget)
+		}
+		excused = append(excused, path)
+	}
+	slices.Sort(excused)
+	derivedSet := make(map[string]bool, len(excused))
+	for _, path := range excused {
+		derivedSet[path] = true
+	}
+	return excused, derivedSet, nil
 }
 
 // resolveAbsorbedConflictSourceObject proves the receipted source commit is
@@ -356,6 +514,19 @@ func absorbedConflictAcknowledgementID(ack WorktreeMergeAbsorbedConflictAcknowle
 			_, _ = hash.Write([]byte{0})
 		}
 		_, _ = hash.Write([]byte{byte(proof.PathCount)})
+		_, _ = hash.Write([]byte{0xfd})
+		for _, pathProof := range proof.PathProofs {
+			for _, value := range []string{pathProof.Path, pathProof.Method} {
+				_, _ = hash.Write([]byte(value))
+				_, _ = hash.Write([]byte{0})
+			}
+			_, _ = hash.Write([]byte{byte(pathProof.AddedLines), byte(pathProof.MatchedLines)})
+		}
+	}
+	_, _ = hash.Write([]byte{0xfc})
+	for _, path := range ack.ExcusedDerivedPaths {
+		_, _ = hash.Write([]byte(path))
+		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -372,11 +543,26 @@ func sameAbsorbedConflictAcknowledgement(left, right WorktreeMergeAbsorbedConfli
 		left.ReceiptTargetSHA != right.ReceiptTargetSHA || left.CurrentTargetSHA != right.CurrentTargetSHA ||
 		left.CandidateTask != right.CandidateTask || left.CandidateWorktree != right.CandidateWorktree ||
 		left.CandidateBranch != right.CandidateBranch || left.CandidateSHA != right.CandidateSHA ||
-		!sameWorktreeMergeSources(left.Sources, right.Sources) || len(left.SourceProofs) != len(right.SourceProofs) {
+		!sameWorktreeMergeSources(left.Sources, right.Sources) || len(left.SourceProofs) != len(right.SourceProofs) ||
+		!slices.Equal(left.ExcusedDerivedPaths, right.ExcusedDerivedPaths) {
 		return false
 	}
 	for index := range left.SourceProofs {
-		if left.SourceProofs[index] != right.SourceProofs[index] {
+		if !sameAbsorbedConflictSourceProof(left.SourceProofs[index], right.SourceProofs[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameAbsorbedConflictSourceProof(left, right WorktreeMergeAbsorbedConflictSourceProof) bool {
+	if left.Task != right.Task || left.Worktree != right.Worktree || left.Branch != right.Branch || left.SHA != right.SHA ||
+		left.Method != right.Method || left.MergeBaseSHA != right.MergeBaseSHA || left.PathCount != right.PathCount ||
+		len(left.PathProofs) != len(right.PathProofs) {
+		return false
+	}
+	for index := range left.PathProofs {
+		if left.PathProofs[index] != right.PathProofs[index] {
 			return false
 		}
 	}
@@ -438,6 +624,13 @@ func readAbsorbedConflictAcknowledgement(path string, receipt WorktreeMergeRecei
 		ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != absorbedConflictAcknowledgementID(ack) {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has invalid immutable identity", path)
 	}
+	excusedDerivedPaths := make(map[string]bool, len(ack.ExcusedDerivedPaths))
+	for _, derivedPath := range ack.ExcusedDerivedPaths {
+		if !isAbsorbedConflictDerivedPathAllowed(derivedPath) {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s excuses a derived path %q outside the allowed shape", path, derivedPath)
+		}
+		excusedDerivedPaths[derivedPath] = true
+	}
 	for index, proof := range ack.SourceProofs {
 		source := receipt.Sources[index]
 		if proof.Task != source.Task || proof.Worktree != source.Worktree || proof.Branch != source.Branch || proof.SHA != source.SHA {
@@ -446,8 +639,23 @@ func readAbsorbedConflictAcknowledgement(path string, receipt WorktreeMergeRecei
 		if proof.Method != "ancestor" && proof.Method != "content_absorbed" {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unknown proof method %q", path, proof.Method)
 		}
-		if proof.Method == "content_absorbed" && (proof.MergeBaseSHA == "" || proof.PathCount == 0) {
-			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s content-absorbed proof lacks its merge base or path count", path)
+		if proof.Method == "content_absorbed" && (proof.MergeBaseSHA == "" || proof.PathCount == 0 || len(proof.PathProofs) != proof.PathCount) {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s content-absorbed proof lacks its merge base, path count, or path proofs", path)
+		}
+		for _, pathProof := range proof.PathProofs {
+			switch pathProof.Method {
+			case "blob_absorbed":
+			case "lines_absorbed":
+				if pathProof.AddedLines != pathProof.MatchedLines {
+					return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unproved lines-absorbed path %q", path, pathProof.Path)
+				}
+			case "derived_excused":
+				if !excusedDerivedPaths[pathProof.Path] {
+					return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s excuses path %q that is not in its recorded excused derived paths", path, pathProof.Path)
+				}
+			default:
+				return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unknown path proof method %q", path, pathProof.Method)
+			}
 		}
 	}
 	return ack, nil

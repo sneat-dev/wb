@@ -168,15 +168,25 @@ since both require an exact clean receipted source worktree to still exist --
 use `acknowledge-absorbed-conflict`. It proves, source by source, that each
 receipted source's exact content is already reachable from the freshly
 fetched current remote target: either the receipted source SHA is a graph
-ancestor of that target, or every path it changed relative to its
-merge-base with the target now carries an identical blob there (an unrelated
-later commit landed the same content). It never reads or requires a
-receipted source worktree, never rewrites the historical receipt or any Work
-Log, and never deletes the preserved, unpublished candidate worktree. It
-writes a separate audited acknowledgement and frees the merger lane for a
-fresh candidate. A source worktree that still exists, a receipt that already
-published a candidate or recorded a landing SHA, or any source whose content
-cannot be proved reachable refuses closed.
+ancestor of that target, or path by path relative to its merge-base with the
+target: an identical blob there (an unrelated later commit landed the same
+content), or, automatically for a `*.jsonl` append-only ledger path, every
+line the source added relative to the merge-base present verbatim as a line
+in the target's copy (`lines_absorbed`, with per-path added/matched line
+counts recorded in the sidecar). Repeatable `--derived-path <path>` audits an
+operator exclusion for one known generated-index shape -- exactly
+`README.md` nested anywhere under a repo-root `spec/` directory
+(`spec/**/README.md`) -- and only when that exact path also exists on the
+fetched target; every other shape, or a path absent from the target, refuses
+closed. Every excused path is recorded in the sidecar alongside the actor and
+reason, and both the dry-run and applied reports list them. It never reads or
+requires a receipted source worktree, never rewrites the historical receipt
+or any Work Log, and never deletes the preserved, unpublished candidate
+worktree. It writes a separate audited acknowledgement and frees the merger
+lane for a fresh candidate. A source worktree that still exists, a receipt
+that already published a candidate or recorded a landing SHA, an invalid or
+absent `--derived-path`, or any path whose content cannot be proved reachable
+refuses closed.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use
