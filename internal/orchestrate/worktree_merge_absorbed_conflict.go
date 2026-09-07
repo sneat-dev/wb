@@ -2,94 +2,34 @@ package orchestrate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/mergeack"
 )
 
-const (
-	worktreeMergeAbsorbedConflictAcknowledgementSchemaVersion = 1
-	worktreeMergeAbsorbedConflictAcknowledgementSuffix        = ".absorbed-conflict.ack.json"
+// worktreeMergeAbsorbedConflictAcknowledgementSuffix is kept as a plain alias
+// of mergeack.FileSuffix: internal/orchestrate/worktree_merge.go's report
+// directory scans (which this file does not own) name it directly, and
+// aliasing rather than duplicating the literal means the two can never
+// diverge.
+const worktreeMergeAbsorbedConflictAcknowledgementSuffix = mergeack.FileSuffix
+
+// WorktreeMergeAbsorbedConflictSourceProof, WorktreeMergeAbsorbedConflictPathProof,
+// and WorktreeMergeAbsorbedConflictAcknowledgement alias internal/mergeack's
+// types directly (rather than duplicating them) so this package's on-disk
+// format, identity hash, and validation are always exactly the ones
+// internal/mergeack defines -- the single source of truth internal/worktrees
+// also reads. See internal/mergeack's package doc for the full rationale.
+type (
+	WorktreeMergeAbsorbedConflictSourceProof     = mergeack.SourceProof
+	WorktreeMergeAbsorbedConflictPathProof       = mergeack.PathProof
+	WorktreeMergeAbsorbedConflictAcknowledgement = mergeack.Acknowledgement
 )
-
-// WorktreeMergeAbsorbedConflictSourceProof records, for one receipted source,
-// how its content was proved already reachable from the current remote
-// target: either the receipted source SHA is a direct ancestor of the
-// freshly fetched target head ("ancestor"), or every path it changed
-// relative to its merge-base with the target is individually proved
-// absorbed ("content_absorbed") -- typically because an unrelated later
-// commit landed the same content, or because a spec-index README.md was
-// operator-excused as a known derived-file shape. MergeBaseSHA and PathCount
-// are populated only for the content_absorbed method; PathProofs details how
-// each changed path was individually proved.
-type WorktreeMergeAbsorbedConflictSourceProof struct {
-	Task         string                                   `json:"task"`
-	Worktree     string                                   `json:"worktree"`
-	Branch       string                                   `json:"branch"`
-	SHA          string                                   `json:"sha"`
-	Method       string                                   `json:"method"`
-	MergeBaseSHA string                                   `json:"merge_base_sha,omitempty"`
-	PathCount    int                                      `json:"path_count,omitempty"`
-	PathProofs   []WorktreeMergeAbsorbedConflictPathProof `json:"path_proofs,omitempty"`
-}
-
-// WorktreeMergeAbsorbedConflictPathProof records how one path a source
-// changed relative to its merge-base with the current target was proved
-// absorbed: "blob_absorbed" (identical git blob on the target),
-// "lines_absorbed" (every line the source added to a `*.jsonl` append-only
-// ledger, relative to the merge-base, is present verbatim as a line in the
-// target's copy -- AddedLines and MatchedLines record the counts), or
-// "derived_excused" (an operator-audited `--derived-path` exclusion for a
-// known generated-index shape).
-type WorktreeMergeAbsorbedConflictPathProof struct {
-	Path         string `json:"path"`
-	Method       string `json:"method"`
-	AddedLines   int    `json:"added_lines,omitempty"`
-	MatchedLines int    `json:"matched_lines,omitempty"`
-}
-
-// WorktreeMergeAbsorbedConflictAcknowledgement is a separate, append-only
-// acknowledgement for an unpublished prepare-phase conflict receipt whose
-// every receipted source worktree is already gone from disk -- so neither an
-// ordinary resume nor prepare-conflict-replacement/supersede-validation-failed
-// can recover it -- yet whose exact receipted content is proved, source by
-// source, to already be reachable from the freshly fetched current remote
-// target either by graph ancestry or by identical-blob content absorption.
-// It never rewrites the historical receipt or any Work Log, and it never
-// deletes the preserved, unpublished candidate worktree; it only frees the
-// merger lane so a fresh candidate can be prepared.
-type WorktreeMergeAbsorbedConflictAcknowledgement struct {
-	SchemaVersion       int                                        `json:"schema_version"`
-	ID                  string                                     `json:"id"`
-	Status              string                                     `json:"status"`
-	ReceiptPath         string                                     `json:"receipt_path"`
-	AcknowledgementPath string                                     `json:"acknowledgement_path"`
-	ReceiptID           string                                     `json:"receipt_id"`
-	ReceiptSHA256       string                                     `json:"receipt_sha256"`
-	ReceiptStatus       WorktreeMergeStatus                        `json:"receipt_status"`
-	Lane                string                                     `json:"lane"`
-	Repository          string                                     `json:"repository"`
-	Target              string                                     `json:"target"`
-	ReceiptTargetSHA    string                                     `json:"receipt_target_sha"`
-	CurrentTargetSHA    string                                     `json:"current_target_sha"`
-	CandidateTask       string                                     `json:"candidate_task"`
-	CandidateWorktree   string                                     `json:"candidate_worktree"`
-	CandidateBranch     string                                     `json:"candidate_branch"`
-	CandidateSHA        string                                     `json:"candidate_sha,omitempty"`
-	Sources             []WorktreeMergeSource                      `json:"sources"`
-	SourceProofs        []WorktreeMergeAbsorbedConflictSourceProof `json:"source_proofs"`
-	ExcusedDerivedPaths []string                                   `json:"excused_derived_paths,omitempty"`
-	Actor               string                                     `json:"actor"`
-	Reason              string                                     `json:"reason"`
-	RecordedAt          time.Time                                  `json:"recorded_at"`
-}
 
 // WorktreeMergeAbsorbedConflictAcknowledgementOptions configures
 // AcknowledgeAbsorbedConflict.
@@ -193,17 +133,17 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	}
 	ackPath := absorbedConflictAcknowledgementPath(receiptPath)
 	ack := WorktreeMergeAbsorbedConflictAcknowledgement{
-		SchemaVersion: worktreeMergeAbsorbedConflictAcknowledgementSchemaVersion, Status: "absorbed_conflict_acknowledged",
+		SchemaVersion: mergeack.SchemaVersion, Status: mergeack.Status,
 		ReceiptPath: receiptPath, AcknowledgementPath: ackPath,
-		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
+		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: string(receipt.Status), Lane: receipt.Lane,
 		Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget,
 		CandidateTask: receipt.Candidate.Task, CandidateWorktree: receipt.Candidate.Worktree, CandidateBranch: receipt.Candidate.Branch, CandidateSHA: receipt.Candidate.SHA,
-		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), SourceProofs: proofs, ExcusedDerivedPaths: excusedDerivedPaths,
+		Sources: mergeAckSources(receipt.Sources), SourceProofs: proofs, ExcusedDerivedPaths: excusedDerivedPaths,
 		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
-	ack.ID = absorbedConflictAcknowledgementID(ack)
+	ack.ID = mergeack.ComputeID(ack)
 	if existing, readErr := readAbsorbedConflictAcknowledgement(ackPath, receipt); readErr == nil {
-		if !sameAbsorbedConflictAcknowledgement(existing, ack) {
+		if !mergeack.Same(existing, ack) {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s binds different immutable evidence", ackPath)
 		}
 		return existing, nil
@@ -213,10 +153,32 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistAbsorbedConflictAcknowledgement(ackPath, ack); err != nil {
+	if err := mergeack.Persist(ackPath, ack); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	return ack, nil
+}
+
+// mergeAckSources converts a receipt's []WorktreeMergeSource into the
+// []mergeack.Source shape an Acknowledgement carries, dropping the Merged
+// flag mergeack has no use for.
+func mergeAckSources(sources []WorktreeMergeSource) []mergeack.Source {
+	converted := make([]mergeack.Source, 0, len(sources))
+	for _, source := range sources {
+		converted = append(converted, mergeack.Source{Task: source.Task, Worktree: source.Worktree, Branch: source.Branch, SHA: source.SHA})
+	}
+	return converted
+}
+
+// mergeAckReceiptIdentity narrows receipt down to the fields mergeack.Load
+// validates an acknowledgement against.
+func mergeAckReceiptIdentity(receipt WorktreeMergeReceipt) mergeack.ReceiptIdentity {
+	return mergeack.ReceiptIdentity{
+		Path: receipt.ReceiptPath, ID: receipt.ID, Status: string(receipt.Status), Lane: receipt.Lane,
+		Repository: receipt.Repository, Target: receipt.Target, TargetSHA: receipt.TargetSHA,
+		Candidate: mergeack.Source{Task: receipt.Candidate.Task, Worktree: receipt.Candidate.Worktree, Branch: receipt.Candidate.Branch, SHA: receipt.Candidate.SHA},
+		Sources:   mergeAckSources(receipt.Sources),
+	}
 }
 
 // validateAbsorbedConflictReceipt narrowly scopes eligibility to an
@@ -401,21 +363,6 @@ func gitFileLines(ctx context.Context, worktree, revision, path string) (lines [
 	return strings.Split(trimmed, "\n"), true
 }
 
-// isAbsorbedConflictDerivedPathAllowed narrowly allows the one derived-index
-// shape this recovery may excuse: a generated spec/**/README.md listing
-// index, exactly "README.md" nested anywhere under a repo-root "spec/"
-// directory. Chosen over "any README.md the receipt's sources changed"
-// because that would let an operator excuse an unrelated hand-authored
-// README.md merely for appearing in this receipt; this shape check binds to
-// the generated-index location instead, regardless of receipt contents.
-func isAbsorbedConflictDerivedPathAllowed(path string) bool {
-	segments := strings.Split(path, "/")
-	if len(segments) < 2 || segments[0] != "spec" {
-		return false
-	}
-	return segments[len(segments)-1] == "README.md"
-}
-
 // validateAbsorbedConflictDerivedPaths normalizes and validates the
 // operator-supplied --derived-path exclusions: each must match the built-in
 // derived-index allowlist and must exist on the freshly fetched
@@ -435,7 +382,7 @@ func validateAbsorbedConflictDerivedPaths(ctx context.Context, worktree, current
 			continue
 		}
 		seen[path] = true
-		if !isAbsorbedConflictDerivedPathAllowed(path) {
+		if !mergeack.IsDerivedPathAllowed(path) {
 			return nil, nil, fmt.Errorf("--derived-path %q is not an allowed derived-index shape (spec/**/README.md)", path)
 		}
 		if _, present := gitBlobAtPath(ctx, worktree, currentTarget, path); !present {
@@ -492,177 +439,15 @@ func nonEmptyTrimmedLines(value string) []string {
 }
 
 func absorbedConflictAcknowledgementPath(receiptPath string) string {
-	return receiptPath + worktreeMergeAbsorbedConflictAcknowledgementSuffix
+	return mergeack.Path(receiptPath)
 }
 
-func absorbedConflictAcknowledgementID(ack WorktreeMergeAbsorbedConflictAcknowledgement) string {
-	hash := sha256.New()
-	for _, value := range []string{
-		ack.ReceiptID, ack.ReceiptPath, ack.ReceiptSHA256, string(ack.ReceiptStatus), ack.Lane, ack.Repository, ack.Target,
-		ack.ReceiptTargetSHA, ack.CurrentTargetSHA, ack.CandidateTask, ack.CandidateWorktree, ack.CandidateBranch, ack.CandidateSHA,
-		ack.Actor, ack.Reason,
-	} {
-		_, _ = hash.Write([]byte(value))
-		_, _ = hash.Write([]byte{0})
-	}
-	for _, source := range ack.Sources {
-		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
-			_, _ = hash.Write([]byte(value))
-			_, _ = hash.Write([]byte{0})
-		}
-	}
-	_, _ = hash.Write([]byte{0xfe})
-	for _, proof := range ack.SourceProofs {
-		for _, value := range []string{proof.Task, proof.Worktree, proof.Branch, proof.SHA, proof.Method, proof.MergeBaseSHA} {
-			_, _ = hash.Write([]byte(value))
-			_, _ = hash.Write([]byte{0})
-		}
-		_, _ = hash.Write([]byte{byte(proof.PathCount)})
-		_, _ = hash.Write([]byte{0xfd})
-		for _, pathProof := range proof.PathProofs {
-			for _, value := range []string{pathProof.Path, pathProof.Method} {
-				_, _ = hash.Write([]byte(value))
-				_, _ = hash.Write([]byte{0})
-			}
-			_, _ = hash.Write([]byte{byte(pathProof.AddedLines), byte(pathProof.MatchedLines)})
-		}
-	}
-	_, _ = hash.Write([]byte{0xfc})
-	for _, path := range ack.ExcusedDerivedPaths {
-		_, _ = hash.Write([]byte(path))
-		_, _ = hash.Write([]byte{0})
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-// sameAbsorbedConflictAcknowledgement compares only the immutable proof
-// evidence, deliberately excluding Actor/Reason/ID/RecordedAt: a retry that
-// repeats the same receipt, target, and per-source proof is idempotent even
-// when the operator supplies a different actor or reason on the replay. The
-// first successful write is authoritative and is never silently overwritten.
-func sameAbsorbedConflictAcknowledgement(left, right WorktreeMergeAbsorbedConflictAcknowledgement) bool {
-	if left.ReceiptPath != right.ReceiptPath || left.AcknowledgementPath != right.AcknowledgementPath ||
-		left.ReceiptID != right.ReceiptID || left.ReceiptSHA256 != right.ReceiptSHA256 || left.ReceiptStatus != right.ReceiptStatus ||
-		left.Lane != right.Lane || left.Repository != right.Repository || left.Target != right.Target ||
-		left.ReceiptTargetSHA != right.ReceiptTargetSHA || left.CurrentTargetSHA != right.CurrentTargetSHA ||
-		left.CandidateTask != right.CandidateTask || left.CandidateWorktree != right.CandidateWorktree ||
-		left.CandidateBranch != right.CandidateBranch || left.CandidateSHA != right.CandidateSHA ||
-		!sameWorktreeMergeSources(left.Sources, right.Sources) || len(left.SourceProofs) != len(right.SourceProofs) ||
-		!slices.Equal(left.ExcusedDerivedPaths, right.ExcusedDerivedPaths) {
-		return false
-	}
-	for index := range left.SourceProofs {
-		if !sameAbsorbedConflictSourceProof(left.SourceProofs[index], right.SourceProofs[index]) {
-			return false
-		}
-	}
-	return true
-}
-
-func sameAbsorbedConflictSourceProof(left, right WorktreeMergeAbsorbedConflictSourceProof) bool {
-	if left.Task != right.Task || left.Worktree != right.Worktree || left.Branch != right.Branch || left.SHA != right.SHA ||
-		left.Method != right.Method || left.MergeBaseSHA != right.MergeBaseSHA || left.PathCount != right.PathCount ||
-		len(left.PathProofs) != len(right.PathProofs) {
-		return false
-	}
-	for index := range left.PathProofs {
-		if left.PathProofs[index] != right.PathProofs[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func persistAbsorbedConflictAcknowledgement(path string, ack WorktreeMergeAbsorbedConflictAcknowledgement) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".absorbed-conflict-ack-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
-}
-
+// readAbsorbedConflictAcknowledgement reads and fully validates the
+// acknowledgement sidecar at path against receipt, delegating the on-disk
+// format, identity hash, and validation to internal/mergeack -- the single
+// source of truth internal/worktrees's cleanup proof also reads.
 func readAbsorbedConflictAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeAbsorbedConflictAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
-	}
-	var ack WorktreeMergeAbsorbedConflictAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("decode absorbed-conflict acknowledgement %s: %w", path, err)
-	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
-	if err != nil {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
-	}
-	if ack.SchemaVersion != worktreeMergeAbsorbedConflictAcknowledgementSchemaVersion || ack.Status != "absorbed_conflict_acknowledged" ||
-		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash ||
-		ack.ReceiptStatus != receipt.Status || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
-		ack.ReceiptTargetSHA != receipt.TargetSHA || ack.CandidateTask != receipt.Candidate.Task || ack.CandidateWorktree != receipt.Candidate.Worktree ||
-		ack.CandidateBranch != receipt.Candidate.Branch || ack.CandidateSHA != receipt.Candidate.SHA || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
-		len(ack.SourceProofs) != len(receipt.Sources) || ack.CurrentTargetSHA == "" ||
-		ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != absorbedConflictAcknowledgementID(ack) {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has invalid immutable identity", path)
-	}
-	excusedDerivedPaths := make(map[string]bool, len(ack.ExcusedDerivedPaths))
-	for _, derivedPath := range ack.ExcusedDerivedPaths {
-		if !isAbsorbedConflictDerivedPathAllowed(derivedPath) {
-			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s excuses a derived path %q outside the allowed shape", path, derivedPath)
-		}
-		excusedDerivedPaths[derivedPath] = true
-	}
-	for index, proof := range ack.SourceProofs {
-		source := receipt.Sources[index]
-		if proof.Task != source.Task || proof.Worktree != source.Worktree || proof.Branch != source.Branch || proof.SHA != source.SHA {
-			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s source proof identity drift", path)
-		}
-		if proof.Method != "ancestor" && proof.Method != "content_absorbed" {
-			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unknown proof method %q", path, proof.Method)
-		}
-		if proof.Method == "content_absorbed" && (proof.MergeBaseSHA == "" || proof.PathCount == 0 || len(proof.PathProofs) != proof.PathCount) {
-			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s content-absorbed proof lacks its merge base, path count, or path proofs", path)
-		}
-		for _, pathProof := range proof.PathProofs {
-			switch pathProof.Method {
-			case "blob_absorbed":
-			case "lines_absorbed":
-				if pathProof.AddedLines != pathProof.MatchedLines {
-					return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unproved lines-absorbed path %q", path, pathProof.Path)
-				}
-			case "derived_excused":
-				if !excusedDerivedPaths[pathProof.Path] {
-					return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s excuses path %q that is not in its recorded excused derived paths", path, pathProof.Path)
-				}
-			default:
-				return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unknown path proof method %q", path, pathProof.Method)
-			}
-		}
-	}
-	return ack, nil
+	return mergeack.Load(path, mergeAckReceiptIdentity(receipt))
 }
 
 func hasAbsorbedConflictAcknowledgement(receipt WorktreeMergeReceipt) (bool, error) {
