@@ -76,7 +76,18 @@ check fails, its `detail` (and the coverage diagnostics manifest, when one is
 written) carries an `ambient inputs:` block naming any `go.work` found above
 the gate's `TMPDIR` or the checked module, any `GOWORK` value observed in the
 gate's own environment, and the names (never the values) of any `WB_AGENT_*`
-variable present — omitted entirely when none of these were observed.
+variable present — omitted entirely when none of these were observed. A
+repository's own `go.work` is only recognized as such when it is a regular
+file; a symlinked `go.work` is always treated as ambient/WB-managed
+(`GOWORK=off`), matching wb's local `-link` classifier's fail-closed rule for
+a symlink it does not resolve.
+
+Every hook block WB runs -- built-in and repository-defined -- now runs with
+every `WB_AGENT_*` variable stripped from its environment. Built-in blocks
+need no agent identity to do their job. A repository-defined hook block that
+shells out to an identity-gated mutating `wb` verb must rely on `wb session
+register` (process-ancestry identity), not on an exported `WB_AGENT_*`
+variable, since none reaches the subprocess.
 
 These commands inspect existing clones and do not fetch, modify, commit, or
 push. For a repository-specific E2E suite wired into a pre-push hook, run the

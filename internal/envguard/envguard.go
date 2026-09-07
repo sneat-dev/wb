@@ -14,6 +14,11 @@
 // operating agent were inherited by tests and changed verdicts
 // ("worktree has an active owner", "agent-mode mutation requires a live
 // registered session", an autoregister overwriting a parked row).
+//
+// A go.work is only ever recognized as "the repository's own" when it is a
+// regular file: a symlinked go.work is always treated as ambient/WB-managed
+// (GOWORK=off), the same fail-closed rule wb's local -link classifier
+// applies to a symlink it does not resolve.
 package envguard
 
 import (
@@ -178,16 +183,54 @@ func SanitizeEnv(base []string, overrides ...string) []string {
 // validated owns multi-module workspace mode intrinsically, rather than
 // carrying an ambient or WB-managed link. A repository in this state must
 // keep GOWORK enabled; every other repository gets GOWORK=off.
+//
+// go.work must be a regular file, not a symlink: this matches wb's local
+// -link classifier, which fails closed (treats a symlinked go.work as not
+// its own) rather than resolving what it points at.
+//
+// repoRoot need not be the git top level -- a workspace's go.work commonly
+// sits below it (e.g. a nested/go.work with the git root above nested/).
+// TracksOwnGoWork resolves the actual top level with `git rev-parse
+// --show-toplevel` and runs both HEAD checks against go.work's path
+// relative to that top level, never against a HEAD:go.work path assumed to
+// be rooted at repoRoot itself.
 func TracksOwnGoWork(repoRoot string) (bool, error) {
 	info, err := os.Lstat(filepath.Join(repoRoot, "go.work"))
 	if err != nil || !info.Mode().IsRegular() {
 		return false, nil
 	}
-	tracked, err := gitPathExistsAtHEAD(repoRoot, "go.work")
+	toplevel, err := gitTopLevel(repoRoot)
+	if err != nil {
+		return false, err
+	}
+	if toplevel == "" {
+		// Not inside a git repository at all: nothing to track against.
+		return false, nil
+	}
+	relativePath, err := filepath.Rel(toplevel, filepath.Join(repoRoot, "go.work"))
+	if err != nil {
+		return false, err
+	}
+	tracked, err := gitPathExistsAtHEAD(toplevel, relativePath)
 	if err != nil || !tracked {
 		return false, err
 	}
-	return gitPathUnchangedFromHEAD(repoRoot, "go.work")
+	return gitPathUnchangedFromHEAD(toplevel, relativePath)
+}
+
+// gitTopLevel resolves the git top-level directory containing dir, or ""
+// (with a nil error) when dir is not inside a git repository at all.
+func gitTopLevel(dir string) (string, error) {
+	command := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 // GoEnvOverrides returns the environment overrides a Go check against dir

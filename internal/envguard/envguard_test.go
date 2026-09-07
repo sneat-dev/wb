@@ -173,6 +173,83 @@ func TestTracksOwnGoWorkTrueOnlyWhenCommittedAndUnchanged(t *testing.T) {
 	}
 }
 
+// TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory covers a
+// go.work that does not sit at the git repository's top level -- e.g. a
+// committed nested/go.work with the git root one directory above nested/.
+// TracksOwnGoWork must resolve the true top level with `git rev-parse
+// --show-toplevel` and check nested/go.work relative to it, not assume
+// go.work's own directory is the git root.
+func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	runGit(t, root, "config", "user.name", "Test")
+
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "nested/go.work")
+	runGit(t, root, "commit", "-m", "add nested go.work")
+
+	// Checks run "under nested/" -- repoRoot is the go.work's own
+	// directory, one level below the git top level.
+	tracked, err := TracksOwnGoWork(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("TracksOwnGoWork = false for a committed, unchanged nested/go.work with the git root above it")
+	}
+
+	// A dirty edit to the nested go.work is no longer "its own" until
+	// committed again -- proves the diff check also resolves the correct
+	// relative path, not just the existence check.
+	if err := os.WriteFile(filepath.Join(nested, "go.work"), []byte("go 1.26\n\nuse ./extra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tracked, err = TracksOwnGoWork(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked {
+		t.Fatal("TracksOwnGoWork = true for a nested go.work that differs from HEAD")
+	}
+}
+
+// TestTracksOwnGoWorkFalseOutsideAnyGitRepository covers a temp module (a
+// go.work with no enclosing git repository at all): GoEnvOverrides must
+// yield GOWORK=off rather than erroring or panicking when `git rev-parse
+// --show-toplevel` finds no repository.
+func TestTracksOwnGoWorkFalseOutsideAnyGitRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracked, err := TracksOwnGoWork(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracked {
+		t.Fatal("TracksOwnGoWork = true for a go.work outside any git repository")
+	}
+
+	overrides := GoEnvOverrides(root)
+	if len(overrides) != 1 || overrides[0] != "GOWORK=off" {
+		t.Fatalf("overrides = %v, want [GOWORK=off]", overrides)
+	}
+}
+
 func envValues(entries []string) map[string]string {
 	values := make(map[string]string, len(entries))
 	for _, entry := range entries {

@@ -3,6 +3,8 @@ package testenv
 import (
 	"os"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/envguard"
 )
 
 func TestIsolateClearsAgentVarsAndPinsGoworkOff(t *testing.T) {
@@ -21,6 +23,34 @@ func TestIsolateClearsAgentVarsAndPinsGoworkOff(t *testing.T) {
 	}
 	if value := os.Getenv("GOWORK"); value != "off" {
 		t.Fatalf("GOWORK = %q after Isolate, want %q", value, "off")
+	}
+}
+
+func TestIsolateTrulyUnsetsAgentVarsAndRestoresAfterTest(t *testing.T) {
+	// envguard.Inspect detects an agent var by key presence in the
+	// environment slice, not by value -- a t.Setenv(name, "") that leaves
+	// the key present with an empty value would still be detected. This
+	// test proves the key is gone while the outer test runs, and that the
+	// original value comes back once it completes.
+	t.Setenv("WB_AGENT_ID", "outer-session")
+	t.Setenv("WB_AGENT_PID", "999")
+
+	t.Run("during", func(t *testing.T) {
+		Isolate(t)
+		inputs := envguard.Inspect(os.Environ())
+		if len(inputs.AgentVars) != 0 {
+			t.Fatalf("AgentVars = %v after Isolate, want none", inputs.AgentVars)
+		}
+		if _, present := os.LookupEnv("WB_AGENT_ID"); present {
+			t.Fatal("WB_AGENT_ID key still present in os.Environ() after Isolate")
+		}
+	})
+
+	if value := os.Getenv("WB_AGENT_ID"); value != "outer-session" {
+		t.Fatalf("WB_AGENT_ID = %q after subtest completed, want restored %q", value, "outer-session")
+	}
+	if value := os.Getenv("WB_AGENT_PID"); value != "999" {
+		t.Fatalf("WB_AGENT_PID = %q after subtest completed, want restored %q", value, "999")
 	}
 }
 
