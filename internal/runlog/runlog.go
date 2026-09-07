@@ -45,7 +45,14 @@ type Event struct {
 	SystemCPUMS   int64     `json:"system_cpu_ms,omitempty"`
 	QueueWaitMS   int64     `json:"queue_wait_ms,omitempty"`
 	CPUUnits      int       `json:"cpu_units,omitempty"`
-	ExitCode      *int      `json:"exit_code,omitempty"`
+	LoadOverride  bool      `json:"load_override,omitempty"`
+	// LoadFloorSkipped names why host-load admission was disabled for this
+	// command, when it was: "env" (WB_ADMISSION_LOAD_FLOOR<=0), "ci"
+	// (CI/GITHUB_ACTIONS declared), or "config" (wb.yaml
+	// admission.load_floor: 0). Empty means the check was active. See
+	// internal/hostload.Resolve.
+	LoadFloorSkipped string `json:"load_floor_skipped,omitempty"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
 }
 
 // RecordAdmission adds scheduler evidence to the terminal event without
@@ -53,6 +60,20 @@ type Event struct {
 func (recorder *Recorder) RecordAdmission(units int, wait time.Duration) {
 	recorder.event.CPUUnits = units
 	recorder.event.QueueWaitMS = wait.Milliseconds()
+}
+
+// RecordLoadOverride records whether --allow-saturated-host admitted this
+// command despite the host's load average exceeding the admission floor.
+func (recorder *Recorder) RecordLoadOverride(overridden bool) {
+	recorder.event.LoadOverride = overridden
+}
+
+// RecordLoadFloorSkipped records why host-load admission was disabled for
+// this command (see internal/hostload.Resolve for the reason values), so a
+// CI or WB_ADMISSION_LOAD_FLOOR-driven skip is provable from the runlog
+// rather than only from the caller's own log.
+func (recorder *Recorder) RecordLoadFloorSkipped(reason string) {
+	recorder.event.LoadFloorSkipped = reason
 }
 
 // Recorder owns one operation ID and its optional managed-worktree log.
