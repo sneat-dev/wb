@@ -153,6 +153,15 @@ func (engine *Engine) Status(ctx context.Context, name string) (Status, error) {
 			})
 		}
 	}
+	for _, consumer := range stream.LinkedConsumers {
+		for _, link := range consumer.Links {
+			status.LinkedConsumers = append(status.LinkedConsumers, LinkedConsumer{
+				Repository: consumer.Repository, Worktree: consumer.Worktree,
+				Library: link.Library, Mechanism: link.Mechanism, Identity: link.Identity,
+				PreviousVersion: link.PreviousVersion, ContentHash: link.ContentHash,
+			})
+		}
+	}
 	engine.libraryGaps(ctx, stream, &status)
 	return status, nil
 }

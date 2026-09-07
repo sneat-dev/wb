@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "name": "splitus-contactus-invite-local-20260906",
+  "created_at": "2026-09-06T09:50:19.692067Z",
+  "updated_at": "2026-09-07T11:39:19.190652Z",
+  "phase": "open",
+  "members": [
+    {
+      "repository": "sneat-co/contactus",
+      "role": "library",
+      "worktree": "/Users/alex/projects/sneat-co/contactus/.worktrees/splitus-contactus-invite-local-20260906",
+      "canonical": "/Users/alex/projects/sneat-co/contactus",
+      "branch": "stream/splitus-contactus-invite-local-20260906",
+      "base": "main",
+      "pull_request_error": "open draft pull request for stream/splitus-contactus-invite-local-20260906: gh pr create --draft --base main --head stream/splitus-contactus-invite-local-20260906 --title stream(splitus-contactus-invite-local-20260906): sneat-co/contactus --body Draft stream pull request for `stream/splitus-contactus-invite-local-20260906` (library).\n\nIt stays a draft until the stream lands: it exists so CI runs on every push to the\nstream branch and the stream's true state is always visible. Agents branch from\n`stream/splitus-contactus-invite-local-20260906` and open their pull requests against it, never against the base.\n\nConsume the library through `wb deps propagate local`; the orchestrator runs\n`wb deps propagate remote` at the end. End with `wb worktree end`.: exit status 1: pull request create failed: GraphQL: No commits between main and stream/splitus-contactus-invite-local-20260906 (createPullRequest)",
+      "lease": {
+        "login": "trakhimenok",
+        "machine": "macbook",
+        "session": "wbs-a33a12d6abc2ad1172fd72a30326a2ed",
+        "recorded_head": "bdc2931695766d6535718bdf3747f241ac9212c9",
+        "held_since": "2026-09-06T09:50:19.692106Z"
+      },
+      "joined_at": "2026-09-06T09:50:19.692106Z"
+    }
+  ],
+  "linked_consumers": [
+    {
+      "repository": "sneat-co/debtus",
+      "worktree": "/Users/alex/projects/sneat-co/debtus/.worktrees/debtus-source-repayment-ui-20260906",
+      "links": [
+        {
+          "library": "/Users/alex/projects/sneat-co/sneat-ext-contracts/.worktrees/financial-agreement-provider-union-20260906",
+          "library_repository": "",
+          "mechanism": "pnpm-link",
+          "state": "applied",
+          "identity": "@sneat/extension-debtus-contract",
+          "previous_version": "^0.2.3",
+          "content_hash": "5f0f9b307b9af70bbad1327a6ebd96ea0b5ed1a3",
+          "artifacts": [
+            "frontend/node_modules/@sneat/extension-debtus-contract.wb-locallink-nested.json",
+            "frontend/libs/extensions/debtus/runtime/node_modules/@sneat/extension-debtus-contract",
+            "frontend/libs/extensions/debtus/ui/node_modules/@sneat/extension-debtus-contract",
+            "frontend/node_modules/@sneat/extension-debtus-contract",
+            "frontend/node_modules/@sneat/extension-debtus-contract.wb-locallink-applied",
+            "frontend/node_modules/.pnpm/@sneat+extension-debtus-contract@0.2.3_@angular+core@22.1.3_@angular+compiler@22.1.3_rxjs@7.8.2__rxjs@7.8.2/node_modules/@sneat/.extension-debtus-contract.wb-locallink-stage",
+            "frontend/node_modules/@sneat/extension-debtus-contract.wb-locallink-symlink"
+          ],
+          "workspace": "frontend",
+          "created_at": "2026-09-07T06:09:11.585214Z"
+        },
+        {
+          "library": "/Users/alex/projects/sneat-co/sneat-ext-contracts/.worktrees/financial-agreement-provider-union-20260906",
+          "library_repository": "",
+          "mechanism": "pnpm-link",
+          "state": "applied",
+          "identity": "@sneat/extension-contactus-contract",
+          "previous_version": "^0.12.9",
+          "content_hash": "5f0f9b307b9af70bbad1327a6ebd96ea0b5ed1a3",
+          "artifacts": [
+            "frontend/node_modules/@sneat/extension-contactus-contract.wb-locallink-nested.json",
+            "frontend/libs/extensions/debtus/ui/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/.pnpm/@sneat+app@0.27.16_1631d91945140aa7a108a12b878667e9/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/.pnpm/@sneat+extension-contactus-ui@0.14.17_2f3d0832fc40db82fac53a80a4421f7a/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/.pnpm/@sneat+extension-contactus@0.14.17_b4e3f1d4a689d99ee614043d5a2975ad/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/.pnpm/@sneat+space-services@0.27.16_@angular+common@22.1.3_@angular+core@22.1.3_@angular+comp_89ba1836fd3a5ae634c7931bf4d57171/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/@sneat/extension-contactus-contract",
+            "frontend/node_modules/@sneat/extension-contactus-contract.wb-locallink-applied",
+            "frontend/node_modules/.pnpm/@sneat+extension-contactus-contract@0.12.9_01340d8dfe45b6c164070edbf9502d16/node_modules/@sneat/.extension-contactus-contract.wb-locallink-stage",
+            "frontend/node_modules/@sneat/extension-contactus-contract.wb-locallink-symlink"
+          ],
+          "workspace": "frontend",
+          "created_at": "2026-09-07T06:09:11.082432Z"
+        }
+      ]
+    }
+  ]
+}

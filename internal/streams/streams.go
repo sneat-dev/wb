@@ -33,7 +33,7 @@ import (
 // it can read. A newer file is refused rather than silently misread: stream
 // state carries live links whose reversal detail is the only record of the
 // published versions a consumer had before linking.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // BranchPrefix is the namespace every stream branch lives in. It is also what
 // the push hook keys its "CI on the stream pull request is the gate" decision
@@ -113,6 +113,18 @@ type Stream struct {
 	// forbids discarding them as a side effect of ending the work.
 	EndedAt *time.Time `json:"ended_at,omitempty"`
 	Members []Member   `json:"members"`
+	// LinkedConsumers are explicitly admitted alternate managed worktrees of a
+	// repository already represented by Members. They participate only in
+	// local dependency linking; stream branch, PR and repository ownership stay
+	// with the member. Recording the exact checkout keeps undo and landing
+	// guards authoritative without pretending the alternate branch is a member.
+	LinkedConsumers []LinkedConsumerBinding `json:"linked_consumers,omitempty"`
+}
+
+type LinkedConsumerBinding struct {
+	Repository string `json:"repository"`
+	Worktree   string `json:"worktree"`
+	Links      []Link `json:"links,omitempty"`
 }
 
 // Member is one repository inside a stream.
@@ -227,6 +239,18 @@ func (stream Stream) Member(repository string) (Member, bool) {
 	return Member{}, false
 }
 
+// LinkedConsumer finds one admitted alternate managed worktree by
+// owner/repository. It is distinct from Member: a linked consumer holds only
+// local links, never the stream branch, PR, or repository ownership.
+func (stream Stream) LinkedConsumer(repository string) (LinkedConsumerBinding, bool) {
+	for _, consumer := range stream.LinkedConsumers {
+		if strings.EqualFold(consumer.Repository, repository) {
+			return consumer, true
+		}
+	}
+	return LinkedConsumerBinding{}, false
+}
+
 // Open reports whether the stream still holds its repositories — which is true
 // while it is being created as well as once it is usable. A repository is only
 // released by ending the stream.
@@ -251,6 +275,11 @@ func (stream Stream) LiveLinks() []MemberLink {
 	for _, member := range stream.Members {
 		for _, link := range member.Links {
 			live = append(live, MemberLink{Member: member, Link: link})
+		}
+	}
+	for _, consumer := range stream.LinkedConsumers {
+		for _, link := range consumer.Links {
+			live = append(live, MemberLink{Member: Member{Repository: consumer.Repository, Worktree: consumer.Worktree}, Link: link})
 		}
 	}
 	return live
