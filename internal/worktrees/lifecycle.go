@@ -18,6 +18,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/locallink"
+	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -2298,9 +2300,24 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		}
 	}
 
+	// Opened once for the whole transaction rather than per candidate: every
+	// candidate asks the same store the same question, and a missing WB home
+	// (the ordinary case outside a stream) must not refuse every candidate.
+	linkSourceStore, err := streams.Open(normalized.ProjectsRoot)
+	if err != nil {
+		linkSourceStore = nil
+	}
 	results := make([]CleanupResult, len(listed.Results))
 	for index, entry := range listed.Results {
 		eligible, reason := cleanupEligibility(entry, normalized, now)
+		if eligible {
+			if sources, linkErr := locallink.HasLiveLinkSource(linkSourceStore, entry.WorktreeDir); linkErr != nil {
+				return CleanupOutcome{}, fmt.Errorf("check live link sources for %s: %w", entry.WorktreeDir, linkErr)
+			} else if len(sources) > 0 {
+				eligible = false
+				reason = locallink.RefusalMessageForSources(entry.WorktreeDir, sources)
+			}
+		}
 		if eligible {
 			if err := preflightWorkLogSealForCleanup(ctx, resolution.Write.Home, normalized.ProjectsRoot, entry); err != nil {
 				eligible = false
