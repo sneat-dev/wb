@@ -10,15 +10,6 @@ body:
         - If one other repository must change, create the issue in that repository.
         - For multi-repository, fleet-process, or governance work, use [sneat-co/backstage](https://github.com/sneat-co/backstage/issues/new/choose).
         - Do not use WB as a fleet tracker or mirror an upstream issue here.
-  - type: dropdown
-    id: owning-repository
-    attributes:
-      label: Owning repository
-      description: WB issues must be owned by this public repository.
-      options:
-        - sneat-dev/wb
-    validations:
-      required: true
   - type: textarea
     id: concrete-wb-change
     attributes:
@@ -27,10 +18,3 @@ body:
       placeholder: "For example: add a test that rejects ... in internal/..."
     validations:
       required: true
-  - type: checkboxes
-    id: ownership-attestation
-    attributes:
-      label: Ownership attestation
-      options:
-        - label: I confirm this issue requires a change to WB code, tests, documentation, packaging, or release.
-          required: true
