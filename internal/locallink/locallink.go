@@ -74,6 +74,10 @@ type ConsumerResult struct {
 	SkippedChecks []string `json:"skipped_checks,omitempty"`
 	// Verification is the single-worker run against the linked copy.
 	Verification *Verification `json:"verification,omitempty"`
+	// Notes are informational outcomes that are not failures — for example
+	// `--undo` finding a link already superseded by a published package and
+	// clearing its record without touching the filesystem.
+	Notes []string `json:"notes,omitempty"`
 	// Errors are per-consumer failures. One consumer's failure never stops
 	// the pass: the point of a stream is to learn about every consumer at
 	// once.

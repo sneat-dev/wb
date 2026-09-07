@@ -101,15 +101,15 @@ func (node *fakeNode) Link(_ context.Context, consumerDir, packageName, dist str
 	return NodeLinkResult{Previous: node.previousReal}, nil
 }
 
-func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string) error {
+func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string) (string, error) {
 	if err := node.unlinkErr[consumerDir+" "+packageName]; err != nil {
-		return err
+		return "", err
 	}
 	node.unlinked = append(node.unlinked, consumerDir+" "+packageName)
 	if err := os.Remove(linkAppliedMarkerPath(consumerDir, packageName)); err != nil && !os.IsNotExist(err) {
-		return err
+		return "", err
 	}
-	return nil
+	return "", nil
 }
 
 func (node *fakeNode) LinkSiblings(_ context.Context, consumerDir string, packageNames []string) error {
@@ -1281,6 +1281,63 @@ func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
 	after, err := HasLiveLink(fixture.store, fixture.consumer)
 	if err != nil || len(after) != 0 {
 		t.Fatalf("the guard still fires after --undo: %#v (err %v)", after, err)
+	}
+}
+
+// go.work already lost its `use` entry for the library — a hand edit, or a
+// rebase — before --undo ever ran. There is nothing on disk this undo owns
+// any more, so it clears the stale record without touching the file at all:
+// deleting go.work here could take other entries this undo has no business
+// owning down with it.
+func TestUndoClearsARecordWhenGoWorkNoLongerReferencesTheLibrary(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
+
+	if _, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer},
+	}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	workspace := filepath.Join(fixture.consumer, "go.work")
+	before := readFile(t, workspace)
+	if !strings.Contains(before, filepath.ToSlash(filepath.Join(fixture.library, "backend"))) {
+		t.Fatalf("fixture is wrong: go.work does not yet use the library:\n%s", before)
+	}
+
+	// A hand edit (or a rebase) drops the library's use entry but leaves the
+	// consumer's own entries, and the rest of the file, untouched.
+	edited := "go 1.27\n\nuse (\n\t./backend\n)\n"
+	if err := os.WriteFile(workspace, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Consumers: []string{fixture.consumer}, Undo: true,
+	})
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("undo reported errors: %#v", result.Consumers)
+	}
+	if after := readFile(t, workspace); after != edited {
+		t.Fatalf("undo touched go.work despite the library entry already being gone:\n%s", after)
+	}
+	var notes []string
+	for _, consumer := range result.Consumers {
+		notes = append(notes, consumer.Notes...)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "record cleared") {
+		t.Fatalf("notes = %#v, want one note saying the record was cleared", notes)
+	}
+	stream, err := fixture.store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := stream.Member("acme/app")
+	if len(member.Links) != 0 {
+		t.Fatalf("recorded links = %#v, want the go.work record cleared", member.Links)
 	}
 }
 
