@@ -59,7 +59,13 @@ binds a separately proved replacement candidate without rewriting history.
 Use acknowledge-absorbed-conflict only for an unpublished prepare conflict
 whose every receipted source worktree is already gone and whose exact content
 is proved, source by source, already reachable from the current remote
-target by graph ancestry or by identical-blob content absorption.`,
+target by graph ancestry or by identical-blob content absorption. Use
+acknowledge-retired-publication only for a conflict/validation_failed/
+checks_failed receipt whose exact published pull request was closed without
+ever merging and whose remote candidate branch is gone, proved fresh from
+GitHub and the current remote target: the case where the target advanced past
+a published candidate, WB refused to rewrite the published branch without
+force-push, and the operator retired the stale pull request by hand.`,
 		Example: `# Finish one compatible worktree end to end
 wb worktree merge . --route auto --cleanup
 
@@ -76,6 +82,9 @@ wb worktree merge acknowledge-stranded-landing /path/to/merge-receipt --apply --
 # Free a stale lane after proving every gone source's content already reached the target
 wb worktree merge acknowledge-absorbed-conflict /path/to/merge-receipt --apply --actor operator --reason "audited absorbed conflict"
 
+# Free a stale lane after proving a stale published pull request was closed unmerged and its branch is gone
+wb worktree merge acknowledge-retired-publication /path/to/merge-receipt --apply --actor operator --reason "audited retired publication"
+
 # Prepare an ancestry-only replacement without changing the target tree
 wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor operator --reason "audited squash recovery"
 
@@ -90,7 +99,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeRetiredPublicationCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
 	return command
 }
 
@@ -563,6 +572,70 @@ cannot be proved reachable refuses closed.`,
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringArrayVar(&derivedPaths, "derived-path", nil, "repeatable: audit-excuse one generated spec/**/README.md index path (must also exist on the fetched target)")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeRetiredPublicationCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-retired-publication <merge-receipt>",
+		Short: "Acknowledge a proved retired pull-request publication without rewriting its receipt",
+		Long: `Prove, from a fresh read of GitHub's own pull-request state and a freshly
+fetched current remote target, that a conflict/validation_failed/checks_failed
+receipt's exact published pull request was closed without ever merging, that
+its remote candidate branch is gone, and that neither its published candidate
+nor its preserved candidate landed on the target, then record a separate
+audited acknowledgement so a fresh candidate can own the lane. This is exactly
+the case where the target advanced past a published candidate, WB refused to
+rewrite the published branch without force-push, and the operator then closed
+the stale pull request and deleted its branch by hand: resume repeats the same
+refusal forever, and every other conflict-recovery verb requires an unpublished
+receipt. This accepts only a prepare- or land-phase receipt with no recorded
+landing SHA and an exact published pull request; a pull request proved MERGED
+refuses closed, pointing at acknowledge-stranded-landing instead. It requires
+the preserved candidate worktree for read-only git object resolution, never
+rewrites the historical receipt or any Work Log, and never deletes that
+candidate worktree. This is a dry-run by default; --apply requires --actor and
+--reason and writes only the new acknowledgement artifact. A pull request that
+is still OPEN or proved MERGED, a candidate branch that still carries a remote
+ref, or a candidate already reachable from the current target refuses closed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeRetiredPublication(command.Context(), orchestrate.WorktreeMergeRetiredPublicationAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\npull-request: %s (%s)\ncandidate-worktree: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.PullRequest, ack.PullRequestState, ack.CandidateWorktree, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			} else {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree merge prepare <the same sources> --target %s\n", ack.Target)
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMutationAdmissionFlags(command)
 	return command
 }

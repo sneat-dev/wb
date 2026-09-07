@@ -11116,6 +11116,121 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-retired-publication",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-publication",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves, from a fresh gh pr view read and a freshly fetched current remote target, that a conflict/validation_failed/checks_failed receipt's exact published pull request was closed without ever merging, that its remote candidate branch carries no ref, and that neither its published nor preserved candidate landed",
+                "Accepts only a prepare- or land-phase receipt with no recorded landing SHA and an exact published pull request; a pull request proved MERGED refuses closed, pointing at acknowledge-stranded-landing instead",
+                "Requires the preserved candidate worktree for read-only git object resolution, never rewrites the historical receipt or any Work Log, and never deletes that candidate worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-publication --help",
+              "contains": [
+                "closed without ever merging",
+                "acknowledge-stranded-landing",
+                "force-push",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationProvesClosedPullRequestAndFreesLane",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenMerged",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenStillOpen",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenBranchStillPublished",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenCandidateLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRequiresActorAndReasonWithApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestRetiredPublicationAcknowledgementTamperingKeepsLaneBlocked",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestValidateRetiredPublicationReceiptRefusesWrongShape",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestEffectiveUnpublishedConflictAcceptsValidRetiredPublicationAcknowledgement",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovers a conflict/validation_failed/checks_failed receipt stuck after publishing a candidate whose target then advanced past it, once the operator has closed the stale pull request unmerged and deleted its remote branch by hand. A subsequent prepare of the exact same sources supersedes the stuck receipt under a fresh operation, integration branch, and empty pull request rather than resuming the retired publication."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"

@@ -362,6 +362,20 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			} else if absorbedAcknowledged {
 				return existing, fmt.Errorf("merge receipt %s was acknowledged as a proved absorbed conflict; prepare a new source candidate", receiptPath)
 			}
+			if retiredAcknowledged, retiredErr := hasRetiredPublicationAcknowledgement(existing); retiredErr != nil {
+				return existing, retiredErr
+			} else if retiredAcknowledged {
+				// A verified, append-only retired-publication acknowledgement proves
+				// this receipt's exact published candidate never landed and its
+				// publication is gone. Retire this immutable receipt from lane
+				// selection exactly like a validation-failure supersession: the same
+				// source set is prepared again under a fresh successor operation, a
+				// fresh integration branch, and an empty pull request, never by
+				// rewriting the historical receipt or reusing its published branch.
+				operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
+				receiptPath = filepath.Join(reportsDir, operation+".json")
+				continue
+			}
 			if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
 				return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
 			} else if adopted {
@@ -3450,7 +3464,8 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			strings.HasSuffix(entry.Name(), worktreeMergePublishedCandidateAdoptionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeAbsorbedConflictAcknowledgementSuffix) {
+			strings.HasSuffix(entry.Name(), worktreeMergeAbsorbedConflictAcknowledgementSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeRetiredPublicationAcknowledgementSuffix) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
@@ -3529,6 +3544,13 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 				return nil, absorbedErr
 			}
 			if absorbedAcknowledged {
+				continue
+			}
+			retiredAcknowledged, retiredErr := hasRetiredPublicationAcknowledgement(receipt)
+			if retiredErr != nil {
+				return nil, retiredErr
+			}
+			if retiredAcknowledged {
 				continue
 			}
 			return &receipt, nil
