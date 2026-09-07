@@ -74,6 +74,10 @@ type ConsumerResult struct {
 	SkippedChecks []string `json:"skipped_checks,omitempty"`
 	// Verification is the single-worker run against the linked copy.
 	Verification *Verification `json:"verification,omitempty"`
+	// Notes are informational outcomes that are not failures — for example
+	// `--undo` finding a link already superseded by a published package and
+	// clearing its record without touching the filesystem.
+	Notes []string `json:"notes,omitempty"`
 	// Errors are per-consumer failures. One consumer's failure never stops
 	// the pass: the point of a stream is to learn about every consumer at
 	// once.
@@ -535,12 +539,18 @@ func (engine *Engine) libraryRepository(options Options, library string) (string
 }
 
 // resolveConsumerStreams maps each consumer worktree to the open stream that
-// has it as a MEMBER, and names the consumers no stream holds.
+// has it as a MEMBER or as an admitted LinkedConsumer, and names the
+// consumers no stream holds.
 //
 // Membership is per consumer because that is where the link is recorded. An
 // earlier version answered from the library alone, so a stream holding the
 // library made every link look recordable — including a link into a worktree no
 // member named, which wrote go.work, recorded nothing, and exited 0.
+//
+// A LinkedConsumer is checked alongside Members for the same reason: it is an
+// admitted worktree WB records links against, just not one holding the
+// stream's branch or PR, and a re-link of an already-admitted consumer must
+// resolve exactly the way a member's does.
 func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string, []string, error) {
 	open, err := engine.openStreams(options)
 	if err != nil {
@@ -557,6 +567,16 @@ func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string
 		for _, candidate := range open {
 			for _, member := range candidate.Members {
 				if sameWorktree(member.Worktree, consumer) {
+					resolved[consumer] = candidate.Name
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+			for _, linked := range candidate.LinkedConsumers {
+				if sameWorktree(linked.Worktree, consumer) {
 					resolved[consumer] = candidate.Name
 					found = true
 					break
@@ -595,6 +615,18 @@ func (engine *Engine) recordLinks(stream, consumer string, links []streams.Link)
 			}
 			matched = true
 			current.Members[index].Links = mergeLinks(current.Members[index].Links, links)
+		}
+		// A LinkedConsumer is not a Member, but it is exactly as recordable:
+		// it is an admitted worktree whose Links field is the same shape and
+		// the same source of truth for `--undo`. Skipping it here would let a
+		// re-link of an already-admitted consumer resolve a stream name and
+		// then find nowhere to write.
+		for index := range current.LinkedConsumers {
+			if !sameWorktree(current.LinkedConsumers[index].Worktree, consumer) {
+				continue
+			}
+			matched = true
+			current.LinkedConsumers[index].Links = mergeLinks(current.LinkedConsumers[index].Links, links)
 		}
 		return nil
 	}); err != nil {
