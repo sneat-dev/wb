@@ -684,6 +684,196 @@ func TestGetRefetchesWhenCachedBodyDigestIsMissing(t *testing.T) {
 	}
 }
 
+func TestReadRecoversFromSignalKilledThenSucceeds(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				// This is what exec.CommandContext reports when its context's
+				// bounded timeout expires and the gh subprocess is killed: not
+				// a network error, and no HTTP status was ever parsed.
+				return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+			}
+			return commandResult{Stdout: []byte(`{"number":389}`)}
+		},
+	}
+	telemetry := &RetryTelemetry{}
+	ctx := WithRetryTelemetry(WithProgress(context.Background(), func(event progress.Event) { events = append(events, event) }), telemetry)
+
+	output, err := observer.Read(ctx, "", "api", "repos/sneat-co/backstage/pulls/389")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(output) != `{"number":389}` {
+		t.Fatalf("calls=%d output=%s", calls, output)
+	}
+	if len(sleeps) != 1 {
+		t.Fatalf("sleeps=%v, want exactly one retry wait", sleeps)
+	}
+	if telemetry.Count != 1 || !strings.Contains(strings.ToLower(telemetry.LastReason), "signal: killed") {
+		t.Fatalf("telemetry=%+v, want one recorded retry citing the signal", telemetry)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Detail, "signal: killed") {
+		t.Fatalf("progress=%+v, want the killed-by-signal cause reported", events)
+	}
+}
+
+func TestGetRecoversFromServiceUnavailableWithTelemetry(t *testing.T) {
+	statuses := []int{503, 200}
+	observer := &Observer{
+		StateDir:   t.TempDir(),
+		RandomIntn: func(int64) int64 { return 0 },
+		Sleep:      func(context.Context, time.Duration) error { return nil },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			status := statuses[0]
+			statuses = statuses[1:]
+			if status == 200 {
+				return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+			}
+			return commandResult{
+				Stdout: []byte(fmt.Sprintf("HTTP/2 %d Service Unavailable\n\n{\"message\":\"temporary\"}", status)),
+				Stderr: []byte(fmt.Sprintf("gh: HTTP %d", status)), ExitCode: 1, Err: errors.New("exit status 1"),
+			}
+		},
+	}
+	telemetry := &RetryTelemetry{}
+	ctx := WithRetryTelemetry(context.Background(), telemetry)
+
+	response, err := observer.Get(ctx, GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("k", 40),
+		Endpoint: "repos/acme/app/compare/base...head",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Body) != `{"ok":true}` {
+		t.Fatalf("response=%s", response.Body)
+	}
+	if telemetry.Count != 1 || telemetry.LastReason != "HTTP 503" {
+		t.Fatalf("telemetry=%+v, want one recorded HTTP 503 retry", telemetry)
+	}
+}
+
+func TestReadDoesNotRetryNotFound(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("404 slept instead of returning the terminal failure")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stderr: []byte("gh: HTTP 404: Not Found"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+	_, err := observer.Read(context.Background(), "", "api", "repos/acme/app/pulls/999")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one terminal attempt for a 404", err, calls)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a 404 must never be classified as transient-exhausted", err)
+	}
+}
+
+func TestReadExhaustedRetriesNameLastCauseAndAreTransient(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	observer := &Observer{
+		MaxAttempts: 3,
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "api", "repos/sneat-co/backstage/pulls/389")
+	if err == nil {
+		t.Fatal("want an error after every attempt fails")
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d, want exactly MaxAttempts=3 attempts", calls)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("sleeps=%v, want a wait between each of the 3 attempts", sleeps)
+	}
+	if !errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, want it to wrap ErrTransientRetriesExhausted", err)
+	}
+	if !strings.Contains(err.Error(), "signal: killed") || !strings.Contains(err.Error(), "3 attempts") {
+		t.Fatalf("err=%v, want it to name the last cause and attempt count", err)
+	}
+}
+
+func TestApiGetPerAttemptTimeoutFloorIsAtLeastThirtySeconds(t *testing.T) {
+	var deadlines []time.Duration
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			if deadline, ok := ctx.Deadline(); ok {
+				deadlines = append(deadlines, time.Until(deadline))
+			} else {
+				deadlines = append(deadlines, 0)
+			}
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+		},
+	}
+
+	_, err := observer.Get(context.Background(), GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("m", 40),
+		Endpoint: "repos/acme/app/pulls/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 1 || deadlines[0] < 29*time.Second {
+		t.Fatalf("attempt deadline=%v, want at least the 30s floor for gh api", deadlines)
+	}
+}
+
+func TestReadPerAttemptTimeoutIsFreshNotSharedAcrossAttempts(t *testing.T) {
+	var deadlines []time.Duration
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error { return nil },
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if deadline, ok := ctx.Deadline(); ok {
+				deadlines = append(deadlines, time.Until(deadline))
+			}
+			if calls == 1 {
+				return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+			}
+			return commandResult{Stdout: []byte(`{"ok":true}`)}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "pr", "view", "42", "--repo", "acme/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 2 {
+		t.Fatalf("deadlines=%v, want one recorded per attempt", deadlines)
+	}
+	for index, remaining := range deadlines {
+		if remaining < 29*time.Second {
+			t.Fatalf("attempt %d deadline=%v, want each attempt to get its own >=30s floor for gh pr view, not a shared budget drained by the previous kill", index, remaining)
+		}
+	}
+}
+
 func TestHelperProcessObserve(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS_OBSERVE") != "1" {
 		return

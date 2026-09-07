@@ -153,6 +153,11 @@ state=$(cat "$S/pr-state")
 merged=$(cat "$S/merged")
 case "$*" in
   'api repos/acme/app/pulls/7 --include'|'api repos/acme/app/pulls/7')
+    if [ -f "$S/fail-pr-view-once" ]; then
+      rm -f "$S/fail-pr-view-once"
+      echo "signal: killed" >&2
+      exit 1
+    fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
     printf '{"number":7,"state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
@@ -232,6 +237,15 @@ esac
 	t.Setenv("WB_LAND_BRANCH", branch)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// failNextPullRequestReadWithSignalKilled arranges for the next `gh api
+// repos/.../pulls/7` read to fail exactly once as a saturated host would: the
+// gh subprocess killed by signal when its exec context ran out, with no HTTP
+// status ever parsed. It must not stop the landing that reads it.
+func (fixture *landFixture) failNextPullRequestReadWithSignalKilled(t *testing.T) {
+	t.Helper()
+	fixture.writeState(t, "fail-pr-view-once", "1")
 }
 
 func landOptions(fixture *landFixture) PullRequestLandOptions {
@@ -744,6 +758,28 @@ func TestEveryLandingLeavesOneEventAndARefusalSavesNothing(t *testing.T) {
 	}
 	if success.Evidence["merge_commit"] == "" {
 		t.Fatal("a landing event must record the commit it produced")
+	}
+}
+
+// A saturated host that kills one `gh api` read by signal must not make
+// `wb pr land` fail outright: the read recovers in-process on the next
+// attempt, exactly the incident this AC (transient-github-read-recovers-in-
+// process) exists to close.
+func TestLandRecoversFromASignalKilledPullRequestReadThenSucceeds(t *testing.T) {
+	fixture := newLandFixture(t, "bump/signal-killed", "go.mod")
+	fixture.failNextPullRequestReadWithSignalKilled(t)
+	options := landOptions(fixture)
+	options.ApprovedBy = "review.md"
+
+	landed, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("a transient signal-killed read must recover in-process: %v", err)
+	}
+	if landed.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", landed.Outcome, landed.Reason)
+	}
+	if landed.Evidence["github_read_retries"] == "" {
+		t.Fatalf("evidence = %#v, want the recovered retry recorded", landed.Evidence)
 	}
 }
 

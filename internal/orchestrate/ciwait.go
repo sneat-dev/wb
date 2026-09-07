@@ -111,7 +111,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			observedHead, observedTarget, reason := pullRequestIdentity(sliceCtx, options.Repository, options.PullRequest)
 			result.ObservedHead = observedHead
 			if reason != "" {
-				if sliceCtx.Err() == context.DeadlineExceeded {
+				if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 					return pendingCommitWaitResult(result), nil
 				}
 				return failedCommitWaitResult(result, reason), nil
@@ -125,14 +125,14 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			observedTargetHead, reason = targetHead(sliceCtx, options.Repository, options.Target)
 			result.ObservedTargetHead = observedTargetHead
 			if reason != "" {
-				if sliceCtx.Err() == context.DeadlineExceeded {
+				if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 					return pendingCommitWaitResult(result), nil
 				}
 				return failedCommitWaitResult(result, "read exact pull-request target head: "+reason), nil
 			}
 			containsTarget, reason := candidateContainsTarget(sliceCtx, options.Repository, observedTargetHead, options.Head)
 			if reason != "" {
-				if sliceCtx.Err() == context.DeadlineExceeded {
+				if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 					return pendingCommitWaitResult(result), nil
 				}
 				return failedCommitWaitResult(result, reason), nil
@@ -145,7 +145,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			observedHead, reason := targetHead(sliceCtx, options.Repository, options.Target)
 			result.ObservedHead = observedHead
 			if reason != "" {
-				if sliceCtx.Err() == context.DeadlineExceeded {
+				if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 					return pendingCommitWaitResult(result), nil
 				}
 				return failedCommitWaitResult(result, reason), nil
@@ -172,7 +172,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 
 		checks, pending, reason := commitChecks(sliceCtx, options)
 		if reason != "" {
-			if sliceCtx.Err() == context.DeadlineExceeded {
+			if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 				return pendingCommitWaitResult(result), nil
 			}
 			return failedCommitWaitResult(result, reason), nil
@@ -275,7 +275,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				observedHead, observedTarget, reason := pullRequestIdentity(sliceCtx, options.Repository, options.PullRequest)
 				result.ObservedHead = observedHead
 				if reason != "" {
-					if sliceCtx.Err() == context.DeadlineExceeded {
+					if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 						return pendingCommitWaitResult(result), nil
 					}
 					return failedCommitWaitResult(result, reason), nil
@@ -285,7 +285,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				}
 				finalTargetHead, targetReason := targetHead(sliceCtx, options.Repository, options.Target)
 				if targetReason != "" {
-					if sliceCtx.Err() == context.DeadlineExceeded {
+					if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(targetReason) {
 						return pendingCommitWaitResult(result), nil
 					}
 					return failedCommitWaitResult(result, "re-read exact pull-request target head: "+targetReason), nil
@@ -297,7 +297,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				observedHead, reason := targetHead(sliceCtx, options.Repository, options.Target)
 				result.ObservedHead = observedHead
 				if reason != "" {
-					if sliceCtx.Err() == context.DeadlineExceeded {
+					if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 						return pendingCommitWaitResult(result), nil
 					}
 					return failedCommitWaitResult(result, reason), nil
