@@ -192,6 +192,77 @@ func TestLiveLinksForWorktreeFindsLinksAcrossOpenStreams(t *testing.T) {
 	}
 }
 
+// LinkSourcesForWorktree is the opposite direction from LiveLinksForWorktree:
+// it protects the library worktree a consumer's link points AT, not the
+// consumer worktree holding the link. It must find both mechanisms, resolve
+// through symlinks, and ignore ended streams — an ended stream released its
+// repositories and no longer strands anyone.
+func TestLinkSourcesForWorktreeFindsBothMechanismsAcrossOpenStreams(t *testing.T) {
+	base := t.TempDir()
+	store := OpenAt(filepath.Join(base, "streams"))
+	library := filepath.Join(base, "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Stream{
+		Name: "npm-consumer",
+		Members: []Member{{
+			Repository: "acme/frontend", Worktree: filepath.Join(base, "frontend"),
+			Links: []Link{{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: MechanismPnpmLink, Identity: "@acme/core",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Stream{
+		Name: "go-consumer",
+		Members: []Member{{
+			Repository: "acme/backend", Worktree: filepath.Join(base, "backend"),
+			Links: []Link{{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: MechanismGoWork, Identity: "acme.example/library",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ended := time.Now().UTC()
+	if _, err := store.Create(Stream{
+		Name: "closed-consumer", EndedAt: &ended,
+		Members: []Member{{
+			Repository: "acme/legacy", Worktree: filepath.Join(base, "legacy"),
+			Links: []Link{{Library: library, LibraryRepository: "acme/library", Mechanism: MechanismGoWork, Identity: "acme.example/library"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sources, err := store.LinkSourcesForWorktree(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources = %#v, want exactly the two open streams' links, not the ended one", sources)
+	}
+	byStream := map[string]StreamLinkSource{}
+	for _, source := range sources {
+		byStream[source.Stream] = source
+	}
+	npm, ok := byStream["npm-consumer"]
+	if !ok || npm.ConsumerRepository != "acme/frontend" || npm.ConsumerWorktree != filepath.Join(base, "frontend") || npm.Link.Mechanism != MechanismPnpmLink {
+		t.Fatalf("npm-consumer source = %#v", npm)
+	}
+	goSource, ok := byStream["go-consumer"]
+	if !ok || goSource.ConsumerRepository != "acme/backend" || goSource.Link.Mechanism != MechanismGoWork {
+		t.Fatalf("go-consumer source = %#v", goSource)
+	}
+	if none, err := store.LinkSourcesForWorktree(filepath.Join(base, "other")); err != nil || len(none) != 0 {
+		t.Fatalf("sources for an unrelated worktree = %#v (err %v)", none, err)
+	}
+}
+
 func TestValidateNameRejectsAnythingThatCouldNotBeATaskName(t *testing.T) {
 	for _, name := range []string{"", "-leading", "has space", "has/slash", ".."} {
 		if err := ValidateName(name); err == nil {
