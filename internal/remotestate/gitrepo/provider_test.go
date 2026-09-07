@@ -484,7 +484,11 @@ func TestStatusRefreshesOnceForMachinesAndClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer trace.Close()
+	defer func() {
+		if err := trace.Close(); err != nil {
+			t.Errorf("close Git trace: %v", err)
+		}
+	}()
 	fetches := 0
 	scanner := bufio.NewScanner(trace)
 	for scanner.Scan() {
