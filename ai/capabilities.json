@@ -644,12 +644,22 @@
               "path": "cmd/wb/ci_wait_test.go",
               "name": "TestCIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate."
+      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with its own >=30s per-attempt timeout and backoff before reaching this loop; only an authoritative failure or exhausted retries surfaces, folded into the same pending/resumable path as a slice deadline."
     },
     {
       "id": "wb.ci.wait.merge-queue",
@@ -4331,11 +4341,13 @@
                 "--format",
                 "--keep",
                 "--keep-commits",
+                "--lane-reason",
                 "--merge-method",
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
                 "--subject",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
@@ -4477,12 +4489,17 @@
               "path": "cmd/wb/deps_propagate_test.go",
               "name": "TestEveryLandingVerbRefusesALiveLink",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRecoversFromASignalKilledPullRequestReadThenSucceeds",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path."
+      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with bounded retries and a >=30s per-attempt timeout; only an authoritative failure or exhausted retries reaches the caller, naming the last cause plus the exact resumable `wb pr land` invocation, with `github_read_retries` recorded on the evidence when recovery happened."
     },
     {
       "id": "wb.remote.claim",
@@ -5523,6 +5540,8 @@
                 "--format",
                 "--json",
                 "--list",
+                "--queue",
+                "--quiet",
                 "--worker"
               ],
               "modes": [
@@ -5532,6 +5551,8 @@
                 "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
                 "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Before admitting CPU-heavy command-mode work, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides and is recorded on the run receipt.",
+                "Reports its place in the shared CPU-lease queue on stderr, even without a terminal: an immediate admitted/queued line naming its position and what it waits on, a heartbeat at most every 10s while still queued, and admitted-after-wait/done receipt lines; --quiet silences them.",
+                "--queue lists every currently held and waiting CPU lease slot (pid, age, worktree, summary) without submitting a command.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
             }
@@ -5550,6 +5571,8 @@
                 "--history",
                 "--idempotency-key",
                 "--list",
+                "--queue",
+                "--quiet",
                 "--worker",
                 "run -- <command>"
               ]
@@ -5567,7 +5590,8 @@
                 "wb run --list",
                 "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
                 "wb run -- go test ./internal/worktrees -run TestCreate",
-                "wb run --history --days 7"
+                "wb run --history --days 7",
+                "wb run --queue"
               ]
             }
           ],
@@ -5592,9 +5616,54 @@
               "kind": "unit"
             },
             {
+              "path": "internal/runlog/runlog_test.go",
+              "name": "TestRecordQueueAdmittedAtIsAdditive",
+              "kind": "unit"
+            },
+            {
               "path": "internal/runqueue/queue_test.go",
               "name": "TestAcquireCoordinatesIndependentCallers",
               "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestRegisterReportsPositionAndTotalAmongWaiters",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestListQueueReportsRunningAndWaitingEntries",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_progress_test.go",
+              "name": "TestRunQueueProgressFormatsQueuedHeartbeatAdmittedAndDoneLines",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandReportsQueueVisibilityOnStderr",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandQuietSuppressesQueueVisibilityLines",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunHistoryRecordsQueueWaitAndAdmissionTime",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunQueueListsRunningAndWaitingEntries",
+              "kind": "integration"
             },
             {
               "path": "internal/orchestrate/engine_integration_test.go",
@@ -8589,7 +8658,8 @@
                 "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
                 "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
-                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed",
+                "A never-published integration-lane candidate is still refused unless its worktree-merge receipt carries a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement bound to the receipt's unchanged bytes with a target head ancestor of the fetched origin target; a missing/stale/tampered one keeps refusing with a hint naming the receipt, a valid one reports `proof: absorbed_conflict_acknowledgement`"
               ]
             }
           ],
@@ -9020,7 +9090,7 @@
                 "Captures uncommitted work as a git stash commit in the repository the worktree was cut from, BEFORE anything is removed, and prints the exact recoverable SHA",
                 "A dirty worktree is not a refusal; a capture that fails stops the removal, because retiring a checkout whose work could not be preserved loses data irrecoverably",
                 "Seals a closing note into the Work Log; a note that cannot be sealed never strands the worktree",
-                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply",
+                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply -- including recognizing a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement as landing proof for a never-pushed integration candidate",
                 "Releases the fleet-wide claim only once every worktree is gone",
                 "Without --apply it reports exactly what it would do and changes nothing"
               ]
@@ -9519,6 +9589,7 @@
                 "--cleanup",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--on-failure",
                 "--prepare-timeout",
@@ -9527,6 +9598,7 @@
                 "--retry",
                 "--route",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -10680,6 +10752,7 @@
                 "--cleanup",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--on-failure",
                 "--prepare-timeout",
@@ -10688,6 +10761,7 @@
                 "--retry",
                 "--route",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -11423,15 +11497,18 @@
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
                 "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
                 "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested",
+                "For an already-published candidate whose target advanced, merges the new target into the published head (recording a target_refreshes entry), re-validates the exact resulting candidate, and fast-forward pushes the same PR branch instead of refusing to rewrite it; a merge conflict reports the conflicting paths without pushing",
                 "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally. Also applies to merge resume."
               ]
             }
@@ -11505,6 +11582,7 @@
                 "--check-timeout",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--prepare-timeout",
                 "--progress",
@@ -11512,6 +11590,7 @@
                 "--rebatch-receipt",
                 "--retry",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -11809,11 +11888,13 @@
                 "--shard-attempt-timeout",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
                 "--stop-before-merge",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
@@ -11821,7 +11902,8 @@
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
                 "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally.",
                 "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
-                "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed"
+                "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed",
+                "When the target has advanced past a published candidate's recorded target SHA, WB refreshes it instead of refusing: merges the freshly fetched target (and any already-advanced candidate descendant) into the published head, records a target_refreshes entry, re-validates the exact resulting candidate, and fast-forward pushes the same PR branch; a merge conflict reports the conflicting paths and leaves the receipt prepare/conflict without pushing, and no target advance is a no-op"
               ]
             }
           ],
@@ -11922,10 +12004,12 @@
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [

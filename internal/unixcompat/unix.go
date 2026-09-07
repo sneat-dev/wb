@@ -22,6 +22,7 @@ const (
 	S_IFREG             = unix.S_IFREG
 	S_IFDIR             = unix.S_IFDIR
 	LOCK_EX             = unix.LOCK_EX
+	LOCK_SH             = unix.LOCK_SH
 	LOCK_NB             = unix.LOCK_NB
 	LOCK_UN             = unix.LOCK_UN
 	AT_SYMLINK_NOFOLLOW = unix.AT_SYMLINK_NOFOLLOW

@@ -80,3 +80,61 @@ func TestRecorderDoesNotCreateStateOutsideManagedWorktree(t *testing.T) {
 		t.Fatalf("unmanaged directory changed: entries=%v err=%v", entries, err)
 	}
 }
+
+// TestRecordQueueAdmittedAtIsAdditive proves the new admission-time field
+// (cmd/wb run.go's queue-visibility receipts) sits alongside the pre-existing
+// QueueWaitMS without disturbing any other recorded field or the existing
+// event shape.
+func TestRecordQueueAdmittedAtIsAdditive(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := exec.Command("git", "init", "-b", "main")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	manifest := worktrees.Manifest{
+		Version: 1, EffortID: "queue-admission", EffortKind: worktrees.EffortKindFeature,
+		Repository: "acme/app", Worktree: root, Branch: "queue-admission", Base: "main",
+		BaseSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC(),
+		RunID: "run-1", ClaimID: strings.Repeat("b", 64), Provenance: worktrees.ProvenanceCreated,
+	}
+	if err := worktrees.WriteManifest(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
+	recorder, err := Begin(root, []string{"go", "test", "./..."}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admittedAt := started.Add(250 * time.Millisecond)
+	recorder.RecordAdmission(1, 250*time.Millisecond)
+	recorder.RecordQueueAdmittedAt(admittedAt)
+	if err := recorder.Finish(0, 10*time.Millisecond, 5*time.Millisecond, started.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := Read(recorder.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	completed := events[1]
+	if completed.QueueWaitMS != 250 {
+		t.Errorf("QueueWaitMS = %d, want 250", completed.QueueWaitMS)
+	}
+	if completed.AdmittedAt == nil || !completed.AdmittedAt.Equal(admittedAt) {
+		t.Errorf("AdmittedAt = %v, want %v", completed.AdmittedAt, admittedAt)
+	}
+	if completed.Kind != "go/test" || completed.DurationMS != 1000 {
+		t.Errorf("unrelated fields disturbed: %#v", completed)
+	}
+	if events[0].AdmittedAt != nil {
+		t.Errorf("requested event = %#v, want AdmittedAt unset before admission", events[0])
+	}
+}

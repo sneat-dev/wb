@@ -52,7 +52,13 @@ type Event struct {
 	// admission.load_floor: 0). Empty means the check was active. See
 	// internal/hostload.Resolve.
 	LoadFloorSkipped string `json:"load_floor_skipped,omitempty"`
-	ExitCode         *int   `json:"exit_code,omitempty"`
+	// AdmittedAt is the wall-clock moment this operation's CPU lease was
+	// granted (immediately for units <= 0, after QueueWaitMS otherwise). A
+	// pointer distinguishes "never admitted" (a command refused before
+	// admission) from the zero time. See cmd/wb run.go's queue-visibility
+	// receipts, which surface this alongside QueueWaitMS on stderr.
+	AdmittedAt *time.Time `json:"admitted_at,omitempty"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
 }
 
 // RecordAdmission adds scheduler evidence to the terminal event without
@@ -74,6 +80,15 @@ func (recorder *Recorder) RecordLoadOverride(overridden bool) {
 // rather than only from the caller's own log.
 func (recorder *Recorder) RecordLoadFloorSkipped(reason string) {
 	recorder.event.LoadFloorSkipped = reason
+}
+
+// RecordQueueAdmittedAt records the wall-clock moment this operation's CPU
+// lease was granted, alongside RecordAdmission's queue-wait duration. Call
+// it once, right after the lease is acquired (or immediately, for a
+// units <= 0 command that never queues).
+func (recorder *Recorder) RecordQueueAdmittedAt(admittedAt time.Time) {
+	admittedAt = admittedAt.UTC()
+	recorder.event.AdmittedAt = &admittedAt
 }
 
 // Recorder owns one operation ID and its optional managed-worktree log.

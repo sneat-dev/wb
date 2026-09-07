@@ -26,6 +26,7 @@ const (
 	S_IFDIR             = 0o040000
 	S_IFLNK             = 0o120000
 	LOCK_EX             = 2
+	LOCK_SH             = 1
 	LOCK_NB             = 4
 	LOCK_UN             = 8
 	AT_SYMLINK_NOFOLLOW = 0

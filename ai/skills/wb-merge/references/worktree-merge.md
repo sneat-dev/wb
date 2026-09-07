@@ -44,8 +44,19 @@ packages in `.wb/quality.yaml`; merge validation consumes that tracked policy.
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA
 pairs, and reruns validation. A conflict aborts the rebase without touching any
-source. Once a candidate is published in a PR, WB refuses target-driven history
-rewrites instead of force-pushing it.
+source. Once a candidate is published in a PR, WB never rewrites that history
+by rebasing or force-pushing it; instead `prepare` (with the same sources),
+`resume`, and `land` refresh it in place: they merge the freshly fetched
+target directly into the published head (any candidate advance already
+recorded via a separate published-candidate descendant is merged onto in the
+same way), record a `target_refreshes` entry with the before/after target and
+candidate SHAs, re-validate the exact resulting candidate SHA, and
+fast-forward push the same PR branch -- never a force-push. A merge conflict
+while refreshing leaves the receipt in `prepare`/`conflict`, names the
+conflicting paths, and never pushes; a validation failure after a clean merge
+leaves the receipt `validation_failed` in the `land` phase, also without
+pushing. Resuming a published receipt whose target has not moved is a no-op:
+no merge, revalidation, or push runs.
 
 `--route auto` direct-pushes only when authoritative GitHub branch and ruleset
 evidence permits it; otherwise it uses a pull request or refuses unsupported

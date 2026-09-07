@@ -160,6 +160,23 @@ residuals, an untrusted approval, changed source/target refs, or a replacement
 not contained in the target refuse without deleting state. The terminal Work
 Log embeds the verified receipt before remote or local deletion.
 
+A `wb worktree merge` integration candidate is a special case of "never
+pushed": its own branch (`wb/integration/...`) is deliberately never published
+under its own name, so the ordinary "was never pushed" refusal always fires
+for it once the merge lane is done with it. Cleanup (and `wb worktree end`,
+which retires through the same transaction) recognizes one narrow extra proof
+for exactly this shape: a worktree-merge receipt under `~/.wb/reports/
+worktree-merge/` naming this task and worktree as its candidate, carrying a
+validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement —
+bound by a plain SHA-256 of the receipt's own unchanged bytes, and recording a
+target head that is an ancestor of the freshly fetched `origin/<target>`. A
+missing, tampered, or stale-target acknowledgement changes nothing: the
+original refusal stands, now naming the exact receipt to run `acknowledge-
+absorbed-conflict` against. A valid one reports `proof:
+absorbed_conflict_acknowledgement` on the cleanup result, together with the
+acknowledgement path and the receipted source SHAs it proved already reached
+the target.
+
 ## A branch with no worktree at all: hand off to wb branch
 
 Every command above is scoped to worktrees. A local or remote branch that has

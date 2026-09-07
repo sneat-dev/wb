@@ -276,9 +276,26 @@ type ListResult struct {
 	// precise, reportable refusal of that candidate, never a malformed
 	// worktree and never a reason to abort a fleet-wide sweep.
 	AbsorbedByRejection string `json:"absorbed_by_rejection,omitempty"`
-	Clean               bool   `json:"clean"`
-	LocallyMerged       bool   `json:"locally_merged"`
-	Locked              bool   `json:"locked"`
+	// AbsorbedConflictAcknowledgementPath is the `wb worktree merge
+	// acknowledge-absorbed-conflict` sidecar cleanup accepted as landing proof
+	// for this head, when it was never itself pushed anywhere. Set only once
+	// every immutable identity, the SHA-256 binding to the exact unchanged
+	// receipt, and the freshly fetched target's ancestry over the
+	// acknowledgement's recorded target all validate. See
+	// applyAbsorbedConflictAcknowledgementCleanupProof.
+	AbsorbedConflictAcknowledgementPath string `json:"absorbed_conflict_acknowledgement_path,omitempty"`
+	// AbsorbedConflictProvenSourceSHAs are the receipted source commits the
+	// acknowledgement proved already reachable from the target, carried here
+	// so a cleanup report and terminal Work Log both show exactly what
+	// evidence authorized retiring a head GitHub's commit index never saw.
+	AbsorbedConflictProvenSourceSHAs []string `json:"absorbed_conflict_proven_source_shas,omitempty"`
+	// AbsorbedConflictReceiptPath names the worktree-merge receipt matched to
+	// this candidate by task and worktree, whether or not its acknowledgement
+	// validated, so a refusal can point at the exact receipt to acknowledge.
+	AbsorbedConflictReceiptPath string `json:"absorbed_conflict_receipt_path,omitempty"`
+	Clean                       bool   `json:"clean"`
+	LocallyMerged               bool   `json:"locally_merged"`
+	Locked                      bool   `json:"locked"`
 	// LockOwner and LockOwnerPID describe who holds Locked, so a refusal
 	// can distinguish a peer operation still running from a recoverable
 	// remnant of one that was interrupted. See diagnoseTaskLock.
@@ -549,6 +566,20 @@ type CleanupResult struct {
 	BranchDeleted          bool   `json:"branch_deleted"`
 	BacklogID              string `json:"backlog_id,omitempty"`
 	Reason                 string `json:"reason,omitempty"`
+	// Proof names the mechanism that authorized retiring a candidate whose
+	// head was never itself pushed anywhere -- currently only
+	// "absorbed_conflict_acknowledgement" -- so the report and terminal Work
+	// Log both distinguish this from an ordinary pushed/merged landing.
+	Proof string `json:"proof,omitempty"`
+}
+
+// cleanupResultProof names the landing-proof mechanism a CleanupResult should
+// report, derived from the ListResult evidence applyAbsorbedConflictAcknowledgementCleanupProof recorded.
+func cleanupResultProof(entry ListResult) string {
+	if entry.AbsorbedConflictAcknowledgementPath != "" {
+		return "absorbed_conflict_acknowledgement"
+	}
+	return ""
 }
 
 // CleanupOutcome contains the decisions plus the durable audit report written
@@ -2219,6 +2250,9 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		if err := applyMergeReceiptCleanupProof(ctx, normalized.MergeReceiptProofs, &listed.Results[index]); err != nil {
 			return CleanupOutcome{}, err
 		}
+		if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, resolution.Write.Home, &listed.Results[index]); err != nil {
+			return CleanupOutcome{}, err
+		}
 		if err := applySupersessionReceipt(ctx, normalized.SupersededBy, &listed.Results[index]); err != nil {
 			return CleanupOutcome{}, err
 		}
@@ -2324,7 +2358,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				reason = fmt.Sprintf("preflight Work Log for %s: %v", entry.Repository, err)
 			}
 		}
-		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
+		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason, Proof: cleanupResultProof(entry)}
 	}
 	// Residue reads back as a candidate that is no longer a Git worktree root,
 	// which is exactly the malformed-candidate shape blockDiagnosedTasks blocks
@@ -2542,6 +2576,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if err := applyMergeReceiptCleanupProof(ctx, normalized.MergeReceiptProofs, &refreshed); err != nil {
 				worktree.close()
 				return fmt.Errorf("cleanup receipt proof for %s: %w", refreshed.Repository, err)
+			}
+			if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, resolution.Write.Home, &refreshed); err != nil {
+				worktree.close()
+				return fmt.Errorf("cleanup absorbed-conflict acknowledgement proof for %s: %w", refreshed.Repository, err)
 			}
 			if err := applySupersessionReceipt(ctx, normalized.SupersededBy, &refreshed); err != nil {
 				worktree.close()
@@ -4345,7 +4383,8 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 		return false, detachedRefusal(entry)
 	case !entry.IntegratedAtOrigin && entry.HeadUnknownToRemote && !entry.landedWithResidue():
 		return false, "head " + shortSHA(entry.HeadSHA) + " was never pushed: GitHub's commit index has never seen it, " +
-			"so nothing can prove this work landed and removing the checkout would lose it"
+			"so nothing can prove this work landed and removing the checkout would lose it; " +
+			absorbedConflictAcknowledgementHint(entry.AbsorbedConflictReceiptPath)
 	case !entry.IntegratedAtOrigin && entry.landedWithResidue() && allowResidue:
 		// The landing is proved by the same receipt every other eligible
 		// candidate needs; only the residual commits are being widened past,
@@ -4640,6 +4679,9 @@ func preflightCleanupRepository(
 	}
 	if err := applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, &refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s receipt proof: %w", entry.Repository, err)
+	}
+	if err := applyAbsorbedConflictAcknowledgementCleanupProof(ctx, home, &refreshed); err != nil {
+		return ListResult{}, fmt.Errorf("preflight cleanup %s absorbed-conflict acknowledgement proof: %w", entry.Repository, err)
 	}
 	if err := applySupersessionReceipt(ctx, options.SupersededBy, &refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt: %w", entry.Repository, err)
