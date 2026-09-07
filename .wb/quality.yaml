@@ -4,4 +4,7 @@ go_test:
   shards: 8
   packages:
     - ./cmd/wb
+    # This integration-heavy package otherwise dominates the unsharded tail
+    # and can consume the Go test process's full 10-minute timeout by itself.
+    - ./internal/orchestrate
     - ./internal/worktrees
