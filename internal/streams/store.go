@@ -419,6 +419,13 @@ func (store *Store) RepositoryStream(repository string) (Stream, bool, []Unreada
 		if _, ok := stream.Member(repository); ok {
 			return stream, true, unreadable, nil
 		}
+		// A repository admitted only as a linked consumer still carries live
+		// local links this stream must be able to undo and guard landing for
+		// — treating it as unheld here would let a second stream claim it
+		// and would let refuseLinkedRepositoryWorktrees miss its links.
+		if _, ok := stream.LinkedConsumer(repository); ok {
+			return stream, true, unreadable, nil
+		}
 	}
 	// A newer stream schema must still fail closed for a repository it may
 	// contain. It must not, however, stop an unrelated repository from landing.
@@ -500,6 +507,14 @@ func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) 
 			}
 			for _, link := range member.Links {
 				links = append(links, StreamLink{Stream: stream.Name, Repository: member.Repository, Link: link})
+			}
+		}
+		for _, consumer := range stream.LinkedConsumers {
+			if normalizePath(consumer.Worktree) != resolved {
+				continue
+			}
+			for _, link := range consumer.Links {
+				links = append(links, StreamLink{Stream: stream.Name, Repository: consumer.Repository, Link: link})
 			}
 		}
 	}
