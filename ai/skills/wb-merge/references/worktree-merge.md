@@ -62,17 +62,30 @@ Resuming a `prepare/validation_failed` (or interrupted `prepare/preparing`)
 receipt re-runs candidate validation for the exact candidate SHA before doing
 anything else, using the receipt's stored validation timeouts unless
 `--prepare-timeout`/`--check-timeout`/`--shard-attempt-timeout` explicitly
-override them; it never treats a stale failure as an automatic pass. Every
-publish and landing transition — pushing the candidate branch, a direct push
-of the target, opening or adopting a pull request, and merging it — then
+override them; it never treats a stale failure as an automatic pass. Resuming
+a receipt that is already in the land phase — an open pull request or a
+direct-push target already recorded — behaves the same way whenever its
+candidate has moved past the SHA that was last proven or published: a
+`validation_failed` status, a validation report recorded against a different
+revision, or a validation identity that no longer names the exact candidate
+SHA all trigger the same exact-candidate re-validation before any push,
+skipped only when `--stop-before-merge` already re-validated the preserved
+candidate earlier in the same call, or when the candidate has already been
+pushed at its exact current SHA (that push's own remote-CI proof stands).
+Every publish and landing transition — pushing the candidate branch, a direct
+push of the target, opening or adopting a pull request, and merging it — then
 passes through one guard that refuses unless the receipt has left
 `validation_failed` for that exact candidate and the recorded validation
 identity still names that exact SHA, naming the candidate and its validation
 status and pointing back at `wb worktree merge resume <receipt>` to
-re-validate. The only pre-existing exception is an already-published
-candidate being advanced atop its own open pull request, where the push gate
-and the remote CI checks that follow are the proof, not a fresh local
-validation.
+re-validate. The only carve-out is an already-published candidate whose
+recorded `PublishedCandidateSHA` still names the exact current candidate SHA
+and whose status has not itself reverted to `validation_failed`: that push's
+pre-push gate and the remote CI checks that followed are the proof, not a
+repeated local validation. It does NOT cover an advance — once the candidate
+SHA moves past `PublishedCandidateSHA`, the new head is unproven and must
+pass through the land-phase re-validation above before this guard will ever
+let it publish.
 
 After a verified batch landing, WB uses the exact source commits preserved in
 the candidate merge graph to find their pull requests. It closes an open source

@@ -11693,7 +11693,8 @@
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
-                "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it"
+                "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
+                "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed"
               ]
             }
           ],
@@ -11760,12 +11761,22 @@
               "path": "internal/orchestrate/worktree_merge_test.go",
               "name": "TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate",
               "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments. A prepare/validation_failed receipt (or an interrupted prepare/preparing receipt) is re-validated for the exact candidate SHA before any publish or landing transition; every such transition refuses unless the receipt has left validation_failed and its recorded validation identity still names that exact candidate."
+      "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments. A prepare/validation_failed receipt (or an interrupted prepare/preparing receipt) is re-validated for the exact candidate SHA before any publish or landing transition; every such transition refuses unless the receipt has left validation_failed and its recorded validation identity still names that exact candidate. Resuming a land-phase receipt (an open PR or a direct-push target already recorded) applies the same exact-candidate re-validation whenever the candidate has advanced past the SHA that was last proven or published, before the same guard runs; the only exception is an already-published candidate whose PublishedCandidateSHA still names the exact current candidate and whose status has not itself reverted to validation_failed, where the earlier push gate and remote CI checks are the proof instead."
     },
     {
       "id": "wb.worktree.merge.revert",
