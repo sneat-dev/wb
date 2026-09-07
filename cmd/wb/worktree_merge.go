@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
 )
@@ -21,12 +22,26 @@ type worktreeMergeFlags struct {
 	cleanup                                bool
 	progress                               bool
 	stopBeforeMerge                        bool
+	allowSaturatedHost                     bool
 	timeout                                time.Duration
 	prepareTimeout                         time.Duration
 	checkTimeout                           time.Duration
 	shardAttemptTimeout                    time.Duration
 	retry                                  int
 	interval                               time.Duration
+}
+
+// checkHostLoadAdmission refuses to start candidate validation when the
+// host's 1-minute load average exceeds the admission.load_floor in wb.yaml,
+// unless --allow-saturated-host was passed. See internal/hostload: two
+// orphaned fixture processes drove load to 7-12 on a shared machine and the
+// merge-gate kept scheduling more CPU-heavy validation on top of it.
+func checkHostLoadAdmission(flags worktreeMergeFlags) error {
+	floor := hostload.Floor("")
+	if err := hostload.Check(nil, floor, flags.allowSaturatedHost); err != nil {
+		return fmt.Errorf("wb worktree merge: %w", err)
+	}
+	return nil
 }
 
 func newWorktreeMergeCmd() *cobra.Command {
@@ -206,6 +221,9 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 	if err := refuseLinkedWorktrees(args); err != nil {
 		return err
 	}
+	if err := checkHostLoadAdmission(*flags); err != nil {
+		return err
+	}
 	campaign := newWorktreeMergeProgress(command, *flags)
 	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter()), landMergeOptions(*flags, "", campaign.reporter()))
 	finishWorktreeMergeProgress(campaign, receipt, err)
@@ -300,6 +318,9 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			if err := refuseLinkedWorktrees(args); err != nil {
 				return err
 			}
+			if err := checkHostLoadAdmission(flags); err != nil {
+				return err
+			}
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
@@ -331,6 +352,9 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			if err := refuseLinkedReceiptWorktrees(args[0]); err != nil {
 				return err
 			}
+			if err := checkHostLoadAdmission(flags); err != nil {
+				return err
+			}
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
@@ -358,6 +382,9 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
+				return err
+			}
+			if err := checkHostLoadAdmission(flags); err != nil {
 				return err
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
@@ -935,6 +962,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().IntVar(&flags.retry, "retry", 0, "retry transient command failures")
 	command.Flags().StringVar(&flags.format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
+	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: runtime.NumCPU())")
 }
 
 func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {

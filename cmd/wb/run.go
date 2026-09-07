@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/process"
 	"github.com/sneat-dev/wb/internal/recipe"
 	"github.com/sneat-dev/wb/internal/runlog"
@@ -29,15 +30,16 @@ func newRunCmd() *cobra.Command {
 
 func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Command {
 	var (
-		apply          bool
-		async          bool
-		configPath     string
-		days           int
-		history        bool
-		jsonOut        bool
-		list           bool
-		idempotencyKey string
-		workerID       string
+		apply              bool
+		async              bool
+		configPath         string
+		days               int
+		history            bool
+		jsonOut            bool
+		list               bool
+		idempotencyKey     string
+		workerID           string
+		allowSaturatedHost bool
 	)
 	cmd := &cobra.Command{
 		Use:   "run [recipe] | run -- <command> [args...]",
@@ -106,7 +108,7 @@ wb run --history --days 7`,
 				if idempotencyKey != "" {
 					return usageError("--idempotency-key requires --async command mode")
 				}
-				return runExternalCommand(cmd, args)
+				return runExternalCommand(cmd, args, configPath, allowSaturatedHost)
 			}
 			if async {
 				return usageError("--async requires command mode with run --")
@@ -116,6 +118,9 @@ wb run --history --days 7`,
 			}
 			if idempotencyKey != "" {
 				return usageError("--idempotency-key requires --async command mode")
+			}
+			if allowSaturatedHost {
+				return usageError("--allow-saturated-host requires command mode with run --")
 			}
 			if days != 14 || outputFormatChanged(cmd) {
 				return usageError("--days, --format=json, and --json require --history")
@@ -139,6 +144,7 @@ wb run --history --days 7`,
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "stable caller key for an intentional submission or exact retry")
 	cmd.Flags().StringVar(&workerID, "worker", "", "stable ID of the sandbox worker that must execute the async job")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
+	cmd.Flags().BoolVar(&allowSaturatedHost, "allow-saturated-host", false, "command mode: admit CPU-heavy work even when the host's load average exceeds the admission.load_floor in wb.yaml (default: runtime.NumCPU())")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")
 	addJSONFormatFlags(cmd, &jsonOut)
@@ -183,7 +189,7 @@ func printRunHistory(cmd *cobra.Command, days int, jsonOut bool) error {
 	return nil
 }
 
-func runExternalCommand(cmd *cobra.Command, args []string) error {
+func runExternalCommand(cmd *cobra.Command, args []string, configPath string, allowSaturatedHost bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
@@ -194,6 +200,16 @@ func runExternalCommand(cmd *cobra.Command, args []string) error {
 	}
 	budget := runqueue.Budget()
 	units := runqueue.Units(args, budget)
+	if units > 0 {
+		floor := hostload.Floor(configPath)
+		if loadErr := hostload.Check(nil, floor, allowSaturatedHost); loadErr != nil {
+			_ = recorder.Finish(exitFindings, 0, 0, time.Now())
+			return fmt.Errorf("wb: %w", loadErr)
+		}
+		if allowSaturatedHost {
+			recorder.RecordLoadOverride(true)
+		}
+	}
 	lease, waited, leaseErr := runqueue.Acquire(cmd.Context(), projectsRoot, units, budget)
 	recorder.RecordAdmission(units, waited)
 	if leaseErr != nil {

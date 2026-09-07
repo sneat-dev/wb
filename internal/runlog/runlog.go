@@ -45,6 +45,7 @@ type Event struct {
 	SystemCPUMS   int64     `json:"system_cpu_ms,omitempty"`
 	QueueWaitMS   int64     `json:"queue_wait_ms,omitempty"`
 	CPUUnits      int       `json:"cpu_units,omitempty"`
+	LoadOverride  bool      `json:"load_override,omitempty"`
 	ExitCode      *int      `json:"exit_code,omitempty"`
 }
 
@@ -53,6 +54,12 @@ type Event struct {
 func (recorder *Recorder) RecordAdmission(units int, wait time.Duration) {
 	recorder.event.CPUUnits = units
 	recorder.event.QueueWaitMS = wait.Milliseconds()
+}
+
+// RecordLoadOverride records whether --allow-saturated-host admitted this
+// command despite the host's load average exceeding the admission floor.
+func (recorder *Recorder) RecordLoadOverride(overridden bool) {
+	recorder.event.LoadOverride = overridden
 }
 
 // Recorder owns one operation ID and its optional managed-worktree log.
