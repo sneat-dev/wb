@@ -225,4 +225,90 @@ const (
 	// the link could not be recorded. An unrecorded link is un-undoable and
 	// invisible to the merge guard's state signal.
 	RefusalNotRecordable = "link-not-recordable"
+	// RefusalLiveLinkSource fires when a worktree slated for removal is still
+	// an open stream's local link source: some consumer resolves it instead
+	// of a published version, and deleting it would strand that consumer.
+	RefusalLiveLinkSource = "live-link-source"
 )
+
+// LiveLinkSourceStore is the read side of stream state the cleanup guard
+// needs. It is an interface for the same reason LiveLinkStore is: a caller
+// that already holds a store passes it straight through, and a test provides
+// its own without a WB home.
+type LiveLinkSourceStore interface {
+	LinkSourcesForWorktree(worktree string) ([]streams.StreamLinkSource, error)
+}
+
+// LiveLinkSource is one reason a worktree must not be removed: an open
+// stream's consumer still resolves it locally in place of a published
+// version.
+type LiveLinkSource struct {
+	// Stream names the open stream recording the link.
+	Stream string `json:"stream"`
+	// Consumer names the repository still resolving this worktree locally.
+	Consumer string `json:"consumer"`
+	// Detail names the offending link.
+	Detail string `json:"detail"`
+	// Sanctioned is the exact command that clears it.
+	Sanctioned string `json:"sanctioned_command"`
+}
+
+// HasLiveLinkSource reports every open stream whose consumer still links to
+// this worktree as its unpublished source.
+//
+// `wb worktree cleanup` — and any verb that removes a managed worktree as
+// part of landing, such as the cleanup step of `wb pr land` and
+// `wb worktree merge` — MUST refuse a worktree this reports on, naming the
+// offending stream, consumer, and link kind, and pointing at the command
+// that repoints or drops the link. There is no flag that both bypasses this
+// guard and removes the worktree.
+//
+// Unlike HasLiveLink, this checks only the recorded stream-state signal.
+// There is no hand-written-`go.work` analogue on the source side: a
+// worktree cannot itself carry evidence that some OTHER checkout's untracked
+// `go.work` names it, so the recorded link is the only signal that exists.
+//
+// A store that cannot be read is an error, never an empty result: "I could
+// not tell" must not be spelled the same way as "nothing links here".
+//
+// Implements: dependency-streams#req:merge-refuses-a-linked-worktree (the
+// removal-time half, protecting the link source rather than the consumer).
+func HasLiveLinkSource(store LiveLinkSourceStore, worktree string) ([]LiveLinkSource, error) {
+	if store == nil {
+		return nil, nil
+	}
+	recorded, err := store.LinkSourcesForWorktree(worktree)
+	if err != nil {
+		return nil, fmt.Errorf("read stream link-source records for %s: %w", worktree, err)
+	}
+	var found []LiveLinkSource
+	for _, source := range recorded {
+		found = append(found, LiveLinkSource{
+			Stream:   source.Stream,
+			Consumer: source.ConsumerRepository,
+			Detail: fmt.Sprintf("stream %s: %s still links %s (%s) to %s",
+				source.Stream, source.ConsumerRepository, source.Link.Identity, source.Link.Mechanism, worktree),
+			Sanctioned: fmt.Sprintf("wb deps propagate local %s --to %s --undo", worktree, source.ConsumerWorktree),
+		})
+	}
+	return found, nil
+}
+
+// RefusalMessageForSources renders the refusal a cleanup verb prints when a
+// worktree slated for removal is still a live link source. It names every
+// offending stream and consumer, and every command that clears one, because a
+// refusal an agent cannot resolve becomes a hand-written workaround.
+func RefusalMessageForSources(worktree string, sources []LiveLinkSource) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	details := make([]string, 0, len(sources))
+	commands := make([]string, 0, len(sources))
+	for _, source := range sources {
+		details = append(details, source.Detail)
+		commands = append(commands, source.Sanctioned)
+	}
+	return fmt.Sprintf(
+		"%s is still a live local link source — removing it would strand its linked consumer(s): %s; repoint or drop the link(s) first: %s",
+		worktree, strings.Join(details, "; "), strings.Join(dedupe(commands), " && "))
+}
