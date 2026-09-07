@@ -15,6 +15,40 @@ type Entry struct {
 	Error    string   `json:"error,omitempty"`
 }
 
+// StatusSnapshot is one consistent read of the machine snapshots and task
+// claims currently held by a remote store.
+type StatusSnapshot struct {
+	Machines []Entry      `json:"machines"`
+	Claims   []ClaimEntry `json:"claims"`
+}
+
+// StatusProvider is the optional provider capability used by remote status to
+// refresh once and read both projections from that same store view. Providers
+// that cannot batch the reads keep the Provider contract below; ReadStatus
+// falls back to its two self-contained methods.
+type StatusProvider interface {
+	Status(ctx context.Context) (StatusSnapshot, error)
+}
+
+// ReadStatus returns the machine and claim projections needed by remote
+// status. A provider-level Status implementation can share one refresh; the
+// fallback preserves compatibility with providers that expose only the
+// self-contained Provider methods.
+func ReadStatus(ctx context.Context, provider Provider) (StatusSnapshot, error) {
+	if statusProvider, ok := provider.(StatusProvider); ok {
+		return statusProvider.Status(ctx)
+	}
+	machines, err := provider.List(ctx)
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	claims, err := provider.Claims(ctx)
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	return StatusSnapshot{Machines: machines, Claims: claims}, nil
+}
+
 // Provider is a shared store of machine snapshots. Implementations must be
 // safe to call from several machines at once; the git provider relies on
 // per-machine files plus rebase for that.

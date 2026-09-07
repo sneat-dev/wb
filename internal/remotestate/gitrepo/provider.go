@@ -310,9 +310,38 @@ func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
 	if err := p.Fetch(ctx); err != nil {
 		return nil, err
 	}
+	return p.readMachines()
+}
+
+// Status refreshes the shared clone once, then reads machine snapshots and
+// claims while holding the same clone lock. List and Claims remain
+// self-contained for callers that need either projection on its own.
+func (p *Provider) Status(ctx context.Context) (remotestate.StatusSnapshot, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return remotestate.StatusSnapshot{}, err
+	}
+	defer func() { _ = lock.release() }()
+	if err := p.Fetch(ctx); err != nil {
+		return remotestate.StatusSnapshot{}, err
+	}
+	machines, err := p.readMachines()
+	if err != nil {
+		return remotestate.StatusSnapshot{}, err
+	}
+	claims, err := p.readClaims()
+	if err != nil {
+		return remotestate.StatusSnapshot{}, err
+	}
+	return remotestate.StatusSnapshot{Machines: machines, Claims: claims}, nil
+}
+
+// readMachines reads the already-refreshed clone. The caller must hold the
+// clone lock so a concurrent writer cannot change the working tree midway.
+func (p *Provider) readMachines() ([]remotestate.Entry, error) {
 	root := filepath.Join(p.opts.ClonePath, "machines")
 	var entries []remotestate.Entry
-	err = filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && file == root {
 				return nil

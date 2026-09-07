@@ -84,7 +84,11 @@ pushed state.
 flag a machine as stale exactly when its effective heartbeat (the later of
 `published_at` and `last_seen_at`) is older than the `--stale` window, and
 MUST render an error row for any entry that cannot be decoded rather than
-dropping it.
+dropping it. When the provider can read machine snapshots and claims together,
+the command MUST refresh the provider once and derive both projections from
+that same refreshed view. It MUST emit concise progress to stderr immediately
+and at least every ten seconds until the read terminates, including when stdout
+uses a machine-readable format; progress MUST NOT contaminate stdout.
 
 #### REQ: remote-machines-rendering
 
@@ -131,7 +135,9 @@ push rejection.
 view — worklist with staleness and error rows, and a one-line-per-machine
 summary carrying both the publish age and the effective-heartbeat (SEEN)
 age — and a store containing undecodable entries never blocks a zero exit
-code.
+code. A batched provider status read performs one refresh for machines and
+claims, and long reads remain visibly alive on stderr without changing the
+machine-readable stdout document.
 
 ## Open Questions
 

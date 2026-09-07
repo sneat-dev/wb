@@ -46,14 +46,17 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 	if err != nil {
 		return err
 	}
-	entries, err := provider.List(context.Background())
+	progress := newLiveProgressWithHeartbeat(
+		progressOutput(errOut, false), true, remoteProgressHeartbeat(deps),
+	)
+	progress.start("remote status: refreshing machines and claims")
+	status, err := remotestate.ReadStatus(context.Background(), provider)
 	if err != nil {
+		progress.finish("remote status: refresh failed")
 		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
 	}
-	claims, err := provider.Claims(context.Background())
-	if err != nil {
-		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
-	}
+	entries, claims := status.Machines, status.Claims
+	progress.finish(fmt.Sprintf("remote status: refreshed %d machines, %d claims", len(entries), len(claims)))
 	// claimRowsAll is computed from the unfiltered entries, before --machine
 	// narrows the slice below: a claim's staleness depends on ITS holder's
 	// snapshot, which the --machine filter may otherwise have dropped.
