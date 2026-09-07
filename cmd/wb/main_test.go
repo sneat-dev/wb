@@ -11,6 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -50,6 +51,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
 		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
 	}
+	// Isolate the whole test binary from ambient ownership/session-identity
+	// state before any test runs: this binary is a subprocess of whichever
+	// agent is operating the shell that launched `go test`, and its
+	// WB_AGENT_* exports would otherwise leak into every worktree/session
+	// assertion below. See internal/testenv and internal/envguard.
+	testenv.IsolateProcess()
 	os.Exit(m.Run())
 }
 
