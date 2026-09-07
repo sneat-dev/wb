@@ -184,3 +184,36 @@ func removeGoWork(consumer string) error {
 func GoWorkUseEntries(consumer string) ([]string, error) {
 	return streams.GoWorkUseEntries(consumer)
 }
+
+// goWorkStillReferencesLibrary reports whether consumer's go.work still
+// carries a `use` entry for library. A missing go.work, or one whose entries
+// resolve to other worktrees only, reports false — the record is stale, not
+// dangerous, because there is nothing left on disk for --undo to preserve.
+//
+// A `use` entry names a specific MODULE directory — often the library
+// worktree's own root, but just as often a subdirectory (`backend/`) inside
+// it — so membership, not exact equality, is what proves the library is
+// still referenced. library itself may no longer exist (undo must still
+// work after the library worktree is gone), so this never requires either
+// side to resolve via the filesystem.
+func goWorkStillReferencesLibrary(consumer, library string) (bool, error) {
+	if strings.TrimSpace(library) == "" {
+		return false, nil
+	}
+	entries, err := streams.GoWorkUseEntries(consumer)
+	if err != nil {
+		return false, err
+	}
+	resolvedLibrary := normalizeWorktree(library)
+	for _, entry := range entries {
+		resolved := entry
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(consumer, resolved)
+		}
+		resolved = normalizeWorktree(resolved)
+		if resolved == resolvedLibrary || pathWithin(resolvedLibrary, resolved) {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -40,7 +40,13 @@ type Node interface {
 	// --undo restores it exactly and must not modify any manifest.
 	Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, err error)
 	// Unlink restores the node_modules entry recorded by Link.
-	Unlink(ctx context.Context, consumerDir, packageName string) error
+	//
+	// note is empty for a normal restore. It carries an informational
+	// message when the consumer's own package manager already replaced the
+	// WB-staged link with a published copy (a governed `pnpm install`, most
+	// often) before undo ran: the record is cleared and the filesystem is
+	// left exactly as the package manager left it.
+	Unlink(ctx context.Context, consumerDir, packageName string) (note string, err error)
 	// LinkSiblings wires runtime dependency edges between packages that WB has
 	// staged from the same provider. External peers continue to resolve from
 	// the consumer's installed dependency context.
