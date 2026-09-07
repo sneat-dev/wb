@@ -2469,6 +2469,7 @@ func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *
 	source := createMergeSource(t, fixture, "refresh-source", "feature/refresh", "first.txt", "first\n")
 	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+		CheckTimeout: 2 * time.Minute, ShardAttemptTimeout: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2480,12 +2481,17 @@ func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *
 
 	refreshed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+		ShardAttemptTimeout: 3 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if refreshed.ID != first.ID || refreshed.ReceiptPath != first.ReceiptPath || refreshed.Candidate.Worktree != first.Candidate.Worktree {
 		t.Fatalf("source advance created a competing candidate: first=%+v refreshed=%+v", first, refreshed)
+	}
+	check, shard := receiptWorktreeMergeValidationTimeouts(refreshed)
+	if check != 2*time.Minute || shard != 3*time.Minute {
+		t.Fatalf("refresh ignored explicit timeout or lost omitted limit: check=%s shard=%s", check, shard)
 	}
 	if len(refreshed.SourceRefreshes) != 1 || refreshed.SourceRefreshes[0].Sources[0].SHA != first.Sources[0].SHA {
 		t.Fatalf("source refresh audit = %+v", refreshed.SourceRefreshes)
