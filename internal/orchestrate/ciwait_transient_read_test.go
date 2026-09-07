@@ -36,8 +36,7 @@ func TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds(
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   if [ ! -f "`+failedOnce+`" ]; then
     touch "`+failedOnce+`"
-    echo "signal: killed" >&2
-    exit 1
+    kill -9 $$
   fi
   echo '{"object":{"sha":"`+rereadTestHead+`"}}'; exit 0
 fi
@@ -69,6 +68,9 @@ echo "unexpected gh args: $*" >&2; exit 30
 	if _, statErr := os.Stat(failedOnce); statErr != nil {
 		t.Fatal("the fake gh never saw the killed-then-retried attempt")
 	}
+	if result.Evidence["github_read_retries"] == "" {
+		t.Fatalf("evidence = %#v, want the recovered retry recorded on the wait result, matching what `wb pr land` already records", result.Evidence)
+	}
 }
 
 // A target-head read that stays transiently broken for the whole in-process
@@ -78,8 +80,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 func TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed(t *testing.T) {
 	installTransientReadTestGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
-  echo "signal: killed" >&2
-  exit 1
+  kill -9 $$
 fi
 echo "unexpected gh args: $*" >&2; exit 30
 `)
@@ -95,5 +96,56 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 	if !strings.Contains(result.Reason, "resume the same exact target identity") {
 		t.Fatalf("reason = %q, want resumable guidance", result.Reason)
+	}
+}
+
+// TestCIWaitTransientReadRecordsRetryTelemetry closes the asymmetry the
+// reviewer flagged: `wb pr land` (via LandPullRequest) has always recorded
+// github_read_retries evidence for an in-process transient GitHub read
+// recovery, but WaitForCommitChecks — the engine underneath `wb ci wait` —
+// never wired up githubobserver.WithRetryTelemetry, so the identical recovery
+// went unrecorded there. Both entry points must now report the same evidence
+// key for the same kind of recovery.
+func TestCIWaitTransientReadRecordsRetryTelemetry(t *testing.T) {
+	dir := t.TempDir()
+	failedOnce := filepath.Join(dir, "failed-once")
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  if [ ! -f "`+failedOnce+`" ]; then
+    touch "`+failedOnce+`"
+    kill -9 $$
+  fi
+  echo '{"protected":false,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"`+rereadTestHead+`"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed {
+		t.Fatalf("result = %+v, want the signal-killed branch-policy read to recover in-process and pass", result)
+	}
+	if _, statErr := os.Stat(failedOnce); statErr != nil {
+		t.Fatal("the fake gh never saw the killed-then-retried attempt")
+	}
+	if result.Evidence["github_read_retries"] == "" {
+		t.Fatalf("evidence = %#v, want github_read_retries recorded on the ci-wait result the same way LandPullRequest already records it", result.Evidence)
 	}
 }

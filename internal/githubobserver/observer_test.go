@@ -874,6 +874,163 @@ func TestReadPerAttemptTimeoutIsFreshNotSharedAcrossAttempts(t *testing.T) {
 	}
 }
 
+// TestReadClampsAttemptTimeoutToRemainingBudget is Finding 1's regression
+// test: MaxRetryElapsed must bound real wall-clock time. Before the fix,
+// elapsedExceeded was computed only AFTER an attempt completed, so an attempt
+// that stalled to its own per-attempt floor (itself under the cap) still let
+// a second full-floor attempt start afterward, blowing well past the cap. A
+// 150ms floor with a 200ms cap demonstrates the gap clearly: unfixed, two
+// uncapped 150ms attempts total ~300ms; fixed, the second attempt's timeout
+// is clamped to the ~50ms of budget actually left, so the loop stops at
+// roughly the 200ms cap.
+func TestReadClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
+	var mu sync.Mutex
+	var attempts int
+	var timeouts []time.Duration
+	observer := &Observer{
+		MaxAttempts:          10,
+		MaxRetryElapsed:      200 * time.Millisecond,
+		MinAPIAttemptTimeout: 150 * time.Millisecond,
+		BaseBackoff:          time.Millisecond,
+		MaxBackoff:           time.Millisecond,
+		RandomIntn:           func(int64) int64 { return 0 },
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			mu.Lock()
+			attempts++
+			mu.Unlock()
+			if deadline, ok := ctx.Deadline(); ok {
+				mu.Lock()
+				timeouts = append(timeouts, time.Until(deadline))
+				mu.Unlock()
+			}
+			<-ctx.Done()
+			return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+		},
+	}
+
+	start := time.Now()
+	_, err := observer.Read(context.Background(), "", "api", "repos/acme/app/pulls/1")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("want an error once every attempt stalls to its deadline")
+	}
+	if !errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, want ErrTransientRetriesExhausted", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("elapsed=%v, want MaxRetryElapsed (200ms) to bound real wall-clock time, not ~300ms from two uncapped 150ms attempts", elapsed)
+	}
+	if attempts < 1 {
+		t.Fatalf("attempts=%d, want at least one attempt to run", attempts)
+	}
+	if len(timeouts) == 0 || timeouts[0] < 130*time.Millisecond {
+		t.Fatalf("first attempt timeout=%v, want a sane ~150ms floor for the first attempt", timeouts)
+	}
+}
+
+// TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller is Finding
+// 2's regression test: a caller cancellation arriving alongside a retryable
+// HTTP status (503) must surface as the caller's own context error, never as
+// ErrTransientRetriesExhausted decorated with resume guidance the caller
+// never asked for.
+func TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("a cancelled caller context must not be retried")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			cancel()
+			return commandResult{Stderr: []byte("gh: HTTP 503"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+
+	_, err := observer.Read(ctx, "", "api", "repos/acme/app/pulls/1")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a cancelled caller context must never be reported as transient-exhausted", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want exactly one attempt (no retry after caller cancellation)", calls)
+	}
+}
+
+// TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller is Finding
+// 2's regression test for the apiGet path (used by Get): a caller
+// cancellation arriving alongside a retryable HTTP status must surface as the
+// caller's context error, not ErrTransientRetriesExhausted.
+func TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("a cancelled caller context must not be retried")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			cancel()
+			return commandResult{
+				Stdout: []byte("HTTP/2 503 Service Unavailable\n\n{\"message\":\"temporary\"}"),
+				Stderr: []byte("gh: HTTP 503"), ExitCode: 1, Err: errors.New("exit status 1"),
+			}
+		},
+	}
+
+	_, err := observer.Get(ctx, GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("z", 40),
+		Endpoint: "repos/acme/app/compare/base...head",
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a cancelled caller context must never be reported as transient-exhausted", err)
+	}
+}
+
+// TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled is Finding
+// 3's regression test: "signal: killed" (and "deadline exceeded") must be
+// matched against the failed command's Err.Error() only, never against
+// combined stdout+stderr, so a PR body or log line quoting that literal text
+// cannot make an authoritative failure look like a recoverable saturated-host
+// kill.
+func TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("an authoritative failure was retried because output text mentioned signal: killed")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{
+				Stdout:   []byte(`{"body":"Deploy failed with signal: killed on the runner"}`),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "pr", "view", "42", "--repo", "acme/app", "--json", "body")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want exactly one terminal attempt, not a retry driven by output text", err, calls)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, output text must never be classified as transient", err)
+	}
+}
+
 func TestHelperProcessObserve(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS_OBSERVE") != "1" {
 		return

@@ -321,18 +321,39 @@ func (o *Observer) Read(ctx context.Context, dir string, args ...string) ([]byte
 	var lastCause string
 	attemptsUsed := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// The remaining budget is checked BEFORE starting this attempt, and
+		// the attempt's own timeout is clamped to it, so a stalling attempt
+		// can never push total wall-clock time past MaxRetryElapsed: checking
+		// only after an attempt completes let one attempt run the full
+		// per-attempt floor even when that floor alone was under the cap,
+		// then still permit a further full attempt afterward.
+		remaining := o.remainingBudget(startedAt)
+		if remaining <= 0 {
+			break
+		}
+		attemptTimeout := floor
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
 		attemptsUsed = attempt + 1
-		attemptCtx, cancelAttempt := o.attemptContext(ctx, floor)
+		attemptCtx, cancelAttempt := o.attemptContext(ctx, attemptTimeout)
 		result := o.Execute(attemptCtx, dir, args...)
 		timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 		cancelAttempt()
 		if result.Err == nil {
 			return append([]byte(nil), result.Stdout...), nil
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The caller's own context is cancelled or expired; that is
+			// authoritative and must never be reported as a saturated-host
+			// transient failure, which would be decorated with resume
+			// guidance the caller never asked for.
+			return nil, ctxErr
+		}
 		message := commandFailureMessage(result)
 		cause, retryable := retryableReadFailure(ctx, timedOut, result, message)
 		lastCause = cause
-		elapsedExceeded := o.now().Sub(startedAt) >= o.maxRetryElapsed()
+		elapsedExceeded := o.remainingBudget(startedAt) <= 0
 		if !retryable || attempt+1 >= maxAttempts || elapsedExceeded {
 			if retryable && attemptsUsed > 1 {
 				return nil, fmt.Errorf("%w: gh %s failed after %d attempts (last cause: %s): %s",
@@ -394,11 +415,30 @@ func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional m
 	floor := o.minAPIAttemptTimeout()
 	startedAt := o.now()
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		attemptCtx, cancelAttempt := o.attemptContext(ctx, floor)
+		// See the matching comment in Read: the remaining budget is checked
+		// BEFORE this attempt starts, and the attempt's timeout is clamped to
+		// it, so MaxRetryElapsed bounds real wall-clock time instead of being
+		// checked only after an attempt that was itself under the cap.
+		remaining := o.remainingBudget(startedAt)
+		if remaining <= 0 {
+			break
+		}
+		attemptTimeout := floor
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		attemptCtx, cancelAttempt := o.attemptContext(ctx, attemptTimeout)
 		result := o.runner()(attemptCtx, dir, args...)
 		timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 		cancelAttempt()
-		elapsedExceeded := o.now().Sub(startedAt) >= o.maxRetryElapsed()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The caller's own context is cancelled or expired; that is
+			// authoritative and must never be reported as a saturated-host
+			// transient failure (ErrTransientRetriesExhausted), which would be
+			// decorated with resume guidance the caller never asked for.
+			return httpResponse{}, ctxErr
+		}
+		elapsedExceeded := o.remainingBudget(startedAt) <= 0
 		response, parseErr := parseIncludedResponse(result.Stdout)
 		commandOK := result.Err == nil && result.ExitCode == 0
 		if parseErr != nil && commandOK {
@@ -495,6 +535,13 @@ func commandFailureMessage(result CommandResponse) string {
 }
 
 func retryableReadFailure(outerCtx context.Context, timedOut bool, result CommandResponse, message string) (string, bool) {
+	if outerCtx.Err() != nil {
+		// The caller's own context is already cancelled or expired; that is
+		// authoritative and must never be reclassified as a transient,
+		// retryable GitHub read failure just because the last observed
+		// output also happened to mention an HTTP status or rate limit.
+		return "", false
+	}
 	lower := strings.ToLower(message)
 	for _, status := range []int{429, 502, 503, 504} {
 		for _, marker := range []string{fmt.Sprintf("http %d", status), fmt.Sprintf("status code %d", status)} {
@@ -563,14 +610,22 @@ func isTemporaryCommandFailure(outerCtx context.Context, timedOut bool, err erro
 	if timedOut {
 		return true
 	}
-	message = strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
-	if strings.Contains(message, "signal: killed") || strings.Contains(message, "deadline exceeded") {
+	// "signal: killed" and "deadline exceeded" are checked against err.Error()
+	// ONLY, never against combined stdout+stderr: those two fragments name the
+	// exact process-kill semantics the timedOut check above already detects
+	// reliably from exec.CommandContext, and command OUTPUT (a PR title, body,
+	// or log line quoting that literal text) is attacker- or author-influenced
+	// content that must never be able to make an authoritative failure look
+	// like a saturated host that is safe to retry.
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(errText, "signal: killed") || strings.Contains(errText, "deadline exceeded") {
 		return true
 	}
 	var networkError net.Error
 	if errors.As(err, &networkError) && networkError.Timeout() {
 		return true
 	}
+	combined := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
 	for _, fragment := range []string{
 		"error connecting to api.github.com",
 		"connection reset",
@@ -583,7 +638,7 @@ func isTemporaryCommandFailure(outerCtx context.Context, timedOut bool, err erro
 		"i/o timeout",
 		"unexpected eof",
 	} {
-		if strings.Contains(message, fragment) {
+		if strings.Contains(combined, fragment) {
 			return true
 		}
 	}
@@ -591,10 +646,18 @@ func isTemporaryCommandFailure(outerCtx context.Context, timedOut bool, err erro
 }
 
 func temporaryFailureCause(message string, err error) string {
-	normalized := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
+	// Mirrors isTemporaryCommandFailure above: "signal: killed" and "deadline
+	// exceeded" are matched against err.Error() only, never against command
+	// output, so the reported cause always agrees with what actually made the
+	// failure retryable.
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, cause := range []string{"signal: killed", "deadline exceeded"} {
+		if strings.Contains(errText, cause) {
+			return cause
+		}
+	}
+	combined := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
 	for _, cause := range []string{
-		"signal: killed",
-		"deadline exceeded",
 		"error connecting to api.github.com",
 		"connection reset",
 		"connection refused",
@@ -606,7 +669,7 @@ func temporaryFailureCause(message string, err error) string {
 		"i/o timeout",
 		"unexpected eof",
 	} {
-		if strings.Contains(normalized, cause) {
+		if strings.Contains(combined, cause) {
 			return cause
 		}
 	}
@@ -698,6 +761,14 @@ func (o *Observer) maxRetryElapsed() time.Duration {
 		return o.MaxRetryElapsed
 	}
 	return defaultMaxRetryElapsed
+}
+
+// remainingBudget returns how much of MaxRetryElapsed is left before
+// startedAt's retry loop must stop, checked BEFORE an attempt starts so a
+// stalling attempt itself can never push the loop's wall-clock time past the
+// cap. A non-positive result means no further attempt may begin.
+func (o *Observer) remainingBudget(startedAt time.Time) time.Duration {
+	return o.maxRetryElapsed() - o.now().Sub(startedAt)
 }
 
 // attemptTimeoutFloor picks the per-attempt exec timeout floor for one gh

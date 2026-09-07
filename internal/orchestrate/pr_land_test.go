@@ -155,8 +155,12 @@ case "$*" in
   'api repos/acme/app/pulls/7 --include'|'api repos/acme/app/pulls/7')
     if [ -f "$S/fail-pr-view-once" ]; then
       rm -f "$S/fail-pr-view-once"
-      echo "signal: killed" >&2
-      exit 1
+      # Self-kill with SIGKILL so Go's exec layer reports the exact
+      # "signal: killed" *exec.ExitError a saturated host produces when its
+      # context deadline expires and the subprocess is killed by signal - a
+      # genuine kill classification, not text a PR body could forge by
+      # merely appearing in stdout/stderr.
+      kill -9 $$
     fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi

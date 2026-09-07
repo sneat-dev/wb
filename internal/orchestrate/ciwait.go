@@ -68,6 +68,24 @@ func stableRereadDelay(pollInterval, configured time.Duration) time.Duration {
 // an intermediate terminal result that callers resume with the same identity,
 // not successful completion.
 func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
+	telemetry := &githubobserver.RetryTelemetry{}
+	ctx = githubobserver.WithRetryTelemetry(ctx, telemetry)
+	result, err := waitForCommitChecks(ctx, options)
+	if telemetry.Count > 0 {
+		if result.Evidence == nil {
+			result.Evidence = map[string]string{}
+		}
+		result.Evidence["github_read_retries"] = fmt.Sprintf("%d (last: %s)", telemetry.Count, telemetry.LastReason)
+	}
+	return result, err
+}
+
+// waitForCommitChecks is the exact-commit observation loop wrapped by the
+// exported WaitForCommitChecks above so every call site — direct-target
+// waits, PR waits, and the recursive call from WaitForPullRequestChecks —
+// gets the same github_read_retries evidence without threading telemetry
+// through every early return in the loop below.
+func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
 	if strings.TrimSpace(options.Repository) == "" || strings.TrimSpace(options.Target) == "" || strings.TrimSpace(options.Head) == "" {
 		return PullRequestWaitResult{}, fmt.Errorf("repository, target, and exact head are required")
 	}
