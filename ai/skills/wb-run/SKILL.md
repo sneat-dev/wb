@@ -72,3 +72,19 @@ fleet-wide apply.
 
 Read [recipes.md](references/recipes.md) only when creating or diagnosing
 `wb.yaml`.
+
+## Await completion without heartbeat context
+
+After asynchronous submission, retain the operation ID and start one waiter as
+an asynchronous harness tool. Continue independent work until that tool completes:
+
+```sh
+wb daemon operation wait <operation-id> --format=json --progress-file /path/to/human-progress.log
+```
+
+Humans can tail the progress file in a separate terminal. The agent-facing
+stdout/stderr contain no periodic operation heartbeats; the final receipt keeps
+failure details and bounded output tails. `--progress=false` disables human
+heartbeats when another observer already provides liveness. Do not repeatedly
+poll `operation get` or forward the human log into the agent context. Harness
+completion delivery is required: a quiet synchronous tool still blocks its caller.

@@ -1168,6 +1168,7 @@ func TestLandWorktreeMergeRevalidatesInterruptedPreparingCandidate(t *testing.T)
 		t.Fatal(err)
 	}
 	receipt.Status = WorktreeMergePreparing
+	receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(12*time.Minute, 5*time.Minute)
 	receipt.Validation = quality.VerificationReport{}
 	receipt.BaselineValidation = quality.VerificationReport{}
 	receipt.ValidationIdentity = nil
@@ -1179,9 +1180,18 @@ func TestLandWorktreeMergeRevalidatesInterruptedPreparingCandidate(t *testing.T)
 	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
 		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		PrepareTimeout: time.Minute, ShardAttemptTimeout: 30 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	stored, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	check, shard := receiptWorktreeMergeValidationTimeouts(stored)
+	if check != 12*time.Minute || shard != 30*time.Second {
+		t.Fatalf("resume lost stored or overridden limits: check=%s shard=%s", check, shard)
 	}
 	if landed.Validation.Status != quality.StatusPassed || landed.Validation.Revision != receipt.Candidate.SHA {
 		t.Fatalf("interrupted candidate was published without exact validation: %+v", landed.Validation)
