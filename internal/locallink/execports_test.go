@@ -227,7 +227,7 @@ func TestExecNodeLinkAndUnlinkRestoreTheInstalledPackage(t *testing.T) {
 		t.Fatalf("the link does not resolve to the built dist: %s", linked)
 	}
 
-	if err := node.Unlink(ctx, consumer, "@acme/core"); err != nil {
+	if _, err := node.Unlink(ctx, consumer, "@acme/core"); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := os.ReadFile(filepath.Join(installed, "package.json"))
@@ -395,7 +395,7 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 		t.Fatalf("the link does not resolve to the built dist: %s", linked)
 	}
 
-	if err := node.Unlink(ctx, consumer, "@acme/core"); err != nil {
+	if _, err := node.Unlink(ctx, consumer, "@acme/core"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(target)
@@ -546,7 +546,7 @@ func TestExecNodeLinksTransitivePnpmSiblingsAndRetriesAfterPartialFailure(t *tes
 	}
 
 	for _, pkg := range packages {
-		if err := node.Unlink(context.Background(), consumer, pkg.name); err != nil {
+		if _, err := node.Unlink(context.Background(), consumer, pkg.name); err != nil {
 			t.Fatalf("undo %s: %v", pkg.name, err)
 		}
 		target := filepath.Join(consumer, "node_modules", filepath.FromSlash(pkg.name))
@@ -622,7 +622,7 @@ func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testin
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := node.Unlink(context.Background(), consumer, "@acme/core"); err != nil {
+		if _, err := node.Unlink(context.Background(), consumer, "@acme/core"); err != nil {
 			t.Errorf("undo linked core: %v", err)
 		}
 	}()
@@ -807,7 +807,7 @@ func TestUnlinkRejectsMarkerForAnotherStagedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := ExecNode{}
-	if err := node.Unlink(context.Background(), consumer, "@acme/core"); err == nil || !strings.Contains(err.Error(), "invalid staged path") {
+	if _, err := node.Unlink(context.Background(), consumer, "@acme/core"); err == nil || !strings.Contains(err.Error(), "invalid staged path") {
 		t.Fatalf("error = %v, want marker/path identity refusal", err)
 	}
 	if !fileExists(filepath.Join(victim, "keep.txt")) {
@@ -860,11 +860,196 @@ func TestUnlinkFlagsARestoredSymlinkThatDangles(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(consumer, "node_modules", ".pnpm")); err != nil {
 		t.Fatal(err)
 	}
-	err = node.Unlink(ctx, consumer, "@acme/core")
+	_, err = node.Unlink(ctx, consumer, "@acme/core")
 	if err == nil {
 		t.Fatal("undo reported success while the restored link dangles")
 	}
 	if !strings.Contains(err.Error(), "dangling") || !strings.Contains(err.Error(), "re-install") {
 		t.Fatalf("error = %v, want it to say the link dangles and how to recover", err)
+	}
+}
+
+// Governed pnpm install can replace the WB-created link with a symlink into a
+// fresh entry in the pnpm virtual store before --undo ever runs. That is not
+// the dangerous case the backups exist to guard: a real, resolvable published
+// package is already installed, so undo clears the stale record and leaves
+// the filesystem exactly as the package manager left it.
+func TestExecNodeUnlinkClearsRecordWhenLinkAlreadySupersededByPublishedPackage(t *testing.T) {
+	consumer := t.TempDir()
+	originalStore := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(originalStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(originalStore, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(target), originalStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	ctx := context.Background()
+	if _, err := node.Link(ctx, consumer, "@acme/core", dist); err != nil {
+		t.Fatal(err)
+	}
+
+	// A governed `pnpm install` runs mid-stream: it replaces the WB-staged
+	// symlink with one pointing at a freshly-installed published version —
+	// not the version node.Link backed up, so a naive "does the backup
+	// match" check alone would refuse.
+	newStore := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@2.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(newStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newStore, "package.json"), []byte(`{"name":"@acme/core","version":"2.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	newRelative, err := filepath.Rel(filepath.Dir(target), newStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newRelative, target); err != nil {
+		t.Fatal(err)
+	}
+
+	note, err := node.Unlink(ctx, consumer, "@acme/core")
+	if err != nil {
+		t.Fatalf("undo refused a link already superseded by a published package: %v", err)
+	}
+	if note != "link superseded by published @acme/core@2.0.0; record cleared" {
+		t.Fatalf("note = %q, want the superseded-and-cleared message", note)
+	}
+
+	// The filesystem is exactly as the package manager left it.
+	after, err := os.Readlink(target)
+	if err != nil || after != newRelative {
+		t.Fatalf("undo touched the filesystem: readlink = %q, err %v", after, err)
+	}
+	published, err := os.ReadFile(filepath.Join(target, "package.json"))
+	if err != nil || !strings.Contains(string(published), `"version":"2.0.0"`) {
+		t.Fatalf("the published package changed: %s (err %v)", published, err)
+	}
+	if fileExists(target + linkSymlinkBackupSuffix) {
+		t.Error("the stale link-recovery record survived undo")
+	}
+	if fileExists(linkAppliedMarkerPath(consumer, "@acme/core")) {
+		t.Error("the applied-link marker survived undo")
+	}
+}
+
+// Normal undo — the link is still exactly where Link left it — must not be
+// mistaken for a superseded one: it restores the previously-installed
+// package as always and reports no note.
+func TestExecNodeUnlinkStillStagedRestoresNormally(t *testing.T) {
+	consumer := t.TempDir()
+	installed := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	ctx := context.Background()
+	if _, err := node.Link(ctx, consumer, "@acme/core", dist); err != nil {
+		t.Fatal(err)
+	}
+
+	note, err := node.Unlink(ctx, consumer, "@acme/core")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note != "" {
+		t.Fatalf("note = %q, want no note for a normal undo", note)
+	}
+	restored, err := os.ReadFile(filepath.Join(installed, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(restored), `"version":"1.0.0"`) {
+		t.Fatalf("undo did not restore the installed package: %s", restored)
+	}
+}
+
+// A link that now points somewhere with no package.json — corrupted state
+// rather than a package manager's own resolution — must keep refusing so a
+// real problem is never silently discarded.
+func TestExecNodeUnlinkRefusesWhenTargetIsUnknown(t *testing.T) {
+	consumer := t.TempDir()
+	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(target), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	ctx := context.Background()
+	if _, err := node.Link(ctx, consumer, "@acme/core", dist); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something outside pnpm's own resolution replaces the link with a path
+	// carrying no package.json at all — corrupted state, not a superseding
+	// install.
+	unknown := filepath.Join(consumer, "somewhere-unexpected")
+	if err := os.MkdirAll(unknown, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	unknownRelative, err := filepath.Rel(filepath.Dir(target), unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unknownRelative, target); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = node.Unlink(ctx, consumer, "@acme/core")
+	if err == nil || !strings.Contains(err.Error(), "no longer points to the WB-staged output") {
+		t.Fatalf("error = %v, want the existing refusal preserved", err)
+	}
+	// Refused, so nothing is touched.
+	if !fileExists(target + linkSymlinkBackupSuffix) {
+		t.Error("undo consumed the backup despite refusing")
+	}
+	if !fileExists(linkAppliedMarkerPath(consumer, "@acme/core")) {
+		t.Error("undo cleared the marker despite refusing")
 	}
 }
