@@ -13,6 +13,7 @@ wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -159,6 +160,23 @@ claim identity, clean worktree, or receipt integrity refuses closed.
 If an unpublished conflict candidate has advanced to a clean strict descendant,
 WB records that observed commit in the supersession and requires the replacement
 to contain both the receipted candidate and the observed descendant.
+
+When an unpublished prepare `conflict` receipt is stuck because every one of
+its receipted source worktrees is already gone -- so neither resume nor
+`prepare-conflict-replacement`/`supersede-validation-failed` can recover it,
+since both require an exact clean receipted source worktree to still exist --
+use `acknowledge-absorbed-conflict`. It proves, source by source, that each
+receipted source's exact content is already reachable from the freshly
+fetched current remote target: either the receipted source SHA is a graph
+ancestor of that target, or every path it changed relative to its
+merge-base with the target now carries an identical blob there (an unrelated
+later commit landed the same content). It never reads or requires a
+receipted source worktree, never rewrites the historical receipt or any Work
+Log, and never deletes the preserved, unpublished candidate worktree. It
+writes a separate audited acknowledgement and frees the merger lane for a
+fresh candidate. A source worktree that still exists, a receipt that already
+published a candidate or recorded a landing SHA, or any source whose content
+cannot be proved reachable refuses closed.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use

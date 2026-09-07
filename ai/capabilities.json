@@ -10764,6 +10764,84 @@
       "notes": "The legacy merge spelling keeps cleanup opt-in. Prepare, receipt-land, resume, and revert remain explicit recovery and control surfaces."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-absorbed-conflict",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-absorbed-conflict",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry or by identical-blob content absorption",
+                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-absorbed-conflict --help",
+              "contains": [
+                "graph ancestor",
+                "identical blob",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictProvesAncestorAndContentAbsorbedSourcesAndFreesLane",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictRefusals",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovers an unpublished prepare conflict whose every receipted source worktree is already gone -- the one case neither resume nor prepare-conflict-replacement/supersede-validation-failed can reach, since both require an exact clean receipted source worktree to still exist. Containment is proved per source, either by graph ancestry against the freshly fetched target or by exact blob equality on every path the source changed relative to its merge-base with the target, and rechecked live under the lane lock at apply time. It never deletes the preserved, unpublished candidate worktree."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-landed-failed",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"

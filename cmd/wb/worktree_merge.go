@@ -55,7 +55,11 @@ worktree that acknowledge-landed-failed would otherwise need is already gone.
 Use seal-validation-failed to prepare a target-tree-identical ancestry-only
 replacement when an audited squash landing broke the historical graph. Use
 supersede-validation-failed only for a prepare failure that did not land: it
-binds a separately proved replacement candidate without rewriting history.`,
+binds a separately proved replacement candidate without rewriting history.
+Use acknowledge-absorbed-conflict only for an unpublished prepare conflict
+whose every receipted source worktree is already gone and whose exact content
+is proved, source by source, already reachable from the current remote
+target by graph ancestry or by identical-blob content absorption.`,
 		Example: `# Finish one compatible worktree end to end
 wb worktree merge . --route auto --cleanup
 
@@ -68,6 +72,9 @@ wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --act
 
 # Free a stale lane after proving a stranded published PR landed, using only GitHub's remote state
 wb worktree merge acknowledge-stranded-landing /path/to/merge-receipt --apply --actor operator --reason "audited stranded landing"
+
+# Free a stale lane after proving every gone source's content already reached the target
+wb worktree merge acknowledge-absorbed-conflict /path/to/merge-receipt --apply --actor operator --reason "audited absorbed conflict"
 
 # Prepare an ancestry-only replacement without changing the target tree
 wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor operator --reason "audited squash recovery"
@@ -83,7 +90,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
 	return command
 }
 
@@ -469,6 +476,69 @@ refuses closed.`,
 				ack.Status, ack.ReceiptPath, ack.CandidateSHA, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeAbsorbedConflictCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-absorbed-conflict <merge-receipt>",
+		Short: "Acknowledge a prepare conflict whose sources are already reachable from the target",
+		Long: `Prove, source by source, that an unpublished prepare conflict receipt's
+every receipted source is already reachable from the freshly fetched current
+remote target -- either because the receipted source SHA is a graph ancestor
+of that target, or because every path it changed relative to its merge-base
+with the target now carries an identical blob there (an unrelated later
+commit landed the same content) -- then record a separate audited
+acknowledgement so a fresh candidate can own the lane. This accepts only a
+prepare-phase conflict receipt with no published candidate and no landing
+SHA whose every receipted source worktree is already gone from disk, which is
+exactly the case neither resume nor prepare-conflict-replacement or
+supersede-validation-failed can recover: those all require an exact clean
+receipted source worktree to still exist. It never reads or requires a
+receipted source worktree, never rewrites the historical receipt or any Work
+Log, and never deletes the preserved, unpublished candidate worktree. This is
+a dry-run by default; --apply requires --actor and --reason and writes only
+the new acknowledgement artifact. A source worktree that still exists, a
+published or landed receipt, or any source whose content cannot be proved
+reachable refuses closed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeAbsorbedConflict(command.Context(), orchestrate.WorktreeMergeAbsorbedConflictAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate-worktree: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateWorktree, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			} else {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree cleanup %s --apply --remote --older-than 0\n", ack.CandidateTask)
 			}
 			return err
 		},
