@@ -1371,9 +1371,13 @@ func validatePrepareFailureSupersessionReceipt(receipt WorktreeMergeReceipt, rec
 	if receipt.Status == WorktreeMergeValidationFailed {
 		return validateValidationFailedSupersessionReceipt(receipt, receiptPath)
 	}
+	unpublished, unpublishedErr := effectiveUnpublishedConflict(receipt)
+	if unpublishedErr != nil {
+		return unpublishedErr
+	}
 	if receipt.ReceiptPath != receiptPath || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) ||
 		receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeConflict ||
-		receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository == "" || receipt.Target == "" ||
+		receipt.LandingSHA != "" || !unpublished || receipt.Repository == "" || receipt.Target == "" ||
 		receipt.TargetSHA == "" || len(receipt.Sources) == 0 || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
 		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
 		receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {

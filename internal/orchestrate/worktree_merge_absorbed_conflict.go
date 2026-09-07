@@ -235,7 +235,11 @@ func validateAbsorbedConflictReceipt(receipt WorktreeMergeReceipt, receiptPath s
 	if receipt.LandingSHA != "" {
 		return fmt.Errorf("receipt %s already recorded a landing SHA %s; use acknowledge-landed-failed instead", receiptPath, receipt.LandingSHA)
 	}
-	if receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" {
+	unpublished, unpublishedErr := effectiveUnpublishedConflict(receipt)
+	if unpublishedErr != nil {
+		return unpublishedErr
+	}
+	if !unpublished {
 		return fmt.Errorf("receipt %s already published a candidate; use acknowledge-stranded-landing instead", receiptPath)
 	}
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" {

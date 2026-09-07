@@ -14,6 +14,7 @@ wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <ope
 wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -216,6 +217,28 @@ lane for a fresh candidate. A source worktree that still exists, a receipt
 that already published a candidate or recorded a landing SHA, an invalid or
 absent `--derived-path`, or any path whose content cannot be proved reachable
 refuses closed.
+
+When a conflict/`validation_failed`/`checks_failed` receipt that once
+published a candidate is stuck because its target advanced past that
+candidate after publication -- WB's own "refusing to rewrite the published
+branch without force-push" refusal repeating on every resume -- and the
+operator has since closed the stale pull request without merging it and
+deleted its remote branch, use `acknowledge-retired-publication`. It requires
+the preserved candidate worktree (for read-only git object resolution) and
+proves, from a fresh `gh pr view` read and a freshly fetched current remote
+target, that the exact published pull request is CLOSED with no merge
+commit (a proved MERGED pull request refuses closed, pointing at
+`acknowledge-stranded-landing` instead), that the candidate branch carries no
+remote ref, and that neither the published candidate SHA nor the preserved
+candidate SHA is reachable from the current target. It never rewrites the
+historical receipt or any Work Log, and never deletes the preserved candidate
+worktree. It writes a separate audited acknowledgement and frees the merger
+lane: a subsequent `wb worktree merge prepare` of the exact same sources
+supersedes the stuck receipt under a fresh successor operation, integration
+branch, and empty pull request, rather than resuming the retired publication.
+A pull request still OPEN or proved MERGED, a candidate branch that still
+carries a remote ref, or a candidate already reachable from the current
+target refuses closed.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use
