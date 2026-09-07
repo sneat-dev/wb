@@ -56,7 +56,14 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 	// record cleared after a failed removal hides a link that is still live
 	// from the merge guard and from `stream end`, and there is no filesystem
 	// signal for an npm link to catch it later.
+	//
+	// Members and LinkedConsumers are kept in separate maps even though both
+	// are indexed by repository: a repository can appear as a Member in one
+	// row and, in principle, be admitted a second time as a LinkedConsumer at
+	// an alternate worktree — collapsing them into one map would let one
+	// overwrite the other's remaining links.
 	kept := map[string]map[string][]streams.Link{}
+	keptConsumers := map[string]map[string][]streams.Link{}
 	undone := map[string]bool{}
 	for _, stream := range all {
 		if options.Stream != "" && stream.Name != options.Stream {
@@ -69,7 +76,7 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 			if len(wanted) > 0 && !matchesAnyWorktree(member.Worktree, wanted) {
 				continue
 			}
-			outcome, remaining := engine.undoMember(ctx, member)
+			outcome, remaining := engine.undoLinks(ctx, member.Worktree, member.Links)
 			outcome.Repository = member.Repository
 			result.Consumers = append(result.Consumers, outcome)
 			undone[normalizeWorktree(member.Worktree)] = true
@@ -81,8 +88,42 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 			}
 			kept[stream.Name][member.Repository] = remaining
 		}
+		// A LinkedConsumer holds no membership row, only local links — but its
+		// links are recorded exactly the same way, and a link no code path can
+		// ever clear is a link that blocks landing forever. Resolving `--undo`
+		// only against Members was the defect: `wb deps propagate local ...
+		// --register-consumer` writes here, not to Members, so an admitted
+		// consumer's link could be recorded but never undone.
+		for _, consumer := range stream.LinkedConsumers {
+			if len(consumer.Links) == 0 {
+				continue
+			}
+			if len(wanted) > 0 && !matchesAnyWorktree(consumer.Worktree, wanted) {
+				continue
+			}
+			outcome, remaining := engine.undoLinks(ctx, consumer.Worktree, consumer.Links)
+			outcome.Repository = consumer.Repository
+			result.Consumers = append(result.Consumers, outcome)
+			undone[normalizeWorktree(consumer.Worktree)] = true
+			if result.Stream == "" {
+				result.Stream = stream.Name
+			}
+			if keptConsumers[stream.Name] == nil {
+				keptConsumers[stream.Name] = map[string][]streams.Link{}
+			}
+			keptConsumers[stream.Name][consumer.Repository] = remaining
+		}
 	}
-	for name, byRepository := range kept {
+	streamNames := map[string]bool{}
+	for name := range kept {
+		streamNames[name] = true
+	}
+	for name := range keptConsumers {
+		streamNames[name] = true
+	}
+	for name := range streamNames {
+		byRepository := kept[name]
+		byConsumerRepository := keptConsumers[name]
 		if _, err := engine.Store.Update(name, func(stream *streams.Stream) error {
 			for index := range stream.Members {
 				remaining, touched := byRepository[stream.Members[index].Repository]
@@ -90,6 +131,17 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 					continue
 				}
 				stream.Members[index].Links = remaining
+			}
+			// A binding whose last link is cleared is kept, not removed — the
+			// same convention Members already follow: the record stays, its
+			// Links field goes empty. Removing the binding outright would be a
+			// new lifecycle this code has no mandate to invent.
+			for index := range stream.LinkedConsumers {
+				remaining, touched := byConsumerRepository[stream.LinkedConsumers[index].Repository]
+				if !touched {
+					continue
+				}
+				stream.LinkedConsumers[index].Links = remaining
 			}
 			return nil
 		}); err != nil {
@@ -152,22 +204,26 @@ func normalizeWorktree(path string) string {
 	return filepath.Clean(path)
 }
 
-// undoMember removes one member's links and reports which ones survived.
+// undoLinks removes one worktree's recorded links and reports which ones
+// survived. It is shared by Members and LinkedConsumers: both hold the same
+// []streams.Link shape and the same reversal rules — only where the record
+// lives in stream state differs, and that is the caller's concern, not this
+// function's.
 //
 // A link whose removal failed is RETURNED, not dropped: its record is what
 // keeps the merge guard closed and `stream end` refusing while the artefact is
 // still on disk.
-func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (ConsumerResult, []streams.Link) {
-	outcome := ConsumerResult{Consumer: member.Worktree, Links: member.Links}
+func (engine *Engine) undoLinks(ctx context.Context, worktree string, links []streams.Link) (ConsumerResult, []streams.Link) {
+	outcome := ConsumerResult{Consumer: worktree, Links: links}
 	var remaining []streams.Link
 	removedWorkspace := false
-	for _, link := range member.Links {
+	for _, link := range links {
 		switch link.Mechanism {
 		case streams.MechanismGoWork:
 			if removedWorkspace {
 				continue
 			}
-			stillUsed, err := goWorkStillReferencesLibrary(member.Worktree, link.Library)
+			stillUsed, err := goWorkStillReferencesLibrary(worktree, link.Library)
 			if err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
@@ -183,7 +239,7 @@ func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (Co
 				removedWorkspace = true
 				continue
 			}
-			if err := removeGoWork(member.Worktree); err != nil {
+			if err := removeGoWork(worktree); err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
 				continue
@@ -200,7 +256,7 @@ func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (Co
 				remaining = append(remaining, link)
 				continue
 			}
-			workspace, err := workspacePath(member.Worktree, link.Workspace)
+			workspace, err := workspacePath(worktree, link.Workspace)
 			if err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)

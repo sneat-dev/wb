@@ -52,6 +52,7 @@ func (git *fakeGit) ExcludedPatterns(_ context.Context, dir string) ([]string, e
 type fakeNode struct {
 	installErr    map[string]error
 	unlinkErr     map[string]error
+	unlinkNote    map[string]string
 	order         []string
 	installed     []string
 	builds        int
@@ -108,6 +109,15 @@ func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string)
 	node.unlinked = append(node.unlinked, consumerDir+" "+packageName)
 	if err := os.Remove(linkAppliedMarkerPath(consumerDir, packageName)); err != nil && !os.IsNotExist(err) {
 		return "", err
+	}
+	// A configured note simulates ExecNode finding the link already
+	// superseded by a published package: Unlink succeeds, touches nothing
+	// further, and reports why. See execports_test.go for the real
+	// filesystem behaviour this stands in for.
+	if node.unlinkNote != nil {
+		if note, ok := node.unlinkNote[consumerDir+" "+packageName]; ok {
+			return note, nil
+		}
 	}
 	return "", nil
 }
