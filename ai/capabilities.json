@@ -8589,7 +8589,8 @@
                 "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
                 "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
-                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed",
+                "A never-published integration-lane candidate is still refused unless its worktree-merge receipt carries a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement bound to the receipt's unchanged bytes with a target head ancestor of the fetched origin target; a missing/stale/tampered one keeps refusing with a hint naming the receipt, a valid one reports `proof: absorbed_conflict_acknowledgement`"
               ]
             }
           ],
@@ -9020,7 +9021,7 @@
                 "Captures uncommitted work as a git stash commit in the repository the worktree was cut from, BEFORE anything is removed, and prints the exact recoverable SHA",
                 "A dirty worktree is not a refusal; a capture that fails stops the removal, because retiring a checkout whose work could not be preserved loses data irrecoverably",
                 "Seals a closing note into the Work Log; a note that cannot be sealed never strands the worktree",
-                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply",
+                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply -- including recognizing a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement as landing proof for a never-pushed integration candidate",
                 "Releases the fleet-wide claim only once every worktree is gone",
                 "Without --apply it reports exactly what it would do and changes nothing"
               ]
