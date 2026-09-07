@@ -2355,7 +2355,20 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	}
 }
 
-func TestLandWorktreeMergeRefusesToRewritePublishedCandidateForTargetDrift(t *testing.T) {
+// TestLandWorktreeMergeRefreshesPublishedCandidateForTargetDrift covers
+// evidence receipt merge-sneat-dev-wb-main-1cbbf49dd60f-e69e39368098.json
+// (2026-09-07): a published candidate whose target advanced used to make WB
+// refuse to rewrite the published branch, stranding the receipt in
+// prepare/conflict with the PR still recorded. WB now refreshes the
+// candidate in place instead: it merges the new target into the published
+// head, records a target_refreshes entry, re-validates the exact new
+// candidate, and fast-forward pushes the same PR branch. See
+// TestLandWorktreeMergeRefreshedTargetConflictReportsPathsWithoutPushing,
+// TestLandWorktreeMergeRefreshAfterAdvancedSourceMergesOnTopOfDescendant,
+// TestLandWorktreeMergeRefreshValidationFailureLeavesNothingPushed, and
+// TestLandWorktreeMergeRefreshIsNoOpWithoutTargetAdvance in
+// worktree_merge_target_refresh_test.go for the remaining refresh contract.
+func TestLandWorktreeMergeRefreshesPublishedCandidateForTargetDrift(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "published-drift-source", "feature/published-drift", "published.txt", "candidate\n")
 	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
@@ -2364,26 +2377,66 @@ func TestLandWorktreeMergeRefusesToRewritePublishedCandidateForTargetDrift(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt.PullRequest = "https://example.test/acme/app/pull/23"
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+receipt.Candidate.Branch)
+	receipt.Phase, receipt.Status = WorktreeMergePhaseLand, WorktreeMergePublished
+	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", receipt.Candidate.SHA
+	receipt.Route.Requested = WorktreeMergeRoutePullRequest
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
 	}
+	originalCandidate := receipt.Candidate.SHA
 	writeEngineFile(t, filepath.Join(fixture.canonical, "advanced.txt"), "target\n")
 	runEngineGit(t, fixture.canonical, "add", "advanced.txt")
 	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: advance published target")
 	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	installWorktreeMergeOpenPRGH(t)
+	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
 	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("WB_TEST_GH_LOG", logPath)
 
-	failed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+	refreshed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
 		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Progress: func(event progress.Event) {
+			if event.Phase == "refresh_published_candidate" && event.State == progress.Completed {
+				sha := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+				t.Setenv("WB_TEST_CANDIDATE_SHA", sha)
+			}
+		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "refusing to rewrite the published branch without force-push") || failed.Status != WorktreeMergeConflict {
-		t.Fatalf("published target drift receipt=%+v err=%v", failed, err)
+	if err == nil {
+		t.Fatalf("expected the exact-head checks boundary past the refresh, got receipt=%+v", refreshed)
 	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != receipt.Candidate.SHA {
-		t.Fatalf("published candidate was rewritten: got %s want %s", got, receipt.Candidate.SHA)
+	if strings.Contains(err.Error(), "refusing to rewrite the published branch without force-push") {
+		t.Fatalf("target drift under a published candidate was refused instead of refreshed: %v", err)
+	}
+	if refreshed.TargetSHA != advancedTarget {
+		t.Fatalf("target_sha = %s, want refreshed %s", refreshed.TargetSHA, advancedTarget)
+	}
+	if refreshed.Candidate.SHA == originalCandidate {
+		t.Fatal("candidate SHA did not change after target refresh")
+	}
+	if contains, ancestorErr := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, originalCandidate, refreshed.Candidate.SHA); ancestorErr != nil || !contains {
+		t.Fatalf("refreshed candidate %s is not a descendant of published candidate %s: %v", refreshed.Candidate.SHA, originalCandidate, ancestorErr)
+	}
+	if len(refreshed.TargetRefreshes) != 1 {
+		t.Fatalf("target_refreshes = %+v, want exactly one entry", refreshed.TargetRefreshes)
+	}
+	entry := refreshed.TargetRefreshes[0]
+	if entry.PreviousTargetSHA != receipt.TargetSHA || entry.NewTargetSHA != advancedTarget ||
+		entry.PreviousCandidateSHA != originalCandidate || entry.NewCandidateSHA != refreshed.Candidate.SHA {
+		t.Fatalf("target refresh entry = %+v", entry)
+	}
+	if refreshed.ValidationIdentity == nil || refreshed.ValidationIdentity.CandidateSHA != refreshed.Candidate.SHA {
+		t.Fatalf("refreshed candidate was not re-validated at its exact new SHA: %+v", refreshed.ValidationIdentity)
+	}
+	if refreshed.PublishedCandidateSHA != refreshed.Candidate.SHA {
+		t.Fatalf("published_candidate_sha = %s, want the fast-forwarded %s", refreshed.PublishedCandidateSHA, refreshed.Candidate.SHA)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, refreshed.Candidate.SHA+"\t") {
+		t.Fatalf("PR branch was not fast-forwarded: %q, want head %s", got, refreshed.Candidate.SHA)
 	}
 }
 
