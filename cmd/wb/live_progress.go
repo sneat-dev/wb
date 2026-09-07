@@ -108,6 +108,22 @@ func (progress *liveProgress) renderLocked(message string, newline bool) {
 	progress.lineWidth = len(message)
 }
 
+// printLine writes one immediate, already-terminated line and returns
+// without touching the replaceable-line/elapsed-suffix/heartbeat machinery
+// the rest of this type provides. Use it for callers whose message already
+// carries its own timing — `wb run`'s queued/admitted/done receipts compute
+// their own elapsed durations, so wrapping them in withElapsed would print a
+// redundant second duration.
+func (progress *liveProgress) printLine(message string) {
+	if progress == nil || !progress.enabled {
+		return
+	}
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	_, _ = fmt.Fprintln(progress.out, message)
+	progress.lineWidth = 0
+}
+
 func (progress *liveProgress) runHeartbeat() {
 	defer close(progress.stopped)
 	ticker := time.NewTicker(progress.heartbeat)

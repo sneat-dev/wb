@@ -5523,6 +5523,8 @@
                 "--format",
                 "--json",
                 "--list",
+                "--queue",
+                "--quiet",
                 "--worker"
               ],
               "modes": [
@@ -5532,6 +5534,8 @@
                 "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
                 "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Before admitting CPU-heavy command-mode work, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides and is recorded on the run receipt.",
+                "Reports its place in the shared CPU-lease queue on stderr, even without a terminal: an immediate admitted/queued line naming its position and what it waits on, a heartbeat at most every 10s while still queued, and admitted-after-wait/done receipt lines; --quiet silences them.",
+                "--queue lists every currently held and waiting CPU lease slot (pid, age, worktree, summary) without submitting a command.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
             }
@@ -5550,6 +5554,8 @@
                 "--history",
                 "--idempotency-key",
                 "--list",
+                "--queue",
+                "--quiet",
                 "--worker",
                 "run -- <command>"
               ]
@@ -5567,7 +5573,8 @@
                 "wb run --list",
                 "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
                 "wb run -- go test ./internal/worktrees -run TestCreate",
-                "wb run --history --days 7"
+                "wb run --history --days 7",
+                "wb run --queue"
               ]
             }
           ],
@@ -5592,9 +5599,54 @@
               "kind": "unit"
             },
             {
+              "path": "internal/runlog/runlog_test.go",
+              "name": "TestRecordQueueAdmittedAtIsAdditive",
+              "kind": "unit"
+            },
+            {
               "path": "internal/runqueue/queue_test.go",
               "name": "TestAcquireCoordinatesIndependentCallers",
               "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestRegisterReportsPositionAndTotalAmongWaiters",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestListQueueReportsRunningAndWaitingEntries",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_progress_test.go",
+              "name": "TestRunQueueProgressFormatsQueuedHeartbeatAdmittedAndDoneLines",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandReportsQueueVisibilityOnStderr",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandQuietSuppressesQueueVisibilityLines",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunHistoryRecordsQueueWaitAndAdmissionTime",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunQueueListsRunningAndWaitingEntries",
+              "kind": "integration"
             },
             {
               "path": "internal/orchestrate/engine_integration_test.go",
