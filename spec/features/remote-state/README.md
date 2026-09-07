@@ -89,6 +89,9 @@ the command MUST refresh the provider once and derive both projections from
 that same refreshed view. It MUST emit concise progress to stderr immediately
 and at least every ten seconds until the read terminates, including when stdout
 uses a machine-readable format; progress MUST NOT contaminate stdout.
+The hosted provider MUST return its machine snapshot view with an empty claims
+projection until hosted claims are implemented, rather than failing a valid
+status read through the unsupported standalone claims operation.
 
 #### REQ: remote-machines-rendering
 

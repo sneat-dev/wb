@@ -134,6 +134,18 @@ func (provider *Provider) List(ctx context.Context) ([]remotestate.Entry, error)
 	return entries, nil
 }
 
+// Status returns the hosted machine view and an empty claim projection in one
+// request. Hosted task claims are not implemented yet, so routing through the
+// generic List+Claims fallback would turn an otherwise valid status read into
+// ErrClaimsUnsupported.
+func (provider *Provider) Status(ctx context.Context) (remotestate.StatusSnapshot, error) {
+	machines, err := provider.List(ctx)
+	if err != nil {
+		return remotestate.StatusSnapshot{}, err
+	}
+	return remotestate.StatusSnapshot{Machines: machines, Claims: []remotestate.ClaimEntry{}}, nil
+}
+
 func (provider *Provider) Claim(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
 	return remotestate.ClaimOutcome{}, ErrClaimsUnsupported
 }
