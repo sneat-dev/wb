@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/envguard"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -297,6 +298,9 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		if ambient := envguard.Inspect(os.Environ(), os.TempDir(), dir); !ambient.Empty() {
+			entry.Detail = strings.TrimRight(entry.Detail, "\n") + "\n" + ambient.String()
+		}
 		reportQualityProgress(options, Progress{
 			Language: language, Module: module, Check: check, Command: entry.Command,
 			State: ProgressCompleted, Status: entry.Status, Attempts: attempts,
@@ -466,11 +470,29 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
-	if len(env) > 0 {
-		command.Env = append(os.Environ(), env...)
-	}
+	command.Env = commandEnv(dir, name, env)
 	output, err := command.CombinedOutput()
 	return string(output), err
+}
+
+// commandEnv derives the environment a validation subprocess runs with: every
+// WB_AGENT_* variable stripped (an operating agent's identity has no business
+// reaching the subprocess under test), and, for "go" itself, GOWORK=off
+// unless the repository being validated tracks its own go.work in HEAD. env
+// carries the caller's own overrides (RunOptions.Env, an explicit
+// "GOWORK=off" a caller already composed) and always wins over both the
+// ambient environment and the automatic Go override.
+//
+// See internal/envguard for why this cannot be plain
+// append(os.Environ(), env...): a duplicate key appended at the end does not
+// override an ambient entry earlier in the slice for most subprocesses'
+// getenv.
+func commandEnv(dir, name string, env []string) []string {
+	overrides := env
+	if name == "go" {
+		overrides = append(append([]string(nil), envguard.GoEnvOverrides(dir)...), env...)
+	}
+	return envguard.SanitizeEnv(os.Environ(), overrides...)
 }
 
 func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, int, error) {
