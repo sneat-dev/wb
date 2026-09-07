@@ -140,3 +140,7 @@ leaf-command cell; focused negative cases remain in
 `daemon operation wait` accepts `--progress=false` for terminal-only output or
 `--progress-file <path>` to append human heartbeats separately. These flags are
 independent of `--format` / `--json`; failure receipts retain error details.
+
+`worktree merge resume` accepts `--prepare-timeout`, `--check-timeout`, and
+`--shard-attempt-timeout` when recovering an interrupted preparing receipt.
+Unspecified validation limits retain the persisted values.

@@ -207,16 +207,24 @@ type WorktreeMergeReceipt struct {
 }
 
 type WorktreeMergeLandOptions struct {
-	ProjectsRoot      string
-	Receipt           string
-	Route             WorktreeMergeRoute
-	Cleanup           bool
-	OnFailure         string
-	Timeout           time.Duration
-	Retry             int
-	CheckPollInterval time.Duration
-	Progress          progress.Reporter
-	ProgressRequested bool
+	ProjectsRoot string
+	Receipt      string
+	Route        WorktreeMergeRoute
+	Cleanup      bool
+	OnFailure    string
+	Timeout      time.Duration
+	Retry        int
+	// PrepareTimeout bounds recovery of an interrupted preparing receipt.
+	// It does not apply after the candidate has reached prepared state.
+	PrepareTimeout time.Duration
+	// CheckTimeout and ShardAttemptTimeout override the validation limits stored
+	// by an interrupted preparing receipt. The effective limits are persisted
+	// before validation so a later retry observes the same policy.
+	CheckTimeout        time.Duration
+	ShardAttemptTimeout time.Duration
+	CheckPollInterval   time.Duration
+	Progress            progress.Reporter
+	ProgressRequested   bool
 	// StopBeforeMerge is the explicit PR-only handoff mode. It validates the
 	// preserved candidate and proves the remote open PR identity, then returns
 	// before CI observation or any merge operation. It is deliberately not
@@ -882,12 +890,33 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.Status == WorktreeMergePreparing {
+		if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
+			storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			if options.CheckTimeout > 0 {
+				storedCheckTimeout = options.CheckTimeout
+			}
+			if options.ShardAttemptTimeout > 0 {
+				storedShardAttemptTimeout = options.ShardAttemptTimeout
+			}
+			receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
 		if err := validatePreparingWorktreeMergeCandidate(ctx, receipt); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+		validationContext := ctx
+		cancelValidation := func() {}
+		if options.PrepareTimeout > 0 {
+			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
+		}
+		validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+		cancelValidation()
+		if validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("interrupted candidate validation failed: %w", validationErr))
 		}
 		receipt.Status = WorktreeMergePrepared

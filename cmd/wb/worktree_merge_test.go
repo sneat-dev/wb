@@ -72,6 +72,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || resume == nil || resume.Flags().Lookup("stop-before-merge") == nil {
 		t.Fatalf("merge resume must expose --stop-before-merge: command=%v err=%v", resume, err)
 	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if resume.Flags().Lookup(flag) == nil {
+			t.Errorf("merge resume is missing --%s", flag)
+		}
+	}
 	land, _, err := command.Find([]string{"land"})
 	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
 		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)

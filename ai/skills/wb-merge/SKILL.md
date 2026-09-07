@@ -43,7 +43,8 @@ wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
 `git push` around it.
 
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
-landing the stream itself is rebase-and-merge. See the `wb-streams` skill.
+landing uses the repository-approved merge method, with merge commits preferred
+for ancestry-preserving tooling. See the `wb-streams` skill.
 
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
@@ -60,16 +61,15 @@ base, deletes the branch, and retires the worktree, all as one verb. Explicit
 **Never run `gh pr merge` by hand**: that is the measured root cause of sixty
 abandoned worktrees, because the cleanup that should follow it never ran.
 
-The dedicated merger agent validates the candidate first. A passing candidate
+The designated landing owner validates the candidate first. A passing candidate
 records that a target baseline was not needed; a failing candidate triggers an
 exact target-snapshot validation so unchanged target failures remain diagnostic
 rather than blocking a fix. It never waits for current target CI to turn green;
 the candidate may fix a red target. The merger owns fetching and
 fast-forwarding, integration validation, exact-head CI, the merge and immediate
-push, post-merge target CI, release/install evidence, and cleanup. Main and
-planning agents hand work to the merger and receive only behavioral, design,
-or authority blockers. The invoking harness assigns this mechanical role to a
-faster, lower-cost model with adequate repository and CI capability. Every
+push, post-merge target CI, release/install evidence, and cleanup. The primary agent owns landing unless it explicitly delegates the complete
+lifecycle to a merger. Delegation is optional and must preserve one owner per
+repository and target; unavailable subagents must not block authorized landing. Every
 Work Log creator MUST pass the exact model identifier when the runtime exposes
 it, or the literal `unknown` when it does not; never infer or guess a model ID
 and never omit `--model`.
@@ -126,7 +126,8 @@ than a fictional queue.
    The dedicated merger checkout must be clean before every integration and
    push; unrelated dirty state is a blocker, not an exception.
    Integrate the compatible batch through the approved target integration
-   route, validate after each merge, then run the full target verification.
+   route, then validate the final compatible batch once under the tracked quality
+   policy. Repeat validation only for changed input or a concrete unresolved risk.
    Before candidate CI, prove the candidate head contains the freshly fetched
    exact target SHA and that the target has a nonempty server-enforced strict
    required-status-check policy. If the target advances, rebase or reintegrate

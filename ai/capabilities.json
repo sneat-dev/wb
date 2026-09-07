@@ -11502,6 +11502,9 @@
               "path": "wb worktree merge resume",
               "flags": [
                 "--check-interval",
+                "--check-timeout",
+                "--prepare-timeout",
+                "--shard-attempt-timeout",
                 "--cleanup",
                 "--format",
                 "--on-failure",
