@@ -2794,6 +2794,12 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	if err != nil {
 		return fmt.Errorf("load candidate quality policy: %w", err)
 	}
+	// Keep raw shard failures outside the compact receipt, scoped to this exact
+	// candidate. Otherwise a long failure index can hide every process error.
+	if receipt.ReceiptPath != "" {
+		runOptions.CoverageDiagnosticsDir = filepath.Join(receipt.ReceiptPath+".diagnostics", receipt.Candidate.SHA)
+		runOptions.CoverageDiagnosticsRepository = receipt.Repository
+	}
 	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
 		runOptions)

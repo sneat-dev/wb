@@ -711,6 +711,11 @@ older queued check without cancelling a mutating worker. Success is silent and
 discoverable. Failure notifies subscribers once with the smallest actionable
 diagnostic. Obsolete results are recorded as stale and never reported current.
 
+Landing validation retains failed Go shard output in a private diagnostic
+directory beside its receipt, keyed by the exact candidate SHA. Compact failure
+indexes must not be the only surviving evidence when many shards fail: the
+operator must be able to read the original error without rerunning validation.
+
 ### Universal Progress Contract
 
 Every WB operation that can run for ten seconds or longer MUST emit a progress
