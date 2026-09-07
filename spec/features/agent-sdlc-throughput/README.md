@@ -965,56 +965,42 @@ unknown newer operation states.
 
 ## Durable Delivery Plan
 
-### Parked checkpoint — September 7, 2026
+### Landed checkpoint — September 7, 2026
 
-Founder requested parking to conserve remaining tokens. Do not launch a broad
-gate until this work is explicitly resumed. Source worktree:
-`/Users/alex/projects/sneat-dev/wb/.worktrees/remote-status-single-refresh`,
-branch `perf/remote-status-single-refresh`. Preserve the other source
-`remote-hub-enroll` at `4fc51fc79afe01f2e7ac5070ad918072202de93a`.
+WB PR #445 landed as `a739e86b2cfc329634a72e5df6161ec44ba34701` and released
+`sneat-dev/wb v0.116.0` (tag on the same SHA; main CI run 34094791336 green).
+Sources `perf/remote-status-single-refresh` (`79987d5`) and
+`feat/remote-hub-enroll` (`4fc51fc`) were absorbed; their worktrees and local
+and remote branches are retired, the canonical clone is fast-forwarded, the
+receipt `merge-sneat-dev-wb-main-1cbbf49dd60f-40222b81bf14` is `complete`, and
+the installed cask plus the daemon queue (generation 41, handoff from
+`0.115.2`) run the exact released build. Claim ownership was transferred by an
+audited handoff from the codex session to `claude-code`/`claude-fable-5-1`.
 
-WB PR #445 remains open at published predecessor
-`183b0a76e8e2de51ee81a8ad94776bf398a2533a`; its lint failure is already fixed
-in the source. Its tests/coverage, race, and native Windows checks succeeded.
-The integration receipt remains at
-`~/.wb/reports/worktree-merge/merge-sneat-dev-wb-main-1cbbf49dd60f-40222b81bf14.json`,
-status `prepare/validation_failed`, candidate
-`eb63d98fd5eb4b4db9f76176f8150f78ed519561`. Source commits after this candidate
-must be integrated through supported WB recovery; never edit receipts or
-force-push. Claim metadata for preparation is `--agent-runtime codex --cli wb
---model gpt-6-astra` (record the actual successor model/identity via handoff if
-different).
+Evidence-backed gaps found while landing, each recorded in the canonical
+`sneat-co/backstage` lesson store on the same day:
 
-This session fixed the stale skill assertion and connected private failed-shard
-diagnostics, published in source commit `c027393`. The retained logs proved
-that an old one-minute shard budget overrode explicit three-minute flags.
-The follow-up fix makes explicit refresh limits win while omitted limits inherit;
-its real prepare/refresh regression failed before the fix. Diagnostic files
-are under `<receipt>.diagnostics/<candidate-sha>/`.
+- `wb worktree merge resume` on a `prepare/validation_failed` receipt did not
+  re-validate; it published candidate `850a429` to the PR and moved the receipt
+  to `land` with `validation.status=failed` (lesson
+  `prepare-recovery-must-not-cross-the-landing-boundary`, recurred).
+- The local gate's `validation_failed` was environmental: a stray
+  `/private/tmp/go.work` put every temp-module Go test into workspace mode, and
+  operator-exported `WB_AGENT_*` variables changed test verdicts (lessons
+  `agent-created-machine-state-has-no-lifecycle-owner` and
+  `l2026-08-10-1058`, recurred).
+- The `sneat-co/backstage` main merger lane is held by an unpublished conflict
+  receipt whose source worktrees no longer exist; no recovery verb accepts it
+  (lesson `every-failure-state-must-have-a-reachable-terminal-recovery-path`,
+  recurred; that lesson's first occurrence was the same lane).
+- The clean-clone guard refused `specscore ... --help` in the canonical clone
+  (lesson `a-clean-clone-guard-keyed-on-command-text-refuses-commands-that-write-nothing`,
+  recurred).
 
-Continuation order:
-
-1. Read the redacted source/candidate Work Logs and current GitHub PR state.
-   Build the source WB CLI with `wb run`; the installed WB v0.115.2 does not
-   contain these repairs. Resume can report source advancement as conflict;
-   then prepare the same two sources, preserving the existing PR/lane.
-2. Use `TMPDIR=/private/tmp` on this Mac: existing dependency and stream tests
-   compare literal paths and fail when `/var` resolves to `/private/var`.
-   Do not fix those unrelated tests. Pass explicit prepare/check/shard budgets
-   and verify the resulting receipt actually records them before waiting.
-3. Validate the refreshed candidate once, publish to the same PR through WB,
-   verify exact-head CI, land, verify remote main/release, install the exact
-   released WB build, and clean both absorbed sources and candidate through WB.
-4. Reconcile the checklist below against remote evidence. The local daemon is
-   operational: WB v0.115.2 was reachable with matching installed provenance.
-   GitHub App main is `d9f93700135df575c77e067362a7e12114f172d3`; dashboard
-   main is `ca01b0ceff926cd5af5ca8a519ff3953afea69d6` (verified remotely).
-5. Resume host wiring at Sneat Go PR #1078, clean source worktree
-   `sneat-co/sneat-go/.worktrees/workbench-github-event-hub`, source
-   `eac40f91a15a1b2ed50a2f6e5ffa0ffe26fdf9d2`. CI currently refuses incomplete
-   private dependency App credentials: `WORKBENCH_GITHUB_APP_PRIVATE_KEY`
-   and associated client configuration. Founder owns GitHub App setup; do not
-   invent credentials or bypass that gate.
+Host wiring is unchanged: Sneat Go PR #1078 (source
+`eac40f91a15a1b2ed50a2f6e5ffa0ffe26fdf9d2`) fails before build because the
+GitHub App client ID and private key secrets are empty; the founder owns that
+setup.
 
 ### Delivery checklist
 
@@ -1036,6 +1022,20 @@ a worktree.
   exact-CI slices, with working defaults and no hidden nine-minute refusal.
 - [x] Narrow known-repository landing and cleanup inventory before subprocess
   inspection; preserve shared-root recovery and exact cleanup receipts.
+- [ ] Refuse every publish or landing transition while `validation.status` is
+  not `passed` for the exact candidate SHA, and add a regression that resumes a
+  `validation_failed` prepare receipt and proves remote refs and phase stay
+  unchanged.
+- [ ] Isolate validation from ambient state: run Go checks with `GOWORK=off`
+  unless the repository tracks its own `go.work`, scrub `WB_AGENT_*` from test
+  subprocess environments, and name any ambient `go.work`, `GOWORK`, or
+  `WB_AGENT_*` input in a failed gate's diagnostics.
+- [ ] Give every reachable merge-receipt `(phase, status)` pair an audited
+  terminal recovery verb, including an unpublished conflict whose receipted
+  source worktrees were removed, with a test that enumerates the pairs against
+  the verbs.
+- [ ] Make `wb worktree guard` and the published guard compare the live branch
+  with the immutable Work Log claim exactly as `wb worktree info` does.
 - [ ] Make every pre-orchestrator landing guard emit immediate progress and a
   ten-second heartbeat, including local-link inventory and `wb remote publish`
   repository collection.
