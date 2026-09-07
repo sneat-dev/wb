@@ -472,8 +472,12 @@ refuses closed.`,
 				encoder.SetIndent("", "  ")
 				return encoder.Encode(ack)
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
-				ack.Status, ack.ReceiptPath, ack.CandidateSHA, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			candidateLanding := ack.CandidateLanding
+			if ack.CandidateLandingTreeSHA != "" {
+				candidateLanding = fmt.Sprintf("%s (tree %s)", candidateLanding, ack.CandidateLandingTreeSHA)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\ncandidate-landing: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateSHA, candidateLanding, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			}
