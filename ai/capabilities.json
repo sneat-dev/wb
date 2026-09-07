@@ -4331,6 +4331,7 @@
                 "--format",
                 "--keep",
                 "--keep-commits",
+                "--lane-reason",
                 "--merge-method",
                 "--non-interactive",
                 "--poll-interval",

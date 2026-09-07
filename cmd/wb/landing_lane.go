@@ -40,7 +40,7 @@ func landingLaneOwner(command string) landinglane.Owner {
 
 // landingLaneGuardRequest builds the LaneGuardRequest for one landing
 // command from the resolved session owner and the shared
-// --take-over-lane/--reason override flags.
+// --take-over-lane/--lane-reason override flags.
 func landingLaneGuardRequest(command, reason string, takeOver bool) orchestrate.LaneGuardRequest {
 	return orchestrate.LaneGuardRequest{
 		Owner:          landingLaneOwner(command),
@@ -73,9 +73,9 @@ func releaseWorktreeMergeLane(receipt orchestrate.WorktreeMergeReceipt) {
 }
 
 // addLandingLaneTakeoverFlag adds the one sanctioned override for a refused
-// landing lane: --take-over-lane, which requires --reason (already present
+// landing lane: --take-over-lane, which requires --lane-reason (already present
 // or added by the caller) to be non-empty. See internal/landinglane.
 func addLandingLaneTakeoverFlag(command *cobra.Command, takeOver *bool) {
 	command.Flags().BoolVar(takeOver, "take-over-lane", false,
-		"override a refused landing lane held by a different WB session; requires --reason <text>, which is recorded on the lane and the receipt")
+		"override a refused landing lane held by a different WB session; requires --lane-reason <text>, which is recorded on the lane and the receipt")
 }

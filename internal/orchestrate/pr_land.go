@@ -278,7 +278,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// it does not own landing onto. See LaneGuardRequest. `wb pr land`
 	// carries no resumable receipt across invocations, so the lane this
 	// acquires is released unconditionally once this call returns.
-	if laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, options.Lane); laneErr != nil {
+	laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, options.Lane)
+	if laneErr != nil {
 		var conflict *landinglane.ConflictError
 		if errors.As(laneErr, &conflict) {
 			return mergeRefusal(result, landRefusal{
@@ -288,7 +289,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			}), nil
 		}
 		return result, laneErr
-	} else if laneRecord.Owner.WBSessionID != "" {
+	}
+	if laneRecord.Owner.WBSessionID != "" {
 		result.LaneOwner = &laneRecord
 		defer func() {
 			_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
@@ -361,7 +363,13 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		OperationProgress: options.OperationProgress,
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
+	// This wait can run the full slice budget (routinely 30-60 minutes for
+	// this fleet) in one call: keep the lane's heartbeat fresh throughout so
+	// it never goes stale out from under this still-live session. See
+	// startLandingLaneHeartbeat.
+	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID, 0)
 	waited, err := waitForPullRequestLandChecks(ctx, waitOptions)
+	stopLaneHeartbeat()
 	if err != nil {
 		return result, err
 	}

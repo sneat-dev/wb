@@ -101,6 +101,146 @@ func TestPrepareWorktreeMergeAdmitsSameSessionLandingLane(t *testing.T) {
 	}
 }
 
+// TestPrepareWorktreeMergeReleasesLaneOnEarlyFailure proves the finding-2
+// fix: an error path after the lane is acquired but before a receipt is
+// created must release the lane immediately, rather than leaving it to clear
+// only via the 30-minute stale timeout while a different session is wrongly
+// refused in the meantime.
+func TestPrepareWorktreeMergeReleasesLaneOnEarlyFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	sourceA := createMergeSource(t, fixture, "lane-guard-source-early-fail", "feature/lane-guard-early-fail", "d.txt", "d\n")
+
+	home, err := wbhome.EnsureRoot(fixture.githubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := filepath.Join(home, session.DirName)
+	if _, err := session.Register(sessionDir, session.Record{
+		PID: os.Getpid(), WBSessionID: "wbs-early-fail", Runtime: "claude-code", Model: "claude-sonnet-5",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register session: %v", err)
+	}
+
+	// A rebatch receipt path that does not exist triggers an error after the
+	// lane guard runs (acquireLandingLane) but before PrepareWorktreeMerge
+	// constructs any receipt of its own — exactly the gap finding 2 closed.
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot:   fixture.githubDir,
+		Sources:        []string{sourceA.WorktreeDir},
+		Target:         "main",
+		Model:          "test-model",
+		AgentRuntime:   "test",
+		RebatchReceipt: filepath.Join(fixture.githubDir, "no-such-receipt.json"),
+		Lane: LaneGuardRequest{
+			Owner: landinglane.Owner{WBSessionID: "wbs-early-fail", PID: os.Getpid(), Command: "wb worktree merge prepare"},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected the missing rebatch receipt to fail")
+	}
+
+	// A different, live session must be admitted immediately: the failed
+	// session's lane must already be gone, not merely stale.
+	if _, err := session.Register(sessionDir, session.Record{
+		PID: os.Getpid() + 1, WBSessionID: "wbs-different-session", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register other session: %v", err)
+	}
+	record, err := landinglane.Acquire(home, landinglane.AcquireRequest{
+		Repository: "acme/app", Target: "main",
+		Self:       landinglane.Owner{WBSessionID: "wbs-different-session", PID: os.Getpid() + 1},
+		SessionDir: sessionDir,
+	})
+	if err != nil {
+		t.Fatalf("a different session should acquire the released lane immediately, got %v", err)
+	}
+	if record.Owner.WBSessionID != "wbs-different-session" {
+		t.Fatalf("lane not admitted to the new session: %+v", record)
+	}
+}
+
+// TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait
+// proves the finding-1 fix: a lane held across a long CI wait (routinely
+// 30-60 minutes for this fleet) must never go stale out from under a
+// still-live session. It scales the real 30-minute stale window down for
+// speed, starts the background heartbeat the way pr_land.go and
+// worktree_merge.go now do around a CI wait, and proves a different live
+// session is refused for the whole simulated wait — then, once the wait ends
+// and the heartbeat stops, that the record's HeartbeatAt actually advanced
+// (proving the ticker really ran, not merely that liveness alone happened to
+// carry the refusal).
+func TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait(t *testing.T) {
+	// startLandingLaneHeartbeat takes a *projectsRoot* (like every other
+	// orchestrate-level lane helper) and resolves the actual WB home from it
+	// via wbhome.Root, exactly as acquireLandingLane/releaseLandingLane do.
+	// Seeding and reading the record must go through that same resolved
+	// home, not a bare temp dir, or the heartbeat writes land somewhere this
+	// test never looks at.
+	projectsRoot := t.TempDir()
+	home, err := wbhome.EnsureRoot(projectsRoot)
+	if err != nil {
+		t.Fatalf("resolve wb home: %v", err)
+	}
+	const staleAfter = 60 * time.Millisecond
+	const heartbeatInterval = 10 * time.Millisecond
+	const simulatedWait = 250 * time.Millisecond // several stale windows
+
+	initial, err := landinglane.Acquire(home, landinglane.AcquireRequest{
+		Repository: "acme/app", Target: "main",
+		Self:        landinglane.Owner{WBSessionID: "wbs-landing", PID: 111, Command: "wb pr land"},
+		IsOwnerLive: func(landinglane.Owner) bool { return true },
+		StaleAfter:  staleAfter,
+	})
+	if err != nil {
+		t.Fatalf("seed acquire: %v", err)
+	}
+
+	stop := startLandingLaneHeartbeat(projectsRoot, "acme/app", "main", "wbs-landing", heartbeatInterval)
+	deadline := time.Now().Add(simulatedWait)
+	refusals := 0
+	for time.Now().Before(deadline) {
+		_, acquireErr := landinglane.Acquire(home, landinglane.AcquireRequest{
+			Repository: "acme/app", Target: "main",
+			Self:        landinglane.Owner{WBSessionID: "wbs-other", PID: 222, Command: "wb pr land"},
+			IsOwnerLive: func(landinglane.Owner) bool { return true },
+			StaleAfter:  staleAfter,
+		})
+		var conflict *landinglane.ConflictError
+		if !errors.As(acquireErr, &conflict) {
+			t.Fatalf("a different live session must be refused throughout the wait, got %v", acquireErr)
+		}
+		refusals++
+		time.Sleep(heartbeatInterval)
+	}
+	stop()
+	if refusals == 0 {
+		t.Fatalf("expected at least one refusal during the simulated wait")
+	}
+
+	final, found, err := landinglane.Read(home, "acme/app", "main")
+	if err != nil || !found {
+		t.Fatalf("Read after wait: found=%v err=%v", found, err)
+	}
+	if !final.Owner.HeartbeatAt.After(initial.Owner.HeartbeatAt) {
+		t.Fatalf("heartbeat should have advanced during the wait: initial=%v final=%v",
+			initial.Owner.HeartbeatAt, final.Owner.HeartbeatAt)
+	}
+}
+
+// TestStartLandingLaneHeartbeatNoOpsWithoutASession proves the guard's
+// deliberate no-op contract: a call that never acquired a lane (empty
+// wbSessionID) must not panic or write anything, exactly like
+// acquireLandingLane/releaseLandingLane's own no-op contract.
+func TestStartLandingLaneHeartbeatNoOpsWithoutASession(t *testing.T) {
+	home := t.TempDir()
+	stop := startLandingLaneHeartbeat(home, "acme/app", "main", "", time.Millisecond)
+	stop()
+	if _, found, err := landinglane.Read(home, "acme/app", "main"); err != nil || found {
+		t.Fatalf("no-op heartbeat must not create a lane record: found=%v err=%v", found, err)
+	}
+}
+
 // TestLaneGuardRequestZeroValueSkipsGuard proves the compatibility contract
 // every existing direct caller relies on: leaving Lane unset never engages
 // the guard, so no existing PrepareWorktreeMerge/LandWorktreeMerge caller (or

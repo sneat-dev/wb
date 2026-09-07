@@ -112,15 +112,35 @@ func (e *ConflictError) Error() string {
 	}
 	return fmt.Sprintf(
 		"landing lane %s (%s -> %s) is held by session %s (pid %d, %s) since %s, running %s; receipt: %s; "+
-			"ask it to hand off with `wb session request-handoff %s`, or override with --take-over-lane --reason <text>",
+			"ask it to hand off with `wb session request-handoff %s`, or override with --take-over-lane --lane-reason <text>",
 		e.Record.Lane, e.Record.Repository, e.Record.Target,
 		owner.WBSessionID, owner.PID, runtime, since, command, receipt, owner.WBSessionID,
 	)
 }
 
 // TakeoverReasonRequiredError reports that --take-over-lane was requested
-// without the --reason it must carry into the record and the receipt.
-var ErrTakeoverReasonRequired = errors.New("--take-over-lane requires --reason <text>")
+// without the --lane-reason it must carry into the record and the receipt.
+var ErrTakeoverReasonRequired = errors.New("--take-over-lane requires --lane-reason <text>")
+
+// CorruptRecordError reports that a lane record exists but could not be
+// parsed. Acquire fails closed on this: an unreadable record must never be
+// treated as an absent one, because that would grant the lane with no
+// conflict check at all — the one case a corrupt file is least allowed to
+// cause. Only an explicit --take-over-lane --lane-reason override replaces it.
+type CorruptRecordError struct {
+	Path string
+	Err  error
+}
+
+func (e *CorruptRecordError) Error() string {
+	return fmt.Sprintf(
+		"landing lane record %s is corrupt (%v); refusing to grant the lane without knowing who last held it — "+
+			"override with --take-over-lane --lane-reason <text> to replace it",
+		e.Path, e.Err,
+	)
+}
+
+func (e *CorruptRecordError) Unwrap() error { return e.Err }
 
 // AcquireRequest describes one attempt to acquire or refresh a landing lane.
 type AcquireRequest struct {
@@ -187,8 +207,20 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	defer func() { _ = unlock(lockFile) }()
 
 	existing, found, err := readRecord(recordPath(home, lane))
+	corruptPath := ""
 	if err != nil {
-		return Record{}, err
+		var corrupt *CorruptRecordError
+		if !errors.As(err, &corrupt) {
+			return Record{}, err
+		}
+		if !request.TakeOver {
+			// Fail closed: an unreadable record must never be treated as an
+			// absent one, which would grant the lane with no conflict check
+			// at all. Only an explicit override may replace it.
+			return Record{}, err
+		}
+		corruptPath = corrupt.Path
+		found = false
 	}
 
 	moment := now().UTC()
@@ -198,6 +230,11 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 
 	if !found {
 		record := Record{SchemaVersion: SchemaVersion, Lane: lane, Repository: repository, Target: target, Owner: self}
+		if corruptPath != "" {
+			record.TakenOver = true
+			record.TakeoverReason = strings.TrimSpace(request.TakeoverReason)
+			record.TakeoverNote = "prior lane record at " + corruptPath + " was corrupt and could not be read"
+		}
 		return record, writeRecord(recordPath(home, lane), record)
 	}
 
@@ -220,7 +257,15 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	stale := moment.Sub(existing.Owner.HeartbeatAt) > staleAfter
 	live := isLive(existing.Owner)
 
-	if !request.TakeOver && live && !stale {
+	// A live owner is never taken over implicitly, no matter how stale its
+	// heartbeat looks: liveness is the authoritative session-registry check
+	// (internal/session), and a heartbeat gap is only a proxy for "the owner
+	// stopped running" — one a long CI wait can produce on its own even while
+	// the owner is very much alive (see startLandingLaneHeartbeat in
+	// internal/orchestrate, added for exactly this). Staleness on its own no
+	// longer grants an automatic takeover; it only ever applies once live is
+	// already false, and it is kept here purely to enrich the recorded note.
+	if !request.TakeOver && live {
 		return existing, &ConflictError{Record: existing}
 	}
 
@@ -237,9 +282,12 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	if request.TakeOver {
 		record.TakeoverReason = strings.TrimSpace(request.TakeoverReason)
 	} else {
-		note := "prior owner's heartbeat is older than the stale threshold"
-		if !live {
-			note = "prior owner's WB session is no longer live"
+		// Reaching here with !request.TakeOver means the guard above already
+		// established live is false: the prior owner's WB session is
+		// confirmed gone, not merely quiet.
+		note := "prior owner's WB session is no longer live"
+		if stale {
+			note += " (heartbeat stale since " + existing.Owner.HeartbeatAt.UTC().Format(time.RFC3339) + ")"
 		}
 		record.TakeoverNote = note
 	}
@@ -376,10 +424,11 @@ func readRecord(path string) (Record, bool, error) {
 	}
 	var record Record
 	if err := json.Unmarshal(contents, &record); err != nil {
-		// A corrupt record must not wedge the lane forever: treat it as
-		// absent so the next Acquire replaces it, the same posture WB takes
-		// for other best-effort local state files.
-		return Record{}, false, nil
+		// A corrupt record must fail closed, not open: treating it as absent
+		// would grant the lane to whoever asks next with no conflict check at
+		// all. See CorruptRecordError; only Acquire's explicit
+		// --take-over-lane --lane-reason override may replace it.
+		return Record{}, false, &CorruptRecordError{Path: path, Err: err}
 	}
 	return record, true, nil
 }

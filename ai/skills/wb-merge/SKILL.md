@@ -47,17 +47,22 @@ wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
 `wb pr land`, `wb worktree merge`, `merge prepare`, `merge land`, `merge
 resume`, and `merge revert` all acquire a durable landing-lane record for the
 (repository, target branch) before doing any work that would otherwise have to
-be re-prepared or stranded. A different live WB session already driving that
-lane is **refused**, naming that session's WB session ID, pid, runtime/model,
-how long it has held the lane, and the receipt it is driving. Ask it to hand
-off with `wb session request-handoff <id>`, or override with
-`--take-over-lane --reason <text>` (`--lane-reason` for the `worktree merge`
-family) — the reason is recorded on the lane and on the receipt. A session
-whose registry entry is gone, or whose heartbeat has gone stale (30 minutes by
-default), is taken over automatically with a printed note. The same session
-resuming or retrying simply refreshes its own lane. This is the mechanical
-enforcement of "one landing owner per repository and target branch" — see
-`[[land-work-dont-queue-it]]`.
+be re-prepared or stranded. A different **live** WB session already driving
+that lane is **refused**, naming that session's WB session ID, pid,
+runtime/model, how long it has held the lane, and the receipt it is driving.
+Ask it to hand off with `wb session request-handoff <id>`, or override with
+`--take-over-lane --lane-reason <text>` (the same flag name on every landing
+command now — the reason is recorded on the lane and, for `worktree merge`,
+on the receipt's `lane_owner` field, so `--format json` shows it). A session
+whose registry entry is gone is taken over automatically with a printed note;
+a live session is **never** taken over implicitly, no matter how old its
+heartbeat looks — a heartbeat refresh runs for the whole duration of any CI
+wait the lane holds, so a live, actively-landing session's lane never goes
+stale out from under it. The same session resuming or retrying simply
+refreshes its own lane. A lane record that cannot be parsed refuses the same
+way a live owner does, naming the corrupt file, rather than being treated as
+free. This is the mechanical enforcement of "one landing owner per repository
+and target branch" — see `[[land-work-dont-queue-it]]`.
 
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
 landing uses the repository-approved merge method, with merge commits preferred

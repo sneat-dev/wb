@@ -74,6 +74,64 @@ func releaseLandingLane(projectsRoot, repository, target, wbSessionID string) er
 	return landinglane.Release(home, repository, target, wbSessionID)
 }
 
+// landingLaneHeartbeatInterval is how often startLandingLaneHeartbeat
+// refreshes a held lane's heartbeat while a CI wait keeps it busy. It is
+// deliberately well under landinglane.DefaultStaleAfter (30 minutes) so a
+// live session's lane record never goes stale during a routine wait, however
+// long that wait runs.
+const landingLaneHeartbeatInterval = 60 * time.Second
+
+// startLandingLaneHeartbeat begins refreshing wbSessionID's heartbeat on the
+// (repository, target) lane every interval (landingLaneHeartbeatInterval when
+// zero) for as long as the caller's CI wait keeps running. Call the returned
+// stop func once the wait returns; it blocks until the background refresh has
+// exited, so no refresh races the caller's own release of the lane.
+//
+// It is a deliberate no-op — a stop func that does nothing — when
+// wbSessionID is empty (no lane guard is running for this call). See finding
+// 1 of the 2026-09-07 landing-lane review: a lane held across a multi-slice
+// CI wait (routinely 30-60 minutes for this fleet) previously went stale
+// without a single heartbeat write, which is exactly when the "one landing
+// owner" guarantee mattered most.
+func startLandingLaneHeartbeat(projectsRoot, repository, target, wbSessionID string, interval time.Duration) (stop func()) {
+	if strings.TrimSpace(wbSessionID) == "" {
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = landingLaneHeartbeatInterval
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				_ = refreshLandingLaneHeartbeat(projectsRoot, repository, target, wbSessionID)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+// refreshLandingLaneHeartbeat is the single heartbeat write startLandingLaneHeartbeat
+// repeats. A missing WB home means nothing could have acquired a lane either,
+// so that is not a failure worth surfacing to the caller's CI wait.
+func refreshLandingLaneHeartbeat(projectsRoot, repository, target, wbSessionID string) error {
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return nil
+	}
+	return landinglane.Heartbeat(home, repository, target, wbSessionID, nil)
+}
+
 // WorktreeMergeLaneReleasable reports whether a worktree-merge receipt in
 // this status should free its landing lane immediately. A resumable,
 // still-live receipt (preparing, prepared, published and awaiting merge, or
