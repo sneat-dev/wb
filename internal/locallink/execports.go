@@ -383,7 +383,7 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 	}
 	marker := linkAppliedMarkerPath(consumerDir, packageName)
 	if fileExists(marker) {
-		if err := node.Unlink(ctx, consumerDir, packageName); err != nil {
+		if _, err := node.Unlink(ctx, consumerDir, packageName); err != nil {
 			return result, fmt.Errorf("restore the prior local link before refreshing %s: %w", packageName, err)
 		}
 	}
@@ -430,7 +430,7 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 		if returnedErr == nil {
 			return
 		}
-		if cleanupErr := node.Unlink(ctx, consumerDir, packageName); cleanupErr != nil {
+		if _, cleanupErr := node.Unlink(ctx, consumerDir, packageName); cleanupErr != nil {
 			returnedErr = fmt.Errorf("%w; restore the published package after the failed link: %v", returnedErr, cleanupErr)
 		}
 	}()
@@ -581,7 +581,7 @@ func copyBuiltPackageContents(source, destination string) error {
 }
 
 // Unlink implements Node, restoring whichever shape the link displaced.
-func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) error {
+func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) (string, error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	marker := linkAppliedMarkerPath(consumerDir, packageName)
 	stage := ""
@@ -589,17 +589,17 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		var validateErr error
 		stage, validateErr = validateStagedLinkPath(consumerDir, target, strings.TrimSpace(string(contents)))
 		if validateErr != nil {
-			return validateErr
+			return "", validateErr
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read the applied-link marker for %s: %w", packageName, err)
+		return "", fmt.Errorf("read the applied-link marker for %s: %w", packageName, err)
 	}
 
 	info, err := os.Lstat(target)
 	if err == nil && info.Mode()&os.ModeSymlink != 0 {
 		actual, readErr := os.Readlink(target)
 		if readErr != nil {
-			return fmt.Errorf("read the active link at %s: %w", target, readErr)
+			return "", fmt.Errorf("read the active link at %s: %w", target, readErr)
 		}
 		actualPath := actual
 		if !filepath.IsAbs(actualPath) {
@@ -609,28 +609,48 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 			symlinkBackup := target + linkSymlinkBackupSuffix
 			if original, backupErr := os.ReadFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
 				if _, statErr := os.Stat(target); statErr != nil {
-					return fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, actual, statErr)
+					return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, actual, statErr)
 				}
 				if err := os.Remove(symlinkBackup); err != nil {
-					return fmt.Errorf("clear the link record for %s: %w", packageName, err)
+					return "", fmt.Errorf("clear the link record for %s: %w", packageName, err)
 				}
-				return clearStagedLink(stage, marker)
+				return "", clearStagedLink(stage, marker)
+			}
+			// The package manager itself may already have replaced the WB
+			// stage with a published copy — a governed `pnpm install` mid
+			// stream is the common trigger. That is not the dangerous case
+			// the backups exist to guard: the filesystem already holds a
+			// real, resolvable package, so refusing here only leaves a dead
+			// record that blocks `wb pr land`'s live-local-link preflight
+			// forever. Confirm it really is a published copy before ever
+			// clearing quietly.
+			if name, version, ok := resolvePublishedPackage(actualPath, packageName); ok {
+				if err := clearSupersededLink(stage, marker, target); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("link superseded by published %s@%s; record cleared", name, version), nil
 			}
 			if fileExists(symlinkBackup) || fileExists(target+linkBackupSuffix) {
-				return fmt.Errorf("%s no longer points to the WB-staged output; preserve its backups and inspect before undo", target)
+				return "", fmt.Errorf("%s no longer points to the WB-staged output; preserve its backups and inspect before undo", target)
 			}
-			return clearStagedLink(stage, marker)
+			return "", clearStagedLink(stage, marker)
 		}
 		if err := os.Remove(target); err != nil {
-			return fmt.Errorf("remove the link at %s: %w", target, err)
+			return "", fmt.Errorf("remove the link at %s: %w", target, err)
 		}
 	} else if err == nil && stage != "" {
-		if fileExists(target+linkSymlinkBackupSuffix) || fileExists(target+linkBackupSuffix) {
-			return fmt.Errorf("%s is no longer the WB-created symlink; preserve its backups and inspect before undo", target)
+		if name, version, ok := resolvePublishedPackage(target, packageName); ok {
+			if err := clearSupersededLink(stage, marker, target); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("link superseded by published %s@%s; record cleared", name, version), nil
 		}
-		return clearStagedLink(stage, marker)
+		if fileExists(target+linkSymlinkBackupSuffix) || fileExists(target+linkBackupSuffix) {
+			return "", fmt.Errorf("%s is no longer the WB-created symlink; preserve its backups and inspect before undo", target)
+		}
+		return "", clearStagedLink(stage, marker)
 	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("inspect %s: %w", target, err)
+		return "", fmt.Errorf("inspect %s: %w", target, err)
 	}
 
 	// A recorded symlink target is restored first: on pnpm this is the normal
@@ -639,28 +659,67 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 	if contents, readErr := os.ReadFile(symlinkBackup); readErr == nil {
 		original := strings.TrimSpace(string(contents))
 		if original == "" {
-			return fmt.Errorf("the recorded link target for %s is empty; restore it by re-installing", packageName)
+			return "", fmt.Errorf("the recorded link target for %s is empty; restore it by re-installing", packageName)
 		}
 		if err := os.Symlink(original, target); err != nil {
-			return fmt.Errorf("restore the original link for %s: %w", packageName, err)
+			return "", fmt.Errorf("restore the original link for %s: %w", packageName, err)
 		}
 		if _, statErr := os.Stat(target); statErr != nil {
-			return fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, original, statErr)
+			return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, original, statErr)
 		}
 		if err := os.Remove(symlinkBackup); err != nil {
-			return fmt.Errorf("clear the link record for %s: %w", packageName, err)
+			return "", fmt.Errorf("clear the link record for %s: %w", packageName, err)
 		}
-		return clearStagedLink(stage, marker)
+		return "", clearStagedLink(stage, marker)
 	} else if !os.IsNotExist(readErr) {
-		return fmt.Errorf("read the link record for %s: %w", packageName, readErr)
+		return "", fmt.Errorf("read the link record for %s: %w", packageName, readErr)
 	}
 	directoryBackup := target + linkBackupSuffix
 	if fileExists(directoryBackup) {
 		if err := os.Rename(directoryBackup, target); err != nil {
-			return fmt.Errorf("restore the installed %s: %w", packageName, err)
+			return "", fmt.Errorf("restore the installed %s: %w", packageName, err)
 		}
 	}
-	return clearStagedLink(stage, marker)
+	return "", clearStagedLink(stage, marker)
+}
+
+// wbStageSuffix names the directory Link stages a built package into beside
+// the consumer's installed peer context. A resolved path still carrying it is
+// another WB stage, never a published copy — see nodeLinkStagePath.
+const wbStageSuffix = ".wb-locallink-stage"
+
+// resolvePublishedPackage reports the package name and version recorded in
+// package.json at resolvedPath, when resolvedPath is not itself a WB stage.
+// It covers both shapes a package manager leaves once it has genuinely
+// replaced the link: a pnpm virtual-store path
+// (node_modules/.pnpm/<name>@<version>/node_modules/<name>) and a plain
+// installed directory. A miss — no package.json, an unreadable or malformed
+// one, an empty version, or resolvedPath still being a WB stage — returns
+// ok=false so the caller keeps refusing rather than guessing.
+func resolvePublishedPackage(resolvedPath, packageName string) (name, version string, ok bool) {
+	if strings.HasSuffix(filepath.Base(resolvedPath), wbStageSuffix) {
+		return "", "", false
+	}
+	data, err := os.ReadFile(filepath.Join(resolvedPath, "package.json"))
+	if err != nil {
+		return "", "", false
+	}
+	var manifest struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return "", "", false
+	}
+	version = strings.TrimSpace(manifest.Version)
+	if version == "" {
+		return "", "", false
+	}
+	name = strings.TrimSpace(manifest.Name)
+	if name == "" {
+		name = packageName
+	}
+	return name, version, true
 }
 
 type siblingStage struct {
@@ -1038,6 +1097,21 @@ func clearStagedLink(stage, marker string) error {
 		return err
 	}
 	return nil
+}
+
+// clearSupersededLink clears everything Link ever wrote for this package —
+// the stage, the marker, and any recovery backup — without touching target
+// itself. The backups exist to let a genuinely dangerous state be inspected
+// before undo; once the package manager has already replaced the link with
+// a published copy, they name a restore that would only overwrite what is
+// correctly installed, so they are stale bookkeeping, not evidence to keep.
+func clearSupersededLink(stage, marker, target string) error {
+	for _, backup := range []string{target + linkSymlinkBackupSuffix, target + linkBackupSuffix} {
+		if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return clearStagedLink(stage, marker)
 }
 
 func fileExists(path string) bool {
