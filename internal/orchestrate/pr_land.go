@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -191,13 +192,71 @@ const perCallTokenOverhead = 400
 // LandPullRequest verifies, merges, and tidies up after one pull request.
 func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (result PullRequestLandResult, err error) {
 	started := time.Now()
+	telemetry := &githubobserver.RetryTelemetry{}
+	ctx = githubobserver.WithRetryTelemetry(ctx, telemetry)
 	defer func() {
+		if telemetry.Count > 0 {
+			if result.Evidence == nil {
+				result.Evidence = map[string]string{}
+			}
+			result.Evidence["github_read_retries"] = fmt.Sprintf("%d (last: %s)", telemetry.Count, telemetry.LastReason)
+		}
+		// A single transient GitHub read failure recovers in-process (see
+		// githubobserver); only exhausting every in-process retry reaches
+		// here, and the exact resume command replaces the raw "start over"
+		// an agent would otherwise have to guess at.
+		err = withPullRequestLandResumeGuidance(err, options)
 		// Every outcome leaves exactly one event, including the error paths:
 		// a verb that only records its successes produces a log in which
 		// nothing ever goes wrong.
 		appendLandEvent(options, result, started, err)
 	}()
 	return landPullRequest(ctx, options)
+}
+
+// withPullRequestLandResumeGuidance appends the exact resumable `wb pr land`
+// invocation to an error that reached the caller only because every
+// in-process retry for a transient GitHub read failure was exhausted. Any
+// other error (an authoritative GitHub failure, a refusal, a validation
+// error) is returned unchanged.
+func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions) error {
+	if err == nil || !errors.Is(err, githubobserver.ErrTransientRetriesExhausted) {
+		return err
+	}
+	number, numberErr := PullRequestNumber(options.PullRequest)
+	if numberErr != nil {
+		return err
+	}
+	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number))
+}
+
+// pullRequestLandResumeCommand rebuilds the exact `wb pr land` invocation
+// that recovers a landing left incomplete by exhausted transient GitHub read
+// retries, carrying forward every option that changes what the command does.
+func pullRequestLandResumeCommand(options PullRequestLandOptions, number string) string {
+	parts := []string{"wb", "pr", "land", options.Repository + "#" + number}
+	if options.MergeMethodExplicit && strings.TrimSpace(options.MergeMethod) != "" {
+		parts = append(parts, "--merge-method", options.MergeMethod)
+	}
+	if options.Keep {
+		parts = append(parts, "--keep")
+	}
+	if options.AllowUnfenced {
+		parts = append(parts, "--allow-unfenced")
+	}
+	if len(options.KeepCommits) > 0 {
+		parts = append(parts, "--keep-commits", strings.Join(options.KeepCommits, ","))
+	}
+	if strings.TrimSpace(options.Reason) != "" {
+		parts = append(parts, "--reason", strconv.Quote(options.Reason))
+	}
+	if strings.TrimSpace(options.Subject) != "" {
+		parts = append(parts, "--subject", strconv.Quote(options.Subject))
+	}
+	if strings.TrimSpace(options.ApprovedBy) != "" {
+		parts = append(parts, "--approved-by", strconv.Quote(options.ApprovedBy))
+	}
+	return strings.Join(parts, " ")
 }
 
 func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {

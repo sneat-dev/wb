@@ -226,6 +226,11 @@ type PullRequestWaitResult struct {
 	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
 	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
 	Reason                     string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	// Evidence carries auxiliary receipt facts that are not part of the wait
+	// outcome itself. "github_read_retries" mirrors the same key on
+	// PullRequestLandResult: the count and last cause of in-process transient
+	// GitHub read recoveries absorbed while producing this result.
+	Evidence map[string]string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 }
 
 // Result records lifecycle state and typed adapter metadata for one repository.

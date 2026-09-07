@@ -644,12 +644,22 @@
               "path": "cmd/wb/ci_wait_test.go",
               "name": "TestCIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate."
+      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with its own >=30s per-attempt timeout and backoff before reaching this loop; only an authoritative failure or exhausted retries surfaces, folded into the same pending/resumable path as a slice deadline."
     },
     {
       "id": "wb.ci.wait.merge-queue",
@@ -4477,12 +4487,17 @@
               "path": "cmd/wb/deps_propagate_test.go",
               "name": "TestEveryLandingVerbRefusesALiveLink",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRecoversFromASignalKilledPullRequestReadThenSucceeds",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path."
+      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with bounded retries and a >=30s per-attempt timeout; only an authoritative failure or exhausted retries reaches the caller, naming the last cause plus the exact resumable `wb pr land` invocation, with `github_read_retries` recorded on the evidence when recovery happened."
     },
     {
       "id": "wb.remote.claim",
