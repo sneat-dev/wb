@@ -648,7 +648,16 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		receipt.RebatchedCandidates = []WorktreeMergeCandidate{rebatch.OriginalCandidate}
 	}
 	if prior != nil {
-		receipt.ValidationTimeouts = prior.ValidationTimeouts
+		// A refresh inherits omitted limits, but explicit caller limits win.
+		// Keeping the entire old policy silently reuses obsolete short deadlines.
+		checkTimeout, shardTimeout := receiptWorktreeMergeValidationTimeouts(*prior)
+		if options.CheckTimeout > 0 {
+			checkTimeout = options.CheckTimeout
+		}
+		if options.ShardAttemptTimeout > 0 {
+			shardTimeout = options.ShardAttemptTimeout
+		}
+		receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(checkTimeout, shardTimeout)
 		receipt.Route = prior.Route
 		receipt.Cleanup = prior.Cleanup
 		receipt.OnFailure = prior.OnFailure
