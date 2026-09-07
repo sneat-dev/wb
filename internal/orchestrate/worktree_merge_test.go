@@ -3654,25 +3654,6 @@ esac
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func installWorktreeMergeOpenPRGH(t *testing.T) {
-	t.Helper()
-	bin := t.TempDir()
-	script := filepath.Join(bin, "gh")
-	body := `#!/bin/sh
-set -eu
-case "$*" in
-  'pr view https://example.test/acme/app/pull/23 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
-    printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
-  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
-esac
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 func installWorktreeMergePublishOnlyPRGH(t *testing.T) {
 	t.Helper()
 	bin := t.TempDir()
