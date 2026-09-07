@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -19,6 +20,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureHooksGitHelperArgument {
 		os.Exit(RunSecureHooksGitHelper(os.Args[2:]))
 	}
+	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
+	// before any hooks test runs.
+	testenv.IsolateProcess()
 	os.Exit(m.Run())
 }
 
