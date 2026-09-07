@@ -136,3 +136,7 @@ when the command consumes it; otherwise the command must reject it. The
 conformance test `TestPersistentFlagMatrix` exercises every root-flag ×
 leaf-command cell; focused negative cases remain in
 `TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem`.
+
+`daemon operation wait` accepts `--progress=false` for terminal-only output or
+`--progress-file <path>` to append human heartbeats separately. These flags are
+independent of `--format` / `--json`; failure receipts retain error details.

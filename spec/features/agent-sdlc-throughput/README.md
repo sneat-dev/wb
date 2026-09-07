@@ -1495,3 +1495,19 @@ Enforced rules.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
+
+## Human progress and agent completion delivery
+
+Long-running operations expose human liveness at least every ten seconds while
+agent consumers wait for completion, actionable failure, or a required decision.
+Human heartbeat delivery must not require model turns. Durable operation IDs
+allow reconnecting to the same work after a harness interruption.
+
+The daemon operation waiter supports `--progress-file` for separate human
+progress and `--progress=false` for a quiet observer. It consumes intermediate
+updates internally and emits one terminal receipt including failure context.
+The harness schedules the waiter asynchronously and delivers completion; CLI
+stream separation alone does not grant a synchronous harness asynchronous tools.
+Existing recovery-required receipts remain actionable terminal notifications.
+Future interactive decision events must explicitly define their continuation
+contract; they must not be inferred from arbitrary command output.
