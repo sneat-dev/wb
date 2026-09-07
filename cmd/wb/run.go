@@ -254,8 +254,8 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 		return fmt.Errorf("wait for WB CPU capacity: %w", leaseErr)
 	}
 	defer lease.Release()
-	announceCleanup := lease.Announce(self)
-	defer announceCleanup()
+	announcement := lease.Announce(self)
+	defer announcement.Cleanup()
 
 	interactive := console.Interactive(cmd.ErrOrStderr(), false)
 	child := process.CommandContextInteractive(cmd.Context(), interactive, args[0], args[1:]...)
@@ -266,7 +266,7 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 
 	if err = child.Start(); err == nil {
 		done := make(chan struct{})
-		if interactive {
+		if units > 0 || interactive {
 			go func() {
 				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
@@ -275,7 +275,15 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 					case <-done:
 						return
 					case <-ticker.C:
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
+						// Refresh the holder record on every tick so a
+						// long-running command never ages past staleAfter
+						// and gets reaped by another WB process as if it
+						// had died; the "still running" line is a separate,
+						// interactive-only courtesy on the same cadence.
+						announcement.Heartbeat()
+						if interactive {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
+						}
 					}
 				}
 			}()
@@ -380,6 +388,10 @@ func acquireWithQueueVisibility(ctx context.Context, projectsRoot string, units,
 			}
 			return result.lease, result.waited, result.err
 		case <-ticker.C:
+			// Refresh the ticket alongside reporting on it, so a still-waiting
+			// command's registration never ages past staleAfter and gets
+			// reaped by another WB process as if this one had died.
+			ticket.Heartbeat()
 			progress.heartbeat(time.Since(queuedAt), ticket.Snapshot(budget))
 		}
 	}

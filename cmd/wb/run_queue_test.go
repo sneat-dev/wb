@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,13 +30,18 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	holderCleanup := held.Announce(runqueue.Participant{PID: 7777, Summary: "go build"})
+	// Registered PIDs are now liveness-checked (a killed process's ticket or
+	// holder record must not linger forever), so both self and the holder
+	// must carry a real, live PID; this test process's own PID qualifies for
+	// the whole test.
+	holderPID := os.Getpid()
+	holderAnnouncement := held.Announce(runqueue.Participant{PID: holderPID, Summary: "go build"})
 	released := make(chan struct{})
 	go func() {
 		// Longer than queueAdmissionGrace so the wait goes through the
 		// queued+heartbeat path rather than resolving as immediate.
 		time.Sleep(queueAdmissionGrace + 60*time.Millisecond)
-		holderCleanup()
+		holderAnnouncement.Cleanup()
 		held.Release()
 		close(released)
 	}()
@@ -43,7 +49,7 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 
 	var out bytes.Buffer
 	progress := newRunQueueProgressWithHeartbeat(&out, true, "", 5*time.Millisecond)
-	self := runqueue.Participant{PID: 999, Summary: "go test", Worktree: "/w/waiter"}
+	self := runqueue.Participant{PID: os.Getpid(), Summary: "go test", Worktree: "/w/waiter"}
 
 	lease, waited, err := acquireWithQueueVisibility(context.Background(), root, 1, 1, self, progress)
 	if err != nil {
@@ -55,8 +61,9 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 	}
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "wb run: queued go test (position 1 of 1, waiting on: 7777 go build)") {
-		t.Fatalf("output missing the queued line: %q", rendered)
+	wantQueued := fmt.Sprintf("wb run: queued go test (position 1 of 1, waiting on: %d go build)", holderPID)
+	if !strings.Contains(rendered, wantQueued) {
+		t.Fatalf("output missing the queued line %q: %q", wantQueued, rendered)
 	}
 	if count := strings.Count(rendered, "wb run: still queued"); count < 2 {
 		t.Fatalf("output had %d heartbeats within the wait, want at least 2: %q", count, rendered)
@@ -158,11 +165,11 @@ func TestRunCommandReportsQueueVisibilityOnStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	holderCleanup := held.Announce(runqueue.Participant{PID: 12345, Summary: "go build"})
+	holderAnnouncement := held.Announce(runqueue.Participant{PID: os.Getpid(), Summary: "go build"})
 	released := make(chan struct{})
 	go func() {
 		time.Sleep(queueAdmissionGrace + 60*time.Millisecond)
-		holderCleanup()
+		holderAnnouncement.Cleanup()
 		held.Release()
 		close(released)
 	}()
@@ -301,9 +308,13 @@ func TestRunQueueListsRunningAndWaitingEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release()
-	cleanup := lease.Announce(runqueue.Participant{PID: 111, Summary: "go build", Worktree: "/w/one"})
-	defer cleanup()
-	waiter := runqueue.Register(root, runqueue.Participant{PID: 222, Summary: "go test", Worktree: "/w/two"})
+	// Registered PIDs are liveness-checked (a killed process's record must
+	// not linger forever), so both the holder and the waiter need a real,
+	// live PID here; this test process's own PID qualifies for the test.
+	pid := os.Getpid()
+	announcement := lease.Announce(runqueue.Participant{PID: pid, Summary: "go build", Worktree: "/w/one"})
+	defer announcement.Cleanup()
+	waiter := runqueue.Register(root, runqueue.Participant{PID: pid, Summary: "go test", Worktree: "/w/two"})
 	defer waiter.Forget()
 
 	var stdout, stderr bytes.Buffer
@@ -314,10 +325,10 @@ func TestRunQueueListsRunningAndWaitingEntries(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &listing); err != nil {
 		t.Fatalf("decode --queue --json output: %v\n%s", err, stdout.String())
 	}
-	if len(listing.Running) != 1 || listing.Running[0].PID != 111 || listing.Running[0].Summary != "go build" {
+	if len(listing.Running) != 1 || listing.Running[0].PID != pid || listing.Running[0].Summary != "go build" {
 		t.Fatalf("listing.Running = %+v", listing.Running)
 	}
-	if len(listing.Waiting) != 1 || listing.Waiting[0].PID != 222 || listing.Waiting[0].Summary != "go test" {
+	if len(listing.Waiting) != 1 || listing.Waiting[0].PID != pid || listing.Waiting[0].Summary != "go test" {
 		t.Fatalf("listing.Waiting = %+v", listing.Waiting)
 	}
 
@@ -325,7 +336,7 @@ func TestRunQueueListsRunningAndWaitingEntries(t *testing.T) {
 	if code := run([]string{"run", "--projects-root", root, "--queue"}, &plainStdout, &plainStderr); code != exitOK {
 		t.Fatalf("exit code = %d; stderr=%s", code, plainStderr.String())
 	}
-	for _, want := range []string{"running (1)", "waiting (1)", "111", "go build", "222", "go test"} {
+	for _, want := range []string{"running (1)", "waiting (1)", fmt.Sprint(pid), "go build", "go test"} {
 		if !strings.Contains(plainStdout.String(), want) {
 			t.Errorf("--queue text output missing %q: %q", want, plainStdout.String())
 		}

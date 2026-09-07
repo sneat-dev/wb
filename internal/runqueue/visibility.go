@@ -39,6 +39,34 @@ type Participant struct {
 type Holder struct {
 	Participant
 	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// staleAfter is how long a ticket or holder record may go without a
+// heartbeat before it is treated as abandoned rather than live. It is a
+// multiple of the ~10s heartbeat cadence `wb run` already keeps while a
+// command is queued or running (see cmd/wb's universalProgressHeartbeat and
+// the ticker in runExternalCommand), giving a couple of missed beats of
+// slack before a record is presumed stale. A var, not a const, so tests can
+// shrink it instead of sleeping 30+ seconds; production code never assigns
+// it.
+var staleAfter = 30 * time.Second
+
+// isLive reports whether a registered PID should still be trusted: the
+// process must actually exist, per processAlive (a bare FindProcess is not
+// enough on Unix — it always succeeds), and its record must have been
+// refreshed recently enough to rule out a stale leftover, e.g. a PID that
+// has since been reused by an unrelated process. A killed waiter or holder
+// stops heartbeating and ages out of both checks without anyone needing to
+// clean up after it.
+func isLive(pid int, updatedAt time.Time) bool {
+	if !processAlive(pid) {
+		return false
+	}
+	if updatedAt.IsZero() {
+		return true
+	}
+	return time.Since(updatedAt) < staleAfter
 }
 
 // State is a point-in-time snapshot of the CPU lease queue relevant to one
@@ -84,6 +112,7 @@ type Ticket struct {
 type ticketRecord struct {
 	Participant
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 	path      string
 }
 
@@ -104,7 +133,7 @@ func Register(projectsRoot string, self Participant) *Ticket {
 	seq := atomic.AddInt64(&ticketSeq, 1)
 	name := fmt.Sprintf("%020d-%d-%d.json", now.UnixNano(), self.PID, seq)
 	path := filepath.Join(dir, name)
-	payload, err := json.Marshal(ticketRecord{Participant: self, CreatedAt: now})
+	payload, err := json.Marshal(ticketRecord{Participant: self, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return ticket
 	}
@@ -123,6 +152,25 @@ func (ticket *Ticket) Forget() {
 	}
 	_ = os.Remove(ticket.path)
 	ticket.path = ""
+}
+
+// Heartbeat refreshes the ticket's UpdatedAt so readTickets keeps treating it
+// as live while its caller is still waiting. Callers already poll queue
+// state on an interval (e.g. `wb run`'s queued-command heartbeat every ~10s);
+// call Heartbeat from that same loop rather than adding a new one. Safe to
+// call on a nil Ticket or one whose registration never succeeded, and
+// best-effort like Register: a failed refresh just means the ticket may age
+// past staleAfter and be reaped as if its process had died, which only
+// affects visibility, never admission.
+func (ticket *Ticket) Heartbeat() {
+	if ticket == nil || ticket.path == "" {
+		return
+	}
+	payload, err := json.Marshal(ticketRecord{Participant: ticket.self, CreatedAt: ticket.createdAt, UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(ticket.path, payload, 0o600)
 }
 
 // Snapshot reports this ticket's current position and the queue depth, plus
@@ -162,6 +210,15 @@ func readTickets(projectsRoot string) []ticketRecord {
 		if err := json.Unmarshal(raw, &record); err != nil {
 			continue
 		}
+		if !isLive(record.PID, record.UpdatedAt) {
+			// Best-effort reap: a killed waiter's ticket file otherwise sits
+			// forever, since nothing else claims its uniquely named path.
+			// Losing a race with another reader/reaper here is fine — the
+			// file is either already gone or about to be skipped again next
+			// read; never fail a run over it.
+			_ = os.Remove(path)
+			continue
+		}
 		record.path = path
 		tickets = append(tickets, record)
 	}
@@ -190,6 +247,14 @@ func readHolders(projectsRoot string, budget int) []Holder {
 		if err := json.Unmarshal(raw, &holder); err != nil {
 			continue
 		}
+		if !isLive(holder.PID, holder.UpdatedAt) {
+			// A killed holder's slot file otherwise self-heals only when
+			// that slot is reused; reap it here instead so it does not sit
+			// reporting a phantom holder in the meantime. Best-effort, same
+			// as readTickets: never fail a run over a stale file.
+			_ = os.Remove(holderPathFor(lockPath))
+			continue
+		}
 		holders = append(holders, holder)
 	}
 	sort.Slice(holders, func(i, j int) bool { return holders[i].StartedAt.Before(holders[j].StartedAt) })
@@ -210,33 +275,71 @@ func snapshot(projectsRoot, selfPath string, budget int) State {
 	return state
 }
 
+// Announcement is the live handle returned by Lease.Announce. Heartbeat keeps
+// the holder records fresh while the lease is held — call it from the same
+// ~10s loop `wb run` already runs while a command executes, mirroring how a
+// waiting Ticket is refreshed — so readHolders does not age the slots out as
+// stale while the holder is legitimately still running. Cleanup removes the
+// holder records once the lease is released; callers should defer it
+// alongside Lease.Release. Both methods are safe to call on a nil
+// Announcement (e.g. the zero-unit case where Announce never wrote anything).
+type Announcement struct {
+	self    Participant
+	started time.Time
+	paths   []string
+}
+
 // Announce records this Lease's slots as held by self, for State/Snapshot and
-// `wb run --queue` visibility. It returns a cleanup that removes the holder
-// records; callers should defer it alongside Release. Best-effort: a failure
-// to write a holder file just means that slot stays anonymous in State
-// (readHolders skips slots with no holder file), never a hard error.
-func (lease *Lease) Announce(self Participant) func() {
+// `wb run --queue` visibility. Best-effort: a failure to write a holder file
+// just means that slot stays anonymous in State (readHolders skips slots
+// with no holder file), never a hard error.
+func (lease *Lease) Announce(self Participant) *Announcement {
 	if lease == nil || len(lease.files) == 0 {
-		return func() {}
+		return &Announcement{}
 	}
 	started := time.Now().UTC()
-	written := make([]string, 0, len(lease.files))
+	announcement := &Announcement{self: self, started: started}
 	for _, file := range lease.files {
 		holderPath := holderPathFor(file.Name())
-		payload, err := json.Marshal(Holder{Participant: self, StartedAt: started})
+		payload, err := json.Marshal(Holder{Participant: self, StartedAt: started, UpdatedAt: started})
 		if err != nil {
 			continue
 		}
 		if err := os.WriteFile(holderPath, payload, 0o600); err != nil {
 			continue
 		}
-		written = append(written, holderPath)
+		announcement.paths = append(announcement.paths, holderPath)
 	}
-	return func() {
-		for _, path := range written {
-			_ = os.Remove(path)
-		}
+	return announcement
+}
+
+// Heartbeat refreshes every announced holder record's UpdatedAt so
+// readHolders keeps treating this lease as live. Best-effort, like Announce:
+// a failed refresh just risks the holder aging past staleAfter and being
+// reaped as if the process had died, which only affects visibility.
+func (announcement *Announcement) Heartbeat() {
+	if announcement == nil || len(announcement.paths) == 0 {
+		return
 	}
+	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		return
+	}
+	for _, path := range announcement.paths {
+		_ = os.WriteFile(path, payload, 0o600)
+	}
+}
+
+// Cleanup removes this announcement's holder records. Safe to call more than
+// once and on a nil Announcement.
+func (announcement *Announcement) Cleanup() {
+	if announcement == nil {
+		return
+	}
+	for _, path := range announcement.paths {
+		_ = os.Remove(path)
+	}
+	announcement.paths = nil
 }
 
 // QueueEntry is one running or waiting governed command, for `wb run
@@ -261,7 +364,7 @@ type QueueListing struct {
 // invocation while other WB processes hold or wait for slots.
 func ListQueue(projectsRoot string, budget int) QueueListing {
 	now := time.Now().UTC()
-	listing := QueueListing{Budget: budget}
+	listing := QueueListing{Budget: budget, Running: []QueueEntry{}, Waiting: []QueueEntry{}}
 	for _, holder := range readHolders(projectsRoot, budget) {
 		listing.Running = append(listing.Running, QueueEntry{
 			PID: holder.PID, Summary: holder.Summary, Worktree: holder.Worktree,
