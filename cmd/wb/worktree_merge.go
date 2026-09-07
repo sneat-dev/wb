@@ -406,9 +406,15 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 	markLandingGuard(command, landingGuardByReceipt)
 	bindWorktreeMergeFlags(command, &flags, false, true, false)
 	if name == "resume" {
-		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional deadline for recovering an interrupted prepare; zero keeps the stored behavior")
-		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "override the logical validation-check deadline while recovering an interrupted prepare")
-		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "override the process-isolated Go test shard-attempt deadline while recovering an interrupted prepare")
+		command.Long = "Resume a receipt and land its exact integration candidate.\n\n" +
+			"A receipt at prepare/validation_failed (or an interrupted prepare/preparing) " +
+			"is re-validated for the exact candidate SHA before anything else, using the " +
+			"receipt's stored validation timeouts unless overridden below. Publish and " +
+			"landing then refuse unless that exact candidate has left validation_failed " +
+			"and its recorded validation identity still names it."
+		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional deadline for recovering an interrupted prepare or re-validating a validation_failed receipt; zero keeps the stored behavior")
+		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "override the logical validation-check deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
+		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "override the process-isolated Go test shard-attempt deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
 		command.Flags().BoolVar(&flags.stopBeforeMerge, "stop-before-merge", false, "PR-only: validate and publish the exact candidate, prove the open PR, then stop before checks or merge")
 	}
 	return command
