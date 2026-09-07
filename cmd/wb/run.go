@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,8 @@ func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Comma
 		idempotencyKey     string
 		workerID           string
 		allowSaturatedHost bool
+		quiet              bool
+		queueFlag          bool
 	)
 	cmd := &cobra.Command{
 		Use:   "run [recipe] | run -- <command> [args...]",
@@ -54,7 +57,14 @@ authenticated durable local daemon queue for the explicitly selected sandboxed
 wb worker connect process to execute. Command arguments are durable journal
 data; pass secrets through the worker's inherited environment, never argv. The
 client uses the protected local socket first and reports when sandbox transport
-denial selects the authenticated project-root file bridge.`,
+denial selects the authenticated project-root file bridge.
+
+A CPU-heavy command mode invocation reports its place in the shared CPU
+budget on stderr: a queued line naming its position and what it is waiting
+on, a heartbeat at most every 10s while it keeps waiting, and admitted/done
+receipt lines — even without a terminal, so a redirected log still shows
+progress instead of going silent for minutes. --quiet silences these lines;
+--queue lists who currently holds or is waiting for CPU capacity.`,
 		Example: `# Discover configured recipes
 wb run --list
 
@@ -72,9 +82,15 @@ wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCre
 wb run --async --worker codex-local --idempotency-key test-create-2 -- go test ./internal/worktrees -run TestCreate
 
 # Inspect command cost in this worktree
-wb run --history --days 7`,
+wb run --history --days 7
+
+# See who currently holds or is waiting for CPU capacity
+wb run --queue
+
+# Silence the queued/admitted/done receipt lines
+wb run --quiet -- go test ./internal/worktrees -run TestCreate`,
 		Args: func(cmd *cobra.Command, args []string) error {
-			if history {
+			if history || queueFlag {
 				return cobra.NoArgs(cmd, args)
 			}
 			if cmd.ArgsLenAtDash() == 0 {
@@ -86,9 +102,15 @@ wb run --history --days 7`,
 			return cobra.MaximumNArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if queueFlag {
+				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet {
+					return usageError("--apply, --async, --config, --history, --idempotency-key, --list, and --quiet cannot be used with --queue")
+				}
+				return printRunQueue(cmd, jsonOut)
+			}
 			if history {
-				if apply || async || configPath != "" || idempotencyKey != "" || list {
-					return usageError("--apply, --async, --config, --idempotency-key, and --list cannot be used with --history")
+				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet {
+					return usageError("--apply, --async, --config, --idempotency-key, --list, and --quiet cannot be used with --history")
 				}
 				return printRunHistory(cmd, days, jsonOut)
 			}
@@ -108,7 +130,7 @@ wb run --history --days 7`,
 				if idempotencyKey != "" {
 					return usageError("--idempotency-key requires --async command mode")
 				}
-				return runExternalCommand(cmd, args, configPath, allowSaturatedHost)
+				return runExternalCommand(cmd, args, configPath, allowSaturatedHost, quiet)
 			}
 			if async {
 				return usageError("--async requires command mode with run --")
@@ -121,6 +143,9 @@ wb run --history --days 7`,
 			}
 			if allowSaturatedHost {
 				return usageError("--allow-saturated-host requires command mode with run --")
+			}
+			if quiet {
+				return usageError("--quiet requires command mode with run --")
 			}
 			if days != 14 || outputFormatChanged(cmd) {
 				return usageError("--days, --format=json, and --json require --history")
@@ -149,6 +174,8 @@ wb run --history --days 7`,
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")
 	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "command mode: silence the queued/admitted/done receipt lines on stderr")
+	cmd.Flags().BoolVar(&queueFlag, "queue", false, "list this machine's CPU lease queue (running and waiting governed commands) and exit")
 	return cmd
 }
 
@@ -189,12 +216,13 @@ func printRunHistory(cmd *cobra.Command, days int, jsonOut bool) error {
 	return nil
 }
 
-func runExternalCommand(cmd *cobra.Command, args []string, configPath string, allowSaturatedHost bool) error {
+func runExternalCommand(cmd *cobra.Command, args []string, configPath string, allowSaturatedHost, quiet bool) error {
+	commandStarted := time.Now()
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	recorder, telemetryErr := runlog.Begin(cwd, args, time.Now())
+	recorder, telemetryErr := runlog.Begin(cwd, args, commandStarted)
 	if telemetryErr != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: command telemetry start failed: %v\n", telemetryErr)
 	}
@@ -213,16 +241,21 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 			recorder.RecordLoadOverride(true)
 		}
 	}
-	lease, waited, leaseErr := runqueue.Acquire(cmd.Context(), projectsRoot, units, budget)
+	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(args), Worktree: cwd}
+	queueProgress := newRunQueueProgressWithHeartbeat(cmd.ErrOrStderr(), !quiet, configPath, runQueueHeartbeat())
+	lease, waited, leaseErr := acquireWithQueueVisibility(cmd.Context(), projectsRoot, units, budget, self, queueProgress)
+	admittedAt := time.Now()
 	recorder.RecordAdmission(units, waited)
+	if leaseErr == nil {
+		recorder.RecordQueueAdmittedAt(admittedAt)
+	}
 	if leaseErr != nil {
 		_ = recorder.Finish(exitFindings, 0, 0, time.Now())
 		return fmt.Errorf("wait for WB CPU capacity: %w", leaseErr)
 	}
 	defer lease.Release()
-	if waited >= 250*time.Millisecond {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: admitted %d/%d CPU units after %s\n", units, budget, waited.Round(10*time.Millisecond))
-	}
+	announcement := lease.Announce(self)
+	defer announcement.Cleanup()
 
 	interactive := console.Interactive(cmd.ErrOrStderr(), false)
 	child := process.CommandContextInteractive(cmd.Context(), interactive, args[0], args[1:]...)
@@ -233,7 +266,7 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 
 	if err = child.Start(); err == nil {
 		done := make(chan struct{})
-		if interactive {
+		if units > 0 || interactive {
 			go func() {
 				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
@@ -242,7 +275,15 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 					case <-done:
 						return
 					case <-ticker.C:
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
+						// Refresh the holder record on every tick so a
+						// long-running command never ages past staleAfter
+						// and gets reaped by another WB process as if it
+						// had died; the "still running" line is a separate,
+						// interactive-only courtesy on the same cadence.
+						announcement.Heartbeat()
+						if interactive {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
+						}
 					}
 				}
 			}()
@@ -257,6 +298,9 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 		if errors.As(err, &childExit) {
 			exitCode = childExit.ExitCode()
 		}
+	}
+	if units > 0 {
+		queueProgress.done(time.Since(commandStarted), exitCode)
 	}
 	var userCPU, systemCPU time.Duration
 	if child.ProcessState != nil {
@@ -277,6 +321,128 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 		}
 	}
 	return fmt.Errorf("execute %s: %w", args[0], err)
+}
+
+// runQueueHeartbeatOverride lets tests shrink `wb run`'s CPU-queue heartbeat
+// cadence below the universal 10s default (universalProgressHeartbeat), the
+// same way other progress types here expose a *WithHeartbeat constructor.
+// Production code never sets it; tests restore it to zero when done.
+var runQueueHeartbeatOverride time.Duration
+
+func runQueueHeartbeat() time.Duration {
+	if runQueueHeartbeatOverride > 0 {
+		return runQueueHeartbeatOverride
+	}
+	return universalProgressHeartbeat
+}
+
+// queueAdmissionGrace is how long acquireWithQueueVisibility waits before
+// deciding a command must announce itself as queued rather than admitted
+// immediately. Most `wb run --` invocations find the CPU budget free; this
+// grace period keeps the common case silent (a single "admitted (queue
+// empty)" line) instead of always printing a queued line the caller barely
+// has time to read.
+const queueAdmissionGrace = 200 * time.Millisecond
+
+// acquireWithQueueVisibility wraps runqueue.Acquire with the human-readable
+// receipts described in cmd/wb/run_queue_progress.go: an immediate
+// admitted/queued line, a heartbeat at most every progress.heartbeat while
+// still queued, and the caller prints the admitted-after-wait line itself
+// once this returns. units <= 0 skips every line — nothing was queued.
+func acquireWithQueueVisibility(ctx context.Context, projectsRoot string, units, budget int, self runqueue.Participant, progress *runQueueProgress) (*runqueue.Lease, time.Duration, error) {
+	if units <= 0 {
+		return &runqueue.Lease{}, 0, nil
+	}
+
+	ticket := runqueue.Register(projectsRoot, self)
+	defer ticket.Forget()
+
+	type acquireResult struct {
+		lease  *runqueue.Lease
+		waited time.Duration
+		err    error
+	}
+	resultCh := make(chan acquireResult, 1)
+	go func() {
+		lease, waited, err := runqueue.Acquire(ctx, projectsRoot, units, budget)
+		resultCh <- acquireResult{lease: lease, waited: waited, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		progress.admittedImmediately()
+		return result.lease, result.waited, result.err
+	case <-time.After(queueAdmissionGrace):
+	}
+
+	queuedAt := time.Now()
+	progress.queued(self.Summary, ticket.Snapshot(budget))
+
+	ticker := time.NewTicker(progress.heartbeatEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case result := <-resultCh:
+			if result.err == nil {
+				progress.admittedAfterWait(time.Since(queuedAt))
+			}
+			return result.lease, result.waited, result.err
+		case <-ticker.C:
+			// Refresh the ticket alongside reporting on it, so a still-waiting
+			// command's registration never ages past staleAfter and gets
+			// reaped by another WB process as if this one had died.
+			ticket.Heartbeat()
+			progress.heartbeat(time.Since(queuedAt), ticket.Snapshot(budget))
+		}
+	}
+}
+
+// runQueueSummary is the short, privacy-safe label runqueue.Participant
+// carries into queue-visibility receipts and `wb run --queue` — the program
+// name and its verb (e.g. "go test"), never full arguments, flags, or paths.
+// It mirrors runlog's own privacy-safe-telemetry contract even though these
+// records are transient rather than durable.
+func runQueueSummary(args []string) string {
+	if len(args) == 0 {
+		return "unknown"
+	}
+	base := filepath.Base(args[0])
+	for _, argument := range args[1:] {
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		return base + " " + argument
+	}
+	return base
+}
+
+func printRunQueue(cmd *cobra.Command, jsonOut bool) error {
+	budget := runqueue.Budget()
+	listing := runqueue.ListQueue(projectsRoot, budget)
+	if jsonOut {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(listing)
+	}
+	out := cmd.OutOrStdout()
+	if _, err := fmt.Fprintf(out, "WB CPU queue · budget %d\n", listing.Budget); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "running (%d):\n", len(listing.Running)); err != nil {
+		return err
+	}
+	for _, entry := range listing.Running {
+		if _, err := fmt.Fprintf(out, "  pid %-8d %-16s %-8s %s\n", entry.PID, entry.Summary, entry.Age.Round(time.Second), entry.Worktree); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(out, "waiting (%d):\n", len(listing.Waiting)); err != nil {
+		return err
+	}
+	for _, entry := range listing.Waiting {
+		if _, err := fmt.Fprintf(out, "  pid %-8d %-16s %-8s %s\n", entry.PID, entry.Summary, entry.Age.Round(time.Second), entry.Worktree); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func governedEnvironment(environment []string, operationID string, args []string, units int) []string {

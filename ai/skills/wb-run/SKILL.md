@@ -45,6 +45,26 @@ admitted units to supported tools. `wb run --history` summarizes privacy-safe
 wall and CPU cost from the current worktree without exposing raw arguments or
 output. The filesystem lease remains the worker-level safety belt.
 
+A CPU-heavy synchronous invocation reports its place in that shared budget on
+stderr — even without a terminal, so a redirected log still shows progress
+instead of going silent for minutes while several agents share one machine.
+The moment it is admitted, it prints either `wb run: admitted (queue empty)`
+or, when the budget is full, `wb run: queued <summary> (position N of M,
+waiting on: <pid> <summary>)`; while still queued it heartbeats at most every
+10s (`wb run: still queued ...; running: <pid> <summary> <age>`), then prints
+`wb run: admitted after <wait>` and, on completion, `wb run: done in
+<elapsed> (exit <code>)`. `--quiet` silences all four lines; stdout and any
+`--format=json` receipt stay untouched either way. Inspect the same state
+without submitting a command:
+
+```sh
+wb run --queue
+```
+
+`--queue` lists every command currently holding or waiting for a CPU lease
+slot (pid, age, worktree, summary); add `--format=json` for a machine-readable
+listing.
+
 Keep the worker inside the harness sandbox. WB prefers the local protected
 socket and reports an explicit project-root file-bridge fallback only for
 socket permission or reachability failures. The fallback keeps the same daemon
