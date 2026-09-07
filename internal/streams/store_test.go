@@ -20,6 +20,67 @@ func TestStoreCreateRefusesASecondStreamOfTheSameName(t *testing.T) {
 	}
 }
 
+// This fixture is a trimmed copy of a real stream-state file a dev build of
+// WB wrote with schema_version 2 and a top-level linked_consumers array
+// (github.com/sneat-dev/wb, commit e0c6f16 "feat: register local-only stream
+// consumers" — never merged to main). A build whose SchemaVersion constant
+// stayed at 1 refused this file outright; loading it here proves the current
+// build reads it, and that Members and LinkedConsumers both round-trip.
+func TestStoreLoadsRealSchemaTwoLinkedConsumersFixture(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "stream_schema_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("splitus-contactus-invite-local-20260906"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(store.Dir("splitus-contactus-invite-local-20260906"), "stream.json")
+	if err := os.WriteFile(statePath, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := store.Load("splitus-contactus-invite-local-20260906")
+	if err != nil {
+		t.Fatalf("Load() on a real schema-2 fixture = %v, want success", err)
+	}
+	if stream.SchemaVersion != 2 {
+		t.Fatalf("SchemaVersion = %d, want 2", stream.SchemaVersion)
+	}
+	if _, ok := stream.Member("sneat-co/contactus"); !ok {
+		t.Fatal("Members did not round-trip the fixture's library member")
+	}
+	if len(stream.LinkedConsumers) != 1 || stream.LinkedConsumers[0].Repository != "sneat-co/debtus" {
+		t.Fatalf("LinkedConsumers = %#v, want the fixture's sneat-co/debtus entry", stream.LinkedConsumers)
+	}
+	if len(stream.LinkedConsumers[0].Links) != 2 {
+		t.Fatalf("LinkedConsumers[0].Links = %d, want 2", len(stream.LinkedConsumers[0].Links))
+	}
+	live := stream.LiveLinks()
+	var sawLinkedConsumer bool
+	for _, link := range live {
+		if link.Member.Repository == "sneat-co/debtus" {
+			sawLinkedConsumer = true
+		}
+	}
+	if !sawLinkedConsumer {
+		t.Fatal("LiveLinks() did not include the linked-consumer's links")
+	}
+
+	// A read must never rewrite the file on disk.
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("Load() rewrote the state file; a read must be side-effect free")
+	}
+}
+
 func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Load("absent"); !errors.Is(err, ErrNotFound) {
@@ -312,39 +373,48 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 	}
 }
 
-func TestRepositoryStreamScopesFutureSchemaToItsIndexedRepositories(t *testing.T) {
+// Schema version 2 is a fully understood, current format (it added
+// LinkedConsumers for admitted alternate managed worktrees): such a record
+// loads completely, so it is never reported as unreadable. RepositoryStream
+// treats a repository recorded only as a linked consumer as held too — it
+// carries live local links this stream's undo and landing guard must reach,
+// so a second stream must not be able to claim it either.
+func TestRepositoryStreamReadsSchemaTwoLinkedConsumers(t *testing.T) {
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
-	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+	if err := os.MkdirAll(store.Dir("known"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	contents := []byte(`{"schema_version":2,"members":[{"repository":"acme/member"}],"linked_consumers":[{"repository":"acme/linked"}],"future_detail":{"value":true}}`)
-	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+	contents := []byte(`{"schema_version":2,"members":[{"repository":"acme/member"}],"linked_consumers":[{"repository":"acme/linked"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("known"), "stream.json"), contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 0 {
 		t.Fatalf("unrelated repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
 	}
-	if _, held, unreadable, err := store.RepositoryStream("acme/linked"); err != nil || held || len(unreadable) != 1 {
-		t.Fatalf("indexed repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	if _, held, unreadable, err := store.RepositoryStream("acme/linked"); err != nil || !held || len(unreadable) != 0 {
+		t.Fatalf("linked-consumer repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
 	}
-	if _, held, unreadable, err := store.RepositoryStream("acme/member"); err != nil || held || len(unreadable) != 1 {
+	if _, held, unreadable, err := store.RepositoryStream("acme/member"); err != nil || !held || len(unreadable) != 0 {
 		t.Fatalf("member repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
 	}
 }
 
-func TestRepositoryStreamKeepsIncompleteFutureMembershipUnreadable(t *testing.T) {
+// An incomplete schema-2 member (missing the "repository" field) still
+// decodes to a valid, readable Stream — it simply carries a member with an
+// empty repository, which matches nothing.
+func TestRepositoryStreamReadsSchemaTwoMemberMissingRepositoryField(t *testing.T) {
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
-	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+	if err := os.MkdirAll(store.Dir("incomplete"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	contents := []byte(`{"schema_version":2,"members":[{"future_repository":"acme/app"}]}`)
-	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(store.Dir("incomplete"), "stream.json"), contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 1 {
-		t.Fatalf("incomplete index: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 0 {
+		t.Fatalf("incomplete member: held=%t unreadable=%#v err=%v", held, unreadable, err)
 	}
 }
 
