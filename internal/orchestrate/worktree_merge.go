@@ -812,6 +812,13 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
+	// Captured before any phase transition below, since receipt.Phase is
+	// unconditionally reassigned to "land" further down: this distinguishes
+	// a true resume of an already-published land-phase receipt (the
+	// land-phase re-validation gap this function closes) from an ordinary
+	// first-ever transition from prepare into land, which must keep refusing
+	// on a bare identity mismatch rather than silently re-validating it away.
+	resumedFromLandPhase := receipt.Phase == WorktreeMergePhaseLand
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
 	}
@@ -940,6 +947,59 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, err
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
+	}
+	if receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergeValidationFailed && receipt.Candidate.SHA != "" {
+		// A prepare/validation_failed receipt must never reach publish without
+		// proving the exact candidate SHA again. Earlier code only re-ran
+		// validation for a "preparing" receipt; a receipt that had already
+		// recorded a failed validation fell through untouched and could reach
+		// the push/PR logic below with validation.status still "failed"
+		// (observed for receipts merge-sneat-dev-wb-main-1cbbf49dd60f-40222b81bf14
+		// and merge-sneat-dev-wb-main-...-35e45d0d254e). Resume closes that gap
+		// by re-validating here, before any conflict-advance or publish step.
+		if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
+			storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			if options.CheckTimeout > 0 {
+				storedCheckTimeout = options.CheckTimeout
+			}
+			if options.ShardAttemptTimeout > 0 {
+				storedShardAttemptTimeout = options.ShardAttemptTimeout
+			}
+			receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
+		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("validation_failed candidate is not safely resumable: %w", err))
+		}
+		head, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+		if headErr != nil || head != receipt.Candidate.SHA {
+			if headErr == nil {
+				headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
+			}
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, headErr)
+		}
+		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		validationContext := ctx
+		cancelValidation := func() {}
+		if options.PrepareTimeout > 0 {
+			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
+		}
+		validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+		cancelValidation()
+		if validationErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed validation_failed candidate re-validation failed: %w", validationErr))
+		}
+		receipt.Status = WorktreeMergePrepared
+		receipt.Failure = ""
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
 	}
 	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 	if advanceErr != nil {
@@ -1186,6 +1246,82 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
+	}
+	if resumedFromLandPhase && !options.StopBeforeMerge {
+		// A land-phase receipt whose candidate has moved past its last proven
+		// SHA must never reach a publish or landing transition without proving
+		// the exact candidate SHA again. Before this block, an ordinary resume
+		// of a receipt shaped like an already-published PR (PullRequest set,
+		// PublishedCandidateSHA naming an old head) whose candidate had since
+		// advanced to a new, still-failing SHA (Status validation_failed) fell
+		// straight through the old published-PR carve-out below and pushed the
+		// unvalidated candidate to the PR branch. StopBeforeMerge is excluded
+		// here because it already re-validates the preserved candidate earlier
+		// in this function (see preparedValidationStillValid above); running
+		// this block too would revalidate the same SHA twice. This block is
+		// gated on resumedFromLandPhase (the receipt's phase as loaded, before
+		// the unconditional reassignment above) rather than the always-true
+		// post-assignment receipt.Phase, so a fresh first-ever transition from
+		// prepare into land keeps refusing on a bare identity mismatch instead
+		// of silently re-validating it away.
+		identity := receipt.ValidationIdentity
+		identityMismatch := identity == nil || identity.CandidateSHA != receipt.Candidate.SHA
+		needsRevalidation := receipt.Status == WorktreeMergeValidationFailed ||
+			receipt.Validation.Revision != receipt.Candidate.SHA || identityMismatch
+		publishedAtCurrentSHA := receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
+		if needsRevalidation && !publishedAtCurrentSHA {
+			if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
+				storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+				if options.CheckTimeout > 0 {
+					storedCheckTimeout = options.CheckTimeout
+				}
+				if options.ShardAttemptTimeout > 0 {
+					storedShardAttemptTimeout = options.ShardAttemptTimeout
+				}
+				receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
+				receipt.UpdatedAt = time.Now().UTC()
+				if err := persistWorktreeMergeReceipt(receipt); err != nil {
+					return receipt, err
+				}
+			}
+			if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			head, headErr := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+			if headErr != nil || head != receipt.Candidate.SHA {
+				if headErr == nil {
+					headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
+				}
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, headErr)
+			}
+			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			validationContext := ctx
+			cancelValidation := func() {}
+			if options.PrepareTimeout > 0 {
+				validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
+			}
+			validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+			cancelValidation()
+			if validationErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed land-phase candidate re-validation failed: %w", validationErr))
+			}
+			// Clear the stale validation_failed status the same way the
+			// prepare-phase re-validation block does (see the WorktreeMergePrepared
+			// assignment above): the guard below refuses on a lingering
+			// validation_failed status even after Validation itself now proves
+			// this exact candidate SHA.
+			receipt.Status = WorktreeMergePrepared
+			receipt.Failure = ""
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
+		}
+	}
+	if err := requireWorktreeMergePublishedValidation(receipt); err != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
 	if options.StopBeforeMerge && receipt.PullRequest != "" {
 		if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
@@ -2898,6 +3034,49 @@ func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMerg
 		SourceSHAs: sourceSHAs, QualityPolicySHA: hex.EncodeToString(policyDigest[:]),
 		WBBuild: buildinfo.Version() + "@" + buildinfo.Revision(), WBExecutableSHA: executableSHA, Validators: validators,
 	}, true
+}
+
+// requireWorktreeMergePublishedValidation is the single choke point every
+// publish and landing transition passes through: push of the candidate
+// branch, direct push of the target, pull-request creation or adoption, and
+// merging the pull request. It refuses unless the receipt's own operation
+// status has left validation_failed for this exact candidate and the
+// recorded validation identity still names that exact candidate SHA — so a
+// stale, unrevalidated, or drifted candidate can never be pushed for its
+// first publish.
+//
+// One carve-out is deliberate and pre-dates this guard: an already-published
+// pull request whose recorded PublishedCandidateSHA still names the exact
+// current candidate SHA, and whose status has not itself gone back to
+// validation_failed, is proven safe by the earlier push gate and by the
+// remote CI checks that ran after that push, not by a fresh local
+// validation. This does NOT cover an advance: once Candidate.SHA moves past
+// PublishedCandidateSHA (a further commit was added, e.g. by
+// advanceResolvedConflictWorktreeMergeCandidate or an --advance resume), the
+// new head is unproven and must pass through the ordinary validation check
+// below — callers are expected to re-validate that exact SHA (see the
+// land-phase re-validation block in LandWorktreeMerge) before ever reaching
+// this guard. The existing exact PR-CI validation-reuse path (the "Decide
+// validation reuse" CI job backing AC
+// pr-land-syncs-and-main-reuses-exact-validation) operates entirely outside
+// this function, on an already-landed target commit, and is unaffected by
+// it.
+func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt) error {
+	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" &&
+		receipt.PublishedCandidateSHA == receipt.Candidate.SHA &&
+		receipt.Status != WorktreeMergeValidationFailed {
+		return nil
+	}
+	identity := receipt.ValidationIdentity
+	if receipt.Status != WorktreeMergeValidationFailed &&
+		receipt.Validation.Revision == receipt.Candidate.SHA &&
+		identity != nil && identity.CandidateSHA == receipt.Candidate.SHA {
+		return nil
+	}
+	return fmt.Errorf(
+		"candidate %s has receipt status %q and validation status %q; publish and landing transitions require a validated exact candidate; run `wb worktree merge resume %s` to re-validate",
+		shortMergeRevision(receipt.Candidate.SHA), receipt.Status, receipt.Validation.Status, receipt.ReceiptPath,
+	)
 }
 
 func preparedValidationStillValid(receipt WorktreeMergeReceipt) (bool, error) {
