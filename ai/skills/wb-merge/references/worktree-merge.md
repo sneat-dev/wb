@@ -58,6 +58,22 @@ run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
 
+Resuming a `prepare/validation_failed` (or interrupted `prepare/preparing`)
+receipt re-runs candidate validation for the exact candidate SHA before doing
+anything else, using the receipt's stored validation timeouts unless
+`--prepare-timeout`/`--check-timeout`/`--shard-attempt-timeout` explicitly
+override them; it never treats a stale failure as an automatic pass. Every
+publish and landing transition — pushing the candidate branch, a direct push
+of the target, opening or adopting a pull request, and merging it — then
+passes through one guard that refuses unless the receipt has left
+`validation_failed` for that exact candidate and the recorded validation
+identity still names that exact SHA, naming the candidate and its validation
+status and pointing back at `wb worktree merge resume <receipt>` to
+re-validate. The only pre-existing exception is an already-published
+candidate being advanced atop its own open pull request, where the push gate
+and the remote CI checks that follow are the proof, not a fresh local
+validation.
+
 After a verified batch landing, WB uses the exact source commits preserved in
 the candidate merge graph to find their pull requests. It closes an open source
 pull request only when its current head still equals that exact commit and its

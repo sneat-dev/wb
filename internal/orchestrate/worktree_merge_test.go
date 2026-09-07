@@ -1198,6 +1198,216 @@ func TestLandWorktreeMergeRevalidatesInterruptedPreparingCandidate(t *testing.T)
 	}
 }
 
+// TestLandWorktreeMergeRevalidatesValidationFailedReceiptThenPublishes covers
+// the fix for the 2026-09-07 incident: a receipt whose status is exactly
+// prepare/validation_failed had no branch in LandWorktreeMerge that re-ran
+// validation, so resume pushed the unvalidated candidate straight to a pull
+// request. Resume must now revalidate the exact candidate SHA before any
+// publish, honoring stored timeouts unless the caller overrides them.
+func TestLandWorktreeMergeRevalidatesValidationFailedReceiptThenPublishes(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "resume-validation-failed-source", "feature/resume-validation-failed", "change.txt", "change\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the exact defective receipt shape: phase=prepare,
+	// status=validation_failed, with the candidate SHA already recorded but
+	// its recorded validation stale/failed and unfingerprinted.
+	receipt.Status = WorktreeMergeValidationFailed
+	receipt.Failure = "candidate check failed"
+	receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(12*time.Minute, 5*time.Minute)
+	receipt.Validation = quality.VerificationReport{Status: quality.StatusFailed, Revision: receipt.Candidate.SHA}
+	receipt.BaselineValidation = quality.VerificationReport{}
+	receipt.ValidationIdentity = nil
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+
+	var events []progress.Event
+	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		PrepareTimeout: time.Minute, ShardAttemptTimeout: 30 * time.Second,
+		Progress: func(event progress.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatalf("resume of a re-passing validation_failed receipt was refused: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded || landed.Validation.Status != quality.StatusPassed || landed.Validation.Revision != receipt.Candidate.SHA {
+		t.Fatalf("landed receipt after revalidation = %+v", landed)
+	}
+	foundRevalidate := false
+	for _, event := range events {
+		if event.Phase == "revalidate_candidate" && event.State == progress.Started {
+			foundRevalidate = true
+		}
+	}
+	if !foundRevalidate {
+		t.Fatalf("resume did not report re-running validation for the validation_failed receipt: %+v", events)
+	}
+	stored, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	// The explicit ShardAttemptTimeout override wins; the omitted CheckTimeout
+	// inherits the value the receipt already had stored — the same rule
+	// interrupted-preparing resume already follows.
+	check, shard := receiptWorktreeMergeValidationTimeouts(stored)
+	if check != 12*time.Minute || shard != 30*time.Second {
+		t.Fatalf("resume lost stored or overridden validation limits: check=%s shard=%s", check, shard)
+	}
+	if stored.Status != WorktreeMergeLanded || stored.ValidationIdentity == nil || stored.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA {
+		t.Fatalf("persisted receipt after revalidated publish = %+v", stored)
+	}
+}
+
+// TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked proves the
+// other half of the guard: when the re-run validation fails again, the
+// receipt stays prepare/validation_failed and nothing reaches the remote —
+// resume must not silently downgrade a still-broken candidate into a push.
+func TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "still-failing-source", "feature/still-failing", "candidate.go", "package app\n\nfunc Candidate() { missingCandidate }\n")
+
+	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA == "" || failed.Phase != WorktreeMergePhasePrepare {
+		t.Fatalf("initial validation failure = receipt %+v err %v", failed, err)
+	}
+	remoteBefore := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "ls-remote", fixture.repository.CloneURL, "refs/heads/"+failed.Candidate.Branch))
+	if remoteBefore != "" {
+		t.Fatalf("candidate branch already present on origin before resume: %q", remoteBefore)
+	}
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: failed.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatalf("resume of a still-failing candidate was not refused: receipt=%+v", resumed)
+	}
+	if resumed.Phase != WorktreeMergePhasePrepare || resumed.Status != WorktreeMergeValidationFailed {
+		t.Fatalf("still-failing resume receipt = %+v, want prepare/validation_failed", resumed)
+	}
+	remoteAfter := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "ls-remote", fixture.repository.CloneURL, "refs/heads/"+failed.Candidate.Branch))
+	if remoteAfter != "" {
+		t.Fatalf("still-failing resume pushed the candidate branch: %q", remoteAfter)
+	}
+	stored, readErr := readWorktreeMergeReceipt(failed.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if stored.Phase != WorktreeMergePhasePrepare || stored.Status != WorktreeMergeValidationFailed || stored.PullRequest != "" {
+		t.Fatalf("persisted still-failing receipt = %+v", stored)
+	}
+}
+
+// TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate unit
+// tests the single guard every publish and landing transition calls through,
+// including the founder-approved carve-out for an already-published
+// candidate advancing atop its own open pull request.
+func TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate(t *testing.T) {
+	base := WorktreeMergeReceipt{
+		ReceiptPath: "/tmp/receipt.json",
+		Status:      WorktreeMergePrepared,
+		Candidate:   WorktreeMergeCandidate{SHA: "cafef00d"},
+		Validation:  quality.VerificationReport{Status: quality.StatusPassed, Revision: "cafef00d"},
+		ValidationIdentity: &WorktreeMergeValidationIdentity{
+			CandidateSHA: "cafef00d",
+		},
+	}
+	if err := requireWorktreeMergePublishedValidation(base); err != nil {
+		t.Fatalf("validated exact candidate was refused: %v", err)
+	}
+
+	failedStatus := base
+	failedStatus.Status = WorktreeMergeValidationFailed
+	if err := requireWorktreeMergePublishedValidation(failedStatus); err == nil ||
+		!strings.Contains(err.Error(), "cafef00d") || !strings.Contains(err.Error(), "wb worktree merge resume /tmp/receipt.json") {
+		t.Fatalf("validation_failed receipt status was not refused with a resume hint: %v", err)
+	}
+
+	mismatchedIdentity := base
+	identity := *base.ValidationIdentity
+	identity.CandidateSHA = "deadbeef"
+	mismatchedIdentity.ValidationIdentity = &identity
+	if err := requireWorktreeMergePublishedValidation(mismatchedIdentity); err == nil {
+		t.Fatal("candidate SHA identity mismatch was not refused")
+	}
+
+	staleRevision := base
+	staleRevision.Validation.Revision = "deadbeef"
+	if err := requireWorktreeMergePublishedValidation(staleRevision); err == nil {
+		t.Fatal("validation recorded against a different revision was not refused")
+	}
+
+	missingIdentity := base
+	missingIdentity.ValidationIdentity = nil
+	if err := requireWorktreeMergePublishedValidation(missingIdentity); err == nil {
+		t.Fatal("missing validation identity was not refused")
+	}
+
+	// The already-published, already-open-pull-request advance carve-out
+	// bypasses the check entirely, even for an otherwise-refusable receipt.
+	publishedAdvance := failedStatus
+	publishedAdvance.PullRequest = "https://example.test/acme/app/pull/1"
+	publishedAdvance.PublishedCandidateSHA = "cafef00d"
+	if err := requireWorktreeMergePublishedValidation(publishedAdvance); err != nil {
+		t.Fatalf("already-published candidate advance was incorrectly refused: %v", err)
+	}
+}
+
+// TestLandWorktreeMergeRefusesPublishWhenValidationIdentityMismatchesCandidate
+// exercises the guard through the real publish/land path with a hand-built
+// receipt: a prepared receipt whose validation identity no longer names the
+// exact candidate SHA must be refused before any remote ref is touched.
+func TestLandWorktreeMergeRefusesPublishWhenValidationIdentityMismatchesCandidate(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "identity-mismatch-source", "feature/identity-mismatch", "change.txt", "change\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != WorktreeMergePrepared || receipt.ValidationIdentity == nil {
+		t.Fatalf("prepared fixture receipt = %+v", receipt)
+	}
+	mismatched := *receipt.ValidationIdentity
+	mismatched.CandidateSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	receipt.ValidationIdentity = &mismatched
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+
+	refused, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "wb worktree merge resume") {
+		t.Fatalf("identity-mismatched candidate was not refused: receipt=%+v err=%v", refused, err)
+	}
+	if refused.Status != WorktreeMergeConflict {
+		t.Fatalf("identity-mismatched refusal receipt = %+v", refused)
+	}
+	remoteAfter := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", fixture.repository.CloneURL, "refs/heads/"+receipt.Candidate.Branch))
+	if remoteAfter != "" {
+		t.Fatalf("identity-mismatched candidate was pushed: %q", remoteAfter)
+	}
+}
+
 func TestLandWorktreeMergeResumeCompleteCleanupClearsStaleFailure(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "resume-complete-source", "feature/resume-complete", "cleanup.txt", "cleanup\n")
