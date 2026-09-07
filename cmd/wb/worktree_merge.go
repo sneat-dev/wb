@@ -30,6 +30,8 @@ type worktreeMergeFlags struct {
 	shardAttemptTimeout                    time.Duration
 	retry                                  int
 	interval                               time.Duration
+	takeOverLane                           bool
+	laneReason                             string
 }
 
 // checkHostLoadAdmission refuses to start candidate validation when the
@@ -109,7 +111,16 @@ checks_failed receipt whose exact published pull request was closed without
 ever merging and whose remote candidate branch is gone, proved fresh from
 GitHub and the current remote target: the case where the target advanced past
 a published candidate, WB refused to rewrite the published branch without
-force-push, and the operator retired the stale pull request by hand.`,
+force-push, and the operator retired the stale pull request by hand.
+
+LANDING LANE. Only one live WB session may drive this (repository, target)
+lane at a time, across merge, prepare, land, resume, and revert. A different
+live session already landing here is refused, naming that session, its pid,
+and the receipt it is driving; ask it to hand off with
+'wb session request-handoff <id>', or force the issue with
+--take-over-lane --lane-reason "<text>" (recorded on the lane and the
+receipt). A session whose registry entry is gone, or whose heartbeat has gone
+stale, is taken over automatically with a printed note.`,
 		Example: `# Finish one compatible worktree end to end
 wb worktree merge . --route auto --cleanup
 
@@ -266,6 +277,7 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 	campaign := newWorktreeMergeProgress(command, *flags)
 	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission))
 	finishWorktreeMergeProgress(campaign, receipt, err)
+	releaseWorktreeMergeLane(receipt)
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 		return writeErr
 	}
@@ -364,6 +376,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter(), admission))
 			finishWorktreeMergeProgress(campaign, receipt, err)
+			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -410,6 +423,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission))
 			finishWorktreeMergeProgress(campaign, receipt, err)
+			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -453,6 +467,7 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission))
 			}
 			finishWorktreeMergeProgress(campaign, receipt, err)
+			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -1086,6 +1101,8 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().StringVar(&flags.format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
 	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: 2x runtime.NumCPU()); the check is disabled automatically in CI (CI=true/GITHUB_ACTIONS=true) and can be disabled or overridden with WB_ADMISSION_LOAD_FLOOR (0 disables, a positive number sets the floor)")
+	addLandingLaneTakeoverFlag(command, &flags.takeOverLane)
+	command.Flags().StringVar(&flags.laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
 }
 
 func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
@@ -1109,6 +1126,9 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.retry < 0 || flags.timeout <= 0 || flags.prepareTimeout < 0 || flags.checkTimeout < 0 || flags.shardAttemptTimeout < 0 {
 		return fmt.Errorf("--timeout must be positive; --prepare-timeout, --check-timeout, and --shard-attempt-timeout must not be negative; --retry must not be negative")
 	}
+	if flags.takeOverLane && strings.TrimSpace(flags.laneReason) == "" {
+		return fmt.Errorf("--take-over-lane requires --lane-reason <text>")
+	}
 	return nil
 }
 
@@ -1116,7 +1136,8 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
-		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission}
+		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission,
+		Lane: landingLaneGuardRequest("wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergeLandOptions {
@@ -1124,6 +1145,7 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
+		Lane:            landingLaneGuardRequest("wb worktree merge land", flags.laneReason, flags.takeOverLane),
 		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission}
 }
 

@@ -4341,11 +4341,13 @@
                 "--format",
                 "--keep",
                 "--keep-commits",
+                "--lane-reason",
                 "--merge-method",
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
                 "--subject",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
@@ -9587,6 +9589,7 @@
                 "--cleanup",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--on-failure",
                 "--prepare-timeout",
@@ -9595,6 +9598,7 @@
                 "--retry",
                 "--route",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -10748,6 +10752,7 @@
                 "--cleanup",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--on-failure",
                 "--prepare-timeout",
@@ -10756,6 +10761,7 @@
                 "--retry",
                 "--route",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -11491,10 +11497,12 @@
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
@@ -11574,6 +11582,7 @@
                 "--check-timeout",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--prepare-timeout",
                 "--progress",
@@ -11581,6 +11590,7 @@
                 "--rebatch-receipt",
                 "--retry",
                 "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
@@ -11878,11 +11888,13 @@
                 "--shard-attempt-timeout",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
                 "--stop-before-merge",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
@@ -11992,10 +12004,12 @@
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [

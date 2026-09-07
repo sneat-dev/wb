@@ -21,6 +21,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -237,9 +238,15 @@ type WorktreeMergeReceipt struct {
 	// from the receipt rather than only from the caller's own log. Set by
 	// cmd/wb before the orchestrate call whose validation the check gates.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission `json:"host_load_admission,omitempty"`
-	ReceiptPath       string                          `json:"receipt_path"`
-	CreatedAt         time.Time                       `json:"created_at"`
-	UpdatedAt         time.Time                       `json:"updated_at"`
+	// LaneOwner is the landing-lane record this receipt's session acquired,
+	// when the caller populated Lane (see LaneGuardRequest); nil when no
+	// guard ran. Recording it on the receipt is what lets `--format json`
+	// show a takeover's reason and prior owner, matching what `cmd/wb`'s help
+	// and ai/skills/wb-merge/SKILL.md promise.
+	LaneOwner   *landinglane.Record `json:"lane_owner,omitempty"`
+	ReceiptPath string              `json:"receipt_path"`
+	CreatedAt   time.Time           `json:"created_at"`
+	UpdatedAt   time.Time           `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -273,6 +280,9 @@ type WorktreeMergeLandOptions struct {
 	// When set it is copied onto the receipt so the override is provable from
 	// the receipt itself, not only from the caller's own log.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission
+	// Lane optionally names the acquiring session for the landing-lane
+	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
+	Lane LaneGuardRequest
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -305,9 +315,12 @@ type WorktreeMergePrepareOptions struct {
 	// calling PrepareWorktreeMerge, if any. It is copied onto the new receipt
 	// so the override is provable from the receipt itself.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission
+	// Lane optionally names the acquiring session for the landing-lane
+	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
+	Lane LaneGuardRequest
 }
 
-func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (WorktreeMergeReceipt, error) {
+func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (preparedReceipt WorktreeMergeReceipt, prepareErr error) {
 	if options.PrepareTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, options.PrepareTimeout)
@@ -344,6 +357,30 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if source.Branch == target {
 			return WorktreeMergeReceipt{}, fmt.Errorf("source worktree %s is on target branch %q", source.Worktree, target)
 		}
+	}
+	// The landing-lane guard runs before any receipt is created: a different
+	// live session already driving this (repository, target) lane must be
+	// refused before this call does any work it would otherwise have to
+	// strand or re-prepare. See LaneGuardRequest.
+	laneRecord, laneErr := acquireLandingLane(projectsRoot, repository, target, options.Lane)
+	if laneErr != nil {
+		return WorktreeMergeReceipt{}, laneErr
+	}
+	if laneRecord.Owner.WBSessionID != "" {
+		// Every return below this point that leaves prepareErr set means no
+		// receipt now tracks this session's ownership of the lane (either
+		// none was created yet, or the attempt was refused outright), so the
+		// lane must not wait out its 30-minute stale timeout before a
+		// different session can use it. A successful prepare deliberately
+		// keeps the lane: a later `wb worktree merge land`/`resume` for the
+		// same receipt still needs it, and cmd/wb releases it itself once the
+		// receipt's status says the lane is no longer needed (see
+		// WorktreeMergeLaneReleasable).
+		defer func() {
+			if prepareErr != nil {
+				_ = releaseLandingLane(projectsRoot, repository, target, laneRecord.Owner.WBSessionID)
+			}
+		}()
 	}
 	var rebatch *WorktreeMergePreparedRebatch
 	if strings.TrimSpace(options.RebatchReceipt) != "" {
@@ -709,6 +746,10 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		HostLoadAdmission:  options.HostLoadAdmission,
 		ReceiptPath:        receiptPath, CreatedAt: createdAt, UpdatedAt: now,
 	}
+	if laneRecord.Owner.WBSessionID != "" {
+		record := laneRecord
+		receipt.LaneOwner = &record
+	}
 	if rebatch != nil {
 		receipt.RebatchOf = rebatch.ReceiptPath
 		receipt.RebatchedCandidates = []WorktreeMergeCandidate{rebatch.OriginalCandidate}
@@ -910,6 +951,16 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, err
 		}
 		return receipt, nil
+	}
+	// The landing-lane guard runs before any push, merge, or check
+	// observation: a different live session already driving this
+	// (repository, target) lane must be refused before this call does more
+	// work it would otherwise have to strand. See LaneGuardRequest.
+	if laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane); laneErr != nil {
+		return receipt, laneErr
+	} else if laneRecord.Owner.WBSessionID != "" {
+		record := laneRecord
+		receipt.LaneOwner = &record
 	}
 	if receipt.Candidate.Worktree == "" {
 		return receipt, fmt.Errorf("receipt %s has no prepared candidate", receiptPath)
@@ -2356,11 +2407,17 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	if interval >= slice {
 		return PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than wait slice %s", interval, slice)
 	}
+	// One slice can still run several minutes of CI observation: keep the
+	// lane's heartbeat fresh throughout so it never goes stale out from under
+	// this still-live session. See startLandingLaneHeartbeat. A no-op when
+	// options.Lane was never populated (no guard running for this call).
+	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane.Owner.WBSessionID, 0)
 	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
 		Slice: slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
 		OperationProgress: options.Progress,
 	})
+	stopLaneHeartbeat()
 	if err != nil {
 		return result, err
 	}
