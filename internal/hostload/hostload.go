@@ -9,6 +9,7 @@
 package hostload
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -103,15 +105,43 @@ func Check(read Reader, floor float64, allow bool) error {
 	return errors.New(message)
 }
 
+// consumersTimeout bounds how long Consumers waits on `ps` before giving up.
+// A hung or slow diagnostics command must never block admission. It is a
+// var, not a const, so tests can shrink it instead of actually waiting.
+var consumersTimeout = 2 * time.Second
+
+// consumerRunner executes the consumer-listing command and returns its raw
+// output. It must honor ctx the way exec.CommandContext does — return once
+// ctx is done, not before — so Consumers stays bounded by consumersTimeout
+// regardless of implementation. Tests inject a fake that blocks on
+// ctx.Done() to simulate a hang, or one that fails outright, without
+// depending on a real `ps` binary or the real clock.
+var consumerRunner = runConsumerCommand
+
+func runConsumerCommand(ctx context.Context) ([]byte, error) {
+	// pid,pcpu,etime,comm — never "command"/"args": the executable name only,
+	// never argv, so a secret passed as a CLI flag (e.g. --token=...) can
+	// never be echoed into a refusal message. See truncateConsumerName.
+	return exec.CommandContext(ctx, "ps", "-Ao", "pid,pcpu,etime,comm").Output()
+}
+
 // Consumers returns up to n lines describing the busiest processes on the
 // host, most CPU-hungry first, for use in a refusal message. Best-effort:
-// any failure to run or parse `ps` yields an empty slice, never an error.
+// any failure to run or parse `ps`, or a timeout, yields either an empty
+// slice or a single one-line note — never an error, and never argv. It never
+// blocks admission: the command is bounded by consumersTimeout regardless of
+// how long a real `ps` would otherwise take.
 func Consumers(n int) []string {
 	if n <= 0 {
 		return nil
 	}
-	output, err := exec.Command("ps", "-Ao", "pid,pcpu,etime,command").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), consumersTimeout)
+	defer cancel()
+	output, err := consumerRunner(ctx)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return []string{"(process diagnostics omitted: ps timed out)"}
+		}
 		return nil
 	}
 	lines := strings.Split(string(output), "\n")
@@ -128,15 +158,22 @@ func Consumers(n int) []string {
 		if trimmed == "" {
 			continue
 		}
+		// Only the first four whitespace-separated fields are ever trusted,
+		// matching the exact "pid pcpu etime comm" shape requested from ps.
+		// Anything beyond field 4 is discarded rather than joined back in,
+		// so a hostile or misbehaving `ps` cannot smuggle argv-shaped text
+		// (e.g. a secret token) past this parser into a refusal message.
 		fields := strings.Fields(trimmed)
 		if len(fields) < 4 {
 			continue
 		}
-		pcpu, err := strconv.ParseFloat(fields[1], 64)
+		pid, pcpuField, etime, comm := fields[0], fields[1], fields[2], fields[3]
+		pcpu, err := strconv.ParseFloat(pcpuField, 64)
 		if err != nil {
 			continue
 		}
-		entries = append(entries, entry{pcpu: pcpu, text: truncateConsumer(trimmed)})
+		text := fmt.Sprintf("pid=%s cpu=%s%% etime=%s comm=%s", pid, pcpuField, etime, truncateConsumerName(comm))
+		entries = append(entries, entry{pcpu: pcpu, text: text})
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].pcpu > entries[j].pcpu })
 	if len(entries) > n {
@@ -149,13 +186,17 @@ func Consumers(n int) []string {
 	return result
 }
 
-const maxConsumerLineLength = 120
+const maxConsumerNameLength = 60
 
-func truncateConsumer(line string) string {
-	if len(line) <= maxConsumerLineLength {
-		return line
+// truncateConsumerName reduces a comm field to its executable basename and
+// bounds its length. comm is a single field (no spaces), so this can never
+// reveal argv — only the process name ps itself reported.
+func truncateConsumerName(comm string) string {
+	name := filepath.Base(comm)
+	if len(name) <= maxConsumerNameLength {
+		return name
 	}
-	return line[:maxConsumerLineLength] + "…"
+	return name[:maxConsumerNameLength] + "…"
 }
 
 // expandPath expands a leading "~/" to the user's home directory, matching

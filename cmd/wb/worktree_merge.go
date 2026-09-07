@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/quality"
 )
 
 type worktreeMergeFlags struct {
@@ -36,12 +37,36 @@ type worktreeMergeFlags struct {
 // unless --allow-saturated-host was passed. See internal/hostload: two
 // orphaned fixture processes drove load to 7-12 on a shared machine and the
 // merge-gate kept scheduling more CPU-heavy validation on top of it.
-func checkHostLoadAdmission(flags worktreeMergeFlags) error {
+//
+// On success it also returns the admission record for this check (nil only
+// when the host's load could not be read at all, e.g. an unsupported
+// platform) so the caller can attach it to the merge receipt — see
+// orchestrate.WorktreeMergeHostLoadAdmission — making an override provable
+// from the receipt itself, not only from the caller's own log.
+func checkHostLoadAdmission(flags worktreeMergeFlags) (*orchestrate.WorktreeMergeHostLoadAdmission, error) {
 	floor := hostload.Floor("")
 	if err := hostload.Check(nil, floor, flags.allowSaturatedHost); err != nil {
-		return fmt.Errorf("wb worktree merge: %w", err)
+		return nil, fmt.Errorf("wb worktree merge: %w", err)
 	}
-	return nil
+	return hostLoadAdmissionRecord(floor, flags.allowSaturatedHost), nil
+}
+
+// hostLoadAdmissionRecord reads the current load directly (hostload.Check
+// short-circuits that read when allow is true) so the receipt always names
+// the exact load an override admitted past, not just that one was passed.
+// A reader that cannot report at all (missing/unsupported source) yields no
+// record — there is nothing truthful to write down.
+func hostLoadAdmissionRecord(floor float64, allow bool) *orchestrate.WorktreeMergeHostLoadAdmission {
+	if hostload.System == nil {
+		return nil
+	}
+	load, err := hostload.System()
+	if err != nil {
+		return nil
+	}
+	return &orchestrate.WorktreeMergeHostLoadAdmission{
+		Load: load, Floor: floor, Overridden: allow, CheckedAt: time.Now().UTC(),
+	}
 }
 
 func newWorktreeMergeCmd() *cobra.Command {
@@ -221,11 +246,12 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 	if err := refuseLinkedWorktrees(args); err != nil {
 		return err
 	}
-	if err := checkHostLoadAdmission(*flags); err != nil {
+	admission, err := checkHostLoadAdmission(*flags)
+	if err != nil {
 		return err
 	}
 	campaign := newWorktreeMergeProgress(command, *flags)
-	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter()), landMergeOptions(*flags, "", campaign.reporter()))
+	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission))
 	finishWorktreeMergeProgress(campaign, receipt, err)
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 		return writeErr
@@ -318,11 +344,12 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			if err := refuseLinkedWorktrees(args); err != nil {
 				return err
 			}
-			if err := checkHostLoadAdmission(flags); err != nil {
+			admission, err := checkHostLoadAdmission(flags)
+			if err != nil {
 				return err
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()))
+			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter(), admission))
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
@@ -352,11 +379,23 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			if err := refuseLinkedReceiptWorktrees(args[0]); err != nil {
 				return err
 			}
-			if err := checkHostLoadAdmission(flags); err != nil {
-				return err
+			// Gate on host load only when this step will actually run local
+			// CPU-heavy validation. A receipt that is already complete, or
+			// already published and validated for its exact candidate SHA,
+			// neither re-validates nor does anything else CPU-heavy here — it
+			// only proves/observes remote state — so refusing it starves an
+			// unrelated, already-finished lane for no reason. See
+			// hostLoadCheckSkippable.
+			var admission *orchestrate.WorktreeMergeHostLoadAdmission
+			if peeked, peekErr := orchestrate.PeekWorktreeMergeReceipt(projectsRoot, args[0]); peekErr != nil || !hostLoadCheckSkippable(peeked) {
+				var err error
+				admission, err = checkHostLoadAdmission(flags)
+				if err != nil {
+					return err
+				}
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter()))
+			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission))
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
@@ -384,14 +423,15 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
-			if err := checkHostLoadAdmission(flags); err != nil {
+			admission, err := checkHostLoadAdmission(flags)
+			if err != nil {
 				return err
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
 			progress.Report(campaign.reporter(), progress.Event{Operation: "worktree_merge", Phase: "prepare_revert", State: progress.Started, Detail: args[0]})
 			receipt, err := orchestrate.PrepareWorktreeMergeRevert(command.Context(), projectsRoot, args[0], flags.timeout, flags.retry)
 			if err == nil {
-				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter()))
+				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission))
 			}
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -989,19 +1029,39 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	return nil
 }
 
-func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter) orchestrate.WorktreeMergePrepareOptions {
+func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
-		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
+		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission}
 }
 
-func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {
+func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
-		StopBeforeMerge: flags.stopBeforeMerge}
+		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission}
+}
+
+// hostLoadCheckSkippable reports whether a land/resume step for receipt will
+// neither run local CPU-heavy validation nor push a fresh candidate, so
+// gating it on host load would only refuse work that cannot add load. Two
+// shapes qualify: a receipt already complete (nothing left to do), and a
+// receipt whose exact candidate SHA is already published in an open pull
+// request and already validated (only remote observation/merge is left).
+// Every other status — preparing, validation_failed, checks_pending, a
+// stale-candidate published receipt, etc. — still re-validates or otherwise
+// does CPU-heavy work locally, so the check still applies to it.
+func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt) bool {
+	if receipt.Status == orchestrate.WorktreeMergeComplete {
+		return true
+	}
+	return strings.TrimSpace(receipt.PullRequest) != "" &&
+		receipt.ValidationIdentity != nil &&
+		receipt.ValidationIdentity.CandidateSHA == receipt.Candidate.SHA &&
+		receipt.Candidate.SHA != "" &&
+		receipt.Validation.Status == quality.StatusPassed
 }
 
 func newWorktreeMergeProgress(command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
@@ -1032,7 +1092,14 @@ func writeWorktreeMergeReceipt(writer io.Writer, format string, receipt orchestr
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(receipt)
 	}
-	_, err := fmt.Fprintf(writer, "status: %s\nrepository: %s\ntarget: %s\ncandidate: %s\nreceipt: %s\nresume: wb %s\n",
-		receipt.Status, receipt.Repository, receipt.Target, receipt.Candidate.SHA, receipt.ReceiptPath, strings.Join(receipt.ResumeArgs, " "))
-	return err
+	if _, err := fmt.Fprintf(writer, "status: %s\nrepository: %s\ntarget: %s\ncandidate: %s\nreceipt: %s\nresume: wb %s\n",
+		receipt.Status, receipt.Repository, receipt.Target, receipt.Candidate.SHA, receipt.ReceiptPath, strings.Join(receipt.ResumeArgs, " ")); err != nil {
+		return err
+	}
+	if admission := receipt.HostLoadAdmission; admission != nil {
+		_, err := fmt.Fprintf(writer, "host_load_admission: load=%.2f floor=%.2f overridden=%t checked_at=%s\n",
+			admission.Load, admission.Floor, admission.Overridden, admission.CheckedAt.Format(time.RFC3339))
+		return err
+	}
+	return nil
 }

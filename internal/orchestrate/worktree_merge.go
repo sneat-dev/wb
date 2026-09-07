@@ -163,6 +163,18 @@ type WorktreeMergeForwardRepairReceipt struct {
 	Failure      string                `json:"failure"`
 }
 
+// WorktreeMergeHostLoadAdmission records one host-load admission check that
+// actually ran against a merge verb (prepare/merge/land/resume/revert). A
+// receipt with no such check recorded either predates this field or the
+// check was skipped because the step it gates never re-runs local CPU-heavy
+// validation (see cmd/wb's hostLoadCheckSkippable).
+type WorktreeMergeHostLoadAdmission struct {
+	Load       float64   `json:"load"`
+	Floor      float64   `json:"floor"`
+	Overridden bool      `json:"overridden"`
+	CheckedAt  time.Time `json:"checked_at"`
+}
+
 type WorktreeMergeReceipt struct {
 	SchemaVersion         int                                            `json:"schema_version"`
 	ID                    string                                         `json:"id"`
@@ -201,9 +213,14 @@ type WorktreeMergeReceipt struct {
 	RebatchedCandidates []WorktreeMergeCandidate `json:"rebatched_candidates,omitempty"`
 	Failure             string                   `json:"failure,omitempty"`
 	ResumeArgs          []string                 `json:"resume_args,omitempty"`
-	ReceiptPath         string                   `json:"receipt_path"`
-	CreatedAt           time.Time                `json:"created_at"`
-	UpdatedAt           time.Time                `json:"updated_at"`
+	// HostLoadAdmission records the most recent host-load admission check
+	// that actually ran for this receipt's lane, so the override is provable
+	// from the receipt rather than only from the caller's own log. Set by
+	// cmd/wb before the orchestrate call whose validation the check gates.
+	HostLoadAdmission *WorktreeMergeHostLoadAdmission `json:"host_load_admission,omitempty"`
+	ReceiptPath       string                          `json:"receipt_path"`
+	CreatedAt         time.Time                       `json:"created_at"`
+	UpdatedAt         time.Time                       `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -231,6 +248,12 @@ type WorktreeMergeLandOptions struct {
 	// persisted as future landing intent: a bare resume is how the merger takes
 	// over from the published handoff.
 	StopBeforeMerge bool
+	// HostLoadAdmission is the host-load admission check cmd/wb ran, if any,
+	// before calling Land/ResumeWorktreeMerge. Nil means the caller decided no
+	// check was needed for this step (e.g. it neither validates nor pushes).
+	// When set it is copied onto the receipt so the override is provable from
+	// the receipt itself, not only from the caller's own log.
+	HostLoadAdmission *WorktreeMergeHostLoadAdmission
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -259,6 +282,10 @@ type WorktreeMergePrepareOptions struct {
 	// RebatchReceipt is an immutable, still-unlanded prepared or exact published
 	// pending/failed-check receipt whose sources are replaced additively.
 	RebatchReceipt string
+	// HostLoadAdmission is the host-load admission check cmd/wb ran before
+	// calling PrepareWorktreeMerge, if any. It is copied onto the new receipt
+	// so the override is provable from the receipt itself.
+	HostLoadAdmission *WorktreeMergeHostLoadAdmission
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (WorktreeMergeReceipt, error) {
@@ -646,6 +673,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		ValidationTimeouts: worktreeMergeValidationTimeouts(options.CheckTimeout, options.ShardAttemptTimeout),
 		SourceRefreshes:    refreshes,
 		ResumeArgs:         worktreeMergePrepareResumeArgs(receiptPath, options.ProgressRequested),
+		HostLoadAdmission:  options.HostLoadAdmission,
 		ReceiptPath:        receiptPath, CreatedAt: createdAt, UpdatedAt: now,
 	}
 	if rebatch != nil {
@@ -811,6 +839,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	receipt, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
+	}
+	if options.HostLoadAdmission != nil {
+		receipt.HostLoadAdmission = options.HostLoadAdmission
 	}
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
@@ -3824,6 +3855,20 @@ func persistWorktreeMergeReceipt(receipt WorktreeMergeReceipt) error {
 		return err
 	}
 	return os.Rename(temporaryPath, receipt.ReceiptPath)
+}
+
+// PeekWorktreeMergeReceipt resolves input (a candidate worktree or a receipt
+// path/task, per resolveWorktreeMergeReceiptPath) and reads the receipt it
+// names, read-only. It exists so a landing guard — such as cmd/wb's
+// host-load admission check — can inspect a receipt's exact state before
+// deciding whether the step it gates will re-run local CPU-heavy validation,
+// without duplicating receipt-resolution logic outside this package.
+func PeekWorktreeMergeReceipt(projectsRoot, input string) (WorktreeMergeReceipt, error) {
+	receiptPath, err := resolveWorktreeMergeReceiptPath(projectsRoot, input)
+	if err != nil {
+		return WorktreeMergeReceipt{}, err
+	}
+	return readWorktreeMergeReceipt(receiptPath)
 }
 
 func readWorktreeMergeReceipt(path string) (WorktreeMergeReceipt, error) {

@@ -9532,7 +9532,7 @@
               ],
               "modes": [
                 "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default.",
-                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides."
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
             }
           ],
@@ -10695,7 +10695,7 @@
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
                 "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup.",
                 "After a verified batch landing, reconciles an absorbed source pull request only when its exact current head, base repository, and base branch still match the landing evidence.",
-                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides."
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
             }
           ],
@@ -11317,7 +11317,7 @@
               "modes": [
                 "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
                 "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides. Applies identically to wb worktree merge resume."
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally. Applies identically to wb worktree merge resume."
               ]
             }
           ],
@@ -11403,7 +11403,7 @@
               "modes": [
                 "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, reports stage and validation progress on stderr when requested, and persists a resumable receipt",
                 "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing",
-                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides.",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at).",
                 "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR",
                 "With --rebatch-receipt, replaces one unlanded prepared lane only with a new candidate whose source set retains every old ref at a descendant head and adds a distinct ref; target drift and dirty or ambiguous identity are refused, while immutable evidence is linked by an append-only acknowledgement"
               ]
@@ -11704,7 +11704,7 @@
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides."
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally."
               ]
             }
           ],
@@ -11783,7 +11783,7 @@
               ],
               "modes": [
                 "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route",
-                "Before preparing the revert candidate, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides."
+                "Before preparing the revert candidate, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default runtime.NumCPU()); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
             }
           ],
