@@ -128,28 +128,37 @@ func newDaemonOperationWaitCmd(deps daemonDependencies) *cobra.Command {
 	var format, afterCursor string
 	var timeout time.Duration
 	var jsonOut bool
+	var showProgress bool
+	var progressFile string
 	command := &cobra.Command{Use: "wait <operation-id>", Short: "Wait for a durable operation to reach a terminal state", Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			selected, err := daemonOutputFormat(format, jsonOut)
 			if err != nil {
 				return usageError(err.Error())
 			}
+			progress, closeProgress, err := daemonOperationProgressWriter(command.ErrOrStderr(), showProgress, progressFile)
+			if err != nil {
+				return err
+			}
+			defer closeProgress()
 			ctx := command.Context()
 			if timeout > 0 {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			client, err := daemonOperationClient(ctx, deps, projectsRoot, command.ErrOrStderr())
+			client, err := daemonOperationClient(ctx, deps, projectsRoot, progress)
 			if err != nil {
 				return err
 			}
-			operation, err := waitForDaemonOperation(ctx, command.ErrOrStderr(), client, &daemonv1.Operation{OperationId: args[0], Cursor: afterCursor})
+			operation, err := waitForDaemonOperation(ctx, progress, client, &daemonv1.Operation{OperationId: args[0], Cursor: afterCursor})
 			if err != nil {
 				return err
 			}
 			return writeDaemonOperation(command.OutOrStdout(), selected, operation)
 		}}
+	command.Flags().BoolVar(&showProgress, "progress", true, "emit human progress while waiting; disable for terminal-only agent results")
+	command.Flags().StringVar(&progressFile, "progress-file", "", "append human progress to a file instead of stderr; agent streams contain only the terminal result")
 	command.Flags().StringVar(&afterCursor, "after-cursor", "", "wait for a receipt newer than this opaque cursor")
 	command.Flags().DurationVar(&timeout, "timeout", 0, "total wait limit (default: no limit)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -179,6 +188,26 @@ func newDaemonOperationCancelCmd(deps daemonDependencies) *cobra.Command {
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
+}
+
+// daemonOperationProgressWriter separates human liveness from agent results.
+// Opening an explicit destination must succeed; silently falling back to stderr
+// would wake a harness that requested a terminal-only result stream.
+func daemonOperationProgressWriter(stderr io.Writer, enabled bool, path string) (io.Writer, func(), error) {
+	if !enabled {
+		if path != "" {
+			return nil, nil, usageError("--progress-file cannot be combined with --progress=false")
+		}
+		return io.Discard, func() {}, nil
+	}
+	if path == "" {
+		return stderr, func() {}, nil
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open human progress file: %w", err)
+	}
+	return file, func() { _ = file.Close() }, nil
 }
 
 func waitForDaemonOperation(ctx context.Context, progress io.Writer, client daemonv1connect.DaemonServiceClient, operation *daemonv1.Operation) (*daemonv1.Operation, error) {

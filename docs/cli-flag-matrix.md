@@ -50,7 +50,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
 | `fleet prs` | rejected | rejected | yes | yes |
-| `remote publish`, `remote status`, `remote machines` | yes | `remote publish` only | rejected | yes |
+| `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
@@ -136,3 +136,11 @@ when the command consumes it; otherwise the command must reject it. The
 conformance test `TestPersistentFlagMatrix` exercises every root-flag ×
 leaf-command cell; focused negative cases remain in
 `TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem`.
+
+`daemon operation wait` accepts `--progress=false` for terminal-only output or
+`--progress-file <path>` to append human heartbeats separately. These flags are
+independent of `--format` / `--json`; failure receipts retain error details.
+
+`worktree merge resume` accepts `--prepare-timeout`, `--check-timeout`, and
+`--shard-attempt-timeout` when recovering an interrupted preparing receipt.
+Unspecified validation limits retain the persisted values.

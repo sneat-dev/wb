@@ -278,3 +278,12 @@ None at this time.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
+
+### Interrupted prepare deadlines
+
+`merge resume` may bound interrupted prepare validation with `--prepare-timeout`
+and override `--check-timeout` or `--shard-attempt-timeout`. Positive overrides
+are persisted before retrying validation; unspecified limits retain their stored
+values. The prepare deadline ends when recovery validation completes and does
+not consume the subsequent CI wait budget. Exact-candidate validation remains
+required; timeout is a failure, never a successful receipt.

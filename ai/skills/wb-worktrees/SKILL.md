@@ -1,6 +1,7 @@
 ---
 name: wb-worktrees
-description: Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
+description: >-
+  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
 ---
 
 # WB worktrees

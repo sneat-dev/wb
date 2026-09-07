@@ -20,6 +20,19 @@ remote:
 | One line per machine with publish age | `wb remote machines --json` |
 | Publish after syncing | `wb sync --publish` |
 
+For the hosted event hub, create a machine credential in the Workbench
+dashboard and pipe it directly from the clipboard. The token stays out of argv,
+stdout, config, and command telemetry:
+
+```sh
+pbpaste | wb remote enroll --machine studio-mac --token-stdin
+```
+
+WB verifies the credential before storing it, writes it to a private managed
+file, preserves unrelated `wb.yaml` settings, and restarts the daemon if it is
+running. Use `--restart-daemon=false` only when restart timing is controlled by
+another supervisor.
+
 The store is a git repository: one `machines/<login>/<machine>/snapshot.yaml`
 per machine, so history is the audit trail. Staleness keys off the effective
 heartbeat: the later of the machine's publish and its claim activity

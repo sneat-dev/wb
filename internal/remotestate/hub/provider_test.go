@@ -117,7 +117,9 @@ func TestProviderUsesTokenFileAndListsSafeEntries(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("rotated-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	requests := 0
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
 		if request.Method != http.MethodGet || request.Header.Get("Authorization") != "Bearer rotated-token" {
 			t.Fatalf("request = %s, authorization %q", request.Method, request.Header.Get("Authorization"))
 		}
@@ -127,9 +129,13 @@ func TestProviderUsesTokenFileAndListsSafeEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := provider.List(context.Background())
+	status, err := provider.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	entries := status.Machines
+	if requests != 1 || len(status.Claims) != 0 {
+		t.Fatalf("requests=%d claims=%+v, want one request and no hosted claims", requests, status.Claims)
 	}
 	if len(entries) != 1 || entries[0].Snapshot.Worktrees[0].Repository != "acme/widgets" {
 		t.Fatalf("entries = %+v", entries)

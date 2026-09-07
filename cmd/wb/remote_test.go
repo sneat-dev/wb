@@ -59,6 +59,39 @@ type remoteFixture struct {
 	projectsRoot, origin, configPath string
 }
 
+type slowStatusProvider struct {
+	delay                               time.Duration
+	statusCalls, listCalls, claimsCalls int
+}
+
+func (provider *slowStatusProvider) Publish(context.Context, remotestate.Snapshot) (remotestate.PublishResult, error) {
+	return remotestate.PublishResult{}, errors.New("unexpected Publish call")
+}
+
+func (provider *slowStatusProvider) List(context.Context) ([]remotestate.Entry, error) {
+	provider.listCalls++
+	return nil, errors.New("unexpected List call")
+}
+
+func (provider *slowStatusProvider) Claim(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
+	return remotestate.ClaimOutcome{}, errors.New("unexpected Claim call")
+}
+
+func (provider *slowStatusProvider) Release(context.Context, string, string, string, bool) (remotestate.ReleaseOutcome, error) {
+	return remotestate.ReleaseOutcome{}, errors.New("unexpected Release call")
+}
+
+func (provider *slowStatusProvider) Claims(context.Context) ([]remotestate.ClaimEntry, error) {
+	provider.claimsCalls++
+	return nil, errors.New("unexpected Claims call")
+}
+
+func (provider *slowStatusProvider) Status(context.Context) (remotestate.StatusSnapshot, error) {
+	provider.statusCalls++
+	time.Sleep(provider.delay)
+	return remotestate.StatusSnapshot{}, nil
+}
+
 func newRemoteFixture(t *testing.T, machine string) remoteFixture {
 	t.Helper()
 	setGitIdentity(t)
@@ -334,6 +367,41 @@ func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status output lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestRemoteStatusUsesOneProviderReadAndHeartbeatsWithoutContaminatingJSON(t *testing.T) {
+	provider := &slowStatusProvider{delay: 35 * time.Millisecond}
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := remoteDeps{
+		configPath: configPath,
+		open: func(remotestate.Config, string) (remotestate.Provider, error) {
+			return provider, nil
+		},
+		now:               func() time.Time { return time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC) },
+		progressHeartbeat: 5 * time.Millisecond,
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runRemoteStatus(deps, t.TempDir(), 24*time.Hour, "", true, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if provider.statusCalls != 1 || provider.listCalls != 0 || provider.claimsCalls != 0 {
+		t.Fatalf("provider calls: Status=%d List=%d Claims=%d, want 1/0/0", provider.statusCalls, provider.listCalls, provider.claimsCalls)
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout is not one JSON document: %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "remote status:") {
+		t.Fatalf("progress contaminated stdout: %q", stdout.String())
+	}
+	if count := strings.Count(stderr.String(), "remote status: refreshing machines and claims"); count < 3 {
+		t.Fatalf("stderr emitted %d refresh liveness events, want at least 3: %q", count, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "remote status: refreshed 0 machines, 0 claims") {
+		t.Fatalf("stderr lacks terminal summary: %q", stderr.String())
 	}
 }
 

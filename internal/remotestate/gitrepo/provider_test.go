@@ -1,7 +1,9 @@
 package gitrepo
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -447,6 +449,65 @@ func TestListSurfacesCorruptEntryAsError(t *testing.T) {
 	carol := entries[1]
 	if carol.Snapshot.Login != "carol" || carol.Snapshot.Machine != "desk" || !strings.Contains(carol.Error, "schema_version 99") {
 		t.Fatalf("corrupt entry = %+v", carol)
+	}
+}
+
+// TestStatusRefreshesOnceForMachinesAndClaims proves the combined status read
+// does not pay List's fetch and then Claims' fetch. Git's trace stream is the
+// authoritative command boundary: exactly one top-level `git fetch` must run,
+// while both projections are returned from that refreshed working tree.
+func TestStatusRefreshesOnceForMachinesAndClaims(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	at := time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tracePath := filepath.Join(t.TempDir(), "git-trace.jsonl")
+	t.Setenv("GIT_TRACE2_EVENT", tracePath)
+	status, err := p.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Machines) != 1 || status.Machines[0].Snapshot.Key() != "alice/laptop" {
+		t.Fatalf("machines = %+v, want alice/laptop", status.Machines)
+	}
+	if len(status.Claims) != 1 || status.Claims[0].Claim.Task != "task-7" {
+		t.Fatalf("claims = %+v, want task-7", status.Claims)
+	}
+
+	trace, err := os.Open(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := trace.Close(); err != nil {
+			t.Errorf("close Git trace: %v", err)
+		}
+	}()
+	fetches := 0
+	scanner := bufio.NewScanner(trace)
+	for scanner.Scan() {
+		var event struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			continue
+		}
+		if event.Event == "start" && len(event.Argv) > 1 && event.Argv[1] == "fetch" {
+			fetches++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 1 {
+		t.Fatalf("git fetch count = %d, want exactly 1", fetches)
 	}
 }
 

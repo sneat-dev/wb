@@ -408,6 +408,12 @@ func (p *Provider) Claims(ctx context.Context) ([]remotestate.ClaimEntry, error)
 	if err := p.Fetch(ctx); err != nil {
 		return nil, err
 	}
+	return p.readClaims()
+}
+
+// readClaims reads the already-refreshed clone. The caller must hold the
+// clone lock so a concurrent writer cannot change the working tree midway.
+func (p *Provider) readClaims() ([]remotestate.ClaimEntry, error) {
 	root := filepath.Join(p.opts.ClonePath, "claims")
 	dirEntries, err := os.ReadDir(root)
 	if err != nil {
