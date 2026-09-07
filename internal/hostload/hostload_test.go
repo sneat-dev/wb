@@ -5,10 +5,23 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// clearAdmissionEnv isolates a test from the real process environment's CI
+// and WB_ADMISSION_LOAD_FLOOR variables, so it exercises exactly the
+// resolution branch it names rather than whatever happens to be set by the
+// runner actually executing `go test` (notably: GitHub Actions itself sets
+// CI=true and GITHUB_ACTIONS=true).
+func clearAdmissionEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("CI", "")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv(EnvLoadFloor, "")
+}
 
 func TestCheckRefusesAboveFloor(t *testing.T) {
 	read := func() (float64, error) { return 9.0, nil }
@@ -55,6 +68,7 @@ func TestCheckUnsupportedPlatformFailsOpen(t *testing.T) {
 }
 
 func TestFloorDefaultsToNumCPUWithoutConfig(t *testing.T) {
+	clearAdmissionEnv(t)
 	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 	got := Floor(missing)
 	if got < 1 {
@@ -62,7 +76,20 @@ func TestFloorDefaultsToNumCPUWithoutConfig(t *testing.T) {
 	}
 }
 
+// TestFloorDefaultIsDoubleNumCPU pins the exact default: a 4-core developer
+// Mac refuses new CPU-heavy work above a load average of 8, not 4 — the
+// original floor was too easily tripped by ordinary background load.
+func TestFloorDefaultIsDoubleNumCPU(t *testing.T) {
+	clearAdmissionEnv(t)
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	want := 2 * float64(runtime.NumCPU())
+	if got := Floor(missing); got != want {
+		t.Fatalf("Floor(missing config) = %v, want 2*NumCPU = %v", got, want)
+	}
+}
+
 func TestFloorReadsConfiguredLoadFloor(t *testing.T) {
+	clearAdmissionEnv(t)
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(path, []byte("admission:\n  load_floor: 2.5\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -72,18 +99,29 @@ func TestFloorReadsConfiguredLoadFloor(t *testing.T) {
 	}
 }
 
-func TestFloorIgnoresNonPositiveConfiguredValue(t *testing.T) {
+// TestFloorTreatsExplicitZeroConfiguredValueAsDisabled matches the design:
+// wb.yaml's admission.load_floor: 0 disables the check entirely, exactly
+// like WB_ADMISSION_LOAD_FLOOR=0.
+func TestFloorTreatsExplicitZeroConfiguredValueAsDisabled(t *testing.T) {
+	clearAdmissionEnv(t)
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(path, []byte("admission:\n  load_floor: 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := Floor(path)
-	if got < 1 {
-		t.Fatalf("Floor(load_floor: 0) = %v, want the NumCPU default", got)
+	floor, reason := Resolve(path)
+	if floor != 0 {
+		t.Fatalf("Resolve(load_floor: 0).floor = %v, want 0 (disabled)", floor)
+	}
+	if reason != "config" {
+		t.Fatalf("Resolve(load_floor: 0).reason = %q, want %q", reason, "config")
+	}
+	if err := Check(func() (float64, error) { return 999.0, nil }, floor, false); err != nil {
+		t.Fatalf("Check with a disabled (0) floor = %v, want nil (always admits)", err)
 	}
 }
 
 func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
+	clearAdmissionEnv(t)
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	original := "parallel: 3\nrecipes:\n  demo:\n    type: command\n    command: echo hi\n"
 	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
@@ -92,6 +130,69 @@ func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
 	got := Floor(path)
 	if got < 1 {
 		t.Fatalf("Floor(unrelated config) = %v, want the NumCPU default", got)
+	}
+}
+
+// TestResolveDisablesInCI matches the design: CI=true (or GITHUB_ACTIONS=true)
+// disables admission entirely, regardless of wb.yaml, because GitHub's
+// shared runners routinely report a load average of 8-10 on 4 vCPUs — a
+// fixed floor would refuse genuine `wb run`/`wb worktree merge` work inside
+// CI workflows, not just protect a shared developer machine.
+func TestResolveDisablesInCI(t *testing.T) {
+	for _, env := range []string{"CI", "GITHUB_ACTIONS"} {
+		t.Run(env, func(t *testing.T) {
+			clearAdmissionEnv(t)
+			t.Setenv(env, "true")
+			floor, reason := Resolve("")
+			if floor != 0 {
+				t.Fatalf("Resolve() with %s=true floor = %v, want 0 (disabled)", env, floor)
+			}
+			if reason != "ci" {
+				t.Fatalf("Resolve() with %s=true reason = %q, want %q", env, reason, "ci")
+			}
+			if err := Check(func() (float64, error) { return 999.0, nil }, floor, false); err != nil {
+				t.Fatalf("Check under CI with a 999.0 load = %v, want nil (admission disabled in CI)", err)
+			}
+		})
+	}
+}
+
+// TestResolveEnvOverrideDisablesAdmission matches the design:
+// WB_ADMISSION_LOAD_FLOOR=0 disables admission and is recorded as reason
+// "env", and it wins over wb.yaml.
+func TestResolveEnvOverrideDisablesAdmission(t *testing.T) {
+	clearAdmissionEnv(t)
+	t.Setenv(EnvLoadFloor, "0")
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(path, []byte("admission:\n  load_floor: 2.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	floor, reason := Resolve(path)
+	if floor != 0 {
+		t.Fatalf("Resolve() with WB_ADMISSION_LOAD_FLOOR=0 floor = %v, want 0 (disabled)", floor)
+	}
+	if reason != "env" {
+		t.Fatalf("Resolve() with WB_ADMISSION_LOAD_FLOOR=0 reason = %q, want %q", reason, "env")
+	}
+}
+
+// TestResolveEnvOverrideSetsPositiveFloorAndWinsOverCI matches the design:
+// a positive WB_ADMISSION_LOAD_FLOOR sets the floor directly and wins even
+// inside CI — this is what lets the dedicated host-load tests in cmd/wb
+// force real gating behavior no matter where `go test` itself runs.
+func TestResolveEnvOverrideSetsPositiveFloorAndWinsOverCI(t *testing.T) {
+	clearAdmissionEnv(t)
+	t.Setenv("CI", "true")
+	t.Setenv(EnvLoadFloor, "3")
+	floor, reason := Resolve("")
+	if floor != 3 {
+		t.Fatalf("Resolve() with WB_ADMISSION_LOAD_FLOOR=3 under CI floor = %v, want 3", floor)
+	}
+	if reason != "" {
+		t.Fatalf("Resolve() with WB_ADMISSION_LOAD_FLOOR=3 under CI reason = %q, want active (empty)", reason)
+	}
+	if err := Check(func() (float64, error) { return 5.0, nil }, floor, false); err == nil {
+		t.Fatal("Check(load 5.0, floor 3) = nil, want a refusal even under CI")
 	}
 }
 

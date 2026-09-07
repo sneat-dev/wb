@@ -169,10 +169,15 @@ type WorktreeMergeForwardRepairReceipt struct {
 // check was skipped because the step it gates never re-runs local CPU-heavy
 // validation (see cmd/wb's hostLoadCheckSkippable).
 type WorktreeMergeHostLoadAdmission struct {
-	Load       float64   `json:"load"`
-	Floor      float64   `json:"floor"`
-	Overridden bool      `json:"overridden"`
-	CheckedAt  time.Time `json:"checked_at"`
+	Load       float64 `json:"load"`
+	Floor      float64 `json:"floor"`
+	Overridden bool    `json:"overridden"`
+	// SkippedReason names why admission was disabled for this check (never
+	// evaluated against Load): "env" (WB_ADMISSION_LOAD_FLOOR<=0), "ci"
+	// (CI/GITHUB_ACTIONS declared), or "config" (wb.yaml admission.load_floor:
+	// 0). Empty means admission was active — see internal/hostload.Resolve.
+	SkippedReason string    `json:"skipped_reason,omitempty"`
+	CheckedAt     time.Time `json:"checked_at"`
 }
 
 type WorktreeMergeReceipt struct {

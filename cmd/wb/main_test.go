@@ -9,12 +9,26 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
 func TestMain(m *testing.M) {
+	// Every CLI test in this package that invokes `wb run --` or `wb
+	// worktree merge`/`prepare`/`resume` (directly via run()/root.Execute(),
+	// in-process) must never depend on the real host load average: GitHub's
+	// shared runners routinely report a load average of 8-10 on 4 vCPUs,
+	// which used to fail any such test outright (sneat-dev/wb PR #450 run
+	// 34124956543). Disable host-load admission by default for this whole
+	// test binary; the dedicated tests in hostload_admission_test.go that
+	// actually exercise gating behavior set WB_ADMISSION_LOAD_FLOOR back to
+	// a positive value themselves — a positive value always wins, even
+	// inside CI, so those tests still see real refusal/admission behavior.
+	if err := os.Setenv(hostload.EnvLoadFloor, "0"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not disable host-load admission for tests: %v\n", err)
+	}
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}

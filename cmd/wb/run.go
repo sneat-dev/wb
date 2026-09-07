@@ -144,7 +144,7 @@ wb run --history --days 7`,
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "stable caller key for an intentional submission or exact retry")
 	cmd.Flags().StringVar(&workerID, "worker", "", "stable ID of the sandbox worker that must execute the async job")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
-	cmd.Flags().BoolVar(&allowSaturatedHost, "allow-saturated-host", false, "command mode: admit CPU-heavy work even when the host's load average exceeds the admission.load_floor in wb.yaml (default: runtime.NumCPU())")
+	cmd.Flags().BoolVar(&allowSaturatedHost, "allow-saturated-host", false, "command mode: admit CPU-heavy work even when the host's load average exceeds the admission.load_floor in wb.yaml (default: 2x runtime.NumCPU()); the check is disabled automatically in CI (CI=true/GITHUB_ACTIONS=true) and can be disabled or overridden with WB_ADMISSION_LOAD_FLOOR (0 disables, a positive number sets the floor)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
 	cmd.Flags().BoolVar(&history, "history", false, "summarize governed commands in the current worktree")
 	addJSONFormatFlags(cmd, &jsonOut)
@@ -201,10 +201,13 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 	budget := runqueue.Budget()
 	units := runqueue.Units(args, budget)
 	if units > 0 {
-		floor := hostload.Floor(configPath)
+		floor, skippedReason := hostload.Resolve(configPath)
 		if loadErr := hostload.Check(nil, floor, allowSaturatedHost); loadErr != nil {
 			_ = recorder.Finish(exitFindings, 0, 0, time.Now())
 			return fmt.Errorf("wb: %w", loadErr)
+		}
+		if skippedReason != "" {
+			recorder.RecordLoadFloorSkipped(skippedReason)
 		}
 		if allowSaturatedHost {
 			recorder.RecordLoadOverride(true)

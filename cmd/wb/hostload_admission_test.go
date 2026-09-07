@@ -19,9 +19,16 @@ import (
 )
 
 // withHostLoad temporarily replaces hostload.System, the Reader every
-// admission call site uses by default, and restores it afterward.
+// admission call site uses by default, and restores it afterward. It also
+// pins WB_ADMISSION_LOAD_FLOOR to a fixed positive floor (4.0): TestMain
+// disables host-load admission for the whole cmd/wb test binary by default
+// (see main_test.go) so no test here depends on the real host load, and a
+// positive WB_ADMISSION_LOAD_FLOOR always wins over that default — even
+// inside CI itself — restoring the real gating behavior these tests exist
+// to exercise.
 func withHostLoad(t *testing.T, load float64) {
 	t.Helper()
+	t.Setenv(hostload.EnvLoadFloor, "4")
 	previous := hostload.System
 	hostload.System = func() (float64, error) { return load, nil }
 	t.Cleanup(func() { hostload.System = previous })

@@ -6,6 +6,27 @@
 // package gives `wb run` and `wb worktree merge`/`prepare`/`resume` a floor
 // below which they refuse new CPU-heavy work instead of piling onto an
 // already-overloaded host.
+//
+// The floor is disabled entirely — every check admits, and Resolve/Floor
+// report a floor of 0 with a reason — in three cases, evaluated in this
+// order:
+//
+//  1. WB_ADMISSION_LOAD_FLOOR is set to a positive number: that number is
+//     the floor, and it wins even inside CI. This lets the dedicated
+//     host-load tests force real gating behavior no matter where they run.
+//  2. WB_ADMISSION_LOAD_FLOOR is set to "0" (or any non-positive number):
+//     disabled, reason "env". Env always overrides wb.yaml.
+//  3. Otherwise, CI is declared (CI=true or GITHUB_ACTIONS=true): disabled,
+//     reason "ci". GitHub's shared runners routinely report a load average
+//     of 8-10 on 4 vCPUs, so a fixed floor would refuse genuine `wb run` /
+//     `wb worktree merge` work inside CI workflows, not just protect a
+//     shared developer machine.
+//  4. Otherwise, wb.yaml sets admission.load_floor explicitly to 0:
+//     disabled, reason "config".
+//
+// Absent all of the above, the floor is wb.yaml's admission.load_floor when
+// positive, else the default of 2*runtime.NumCPU() — a 4-core developer Mac
+// refuses new CPU-heavy work above a load average of 8.
 package hostload
 
 import (
@@ -37,6 +58,13 @@ var System Reader = readLoadAvg1
 // source. Callers must treat it as "never refuse", not as a failure.
 var ErrUnsupported = errors.New("hostload: 1-minute load average is not available on this platform")
 
+// EnvLoadFloor overrides the resolved admission floor. A positive value sets
+// the floor directly, taking priority over both wb.yaml and CI detection. A
+// value of "0" (or any non-positive number) disables admission entirely.
+// Unset defers to CI detection, then wb.yaml. See the package doc for the
+// full resolution order.
+const EnvLoadFloor = "WB_ADMISSION_LOAD_FLOOR"
+
 // config is the subset of wb.yaml this package understands.
 type config struct {
 	Admission struct {
@@ -44,41 +72,93 @@ type config struct {
 	} `yaml:"admission"`
 }
 
-// Floor resolves the load-average ceiling above which new CPU-heavy work is
-// refused. Default is runtime.NumCPU() (never less than 1); wb.yaml's
-// admission.load_floor key overrides it. configPath "" resolves
-// wbconfig.DefaultPath(). A missing or unparsable config is not an error
-// here — it just keeps the default.
-func Floor(configPath string) float64 {
-	def := float64(runtime.NumCPU())
+// runningInCI reports whether the environment declares itself a CI runner.
+func runningInCI() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")), "true")
+}
+
+// defaultFloor is the admission ceiling when nothing overrides it: twice the
+// host's CPU count, never less than 1.
+func defaultFloor() float64 {
+	def := 2 * float64(runtime.NumCPU())
 	if def < 1 {
 		def = 1
 	}
+	return def
+}
+
+// Resolve computes the admission floor and, when admission is disabled,
+// names why: "env" (WB_ADMISSION_LOAD_FLOOR is 0 or negative), "ci"
+// (CI/GITHUB_ACTIONS declared), or "config" (wb.yaml admission.load_floor:
+// 0 explicitly). An empty reason means admission is active and floor is the
+// ceiling Check should refuse above. See the package doc for resolution
+// order — notably, a positive WB_ADMISSION_LOAD_FLOOR wins even inside CI.
+// configPath "" resolves wbconfig.DefaultPath(). A missing or unparsable
+// config is not an error here — it just keeps the default.
+func Resolve(configPath string) (floor float64, reason string) {
+	if raw, ok := os.LookupEnv(EnvLoadFloor); ok {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil {
+			if v > 0 {
+				return v, ""
+			}
+			return 0, "env"
+		}
+	}
+	if runningInCI() {
+		return 0, "ci"
+	}
+	def := defaultFloor()
 	path := strings.TrimSpace(configPath)
 	if path == "" {
 		path = wbconfig.DefaultPath()
 	}
 	raw, err := os.ReadFile(expandPath(path))
 	if err != nil {
-		return def
+		return def, ""
 	}
 	var cfg config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return def
+		return def, ""
 	}
-	if cfg.Admission.LoadFloor != nil && *cfg.Admission.LoadFloor > 0 {
-		return *cfg.Admission.LoadFloor
+	if cfg.Admission.LoadFloor != nil {
+		if *cfg.Admission.LoadFloor == 0 {
+			return 0, "config"
+		}
+		if *cfg.Admission.LoadFloor > 0 {
+			return *cfg.Admission.LoadFloor, ""
+		}
 	}
-	return def
+	return def, ""
+}
+
+// Floor resolves the load-average ceiling above which new CPU-heavy work is
+// refused, discarding the disablement reason. Use Resolve when the reason
+// needs to be recorded (e.g. on a receipt or runlog event).
+func Floor(configPath string) float64 {
+	floor, _ := Resolve(configPath)
+	return floor
+}
+
+// Disabled reports whether host-load admission is turned off entirely, and
+// why. See Resolve for the reason values.
+func Disabled(configPath string) (bool, string) {
+	floor, reason := Resolve(configPath)
+	return floor <= 0, reason
 }
 
 // Check refuses admission when the host's 1-minute load average exceeds
 // floor, unless allow is true (the caller passed --allow-saturated-host).
-// read is normally nil, which selects System; tests inject a fake Reader.
-// A Reader error (including ErrUnsupported) never blocks admission — an
-// unreadable or unsupported load source fails open.
+// floor <= 0 means admission is disabled (see Resolve/Disabled) and Check
+// always admits, without even reading the load. read is normally nil, which
+// selects System; tests inject a fake Reader. A Reader error (including
+// ErrUnsupported) never blocks admission — an unreadable or unsupported
+// load source fails open.
 func Check(read Reader, floor float64, allow bool) error {
 	if allow {
+		return nil
+	}
+	if floor <= 0 {
 		return nil
 	}
 	if read == nil {

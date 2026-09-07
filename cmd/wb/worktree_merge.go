@@ -37,6 +37,9 @@ type worktreeMergeFlags struct {
 // unless --allow-saturated-host was passed. See internal/hostload: two
 // orphaned fixture processes drove load to 7-12 on a shared machine and the
 // merge-gate kept scheduling more CPU-heavy validation on top of it.
+// Admission is disabled entirely (and the load is never read for the
+// refusal decision) in CI, or via WB_ADMISSION_LOAD_FLOOR — see
+// internal/hostload.Resolve for the exact precedence.
 //
 // On success it also returns the admission record for this check (nil only
 // when the host's load could not be read at all, e.g. an unsupported
@@ -44,19 +47,20 @@ type worktreeMergeFlags struct {
 // orchestrate.WorktreeMergeHostLoadAdmission — making an override provable
 // from the receipt itself, not only from the caller's own log.
 func checkHostLoadAdmission(flags worktreeMergeFlags) (*orchestrate.WorktreeMergeHostLoadAdmission, error) {
-	floor := hostload.Floor("")
+	floor, skippedReason := hostload.Resolve("")
 	if err := hostload.Check(nil, floor, flags.allowSaturatedHost); err != nil {
 		return nil, fmt.Errorf("wb worktree merge: %w", err)
 	}
-	return hostLoadAdmissionRecord(floor, flags.allowSaturatedHost), nil
+	return hostLoadAdmissionRecord(floor, skippedReason, flags.allowSaturatedHost), nil
 }
 
 // hostLoadAdmissionRecord reads the current load directly (hostload.Check
-// short-circuits that read when allow is true) so the receipt always names
-// the exact load an override admitted past, not just that one was passed.
-// A reader that cannot report at all (missing/unsupported source) yields no
-// record — there is nothing truthful to write down.
-func hostLoadAdmissionRecord(floor float64, allow bool) *orchestrate.WorktreeMergeHostLoadAdmission {
+// short-circuits that read when allow is true, or when the floor is
+// disabled) so the receipt always names the exact load an override admitted
+// past, not just that one was passed. A reader that cannot report at all
+// (missing/unsupported source) yields no record — there is nothing truthful
+// to write down.
+func hostLoadAdmissionRecord(floor float64, skippedReason string, allow bool) *orchestrate.WorktreeMergeHostLoadAdmission {
 	if hostload.System == nil {
 		return nil
 	}
@@ -65,7 +69,7 @@ func hostLoadAdmissionRecord(floor float64, allow bool) *orchestrate.WorktreeMer
 		return nil
 	}
 	return &orchestrate.WorktreeMergeHostLoadAdmission{
-		Load: load, Floor: floor, Overridden: allow, CheckedAt: time.Now().UTC(),
+		Load: load, Floor: floor, Overridden: allow, SkippedReason: skippedReason, CheckedAt: time.Now().UTC(),
 	}
 }
 
@@ -1008,7 +1012,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().IntVar(&flags.retry, "retry", 0, "retry transient command failures")
 	command.Flags().StringVar(&flags.format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
-	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: runtime.NumCPU())")
+	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: 2x runtime.NumCPU()); the check is disabled automatically in CI (CI=true/GITHUB_ACTIONS=true) and can be disabled or overridden with WB_ADMISSION_LOAD_FLOOR (0 disables, a positive number sets the floor)")
 }
 
 func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
