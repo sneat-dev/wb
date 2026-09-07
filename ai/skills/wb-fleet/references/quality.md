@@ -58,6 +58,26 @@ wb check --fleet --match '<owner>/*' --profile ci \
 Use bounded parallelism: more workers are not faster when repositories contend
 for the same CPU, disk, package cache, or external rate limit.
 
+## Ambient-state isolation
+
+Every Go check's subprocess (`go vet`/`go test`/`go build`, and the built-in
+Go pre-commit/pre-push hook blocks) runs with `GOWORK=off` unless the
+repository being validated tracks its own `go.work` unchanged in HEAD, and
+with every `WB_AGENT_*` variable stripped from its environment regardless of
+language. Neither is achieved by appending an override to the parent
+environment: a `go.work` an operator or a sibling worktree leaves above the
+gate's `TMPDIR` is picked up by Go's own auto-detection independently of any
+env var wb sets, and a duplicate-key append does not reliably override an
+already-present ambient value (`internal/envguard.SanitizeEnv` keeps exactly
+one entry per key instead). `internal/testenv` gives WB's own test suite the
+matching isolation, since `go test` inherits the operating agent's
+`WB_AGENT_*` exports directly, not only through subprocesses wb spawns. When a
+check fails, its `detail` (and the coverage diagnostics manifest, when one is
+written) carries an `ambient inputs:` block naming any `go.work` found above
+the gate's `TMPDIR` or the checked module, any `GOWORK` value observed in the
+gate's own environment, and the names (never the values) of any `WB_AGENT_*`
+variable present — omitted entirely when none of these were observed.
+
 These commands inspect existing clones and do not fetch, modify, commit, or
 push. For a repository-specific E2E suite wired into a pre-push hook, run the
 hook's orchestrating command once instead of duplicating it here.

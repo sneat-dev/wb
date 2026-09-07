@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/envguard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,10 +39,14 @@ const (
 // it contains unbounded command output and therefore stays in the private
 // report root rather than crossing the bounded hook/session boundary.
 type CoverageDiagnosticManifest struct {
-	SchemaVersion int                      `yaml:"schema_version" json:"schema_version"`
-	Repository    string                   `yaml:"repository" json:"repository"`
-	Module        string                   `yaml:"module" json:"module"`
-	Files         []CoverageDiagnosticFile `yaml:"files" json:"files"`
+	SchemaVersion int    `yaml:"schema_version" json:"schema_version"`
+	Repository    string `yaml:"repository" json:"repository"`
+	Module        string `yaml:"module" json:"module"`
+	// Ambient names the machine-state signals present in the gate's own
+	// environment and in the ancestors of TMPDIR and Module when the shard
+	// failures below were recorded. Empty when none were observed.
+	Ambient envguard.AmbientInputs   `yaml:"ambient,omitempty" json:"ambient,omitempty"`
+	Files   []CoverageDiagnosticFile `yaml:"files" json:"files"`
 }
 
 type CoverageDiagnosticFile struct {
@@ -278,7 +283,12 @@ func writeCoverageDiagnostics(directory, repository, module string, jobs []goCov
 		return err
 	}
 	stem := coverageDiagnosticStem(repository, module)
-	manifest := CoverageDiagnosticManifest{SchemaVersion: 1, Repository: repository, Module: module}
+	manifest := CoverageDiagnosticManifest{
+		SchemaVersion: 1,
+		Repository:    repository,
+		Module:        module,
+		Ambient:       envguard.Inspect(os.Environ(), os.TempDir(), module),
+	}
 	for index, result := range results {
 		if result.err == nil {
 			continue
