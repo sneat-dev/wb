@@ -4,8 +4,7 @@
 
 Create an issue in `sneat-dev/wb` only when resolving it requires a concrete
 change to WB code, tests, documentation, packaging, or release work. Use the
-**WB change** issue form, which prompts for the owning repository and the
-concrete WB change.
+**WB change** issue form, which asks you to name the concrete WB change.
 
 If exactly one other repository must change, create the issue in that owning
 repository. If the work spans repositories or concerns Sneat Co. fleet process
