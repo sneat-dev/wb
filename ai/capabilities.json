@@ -4625,6 +4625,80 @@
       "notes": "wb remote claims exits 0 even when some claim files are undecodable."
     },
     {
+      "id": "wb.remote.enroll",
+      "feature_refs": [
+        "spec/features/remote-state/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote enroll",
+              "flags": [
+                "--format",
+                "--json",
+                "--machine",
+                "--restart-daemon",
+                "--token-file",
+                "--token-stdin",
+                "--url"
+              ],
+              "modes": [
+                "Verifies an explicitly piped one-time machine credential, stores it outside configuration with private permissions, updates only hub-owned remote settings, and restarts a running daemon by default without exposing the credential."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote enroll --help",
+              "contains": [
+                "--machine",
+                "--token-stdin",
+                "--restart-daemon"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote enroll --machine studio-mac --token-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_enroll_test.go",
+              "name": "TestRemoteEnrollKeepsCredentialOutOfOutputAndConfig",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/wbconfig/remote_test.go",
+              "name": "TestSetRemoteHubPreservesUnrelatedConfiguration",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The credential is accepted only from explicitly selected stdin and is verified before either the credential file or configuration is written."
+    },
+    {
       "id": "wb.remote.machines",
       "feature_refs": [
         "spec/features/remote-state/README.md"

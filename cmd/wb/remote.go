@@ -76,6 +76,7 @@ For the authenticated outbound HTTPS hub:
 ` + remotestate.HubConfigSnippet + `
 
   wb remote publish    scan this machine and publish its snapshot
+  wb remote enroll     securely install a hosted-hub machine credential
   wb remote status     cross-machine worklist from the store
   wb remote machines   one line per machine with publish age
   wb remote claim      claim a task, or refresh your own claim on it
@@ -88,5 +89,6 @@ For the authenticated outbound HTTPS hub:
 	cmd.AddCommand(newRemoteClaimCmd())
 	cmd.AddCommand(newRemoteReleaseCmd())
 	cmd.AddCommand(newRemoteClaimsCmd())
+	cmd.AddCommand(newRemoteEnrollCmd())
 	return cmd
 }
