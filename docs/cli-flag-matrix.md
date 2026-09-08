@@ -29,6 +29,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | Command surface | `--projects-root` | `--filter` | `--org` | `--non-interactive` |
 |---|---:|---:|---:|---:|
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
+| `sync-report validate` | rejected | rejected | rejected | yes |
+| `sync-report publish` | yes | rejected | rejected | yes |
 | `run` | yes | yes | yes | yes |
 | `worker connect` | yes | rejected | rejected | yes |
 | `daemon serve`, `start`, `status`, `stop`, `restart`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
