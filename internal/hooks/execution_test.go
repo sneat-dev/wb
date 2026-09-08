@@ -200,18 +200,34 @@ func TestRunPlacesVerboseHookReportsBesidePrivateMetricsState(t *testing.T) {
 	}
 }
 
-func TestRunProvidesPrivateRuntimeAndGoCachesOutsideRepository(t *testing.T) {
+// A hook inherits the ambient Go and tool caches rather than a private
+// per-repository copy. Go's build and module caches, and golangci-lint's
+// cache, are content-addressed and meant to be shared machine-wide: a private
+// tree made every hook run compile and lint from cold moments after the same
+// inputs had been built in the same checkout. WB keeps only its OWN state --
+// the runtime root and the report root -- private and outside the repository.
+func TestRunInheritsAmbientGoCachesAndKeepsWBRootsPrivate(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
 	home := filepath.Join(t.TempDir(), "wb-home")
 	t.Setenv(wbhome.EnvOverride, home)
+	ambient := t.TempDir()
+	ambientGoPath := filepath.Join(ambient, "gopath")
+	ambientGoCache := filepath.Join(ambient, "go-build")
+	ambientGoModCache := filepath.Join(ambient, "mod")
+	ambientTmp := filepath.Join(ambient, "tmp")
+	ambientXDG := filepath.Join(ambient, "xdg")
+	t.Setenv("GOPATH", ambientGoPath)
+	t.Setenv("GOCACHE", ambientGoCache)
+	t.Setenv("GOMODCACHE", ambientGoModCache)
+	t.Setenv("GOTMPDIR", ambientTmp)
+	t.Setenv("XDG_CACHE_HOME", ambientXDG)
 	configDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, configDir)
 	envPath := filepath.Join(t.TempDir(), "hook-env.txt")
 	mustWrite(t, filepath.Join(configDir, "runtime-env.sh"), `#!/bin/sh
 set -eu
 printf '%s\n' "$WB_HOOK_RUNTIME_ROOT" > "$WB_TEST_ENV_PATH"
-printf '%s\n' "$WB_HOOK_CACHE_ROOT" >> "$WB_TEST_ENV_PATH"
 printf '%s\n' "$WB_HOOK_REPORT_ROOT" >> "$WB_TEST_ENV_PATH"
 printf '%s\n' "$GOPATH" >> "$WB_TEST_ENV_PATH"
 printf '%s\n' "$GOCACHE" >> "$WB_TEST_ENV_PATH"
@@ -235,23 +251,28 @@ printf '%s\n' "$XDG_CACHE_HOME" >> "$WB_TEST_ENV_PATH"
 	lines := readLogLines(t, envPath)
 	want := []string{
 		layout.Root,
-		layout.CacheRoot,
 		layout.ReportRoot,
-		layout.GoPath,
-		layout.GoCache,
-		layout.GoModCache,
-		layout.GoTmpDir,
-		layout.XDGCacheHome,
+		ambientGoPath,
+		ambientGoCache,
+		ambientGoModCache,
+		ambientTmp,
+		ambientXDG,
 	}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("hook runtime environment = %v, want %v", lines, want)
 	}
-	for _, path := range want {
+	for _, path := range []string{layout.Root, layout.ReportRoot} {
 		if strings.HasPrefix(path, repo+string(filepath.Separator)) || path == repo {
 			t.Fatalf("hook runtime path points into repository: %s", path)
 		}
 		if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
 			t.Fatalf("hook runtime directory %s stat=%v err=%v", path, info, statErr)
+		}
+	}
+	// WB must not recreate a private cache tree under its runtime root.
+	for _, stale := range []string{"cache", "go", "go-build", "xdg"} {
+		if _, statErr := os.Stat(filepath.Join(layout.Root, stale)); statErr == nil {
+			t.Fatalf("hook runtime root still holds a private cache directory: %s", stale)
 		}
 	}
 	if output, statusErr := gitOutput(repo, "status", "--porcelain"); statusErr != nil || output != "" {
