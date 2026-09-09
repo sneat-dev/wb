@@ -3790,6 +3790,33 @@ func validateWorktreeMergeSupersededOperationID(operation, receiptPath, lane str
 	return nil
 }
 
+// validateWorktreeMergeSupersededOperationIDMatchesRecordedSourceSet accepts
+// a deterministic supersession chain rooted in either the current sources or
+// one complete historical source set retained by an append-only refresh. The
+// chain validator still proves every predecessor path hash and suffix.
+func validateWorktreeMergeSupersededOperationIDMatchesRecordedSourceSet(receipt WorktreeMergeReceipt, receiptPath string) error {
+	currentErr := validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, receipt.Sources)
+	if currentErr == nil {
+		return nil
+	}
+	for _, refresh := range receipt.SourceRefreshes {
+		if len(refresh.Sources) == 0 || refresh.RecordedAt.IsZero() {
+			continue
+		}
+		complete := true
+		for _, source := range refresh.Sources {
+			if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+				complete = false
+				break
+			}
+		}
+		if complete && validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, refresh.Sources) == nil {
+			return nil
+		}
+	}
+	return currentErr
+}
+
 func mergeOperationSuffix(operation string) string {
 	if index := strings.LastIndex(operation, "-"); index >= 0 && index+1 < len(operation) {
 		return operation[index+1:]

@@ -107,6 +107,39 @@ func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSucces
 	if err := validatePrepareFailureSupersessionReceipt(receipt(successor, successorPath, sources), successorPath); err != nil {
 		t.Fatalf("deterministic successor = %v", err)
 	}
+	currentSources := []WorktreeMergeSource{{Task: "source", Worktree: "/worktrees/source", Branch: "feature/source", SHA: "fedcba9876543210"}}
+	refreshed := receipt(successor, successorPath, currentSources)
+	refreshed.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: sources}}
+	if err := validatePrepareFailureSupersessionReceipt(refreshed, successorPath); err != nil {
+		t.Fatalf("deterministic successor rooted in historical sources = %v", err)
+	}
+	refreshedRoot := receipt(root, rootPath, currentSources)
+	refreshedRoot.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: sources}}
+	if err := validatePrepareFailureSupersessionReceipt(refreshedRoot, rootPath); err != nil {
+		t.Fatalf("original operation rooted in historical sources = %v", err)
+	}
+	malformedSuccessor := root + "-superseded-000000000000"
+	malformedPath := filepath.Join(reportsDir, malformedSuccessor+".json")
+	malformed := receipt(malformedSuccessor, malformedPath, currentSources)
+	malformed.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: sources}}
+	if err := validatePrepareFailureSupersessionReceipt(malformed, malformedPath); err == nil {
+		t.Fatal("malformed successor was accepted through valid historical sources")
+	}
+	for name, mutate := range map[string]func(*WorktreeMergeReceipt){
+		"missing refresh timestamp": func(r *WorktreeMergeReceipt) { r.SourceRefreshes[0].RecordedAt = time.Time{} },
+		"incomplete refresh source": func(r *WorktreeMergeReceipt) { r.SourceRefreshes[0].Sources[0].Branch = "" },
+		"unrelated refresh source":  func(r *WorktreeMergeReceipt) { r.SourceRefreshes[0].Sources[0].SHA = "deadbeefdeadbeef" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := refreshed
+			candidate.SourceRefreshes = append([]WorktreeMergeSourceRefresh(nil), refreshed.SourceRefreshes...)
+			candidate.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), refreshed.SourceRefreshes[0].Sources...)
+			mutate(&candidate)
+			if err := validatePrepareFailureSupersessionReceipt(candidate, successorPath); err == nil {
+				t.Fatal("invalid historical source identity was accepted")
+			}
+		})
+	}
 
 	tests := []struct {
 		name    string

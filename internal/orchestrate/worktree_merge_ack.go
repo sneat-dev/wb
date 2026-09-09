@@ -1458,7 +1458,7 @@ func validatePrepareFailureSupersessionReceipt(receipt WorktreeMergeReceipt, rec
 			return fmt.Errorf("receipt %s has an incomplete immutable source identity", receiptPath)
 		}
 	}
-	if err := validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, receipt.Sources); err != nil {
+	if err := validateWorktreeMergeSupersededOperationIDMatchesRecordedSourceSet(receipt, receiptPath); err != nil {
 		return fmt.Errorf("receipt %s has an invalid superseded conflict identity: %w", receiptPath, err)
 	}
 	return nil
