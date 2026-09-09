@@ -110,6 +110,24 @@ outbox receipt. It does not try to relabel either record as `removed`; a
 mismatched claim, commit, disposition, successor, or outbox still refuses
 closed.
 
+A branch that earned more commits after finalize sealed an earlier head — a
+rebase or merge onto main, or a follow-up push, that then landed on the
+target as a merge commit — used to be permanently stuck: the exact-match
+corroboration above always refuses once the sealed `final_commit` no longer
+names the current head, and a second `finalize` or an `abort --absorbed-by`
+both refuse too (the former because the claim is already terminal, the
+latter because its proof was squash-only). Cleanup now recognizes this shape
+without ever rewriting the sealed terminal: once the current head
+independently re-proves it is a Git descendant of the exact commit finalize
+sealed (`git merge-base --is-ancestor <sealed-final-commit> <current-head>`)
+and every ordinary safety check above already passed for the current head,
+cleanup appends a separate, additive `cleanup` record and outbox event next
+to the immutable terminal and proceeds. Only a `landed` terminal without a
+successor or exotic evidence (handoff, dirty capture, supersession) can be
+advanced this way — a `not_landed`/failure terminal still refuses closed,
+exactly as before. The same command that was refused is the one that now
+succeeds: rerun `wb worktree cleanup <task> --apply --remote` as-is.
+
 Work absorbed into a differently named integration branch — the batching a
 target requiring linear history forces — is eligible too, because the branch
 name is not the evidence. WB reads the merged pull request GitHub associates
@@ -255,7 +273,17 @@ For a clean source retained after a squash merge, add `--absorbed-by <merged-pr>
 WB fetches the PR head from the configured origin and proves the source ancestry,
 the landed merge in the fresh target, and matching PR/merge trees before it
 removes anything. A PR title, branch name, or commit-message reference is never
-proof.
+proof. `--absorbed-by` is re-verified whenever it is supplied, even when the
+source head is already integrated into the target by plain Git ancestry, so an
+explicit pointer to an already-landed branch is no longer refused just because
+the exotic "batched onto a differently named branch" discovery never had a
+reason to run. A genuine merge commit is recognized as its own landing shape
+alongside squash: when the PR head's tree no longer equals the merge
+commit's tree — because the target advanced past the source's last sync with
+it before the merge, the common case in an actively landing repository — WB
+falls back to proving the exact source head's own `git merge-base
+--is-ancestor` reachability into the freshly fetched target instead of
+requiring tree equality.
 `orphaned` is an append-only terminalization for a claim whose checkout and
 refs have already vanished. It never deletes Git or filesystem state. Select
 one exact immutable claim and name the approving actor and reason; inspect the
