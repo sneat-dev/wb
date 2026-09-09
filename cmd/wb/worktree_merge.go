@@ -140,6 +140,9 @@ wb worktree merge acknowledge-absorbed-conflict /path/to/merge-receipt --apply -
 # Free a stale lane after proving a stale published pull request was closed unmerged and its branch is gone
 wb worktree merge acknowledge-retired-publication /path/to/merge-receipt --apply --actor operator --reason "audited retired publication"
 
+# Free a stale lane after proving an unpublished validation failure preserved every source
+wb worktree merge acknowledge-retired-unpublished-validation-failure /path/to/merge-receipt --apply --actor operator --reason "audited unpublished failure"
+
 # Prepare an ancestry-only replacement without changing the target tree
 wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor operator --reason "audited squash recovery"
 
@@ -154,7 +157,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeRetiredPublicationCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(), newWorktreeMergeAcknowledgeRetiredPublicationCmd(), newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
 	return command
 }
 
@@ -720,6 +723,59 @@ ref, or a candidate already reachable from the current target refuses closed.`,
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			} else {
 				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree merge prepare <the same sources> --target %s\n", ack.Target)
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
+		Short: "Retire an unpublished validation failure while preserving its sources",
+		Long: `Prove that an exact prepare/validation_failed receipt never published or
+landed its candidate and that every receipted source still exists as a clean,
+actively claimed worktree at the exact recorded SHA. WB freshly checks that the
+candidate branch has no remote ref and the candidate is not reachable from the
+current remote target. It then records a separate append-only acknowledgement
+so another source set can own the repository target lane. The historical
+receipt, candidate worktree, source worktrees, and Work Logs remain unchanged.
+This is a dry-run by default; --apply requires --actor and --reason.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeUnpublishedValidationFailure(command.Context(), orchestrate.WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate-worktree: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.Candidate.Worktree, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			} else {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree merge prepare <preserved or different sources> --target %s\n", ack.Target)
 			}
 			return err
 		},

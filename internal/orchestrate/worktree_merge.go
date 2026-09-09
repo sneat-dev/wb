@@ -459,6 +459,16 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				receiptPath = filepath.Join(reportsDir, operation+".json")
 				continue
 			}
+			if unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(existing); acknowledgementErr != nil {
+				return existing, acknowledgementErr
+			} else if unpublishedFailureAcknowledged {
+				// The failed preparation never published or landed and every exact
+				// source remains preserved. Keep the receipt immutable and allocate a
+				// fresh successor operation for a later attempt.
+				operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
+				receiptPath = filepath.Join(reportsDir, operation+".json")
+				continue
+			}
 			if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
 				return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
 			} else if adopted {
@@ -3769,7 +3779,8 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeAbsorbedConflictAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeRetiredPublicationAcknowledgementSuffix) {
+			strings.HasSuffix(entry.Name(), worktreeMergeRetiredPublicationAcknowledgementSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeUnpublishedValidationFailureAcknowledgementSuffix) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
@@ -3855,6 +3866,13 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 				return nil, retiredErr
 			}
 			if retiredAcknowledged {
+				continue
+			}
+			unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(receipt)
+			if acknowledgementErr != nil {
+				return nil, acknowledgementErr
+			}
+			if unpublishedFailureAcknowledged {
 				continue
 			}
 			return &receipt, nil
