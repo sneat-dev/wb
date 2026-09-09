@@ -996,7 +996,18 @@ PR head's tree therefore no longer equals the merge commit's tree: the exact
 source head's own Git ancestry into the freshly fetched target is checked
 instead of tree equality, so a landing shape squash's tree-equality proof
 would wrongly reject is still accepted on its own, topology-appropriate
-evidence.
+evidence. A merged pull request may be named by its bare number, a leading
+"#", or its full GitHub URL — all three resolve the same pull request.
+
+If 'wb worktree log finalize --apply' already sealed the exact worktree as
+landed before its branch was rebased onto a moved target (force-pushed with
+lease) and only the rebased head ever landed, --absorbed-by's proof above
+still verifies that landing; --disposition discarded then appends the same
+additive cleanup record 'wb worktree cleanup' writes for an advanced
+terminal instead of trying to reseal the immutable "landed" terminal as
+"discarded" at a different commit, which used to refuse with "immutable
+terminal conflicts with requested transition". The original finalize
+terminal is never rewritten.
 
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
@@ -2053,9 +2064,14 @@ a rebase or merge onto main, or a follow-up push, that then landed on the
 target as a merge commit — is still eligible: once the current head
 independently re-proves it is a Git descendant of the exact commit finalize
 sealed, cleanup appends a separate, additive cleanup record next to the
-sealed terminal instead of refusing outright. Only a landed terminal without
-a successor or exotic evidence (handoff, dirty capture, supersession) can be
-advanced this way.
+sealed terminal instead of refusing outright. When the sealed commit was
+instead force-pushed onto a moved target (a rebase, not a plain follow-up
+commit) and is therefore no longer a Git descendant at all, cleanup falls
+back to proving the narrower, still-sufficient fact a clean rebase preserves:
+every one of the sealed commit's own non-merge patches (by stable
+git patch-id) is present somewhere in the current head's own history since
+their common ancestor. Only a landed terminal without a successor or exotic
+evidence (handoff, dirty capture, supersession) can be advanced this way.
 
 A branch whose exact head never reaches the target because a merger batched it
 onto a differently named integration branch and landed that branch once is
@@ -2066,11 +2082,13 @@ then proves containment locally: merging the branch into that merge commit
 must add nothing to it, and merging it into the target must add nothing there
 either. Work that landed and was later reverted therefore stays blocked.
 
---absorbed-by <pr|commit> covers a landing GitHub cannot associate, such as
-content cherry-picked rather than merged into the integration branch. It only
-selects which receipt to verify; every proof above still runs, and the named
-commit must additionally be exactly where the work entered the target, so the
-flag can never make unlanded work eligible.
+--absorbed-by <pr-number|pr-url|commit> covers a landing GitHub cannot
+associate, such as content cherry-picked rather than merged into the
+integration branch. It only selects which receipt to verify; every proof
+above still runs, and the named commit must additionally be exactly where the
+work entered the target, so the flag can never make unlanded work eligible.
+A pull request may be named by its bare number, a leading "#", or its full
+GitHub URL — all three resolve the same pull request.
 
 --superseded-by <receipt.json> is the explicit trusted-reviewer receipt
 authority for an intentionally split branch whose original head did not land

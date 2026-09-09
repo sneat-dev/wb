@@ -66,6 +66,16 @@ rerun ` + "`merge prepare`" + `; WB records the failed landing and retains the l
 
 var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 
+// errImmutableTerminalConflict is returned by writeWorkLogTerminalWithEvidence
+// when a claim already has a sealed terminal that disagrees with the one
+// being requested (different FinalCommit, disposition, or evidence). It is a
+// sentinel, not just formatted text, so a caller — abort's discard path in
+// particular (S63) — can distinguish "this claim was already finalized under
+// a different, now-stale head" from every other seal failure and try the
+// narrower additive-cleanup-record authorization instead of surfacing a bare
+// refusal.
+var errImmutableTerminalConflict = errors.New("immutable terminal conflicts with requested transition")
+
 var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
 
 const (
@@ -1962,6 +1972,42 @@ func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposit
 	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil, nil)
 }
 
+// sealDiscardedWorkLogAfterAbsorbedByProof is abort's --disposition
+// discarded sibling of sealWorkLogForCleanup's own "already terminal" path
+// (S63): a worktree finalized "landed" before its branch was rebased onto a
+// moved target and then landed via merge commit passes abort's own
+// --absorbed-by verification (attestedAbsorbedReceipt /
+// verifyAttestedMergeCommitPullRequest, PR #467) just fine, but the ordinary
+// discard seal below still tries to write a NEW terminal disagreeing with
+// the sealed one (different FinalCommit, disposition "discarded" instead of
+// "landed") and is refused with errImmutableTerminalConflict. Once that
+// specific conflict is the ONLY problem — every other abort safety check
+// already passed by the time this is called — this composes with the exact
+// same additive, non-rewriting authorization cleanup already uses
+// (acceptAdvancedCleanupTerminal) instead of surfacing the refusal: the
+// terminal keeps saying, truthfully, that the work landed at its own sealed
+// FinalCommit, and a separate cleanup record proves the current head is
+// authorized too. A worktree with no existing terminal at all (the ordinary
+// abort case) is completely unaffected: the first seal attempt below
+// succeeds and this fallback is never reached.
+func sealDiscardedWorkLogAfterAbsorbedByProof(home, worktree, finalCommit string, dirty *DirtyWorktreeEvidence) error {
+	sealErr := sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, string(AbortDiscarded), dirty)
+	if sealErr == nil {
+		return nil
+	}
+	if !errors.Is(sealErr, errImmutableTerminalConflict) {
+		return sealErr
+	}
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if err != nil {
+		return sealErr
+	}
+	if advancedErr := acceptAdvancedCleanupTerminal(home, worktree, finalCommit, projection); advancedErr != nil {
+		return sealErr
+	}
+	return nil
+}
+
 func sealWorkLogForSupersession(home, worktree, finalCommit string, receipt *SupersessionReceipt) error {
 	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt, nil)
 }
@@ -2309,7 +2355,22 @@ func acceptAdvancedCleanupTerminal(home, worktree, finalCommit string, projectio
 		return fmt.Errorf("check whether %s remains descended from the sealed final commit %s: %w", finalCommit, terminal.FinalCommit, err)
 	}
 	if !descended {
-		return fmt.Errorf("current head %s is not a descendant of the sealed final commit %s; the finalized work may have been discarded", finalCommit, terminal.FinalCommit)
+		// Plain Git ancestry cannot see past a rebase (or an equivalent
+		// history rewrite that replays the same changes as new commits):
+		// force-pushing the sealed branch onto a moved target (S63) produces
+		// a head that shares no parent-child relationship with the sealed
+		// commit at all, even though every one of its patches survives
+		// unchanged. Fall back to proving that narrower, still-sufficient
+		// fact directly: every non-merge commit sealed at terminal.FinalCommit
+		// has an identical stable patch-id somewhere in the current head's
+		// own history since their common ancestor.
+		equivalent, patchErr := commitsShareEveryPatchIDByRebase(context.Background(), worktree, terminal.FinalCommit, finalCommit)
+		if patchErr != nil {
+			return fmt.Errorf("check whether %s carries every patch sealed at %s: %w", finalCommit, terminal.FinalCommit, patchErr)
+		}
+		if !equivalent {
+			return fmt.Errorf("current head %s is not a descendant of the sealed final commit %s, and does not carry every one of its patches either; the finalized work may have been discarded or altered", finalCommit, terminal.FinalCommit)
+		}
 	}
 	record := workLogCleanupRecord{Version: 1, ClaimID: claim.ClaimID, TerminalFinalCommit: terminal.FinalCommit,
 		FinalCommit: finalCommit, CleanedAt: time.Now().UTC()}
@@ -2544,7 +2605,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
 			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) || !sameFinalizeReport(existing.FinalizeReport, finalizeReport) {
-			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
+			return time.Time{}, errImmutableTerminalConflict
 		}
 		sealedAt = existing.SealedAt
 	} else if !errors.Is(err, os.ErrNotExist) {

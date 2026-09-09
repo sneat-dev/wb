@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -4267,19 +4268,42 @@ func fetchExactRemotePullRequestHeadWithRun(
 	return fetched, nil
 }
 
+// absorbedByPullRequestURLPattern matches a GitHub pull-request URL, web
+// (".../pull/<N>") or API (".../pulls/<N>") shape, with an optional
+// trailing path/query/fragment (e.g. "/files", "?diff=split"). The captured
+// repository slug is checked against the command's own --repository so a
+// URL naming a different repository is refused rather than silently
+// resolved against the wrong one.
+var absorbedByPullRequestURLPattern = regexp.MustCompile(`(?i)^https?://(?:www\.)?github\.com/([^/\s]+/[^/\s]+)/pulls?/(\d+)(?:[/?#].*)?$`)
+
 // resolveAbsorbedBy turns an operator pointer into one exact landing commit.
-// A pull-request number must name a pull request that really merged into this
-// exact base; anything else must resolve to a commit already present in the
-// canonical object database, which a genuine landing always is because the
-// target was just fetched.
+// A pull-request number, "#"-prefixed number, or full GitHub pull-request
+// URL must name a pull request that really merged into this exact base;
+// anything else must resolve to a commit already present in the canonical
+// object database, which a genuine landing always is because the target was
+// just fetched. All three pointer shapes are accepted consistently for both
+// squash and merge-commit landings (S63): a URL used to fail with "does not
+// resolve to a commit" because only a bare/"#"-prefixed number and a
+// commit-ish were ever tried.
 func resolveAbsorbedBy(
 	ctx context.Context,
 	worktree, repository, slug, base, absorbedBy string,
 ) (string, *PullRequest, string, error) {
-	pointer := strings.TrimPrefix(strings.TrimSpace(absorbedBy), "#")
-	if pointer == "" {
-		return "", nil, "--absorbed-by requires a pull request number or landing commit", nil
+	trimmed := strings.TrimSpace(absorbedBy)
+	if trimmed == "" {
+		return "", nil, "--absorbed-by requires a pull request number, pull request URL, or landing commit", nil
 	}
+	if match := absorbedByPullRequestURLPattern.FindStringSubmatch(trimmed); match != nil {
+		if !strings.EqualFold(match[1], slug) {
+			return "", nil, fmt.Sprintf("--absorbed-by URL %s names repository %q, not the requested %q", trimmed, match[1], slug), nil
+		}
+		number, err := strconv.Atoi(match[2])
+		if err != nil || number <= 0 {
+			return "", nil, fmt.Sprintf("--absorbed-by URL %s has an invalid pull request number", trimmed), nil
+		}
+		return resolveAbsorbedByPullRequest(ctx, worktree, slug, base, number)
+	}
+	pointer := strings.TrimPrefix(trimmed, "#")
 	if number, err := strconv.Atoi(pointer); err == nil {
 		if number <= 0 {
 			return "", nil, fmt.Sprintf("--absorbed-by pull request number %d is not positive", number), nil

@@ -642,7 +642,17 @@ func applyDiscardedAbort(
 	// The private archive/outbox is durable before remote or local Git state
 	// is retired. A failed later step is therefore a visible cleanup backlog,
 	// never an evidence-free disappearance.
-	if err := sealWorkLogForRecycleWithDirtyCapture(home, refreshed.WorktreeDir, refreshed.HeadSHA, string(options.Disposition), result.DirtyCapture); err != nil {
+	//
+	// This function (applyDiscardedAbort) only ever runs for
+	// options.Disposition == AbortDiscarded. A worktree may already have an
+	// immutable "landed" terminal from an earlier `wb worktree log finalize
+	// --apply` whose branch was then rebased onto a moved target and landed
+	// as a merge commit (S63): --absorbed-by's proof above already verified
+	// that exact landing, so sealDiscardedWorkLogAfterAbsorbedByProof composes
+	// with the same additive authorization cleanup uses instead of refusing.
+	// A worktree with no existing terminal (the ordinary abort case) is
+	// unaffected: its first, ordinary seal attempt succeeds immediately.
+	if err := sealDiscardedWorkLogAfterAbsorbedByProof(home, refreshed.WorktreeDir, refreshed.HeadSHA, result.DirtyCapture); err != nil {
 		return fmt.Errorf("seal discarded work log for %s: %w", refreshed.Repository, err)
 	}
 	backlogRecord := newLifecycleBacklogRecord(projectsRoot, refreshed, string(AbortDiscarded))
