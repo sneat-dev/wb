@@ -3615,7 +3615,18 @@ func inspectLifecycleWorktree(
 			}
 			result.IntegratedAtOrigin = result.RebaseMergedAtOrigin
 		}
-		if !result.IntegratedAtOrigin {
+		// An explicit --absorbed-by pointer is verified whenever it is
+		// supplied, not only when ordinary ancestry has already failed.
+		// AbsorbedAtOrigin used to be set only by this "batched onto a
+		// differently named integration branch" discovery path, so a branch
+		// simply pushed straight to a head that later became a merged pull
+		// request's own head — already IntegratedAtOrigin via plain Git
+		// ancestry — always failed an explicit --absorbed-by even though the
+		// landing was already proven; abort's own safety gate for
+		// --absorbed-by specifically requires AbsorbedAtOrigin, not just
+		// IntegratedAtOrigin. Running the check unconditionally when a
+		// pointer is supplied lets ordinary ancestry additionally satisfy it.
+		if !result.IntegratedAtOrigin || absorbedBy != "" {
 			receipt, rejection, err := absorbedLandingReceipt(
 				ctx, worktree, canonical, slug, head, base, result.RemoteTargetSHA, absorbedBy, pullRequests,
 			)
@@ -3996,16 +4007,34 @@ func attestedAbsorbedReceipt(
 		return nil, rejection, err
 	}
 	if pullRequest != nil {
-		if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest); err != nil || rejection != "" {
-			return nil, rejection, err
+		// A numbered PR has a stronger, topology-aware proof than generic
+		// patch containment: the exact source head is in the fetched PR
+		// head, and the reported merge is in the fresh target. Two landing
+		// shapes are recognized. A squash (or rebase) landing creates a new
+		// commit disconnected from the source branch's own history, so tree
+		// equality between the PR head and the merge commit is the only
+		// available proof there. A genuine "Create a merge commit" landing
+		// instead keeps the exact source head reachable through the merge
+		// commit's own parent chain — Git ancestry, not tree equality, is the
+		// correct proof there, and unlike tree equality it is not defeated by
+		// the target having advanced past the source's last sync with it
+		// before the merge, which is the common case in an actively landing
+		// repository.
+		squashRejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
+		if err != nil {
+			return nil, "", err
 		}
-		// A numbered PR has a stronger, topology-aware squash proof: the exact
-		// source head is in the fetched PR head, that head has the landing tree,
-		// and the reported merge is in the fresh target. A three-way merge of a
-		// source into its squash landing can legitimately conflict after the
-		// integration branch amended the source's files, so generic patch
-		// containment would reject a receipt the PR evidence already proves.
-		return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+		if squashRejection == "" {
+			return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+		}
+		mergeCommitRejection, err := verifyAttestedMergeCommitPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
+		if err != nil {
+			return nil, "", err
+		}
+		if mergeCommitRejection == "" {
+			return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+		}
+		return nil, squashRejection + "; " + mergeCommitRejection, nil
 	}
 	landed, err := isAncestor(ctx, repository, landingSHA, target)
 	if err != nil {
@@ -4101,6 +4130,49 @@ func verifyAttestedSquashPullRequest(
 	}
 	if pullRequestTree != mergeTree {
 		return fmt.Sprintf("--absorbed-by %s pull request head tree %s does not equal merge tree %s", absorbedBy, pullRequestTree, mergeTree), nil
+	}
+	return "", nil
+}
+
+// verifyAttestedMergeCommitPullRequest proves a genuine (non-squash,
+// non-rebase) "Create a merge commit" landing, tried after the squash shape
+// above finds a tree mismatch. Unlike a squash commit, a real merge commit's
+// tree can legitimately differ from its own PR head's tree — it only needs
+// to record whatever else the target carried at merge time — so tree
+// equality is the wrong test here and would reject a landing that Git's own
+// object graph already proves. The one fact that is both necessary and
+// sufficient is that the pull request really has a recorded merge commit and
+// that the exact source head — not merely the PR's reported head — is
+// reachable from it via `git merge-base --is-ancestor` into the freshly
+// fetched target. This is the same ordinary containment cleanup itself
+// already trusts without any receipt; it is re-run here only because
+// abort's own --absorbed-by safety gate requires the stronger,
+// explicitly-attested AbsorbedAtOrigin before it will rely on that ancestry.
+func verifyAttestedMergeCommitPullRequest(
+	ctx context.Context,
+	repository, sourceHead, target, absorbedBy string,
+	pullRequest *PullRequest,
+) (string, error) {
+	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
+		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.MergeSHA) {
+		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
+	}
+	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil {
+		return "", err
+	}
+	if !mergeInTarget {
+		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
+	}
+	sourceInTarget, err := isAncestor(ctx, repository, sourceHead, target)
+	if err != nil {
+		return "", err
+	}
+	if !sourceInTarget {
+		return fmt.Sprintf(
+			"--absorbed-by %s names a merge commit, but exact source head %s is not contained in the exact fetched origin/%s target %s (a squash or rebase landing needs the squash-tree proof instead)",
+			absorbedBy, sourceHead, pullRequest.Base, target,
+		), nil
 	}
 	return "", nil
 }
