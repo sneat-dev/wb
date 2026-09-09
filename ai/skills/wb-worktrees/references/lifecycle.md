@@ -144,6 +144,20 @@ advanced this way — a `not_landed`/failure terminal still refuses closed,
 exactly as before. The same command that was refused is the one that now
 succeeds: rerun `wb worktree cleanup <task> --apply --remote` as-is.
 
+A force-pushed rebase breaks that descendance check outright: replaying the
+sealed commits onto a moved target gives them new SHAs and a new parent
+chain, so the current head shares no Git ancestry with the sealed
+`final_commit` at all, even though its content is identical. Cleanup falls
+back to a narrower, purely content-based proof for exactly this case: every
+non-merge commit sealed at `final_commit` must have an identical stable
+`git patch-id --stable` somewhere between their common ancestor and the
+current head. This survives a *clean* rebase (no conflicts during replay,
+so every patch's bytes are unchanged) but not a rebase that required manual
+conflict resolution, which edits the replayed diffs and breaks patch-id
+equality — that shape needs `abort --disposition discarded --absorbed-by`
+(below) instead, which proves ancestry against the actual landing rather
+than patch content.
+
 Work absorbed into a differently named integration branch — the batching a
 target requiring linear history forces — is eligible too, because the branch
 name is not the evidence. WB reads the merged pull request GitHub associates
@@ -152,11 +166,13 @@ merging the branch into the landing commit must add nothing to it, and merging
 it into the fetched target must add nothing there. Work that landed and was
 later reverted, or landed only in part, stays `awaiting_push`.
 
-`--absorbed-by <pr|commit>` names the receipt to verify when the batch
-cherry-picked rather than merged the branch, so GitHub associates nothing. It
-selects which receipt to check and never replaces one; the named commit must
-also be exactly where the work entered the target. A pointer that fails
-verification refuses only its own candidate and says which check refused it.
+`--absorbed-by <pr-number|pr-url|commit>` names the receipt to verify when the
+batch cherry-picked rather than merged the branch, so GitHub associates
+nothing. A pull request may be named by its bare number, a leading `#`, or its
+full GitHub URL — all three resolve the same pull request. It selects which
+receipt to check and never replaces one; the named commit must also be
+exactly where the work entered the target. A pointer that fails verification
+refuses only its own candidate and says which check refused it.
 
 ## Apply
 
@@ -299,7 +315,24 @@ commit's tree — because the target advanced past the source's last sync with
 it before the merge, the common case in an actively landing repository — WB
 falls back to proving the exact source head's own `git merge-base
 --is-ancestor` reachability into the freshly fetched target instead of
-requiring tree equality.
+requiring tree equality. A pull request pointer accepts a bare number, a
+leading `#`, or its full GitHub URL — all three resolve the same pull
+request and land on identical verification.
+
+If `wb worktree log finalize --apply` already sealed the exact worktree as
+`landed` before its branch was rebased onto a moved target and only the
+rebased head ever landed — the same shape `cleanup`'s patch-id fallback
+above handles, but here without requiring clean-rebase patch equality, since
+`--absorbed-by` proves ancestry against the real landing instead — the
+ordinary discard seal below would try to rewrite the immutable `landed`
+terminal as `discarded` at a different commit and refuse with "immutable
+terminal conflicts with requested transition". Once `--absorbed-by`'s proof
+above already verified that exact landing, `discarded` composes with the
+same additive record `cleanup` writes for an advanced terminal instead: the
+original finalize terminal keeps saying, truthfully, that the work landed at
+its own sealed commit, and a separate append-only record proves the current
+head is authorized too. A worktree with no existing terminal — the ordinary
+abort case — is unaffected; its first, ordinary seal attempt succeeds.
 `orphaned` is an append-only terminalization for a claim whose checkout and
 refs have already vanished. It never deletes Git or filesystem state. Select
 one exact immutable claim and name the approving actor and reason; inspect the
