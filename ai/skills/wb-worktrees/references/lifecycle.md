@@ -20,7 +20,9 @@ wb worktree summary fair-split --format json
 
 That overview lists each repository's path, branch, short head, clean/dirty/
 locked state, and origin-target integration. Pass `--github` when open or
-merged pull-request evidence matters.
+merged pull-request evidence matters. Once `wb worktree log finalize` has
+sealed a worktree's claim, the same summary prints its terminal result,
+message, and report path.
 
 For one checkout, start with the redacted summary (no prompt bodies):
 
@@ -47,6 +49,20 @@ Add GitHub PR evidence only when it affects the decision:
 ```sh
 wb worktree list <task> --github
 ```
+
+A lead session polling for lane completion reads `terminal_result`,
+`terminal_message`, `finalized_at`, and `report_path` -- populated once a lane
+runs `wb worktree log finalize --report <file> --apply` -- rather than
+agreeing on an arbitrary reports path:
+
+```sh
+wb worktree list --finalized --format json
+wb worktree list --not-finalized --format json
+```
+
+The text table's state column shows `finalized-success`/`finalized-failure`
+for a sealed worktree. See [worklog.md](worklog.md) for the full finalize
+contract, including the private report body's redaction rule.
 
 Do not replace this with recursive Git loops. WB validates that each path is a
 real linked worktree belonging to its expected canonical clone, stops at Git
