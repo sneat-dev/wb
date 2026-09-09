@@ -990,6 +990,13 @@ For a clean source retained after a squash landing, --disposition discarded
 --absorbed-by <merged-pr> verifies GitHub's merged PR metadata and rechecks
 the exact source head, fetched PR head, landing tree, and freshly fetched
 target before removal. It never accepts a commit-message reference as proof.
+A genuine "Create a merge commit" landing is verified too, even when the
+target advanced past the source's last sync with it before the merge and the
+PR head's tree therefore no longer equals the merge commit's tree: the exact
+source head's own Git ancestry into the freshly fetched target is checked
+instead of tree equality, so a landing shape squash's tree-equality proof
+would wrongly reject is still accepted on its own, topology-appropriate
+evidence.
 
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
@@ -2038,6 +2045,17 @@ deletes an unchanged remote branch with force-with-lease protection. Durable
 Work Log archive/outbox evidence is written before any remote or local deletion.
 The same named dry-run/apply command inspects and resumes a durable exact-ref
 backlog if interruption happened after a worktree disappeared.
+
+If 'wb worktree log finalize --apply' already sealed the exact current HEAD as
+landed, cleanup corroborates that immutable terminal without ever rewriting
+it. A branch that earned more commits after finalize sealed an earlier head —
+a rebase or merge onto main, or a follow-up push, that then landed on the
+target as a merge commit — is still eligible: once the current head
+independently re-proves it is a Git descendant of the exact commit finalize
+sealed, cleanup appends a separate, additive cleanup record next to the
+sealed terminal instead of refusing outright. Only a landed terminal without
+a successor or exotic evidence (handoff, dirty capture, supersession) can be
+advanced this way.
 
 A branch whose exact head never reaches the target because a merger batched it
 onto a differently named integration branch and landed that branch once is
