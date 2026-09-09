@@ -461,8 +461,22 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 	if projection.LastCheckpoint == nil || projection.LastCheckpoint.Dirty {
 		return LogVerbResult{}, fmt.Errorf("integrate requires a prior clean checkpoint")
 	}
+	resolvedConflict := false
 	if projection.Conflict != "" && projection.Conflict != "resolved" {
-		return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q", projection.Conflict)
+		if projection.Conflict != "integrate_conflict" || projection.LastTarget == nil ||
+			strings.TrimSpace(projection.LastTarget.SHA) == "" ||
+			strings.TrimSpace(projection.LastCheckpoint.Head) == "" ||
+			projection.LastCheckpoint.Head != gitEvidence.Head {
+			return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q", projection.Conflict)
+		}
+		containsTarget, ancestryErr := isAncestor(ctx, root, projection.LastTarget.SHA, gitEvidence.Head)
+		if ancestryErr != nil {
+			return LogVerbResult{}, fmt.Errorf("verify checkpointed integrate conflict resolution: %w", ancestryErr)
+		}
+		if !containsTarget {
+			return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q: checkpoint %s does not contain attempted target %s", projection.Conflict, gitEvidence.Head, projection.LastTarget.SHA)
+		}
+		resolvedConflict = true
 	}
 
 	base := strings.TrimSpace(options.Base)
@@ -501,6 +515,9 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 		target.Ahead, target.Behind = ahead, behind
 	}
 	conflict := ""
+	if resolvedConflict {
+		conflict = "resolved"
+	}
 	result := "ok"
 	message := "integrated target into claim"
 	if integrateErr != nil {
