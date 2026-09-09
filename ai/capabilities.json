@@ -9666,8 +9666,10 @@
               "flags": [
                 "--absorbed-by",
                 "--base",
+                "--finalized",
                 "--format",
                 "--github",
+                "--not-finalized",
                 "--only",
                 "--parallel",
                 "--ttl"
@@ -9678,7 +9680,8 @@
                 "Versioned JSON envelope exposes results, diagnostics, and lifecycle-artifact cleanup backlog; it replaces the legacy bare result array",
                 "A detached checkout is inventoried rather than warned about and dropped, so the pull-request review checkouts that make up most permanent worktree debt are visible and removable",
                 "Every row carries its owner, its age, and whether it passed --ttl, so an abandoned worktree is distinguishable from a paused one",
-                "Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are purged unconditionally and silently on this read path rather than logged once per artefact"
+                "Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are purged unconditionally and silently on this read path rather than logged once per artefact",
+                "terminal_result, terminal_message, finalized_at, and report_path are exposed (JSON and the text state column) once wb worktree log finalize seals a claim; --finalized/--not-finalized filter on that"
               ]
             }
           ],
@@ -9753,7 +9756,8 @@
                 "Read-only agent bootstrap dump of manifest, claim identity, exact original prompt, ordered prompt bodies, and live Git evidence for one worktree.",
                 "Mutating verbs are registered as subcommands under this parent.",
                 "Mutation verbs accept --mode agent only with a live registered session, or --mode manual with --initiator.",
-                "recover and archive remain read-only until --apply; show is always read-only."
+                "recover and archive remain read-only until --apply; show is always read-only.",
+                "Once finalized, includes the terminal record and, exactly like the original prompt body, the private finalize --report/--report-stdin body."
               ]
             }
           ],
@@ -10012,10 +10016,13 @@
                 "--apply",
                 "--format",
                 "--message",
+                "--report",
+                "--report-stdin",
                 "--result"
               ],
               "modes": [
-                "Records a terminal result; --apply seals the hybrid claim."
+                "Records a terminal result; --apply seals the hybrid claim.",
+                "--report/--report-stdin attaches a completion report; --apply persists it under WB_HOME."
               ]
             }
           ],
@@ -10028,7 +10035,8 @@
               "command": "wb worktree log finalize --help",
               "contains": [
                 "--apply",
-                "--result"
+                "--result",
+                "--report"
               ]
             }
           ],
@@ -10041,7 +10049,8 @@
               "path": "ai/skills/wb-worktrees/references/worklog.md",
               "marker": "# Work log verbs",
               "examples": [
-                "wb worktree log finalize . --result success"
+                "wb worktree log finalize . --result success",
+                "wb worktree log finalize . --result success --report report.md --apply"
               ]
             }
           ],
@@ -10461,7 +10470,8 @@
                 "--format"
               ],
               "modes": [
-                "Redacted inspect of journal and live Git evidence without prompt bodies."
+                "Redacted inspect of journal and live Git evidence without prompt bodies.",
+                "Once wb worktree log finalize has sealed the claim, includes the redacted terminal record (disposition, terminal_result, terminal_message, report_path) without the report body."
               ]
             }
           ],
@@ -12892,7 +12902,8 @@
               ],
               "modes": [
                 "Requires one task name and prints a brief overview of every live worktree: path, branch, short head, clean/dirty/locked state, and origin-target integration",
-                "Optional --github attaches open or merged pull-request evidence"
+                "Optional --github attaches open or merged pull-request evidence",
+                "Once wb worktree log finalize has sealed a worktree's claim, prints its terminal result, message, and report path"
               ]
             }
           ],
