@@ -15,6 +15,7 @@ wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <o
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -247,6 +248,15 @@ worktree. It writes a separate audited acknowledgement and frees the merger
 lane: a subsequent `wb worktree merge prepare` of the exact same sources
 supersedes the stuck receipt under a fresh successor operation, integration
 branch, and empty pull request, rather than resuming the retired publication.
+
+When a prepare/`validation_failed` receipt never published or landed, but its
+immutable receipt still blocks a different source set from using the same
+repository target lane, use `acknowledge-retired-unpublished-validation-failure`. WB
+requires the candidate branch to be absent from the remote, proves the
+candidate is not reachable from the freshly fetched target, and requires every
+receipted source to remain clean, exact, and actively claimed. The append-only
+acknowledgement retires only the failed merge attempt; it does not delete or
+rewrite the candidate, source worktrees, branches, receipt, or Work Logs.
 A pull request still OPEN or proved MERGED, a candidate branch that still
 carries a remote ref, or a candidate already reachable from the current
 target refuses closed.

@@ -11311,6 +11311,80 @@
       "notes": "This recovers a conflict/validation_failed/checks_failed receipt stuck after publishing a candidate whose target then advanced past it, once the operator has closed the stale pull request unmerged and deleted its remote branch by hand. A subsequent prepare of the exact same sources supersedes the stuck receipt under a fresh operation, integration branch, and empty pull request rather than resuming the retired publication."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-retired-unpublished-validation-failure",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-unpublished-validation-failure",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Accepts only an unpublished prepare/validation_failed receipt with no landing SHA, pull request, or published candidate SHA",
+                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed",
+                "Writes only an append-only acknowledgement; the receipt, candidate, sources, branches, and Work Logs remain unchanged while a different source set may acquire the lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-unpublished-validation-failure --help",
+              "contains": [
+                "receipt never published",
+                "actively claimed",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_test.go",
+              "name": "TestAcknowledgeUnpublishedValidationFailureFreesLane",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This retires only an unpublished failed preparation after proving its exact source work remains preserved; malformed acknowledgement evidence keeps the lane blocked."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
