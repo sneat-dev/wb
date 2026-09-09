@@ -47,7 +47,13 @@ type ListOptions struct {
 	Filter string
 	// OwnerState limits results by current owner PID liveness: active or orphaned.
 	OwnerState string
-	GitHub     bool
+	// Finalized narrows results by whether `wb worktree log finalize` sealed
+	// this checkout's claim: nil applies no filter, true keeps only checkouts
+	// with a recorded TerminalResult, false keeps only checkouts without one.
+	// It is independent of OwnerState/Base/Filter and applied after every
+	// other selection, exactly like OwnerState.
+	Finalized *bool
+	GitHub    bool
 	// AbsorbedBy points at the merged pull request or exact landing commit
 	// that carried a candidate's work into the target inside a differently
 	// named integration branch. It selects which receipt to verify and never
@@ -342,6 +348,19 @@ type ListResult struct {
 	// "in use" is decided from, because a live process id is evidence about a
 	// process and the question is about a worktree.
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	// TerminalResult, TerminalMessage, FinalizedAt, and ReportPath are
+	// populated only when `wb worktree log finalize --apply` sealed this
+	// worktree's claim: TerminalResult is "success" or "failure",
+	// TerminalMessage is the finalize --message text, FinalizedAt is when the
+	// terminal was sealed, and ReportPath names the private copy of a
+	// --report/--report-stdin body under WB_HOME (never the body itself,
+	// which stays private local data read only by the bare `wb worktree log`
+	// dump). A terminal claim sealed by any other disposition (recycled,
+	// removed, superseded, orphaned, handoff, ...) leaves all four empty.
+	TerminalResult  string    `json:"terminal_result,omitempty"`
+	TerminalMessage string    `json:"terminal_message,omitempty"`
+	FinalizedAt     time.Time `json:"finalized_at,omitempty"`
+	ReportPath      string    `json:"report_path,omitempty"`
 	// Landing is the commit-identity landing evidence for a head that is not
 	// itself contained in the target: the merged pull request of an ancestor,
 	// plus the local commits stacked on top of it. A squash merge produces
@@ -1123,6 +1142,16 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		filtered := outcome.Results[:0]
 		for _, result := range outcome.Results {
 			if result.OwnerState == options.OwnerState {
+				filtered = append(filtered, result)
+			}
+		}
+		outcome.Results = filtered
+	}
+	if options.Finalized != nil {
+		want := *options.Finalized
+		filtered := outcome.Results[:0]
+		for _, result := range outcome.Results {
+			if (result.TerminalResult != "") == want {
 				filtered = append(filtered, result)
 			}
 		}
@@ -3508,6 +3537,14 @@ func inspectLifecycleWorktree(
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
 		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
+			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
+			if terminal.FinalizeReport != nil {
+				result.TerminalResult = terminal.FinalizeReport.Result
+				result.TerminalMessage = terminal.FinalizeReport.Message
+				result.ReportPath = terminal.FinalizeReport.ReportPath
+				result.FinalizedAt = terminal.SealedAt
+			}
 		}
 	}
 	if withGitHub {

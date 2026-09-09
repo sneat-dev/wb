@@ -101,6 +101,162 @@ func TestLogVerbsSteerCheckpointRefreshFinalize(t *testing.T) {
 	}
 }
 
+// TestLogFinalizeReportRecordsTerminalEvidenceAndListFilters proves the
+// wb worktree log finalize --report journey at the library level: the report
+// body lands under WB_HOME (never inside the worktree/source Git), the sealed
+// terminal/outbox carry terminal_result/terminal_message/report_path,
+// ListWithDiagnostics surfaces those on the still-live worktree, the
+// Finalized filter selects on that evidence, and LoadWorkLogView's redaction
+// split holds: only IncludePromptBodies=true returns the report body.
+func TestLogFinalizeReportRecordsTerminalEvidenceAndListFilters(t *testing.T) {
+	fixture := newGitFixture(t)
+	promptPath := writeWorkLogPromptFile(t, "finalize with a report\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "log-finalize-report",
+		WorkLog: WorkLogOptions{
+			RunID: "log-finalize-report-run", Model: "unknown",
+			OriginalPrompt: promptPath, RequireOriginalPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+
+	if _, err := LogInit(context.Background(), LogInitOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reportBody := []byte("# Report\n\nEverything shipped.\n")
+	finalize, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+		Result: "success", Message: "shipped it", Apply: true, Report: reportBody,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalize.Applied {
+		t.Fatalf("finalize = %#v", finalize)
+	}
+
+	results, err := List(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "log-finalize-report",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("list results = %#v", results)
+	}
+	result := results[0]
+	if result.TerminalResult != "success" || result.TerminalMessage != "shipped it" || result.ReportPath == "" || result.FinalizedAt.IsZero() {
+		t.Fatalf("list did not surface finalize evidence: %#v", result)
+	}
+	if strings.Contains(result.ReportPath, worktree) {
+		t.Fatalf("report path %q leaked into the worktree; it must live under WB_HOME only", result.ReportPath)
+	}
+	onDisk, err := os.ReadFile(result.ReportPath)
+	if err != nil || string(onDisk) != string(reportBody) {
+		t.Fatalf("report on disk = %q, err=%v, want %q", onDisk, err, reportBody)
+	}
+
+	// --finalized / --not-finalized (Finalized filter) select on exactly this.
+	trueFilter := true
+	finalizedOnly, err := List(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "log-finalize-report", Finalized: &trueFilter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalizedOnly) != 1 {
+		t.Fatalf("Finalized=true results = %#v", finalizedOnly)
+	}
+	falseFilter := false
+	notFinalized, err := List(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "log-finalize-report", Finalized: &falseFilter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notFinalized) != 0 {
+		t.Fatalf("Finalized=false results = %#v, want none", notFinalized)
+	}
+
+	// The bare dump (agent bootstrap) carries the exact report body.
+	dump, err := LoadWorkLogView(context.Background(), LoadWorkLogOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, IncludePromptBodies: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dump.Terminal == nil || dump.Terminal.TerminalResult != "success" || dump.Terminal.Disposition != "landed" {
+		t.Fatalf("bare dump terminal = %#v", dump.Terminal)
+	}
+	if dump.FinalizeReportBody != string(reportBody) {
+		t.Fatalf("bare dump report body = %q, want %q", dump.FinalizeReportBody, reportBody)
+	}
+
+	// The redacted show never carries the body.
+	show, _, err := LogShow(context.Background(), fixture.projectsRoot, worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.Terminal == nil || show.Terminal.ReportPath == "" {
+		t.Fatalf("redacted show missing terminal metadata: %#v", show.Terminal)
+	}
+	if show.FinalizeReportBody != "" {
+		t.Fatalf("redacted show leaked the report body: %q", show.FinalizeReportBody)
+	}
+}
+
+// TestLogFinalizeReportRejectsOversizedBody proves the 1 MiB cap is enforced
+// by the library itself (defense in depth behind the CLI's own check) and
+// that a rejected report never mutates the claim.
+func TestLogFinalizeReportRejectsOversizedBody(t *testing.T) {
+	fixture := newGitFixture(t)
+	promptPath := writeWorkLogPromptFile(t, "finalize with an oversized report\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "log-finalize-oversized",
+		WorkLog: WorkLogOptions{
+			RunID: "log-finalize-oversized-run", Model: "unknown",
+			OriginalPrompt: promptPath, RequireOriginalPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if _, err := LogInit(context.Background(), LogInitOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oversized := make([]byte, MaxFinalizeReportBytes+1)
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+		Result: "success", Apply: true, Report: oversized,
+	}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized report err = %v, want an exceeds-cap error", err)
+	}
+
+	// The claim is untouched: a normal finalize still succeeds afterward.
+	finalize, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+		Result: "success", Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalize.Applied {
+		t.Fatalf("finalize after rejected oversized report = %#v", finalize)
+	}
+}
+
 func TestLogIntegrateAcceptsCheckpointedManualConflictResolution(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{

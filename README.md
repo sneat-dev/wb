@@ -207,6 +207,8 @@ and cannot deliver inter-agent messages.
 `wb worktree summary <task>` is the brief task/effort overview across every
 live worktree: path, branch, short head, clean/dirty/locked state, and
 origin-target integration. Pass `--github` for open or merged PR evidence.
+Once `wb worktree log finalize` has sealed a worktree's claim, the summary
+also prints its terminal result, message, and report path.
 `wb worktree info [path]` is the safe redacted summary: claim identity, prompt
 ordinals/digests, and live Git evidence, with prompt bodies omitted.
 `wb worktree log [path]` dumps the private local journal for agent bootstrap:
@@ -216,6 +218,17 @@ under the same command (`init`, `steer`, `show`, `checkpoint`, `refresh`,
 `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive`) append to
 `.wb/local/worklog/` and fence on the Hybrid claim where required. `log show`
 stays redacted; `log sync` remains offline until Synchestra is configured.
+
+`log finalize --report <path>` (or `--report-stdin`) attaches an agent's
+completion report; `--apply` copies it into the private Work Log store under
+`WB_HOME` (never source Git, capped at 1 MiB) and records `terminal_result`,
+`terminal_message`, `finalized_at`, and `report_path` on the sealed terminal.
+A lead session reads that a lane finished, and where its report lives,
+through `wb worktree list --finalized`/`--not-finalized` or
+`wb worktree summary <task>` — never an arbitrary reports path. The report
+body itself stays private: only the bare `wb worktree log` dump reads it
+back, exactly like an original prompt body; `log show` sees `report_path`
+but never the body.
 
 If Work Log publication fails after Git has published one or more coordinated
 worktrees, WB records exact per-repository recovery outcomes, writes durable
@@ -263,6 +276,8 @@ wb worktree list                    # includes owner agent/model/PID liveness
 wb worktree list --only active      # at least one recorded PID is live
 wb worktree list --only orphaned    # no recorded live PID
 wb worktree list bots-e2e --github
+wb worktree list --finalized        # sealed by wb worktree log finalize
+wb worktree list --not-finalized    # not yet finalized
 ```
 
 `--format json` returns a versioned envelope containing `results`,

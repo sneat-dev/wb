@@ -906,6 +906,222 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	}
 }
 
+// TestWorktreeLogFinalizeReportSurfacesThroughListSummaryAndLog proves the
+// wb worktree log finalize --report journey end to end through the CLI: the
+// report body lands under WB_HOME (never source Git), wb worktree
+// list/summary surface report_path/terminal_result/terminal_message/
+// finalized_at without the body, --finalized/--not-finalized filter on it,
+// and the redaction split holds -- log show never carries the body, the bare
+// log dump does.
+func TestWorktreeLogFinalizeReportSurfacesThroughListSummaryAndLog(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "finalize with a report")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-finalize-report", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-finalize-report")
+
+	reportBody := "# Report\n\nShipped the thing.\n"
+	reportPath := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(reportPath, []byte(reportBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	finalizeArgs := []string{
+		"--projects-root", projects, "worktree", "log", "finalize", worktree,
+		"--result", "success", "--message", "shipped the thing",
+		"--report", reportPath, "--apply", "--format", "json",
+	}
+	if code := run(finalizeArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("finalize failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var finalizeResult struct {
+		Applied bool     `json:"applied"`
+		Notes   []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &finalizeResult); err != nil {
+		t.Fatalf("decode finalize output: %v\n%s", err, stdout.String())
+	}
+	if !finalizeResult.Applied {
+		t.Fatalf("finalize did not apply: %+v", finalizeResult)
+	}
+	noted := false
+	for _, note := range finalizeResult.Notes {
+		if strings.Contains(note, "report copied to") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatalf("finalize notes do not mention the copied report: %+v", finalizeResult.Notes)
+	}
+
+	// wb worktree list --format json exposes the redacted metadata.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "list", "cli-finalize-report", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("list failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var listOutcome worktrees.ListOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &listOutcome); err != nil {
+		t.Fatalf("decode list output: %v\n%s", err, stdout.String())
+	}
+	if len(listOutcome.Results) != 1 {
+		t.Fatalf("list results = %#v", listOutcome.Results)
+	}
+	result := listOutcome.Results[0]
+	if result.TerminalResult != "success" || result.TerminalMessage != "shipped the thing" || result.ReportPath == "" || result.FinalizedAt.IsZero() {
+		t.Fatalf("list did not surface finalize evidence: %#v", result)
+	}
+	if strings.Contains(result.ReportPath, string(filepath.Separator)+".git"+string(filepath.Separator)) {
+		t.Fatalf("report path looks like it landed in source Git: %s", result.ReportPath)
+	}
+	reportOnDisk, err := os.ReadFile(result.ReportPath)
+	if err != nil || string(reportOnDisk) != reportBody {
+		t.Fatalf("report body on disk = %q, err=%v, want %q", reportOnDisk, err, reportBody)
+	}
+
+	// The text table's state column reflects the finalize outcome.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "list", "cli-finalize-report"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("text list failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "finalized-success") {
+		t.Fatalf("text list state column missing finalized-success: %s", stdout.String())
+	}
+
+	// --finalized / --not-finalized filter on exactly this evidence.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "list", "cli-finalize-report", "--finalized", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("--finalized list failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var finalizedOnly worktrees.ListOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &finalizedOnly); err != nil {
+		t.Fatalf("decode --finalized output: %v\n%s", err, stdout.String())
+	}
+	if len(finalizedOnly.Results) != 1 {
+		t.Fatalf("--finalized results = %#v", finalizedOnly.Results)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "list", "cli-finalize-report", "--not-finalized", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("--not-finalized list failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var notFinalized worktrees.ListOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &notFinalized); err != nil {
+		t.Fatalf("decode --not-finalized output: %v\n%s", err, stdout.String())
+	}
+	if len(notFinalized.Results) != 0 {
+		t.Fatalf("--not-finalized results = %#v, want none", notFinalized.Results)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"worktree", "list", "--finalized", "--not-finalized"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("--finalized and --not-finalized together = code=%d stdout=%s stderr=%s, want exitUsage", code, stdout.String(), stderr.String())
+	}
+
+	// wb worktree summary prints the terminal message and report path.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "summary", "cli-finalize-report"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("summary failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	summaryText := stdout.String()
+	if !strings.Contains(summaryText, "finalize: success") || !strings.Contains(summaryText, "message:  shipped the thing") || !strings.Contains(summaryText, "report:   "+result.ReportPath) {
+		t.Fatalf("summary did not print finalize evidence: %s", summaryText)
+	}
+
+	// wb worktree log show stays redacted: terminal metadata, never the body.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", "show", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("log show failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Shipped the thing") {
+		t.Fatalf("log show leaked the private report body: %s", stdout.String())
+	}
+	var showEnvelope struct {
+		View worktrees.WorkLogView `json:"view"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &showEnvelope); err != nil {
+		t.Fatalf("decode log show output: %v\n%s", err, stdout.String())
+	}
+	if showEnvelope.View.Terminal == nil || showEnvelope.View.Terminal.TerminalResult != "success" || showEnvelope.View.Terminal.ReportPath == "" {
+		t.Fatalf("log show did not include the redacted terminal record: %#v", showEnvelope.View.Terminal)
+	}
+	if showEnvelope.View.FinalizeReportBody != "" {
+		t.Fatalf("log show carried the private report body: %q", showEnvelope.View.FinalizeReportBody)
+	}
+
+	// The bare wb worktree log dump carries the exact private report body,
+	// exactly like it does for an original prompt body.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("bare log failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var view worktrees.WorkLogView
+	if err := json.Unmarshal(stdout.Bytes(), &view); err != nil {
+		t.Fatalf("decode bare log output: %v\n%s", err, stdout.String())
+	}
+	if view.FinalizeReportBody != reportBody {
+		t.Fatalf("bare log finalize_report_body = %q, want %q", view.FinalizeReportBody, reportBody)
+	}
+}
+
+// TestWorktreeLogFinalizeReportRejectsOversizedInput proves the 1 MiB report
+// cap is enforced before anything is written, from both --report and
+// --report-stdin, with a clear error rather than a silent truncation.
+func TestWorktreeLogFinalizeReportRejectsOversizedInput(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "finalize with an oversized report")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-finalize-oversized", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-finalize-oversized")
+
+	oversized := bytes.Repeat([]byte("a"), worktrees.MaxFinalizeReportBytes+1)
+	oversizedPath := filepath.Join(t.TempDir(), "oversized.md")
+	if err := os.WriteFile(oversizedPath, oversized, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	args := []string{
+		"--projects-root", projects, "worktree", "log", "finalize", worktree,
+		"--result", "success", "--report", oversizedPath, "--apply",
+	}
+	if code := run(args, &stdout, &stderr); code == exitOK || !strings.Contains(stderr.String(), "exceeds") {
+		t.Fatalf("oversized --report was not rejected: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	// A rejected report must never reach the claim: the worktree stays active
+	// and finalizable, not partially sealed.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", "finalize", worktree, "--result", "success", "--apply"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("finalize after rejected oversized report failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"worktree", "log", "finalize", ".", "--report", oversizedPath, "--report-stdin"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("--report and --report-stdin together = code=%d stdout=%s stderr=%s, want exitUsage", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs(t *testing.T) {
 	command := newWorktreeLogRecoverCmd()
 	for _, flag := range []string{"reconcile-branch", "expected-head", "remote", "actor", "reason", "event-id", "apply"} {
