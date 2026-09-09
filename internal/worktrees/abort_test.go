@@ -37,6 +37,74 @@ func TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest(t *testing.T) {
 	}
 }
 
+// TestAbortDiscardedAcceptsAttestedMergeCommitLanding is the S41 regression
+// for abort's --absorbed-by proof: a genuine "Create a merge commit" landing
+// whose target advanced past the branch's last sync before the merge (the
+// common case in an actively landing repository) used to be refused, because
+// the squash-only proof requires the pull request head's tree to equal the
+// merge commit's tree, and a real merge commit's tree legitimately differs
+// once the target has carried other, unrelated work. The exact source head
+// is still reachable through the merge commit's own parent chain, and that
+// Git ancestry — not tree equality — is what the merge-commit shape proves.
+func TestAbortDiscardedAcceptsAttestedMergeCommitLanding(t *testing.T) {
+	const task = "abort-absorbed-merge-commit"
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "candidate.txt"), []byte(task+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "candidate.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "candidate work")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	// Advance main with an unrelated commit before the merge, so the
+	// resulting merge commit's tree differs from the branch's own tree.
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "unrelated.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge candidate (#77)")
+	mergeSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	if gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}") == gitTestOutput(t, fixture.canonical, "rev-parse", mergeSHA+"^{tree}") {
+		t.Fatal("fixture must land more than the branch's own tree, or the squash proof would already accept it")
+	}
+
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", head)
+	installAbsorbingPullRequestFixture(t, head, mergeSHA, mergedAt)
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task,
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone || !results[0].BranchDeleted ||
+		!results[0].AbsorbedAtOrigin || results[0].AbsorbedBySHA != mergeSHA {
+		t.Fatalf("merge-commit absorbed abort = %#v", results)
+	}
+	proof := results[0].MergedPullRequest
+	if proof == nil || proof.Number != 77 || proof.HeadSHA != head || proof.MergeSHA != mergeSHA {
+		t.Fatalf("persisted merge-commit pull request proof = %#v", proof)
+	}
+	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("absorbed worktree remains: %v", err)
+	}
+}
+
 func TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs(t *testing.T) {
 	tests := []struct {
 		name   string

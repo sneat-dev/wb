@@ -2089,6 +2089,212 @@ func TestCleanupRejectsAlreadyFinalizedNotLandedClaim(t *testing.T) {
 	}
 }
 
+// TestCleanupAcceptsAdvancedTerminalAfterFinalize reproduces S41: a lane
+// finalizes success, the branch then earns a follow-up commit, and only that
+// later commit lands on main as a merge commit. Cleanup must retire the
+// worktree without ever rewriting the original immutable terminal, by
+// additively authorizing the advanced head once it re-proves that head is a
+// descendant of the exact commit finalize sealed.
+func TestCleanupAcceptsAdvancedTerminalAfterFinalize(t *testing.T) {
+	const task = "cleanup-advanced-terminal"
+	fixture, result, head1, head2, mergeSHA, mergedAt := prepareFinalizedThenAdvancedTask(t, task)
+	installMergedPullRequestFixtureWithMerge(t, head2, mergeSHA, mergedAt)
+
+	projection, err := readWorkLogProjection(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRoot := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID)
+	terminalPath := filepath.Join(runRoot, "terminals", projection.ClaimID+".json")
+	sealedOutboxPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "outbox", projection.RunID+"-"+projection.ClaimID+"-sealed.json")
+	terminalBefore, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal workLogTerminalRecord
+	if err := json.Unmarshal(terminalBefore, &terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.FinalCommit != head1 || terminal.Disposition != "landed" {
+		t.Fatalf("finalize terminal = %#v, want FinalCommit=%s Disposition=landed", terminal, head1)
+	}
+	outboxBefore, err := os.ReadFile(sealedOutboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A crash-interrupted retry of the private seal step, before Git ever
+	// removes the worktree, must compose safely rather than conflict against
+	// its own prior additive record.
+	if err := acceptAdvancedCleanupTerminal(fixture.home, result.WorktreeDir, head2, projection); err != nil {
+		t.Fatalf("first advanced cleanup authorization: %v", err)
+	}
+	if err := acceptAdvancedCleanupTerminal(fixture.home, result.WorktreeDir, head2, projection); err != nil {
+		t.Fatalf("idempotent retry of the advanced cleanup authorization: %v", err)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("advanced cleanup authorization alone must not touch the worktree: %v", statErr)
+	}
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, DeleteRemote: true,
+		OlderThan: 0, Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("advanced-terminal cleanup outcome = %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("advanced-terminal worktree remains after cleanup: %v", statErr)
+	}
+
+	terminalAfter, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(terminalBefore, terminalAfter) {
+		t.Fatal("cleanup rewrote the immutable finalize terminal")
+	}
+	outboxAfter, err := os.ReadFile(sealedOutboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(outboxBefore, outboxAfter) {
+		t.Fatal("cleanup rewrote the immutable finalize outbox receipt")
+	}
+
+	cleanupRecordPath := filepath.Join(runRoot, "cleanups", projection.ClaimID+".json")
+	cleanupRecordBytes, err := os.ReadFile(cleanupRecordPath)
+	if err != nil {
+		t.Fatalf("read additive cleanup record: %v", err)
+	}
+	var cleanupRecord workLogCleanupRecord
+	if err := json.Unmarshal(cleanupRecordBytes, &cleanupRecord); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupRecord.TerminalFinalCommit != head1 || cleanupRecord.FinalCommit != head2 || cleanupRecord.CleanedAt.IsZero() {
+		t.Fatalf("additive cleanup record = %#v, want TerminalFinalCommit=%s FinalCommit=%s", cleanupRecord, head1, head2)
+	}
+
+	cleanedOutboxPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "outbox", projection.RunID+"-"+projection.ClaimID+"-cleaned.json")
+	var cleanedEvent workLogPublicEvent
+	cleanedOutboxBytes, err := os.ReadFile(cleanedOutboxPath)
+	if err != nil {
+		t.Fatalf("read additive cleanup outbox event: %v", err)
+	}
+	if err := json.Unmarshal(cleanedOutboxBytes, &cleanedEvent); err != nil {
+		t.Fatal(err)
+	}
+	if cleanedEvent.Type != "worktree.cleaned" || cleanedEvent.FinalCommit != head2 {
+		t.Fatalf("additive cleanup outbox event = %#v, want Type=worktree.cleaned FinalCommit=%s", cleanedEvent, head2)
+	}
+}
+
+// TestCleanupRejectsAdvancedTerminalNotDescendedFromSealedCommit proves the
+// new advanced-terminal path never authorizes cleanup of a head that is not
+// a Git descendant of the exact commit finalize sealed — e.g. history was
+// rewritten and the finalized work discarded rather than merely extended.
+func TestCleanupRejectsAdvancedTerminalNotDescendedFromSealedCommit(t *testing.T) {
+	const task = "cleanup-advanced-terminal-diverged"
+	fixture, result, head1, _, _, mergedAt := prepareFinalizedThenAdvancedTask(t, task)
+
+	// Discard the finalized commit and its follow-up entirely: rewind to the
+	// merge base and land a completely unrelated commit as the new tip. This
+	// commit is not a descendant of head1 (the sealed FinalCommit).
+	base := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD~2")
+	if merged, err := isAncestor(context.Background(), result.WorktreeDir, base, head1); err != nil || !merged {
+		t.Fatalf("fixture sanity: base must be an ancestor of head1: merged=%t err=%v", merged, err)
+	}
+	gitTest(t, result.WorktreeDir, "reset", "--hard", base)
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "rewritten.txt"), []byte("not a descendant\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "rewritten.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "history rewritten after finalize")
+	diverged := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "--force", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "fetch", "origin")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "origin/"+result.Branch, "-m", "merge diverged branch")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAtDiverged := mergedAt.Add(time.Hour)
+	installMergedPullRequestFixture(t, diverged, mergedAtDiverged)
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, DeleteRemote: true,
+		OlderThan: 0, Now: func() time.Time { return mergedAtDiverged.Add(time.Hour) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not authorize cleanup") {
+		t.Fatalf("diverged advanced-terminal cleanup error = %v", err)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("diverged advanced-terminal cleanup touched the worktree: %v", statErr)
+	}
+}
+
+// prepareFinalizedThenAdvancedTask reproduces the exact four-step state that
+// used to leave a worktree permanently stuck (S41): finalize seals the claim
+// as landed at head1, the branch then earns a follow-up commit (head2, "a
+// rebase/merge onto main, or a follow-up push"), and only THEN does the
+// branch land on main as a merge commit. head1 is deliberately never merged
+// on its own — only head2 ever reaches main — so the fixture cannot be
+// satisfied by the pre-existing exact-match acceptExistingCleanupTerminal
+// path; only the new advanced-terminal authorization can retire it.
+func prepareFinalizedThenAdvancedTask(t *testing.T, task string) (fixture *gitFixture, result CreateResult, head1, head2, mergeSHA string, mergedAt time.Time) {
+	t.Helper()
+	fixture = newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head1 = gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "success", Message: "landed before the follow-up commit", Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "follow-up.txt"), []byte("more work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "follow-up.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "follow-up commit after finalize")
+	head2 = gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "origin", result.Branch)
+
+	// Advance main with an unrelated commit first, so the eventual merge
+	// commit's tree differs from head2's own tree exactly as a real,
+	// concurrently-landing repository would produce — the shape that makes
+	// the squash-only absorbed-by proof (tree equality) reject a genuine
+	// merge-commit landing.
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "unrelated.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature (advanced)")
+	mergeSHA = gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+
+	return fixture, result, head1, head2, mergeSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+}
+
 func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) (CreateResult, string, time.Time) {
 	t.Helper()
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
