@@ -34,12 +34,29 @@ type Node interface {
 	// Build runs the library repository's own build target and returns the
 	// directory holding the built package.
 	Build(ctx context.Context, libraryDir, packageDir string) (dist string, err error)
-	// Link points the consumer's node_modules entry for packageName at dist,
-	// returning what was there before so --undo restores it exactly. It must
-	// not modify any manifest.
-	Link(ctx context.Context, consumerDir, packageName, dist string) (previous string, err error)
+	// Link stages dist beside the consumer's installed package so framework
+	// peer dependencies resolve from the consumer, points node_modules at that
+	// stage, and reports every generated path. It preserves what was there so
+	// --undo restores it exactly and must not modify any manifest.
+	Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, err error)
 	// Unlink restores the node_modules entry recorded by Link.
-	Unlink(ctx context.Context, consumerDir, packageName string) error
+	//
+	// note is empty for a normal restore. It carries an informational
+	// message when the consumer's own package manager already replaced the
+	// WB-staged link with a published copy (a governed `pnpm install`, most
+	// often) before undo ran: the record is cleared and the filesystem is
+	// left exactly as the package manager left it.
+	Unlink(ctx context.Context, consumerDir, packageName string) (note string, err error)
+	// LinkSiblings wires runtime dependency edges between packages that WB has
+	// staged from the same provider. External peers continue to resolve from
+	// the consumer's installed dependency context.
+	LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error
+}
+
+// NodeLinkResult reports every generated path relative to the npm workspace.
+type NodeLinkResult struct {
+	Previous  string
+	Artifacts []string
 }
 
 // Verifier runs a consumer's own lint and tests.

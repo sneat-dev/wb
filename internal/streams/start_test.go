@@ -58,6 +58,9 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 		if pullRequest.Base != "main" {
 			t.Errorf("pull request %d targets %q, want main", pullRequest.Number, pullRequest.Base)
 		}
+		if !strings.Contains(pullRequest.Body, "WB stream: `checkout-rewrite`") {
+			t.Errorf("pull request %d body lacks WB stream identity: %q", pullRequest.Number, pullRequest.Body)
+		}
 	}
 
 	// The state is WB-owned and outside every repository: no member worktree
@@ -78,6 +81,26 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 	}
 	if len(restored.Members) != 3 {
 		t.Fatalf("restored members = %d, want 3", len(restored.Members))
+	}
+}
+
+func TestStartDoesNotReserveAStreamWhenWorktreePlanningFails(t *testing.T) {
+	engine, _, _, worktrees := newTestEngine(t)
+	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
+		".github/workflows/ci.yml": cancellingWorkflow,
+	})
+	worktrees.planErr = errors.New("worktrees config root: must be an absolute path")
+
+	if _, err := engine.Start(context.Background(), StartOptions{
+		Name: "invalid-placement", Repositories: []string{"acme/library"},
+	}, nil); err == nil || !strings.Contains(err.Error(), "plan worktree") {
+		t.Fatalf("start error = %v, want planning refusal", err)
+	}
+	if _, err := engine.Store.Load("invalid-placement"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid placement reserved a stream: %v", err)
+	}
+	if len(worktrees.created) != 0 {
+		t.Fatalf("invalid placement created %d worktrees", len(worktrees.created))
 	}
 }
 

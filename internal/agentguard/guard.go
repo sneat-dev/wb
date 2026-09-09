@@ -120,6 +120,9 @@ func inspectFileTool(input toolInput, projectsRoot string) *finding {
 // just the rule: a refusal an agent cannot act on becomes a refusal it works
 // around.
 func refusal(result finding) string {
+	if len(result.GovernedCommand) > 0 {
+		return governedCommandRefusal(result)
+	}
 	slug := result.Location.Slug()
 	if slug == "" {
 		slug = "<owner/repository>"
@@ -135,6 +138,31 @@ func refusal(result finding) string {
 	message.WriteString("If this clone already holds uncommitted work, rescue it first:\n")
 	fmt.Fprintf(&message, "  wb worktree rescue %s\n", result.Location.Root)
 	return message.String()
+}
+
+func governedCommandRefusal(result finding) string {
+	var message strings.Builder
+	message.WriteString("CPU-heavy validation in a managed worktree must run through WB.\n")
+	fmt.Fprintf(&message, "Refused: %s.\n\n", result.Detail)
+	message.WriteString("This gives the operation a durable ID and timing receipt, and lets WB queue\n")
+	message.WriteString("or coalesce equivalent work when several agents share a constrained machine.\n")
+	message.WriteString("Run: wb run --")
+	for _, word := range result.GovernedCommand {
+		message.WriteByte(' ')
+		message.WriteString(shellQuote(word))
+	}
+	message.WriteByte('\n')
+	message.WriteString("Run gofmt or Prettier directly after edits; they are intentionally not queued.\n")
+	return message.String()
+}
+
+func shellQuote(value string) string {
+	if value != "" && strings.IndexFunc(value, func(character rune) bool {
+		return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-", character)
+	}) < 0 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 // hookResponse is the PreToolUse response document.

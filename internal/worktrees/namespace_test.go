@@ -39,7 +39,12 @@ func taskNamespaceArtifact(t *testing.T, outcome CleanupOutcome, path string) Li
 func TestCleanupRetiresTheTaskNamespaceItEmpties(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-retires-namespace")
 	installMergedPullRequestFixture(t, head, mergedAt)
-	namespace := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	// Repository-local placement has no shared physical task namespace:
+	// <canonical>/.worktrees/<task> is the task directory itself. The WB_HOME
+	// shell remains the logical lock namespace and must be retired too once this
+	// is the final member.
+	physicalNamespace := created.WorktreeDir
+	logicalNamespace := filepath.Join(fixture.home, "worktrees", "cleanup-retires-namespace")
 
 	cleaned, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-retires-namespace",
@@ -52,9 +57,11 @@ func TestCleanupRetiresTheTaskNamespaceItEmpties(t *testing.T) {
 	if len(cleaned.Results) != 1 || !cleaned.Results[0].Applied {
 		t.Fatalf("cleanup = %#v", cleaned.Results)
 	}
-	if _, statErr := os.Stat(namespace); !os.IsNotExist(statErr) {
-		entries, _ := os.ReadDir(namespace)
-		t.Fatalf("terminal cleanup left the task namespace behind: %v %#v", statErr, entries)
+	for _, namespace := range []string{physicalNamespace, logicalNamespace} {
+		if _, statErr := os.Stat(namespace); !os.IsNotExist(statErr) {
+			entries, _ := os.ReadDir(namespace)
+			t.Fatalf("terminal cleanup left the task namespace behind: %s: %v %#v", namespace, statErr, entries)
+		}
 	}
 }
 

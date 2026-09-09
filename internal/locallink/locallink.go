@@ -74,6 +74,10 @@ type ConsumerResult struct {
 	SkippedChecks []string `json:"skipped_checks,omitempty"`
 	// Verification is the single-worker run against the linked copy.
 	Verification *Verification `json:"verification,omitempty"`
+	// Notes are informational outcomes that are not failures — for example
+	// `--undo` finding a link already superseded by a published package and
+	// clearing its record without touching the filesystem.
+	Notes []string `json:"notes,omitempty"`
 	// Errors are per-consumer failures. One consumer's failure never stops
 	// the pass: the point of a stream is to learn about every consumer at
 	// once.
@@ -226,9 +230,9 @@ func linkPlan(identities []streams.Identity, verify bool) []string {
 			plan = append(plan, "write an excluded go.work naming every module in the consumer worktree plus "+identity.Name)
 		case streams.EcosystemNpm:
 			plan = append(plan,
-				"prove a clean frozen install of the unlinked consumer tree",
-				"build "+identity.Name+" once with the repository's own build target, cached by the library content hash",
-				"link the built dist into the consumer's node_modules without touching a tracked file")
+				"prove a clean frozen install of each affected unlinked npm workspace",
+				"build "+identity.Name+" from its owning npm workspace, cached by the library content hash",
+				"stage the built package in the consumer's installed peer context and link it into the declaring workspace without touching a tracked file")
 		}
 	}
 	plan = append(plan, "record every link in stream state so --undo can reverse it exactly")
@@ -280,9 +284,9 @@ func (engine *Engine) linkConsumer(
 	}
 	goDeclarations, npmDeclarations := splitDeclarations(declarations)
 
-	// The frozen install proves a clean install of the UNLINKED tree, so it
-	// runs once, before any mechanism touches node_modules. Running it per
-	// identity meant every install after the first ran against a tree that
+	// The frozen install proves a clean install of each UNLINKED npm workspace,
+	// so it runs once per workspace, before any mechanism touches node_modules.
+	// Running it per identity meant every install after the first ran against a tree that
 	// already carried a link — and a real `pnpm install --frozen-lockfile`
 	// reconciles node_modules against the lockfile, so it would typically
 	// remove that link again.
@@ -291,17 +295,24 @@ func (engine *Engine) linkConsumer(
 			outcome.Errors = append(outcome.Errors, "no Node toolchain available to link an npm package")
 			return outcome
 		}
-		if err := engine.Node.FrozenInstall(ctx, consumer); err != nil {
-			// A check that could not run is reported as skipped, not as a
-			// pass and not as a failure: the consumer has no lockfile, so
-			// there is no baseline to prove, and the operator has to see that
-			// rather than infer it from silence.
-			if skipped, wasSkipped := Skipped(err); wasSkipped {
-				outcome.SkippedChecks = append(outcome.SkippedChecks, skipped.Error())
-			} else {
-				outcome.Errors = append(outcome.Errors, fmt.Sprintf(
-					"prove a clean frozen install of %s before linking: %v", consumer, err))
+		for _, workspace := range declarationWorkspaces(npmDeclarations) {
+			workspaceDir, err := workspacePath(consumer, workspace)
+			if err != nil {
+				outcome.Errors = append(outcome.Errors, err.Error())
 				return outcome
+			}
+			if err := engine.Node.FrozenInstall(ctx, workspaceDir); err != nil {
+				// A check that could not run is reported as skipped, not as a
+				// pass and not as a failure: the consumer has no lockfile, so
+				// there is no baseline to prove, and the operator has to see that
+				// rather than infer it from silence.
+				if skipped, wasSkipped := Skipped(err); wasSkipped {
+					outcome.SkippedChecks = append(outcome.SkippedChecks, skipped.Error())
+				} else {
+					outcome.Errors = append(outcome.Errors, fmt.Sprintf(
+						"prove a clean frozen install of %s before linking: %v", workspaceDir, err))
+					return outcome
+				}
 			}
 		}
 	}
@@ -319,6 +330,7 @@ func (engine *Engine) linkConsumer(
 	}
 
 	var applied []streams.Link
+	var appliedNpm []streams.Link
 	if len(goDeclarations) > 0 {
 		links, err := engine.linkGo(ctx, library, consumer, goDeclarations, result.LibraryRepository, hash)
 		if err != nil {
@@ -327,12 +339,30 @@ func (engine *Engine) linkConsumer(
 		applied = append(applied, links...)
 	}
 	for _, declaration := range npmDeclarations {
-		link, err := engine.linkNpm(ctx, options, library, consumer, declaration, result.LibraryRepository, hash)
+		link, err := engine.linkNpm(ctx, library, consumer, declaration, result.LibraryRepository, hash)
 		if err != nil {
 			outcome.Errors = append(outcome.Errors, err.Error())
 			continue
 		}
 		applied = append(applied, link)
+		appliedNpm = append(appliedNpm, link)
+	}
+	// Once every npm package in this consumer has been staged, reconcile only
+	// declared runtime sibling edges. Linking one package at a time cannot do
+	// this safely: the sibling stage may not exist until a later declaration is
+	// applied. A failed package stays intent-only and is therefore excluded from
+	// reconciliation; its recorded link remains undoable for recovery.
+	if len(appliedNpm) == len(npmDeclarations) {
+		for workspace, names := range npmLinkGroups(appliedNpm) {
+			workspaceDir, workspaceErr := workspacePath(consumer, workspace)
+			if workspaceErr != nil {
+				outcome.Errors = append(outcome.Errors, workspaceErr.Error())
+				continue
+			}
+			if linkErr := engine.Node.LinkSiblings(ctx, workspaceDir, names); linkErr != nil {
+				outcome.Errors = append(outcome.Errors, linkErr.Error())
+			}
+		}
 	}
 	// Re-record with the exact artefacts each mechanism produced. A link that
 	// failed to apply keeps its intended record rather than being removed:
@@ -360,6 +390,22 @@ func (engine *Engine) linkConsumer(
 	return outcome
 }
 
+func npmLinkGroups(links []streams.Link) map[string][]string {
+	groups := map[string][]string{}
+	for _, link := range links {
+		workspace := link.Workspace
+		if workspace == "" {
+			workspace = "."
+		}
+		groups[workspace] = append(groups[workspace], link.Identity)
+	}
+	for workspace, names := range groups {
+		sort.Strings(names)
+		groups[workspace] = dedupe(names)
+	}
+	return groups
+}
+
 // intendedLinks is what the consumer is about to carry. It is recorded before
 // the filesystem changes, so the record never lags the disk.
 func intendedLinks(
@@ -371,21 +417,39 @@ func intendedLinks(
 	for _, declaration := range goDeclarations {
 		links = append(links, streams.Link{
 			Library: library, LibraryRepository: libraryRepository,
-			Mechanism: streams.MechanismGoWork, Identity: declaration.Identity.Name,
+			Mechanism: streams.MechanismGoWork, State: streams.LinkStateIntent, Identity: declaration.Identity.Name,
 			PreviousVersion: declaration.Version, ContentHash: hash,
 			Artifacts: []string{streams.GoWorkFile, streams.GoWorkSum}, CreatedAt: now,
 		})
 	}
 	for _, declaration := range npmDeclarations {
+		artifact := filepath.Join(filepath.FromSlash(declaration.Workspace), "node_modules", filepath.FromSlash(declaration.Identity.Name))
 		links = append(links, streams.Link{
 			Library: library, LibraryRepository: libraryRepository,
-			Mechanism: streams.MechanismPnpmLink, Identity: declaration.Identity.Name,
+			Mechanism: streams.MechanismPnpmLink, State: streams.LinkStateIntent, Identity: declaration.Identity.Name,
 			PreviousVersion: declaration.Version, ContentHash: hash,
-			Artifacts: []string{filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(declaration.Identity.Name)))},
+			Artifacts: []string{filepath.ToSlash(filepath.Clean(artifact)), filepath.ToSlash(filepath.Clean(artifact)) + linkAppliedMarkerSuffix}, Workspace: declaration.Workspace,
 			CreatedAt: now,
 		})
 	}
 	return links
+}
+
+func declarationWorkspaces(declarations []streams.Declaration) []string {
+	seen := map[string]bool{}
+	var workspaces []string
+	for _, declaration := range declarations {
+		workspace := declaration.Workspace
+		if workspace == "" {
+			workspace = "."
+		}
+		if !seen[workspace] {
+			seen[workspace] = true
+			workspaces = append(workspaces, workspace)
+		}
+	}
+	sort.Strings(workspaces)
+	return workspaces
 }
 
 func splitDeclarations(declarations []streams.Declaration) (goDeclarations, npmDeclarations []streams.Declaration) {
@@ -475,12 +539,18 @@ func (engine *Engine) libraryRepository(options Options, library string) (string
 }
 
 // resolveConsumerStreams maps each consumer worktree to the open stream that
-// has it as a MEMBER, and names the consumers no stream holds.
+// has it as a MEMBER or as an admitted LinkedConsumer, and names the
+// consumers no stream holds.
 //
 // Membership is per consumer because that is where the link is recorded. An
 // earlier version answered from the library alone, so a stream holding the
 // library made every link look recordable — including a link into a worktree no
 // member named, which wrote go.work, recorded nothing, and exited 0.
+//
+// A LinkedConsumer is checked alongside Members for the same reason: it is an
+// admitted worktree WB records links against, just not one holding the
+// stream's branch or PR, and a re-link of an already-admitted consumer must
+// resolve exactly the way a member's does.
 func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string, []string, error) {
 	open, err := engine.openStreams(options)
 	if err != nil {
@@ -497,6 +567,16 @@ func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string
 		for _, candidate := range open {
 			for _, member := range candidate.Members {
 				if sameWorktree(member.Worktree, consumer) {
+					resolved[consumer] = candidate.Name
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+			for _, linked := range candidate.LinkedConsumers {
+				if sameWorktree(linked.Worktree, consumer) {
 					resolved[consumer] = candidate.Name
 					found = true
 					break
@@ -536,6 +616,18 @@ func (engine *Engine) recordLinks(stream, consumer string, links []streams.Link)
 			matched = true
 			current.Members[index].Links = mergeLinks(current.Members[index].Links, links)
 		}
+		// A LinkedConsumer is not a Member, but it is exactly as recordable:
+		// it is an admitted worktree whose Links field is the same shape and
+		// the same source of truth for `--undo`. Skipping it here would let a
+		// re-link of an already-admitted consumer resolve a stream name and
+		// then find nowhere to write.
+		for index := range current.LinkedConsumers {
+			if !sameWorktree(current.LinkedConsumers[index].Worktree, consumer) {
+				continue
+			}
+			matched = true
+			current.LinkedConsumers[index].Links = mergeLinks(current.LinkedConsumers[index].Links, links)
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("record links in stream %s: %w", stream, err)
@@ -560,7 +652,16 @@ func mergeLinks(existing, fresh []streams.Link) []streams.Link {
 	for _, link := range fresh {
 		replaced := false
 		for index := range merged {
-			if merged[index].Identity == link.Identity && merged[index].Mechanism == link.Mechanism {
+			if merged[index].Identity == link.Identity && merged[index].Mechanism == link.Mechanism &&
+				normalizedLinkWorkspace(merged[index].Workspace) == normalizedLinkWorkspace(link.Workspace) {
+				// Recording a refresh intent must not downgrade an existing
+				// applied link. The provider build happens after this write and
+				// may fail; the old marker/backups are still the recovery truth
+				// until a newly applied record replaces them.
+				if link.State == streams.LinkStateIntent && merged[index].State != streams.LinkStateIntent {
+					replaced = true
+					break
+				}
 				// Keep the version recorded first: it is the published version
 				// the consumer had before any link existed, and that is what
 				// --undo must restore.
@@ -575,6 +676,13 @@ func mergeLinks(existing, fresh []streams.Link) []streams.Link {
 		}
 	}
 	return merged
+}
+
+func normalizedLinkWorkspace(workspace string) string {
+	if strings.TrimSpace(workspace) == "" {
+		return "."
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(workspace)))
 }
 
 func sameWorktree(left, right string) bool {

@@ -33,7 +33,7 @@ fresh, loudly.`,
 	cmd.Flags().StringVar(&note, "note", "", "free-form note stored with the claim")
 	cmd.Flags().BoolVar(&takeOver, "take-over", false, "replace another holder's claim, but only if it is stale")
 	cmd.Flags().BoolVar(&force, "force", false, "replace any claim, stale or fresh")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the claim outcome as JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().DurationVar(&stale, "stale", 24*time.Hour, "a claim's holder is stale once their snapshot is older than this")
 	return cmd
 }

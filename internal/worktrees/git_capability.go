@@ -22,6 +22,14 @@ type gitFilesystemCapability struct {
 type gitFilesystemCapabilityRoot struct {
 	path      string
 	directory *os.File
+	// shared marks a root WB needs to write but does not own: the ambient Go
+	// build and module caches. Their parents are machine-global directories
+	// (~/Library/Caches, ~/go/pkg) shared with every other application, so the
+	// darwin backend must not freeze or lock them. Freezing a directory WB
+	// does not own serializes unrelated repositories against each other and,
+	// if a helper is interrupted before it restores the mode, leaves shared
+	// state permanently read-only for every program on the machine.
+	shared bool
 }
 
 func requireGitFilesystemCapability() error {

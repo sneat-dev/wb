@@ -1,8 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // An operator holds a pull request in whichever form their source gave them:
@@ -32,11 +39,49 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 	}
 }
 
+func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
+	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("PATH", t.TempDir())
+	previousProjectsRoot := projectsRoot
+	projectsRoot = filepath.Join(t.TempDir(), "projects")
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	command := newPRLandCmd()
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"acme/app#7", "--non-interactive"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("missing gh unexpectedly let the landing continue")
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "pr land: local link preflight: acme/app: started") ||
+		(!strings.Contains(output, ": completed") &&
+			!strings.Contains(output, "pr land: local link preflight: failed")) {
+		t.Fatalf("local-link preflight was silent before GitHub:\n%s", output)
+	}
+}
+
+func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
+	command := newPRLandCmd()
+	if got := command.Flags().Lookup("timeout").DefValue; got != defaultCIWaitSlice.String() {
+		t.Fatalf("--timeout default = %s, want %s", got, defaultCIWaitSlice)
+	}
+	if got := command.Flags().Lookup("poll-interval").DefValue; got != orchestrate.DefaultCheckPollInterval.String() {
+		t.Fatalf("--poll-interval default = %s, want %s", got, orchestrate.DefaultCheckPollInterval)
+	}
+	if defaultCIWaitSlice <= orchestrate.DefaultCheckPollInterval {
+		t.Fatalf("default timeout %s must outlive poll interval %s", defaultCIWaitSlice, orchestrate.DefaultCheckPollInterval)
+	}
+}
+
 func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	command := newPRLandCmd()
+	if got := command.Flags().Lookup("merge-method").DefValue; got != "merge" {
+		t.Fatalf("--merge-method default = %q, want merge", got)
+	}
 	for _, wanted := range []string{
 		"CLEANUP IS THE DEFAULT",
-		"SQUASH IS THE DEFAULT",
+		"MERGE COMMIT IS THE DEFAULT",
 		"--keep-commits",
 		"--reason",
 		"made from the diff",
@@ -59,10 +104,60 @@ func TestPRLandHelpStatesItsDefaultsAndItsRefusals(t *testing.T) {
 	}
 }
 
+func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
+	for _, method := range []string{"", "merge", "rebase"} {
+		name := method
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			command := newPRLandCmd()
+			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
+				t.Fatal(err)
+			}
+			if method != "" {
+				if err := command.Flags().Set("merge-method", method); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := command.RunE(command, []string{"acme/app#7"})
+			if err == nil || !strings.Contains(err.Error(), "explicit --merge-method squash") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 	got := splitCommaSeparated([]string{"a,b", " c ", "", "d,,e"})
 	want := []string{"a", "b", "c", "d", "e"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("splitCommaSeparated = %v, want %v", got, want)
+	}
+}
+
+// A landing outside a stream appends to .fleet. The next PR landing must
+// inventory that event log without calling it corrupt stream state before the
+// local-link guard can make its real decision.
+func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	log, streamName := landingEventLog("acme/app")
+	if streamName != "" {
+		t.Fatalf("stream name = %q, want an outside-stream landing", streamName)
+	}
+	if err := log.Append(streams.Event{Verb: "wb pr land", Outcome: "refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "streams", fleetEventLogName, "events.jsonl")); err != nil {
+		t.Fatalf("fleet event log was not appended: %v", err)
+	}
+
+	if err := refuseLinkedRepositoryWorktrees("acme/app"); err != nil {
+		t.Fatalf("next landing guard rejected only the fleet event log: %v", err)
 	}
 }

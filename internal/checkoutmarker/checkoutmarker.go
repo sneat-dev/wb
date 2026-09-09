@@ -46,6 +46,11 @@ const FileName = ".worktree.md"
 // It is anchored so it can only ever match the checkout root's own marker.
 const ExcludePattern = "/" + FileName
 
+// WorktreesExcludePattern keeps WB's repository-local linked checkout root
+// out of status, recursive searches, and build discovery in its canonical
+// clone. It applies only at the canonical checkout root.
+const WorktreesExcludePattern = "/.worktrees/"
+
 // excludeHeader labels WB's block inside a file the user may also be editing.
 const excludeHeader = "# WB: generated per-checkout marker, see AGENTS.md"
 
@@ -257,10 +262,23 @@ func EnsureExclude(excludePath string) (bool, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, fmt.Errorf("read %s: %w", excludePath, err)
 	}
+	patterns := []string{ExcludePattern, WorktreesExcludePattern}
+	present := make(map[string]bool, len(patterns))
 	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == ExcludePattern {
-			return false, nil
+		for _, pattern := range patterns {
+			if strings.TrimSpace(line) == pattern {
+				present[pattern] = true
+			}
 		}
+	}
+	missing := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if !present[pattern] {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(missing) == 0 {
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
 		return false, fmt.Errorf("create %s: %w", filepath.Dir(excludePath), err)
@@ -271,7 +289,9 @@ func EnsureExclude(excludePath string) (bool, error) {
 		builder.WriteString("\n")
 	}
 	builder.WriteString(excludeHeader + "\n")
-	builder.WriteString(ExcludePattern + "\n")
+	for _, pattern := range missing {
+		builder.WriteString(pattern + "\n")
+	}
 	if err := writeFileAtomically(excludePath, builder.String()); err != nil {
 		return false, err
 	}

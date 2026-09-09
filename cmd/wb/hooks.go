@@ -143,7 +143,7 @@ func newHooksCheckCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "explicit hooks policy (default: global + repository policies)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&fleet, "fleet", false, "process every local repository under --projects-root")
 	return cmd
 }
@@ -389,7 +389,7 @@ func newHooksRunCmd() *cobra.Command {
 func newHooksPushTierCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "push-tier",
-		Short:  "Classify a pending push into tier 0 (skip), 1 (lint only), or 2 (lint + test)",
+		Short:  "Classify a pending push into tier 0 (skip), 1 (feature), or 2 (publication)",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -425,11 +425,6 @@ func newHooksMetricsCmd() *cobra.Command {
 				return err
 			}
 			if metricsFile == "" {
-				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
-					return err
-				}
-			}
-			if metricsFile == "" {
 				metricsFile = policy.Metrics.Path
 			}
 			events, err := hooks.ReadEvents(metricsFile)
@@ -449,7 +444,7 @@ func newHooksMetricsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&metricsFile, "file", "", "hook events JSONL file")
 	cmd.Flags().StringVar(&repository, "repo", "", "only repositories containing this text")
 	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to chart")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable summary JSON")
+	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
 
@@ -492,9 +487,6 @@ wb hooks measure . --days 30 --json`,
 				return err
 			}
 			if metricsFile == "" {
-				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
-					return err
-				}
 				metricsFile = policy.Metrics.Path
 			}
 			events, err := hooks.ReadEvents(metricsFile)
@@ -514,7 +506,7 @@ wb hooks measure . --days 30 --json`,
 	cmd.Flags().StringVar(&metricsFile, "file", "", "hook events JSONL file")
 	cmd.Flags().StringVar(&repository, "repo", "", "only repositories containing this text")
 	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to price")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the machine-readable profile delta")
+	addJSONFormatFlags(cmd, &jsonOut)
 	setDiscoveryTerms(cmd, "hooks measure profile delta cost budget stream branch saving commit push duration")
 	return cmd
 }

@@ -97,10 +97,12 @@ func describeWorktree(location agentguard.Location, options DescribeOptions, bas
 	}
 	commonDir := commonDirectoryFor(gitDir)
 	canonicalPath := ""
+	canonicalPhysicalPath := ""
 	repository := ""
 	if commonDir != "" && filepath.Base(commonDir) == ".git" {
-		canonicalPath = filepath.Dir(commonDir)
-		canonicalLocation := agentguard.Classify(options.ProjectsRoot, canonicalPath)
+		canonicalPhysicalPath = filepath.Dir(commonDir)
+		canonicalPath = canonicalPhysicalPath
+		canonicalLocation := agentguard.Classify(options.ProjectsRoot, canonicalPhysicalPath)
 		repository = canonicalLocation.Slug()
 		if repository != "" {
 			// Git records the PHYSICAL path in its gitdir pointer, so on macOS
@@ -111,7 +113,7 @@ func describeWorktree(location agentguard.Location, options DescribeOptions, bas
 			canonicalPath = filepath.Join(options.ProjectsRoot, canonicalLocation.Owner, canonicalLocation.Repository)
 		}
 	}
-	task, worktreesRoot := taskCoordinates(location.Root, repository)
+	task, worktreesRoot := taskCoordinates(location.Root, canonicalPhysicalPath, repository)
 	excludePath := ""
 	if commonDir != "" {
 		excludePath = filepath.Join(commonDir, "info", "exclude")
@@ -169,12 +171,29 @@ func commonDirectoryFor(gitDir string) string {
 	return filepath.Dir(parent)
 }
 
-// taskCoordinates recovers the task name and worktrees root from a managed
-// worktree's own path, which WB lays out as
-// <worktrees-root>/<task>/<owner>/<repository>. A checkout somewhere else —
-// an adopted worktree that was deliberately never relocated — reports no task
-// rather than a wrong one.
-func taskCoordinates(root, repository string) (task, worktreesRoot string) {
+// taskCoordinates recovers a task only when the linked checkout occupies one
+// of WB's managed placements. The local placement is anchored to the actual
+// canonical checkout from Git's common directory, never to an arbitrary
+// directory merely named .worktrees. Shared and legacy placements retain their
+// historic <worktrees-root>/<task>/<owner>/<repository> interpretation.
+func taskCoordinates(root, canonicalPath, repository string) (task, worktreesRoot string) {
+	if canonicalPath != "" {
+		canonical := filepath.Clean(canonicalPath)
+		if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
+			canonical = resolved
+		}
+		worktree := filepath.Clean(root)
+		if resolved, err := filepath.EvalSymlinks(worktree); err == nil {
+			worktree = resolved
+		}
+		localRoot := filepath.Join(canonical, ".worktrees")
+		if filepath.Dir(worktree) == localRoot {
+			candidate := filepath.Base(worktree)
+			if candidate != "." && candidate != string(filepath.Separator) {
+				return candidate, localRoot
+			}
+		}
+	}
 	if repository == "" {
 		return "", ""
 	}

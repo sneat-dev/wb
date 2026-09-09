@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/envguard"
 	"github.com/sneat-dev/wb/internal/process"
 )
 
@@ -29,6 +30,13 @@ const (
 type RunOptions struct {
 	Timeout time.Duration
 	Retry   int
+	// CheckTimeout bounds one logical verification check, including all of its
+	// command attempts and any process-isolated Go shards. Zero leaves the
+	// existing per-command Timeout behavior unchanged.
+	CheckTimeout time.Duration
+	// ShardAttemptTimeout bounds one process-isolated Go test shard attempt.
+	// Zero retains Timeout as the shard-attempt bound when Timeout is set.
+	ShardAttemptTimeout time.Duration
 	// GoTestShards runs each explicitly named Go package in this many
 	// process-isolated shards. It is opt-in because TestMain and process-global
 	// fixtures run once per shard; callers must name packages whose contract
@@ -78,6 +86,7 @@ type ProgressState string
 
 const (
 	ProgressStarted             ProgressState = "started"
+	ProgressRetrying            ProgressState = "retrying"
 	ProgressCompleted           ProgressState = "completed"
 	ProgressRepositoryCompleted ProgressState = "repository_completed"
 )
@@ -90,9 +99,12 @@ type Progress struct {
 	Module     string
 	Check      Check
 	Command    string
+	Detail     string
 	State      ProgressState
 	Status     Status
 	Attempts   int
+	Completed  int
+	Total      int
 }
 
 // VerificationReport records all conventional checks applicable to a
@@ -265,18 +277,30 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 	reportQualityProgress(options, Progress{
 		Language: language, Module: module, Check: check, Command: entry.Command, State: ProgressStarted,
 	})
+	checkCtx := ctx
+	cancel := func() {}
+	if options.CheckTimeout > 0 {
+		checkCtx, cancel = context.WithTimeout(ctx, options.CheckTimeout)
+	}
+	defer cancel()
 	var output string
 	var attempts int
 	var err error
 	if shardedGoTest {
-		output, attempts, err = runShardedVerification(ctx, options, dir)
+		output, attempts, err = runShardedVerification(checkCtx, options, dir)
 	} else {
-		output, attempts, err = runWithOptions(ctx, options, dir, command[0], command[1:]...)
+		output, attempts, err = runWithOptions(checkCtx, options, dir, command[0], command[1:]...)
+	}
+	if checkCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		err = fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
 	entry.Attempts = attempts
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		if ambient := envguard.Inspect(os.Environ(), os.TempDir(), dir); !ambient.Empty() {
+			entry.Detail = strings.TrimRight(entry.Detail, "\n") + "\n" + ambient.String()
+		}
 		reportQualityProgress(options, Progress{
 			Language: language, Module: module, Check: check, Command: entry.Command,
 			State: ProgressCompleted, Status: entry.Status, Attempts: attempts,
@@ -446,11 +470,29 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
-	if len(env) > 0 {
-		command.Env = append(os.Environ(), env...)
-	}
+	command.Env = commandEnv(dir, name, env)
 	output, err := command.CombinedOutput()
 	return string(output), err
+}
+
+// commandEnv derives the environment a validation subprocess runs with: every
+// WB_AGENT_* variable stripped (an operating agent's identity has no business
+// reaching the subprocess under test), and, for "go" itself, GOWORK=off
+// unless the repository being validated tracks its own go.work in HEAD. env
+// carries the caller's own overrides (RunOptions.Env, an explicit
+// "GOWORK=off" a caller already composed) and always wins over both the
+// ambient environment and the automatic Go override.
+//
+// See internal/envguard for why this cannot be plain
+// append(os.Environ(), env...): a duplicate key appended at the end does not
+// override an ambient entry earlier in the slice for most subprocesses'
+// getenv.
+func commandEnv(dir, name string, env []string) []string {
+	overrides := env
+	if name == "go" {
+		overrides = append(append([]string(nil), envguard.GoEnvOverrides(dir)...), env...)
+	}
+	return envguard.SanitizeEnv(os.Environ(), overrides...)
 }
 
 func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, int, error) {
@@ -468,7 +510,7 @@ func runWithOptions(ctx context.Context, options RunOptions, dir, name string, a
 		if timedOut {
 			err = fmt.Errorf("timed out after %s", options.Timeout)
 		}
-		if err == nil || attempts > options.Retry {
+		if err == nil || attempts > options.Retry || ctx.Err() != nil {
 			return output, attempts, err
 		}
 	}
@@ -479,13 +521,40 @@ func commandError(command, output string, err error) string {
 	if detail == "" {
 		detail = err.Error()
 	}
-	const (
-		max       = 1000
-		headBytes = 250
-	)
+	if strings.HasPrefix(detail, coverageFailureSummaryHeader) {
+		if rawStart := strings.Index(detail, coverageRawOutputHeader); rawStart >= 0 {
+			// Keep the complete job/test index even when raw process logs need a
+			// transport-safe bound. Those logs are retained separately whenever a
+			// coverage diagnostics directory is configured.
+			summary := detail[:rawStart]
+			return summary + truncateCommandDetailTo(detail[rawStart:], 1000-len(summary))
+		}
+	}
+	return truncateCommandDetailTo(detail, 1000)
+}
+
+func truncateCommandDetailTo(detail string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(detail) > max {
-		tailBytes := max - headBytes
-		detail = detail[:headBytes] + fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes) + detail[len(detail)-tailBytes:]
+		headBytes := max / 4
+		if headBytes > 250 {
+			headBytes = 250
+		}
+		// Reserve enough space for the truncation notice itself. Its exact
+		// length depends only on the rendered tail count.
+		tailBytes := max - headBytes - 64
+		if tailBytes < 0 {
+			tailBytes = 0
+		}
+		marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+		tailBytes = max - headBytes - len(marker)
+		if tailBytes < 0 {
+			tailBytes = 0
+		}
+		marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+		detail = detail[:headBytes] + marker + detail[len(detail)-tailBytes:]
 	}
 	return detail
 }

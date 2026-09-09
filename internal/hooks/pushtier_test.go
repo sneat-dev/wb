@@ -56,7 +56,7 @@ func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
 				{LocalRef: "refs/heads/has-pr", LocalSHA: fakeSHA('a'), RemoteRef: "refs/heads/has-pr", RemoteSHA: zeroSHA()},
 			},
 			defaultBranch: "main",
-			wantTier:      TierFull,
+			wantTier:      TierPublication,
 		},
 		{
 			name: "the default branch is always a publication push",
@@ -64,7 +64,7 @@ func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
 				{LocalRef: "refs/heads/main", LocalSHA: fakeSHA('a'), RemoteRef: "refs/heads/main", RemoteSHA: fakeSHA('b')},
 			},
 			defaultBranch: "main",
-			wantTier:      TierFull,
+			wantTier:      TierPublication,
 		},
 		{
 			name: "a tag is always a publication push",
@@ -72,7 +72,7 @@ func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
 				{LocalRef: "refs/tags/v1.2.3", LocalSHA: fakeSHA('a'), RemoteRef: "refs/tags/v1.2.3", RemoteSHA: zeroSHA()},
 			},
 			defaultBranch: "main",
-			wantTier:      TierFull,
+			wantTier:      TierPublication,
 		},
 		{
 			name: "a pure deletion skips lint and test",
@@ -135,15 +135,15 @@ func TestClassifyPushTierMixedRefsTakeTheHighestRequirement(t *testing.T) {
 		{LocalRef: "refs/heads/feature", LocalSHA: fakeSHA('a'), RemoteRef: "refs/heads/feature", RemoteSHA: zeroSHA()},
 		{LocalRef: "refs/heads/main", LocalSHA: fakeSHA('a'), RemoteRef: "refs/heads/main", RemoteSHA: fakeSHA('b')},
 	}, "main", lookup)
-	if got.Tier != TierFull {
-		t.Fatalf("mixed push tier = %d (%s), want %d (default branch present)", got.Tier, got.Reason, TierFull)
+	if got.Tier != TierPublication {
+		t.Fatalf("mixed push tier = %d (%s), want %d (default branch present)", got.Tier, got.Reason, TierPublication)
 	}
 }
 
 func TestClassifyPushTierEmptyUpdatesDefaultsToFullTier(t *testing.T) {
 	got := ClassifyPushTier(nil, "main", nil)
-	if got.Tier != TierFull {
-		t.Fatalf("empty update list tier = %d, want %d (safe default)", got.Tier, TierFull)
+	if got.Tier != TierPublication {
+		t.Fatalf("empty update list tier = %d, want %d (safe default)", got.Tier, TierPublication)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestClassifyPendingPushWithEmptyNonTerminalStdinDefaultsToFullTier(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Tier != TierFull {
-		t.Fatalf("empty non-terminal stdin tier = %d, want %d (no ref lines observed)", got.Tier, TierFull)
+	if got.Tier != TierPublication {
+		t.Fatalf("empty non-terminal stdin tier = %d, want %d (no ref lines observed)", got.Tier, TierPublication)
 	}
 }

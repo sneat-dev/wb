@@ -9,6 +9,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -19,15 +20,26 @@ type remoteDeps struct {
 	login      func() (string, error)
 	open       func(cfg remotestate.Config, projectsRoot string) (remotestate.Provider, error)
 	now        func() time.Time
+	// progressHeartbeat is a test seam. Production always uses the universal
+	// ten-second progress contract.
+	progressHeartbeat time.Duration
 }
 
 func defaultRemoteDeps() remoteDeps {
 	return remoteDeps{
-		configPath: wbconfig.DefaultPath(),
-		login:      discover.AuthUser,
-		open:       openRemote,
-		now:        func() time.Time { return time.Now().UTC() },
+		configPath:        wbconfig.DefaultPath(),
+		login:             discover.AuthUser,
+		open:              openRemote,
+		now:               func() time.Time { return time.Now().UTC() },
+		progressHeartbeat: universalProgressHeartbeat,
 	}
+}
+
+func remoteProgressHeartbeat(deps remoteDeps) time.Duration {
+	if deps.progressHeartbeat > 0 {
+		return deps.progressHeartbeat
+	}
+	return universalProgressHeartbeat
 }
 
 // openRemote selects the provider named by cfg. It lives here rather than in
@@ -39,6 +51,10 @@ func openRemote(cfg remotestate.Config, projectsRoot string) (remotestate.Provid
 			ClonePath: filepath.Join(projectsRoot, cfg.RepoOwner(), cfg.RepoName()),
 			CloneURL:  "git@github.com:" + cfg.Repo + ".git",
 		}), nil
+	case "hub":
+		return hub.New(hub.Options{
+			BaseURL: cfg.URL, Machine: cfg.Machine, TokenFile: cfg.TokenFile,
+		})
 	default:
 		return nil, &exitError{code: exitUsage, message: "remote.provider " + cfg.Provider + " is not supported"}
 	}
@@ -66,7 +82,12 @@ configured in ~/.config/wb/wb.yaml:
 
 ` + remotestate.ConfigSnippet + `
 
+For the authenticated outbound HTTPS hub:
+
+` + remotestate.HubConfigSnippet + `
+
   wb remote publish    scan this machine and publish its snapshot
+  wb remote enroll     securely install a hosted-hub machine credential
   wb remote status     cross-machine worklist from the store
   wb remote machines   one line per machine with publish age
   wb remote claim      claim a task, or refresh your own claim on it
@@ -79,5 +100,6 @@ configured in ~/.config/wb/wb.yaml:
 	cmd.AddCommand(newRemoteClaimCmd())
 	cmd.AddCommand(newRemoteReleaseCmd())
 	cmd.AddCommand(newRemoteClaimsCmd())
+	cmd.AddCommand(newRemoteEnrollCmd())
 	return cmd
 }

@@ -4,6 +4,7 @@ dist/
 *.test
 *.out
 .DS_Store
+.specscore-lifecycle.lock
 
 # Generated per-checkout marker; see AGENTS.md. Never commit it.
 /.worktree.md

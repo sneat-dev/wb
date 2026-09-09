@@ -9,7 +9,157 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest(t *testing.T) {
+	fixture, created, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "abort-absorbed-squash")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-absorbed-squash")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, mergedAt)
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-absorbed-squash",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone || !results[0].BranchDeleted ||
+		!results[0].AbsorbedAtOrigin || results[0].AbsorbedBySHA != squashSHA {
+		t.Fatalf("strict absorbed abort = %#v", results)
+	}
+	proof := results[0].MergedPullRequest
+	if proof == nil || proof.Number != 77 || proof.Repository != "acme/app" || proof.HeadSHA != integrationHead || proof.MergeSHA != squashSHA || proof.Base != "main" {
+		t.Fatalf("persisted pull request proof = %#v", proof)
+	}
+	if _, err := os.Stat(created.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("absorbed worktree remains: %v", err)
+	}
+}
+
+func TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string)
+		want   string
+	}{
+		{
+			name: "missing PR head metadata",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, _ string) {
+				installAbsorbingPullRequestFixture(t, "", squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "invalid head commit",
+		},
+		{
+			name: "merge is absent from fetched target",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
+				gitTest(t, fixture.canonical, "push", "--force", "origin", squashSHA+"^:refs/heads/main")
+				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "not contained in the exact fetched origin/main target",
+		},
+		{
+			name: "source head is not in the PR head",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
+				if err := os.WriteFile(filepath.Join(created.WorktreeDir, "after-integration.txt"), []byte("not in PR\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitTest(t, created.WorktreeDir, "add", "after-integration.txt")
+				gitTest(t, created.WorktreeDir, "commit", "-m", "advance source outside PR")
+				gitTest(t, created.WorktreeDir, "push", "origin", created.Branch)
+				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "does not contain exact source head",
+		},
+		{
+			name: "PR ref does not match GitHub head metadata",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
+				gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", squashSHA)
+				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "origin advertises refs/pull/77/head",
+		},
+		{
+			name: "PR is not merged",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
+				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+				payload, err := json.Marshal(map[string]any{
+					"number": 77, "html_url": "https://github.com/acme/app/pull/77", "state": "open",
+					"merged_at": nil, "head": map[string]any{"ref": "app-main-merger", "sha": integrationHead},
+					"base": map[string]any{"ref": "main", "sha": ""}, "merge_commit_sha": squashSHA,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("WB_TEST_SINGLE_PULL", string(payload))
+			},
+			want: "is not merged",
+		},
+		{
+			name: "PR head tree differs from merge tree",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, _ string) {
+				gitTest(t, fixture.canonical, "checkout", "integration/abort-absorbed-refusal")
+				if err := os.WriteFile(filepath.Join(fixture.canonical, "post-pr.txt"), []byte("not squashed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitTest(t, fixture.canonical, "add", "post-pr.txt")
+				gitTest(t, fixture.canonical, "commit", "-m", "post PR head drift")
+				updatedIntegrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+				gitTest(t, fixture.canonical, "push", "origin", "HEAD:refs/heads/integration/abort-absorbed-refusal")
+				gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", updatedIntegrationHead)
+				gitTest(t, fixture.canonical, "checkout", "main")
+				installAbsorbingPullRequestFixture(t, updatedIntegrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "does not equal merge tree",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, created, _, squashSHA, _ := prepareAbsorbedCandidate(t, "abort-absorbed-refusal")
+			integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-absorbed-refusal")
+			test.mutate(t, fixture, created, squashSHA, integrationHead)
+
+			results, err := Abort(context.Background(), AbortOptions{
+				ProjectsRoot: fixture.projectsRoot, Task: "abort-absorbed-refusal",
+				Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Eligible || !strings.Contains(results[0].Reason, test.want) {
+				t.Fatalf("refused strict absorbed abort = %#v, want %q", results, test.want)
+			}
+			if _, err := os.Stat(created.WorktreeDir); err != nil {
+				t.Fatalf("refused proof changed worktree: %v", err)
+			}
+		})
+	}
+}
+
+func TestAbortDiscardedRefusesSquashSourceAdvanceAtRemovalBoundary(t *testing.T) {
+	fixture, created, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "abort-absorbed-source-race")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "integration/abort-absorbed-source-race")
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, mergedAt)
+
+	_, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "abort-absorbed-source-race",
+		Disposition: AbortDiscarded, AbsorbedBy: "77", DeleteRemote: true, Apply: true,
+		beforeAbortRemoval: func(worktree string) {
+			if err := os.WriteFile(filepath.Join(worktree, "late-source.txt"), []byte("advanced after proof\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitTest(t, worktree, "add", "late-source.txt")
+			gitTest(t, worktree, "commit", "-m", "advance source after preflight")
+			gitTest(t, worktree, "push", "origin", created.Branch)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "branch head moved") {
+		t.Fatalf("source advance abort error = %v", err)
+	}
+	if _, err := os.Stat(created.WorktreeDir); err != nil {
+		t.Fatalf("source advance removed worktree: %v", err)
+	}
+}
 
 func TestAbortMultiRepositoryRequiresExplicitSelection(t *testing.T) {
 	fixture := newGitFixture(t)

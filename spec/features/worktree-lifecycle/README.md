@@ -12,16 +12,18 @@ status: Implementing
 
 ## Summary
 
-`wb worktree` creates, guards, inventories, and safely cleans task worktrees
-while a workstation moves from the historic `<projects-root>/.wb` layout to
-the user-scoped `~/.wb` home. `wb worktree list` reports local Git state with
-optional GitHub PR evidence; `wb worktree cleanup` safely plans or applies
-removal of clean task worktrees and exact merged branch refs.
+`wb worktree` creates, guards, inventories, and safely cleans task worktrees.
+Its default checkout is `<canonical-repository>/.worktrees/<task>`, while
+`WB_HOME` remains the user-scoped private home for Work Logs, locks, receipts,
+and reports. A user-only absolute shared root may instead place checkouts at
+`<root>/<task>/<owner>/<repository>`. `wb worktree list` reports local Git
+state with optional GitHub PR evidence; `wb worktree cleanup` safely plans or
+applies removal of clean task worktrees and exact merged branch refs.
 
 ## Problem
 
-Central worktrees protect canonical clones, but completed tasks accumulate
-linked checkouts and branches. Ad-hoc cleanup can discard uncommitted work,
+Worktrees inside canonical repository directories protect canonical clones, but
+completed tasks accumulate linked checkouts and branches. Ad-hoc cleanup can discard uncommitted work,
 delete a reused branch, or remove one repository while a coordinated task is
 still active elsewhere. A default-layout migration must not either continue
 creating work under an obsolete projects-root directory or strand linked
@@ -53,30 +55,40 @@ the remote only when `--github` is explicit.
 
 #### REQ: authoritative-write-home
 
-New worktree creation, locks, and new cleanup reports MUST use the resolver's
+New Work Logs, task locks, receipts, and cleanup reports MUST use the resolver's
 write home: `~/.wb` by default, or the exact directory named by `WB_HOME` when
 that variable is set. A populated `<projects-root>/.wb` MUST NOT silently
 become the write home. `WB_HOME` MUST remain authoritative for commands later
-started by a managed hook installed from that environment.
+started by a managed hook installed from that environment, but MUST NOT choose
+the default physical checkout location.
+
+#### REQ: local-default-and-user-shared-root
+
+Without a user `worktrees.root` setting, creation MUST place a new checkout at
+`<canonical-repository>/.worktrees/<task>`. An explicit root may come only
+from the user's `$XDG_CONFIG_HOME/wb/worktrees.yaml` or
+`~/.config/wb/worktrees.yaml`; after `~` expansion it MUST be absolute and
+places a checkout at `<root>/<task>/<owner>/<repository>`. Repository policy
+MUST NOT set or override the root. The creator needs permissions for both the
+private `WB_HOME` state and the selected physical checkout directory.
 
 #### REQ: migration-layout-compatibility
 
-Without an explicit `WB_HOME`, the shared layout resolver MUST recognize an
-existing legacy `<projects-root>/.wb/worktrees` hierarchy in addition to the
-new write layout. Guard, inventory, and cleanup MUST continue to validate and
-operate on those linked worktrees using their actual layout. An explicit
-`WB_HOME` selects only that layout so a caller can intentionally isolate a
-session or fixture. A managed hook that pins the normal default home MUST mark
-that fact so it retains this migration compatibility without treating a
-user-selected `WB_HOME` as non-authoritative.
+Guard, inventory, and cleanup MUST continue to validate and operate on existing
+local, configured-shared, and historic `<projects-root>/.wb/worktrees` linked
+worktrees governed by the same `WB_HOME`, using their actual placement.
+Changing `worktrees.root` MUST NOT relocate them or stop their discovery. A
+managed hook that pins the normal default home MUST preserve that compatibility
+without treating a user-selected `WB_HOME` as non-authoritative.
 
 #### REQ: legacy-mixed-inventory
 
-Inventory MUST recognize both historic direct-repository task entries
-`<task>/<repository>` and current `<task>/<owner>/<repository>` entries.
-Once a Git root is recognized, traversal MUST stop below it. Malformed
-candidates MUST yield deterministic diagnostics without hiding valid sibling
-repositories whenever the command's result API permits.
+Inventory MUST recognize default local `<canonical-repository>/.worktrees/<task>`
+entries, configured shared `<task>/<owner>/<repository>` entries, and historic
+direct-repository `<task>/<repository>` entries. Once a Git root is recognized,
+traversal MUST stop below it. Malformed candidates MUST yield deterministic
+diagnostics without hiding valid sibling repositories whenever the command's
+result API permits.
 
 #### REQ: validated-identity
 
@@ -223,6 +235,43 @@ flag cannot degrade into a bare content assertion. A pointer that fails any
 verification MUST refuse only its own candidate, with the failing verification
 reported as that candidate's reason, and MUST NOT be reported as a malformed
 worktree or abort a fleet sweep.
+
+When `wb worktree abort --disposition discarded --absorbed-by <PR>` uses a
+merged pull request as that receipt, WB MUST read the authoritative PR number,
+merged timestamp, base target, head SHA, and merge SHA; fetch the exact PR head
+from the configured origin without updating a branch ref; prove the exact
+source head is an ancestor of that PR head; prove the merge SHA is contained in
+the freshly fetched base target; and prove the PR-head tree equals the merge
+tree. It MUST then retain the ordinary content/revert, clean-worktree, and
+branch-unchanged checks through the removal boundary. Missing metadata, target
+drift, source advancement, non-containment, or unequal trees MUST refuse the
+one candidate. Commit messages, PR titles, and branch names are not evidence.
+
+#### REQ: absorbed-source-pr-reconciliation
+
+After a batch candidate is authoritatively landed on its target, WB MUST
+reconcile every source pull request whose exact head is preserved in the
+candidate's merge graph. It MUST read GitHub's commit-to-pull-request index,
+require the pull request's current head to equal that exact source commit, and
+require its base repository and branch to equal the landed target. WB MAY then
+close the source pull request as absorbed and record the exact source, batch
+pull request, and landing commit in both an idempotently marked comment and the
+append-only landing receipt.
+
+An advanced head, changed base, partial integration, or unverified landing MUST
+leave the source pull request open and record the refusal. A retry MUST neither
+repeat the close nor duplicate the comment. A pull request merely closed
+without merge or absorption evidence MUST remain preserved; closed state alone
+never authorizes worktree cleanup.
+
+#### REQ: pull-request-effort-identity
+
+Every pull request created by WB MUST include its stable WB effort identifier
+in the visible body and in a versioned machine-readable marker. A stream pull
+request MUST also include its stream identifier. WB MUST NOT publish a local
+worktree path, because that path is machine-specific and may change after a
+supported relocation. It MUST NOT duplicate the source branch as WB metadata,
+because GitHub already stores and exposes the exact pull-request head branch.
 
 #### REQ: coordinated-task-safety
 
@@ -410,6 +459,9 @@ publishes anything, its creator MUST supply the successor's exact model or
 explicit `unknown`, plus independently known optional CLI/provider route
 identifiers; WB MUST NOT copy the predecessor's route. Automatic recycle
 rollback recovery MUST use explicit unknown model/provenance and no route.
+An `--absorbed-by` discarded abort MUST be clean and must persist the verified
+PR and landing identity in its ordinary lifecycle result/receipt projection so
+the terminal record names evidence rather than an operator assertion.
 
 #### REQ: dirty-discard-sealing
 
@@ -435,6 +487,39 @@ repository N MUST roll repositories 1..N back to their old paths/branches and
 active recovery claims so the same coordinated rename is retryable. Durable
 terminal/outbox history MUST remain append-only. A process crash MAY require
 recovery from those records until automatic journal replay is implemented.
+Before the first destination checkout claim exists, rename MUST inventory the
+locked destination before reserving its new prompt so its own reservation is
+never treated as a collision. An interrupted or refused pre-apply reservation
+MUST remain auditable and `wb worktree abort <destination> --disposition
+discarded --apply` MUST terminalize that reservation without `--remote`, while
+retaining its immutable prompt archive and refusing any non-WB task-shell
+content.
+
+#### REQ: explicit-layout-relocation
+
+`wb worktree relocate` MUST be the sole supported way to move an active
+WB-managed checkout between repository-local and configured shared placement.
+It MUST plan by default and require `--apply`; `--to=local` selects
+`<canonical>/.worktrees/<task>`, while `--to=shared` requires the current
+user-configured absolute shared root. Changing layout configuration MUST never
+move, hide, or implicitly select an existing checkout.
+
+The selector MUST resolve only registry-and-claim corroborated managed
+worktrees across repository-local, configured shared, and historic layouts.
+Adopted external worktrees MUST be reported but remain ineligible. Before each
+move WB MUST hold the task lock and recheck clean state, branch/head, registry
+membership, lock state, source path, and an absent destination. It MUST use the
+descriptor-anchored no-replace move plus Git repair and registration
+verification, preserving task, branch, immutable claim ID, and Work Log
+identity.
+
+Apply MUST append a durable relocation receipt before reporting success. The
+receipt binds the immutable claim, source and destination paths, branch, head,
+target layout, and timestamp, and makes an exact retry a no-op. A failed or
+partial move MUST remain recoverable from the receipt and Git registry; it MUST
+never rewrite or delete the original claim. For a batch or any operation that
+lasts over ten seconds, progress MUST be emitted to stderr at least every ten
+seconds while stdout remains parseable with `--format=json`.
 
 ## Interaction with Other Features
 
@@ -461,7 +546,7 @@ without the opt-in performs no remote access at all.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:absorbed-source-pr-reconciliation, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -474,6 +559,7 @@ rejected while a live rebase is accepted only transiently; prior-release hooks
 remain compatible without persisting an ephemeral executable; an exact rescue
 branch passes the real managed pre-push hook while any differently named ref
 using the same attestation refuses; dry runs preserve state; exact merged heads can be cleaned;
+an exact source PR absorbed by a verified batch landing is closed and commented once while an advanced-head or changed-base PR stays open;
 dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
 with comparison guards; a named terminal apply without `--remote` is refused
 while the observed origin branch still exists and completes when that branch is
@@ -486,6 +572,23 @@ non-empty ones remain blocking backlog; a terminal task leaves no namespace
 directory behind and an operation whose namespace is retired underneath it
 refuses instead of writing where nothing can reach; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
+
+### AC: mixed-layout-relocation-preserves-active-identity
+
+**Requirements:** worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:explicit-layout-relocation
+
+**Given** managed local, configured shared, and historic registered worktrees
+with active immutable Work Log claims
+**When** an operator plans and applies a relocation to the other supported
+layout, then retries the same invocation
+**Then** the dry run leaves every checkout in place; apply moves only selected,
+clean, unlocked managed worktrees with Git registration repaired; task, branch,
+head, and immutable claim identity remain unchanged; the original claim stays
+readable through the new path via an append-only relocation receipt; retry is a
+no-op with the same receipt; and adopted external, dirty, locked, mismatched,
+or destination-colliding worktrees remain at their source with an explicit
+reason. JSON stdout remains one document while batch progress is sent to
+stderr.
 
 ## Open Questions
 

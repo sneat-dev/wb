@@ -25,13 +25,13 @@ func writeOriginalPromptFixture(t *testing.T, contents string) string {
 	return path
 }
 
-func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
+func TestWorktreeHelpExplainsDefaultAndSharedLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
 		"dirty or off-base canonical clone",
 		"fetches",
 		"without switching or updating any local branch",
-		"<wb-home>/worktrees/<task>/<owner>/<repository>",
+		"<canonical-repository>/.worktrees/<task>",
 		"WB_HOME",
 		"--resume",
 		"wb worktree merge <worktree...> --route auto --cleanup",
@@ -56,7 +56,7 @@ func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T
 		}
 	}
 	abort := newWorktreeAbortCmd()
-	for _, flag := range []string{"model", "cli", "provider"} {
+	for _, flag := range []string{"model", "cli", "provider", "absorbed-by"} {
 		if abort.Flags().Lookup(flag) == nil {
 			t.Fatalf("abort is missing --%s", flag)
 		}
@@ -196,7 +196,7 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	list := newWorktreeListCmd()
-	for _, wanted := range []string{"only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
+	for _, wanted := range []string{"resolver-recognized layout", "repository-local", "configured shared root", "worktree relocate", "only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
@@ -217,6 +217,9 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	const task = "artifact-json"
 	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
@@ -463,6 +466,91 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	}
 }
 
+func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
+	command := newWorktreeRelocateCmd()
+	for _, wanted := range []string{"--to=local", "--to=shared", "descriptor-anchored", "append-only relocation receipt", "--format=json"} {
+		if !strings.Contains(command.Long, wanted) {
+			t.Errorf("relocate help does not mention %q", wanted)
+		}
+	}
+	for _, flag := range []string{"to", "apply", "format", "json"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Errorf("relocate is missing --%s", flag)
+		}
+	}
+	if apply := command.Flags().Lookup("apply"); apply == nil || apply.DefValue != "false" {
+		t.Fatalf("relocate --apply default = %#v, want false", apply)
+	}
+}
+
+func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "relocate CLI JSON fixture")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
+	if code := run(createArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	runRelocateJSON := func(extra ...string) (string, string, int) {
+		stdout.Reset()
+		stderr.Reset()
+		args := append([]string{"--projects-root", projects, "worktree", "relocate", "cli-relocate", "--to=local"}, extra...)
+		code := run(args, &stdout, &stderr)
+		return stdout.String(), stderr.String(), code
+	}
+
+	formatJSON, formatStderr, code := runRelocateJSON("--format=json")
+	if code != exitOK {
+		t.Fatalf("relocate --format=json exit=%d stdout=%s stderr=%s", code, formatJSON, formatStderr)
+	}
+	if formatStderr != "" {
+		t.Fatalf("relocate JSON diagnostics/progress must use stderr only; stderr=%q", formatStderr)
+	}
+	var envelope worktrees.RelocateOutcome
+	if err := json.Unmarshal([]byte(formatJSON), &envelope); err != nil {
+		t.Fatalf("relocate --format=json must emit one parseable document: %v\n%s", err, formatJSON)
+	}
+	if envelope.SchemaVersion != 1 || len(envelope.Results) != 1 || !envelope.Results[0].AlreadyThere {
+		t.Fatalf("relocate JSON control-plane envelope = %#v", envelope)
+	}
+
+	shortcutJSON, shortcutStderr, code := runRelocateJSON("--json")
+	if code != exitOK || shortcutStderr != "" {
+		t.Fatalf("relocate --json exit=%d stdout=%s stderr=%s", code, shortcutJSON, shortcutStderr)
+	}
+	if shortcutJSON != formatJSON {
+		t.Fatalf("--json output differs from --format=json\n--format=json: %s\n--json: %s", formatJSON, shortcutJSON)
+	}
+
+	conflictingStdout, conflictingStderr, code := runRelocateJSON("--json", "--format=text")
+	if code == exitOK || conflictingStdout != "" || !strings.Contains(conflictingStderr, "--json cannot be combined with --format=text") {
+		t.Fatalf("conflicting JSON flags exit=%d stdout=%q stderr=%q", code, conflictingStdout, conflictingStderr)
+	}
+
+	// A malformed candidate turns into a List diagnostic. JSON mode must keep
+	// that operator-facing warning on stderr while stdout remains one document.
+	diagnosticRoot := t.TempDir()
+	diagnosticProjects, _ := setUpMismatchedWorktreeFixture(t, diagnosticRoot)
+	stdout.Reset()
+	stderr.Reset()
+	diagnosticArgs := []string{"--projects-root", diagnosticProjects, "worktree", "relocate", "stale-task", "--to=local", "--format=json"}
+	if code := run(diagnosticArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("relocate with diagnostic exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var diagnosticEnvelope worktrees.RelocateOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &diagnosticEnvelope); err != nil {
+		t.Fatalf("relocate diagnostic JSON is not parseable: %v\n%s", err, stdout.String())
+	}
+	if len(diagnosticEnvelope.Diagnostics) != 1 || strings.Contains(stdout.String(), "warning:") ||
+		!strings.Contains(stderr.String(), "warning: relocate skipped malformed candidate") {
+		t.Fatalf("relocate diagnostic streams stdout=%q stderr=%q envelope=%#v", stdout.String(), stderr.String(), diagnosticEnvelope)
+	}
+}
+
 // setUpRenameCLIFixture creates a real canonical repository with a working
 // origin remote — `worktree create`'s canonical sync needs one to pull from —
 // and points WB_HOME and related XDG state at an isolated root.
@@ -528,8 +616,7 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	if !strings.Contains(stdout.String(), "renamed cli-old acme/app ->") {
 		t.Fatalf("rename stdout = %s", stdout.String())
 	}
-	home := os.Getenv(wbhome.EnvOverride)
-	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
+	newWorktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-new")
 	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
 		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
 	}
@@ -603,7 +690,7 @@ func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-info", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-info", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-info")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree}, &stdout, &stderr); code != exitOK {
@@ -657,7 +744,7 @@ func TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-claimed", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-claimed", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-claimed")
 	if err := os.WriteFile(filepath.Join(worktree, "claimed.txt"), []byte("claimed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +804,7 @@ func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-worklog", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-worklog", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-worklog")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {
@@ -760,7 +847,7 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-log-verbs", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-log-verbs", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-log-verbs")
 
 	var checkpointOutput string
 	for _, args := range [][]string{
@@ -849,7 +936,7 @@ func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	if code := run(args, &stdout, &stderr); code != exitOK {
 		t.Fatalf("initial create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	projectionPath := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-resume", "acme", "app", ".wb-worklog", "recovery.json")
+	projectionPath := filepath.Join(projects, "acme", "app", ".worktrees", "cli-resume", ".wb-worklog", "recovery.json")
 	before, err := os.ReadFile(projectionPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1196,7 +1283,7 @@ func TestWorktreeCreateAcceptsOriginalPromptFromStdin(t *testing.T) {
 		t.Fatalf("archived stdin prompt = %q, want %q", content, prompt)
 	}
 
-	worktree := filepath.Join(home, "worktrees", "cli-stdin-prompt", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-stdin-prompt")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {

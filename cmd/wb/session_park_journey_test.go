@@ -9,10 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -229,6 +229,9 @@ func buildJourneyWB(t *testing.T) string {
 	t.Helper()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	binary := filepath.Join(t.TempDir(), "wb")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	command := exec.Command("go", "build", "-o", binary, "./cmd/wb")
 	command.Dir = repoRoot
 	if output, err := command.CombinedOutput(); err != nil {
@@ -508,7 +511,7 @@ func terminateJourneyTmuxProcesses(t *testing.T, tmuxState string) {
 		raw, readErr := os.ReadFile(filepath.Join(tmuxState, entry.Name()))
 		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
 		if readErr == nil && parseErr == nil && pid > 0 {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			_ = terminateJourneyProcess(pid)
 		}
 	}
 }
@@ -612,6 +615,9 @@ while :; do sleep 1; done
 // command name park uses, so the controlled ssh shim resolves it from PATH.
 func linkJourneyRemoteWB(t *testing.T, path, binary string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
 	if err := os.Symlink(binary, path); err != nil {
 		t.Fatal(err)
 	}

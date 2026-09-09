@@ -3,6 +3,7 @@ package locallink
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +72,105 @@ func TestHasLiveLinkReportsAHandWrittenGoWorkWithNoStreamRecord(t *testing.T) {
 	}
 }
 
+func TestHasLiveLinkAcceptsTrackedIntrinsicGoWorkspace(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse (\n\t./bookius\n\t./debtus\n)\n")
+	writeGuardTestFile(t, worktree, "bookius/go.mod", "module example.com/contracts/bookius\n\ngo 1.27\n")
+	writeGuardTestFile(t, worktree, "debtus/go.mod", "module example.com/contracts/debtus\n\ngo 1.27\n")
+	commitGuardTestRepository(t, worktree)
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 0 {
+		t.Fatalf("links = %#v, err = %v; tracked same-repository modules are intrinsic", links, err)
+	}
+}
+
+func TestHasLiveLinkRejectsExternalEntryInTrackedGoWorkspace(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse /elsewhere/library\n")
+	commitGuardTestRepository(t, worktree)
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || !strings.Contains(links[0].Detail, "/elsewhere/library") {
+		t.Fatalf("links = %#v, want external workspace entry refusal", links)
+	}
+}
+
+func TestHasLiveLinkRejectsUntrackedInternalGoWorkspace(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "backend/go.mod", "module example.com/backend\n\ngo 1.27\n")
+	commitGuardTestRepository(t, worktree)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./backend\n")
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; an untracked workspace must refuse", links, err)
+	}
+}
+
+func TestHasLiveLinkRejectsUntrackedModuleInTrackedGoWorkspace(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./local-module\n")
+	commitGuardTestRepository(t, worktree)
+	writeGuardTestFile(t, worktree, "local-module/go.mod", "module example.com/local\n\ngo 1.27\n")
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; an untracked module must refuse", links, err)
+	}
+}
+
+func TestHasLiveLinkRejectsTrackedGoWorkSymlink(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "workspace-source", "go 1.27\n\nuse ./module\n")
+	writeGuardTestFile(t, worktree, "module/go.mod", "module example.com/module\n\ngo 1.27\n")
+	if err := os.Symlink("workspace-source", filepath.Join(worktree, "go.work")); err != nil {
+		t.Fatal(err)
+	}
+	commitGuardTestRepository(t, worktree)
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; a symlinked workspace must refuse", links, err)
+	}
+}
+
+func TestHasLiveLinkRejectsTrackedGoModSymlink(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
+	writeGuardTestFile(t, worktree, "module-source.mod", "module example.com/module\n\ngo 1.27\n")
+	if err := os.MkdirAll(filepath.Join(worktree, "module"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../module-source.mod", filepath.Join(worktree, "module/go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	commitGuardTestRepository(t, worktree)
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; a symlinked module manifest must refuse", links, err)
+	}
+}
+
+func TestHasLiveLinkRejectsMissingTrackedGoMod(t *testing.T) {
+	worktree := initGuardTestRepository(t)
+	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
+	writeGuardTestFile(t, worktree, "module/go.mod", "module example.com/module\n\ngo 1.27\n")
+	commitGuardTestRepository(t, worktree)
+	if err := os.Remove(filepath.Join(worktree, "module/go.mod")); err != nil {
+		t.Fatal(err)
+	}
+
+	links, err := HasLiveLink(fakeLinkStore{}, worktree)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; a missing current module manifest must refuse", links, err)
+	}
+}
+
 // "I could not tell" must not be spelled the same way as "there is no link".
 func TestHasLiveLinkPropagatesAnUnreadableStore(t *testing.T) {
 	if _, err := HasLiveLink(fakeLinkStore{err: errors.New("state is unreadable")}, t.TempDir()); err == nil {
@@ -124,5 +224,136 @@ func TestGoWorkUseEntriesOnAWorktreeWithoutOneIsEmpty(t *testing.T) {
 	entries, err := GoWorkUseEntries(t.TempDir())
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("entries = %v, err = %v", entries, err)
+	}
+}
+
+type fakeLinkSourceStore struct {
+	sources map[string][]streams.StreamLinkSource
+	err     error
+}
+
+func (store fakeLinkSourceStore) LinkSourcesForWorktree(worktree string) ([]streams.StreamLinkSource, error) {
+	if store.err != nil {
+		return nil, store.err
+	}
+	return store.sources[worktree], nil
+}
+
+// AC: merge-refuses-a-linked-worktree (removal-time half, pnpm-link) — a
+// worktree still recorded as a link source refuses, naming the stream, the
+// consumer, and the command that clears it.
+func TestHasLiveLinkSourceReportsAPnpmLinkConsumer(t *testing.T) {
+	library := t.TempDir()
+	store := fakeLinkSourceStore{sources: map[string][]streams.StreamLinkSource{
+		library: {{
+			Stream: "checkout-rewrite", ConsumerRepository: "acme/frontend", ConsumerWorktree: "/work/frontend",
+			Link: streams.Link{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: streams.MechanismPnpmLink, Identity: "@acme/core",
+			},
+		}},
+	}}
+	sources, err := HasLiveLinkSource(store, library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 || sources[0].Stream != "checkout-rewrite" || sources[0].Consumer != "acme/frontend" {
+		t.Fatalf("sources = %#v", sources)
+	}
+	message := RefusalMessageForSources(library, sources)
+	if !strings.Contains(message, "checkout-rewrite") || !strings.Contains(message, "acme/frontend") || !strings.Contains(message, "@acme/core") {
+		t.Errorf("refusal does not name the stream, consumer, and link: %s", message)
+	}
+	if !strings.Contains(message, "wb deps propagate local "+library+" --to /work/frontend --undo") {
+		t.Errorf("refusal does not name the exact repoint command: %s", message)
+	}
+}
+
+// AC: merge-refuses-a-linked-worktree (removal-time half, go.work) — the
+// other recorded mechanism refuses identically, naming its link kind.
+func TestHasLiveLinkSourceReportsAGoWorkConsumer(t *testing.T) {
+	library := t.TempDir()
+	store := fakeLinkSourceStore{sources: map[string][]streams.StreamLinkSource{
+		library: {{
+			Stream: "backend-bump", ConsumerRepository: "acme/backend", ConsumerWorktree: "/work/backend",
+			Link: streams.Link{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: streams.MechanismGoWork, Identity: "acme.example/library",
+			},
+		}},
+	}}
+	sources, err := HasLiveLinkSource(store, library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("sources = %#v", sources)
+	}
+	if !strings.Contains(sources[0].Detail, "go.work") {
+		t.Errorf("detail does not name the link kind: %s", sources[0].Detail)
+	}
+}
+
+// A worktree with no recorded source link proceeds silently — most cleanups
+// never touch a library worktree at all.
+func TestHasLiveLinkSourceIsEmptyWithNoRecordedLink(t *testing.T) {
+	worktree := t.TempDir()
+	sources, err := HasLiveLinkSource(fakeLinkSourceStore{}, worktree)
+	if err != nil || len(sources) != 0 {
+		t.Fatalf("sources = %#v, err = %v, want none", sources, err)
+	}
+	if RefusalMessageForSources(worktree, sources) != "" {
+		t.Errorf("refusal message rendered for no sources")
+	}
+}
+
+// A nil store — no WB home, the ordinary case outside a stream — must not be
+// mistaken for an unreadable store.
+func TestHasLiveLinkSourceAcceptsANilStore(t *testing.T) {
+	sources, err := HasLiveLinkSource(nil, t.TempDir())
+	if err != nil || len(sources) != 0 {
+		t.Fatalf("sources = %#v, err = %v, want none from a nil store", sources, err)
+	}
+}
+
+// An unreadable store is an error, never an empty result: "I could not tell"
+// must not be spelled the same way as "nothing links here".
+func TestHasLiveLinkSourcePropagatesAStoreReadFailure(t *testing.T) {
+	if _, err := HasLiveLinkSource(fakeLinkSourceStore{err: errors.New("disk fell over")}, t.TempDir()); err == nil {
+		t.Fatal("an unreadable store reported no error")
+	}
+}
+
+func initGuardTestRepository(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGuardTestGit(t, dir, "init", "-q")
+	runGuardTestGit(t, dir, "config", "user.name", "WB Test")
+	runGuardTestGit(t, dir, "config", "user.email", "wb-test@example.invalid")
+	return dir
+}
+
+func writeGuardTestFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func commitGuardTestRepository(t *testing.T, dir string) {
+	t.Helper()
+	runGuardTestGit(t, dir, "add", ".")
+	runGuardTestGit(t, dir, "commit", "-qm", "test setup")
+}
+
+func runGuardTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
 }

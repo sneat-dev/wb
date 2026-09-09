@@ -105,6 +105,20 @@ receipt, prepares an audited no-content ancestry seal, proves exact target-tree
 identity and every required ancestor, round-trips it through supersession, and
 refuses a later semantic tree drift while preserving historical records.
 
+### Task 6: Recover lost external publication evidence
+
+**Id:** task-6
+**Verifies:** mechanical-worktree-merge#ac:published-candidate-adoption-recovers-a-missing-local-acknowledgement
+**Depends-On:** 2
+**Status:** complete
+
+Add a dry-run-first, append-only adoption acknowledgement for an unlanded
+prepare/conflict receipt where the exact candidate branch and open pull request
+were published outside WB. Re-read receipt, claims, sources, GitHub identity,
+and remote ref under the lane lock. Prove a normal descendant-source refresh
+retains the PR/published predecessor and advances it with an ordinary non-force
+push, while malformed or drifted evidence refuses without mutation.
+
 ## Open Questions
 
 None at this time.

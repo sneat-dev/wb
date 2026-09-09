@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/hooks"
 )
@@ -38,13 +41,25 @@ func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
 			Hook: "pre-push", Action: "push-attempt", Outcome: "passed", DurationMS: 60000, Branch: "feature/y"},
 	})
 
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"hooks", "measure", ".", "--file", path, "--json", "--non-interactive"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("exit code = %d; stderr=%s", code, stderr.String())
-	}
+	outputs := make(map[string][]byte)
 	var delta hooks.ProfileDelta
-	if err := json.Unmarshal(stdout.Bytes(), &delta); err != nil {
-		t.Fatalf("parse %q: %v", stdout.String(), err)
+	for name, flag := range map[string][]string{
+		"canonical": {"--format=json"},
+		"shortcut":  {"--json"},
+	} {
+		var stdout, stderr bytes.Buffer
+		args := []string{"hooks", "measure", ".", "--file", path, "--non-interactive"}
+		args = append(args, flag...)
+		if code := run(args, &stdout, &stderr); code != exitOK {
+			t.Fatalf("%s exit code = %d; stderr=%s", name, code, stderr.String())
+		}
+		outputs[name] = stdout.Bytes()
+		if err := json.Unmarshal(stdout.Bytes(), &delta); err != nil {
+			t.Fatalf("parse %s output %q: %v", name, stdout.String(), err)
+		}
+	}
+	if !bytes.Equal(outputs["canonical"], outputs["shortcut"]) {
+		t.Errorf("--format=json output differs from --json\ncanonical: %s\nshortcut: %s", outputs["canonical"], outputs["shortcut"])
 	}
 	if delta.Commit.Runs != 1 || delta.Commit.MaxDurationMS != 800 {
 		t.Errorf("commit = %#v", delta.Commit)
@@ -64,6 +79,39 @@ func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
 		if !strings.Contains(textOut.String(), want) {
 			t.Errorf("text report does not contain %q:\n%s", want, textOut.String())
 		}
+	}
+}
+
+// Hook reports are read-only. Pending receipt replay belongs to a maintenance
+// path because even preparing its runtime changes filesystem state.
+func TestHookReportsDoNotCreateRuntimeState(t *testing.T) {
+	repo := t.TempDir()
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = repo
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	wbHome := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", wbHome)
+
+	for _, name := range []string{"metrics", "measure"} {
+		t.Run(name, func(t *testing.T) {
+			cmd := map[string]func() *cobra.Command{
+				"metrics": newHooksMetricsCmd,
+				"measure": newHooksMeasureCmd,
+			}[name]()
+			cmd.SetArgs([]string{repo, "--json"})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(wbHome); !os.IsNotExist(err) {
+				t.Fatalf("read-only report created WB_HOME state: %v", err)
+			}
+		})
 	}
 }
 

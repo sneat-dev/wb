@@ -9,12 +9,27 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
 func TestMain(m *testing.M) {
+	// Every CLI test in this package that invokes `wb run --` or `wb
+	// worktree merge`/`prepare`/`resume` (directly via run()/root.Execute(),
+	// in-process) must never depend on the real host load average: GitHub's
+	// shared runners routinely report a load average of 8-10 on 4 vCPUs,
+	// which used to fail any such test outright (sneat-dev/wb PR #450 run
+	// 34124956543). Disable host-load admission by default for this whole
+	// test binary; the dedicated tests in hostload_admission_test.go that
+	// actually exercise gating behavior set WB_ADMISSION_LOAD_FLOOR back to
+	// a positive value themselves — a positive value always wins, even
+	// inside CI, so those tests still see real refusal/admission behavior.
+	if err := os.Setenv(hostload.EnvLoadFloor, "0"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not disable host-load admission for tests: %v\n", err)
+	}
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}
@@ -36,6 +51,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
 		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
 	}
+	// Isolate the whole test binary from ambient ownership/session-identity
+	// state before any test runs: this binary is a subprocess of whichever
+	// agent is operating the shell that launched `go test`, and its
+	// WB_AGENT_* exports would otherwise leak into every worktree/session
+	// assertion below. See internal/testenv and internal/envguard.
+	testenv.IsolateProcess()
 	os.Exit(m.Run())
 }
 
@@ -239,6 +260,33 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 				t.Errorf("run(%q) = %d, want %d; stderr: %s", test.args, got, test.want, stderr.String())
 			}
 		})
+	}
+}
+
+func TestEveryJSONShortcutHasCanonicalFormatFlag(t *testing.T) {
+	for _, path := range subcommandPaths(newRootCmd(), nil) {
+		command, _, err := newRootCmd().Find(path)
+		if err != nil {
+			t.Fatalf("find wb %s: %v", strings.Join(path, " "), err)
+		}
+		if command.Flags().Lookup("json") == nil {
+			continue
+		}
+		if command.Flags().Lookup("format") == nil {
+			t.Errorf("wb %s offers --json without canonical --format", strings.Join(path, " "))
+		}
+	}
+}
+
+func TestRunSeparatorPreservesChildOutputFlags(t *testing.T) {
+	t.Setenv("WB_HOME", t.TempDir())
+	var stdout, stderr bytes.Buffer
+	args := []string{"run", "--", "/usr/bin/printf", "%s|%s", "--format=json", "--json"}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d; stderr: %s", code, stderr.String())
+	}
+	if got, want := stdout.String(), "--format=json|--json"; got != want {
+		t.Errorf("forwarded output = %q, want %q", got, want)
 	}
 }
 

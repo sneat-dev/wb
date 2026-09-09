@@ -838,6 +838,140 @@ func registerParkChecklistSession(t *testing.T, wbSessionID string) string {
 	return home
 }
 
+// unregisteredParkFixture is registerParkChecklistSession's counterpart for the
+// case the park verb now has to handle: a hermetic WB home in which no session
+// has registered at all, and no ambient WB_AGENT_* declaration to fall back on.
+func unregisteredParkFixture(t *testing.T) (string, string) {
+	t.Helper()
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_AGENT_PID", "")
+	t.Setenv("WB_AGENT_RUNTIME", "")
+	t.Setenv("WB_AGENT_MODEL", "")
+	views, err := session.List(filepath.Join(home, session.DirName))
+	if err != nil || len(views) != 0 {
+		t.Fatalf("fixture must start with no registered session: %d views, err=%v", len(views), err)
+	}
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	if err := os.WriteFile(contextPath, []byte("carrying the campaign forward\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home, contextPath
+}
+
+// TestSessionParkRegistersAnUnregisteredSessionBeforeParking proves AC
+// unregistered-session-can-park: requiring `wb session register` first made
+// agents hand-roll their own parking, so park registers the caller from what it
+// can observe, says so, and continues.
+func TestSessionParkRegistersAnUnregisteredSessionBeforeParking(t *testing.T) {
+	home, contextPath := unregisteredParkFixture(t)
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("park refused an unregistered session: %v", err)
+	}
+	var output sessionParkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if !output.RegisteredAtPark || output.WBSessionID == "" {
+		t.Fatalf("park output = %#v, want the new wb_session_id flagged registered_at_park", output)
+	}
+	if output.ParkedSessionID == "" || output.MemberCount != 0 {
+		t.Fatalf("park output = %#v, want a parked ID for a zero-member session", output)
+	}
+
+	views, err := session.List(filepath.Join(home, session.DirName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered session.View
+	for _, view := range views {
+		if view.WBSessionID == output.WBSessionID {
+			registered = view
+		}
+	}
+	if registered.WBSessionID == "" {
+		t.Fatalf("park did not leave a session record for %s: %#v", output.WBSessionID, views)
+	}
+	if !registered.RegisteredAtPark || registered.PID <= 0 || registered.Runtime == "" || registered.Machine == "" {
+		t.Fatalf("registered session = %#v, want the inferred identity", registered.Record)
+	}
+	// Nothing declared a model and no process can be observed to carry one, so
+	// it is admitted as unknown rather than guessed — and never refused.
+	if registered.Model != session.Unknown {
+		t.Fatalf("registered model = %q, want %q", registered.Model, session.Unknown)
+	}
+	if registered.State != session.StateParked || registered.ParkedSessionID != output.ParkedSessionID {
+		t.Fatalf("registered session = %#v, want it projected as parked %s", registered, output.ParkedSessionID)
+	}
+	state, err := sessionpark.NewStore(filepath.Join(home, "parked-sessions")).Load(output.ParkedSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Bundle.Source.WBSessionID != output.WBSessionID || len(state.Bundle.Worktrees) != 0 {
+		t.Fatalf("parked aggregate source = %#v, want the session park registered", state.Bundle.Source)
+	}
+}
+
+func TestSessionParkTextOutputNamesAParkTimeRegistration(t *testing.T) {
+	_, contextPath := unregisteredParkFixture(t)
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("park refused an unregistered session: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "registered_at_park") || !strings.Contains(stdout.String(), "wbs-") {
+		t.Fatalf("text output must name the park-time registration and its WB session ID: %q", stdout.String())
+	}
+}
+
+// TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering proves the
+// escape hatch stays an addressing mechanism: naming a session that never
+// registered must refuse rather than invent one.
+func TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering(t *testing.T) {
+	home := registerParkChecklistSession(t, "wbs-explicit-park-target")
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	if err := os.WriteFile(contextPath, []byte("explicitly targeted continuation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-never-registered"})
+	command.SetOut(new(bytes.Buffer))
+	command.SetErr(new(bytes.Buffer))
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "wbs-never-registered") {
+		t.Fatalf("park --wb-session-id error = %v, want a refusal naming the unknown session", err)
+	}
+
+	stdout := new(bytes.Buffer)
+	command = newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--wb-session-id", "wbs-explicit-park-target", "--format", "json"})
+	command.SetOut(stdout)
+	command.SetErr(new(bytes.Buffer))
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var output sessionParkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.WBSessionID != "wbs-explicit-park-target" || output.RegisteredAtPark {
+		t.Fatalf("park output = %#v, want the targeted session parked without a park-time registration", output)
+	}
+	if _, found, err := sessionpark.NewStore(filepath.Join(home, "parked-sessions")).FindBySource("wbs-explicit-park-target"); err != nil || !found {
+		t.Fatalf("targeted park did not store an aggregate for the named session: found=%t err=%v", found, err)
+	}
+}
+
 func TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout(t *testing.T) {
 	home := registerParkChecklistSession(t, "wbs-checklist-park-source")
 	contextPath := filepath.Join(t.TempDir(), "continuation.md")

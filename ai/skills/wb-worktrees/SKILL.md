@@ -1,6 +1,7 @@
 ---
 name: wb-worktrees
-description: Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
+description: >-
+  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
 ---
 
 # WB worktrees
@@ -9,15 +10,29 @@ Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make
 it eligible. WB creation leaves its current branch, index, and working tree
 untouched while it fetches and pins the requested remote base.
-Make feature changes only below the authoritative WB home:
+Make feature changes only in a WB-created worktree. The default checkout is
+inside its canonical repository directory:
 
 ```txt
-~/.wb/worktrees/<task>/<owner>/<repository>
+<canonical-repository>/.worktrees/<task>
 ```
 
-Set `WB_HOME` only when an explicit isolated home is intended. New work never
-falls back to `<projects-root>/.wb`; without an explicit override, WB still
-recognizes legacy linked worktrees there during migration.
+`WB_HOME` is the private authority for Work Logs, task locks, receipts, and
+reports; it does not choose the default checkout path, even when explicit. A
+user may set `worktrees.root` in `~/.config/wb/worktrees.yaml` to an absolute
+path (with `~` expansion, for example `~/.wb/worktrees`) for the shared form
+`<root>/<task>/<owner>/<repository>`. Repository policy cannot set that root.
+Existing linked worktrees governed by the same `WB_HOME` remain discoverable
+during migration.
+
+## Validation
+
+During implementation, format changed files and run focused named tests plus
+focused vet or lint for the affected packages. Before a push, run at most one
+warranted full static or test gate. Leave broad race, coverage, and fleet checks
+to CI unless a deliberate final local run is necessary because CI cannot cover
+the risk. When a broad gate finds a failure, rerun that named failure to
+diagnose it; do not repeat the whole gate.
 
 ## Route
 
@@ -135,7 +150,16 @@ wb worktree create <task> --mode agent --model <exact-model> \
 ```
 
 `$PPID` from the harness tool-call shell identifies the live agent; `$$` is an
-intermediate shell and is rejected. For intentional human CLI work, use
+intermediate shell and is rejected. If the shell tail-execs its final command,
+WB may see a Codex app-server as its direct parent; WB accepts that parent only
+when kernel process evidence confirms the `codex` executable and `app-server`
+role. To keep the shell alive for older builds, use:
+
+```sh
+wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"
+```
+
+Registering WB's own PID remains rejected. For intentional human CLI work, use
 `--mode manual --initiator <human>` so the exception is explicit and audited.
 
 With no prefix, WB uses the task slug itself as the branch name. Use

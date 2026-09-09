@@ -190,6 +190,31 @@ unchanged old remote source branch with force-with-lease and rolls every
 already-moved repository back if a later repository fails. Never copy a prior
 task's projection, prompt, or source state into the new task.
 
+If a recycle stops after it reserves the new task prompt but before it creates
+the first destination checkout claim, use `wb worktree abort next-task --disposition discarded --apply`. This is the one no-`--remote` discarded
+case: WB proves the reservation has no checkout, branch, remote ref, or
+cleanup backlog, appends its terminal record, retains the private prompt
+archive, and removes only a lock-only WB task shell. Any real worktree or
+unrecognized task-shell content remains refused for its normal recovery path.
+
+## Relocate a still-active task deliberately
+
+Changing `worktrees.root` only affects new worktrees. To move an existing,
+clean, unlocked WB-managed task between the repository-local and current shared
+layout, inspect the plan and then apply the exact target:
+
+```sh
+wb worktree relocate <task> --to local
+wb worktree relocate <task> --to shared
+wb --filter acme/app worktree relocate <task> --to shared --format json
+wb worktree relocate <task> --to shared --apply
+```
+
+Relocation preserves the task, branch, and immutable Work Log claim. WB repairs
+and verifies Git's registry, then records an append-only relocation receipt.
+It never moves adopted external worktrees; resolve those explicitly before
+changing their location.
+
 ## Abort instead of abandoning
 
 An unused or interrupted worktree has no merged PR, so `cleanup` must refuse
@@ -202,12 +227,14 @@ wb worktree abort <task> --disposition not_landed --successor <agent-or-session>
   --model <exact-successor-model-or-unknown> --cli <invoking-cli-if-known> \
   --provider <routing-or-billing-provider-if-known> --apply
 wb worktree abort <task> --disposition discarded --apply --remote
+wb worktree abort <task> --disposition discarded --absorbed-by <merged-pr> --apply --remote
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
   --actor <approving-person-or-agent> --reason <audit-reason>
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
   --actor <approving-person-or-agent> --reason <audit-reason> --apply
 wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
+wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote
 wb worktree abort fair-split --disposition discarded --all --apply --remote
 wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply
 ```
@@ -223,6 +250,12 @@ authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write
 makes it refuse.
+
+For a clean source retained after a squash merge, add `--absorbed-by <merged-pr>`.
+WB fetches the PR head from the configured origin and proves the source ancestry,
+the landed merge in the fresh target, and matching PR/merge trees before it
+removes anything. A PR title, branch name, or commit-message reference is never
+proof.
 `orphaned` is an append-only terminalization for a claim whose checkout and
 refs have already vanished. It never deletes Git or filesystem state. Select
 one exact immutable claim and name the approving actor and reason; inspect the

@@ -46,7 +46,7 @@ explicit-home override; addresses #33.
 ### Task 2: Make inventory and cleanup layout-aware
 
 **Id:** task-2
-**Verifies:** worktree-lifecycle#ac:safe-real-git-lifecycle
+**Verifies:** worktree-lifecycle#ac:safe-real-git-lifecycle, worktree-lifecycle#ac:mixed-layout-relocation-preserves-active-identity
 **Depends-On:** task-1
 **Status:** planning
 

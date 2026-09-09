@@ -20,13 +20,13 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 	}, false)
 	for _, want := range []string{
 		"Final outcomes",
-		"Pulled              3",
+		"Pulled                  3",
 		"Pull actions",
-		"Pull planned        1",
-		"Pull attempted      3",
-		"Pull succeeded      3",
-		"Updated from remote 2",
-		"Already current     1",
+		"Pull planned            1",
+		"Pull attempted          3",
+		"Pull succeeded          3",
+		"Updated from remote     2",
+		"Already current         1",
 		"Attention",
 		"Failures",
 	} {

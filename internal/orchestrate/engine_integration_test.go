@@ -100,6 +100,21 @@ func TestRunCommitsWithoutPushing(t *testing.T) {
 	}
 }
 
+func TestRunResumeRefusesOperationBranchCheckedOutInCanonical(t *testing.T) {
+	fixture := newEngineFixture(t)
+	options := fixture.options()
+	runEngineGit(t, fixture.canonical, "checkout", "-b", options.Branch)
+	before := mustReadEngineFile(t, filepath.Join(fixture.canonical, "dependency.txt"))
+	options.Resume = true
+	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
+	if err == nil || !strings.Contains(err.Error(), "checked out in canonical repository") {
+		t.Fatalf("resume error = %v, results=%+v", err, results)
+	}
+	if after := mustReadEngineFile(t, filepath.Join(fixture.canonical, "dependency.txt")); after != before {
+		t.Fatalf("resume wrote canonical dependency: before=%q after=%q", before, after)
+	}
+}
+
 // TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard is the Defect C
 // regression: `wb deps bump`/`wb deps set` wave worktrees are created by
 // this exact Run/processRepository path with plain `git worktree add`, not

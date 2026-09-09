@@ -50,7 +50,9 @@ func newDepsPropagateLocalCmd() *cobra.Command {
 
 WB discovers what the library publishes from the library worktree itself — the
 Go module path from backend/go.mod (or the module root), and npm package names
-from libs/**/package.json. An operator-supplied package name is never accepted
+from libs/**/package.json in every repository-owned npm workspace, including a
+nested frontend/ workspace. Invoke this command with the repository-root
+worktrees recorded by the stream. An operator-supplied package name is never accepted
 as a substitute, and a consumer that declares none of the discovered identities
 is reported and skipped rather than linked to something it does not use.
 
@@ -61,12 +63,17 @@ the file does not exist in the repository, so a CI checkout has no go.work to
 honour; GOWORK=off is the explicit guarantee where a toolchain might discover
 one anyway.
 
-An npm consumer first proves a clean frozen install of its unlinked tree, so a
-link never masks a lockfile or manifest mismatch. The library is then built once
-with the repository's own build target, cached against the library's CONTENT
-HASH and rebuilt whenever that hash moves, and linked into node_modules. No
-pnpm override, alias, or workspace: entry is ever written, and no tracked file
-changes.
+An npm consumer first proves a clean frozen install of each affected unlinked
+workspace, so a link never masks a lockfile or manifest mismatch. The library is
+then built from its owning workspace with that workspace's own build target,
+cached against the library's CONTENT HASH and rebuilt whenever that hash moves,
+staged inside the consumer's installed peer context, and linked into the
+declaring consumer workspace's node_modules. This makes peer dependencies
+resolve from the consumer and does not modify pnpm's global store. No pnpm
+override, alias, or workspace: entry is ever written, and no tracked file changes.
+Restart an already-running frontend build after the link topology changes. If
+it still resolves the previous package target, explicitly clear its generated
+resolver cache and rebuild; WB does not silently delete framework caches.
 
 While a link is live, do NOT run 'go mod tidy' or 'go get': both resolve against
 the workspace and would write a go.sum describing an unpublished library tree.
@@ -246,6 +253,11 @@ func printPropagateLocal(command *cobra.Command, format string, result locallink
 				if _, err := fmt.Fprintf(out, "    ! %s\n", detail); err != nil {
 					return err
 				}
+			}
+		}
+		for _, note := range consumer.Notes {
+			if _, err := fmt.Fprintf(out, "  %s\n", note); err != nil {
+				return err
 			}
 		}
 		for _, failure := range consumer.Errors {

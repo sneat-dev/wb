@@ -347,16 +347,20 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 		}
 		repo := repositories[repository]
 		if repo == nil {
-			home, err := wbhome.EnsureRoot(options.GitHubDir)
-			if err != nil {
-				return nil, err
+			canonical := filepath.Join(options.GitHubDir, owner, name)
+			placement, placementErr := worktrees.ResolveUserWorktreePlacement(canonical)
+			if placementErr != nil {
+				return nil, placementErr
 			}
-			worktree := filepath.Join(home, "worktrees", slug(spec.ID), owner, name)
+			worktree, pathErr := placement.Path(slug(spec.ID), owner+"/"+name)
+			if pathErr != nil {
+				return nil, pathErr
+			}
 			repo = &campaignRepository{
 				repository: repository,
 				owner:      owner,
 				name:       name,
-				canonical:  filepath.Join(options.GitHubDir, owner, name),
+				canonical:  canonical,
 				worktree:   worktree,
 				branch:     "wb/migrate/" + slug(spec.ID),
 				ref:        ref,
@@ -420,17 +424,20 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 	if err != nil {
 		return "", err
 	}
-	home, err := wbhome.Root(options.GitHubDir)
-	if err != nil {
-		return "", err
-	}
-	worktree := filepath.Join(home, "worktrees", slug(spec.ID), owner, name)
-	if _, err := os.Stat(worktree); os.IsNotExist(err) {
+	canonical := filepath.Join(options.GitHubDir, owner, name)
+	if _, err := os.Stat(canonical); os.IsNotExist(err) {
 		return sourceRoot, nil
 	} else if err != nil {
 		return "", err
 	}
 	expectedBranch := "wb/migrate/" + slug(spec.ID)
+	worktree, err := registeredCampaignWorktree(canonical, expectedBranch)
+	if err != nil {
+		return "", err
+	}
+	if worktree == "" {
+		return sourceRoot, nil
+	}
 	branch, err := runIn(worktree, "git", "branch", "--show-current")
 	if err != nil {
 		return "", err
@@ -1220,6 +1227,8 @@ func (c *campaign) syncReport() {
 			if reportRepo.Repository != repo.repository {
 				continue
 			}
+			reportRepo.CanonicalDir = repo.canonical
+			reportRepo.WorktreeDir = repo.worktree
 			reportRepo.Actions = append([]string(nil), repo.report.Actions...)
 			if repo.report.ChangedFiles == nil {
 				reportRepo.ChangedFiles = nil
@@ -1252,9 +1261,27 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 	if _, err := runIn(repo.canonical, "git", "fetch", "--quiet", "origin"); err != nil {
 		return err
 	}
+	physicalCanonical, err := filepath.EvalSymlinks(repo.canonical)
+	if err != nil {
+		return fmt.Errorf("resolve canonical repository path: %w", err)
+	}
+	repo.canonical = physicalCanonical
+	repo.report.CanonicalDir = physicalCanonical
 	base := "origin/" + repo.ref
-	if _, err := runIn(repo.canonical, "git", "rev-parse", "--verify", base+"^{commit}"); err != nil {
+	baseRevision, err := runIn(repo.canonical, "git", "rev-parse", "--verify", base+"^{commit}")
+	if err != nil {
 		return fmt.Errorf("%s does not contain %s: %w", repo.repository, base, err)
+	}
+	baseRevision = strings.TrimSpace(baseRevision)
+	if repo.resume {
+		registered, registeredErr := registeredCampaignWorktree(repo.canonical, repo.branch)
+		if registeredErr != nil {
+			return registeredErr
+		}
+		if registered != "" {
+			repo.worktree = registered
+			repo.report.WorktreeDir = registered
+		}
 	}
 	if _, err := os.Stat(repo.worktree); err == nil {
 		if repo.resume {
@@ -1267,13 +1294,48 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 	if _, err := runIn(repo.canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+repo.branch); err == nil {
 		return fmt.Errorf("campaign branch already exists in %s: %s", repo.canonical, repo.branch)
 	}
-	if err := os.MkdirAll(filepath.Dir(repo.worktree), 0o755); err != nil {
-		return err
+	placement, placementErr := worktrees.ResolveWorktreePlacement(context.Background(), repo.canonical, baseRevision)
+	if placementErr != nil {
+		return placementErr
 	}
-	if _, err := runIn(repo.canonical, "git", "worktree", "add", "--quiet", "-b", repo.branch, repo.worktree, base); err != nil {
-		return err
+	created, createErr := worktrees.CreateWorktreeAtPlacement(context.Background(), repo.canonical, placement, campaignTaskFromBranch(repo.branch), repo.owner+"/"+repo.name, repo.branch, repo.ref, baseRevision)
+	if createErr != nil {
+		return createErr
 	}
+	repo.worktree = created.Path
+	repo.report.WorktreeDir = created.Path
+	created.Close()
 	return nil
+}
+
+func campaignTaskFromBranch(branch string) string {
+	return strings.TrimPrefix(branch, "wb/migrate/")
+}
+
+func registeredCampaignWorktree(canonical, branch string) (string, error) {
+	physicalCanonical, resolveCanonicalErr := filepath.EvalSymlinks(canonical)
+	if resolveCanonicalErr != nil {
+		return "", resolveCanonicalErr
+	}
+	output, err := runIn(canonical, "git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	path := ""
+	for _, line := range strings.Split(output, "\n") {
+		if candidate, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = candidate
+			continue
+		}
+		if line == "branch refs/heads/"+branch {
+			physicalPath, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr == nil && filepath.Clean(physicalPath) == filepath.Clean(physicalCanonical) {
+				return "", nil
+			}
+			return filepath.Clean(path), nil
+		}
+	}
+	return "", nil
 }
 
 func validateResumeWorktree(repo *campaignRepository) error {
@@ -1390,24 +1452,7 @@ func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if _, err := os.Stat(root); os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	worktrees := []string{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Name() == ".git" {
-			worktrees = append(worktrees, filepath.Dir(path))
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-		}
-		return nil
-	})
+	worktrees, err := campaignRegisteredWorktrees(githubDir, "wb/migrate/"+slug(migrationID))
 	if err != nil {
 		return nil, err
 	}
@@ -1422,6 +1467,54 @@ func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
 		}
 		if _, err := runIn(worktree, "git", "worktree", "remove", worktree); err != nil {
 			return nil, err
+		}
+	}
+	return worktrees, nil
+}
+
+// campaignRegisteredWorktrees asks each canonical clone's Git registry for
+// the migration branch. This survives a changed placement root and avoids
+// treating an unregistered directory under a configured shared root as a
+// campaign checkout eligible for deletion.
+func campaignRegisteredWorktrees(githubDir, branch string) ([]string, error) {
+	owners, err := os.ReadDir(githubDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var worktrees []string
+	for _, owner := range owners {
+		if !owner.IsDir() || owner.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		repositories, readErr := os.ReadDir(filepath.Join(githubDir, owner.Name()))
+		if readErr != nil {
+			return nil, readErr
+		}
+		for _, repository := range repositories {
+			if !repository.IsDir() || repository.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			canonical := filepath.Join(githubDir, owner.Name(), repository.Name())
+			info, statErr := os.Stat(filepath.Join(canonical, ".git"))
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			if statErr != nil {
+				return nil, statErr
+			}
+			if !info.IsDir() {
+				continue
+			}
+			worktree, registeredErr := registeredCampaignWorktree(canonical, branch)
+			if registeredErr != nil {
+				return nil, registeredErr
+			}
+			if worktree != "" {
+				worktrees = append(worktrees, worktree)
+			}
 		}
 	}
 	return worktrees, nil

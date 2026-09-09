@@ -45,7 +45,8 @@ The fastest agent workflow is:
 
   Start isolated work   wb worktree create <task> <owner/repository>
   Inspect progress      wb worktree summary <task>
-  Land and clean up     wb worktree merge <worktree> --route auto --cleanup
+  Open fleet dashboard  wb dashboard
+  Land and clean up     wb worktree land <worktree>
 
 Not sure which command matches an intent? Search the structured catalog:
 
@@ -103,7 +104,6 @@ func newRootCmd() *cobra.Command {
 			// deliberately keyed to the current directory: a fleet-wide sweep
 			// run from somewhere else must not make every lane look busy.
 			worktrees.TouchHeartbeatForCurrentDirectory(persistentCommandID(cmd))
-			maybeWarnSkillsDrift(cmd)
 			return nil
 		},
 	}
@@ -135,9 +135,14 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newDepsCmd(), rootGroupChange),
 		groupedRootCommand(newMigrateCmd(), rootGroupChange),
 		groupedRootCommand(newRunCmd(), rootGroupChange),
+		groupedRootCommand(newWorkerCmd(defaultDaemonDependencies()), rootGroupMaintain),
+		groupedRootCommand(newDashboardCmd(), rootGroupFleet),
+		groupedRootCommand(newDaemonCmd(), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
+		groupedRootCommand(newPluginCmd(), rootGroupLearn),
+		groupedRootCommand(newCodeGrapherCmd(), rootGroupLearn),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
 		groupedRootCommand(newSkillsCmd(), rootGroupLearn),
 		groupedRootCommand(newVersionCmd(), rootGroupLearn),
@@ -154,22 +159,26 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
+		"dashboard":    true,
+		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
+		"worker connect": true,
+		"deps graph":     true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"hooks measure":            true,
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
-		"verify receipt": true,
-		"fleet":          true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
-		"remote status": true, "remote machines": true,
+		"verify receipt": true, "repo transfer cleanup": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "remote publish": true,
+		"remote status": true, "remote machines": true, "remote enroll": true,
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"layout audit": true, "layout clean": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
+		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"pr land":        true,
-		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true,
+		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
@@ -188,13 +197,13 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
-		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "remote publish": true,
+		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
 		"branch list": true, "branch cleanup": true,
 		"archive clean": true,
 	},
-	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true},
+	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
 	// would make scripts need command-specific conditionals for no benefit.
@@ -239,13 +248,13 @@ func persistentFlagNeedsFleet(flag, commandID string) bool {
 	case "filter":
 		switch commandID {
 		case "ci audit", "hooks install", "hooks check", "hooks repair", "coverage", "verify", "check", "status",
-			"fleet", "fleet overview", "fleet stats", "fleet status":
+			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
 			return true
 		}
 	case "projects-root":
 		switch commandID {
 		case "ci audit", "coverage", "verify", "check", "status",
-			"fleet", "fleet overview", "fleet stats", "fleet status":
+			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
 			return true
 		}
 	}
@@ -256,7 +265,7 @@ func persistentCommandSelectedFleet(cmd *cobra.Command, commandID string, args [
 	switch commandID {
 	case "status":
 		return len(args) == 0
-	case "fleet", "fleet overview", "fleet stats", "fleet status":
+	case "fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
 		return true
 	case "repo status":
 		return false

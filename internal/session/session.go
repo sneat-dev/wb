@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -45,6 +44,13 @@ type Record struct {
 	// readable and writable so existing hooks and PID records continue to
 	// work; new integrations should use NativeHarnessID.
 	AgentID string `json:"agent_id,omitempty"`
+
+	// RegisteredAtPark records that this registration was created by
+	// `wb session park` from what it could observe, rather than declared by an
+	// explicit `wb session register`. It is provenance, not a lesser status: a
+	// reader that sees an inferred runtime or model needs to know the session
+	// never announced them itself.
+	RegisteredAtPark bool `json:"registered_at_park,omitempty"`
 
 	// WBVersion and WBPath describe the binary that took the registration.
 	// Several WB builds can coexist — a release on PATH and a local build
@@ -161,6 +167,12 @@ func Register(dir string, record Record) (Record, error) {
 			}
 			if record.StartedAt.IsZero() {
 				record.StartedAt = previous.StartedAt
+			}
+			// How a WB session identity first came into existence is a fact
+			// about that identity, so a later re-registration of the same
+			// session cannot quietly present itself as a declared one.
+			if !record.RegisteredAtPark {
+				record.RegisteredAtPark = previous.RegisteredAtPark
 			}
 		}
 	}
@@ -329,7 +341,7 @@ func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Re
 	if err != nil {
 		return Record{}, err
 	}
-	err = directory.Sync()
+	err = syncDirectory(directory)
 	_ = directory.Close()
 	if err != nil {
 		return Record{}, err
@@ -473,11 +485,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 }
 
 func state(pid int) string {
-	if pid <= 0 {
-		return StateGone
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil || errors.Is(err, syscall.EPERM) {
+	if processAlive(pid) {
 		return StateLive
 	}
 	return StateGone

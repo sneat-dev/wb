@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 func TestLandlockInstallPinsCallerThroughImmediateExecBoundary(t *testing.T) {

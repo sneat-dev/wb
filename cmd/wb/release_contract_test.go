@@ -53,6 +53,41 @@ func TestReleaseSignsAndNotarizesMacOSArtifacts(t *testing.T) {
 	if !strings.Contains(string(goreleaserContents), "notarize:") {
 		t.Errorf("%s must enable the notarize: block for macOS artifacts", goreleaserPath)
 	}
+	if !strings.Contains(string(goreleaserContents), "homepage: https://sneat.work/bench") {
+		t.Errorf("%s must publish the canonical Workbench homepage", goreleaserPath)
+	}
+	if strings.Contains(string(goreleaserContents), "com.apple.quarantine") {
+		t.Errorf("%s must not bypass Gatekeeper for signed and notarized macOS artifacts", goreleaserPath)
+	}
+}
+
+func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	readme, err := os.ReadFile(filepath.Join(repoRoot, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(readme)
+	for _, command := range []string{
+		selfUpdateHomebrewInstallCommand,
+		"curl -fsSL https://sneat.work/bench/install/get-cli | sh",
+		"go install github.com/sneat-dev/wb/cmd/wb@latest",
+	} {
+		if !strings.Contains(contents, command) {
+			t.Errorf("README.md must document supported install command %q", command)
+		}
+	}
+	if !strings.Contains(contents, "On macOS or Linux, install the published Homebrew cask") {
+		t.Error("README.md must document the Homebrew cask for macOS and Linux")
+	}
+	if !strings.Contains(contents, "Native Windows releases are not currently published") {
+		t.Error("README.md must state the current Windows release limitation")
+	}
+	if !strings.Contains(contents, "wsl --install") ||
+		!strings.Contains(contents, "wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'") ||
+		!strings.Contains(contents, "WB running in WSL") {
+		t.Error("README.md must document WSL as the supported Windows installation path")
+	}
 }
 
 func TestReleaseEligibilityRestrictsPublicationRefs(t *testing.T) {
@@ -104,7 +139,9 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"push":         map[string]any{"branches": []any{"main"}, "tags": []any{"v*"}},
 		"pull_request": nil, "workflow_dispatch": nil,
 	})
-	assert("CI permissions", workflow["permissions"], map[string]any{"contents": "read"})
+	assert("CI permissions", workflow["permissions"], map[string]any{
+		"actions": "read", "contents": "read", "pull-requests": "read",
+	})
 	assert("CI concurrency", workflow["concurrency"], map[string]any{
 		"group":              "go-ci-${{ github.workflow }}-${{ github.ref }}",
 		"cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
@@ -117,7 +154,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@v1.14.14" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
 		t.Fatalf("release uses=%v", got)
 	}
 	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility"})
@@ -140,9 +177,40 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
-	assert("required check name", aggregate["name"], "Build, vet, test")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"static", "lint", "coverage", "race"})
+	assert("required check name", aggregate["name"], "Required checks passed")
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
+	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
+		job, ok := jobs[name].(map[string]any)
+		if !ok {
+			t.Fatalf("validation job %s missing", name)
+		}
+		assert(name+" starts after eligibility and reuse", job["needs"], []any{"release-eligibility", "validation-reuse"})
+		assert(name+" reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
+			"github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'")
+	}
+	windowsScope, ok := jobs["windows-scope"].(map[string]any)
+	if !ok {
+		t.Fatal("native Windows scope job missing")
+	}
+	windowsScopeSteps, ok := windowsScope["steps"].([]any)
+	if !ok || len(windowsScopeSteps) < 2 {
+		t.Fatalf("native Windows scope steps=%v", windowsScope["steps"])
+	}
+	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
+	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@v6")
+	windows, ok := jobs["windows"].(map[string]any)
+	if !ok {
+		t.Fatal("native Windows validation job missing")
+	}
+	assert("Windows validation prerequisites", windows["needs"], []any{"windows-scope", "validation-reuse"})
+	assert("Windows validation reuse condition", strings.Join(strings.Fields(fmt.Sprint(windows["if"])), " "),
+		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
+	assert("Windows validation commands", workflowContractTestCommands(t, windows), []string{
+		"go build ./...",
+		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
+		"go test ./api/githubapp -count=1",
+	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
 	if !ok {
 		t.Fatal("eligibility job missing")
@@ -215,6 +283,84 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		}
 	}
 	assert("only CLI publisher", publishers, []string{"go-ci.yml:release"})
+}
+
+func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "go-ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string
+				Env map[string]string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	steps := workflow.Jobs["test"].Steps
+	if len(steps) != 1 || steps[0].Run == "" {
+		t.Fatal("required check must only summarize the validation results")
+	}
+	step := steps[0]
+	if len(step.Env) != 9 {
+		t.Fatalf("summary receives %d environment values, want the nine eligibility/reuse/validation/Windows values", len(step.Env))
+	}
+	runValues := func(values map[string]string) error {
+		cmd := exec.Command("sh", "-c", step.Run)
+		cmd.Env = os.Environ()
+		for key := range step.Env {
+			value := "success"
+			if override, ok := values[key]; ok {
+				value = override
+			}
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+		return cmd.Run()
+	}
+	run := func(failedKey, result string) error {
+		return runValues(map[string]string{failedKey: result})
+	}
+	if err := run("", ""); err != nil {
+		t.Fatalf("all successful prerequisites rejected: %v", err)
+	}
+	if err := run("WINDOWS_RESULT", "skipped"); err != nil {
+		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
+	}
+	for key := range step.Env {
+		if key == "REUSE_RESULT" {
+			continue
+		}
+		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+			if key == "WINDOWS_RESULT" && result == "skipped" {
+				continue
+			}
+			t.Run(key+"/"+result, func(t *testing.T) {
+				if err := run(key, result); err == nil {
+					t.Fatalf("summary accepted %s=%q", key, result)
+				}
+			})
+		}
+	}
+	t.Run("trusted validation reuse", func(t *testing.T) {
+		values := map[string]string{
+			"ELIGIBILITY_RESULT": "success",
+			"REUSE_RESULT":       "true",
+			"REUSE_JOB_RESULT":   "success",
+			"SOURCE_RESULT":      "skipped",
+			"STATIC_RESULT":      "skipped",
+			"LINT_RESULT":        "skipped",
+			"COVERAGE_RESULT":    "skipped",
+			"RACE_RESULT":        "skipped",
+			"WINDOWS_RESULT":     "skipped",
+		}
+		if err := runValues(values); err != nil {
+			t.Fatalf("trusted reuse was rejected: %v", err)
+		}
+	})
 }
 
 func workflowContractTestCommands(t *testing.T, job map[string]any) []string {
@@ -296,11 +442,25 @@ func TestReleaseEligibilityUsesGitChangeSets(t *testing.T) {
 	if got := run(cli, head); got != "eligible=false" {
 		t.Fatalf("docs-only = %q", got)
 	}
+	write("api/githubapp/provider.go")
+	git("add", ".")
+	git("commit", "-m", "github app api")
+	api := git("rev-parse", "HEAD")
+	if got := run(head, api); got != "eligible=true" {
+		t.Fatalf("github app api = %q", got)
+	}
+	write("docs/after-api.md")
+	git("add", ".")
+	git("commit", "-m", "docs after api")
+	docsAfterAPI := git("rev-parse", "HEAD")
+	if got := run(api, docsAfterAPI); got != "eligible=false" {
+		t.Fatalf("docs-only after api = %q", got)
+	}
 	write(".github/workflows/go-ci.yml")
 	git("add", ".")
 	git("commit", "-m", "workflow")
 	workflow := git("rev-parse", "HEAD")
-	if got := run(head, workflow); got != "eligible=true" {
+	if got := run(docsAfterAPI, workflow); got != "eligible=true" {
 		t.Fatalf("workflow-only = %q", got)
 	}
 	write(".github/scripts/release-eligible.sh")

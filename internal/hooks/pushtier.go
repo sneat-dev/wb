@@ -21,9 +21,9 @@ const (
 
 // pushTier names the three fixed levels a pre-push hook can run. They compose
 // with, and never replace, the always-on Tier 0 admission/guard/diff-check
-// block that every managed pre-push shim runs unconditionally: this package
-// only ever decides whether the language profile's lint (Tier 1) and test
-// (Tier 2) blocks run.
+// block that every managed pre-push shim runs unconditionally. Tier 2 retains
+// publication identity for telemetry and policy while local hooks stay on
+// static validation; tests and coverage belong to landing/CI.
 type pushTier int
 
 const (
@@ -32,14 +32,14 @@ const (
 	// stream branch whose pull request CI is the gate). It never raises the
 	// overall decision; it is excluded when combining ref updates.
 	tierIrrelevant pushTier = -1
-	// TierSkip runs neither lint nor test.
+	// TierSkip runs no language validation.
 	TierSkip pushTier = 0
 	// TierLint runs lint/vet only. This is the fast lane: a feature branch
 	// with no open pull request yet.
 	TierLint pushTier = 1
-	// TierFull runs lint/vet and the full test suite. This is a publication
-	// push: the default branch, a tag, or a branch with an open pull request.
-	TierFull pushTier = 2
+	// TierPublication marks the default branch, a tag, or a branch with an
+	// open pull request. The hook still runs only static validation.
+	TierPublication pushTier = 2
 )
 
 // RefUpdate is one line of the pushed-ref list Git streams on pre-push stdin:
@@ -114,8 +114,8 @@ type Classification struct {
 // RunLint reports whether the Tier 1 lint/vet block should run.
 func (c Classification) RunLint() bool { return c.Tier >= TierLint }
 
-// RunTest reports whether the Tier 2 test block should run.
-func (c Classification) RunTest() bool { return c.Tier >= TierFull }
+// IsPublication reports whether the pushed refs require publication policy.
+func (c Classification) IsPublication() bool { return c.Tier >= TierPublication }
 
 // ExitCode is the fixed process-exit encoding `wb hooks push-tier` uses to
 // hand its decision to the calling shell template: 0, 1, or 2.
@@ -135,7 +135,7 @@ func (c Classification) ExitCode() int { return int(c.Tier) }
 // other branch (PR lookup) rather than guessing.
 func ClassifyPushTier(updates []RefUpdate, defaultBranch string, lookup PRLookup) Classification {
 	if len(updates) == 0 {
-		return Classification{Tier: TierFull, Reason: "no pushed-ref lines were observed; running the full tier as a safe default"}
+		return Classification{Tier: TierPublication, Reason: "no pushed-ref lines were observed; treating the push as a publication"}
 	}
 	best := tierIrrelevant
 	reason := ""
@@ -151,7 +151,7 @@ func ClassifyPushTier(updates []RefUpdate, defaultBranch string, lookup PRLookup
 		if reason == "" {
 			reason = "every pushed ref carries no local verification requirement of its own"
 		}
-		return Classification{Tier: TierSkip, Reason: reason + "; skipping lint and test"}
+		return Classification{Tier: TierSkip, Reason: reason + "; skipping language validation"}
 	}
 	return Classification{Tier: best, Reason: reason}
 }
@@ -174,9 +174,9 @@ func classifyOneRef(update RefUpdate, defaultBranch string, lookup PRLookup) (pu
 		return tierIrrelevant, fmt.Sprintf(
 			"%s is a stream branch: CI on its stream pull request is the gate, so no local verification runs", update.RemoteRef)
 	case isTagRef(update.RemoteRef):
-		return TierFull, fmt.Sprintf("%s is a tag: publication push", update.RemoteRef)
+		return TierPublication, fmt.Sprintf("%s is a tag: publication push", update.RemoteRef)
 	case defaultBranch != "" && update.RemoteRef == "refs/heads/"+defaultBranch:
-		return TierFull, fmt.Sprintf("%s is the default branch: publication push", update.RemoteRef)
+		return TierPublication, fmt.Sprintf("%s is the default branch: publication push", update.RemoteRef)
 	}
 
 	branch, isBranch := branchFromRef(update.RemoteRef)
@@ -184,7 +184,7 @@ func classifyOneRef(update RefUpdate, defaultBranch string, lookup PRLookup) (pu
 		// An unrecognized ref namespace (neither refs/heads, refs/tags, nor a
 		// checkpoint ref) is unfamiliar territory; the safe default is the
 		// full tier rather than guessing it is exempt.
-		return TierFull, fmt.Sprintf("%s is an unrecognized ref namespace; running the full tier as a safe default", update.RemoteRef)
+		return TierPublication, fmt.Sprintf("%s is an unrecognized ref namespace; treating it as a publication", update.RemoteRef)
 	}
 	if lookup == nil {
 		return TierLint, fmt.Sprintf("%s: no pull-request signal available; running the fast lane (CI is the real gate)", branch)
@@ -194,7 +194,7 @@ func classifyOneRef(update RefUpdate, defaultBranch string, lookup PRLookup) (pu
 	case !known:
 		return TierLint, fmt.Sprintf("%s: open-PR status unknown; running the fast lane (CI is the real gate)", branch)
 	case open:
-		return TierFull, fmt.Sprintf("%s has an open pull request: publication push", branch)
+		return TierPublication, fmt.Sprintf("%s has an open pull request: publication push", branch)
 	default:
 		return TierLint, fmt.Sprintf("%s has no open pull request: fast lane", branch)
 	}

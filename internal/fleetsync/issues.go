@@ -178,7 +178,8 @@ func splitAttention(results []Result) (defects, informational []Result) {
 	for _, result := range results {
 		switch {
 		case result.Status == Diverged, result.Status == NoUpstream,
-			result.Status == Unpushed, result.Status == ArchivedUnlandable:
+			result.Status == Unpushed, result.Status == ArchivedUnlandable,
+			result.Status == RepositoryTransferRequired:
 			defects = append(defects, result)
 		case result.ArchivedNotPruned && isBenignStatus(result.Status):
 			informational = append(informational, result)
@@ -251,6 +252,9 @@ func writeAttentionEntry(out *strings.Builder, result Result) {
 	case ArchivedUnlandable:
 		fmt.Fprintf(out, "- **Impact:** archived on GitHub, so its %s can never be pushed\n",
 			result.Detail.Summary())
+	case RepositoryTransferRequired:
+		fmt.Fprintf(out, "- **Transfer:** `%s` → `%s`\n", result.Repo.TransferFrom, result.Repo.Slug())
+		out.WriteString("- **Impact:** the canonical clone remains at its old owner/name path\n")
 	}
 	if result.Archived {
 		// The default (non --prune-archived) sync path can leave an archived
@@ -344,6 +348,8 @@ func inspectCommands(result Result) []string {
 			at + " log --oneline --branches --not --remotes",
 			at + " status -sb",
 		}
+	case RepositoryTransferRequired:
+		return []string{at + " remote get-url --all origin", at + " worktree list --porcelain", at + " status -sb"}
 	default:
 		return []string{at + " status -sb"}
 	}
@@ -409,6 +415,8 @@ func resolveOptions(result Result) []string {
 			"Or discard them if they were superseded — confirm with the log above first",
 			worktree,
 		}
+	case RepositoryTransferRequired:
+		return []string{"Re-run `wb sync` after resolving the reported refusal; WB will revalidate and apply the managed repository relocation"}
 	default:
 		return []string{worktree}
 	}

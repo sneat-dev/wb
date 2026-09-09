@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
@@ -216,6 +218,169 @@ func TestGetHonoursRetryAfterHTTPDateWithInjectedClock(t *testing.T) {
 	}
 	if len(sleeps) != 1 || sleeps[0] != 4*time.Second {
 		t.Fatalf("sleeps=%v, want one injected-clock Retry-After wait of 4s", sleeps)
+	}
+}
+
+func TestGetRetriesTransientGitHubServiceFailuresWithProgress(t *testing.T) {
+	statuses := []int{502, 503, 504, 200}
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			status := statuses[0]
+			statuses = statuses[1:]
+			if status == 200 {
+				return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+			}
+			return commandResult{
+				Stdout:   []byte(fmt.Sprintf("HTTP/2 %d Service Unavailable\n\n{\"message\":\"temporary\"}", status)),
+				Stderr:   []byte(fmt.Sprintf("gh: HTTP %d", status)),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), GetRequest{
+		Repository: "acme/app",
+		Target:     "main",
+		Head:       strings.Repeat("c", 40),
+		Endpoint:   "repos/acme/app/compare/base...head",
+		Progress:   func(event progress.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Body) != `{"ok":true}` || len(statuses) != 0 {
+		t.Fatalf("response=%s remaining statuses=%v", response.Body, statuses)
+	}
+	wantSleeps := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+	if !slices.Equal(sleeps, wantSleeps) {
+		t.Fatalf("sleeps=%v, want %v", sleeps, wantSleeps)
+	}
+	if len(events) != 3 {
+		t.Fatalf("progress events=%d, want 3: %+v", len(events), events)
+	}
+	for index, event := range events {
+		wantStatus := 502 + index
+		if event.Operation != "github_api" || event.Phase != "retry" || event.Repository != "acme/app" || event.State != progress.Waiting {
+			t.Fatalf("event %d metadata=%+v", index, event)
+		}
+		for _, fragment := range []string{fmt.Sprintf("attempt %d/4", index+1), fmt.Sprintf("HTTP %d", wantStatus), wantSleeps[index].String()} {
+			if !strings.Contains(event.Detail, fragment) {
+				t.Fatalf("event %d detail=%q, missing %q", index, event.Detail, fragment)
+			}
+		}
+	}
+}
+
+func TestGetRetriesTemporaryNetworkFailure(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(int64) int64 { return 0 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				return commandResult{Stderr: []byte("error connecting to api.github.com"), ExitCode: 1, Err: errors.New("exit status 1")}
+			}
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), GetRequest{Endpoint: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(response.Body) != `{"ok":true}` || len(sleeps) != 1 {
+		t.Fatalf("calls=%d sleeps=%v response=%s", calls, sleeps, response.Body)
+	}
+}
+
+func TestGetDoesNotRetryAuthenticationOrOrdinaryForbiddenFailures(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprintf("HTTP_%d", status), func(t *testing.T) {
+			calls := 0
+			observer := &Observer{
+				StateDir: t.TempDir(),
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					t.Fatal("non-retryable failure slept")
+					return nil
+				},
+				Run: func(_ context.Context, _ string, _ ...string) commandResult {
+					calls++
+					return commandResult{
+						Stdout: []byte(fmt.Sprintf("HTTP/2 %d Forbidden\n\n{\"message\":\"authentication required\"}", status)),
+						Stderr: []byte("gh: authentication required"), ExitCode: 1, Err: errors.New("exit status 1"),
+					}
+				},
+			}
+			_, err := observer.Get(context.Background(), GetRequest{Endpoint: "user"})
+			if err == nil || calls != 1 {
+				t.Fatalf("err=%v calls=%d, want one terminal attempt", err, calls)
+			}
+		})
+	}
+}
+
+func TestReadRetriesTransientFailureAndReportsProgress(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				return commandResult{Stderr: []byte("gh: HTTP 502"), ExitCode: 1, Err: errors.New("exit status 1")}
+			}
+			return commandResult{Stdout: []byte(`{"number":42}`)}
+		},
+	}
+	ctx := WithProgress(context.Background(), func(event progress.Event) { events = append(events, event) })
+
+	output, err := observer.Read(ctx, "", "pr", "view", "42", "--repo", "acme/app", "--json", "number")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(output) != `{"number":42}` || !slices.Equal(sleeps, []time.Duration{250 * time.Millisecond}) {
+		t.Fatalf("calls=%d sleeps=%v output=%s", calls, sleeps, output)
+	}
+	if len(events) != 1 || events[0].Operation != "github_read" || events[0].Repository != "acme/app" || !strings.Contains(events[0].Detail, "HTTP 502") {
+		t.Fatalf("progress=%+v", events)
+	}
+}
+
+func TestReadDoesNotRetryOrdinaryForbiddenFailure(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("ordinary forbidden failure slept")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stderr: []byte("gh: HTTP 403: resource not accessible"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+	_, err := observer.Read(context.Background(), "", "repo", "view", "acme/app")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one terminal attempt", err, calls)
 	}
 }
 
@@ -516,6 +681,353 @@ func TestGetRefetchesWhenCachedBodyDigestIsMissing(t *testing.T) {
 	}
 	if string(response.Body) != `{"fresh":true}` || response.Cached {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestReadRecoversFromSignalKilledThenSucceeds(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				// This is what exec.CommandContext reports when its context's
+				// bounded timeout expires and the gh subprocess is killed: not
+				// a network error, and no HTTP status was ever parsed.
+				return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+			}
+			return commandResult{Stdout: []byte(`{"number":389}`)}
+		},
+	}
+	telemetry := &RetryTelemetry{}
+	ctx := WithRetryTelemetry(WithProgress(context.Background(), func(event progress.Event) { events = append(events, event) }), telemetry)
+
+	output, err := observer.Read(ctx, "", "api", "repos/sneat-co/backstage/pulls/389")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(output) != `{"number":389}` {
+		t.Fatalf("calls=%d output=%s", calls, output)
+	}
+	if len(sleeps) != 1 {
+		t.Fatalf("sleeps=%v, want exactly one retry wait", sleeps)
+	}
+	if telemetry.Count != 1 || !strings.Contains(strings.ToLower(telemetry.LastReason), "signal: killed") {
+		t.Fatalf("telemetry=%+v, want one recorded retry citing the signal", telemetry)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Detail, "signal: killed") {
+		t.Fatalf("progress=%+v, want the killed-by-signal cause reported", events)
+	}
+}
+
+func TestGetRecoversFromServiceUnavailableWithTelemetry(t *testing.T) {
+	statuses := []int{503, 200}
+	observer := &Observer{
+		StateDir:   t.TempDir(),
+		RandomIntn: func(int64) int64 { return 0 },
+		Sleep:      func(context.Context, time.Duration) error { return nil },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			status := statuses[0]
+			statuses = statuses[1:]
+			if status == 200 {
+				return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+			}
+			return commandResult{
+				Stdout: []byte(fmt.Sprintf("HTTP/2 %d Service Unavailable\n\n{\"message\":\"temporary\"}", status)),
+				Stderr: []byte(fmt.Sprintf("gh: HTTP %d", status)), ExitCode: 1, Err: errors.New("exit status 1"),
+			}
+		},
+	}
+	telemetry := &RetryTelemetry{}
+	ctx := WithRetryTelemetry(context.Background(), telemetry)
+
+	response, err := observer.Get(ctx, GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("k", 40),
+		Endpoint: "repos/acme/app/compare/base...head",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Body) != `{"ok":true}` {
+		t.Fatalf("response=%s", response.Body)
+	}
+	if telemetry.Count != 1 || telemetry.LastReason != "HTTP 503" {
+		t.Fatalf("telemetry=%+v, want one recorded HTTP 503 retry", telemetry)
+	}
+}
+
+func TestReadDoesNotRetryNotFound(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("404 slept instead of returning the terminal failure")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stderr: []byte("gh: HTTP 404: Not Found"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+	_, err := observer.Read(context.Background(), "", "api", "repos/acme/app/pulls/999")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one terminal attempt for a 404", err, calls)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a 404 must never be classified as transient-exhausted", err)
+	}
+}
+
+func TestReadExhaustedRetriesNameLastCauseAndAreTransient(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	observer := &Observer{
+		MaxAttempts: 3,
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "api", "repos/sneat-co/backstage/pulls/389")
+	if err == nil {
+		t.Fatal("want an error after every attempt fails")
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d, want exactly MaxAttempts=3 attempts", calls)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("sleeps=%v, want a wait between each of the 3 attempts", sleeps)
+	}
+	if !errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, want it to wrap ErrTransientRetriesExhausted", err)
+	}
+	if !strings.Contains(err.Error(), "signal: killed") || !strings.Contains(err.Error(), "3 attempts") {
+		t.Fatalf("err=%v, want it to name the last cause and attempt count", err)
+	}
+}
+
+func TestApiGetPerAttemptTimeoutFloorIsAtLeastThirtySeconds(t *testing.T) {
+	var deadlines []time.Duration
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			if deadline, ok := ctx.Deadline(); ok {
+				deadlines = append(deadlines, time.Until(deadline))
+			} else {
+				deadlines = append(deadlines, 0)
+			}
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+		},
+	}
+
+	_, err := observer.Get(context.Background(), GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("m", 40),
+		Endpoint: "repos/acme/app/pulls/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 1 || deadlines[0] < 29*time.Second {
+		t.Fatalf("attempt deadline=%v, want at least the 30s floor for gh api", deadlines)
+	}
+}
+
+func TestReadPerAttemptTimeoutIsFreshNotSharedAcrossAttempts(t *testing.T) {
+	var deadlines []time.Duration
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error { return nil },
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if deadline, ok := ctx.Deadline(); ok {
+				deadlines = append(deadlines, time.Until(deadline))
+			}
+			if calls == 1 {
+				return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+			}
+			return commandResult{Stdout: []byte(`{"ok":true}`)}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "pr", "view", "42", "--repo", "acme/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 2 {
+		t.Fatalf("deadlines=%v, want one recorded per attempt", deadlines)
+	}
+	for index, remaining := range deadlines {
+		if remaining < 29*time.Second {
+			t.Fatalf("attempt %d deadline=%v, want each attempt to get its own >=30s floor for gh pr view, not a shared budget drained by the previous kill", index, remaining)
+		}
+	}
+}
+
+// TestReadClampsAttemptTimeoutToRemainingBudget is Finding 1's regression
+// test: MaxRetryElapsed must bound real wall-clock time. Before the fix,
+// elapsedExceeded was computed only AFTER an attempt completed, so an attempt
+// that stalled to its own per-attempt floor (itself under the cap) still let
+// a second full-floor attempt start afterward, blowing well past the cap. A
+// 150ms floor with a 200ms cap demonstrates the gap clearly: unfixed, two
+// uncapped 150ms attempts total ~300ms; fixed, the second attempt's timeout
+// is clamped to the ~50ms of budget actually left, so the loop stops at
+// roughly the 200ms cap.
+func TestReadClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
+	var mu sync.Mutex
+	var attempts int
+	var timeouts []time.Duration
+	observer := &Observer{
+		MaxAttempts:          10,
+		MaxRetryElapsed:      200 * time.Millisecond,
+		MinAPIAttemptTimeout: 150 * time.Millisecond,
+		BaseBackoff:          time.Millisecond,
+		MaxBackoff:           time.Millisecond,
+		RandomIntn:           func(int64) int64 { return 0 },
+		Run: func(ctx context.Context, _ string, _ ...string) commandResult {
+			mu.Lock()
+			attempts++
+			mu.Unlock()
+			if deadline, ok := ctx.Deadline(); ok {
+				mu.Lock()
+				timeouts = append(timeouts, time.Until(deadline))
+				mu.Unlock()
+			}
+			<-ctx.Done()
+			return commandResult{ExitCode: -1, Err: errors.New("signal: killed")}
+		},
+	}
+
+	start := time.Now()
+	_, err := observer.Read(context.Background(), "", "api", "repos/acme/app/pulls/1")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("want an error once every attempt stalls to its deadline")
+	}
+	if !errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, want ErrTransientRetriesExhausted", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("elapsed=%v, want MaxRetryElapsed (200ms) to bound real wall-clock time, not ~300ms from two uncapped 150ms attempts", elapsed)
+	}
+	if attempts < 1 {
+		t.Fatalf("attempts=%d, want at least one attempt to run", attempts)
+	}
+	if len(timeouts) == 0 || timeouts[0] < 130*time.Millisecond {
+		t.Fatalf("first attempt timeout=%v, want a sane ~150ms floor for the first attempt", timeouts)
+	}
+}
+
+// TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller is Finding
+// 2's regression test: a caller cancellation arriving alongside a retryable
+// HTTP status (503) must surface as the caller's own context error, never as
+// ErrTransientRetriesExhausted decorated with resume guidance the caller
+// never asked for.
+func TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("a cancelled caller context must not be retried")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			cancel()
+			return commandResult{Stderr: []byte("gh: HTTP 503"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+
+	_, err := observer.Read(ctx, "", "api", "repos/acme/app/pulls/1")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a cancelled caller context must never be reported as transient-exhausted", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want exactly one attempt (no retry after caller cancellation)", calls)
+	}
+}
+
+// TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller is Finding
+// 2's regression test for the apiGet path (used by Get): a caller
+// cancellation arriving alongside a retryable HTTP status must surface as the
+// caller's context error, not ErrTransientRetriesExhausted.
+func TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("a cancelled caller context must not be retried")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			cancel()
+			return commandResult{
+				Stdout: []byte("HTTP/2 503 Service Unavailable\n\n{\"message\":\"temporary\"}"),
+				Stderr: []byte("gh: HTTP 503"), ExitCode: 1, Err: errors.New("exit status 1"),
+			}
+		},
+	}
+
+	_, err := observer.Get(ctx, GetRequest{
+		Repository: "acme/app", Target: "main", Head: strings.Repeat("z", 40),
+		Endpoint: "repos/acme/app/compare/base...head",
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, a cancelled caller context must never be reported as transient-exhausted", err)
+	}
+}
+
+// TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled is Finding
+// 3's regression test: "signal: killed" (and "deadline exceeded") must be
+// matched against the failed command's Err.Error() only, never against
+// combined stdout+stderr, so a PR body or log line quoting that literal text
+// cannot make an authoritative failure look like a recoverable saturated-host
+// kill.
+func TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("an authoritative failure was retried because output text mentioned signal: killed")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{
+				Stdout:   []byte(`{"body":"Deploy failed with signal: killed on the runner"}`),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
+		},
+	}
+
+	_, err := observer.Read(context.Background(), "", "pr", "view", "42", "--repo", "acme/app", "--json", "body")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want exactly one terminal attempt, not a retry driven by output text", err, calls)
+	}
+	if errors.Is(err, ErrTransientRetriesExhausted) {
+		t.Fatalf("err=%v, output text must never be classified as transient", err)
 	}
 }
 

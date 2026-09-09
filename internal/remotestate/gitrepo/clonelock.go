@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // cloneLockTimeout bounds how long one WB process waits for another to

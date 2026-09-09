@@ -315,6 +315,80 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 	}
 }
 
+func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := []string{
+		"go test ./internal/worktrees",
+		"go vet ./cmd/wb",
+		"go build ./...",
+		"golangci-lint run ./...",
+		"pnpm test",
+		"pnpm run build:prod",
+		"npm run lint",
+		"yarn e2e",
+		"npx nx affected --target=test",
+		"cargo test --workspace",
+		"cd internal && go test ./runlog",
+	}
+	for _, command := range denied {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed direct heavy validation", command)
+			}
+			for _, expected := range []string{"wb run --", "durable ID", "gofmt", "Prettier"} {
+				if !strings.Contains(decision.Reason, expected) {
+					t.Fatalf("refusal for %q is missing %q:\n%s", command, expected, decision.Reason)
+				}
+			}
+		})
+	}
+}
+
+func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	allowed := []string{
+		"gofmt -w internal/runlog/runlog.go",
+		"prettier --write web/src/app.ts",
+		"wb run -- go test ./internal/runlog",
+		"wb run -- pnpm test",
+		"go env GOMODCACHE",
+		"pnpm install",
+	}
+	for _, command := range allowed {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused an allowed command:\n%s", command, decision.Reason)
+			}
+		})
+	}
+
+	// A linked fixture without WB's manifest is outside this policy. The hook
+	// must not claim authority over worktrees owned by another tool.
+	if err := os.Remove(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if decision := Inspect(bashCall("go test ./...", repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+		t.Fatalf("an unmanaged linked worktree was refused:\n%s", decision.Reason)
+	}
+}
+
 // TestFileToolsAreJudgedByTheirPath covers Write, Edit, and the read tools
 // that carry the same key and must not be touched.
 func TestFileToolsAreJudgedByTheirPath(t *testing.T) {

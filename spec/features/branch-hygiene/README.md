@@ -390,6 +390,9 @@ flushed per event rather than buffered until the end. Each event MUST name the
 repository being inspected and carry a running `[n/N]` count. A final summary
 line MUST report totals per disposition and elapsed time. stdout MUST remain
 reserved for the report, so `--format json` stdout stays machine-parseable.
+If inspection of one repository lasts ten seconds or longer, WB MUST emit an
+alive heartbeat for that same `[n/N]` repository at least every ten seconds
+until inspection advances or terminates.
 
 Progress MUST be plain line-buffered text unless stdout is a terminal and
 `--non-interactive` is unset, in which case a live terminal UI is permitted.
@@ -542,7 +545,10 @@ Given a fixture fleet of several repositories, when `wb branch list --format
 json` runs with stdout and stderr captured separately, then stderr receives at
 least one progress event naming a repository with an `[n/N]` count before the
 final report is written, plus a closing summary with per-disposition totals and
-elapsed time; and stdout parses as JSON with no progress text mixed into it.
+elapsed time. Given one repository inspection blocks across several progress
+intervals, stderr receives repeated alive heartbeats for its same `[n/N]`
+identity with no gap above ten seconds; and stdout parses as JSON with no
+progress text mixed into it.
 
 ## Open Questions
 

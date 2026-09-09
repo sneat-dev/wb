@@ -19,6 +19,16 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
+	previousRuntimeProcessCheck := sessionRegisterRuntimeProcess
+	previousCurrentPID := sessionRegisterCurrentPID
+	sessionRegisterCurrentPID = func() int { return -1 }
+	sessionRegisterRuntimeProcess = func(pid int, runtime string) bool {
+		return pid == os.Getpid() && runtime == "codex"
+	}
+	t.Cleanup(func() {
+		sessionRegisterRuntimeProcess = previousRuntimeProcessCheck
+		sessionRegisterCurrentPID = previousCurrentPID
+	})
 	command := newSessionRegisterCmd()
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -44,6 +54,14 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 		record.NativeHarnessID != "native-123" || record.TmuxName != "wb-session-wbs-successor" ||
 		record.PredecessorWBSessionID != "wbs-source" || record.HandoffID != "handoff-123" {
 		t.Fatalf("record = %+v", record)
+	}
+}
+
+func TestSessionRegisterRejectsOwnPID(t *testing.T) {
+	command := newSessionRegisterCmd()
+	command.SetArgs([]string{"--pid", strconv.Itoa(os.Getpid()), "--runtime", "codex"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "WB itself") {
+		t.Fatalf("register own PID error = %v, want self-registration rejection", err)
 	}
 }
 

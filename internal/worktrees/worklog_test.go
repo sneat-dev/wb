@@ -688,6 +688,70 @@ func TestCreateResumeRejectsSilentWorkLogReclaim(t *testing.T) {
 	}
 }
 
+func TestCreateResumeAcceptsRuntimeWhenHandoffClaimLeftItUnbound(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "unbound-runtime",
+		WorkLog: WorkLogOptions{
+			RunID: "handoff-run", AgentID: "successor", AgentRuntime: "", Model: "unknown",
+		},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create unbound runtime claim = %#v err=%v", created, err)
+	}
+
+	resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "unbound-runtime",
+		Resume:       true,
+		WorkLog: WorkLogOptions{
+			RunID: "handoff-run", AgentID: "successor", AgentRuntime: "codex", Model: "unknown",
+		},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].Action != "resumed" {
+		t.Fatalf("resume unbound runtime claim = %#v err=%v", resumed, err)
+	}
+
+	claimBytes, err := os.ReadFile(created[0].WorkLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.AgentRuntime != "" {
+		t.Fatalf("immutable claim runtime = %q, want unbound", claim.AgentRuntime)
+	}
+}
+
+func TestCreateResumeRejectsDifferentBoundRuntime(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "bound-runtime",
+		WorkLog: WorkLogOptions{
+			RunID: "bound-run", AgentID: "agent-one", AgentRuntime: "claude-code", Model: "unknown",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "bound-runtime",
+		Resume:       true,
+		WorkLog: WorkLogOptions{
+			RunID: "bound-run", AgentID: "agent-one", AgentRuntime: "codex", Model: "unknown",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "different agent runtime") {
+		t.Fatalf("bound runtime mismatch error = %v", err)
+	}
+}
+
 func TestCreateResumePreservesIndependentActiveClaimsAcrossRepositories(t *testing.T) {
 	fixture := newGitFixture(t)
 	storageCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
@@ -790,6 +854,46 @@ func TestCreateRollsBackPublishedGitAfterWorkLogStageFailure(t *testing.T) {
 				t.Fatalf("failed-create claim was not terminalized append-only: %v", err)
 			}
 		})
+	}
+}
+
+func TestCreateWorkLogRollbackBacklogRetainsConfiguredSharedPlacement(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "alternate-shared-worktrees")
+	resolvedSharedRoot, resolveErr := resolveSharedWorktreesRoot(sharedRoot)
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "shared-worklog-rollback",
+		WorkLog:      WorkLogOptions{RunID: "shared-worklog-rollback-run", Model: "unknown"},
+		afterWorkLogClaim: func(CreateResult) error {
+			return errors.New("injected shared placement Work Log failure")
+		},
+	})
+	var publicationErr *CreatePublicationError
+	if !errors.As(err, &publicationErr) || len(publicationErr.Outcomes) != 1 {
+		t.Fatalf("typed publication error = %#v err=%v", publicationErr, err)
+	}
+	outcome := publicationErr.Outcomes[0]
+	if !outcome.BacklogPersisted || !outcome.RollbackCompleted {
+		t.Fatalf("shared placement recovery outcome = %#v", outcome)
+	}
+	contents, readErr := os.ReadFile(outcome.CleanupBacklogPath)
+	var backlog lifecycleBacklogRecord
+	if readErr == nil {
+		readErr = json.Unmarshal(contents, &backlog)
+	}
+	if readErr != nil || filepath.Clean(backlog.WorktreesRoot) != filepath.Clean(resolvedSharedRoot) || backlog.Local {
+		t.Fatalf("shared placement backlog = %#v err=%v", backlog, readErr)
+	}
+	if _, statErr := os.Stat(outcome.Result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("shared placement rollback left checkout: %v", statErr)
 	}
 }
 

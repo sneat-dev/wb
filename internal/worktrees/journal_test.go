@@ -46,6 +46,26 @@ func newCreatedManifest(effort string) Manifest {
 	}
 }
 
+func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "local", path: "/projects/acme/app/.worktrees/fair-split", want: "fair-split"},
+		{name: "shared", path: "/shared/worktrees/fair-split/acme/app", want: "fair-split"},
+		{name: "shared", path: "/shared/fair-split/acme/app", want: "fair-split"},
+		{name: "invalid local effort", path: "/projects/acme/app/.worktrees/not a task", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := effortFromWorktreePath(test.path); got != test.want {
+				t.Fatalf("effortFromWorktreePath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
+	}
+}
+
 // The whole point of holding the journal in the worktree is that an orphan can
 // be triaged with nothing else intact. This deletes every external record
 // before reading, because that is the state an abandoned checkout is found in.

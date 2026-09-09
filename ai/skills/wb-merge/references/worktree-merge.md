@@ -11,12 +11,18 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
+wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
 wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>
+wb worktree merge prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason> --progress
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -39,8 +45,19 @@ packages in `.wb/quality.yaml`; merge validation consumes that tracked policy.
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA
 pairs, and reruns validation. A conflict aborts the rebase without touching any
-source. Once a candidate is published in a PR, WB refuses target-driven history
-rewrites instead of force-pushing it.
+source. Once a candidate is published in a PR, WB never rewrites that history
+by rebasing or force-pushing it; instead `prepare` (with the same sources),
+`resume`, and `land` refresh it in place: they merge the freshly fetched
+target directly into the published head (any candidate advance already
+recorded via a separate published-candidate descendant is merged onto in the
+same way), record a `target_refreshes` entry with the before/after target and
+candidate SHAs, re-validate the exact resulting candidate SHA, and
+fast-forward push the same PR branch -- never a force-push. A merge conflict
+while refreshing leaves the receipt in `prepare`/`conflict`, names the
+conflicting paths, and never pushes; a validation failure after a clean merge
+leaves the receipt `validation_failed` in the `land` phase, also without
+pushing. Resuming a published receipt whose target has not moved is a no-op:
+no merge, revalidation, or push runs.
 
 `--route auto` direct-pushes only when authoritative GitHub branch and ruleset
 evidence permits it; otherwise it uses a pull request or refuses unsupported
@@ -54,6 +71,51 @@ run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
 
+Resuming a `prepare/validation_failed` (or interrupted `prepare/preparing`)
+receipt re-runs candidate validation for the exact candidate SHA before doing
+anything else, using the receipt's stored validation timeouts unless
+`--prepare-timeout`/`--check-timeout`/`--shard-attempt-timeout` explicitly
+override them; it never treats a stale failure as an automatic pass. Resuming
+a receipt that is already in the land phase — an open pull request or a
+direct-push target already recorded — behaves the same way whenever its
+candidate has moved past the SHA that was last proven or published: a
+`validation_failed` status, a validation report recorded against a different
+revision, or a validation identity that no longer names the exact candidate
+SHA all trigger the same exact-candidate re-validation before any push,
+skipped only when `--stop-before-merge` already re-validated the preserved
+candidate earlier in the same call, or when the candidate has already been
+pushed at its exact current SHA (that push's own remote-CI proof stands).
+Every publish and landing transition — pushing the candidate branch, a direct
+push of the target, opening or adopting a pull request, and merging it — then
+passes through one guard that refuses unless the receipt has left
+`validation_failed` for that exact candidate and the recorded validation
+identity still names that exact SHA, naming the candidate and its validation
+status and pointing back at `wb worktree merge resume <receipt>` to
+re-validate. The only carve-out is an already-published candidate whose
+recorded `PublishedCandidateSHA` still names the exact current candidate SHA
+and whose status has not itself reverted to `validation_failed`: that push's
+pre-push gate and the remote CI checks that followed are the proof, not a
+repeated local validation. It does NOT cover an advance — once the candidate
+SHA moves past `PublishedCandidateSHA`, the new head is unproven and must
+pass through the land-phase re-validation above before this guard will ever
+let it publish.
+
+After a verified batch landing, WB uses the exact source commits preserved in
+the candidate merge graph to find their pull requests. It closes an open source
+pull request only when its current head still equals that exact commit and its
+base repository and branch still equal the landed target. The landing receipt
+records the observation, and an idempotently marked comment links the source PR
+to the batch PR and landing commit. An advanced head or changed base stays open.
+
+If a legacy landed cleanup removed every receipted worktree and local and
+remote branch but failed to retain terminal Work Log evidence, first run
+`acknowledge-missing-cleanup` without `--apply`. It re-fetches the exact remote
+target, proves the receipted landing is still contained, and checks every exact
+asset is absent. Applying with an actor and reason writes a separate immutable
+acknowledgement. A subsequent `merge resume --cleanup` revalidates the receipt,
+target ancestry, acknowledgement, and absent assets before completing. It never
+creates replacement Work Logs or weakens cleanup for live or partial assets.
+
 When post-target CI fails but a forward fix is preferable to a revert, commit
 the fix on the same preserved source and rerun `merge prepare`. WB accepts only
 an additive source advance, proves the fetched target still contains the failed
@@ -63,12 +125,30 @@ candidate without rewriting published history, records the failed attempt in
 `forward_repairs`, and opens a fresh PR.
 Do not edit or terminalize the failed receipt by hand.
 
+If a `prepare/conflict` receipt lost only WB's publication fields after its
+candidate was externally pushed and an open pull request was created, use
+`adopt-published-candidate` before retrying prepare. First run it without
+`--apply`; apply only after it proves the exact receipt repository, target,
+candidate branch and SHA, active claims, clean worktrees, and remote branch.
+It writes an append-only acknowledgement, never force-pushes or rewrites the
+receipt. A normal prepare can then consume that proof when one source advances
+cleanly by descent, preserving the published predecessor and pull request.
+
 For the one audited preparing-receipt collision recovery, use
 `acknowledge-receipt-collision` only with all six explicit expected digests and
 revisions. It writes only the append-only acknowledgement beside the receipt;
 the historical `validation_failed` state is an operator assertion because the
 pre-mutation receipt bytes are unavailable. Normal prepare stays blocked after
 that acknowledgement and the audited rebatch path rechecks it before use.
+
+An explicit `prepare --rebatch-receipt` may replace an exact open, published,
+unlanded candidate after the target advances by proven fast-forward ancestry.
+The source set must still add a distinct branch and retain every original
+source by ancestry. Candidate/ref drift, a closed or merged PR, target rewind
+or divergence, and landed candidates remain refusals. The replacement starts
+from the freshly fetched target and its append-only acknowledgement records
+both target SHAs; the original receipt and candidate stay unchanged. An
+unpublished prepared receipt still requires an unchanged target.
 
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but
@@ -110,15 +190,76 @@ is dry-run by default and requires an audited actor and reason to apply. It does
 not change the failed receipt or any existing Work Log and does not itself
 supersede the receipt.
 
-When an old prepare `validation_failed` candidate did not land and diverges
-from its replacement, use `supersede-validation-failed`. It admits only the
-prepare failure state and only when the old immutable candidate claim base,
+When an old unpublished prepare `validation_failed` or `conflict` candidate did
+not land and diverges from its replacement, use `supersede-validation-failed`.
+It admits only those prepare failure states and only when the old immutable candidate claim base,
 receipt target, freshly fetched current target, and every exact clean receipted
 source are ancestors of one exact clean replacement worktree with an active
 claim. The old failed candidate itself is deliberately not required to be an
 ancestor. WB writes a receipt-hash-bound append-only supersession artifact;
 it never rewrites the failed receipt or either Work Log. Missing ancestry,
 claim identity, clean worktree, or receipt integrity refuses closed.
+If an unpublished conflict candidate has advanced to a clean strict descendant,
+WB records that observed commit in the supersession and requires the replacement
+to contain both the receipted candidate and the observed descendant.
+
+When an unpublished prepare `conflict` receipt is stuck because every one of
+its receipted source worktrees is already gone -- so neither resume nor
+`prepare-conflict-replacement`/`supersede-validation-failed` can recover it,
+since both require an exact clean receipted source worktree to still exist --
+use `acknowledge-absorbed-conflict`. It proves, source by source, that each
+receipted source's exact content is already reachable from the freshly
+fetched current remote target: either the receipted source SHA is a graph
+ancestor of that target, or path by path relative to its merge-base with the
+target: an identical blob there (an unrelated later commit landed the same
+content), or, automatically for a `*.jsonl` append-only ledger path, every
+line the source added relative to the merge-base present verbatim as a line
+in the target's copy (`lines_absorbed`, with per-path added/matched line
+counts recorded in the sidecar). Repeatable `--derived-path <path>` audits an
+operator exclusion for one known generated-index shape -- exactly
+`README.md` nested anywhere under a repo-root `spec/` directory
+(`spec/**/README.md`) -- and only when that exact path also exists on the
+fetched target; every other shape, or a path absent from the target, refuses
+closed. Every excused path is recorded in the sidecar alongside the actor and
+reason, and both the dry-run and applied reports list them. It never reads or
+requires a receipted source worktree, never rewrites the historical receipt
+or any Work Log, and never deletes the preserved, unpublished candidate
+worktree. It writes a separate audited acknowledgement and frees the merger
+lane for a fresh candidate. A source worktree that still exists, a receipt
+that already published a candidate or recorded a landing SHA, an invalid or
+absent `--derived-path`, or any path whose content cannot be proved reachable
+refuses closed.
+
+When a conflict/`validation_failed`/`checks_failed` receipt that once
+published a candidate is stuck because its target advanced past that
+candidate after publication -- WB's own "refusing to rewrite the published
+branch without force-push" refusal repeating on every resume -- and the
+operator has since closed the stale pull request without merging it and
+deleted its remote branch, use `acknowledge-retired-publication`. It requires
+the preserved candidate worktree (for read-only git object resolution) and
+proves, from a fresh `gh pr view` read and a freshly fetched current remote
+target, that the exact published pull request is CLOSED with no merge
+commit (a proved MERGED pull request refuses closed, pointing at
+`acknowledge-stranded-landing` instead), that the candidate branch carries no
+remote ref, and that neither the published candidate SHA nor the preserved
+candidate SHA is reachable from the current target. It never rewrites the
+historical receipt or any Work Log, and never deletes the preserved candidate
+worktree. It writes a separate audited acknowledgement and frees the merger
+lane: a subsequent `wb worktree merge prepare` of the exact same sources
+supersedes the stuck receipt under a fresh successor operation, integration
+branch, and empty pull request, rather than resuming the retired publication.
+
+When a prepare/`validation_failed` receipt never published or landed, but its
+immutable receipt still blocks a different source set from using the same
+repository target lane, use `acknowledge-retired-unpublished-validation-failure`. WB
+requires the candidate branch to be absent from the remote, proves the
+candidate is not reachable from the freshly fetched target, and requires every
+receipted source to remain clean, exact, and actively claimed. The append-only
+acknowledgement retires only the failed merge attempt; it does not delete or
+rewrite the candidate, source worktrees, branches, receipt, or Work Logs.
+A pull request still OPEN or proved MERGED, a candidate branch that still
+carries a remote ref, or a candidate already reachable from the current
+target refuses closed.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use
@@ -139,3 +280,12 @@ claim base, target, and current source is an ancestor; it writes no merge
 receipt and never changes the historical receipt, claim, acknowledgement, or
 collision evidence. Pass its candidate only to `correct-self-supersession`;
 normal `prepare` remains blocked.
+
+When an unlanded conflict receipt still owns the lane that a replacement needs,
+use `prepare-conflict-replacement`. Pin the immutable receipt and claim, the
+fresh target, and every receipted source in receipt order. It admits only an
+unpublished clean conflict candidate; an observed strict descendant is retained
+as a required root. The command creates no receipt or acknowledgement, so pass
+the resulting candidate to `supersede-validation-failed` to append the only
+lane-releasing transition. Use `--progress` for heartbeat updates during long
+Git operations while JSON output remains stable.

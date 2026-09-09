@@ -155,6 +155,7 @@ func markLandingGuard(command *cobra.Command, addressing string) *cobra.Command 
 // rows — is added here FIRST, and the test then fails until it declares the
 // guard.
 var landingSurface = map[string]string{
+	"wb worktree land":          landingGuardByWorktree,
 	"wb worktree merge":         landingGuardByWorktree,
 	"wb worktree merge prepare": landingGuardByWorktree,
 	"wb worktree merge land":    landingGuardByReceipt,
@@ -197,10 +198,19 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 		// this repository directly.
 		return refuseLinkedWorktreesOfRepository(repository)
 	}
-	worktrees := make([]string, 0, len(stream.Members))
+	worktrees := make([]string, 0, len(stream.Members)+len(stream.LinkedConsumers))
 	for _, member := range stream.Members {
 		if member.Repository == repository && member.Worktree != "" {
 			worktrees = append(worktrees, member.Worktree)
+		}
+	}
+	// A repository admitted only as a linked consumer holds no membership row,
+	// but its Links are exactly the live local links this guard exists to
+	// catch — missing them here would let a repository dodge the guard just
+	// by joining as a consumer instead of a member.
+	for _, consumer := range stream.LinkedConsumers {
+		if consumer.Repository == repository && consumer.Worktree != "" {
+			worktrees = append(worktrees, consumer.Worktree)
 		}
 	}
 	return refuseLinkedWorktrees(worktrees)
@@ -218,6 +228,7 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 func refuseLinkedWorktreesOfRepository(repository string) error {
 	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
+		Filter:       repository,
 	})
 	if err != nil {
 		return err

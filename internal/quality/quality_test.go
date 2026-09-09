@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -337,6 +338,64 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 	}
 }
 
+func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *testing.T) {
+	jobs := []goCoverageJob{
+		{label: "example.test/serial shard 2/2"},
+		{label: "unsharded packages"},
+	}
+	results := []goCoverageJobResult{
+		{output: "--- FAIL: TestJourney (0.01s)\n    --- FAIL: TestJourney/remote_resume (0.00s)\nFAIL", err: errors.New("exit status 1")},
+		{output: "package compile error", err: errors.New("exit status 1")},
+	}
+	summary := summarizeCoverageFailures(jobs, results)
+	for _, expected := range []string{
+		"[example.test/serial shard 2/2] TestJourney",
+		"[example.test/serial shard 2/2] TestJourney/remote_resume",
+		"[unsharded packages] command failed without a named Go test",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("failure summary missing %q: %q", expected, summary)
+		}
+	}
+
+	full := summary + coverageRawOutputHeader + strings.Repeat("uninteresting passing output\n", 200) + "terminal raw failure"
+	detail := commandError("go test", full, errors.New("exit status 1"))
+	for _, expected := range []string{
+		"[example.test/serial shard 2/2] TestJourney",
+		"[example.test/serial shard 2/2] TestJourney/remote_resume",
+		"[unsharded packages] command failed without a named Go test",
+		coverageRawOutputHeader,
+		"terminal raw failure",
+	} {
+		if !strings.Contains(detail, expected) {
+			t.Fatalf("bounded detail missing %q: %q", expected, detail)
+		}
+	}
+	if strings.Index(detail, "TestJourney/remote_resume") > strings.Index(detail, coverageRawOutputHeader) {
+		t.Fatalf("failure index followed raw output: %q", detail)
+	}
+}
+
+func TestBoundedCoverageParallelismLeavesOneEffectiveCPUForOtherAgents(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                       string
+		requested, jobs, cpu, want int
+	}{
+		{name: "four core host", requested: 8, jobs: 17, cpu: 4, want: 3},
+		{name: "single core host", requested: 8, jobs: 17, cpu: 1, want: 1},
+		{name: "request below cpu limit", requested: 2, jobs: 17, cpu: 8, want: 2},
+		{name: "jobs below cpu limit", requested: 8, jobs: 2, cpu: 8, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := boundedCoverageParallelism(tc.requested, tc.jobs, tc.cpu); got != tc.want {
+				t.Fatalf("boundedCoverageParallelism(%d, %d, %d) = %d, want %d", tc.requested, tc.jobs, tc.cpu, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
@@ -427,67 +486,192 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	}
 }
 
-func TestRunWithOptionsTimeoutTerminatesForkedProcessTree(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
+func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
 	}
 	dir := t.TempDir()
-	pidsPath := filepath.Join(dir, "pids")
-	triggerPath := filepath.Join(dir, "trigger")
-	tool := filepath.Join(dir, "forking-timeout-tool")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile [ ! -e \""+triggerPath+"\" ]; do sleep 0.01; done\nwhile :; do sleep 1; done\n")
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
 	if err := os.Chmod(tool, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	type result struct {
-		output   string
-		attempts int
-		err      error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		output, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: time.Second}, dir, tool)
-		resultCh <- result{output: output, attempts: attempts, err: err}
-	}()
-	_ = readQualityFile(t, pidsPath)
-	writeQualityFile(t, triggerPath, "go")
-	outcome := <-resultCh
-	if outcome.err == nil || !strings.Contains(outcome.err.Error(), "timed out after 1s") || outcome.attempts != 1 {
-		t.Fatalf("timeout result = err %v, attempts %d, output %q", outcome.err, outcome.attempts, outcome.output)
-	}
-	pids := strings.Fields(string(readQualityFile(t, pidsPath)))
-	if len(pids) != 2 {
-		t.Fatalf("recorded PIDs = %q, want parent and child", pids)
-	}
-	for _, rawPID := range pids {
-		pid, parseErr := strconv.Atoi(rawPID)
-		if parseErr != nil || pid <= 0 {
-			t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
-		}
-		assertQualityProcessGone(t, pid)
+	entry := runVerification(context.Background(), RunOptions{Timeout: time.Second, Retry: 1, CheckTimeout: 10 * time.Millisecond}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || entry.Attempts != 1 || !strings.Contains(entry.Detail, "check timed out after 10ms") {
+		t.Fatalf("check deadline result = %+v", entry)
 	}
 }
 
-func readQualityFile(t *testing.T, path string) []byte {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			if strings.TrimSpace(string(raw)) != "" {
-				return raw
-			}
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
 	}
-	t.Fatalf("timed out waiting for %s", path)
-	return nil
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "slow-check")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
+	if entry.Status != StatusFailed || strings.Contains(entry.Detail, "check timed out") {
+		t.Fatalf("parent deadline did not win: %+v", entry)
+	}
+}
+
+func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
+	}
+	for _, test := range []struct {
+		name, startupDelay string
+	}{
+		{name: "immediate", startupDelay: ""},
+		// This exceeds the former one-second PID polling deadline. It proves
+		// readiness, rather than a race with the attempt deadline, owns start.
+		{name: "delayed-start", startupDelay: "sleep 1.2\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pidsPath := filepath.Join(dir, "pids")
+			tool := filepath.Join(dir, "forking-cancellation-tool")
+			writeQualityFile(t, tool, "#!/bin/sh\n"+test.startupDelay+"sleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
+			if err := os.Chmod(tool, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			type result struct {
+				output   string
+				attempts int
+				err      error
+			}
+			resultCh := make(chan result, 1)
+			done := make(chan struct{})
+			ctx, cancel := context.WithCancel(context.Background())
+			var recordedPIDs []int
+			parentGroupID := 0
+			t.Cleanup(func() {
+				cancel()
+				drained := false
+				select {
+				case <-done:
+					drained = true
+				case <-time.After(time.Second):
+				}
+				// The assertions below normally prove these PIDs are already gone.
+				// If a mutation regresses group cancellation and an assertion aborts
+				// first, kill only the group whose recorded parent was proved to own
+				// it, so this test never leaves its child sleep running for 30s.
+				if parentGroupID != 0 && qualityProcessesAlive(recordedPIDs) {
+					if err := syscall.Kill(-parentGroupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+						t.Errorf("kill recorded process group %d: %v", parentGroupID, err)
+					}
+					if drained {
+						t.Error("recorded process survived cancellation; test cleanup killed its group")
+					}
+				}
+				if !drained {
+					select {
+					case <-done:
+					case <-time.After(time.Second):
+						t.Error("forking process did not drain after test cleanup cancellation")
+					}
+				}
+			})
+			go func() {
+				// The 30-second attempt deadline is only a safety net. The separate
+				// real-deadline test above owns timeout-to-error mapping; this test
+				// owns readiness and whole-process-tree cancellation.
+				output, attempts, err := runWithOptions(ctx, RunOptions{Timeout: 30 * time.Second}, dir, tool)
+				resultCh <- result{output: output, attempts: attempts, err: err}
+				close(done)
+			}()
+
+			// The script owns readiness by writing both PIDs. Its bounded watchdog
+			// detects a startup failure and reports an early command exit instead
+			// of competing with the cancellation behavior being asserted.
+			readinessDeadline := time.NewTimer(10 * time.Second)
+			defer readinessDeadline.Stop()
+			var pids []string
+			for len(pids) == 0 {
+				select {
+				case outcome := <-resultCh:
+					t.Fatalf("forking process exited before readiness: err %v, attempts %d, output %q", outcome.err, outcome.attempts, outcome.output)
+				case <-readinessDeadline.C:
+					t.Fatal("timed out waiting for forked process readiness")
+				default:
+				}
+				raw, err := os.ReadFile(pidsPath)
+				if err == nil && strings.TrimSpace(string(raw)) != "" {
+					pids = strings.Fields(string(raw))
+					break
+				}
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("read %s: %v", pidsPath, err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(pids) != 2 {
+				t.Fatalf("recorded PIDs = %q, want parent and child", pids)
+			}
+			for _, rawPID := range pids {
+				pid, parseErr := strconv.Atoi(rawPID)
+				if parseErr != nil || pid <= 0 {
+					t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
+				}
+				recordedPIDs = append(recordedPIDs, pid)
+				assertQualityProcessAlive(t, pid)
+			}
+			parentGroupID = qualityOwnedProcessGroup(t, recordedPIDs[0])
+			cancel()
+			var outcome result
+			select {
+			case outcome = <-resultCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("forking process did not return within five seconds of cancellation")
+			}
+			if ctx.Err() != context.Canceled || outcome.err == nil || strings.Contains(outcome.err.Error(), "timed out after") || outcome.attempts != 1 {
+				t.Fatalf("cancellation result = context %v, err %v, attempts %d, output %q", ctx.Err(), outcome.err, outcome.attempts, outcome.output)
+			}
+			for _, rawPID := range pids {
+				pid, parseErr := strconv.Atoi(rawPID)
+				if parseErr != nil || pid <= 0 {
+					t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
+				}
+				assertQualityProcessGone(t, pid)
+			}
+		})
+	}
+}
+
+func assertQualityProcessAlive(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("probe ready PID %d: %v", pid, err)
+	}
+}
+
+func qualityOwnedProcessGroup(t *testing.T, pid int) int {
+	t.Helper()
+	output, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatalf("read process group for %d: %v", pid, err)
+	}
+	groupID, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil || groupID != pid {
+		t.Fatalf("process group for recorded parent %d = %q; want its own group", pid, output)
+	}
+	return groupID
+}
+
+func qualityProcessesAlive(pids []int) bool {
+	for _, pid := range pids {
+		if syscall.Kill(pid, 0) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func assertQualityProcessGone(t *testing.T, pid int) {
@@ -503,7 +687,7 @@ func assertQualityProcessGone(t *testing.T, pid int) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("forked process PID %d survived the timeout", pid)
+	t.Fatalf("forked process PID %d survived cancellation", pid)
 }
 
 func checkStrings(checks []Check) []string {

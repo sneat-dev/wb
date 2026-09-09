@@ -42,6 +42,10 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
       status="diverged"
     fi
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
+  'api repos/acme/app/git/commits/'*' --include')
+    sha="${2##*/}"
+    tree="$(git --git-dir="$WB_TEST_REMOTE" rev-parse "$sha^{tree}" 2>/dev/null || true)"
+    printf '{"tree":{"sha":"%s"}}\n' "$tree" ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
@@ -284,5 +288,130 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 				t.Fatalf("validateStrandedLandingReceipt() error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestAcknowledgeStrandedPullRequestLandingProvesSquashMergeByTreeIdentity
+// reproduces the real gap: GitHub squash-merges the receipted pull request,
+// which rewrites the merged commit, so the receipted candidate can never be
+// an ancestor of the current remote target even though it landed exactly.
+// The acknowledgement must fall back to proving the server merge commit's
+// tree is identical to the candidate's own tree, reading both trees from
+// GitHub's own remote state.
+func TestAcknowledgeStrandedPullRequestLandingProvesSquashMergeByTreeIdentity(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "stranded-squash-source", "feature/stranded-squash", "squash.txt", "squash\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeConflict
+	receipt.PullRequest = "https://example.test/acme/app/pull/94"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.Failure = "read pull-request landing receipt: chdir " + receipt.Candidate.Worktree + ": no such file or directory"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build the exact tree GitHub's server squash-merge commit would carry:
+	// the candidate's own tree, but chained with a single parent off the
+	// pre-merge target rather than off the candidate, so the candidate can
+	// never be its ancestor.
+	candidateTree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.Candidate.SHA+"^{tree}"))
+	squashCommit := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", candidateTree, "-p", receipt.TargetSHA, "-m", "squash: land via squash merge"))
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", squashCommit)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	// The candidate object must still exist on the remote for the ancestry
+	// comparison to run, even though main no longer points through it.
+	runEngineGit(t, fixture.canonical, "push", "origin", receipt.Candidate.SHA+":refs/heads/stranded-squash-candidate")
+
+	if err := os.RemoveAll(receipt.Candidate.Worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", squashCommit)
+
+	ack, err := AcknowledgeStrandedPullRequestLanding(context.Background(), WorktreeMergeStrandedLandingAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "GitHub squash-merged the PR; both trees match exactly",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.CandidateLanding != "tree-identical" || ack.CandidateLandingTreeSHA != candidateTree {
+		t.Fatalf("ack candidate-landing proof = %+v, want tree-identical over tree %s", ack, candidateTree)
+	}
+	if ack.ProvedLandingSHA != squashCommit || ack.CurrentTargetSHA != squashCommit {
+		t.Fatalf("ack landing/target = %+v", ack)
+	}
+
+	// The lane is freed exactly like the plain ancestor case: a fresh source
+	// can pass normal prepare preflight afterward.
+	newSource := createMergeSource(t, fixture, "stranded-squash-source-new", "feature/stranded-squash-new", "new.txt", "new\n")
+	next, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{newSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Status != WorktreeMergePrepared || next.Candidate.SHA == "" {
+		t.Fatalf("new merge preflight = %+v", next)
+	}
+}
+
+// TestAcknowledgeStrandedPullRequestLandingRefusesSquashTreeMismatch covers
+// the negative side of the same proof: GitHub reports MERGED and the server
+// merge commit is contained in the current remote target, but its tree does
+// not match the receipted candidate's own tree (the candidate is also not an
+// ancestor), so neither proof holds and the acknowledgement must refuse
+// closed with the existing "does not contain" message.
+func TestAcknowledgeStrandedPullRequestLandingRefusesSquashTreeMismatch(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "stranded-squash-mismatch-source", "feature/stranded-squash-mismatch", "squash-mismatch.txt", "squash-mismatch\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeConflict
+	receipt.PullRequest = "https://example.test/acme/app/pull/95"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.Failure = "read pull-request landing receipt: chdir " + receipt.Candidate.Worktree + ": no such file or directory"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a "merge commit" whose tree is the pre-merge target's own tree
+	// (unrelated to whatever the candidate added), so tree identity fails
+	// exactly like ancestry does.
+	targetTree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.TargetSHA+"^{tree}"))
+	squashCommit := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", targetTree, "-p", receipt.TargetSHA, "-m", "squash: unrelated tree"))
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", squashCommit)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	runEngineGit(t, fixture.canonical, "push", "origin", receipt.Candidate.SHA+":refs/heads/stranded-squash-mismatch-candidate")
+
+	if err := os.RemoveAll(receipt.Candidate.Worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", squashCommit)
+
+	if _, err := AcknowledgeStrandedPullRequestLanding(context.Background(), WorktreeMergeStrandedLandingAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "attempt",
+	}); err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("expected refusal for a tree mismatch, got %v", err)
+	}
+	if _, statErr := os.Stat(strandedLandingAcknowledgementPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("refused acknowledgement wrote a file: %v", statErr)
 	}
 }

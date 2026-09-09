@@ -34,16 +34,17 @@ type streamWorktrees struct {
 // created, so an interrupted start leaves coordinates `wb stream end` can act
 // on. Deriving it here — rather than guessing later — keeps that promise
 // truthful even when creation never ran.
-func (adapter *streamWorktrees) PlannedWorktree(task, repository string) string {
-	home, err := wbhome.Root(adapter.projectsRoot)
-	if err != nil {
-		return ""
-	}
+func (adapter *streamWorktrees) PlannedWorktree(task, repository string) (string, error) {
 	owner, name, found := strings.Cut(repository, "/")
 	if !found {
-		return filepath.Join(home, "worktrees", task, repository)
+		return "", fmt.Errorf("repository must be owner/name, got %q", repository)
 	}
-	return filepath.Join(home, "worktrees", task, owner, name)
+	canonical := filepath.Join(adapter.projectsRoot, owner, name)
+	placement, err := worktrees.ResolveUserWorktreePlacement(canonical)
+	if err != nil {
+		return "", err
+	}
+	return placement.Path(task, repository)
 }
 
 func (adapter *streamWorktrees) Create(ctx context.Context, task, branch string, repositories []string) ([]streams.CreatedWorktree, error) {

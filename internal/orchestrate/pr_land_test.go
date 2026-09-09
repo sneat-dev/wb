@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,15 @@ state=$(cat "$S/pr-state")
 merged=$(cat "$S/merged")
 case "$*" in
   'api repos/acme/app/pulls/7 --include'|'api repos/acme/app/pulls/7')
+    if [ -f "$S/fail-pr-view-once" ]; then
+      rm -f "$S/fail-pr-view-once"
+      # Self-kill with SIGKILL so Go's exec layer reports the exact
+      # "signal: killed" *exec.ExitError a saturated host produces when its
+      # context deadline expires and the subprocess is killed by signal - a
+      # genuine kill classification, not text a PR body could forge by
+      # merely appearing in stdout/stderr.
+      kill -9 $$
+    fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
     printf '{"number":7,"state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
@@ -233,10 +243,74 @@ esac
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// failNextPullRequestReadWithSignalKilled arranges for the next `gh api
+// repos/.../pulls/7` read to fail exactly once as a saturated host would: the
+// gh subprocess killed by signal when its exec context ran out, with no HTTP
+// status ever parsed. It must not stop the landing that reads it.
+func (fixture *landFixture) failNextPullRequestReadWithSignalKilled(t *testing.T) {
+	t.Helper()
+	fixture.writeState(t, "fail-pr-view-once", "1")
+}
+
 func landOptions(fixture *landFixture) PullRequestLandOptions {
 	return PullRequestLandOptions{
 		Repository: "acme/app", PullRequest: "7", ProjectsRoot: fixture.projects,
 		Keep: true, CheckPollInterval: time.Millisecond, Slice: 10 * time.Second,
+	}
+}
+
+func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
+	var got []time.Duration
+	for remaining := 20 * time.Minute; remaining > 0; {
+		slice, err := pullRequestLandWaitSlice(remaining)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, slice)
+		remaining -= slice
+	}
+	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wait slices = %v, want %v", got, want)
+	}
+	for _, slice := range got {
+		if slice > MaxForegroundCheckWaitSlice {
+			t.Fatalf("slice %s exceeds %s", slice, MaxForegroundCheckWaitSlice)
+		}
+	}
+}
+
+func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testing.T) {
+	options := PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "7", Target: "main", Head: strings.Repeat("a", 40),
+		Slice: 20 * time.Minute, CheckPollInterval: time.Minute,
+	}
+	var observed []time.Duration
+	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current PullRequestWaitOptions) (PullRequestWaitResult, error) {
+		observed = append(observed, current.Slice)
+		status := PullRequestWaitPending
+		if len(observed) == 3 {
+			status = PullRequestWaitPassed
+		}
+		return PullRequestWaitResult{Status: status}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed {
+		t.Fatalf("status = %s, want %s", result.Status, PullRequestWaitPassed)
+	}
+	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
+	if !slices.Equal(observed, want) {
+		t.Fatalf("observed slices = %v, want %v", observed, want)
+	}
+}
+
+func TestPullRequestLandRejectsNonPositiveTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		if _, err := pullRequestLandWaitSlice(timeout); err == nil {
+			t.Fatalf("timeout %s was accepted", timeout)
+		}
 	}
 }
 
@@ -257,6 +331,12 @@ func TestLandMechanicalBumpNeedsNoApproval(t *testing.T) {
 	}
 	if result.MergeSHA == "" || !result.LandingOnBase {
 		t.Fatalf("landing evidence = %#v", result)
+	}
+	if result.CanonicalSync != "fast_forwarded" {
+		t.Fatalf("canonical sync = %q, want fast_forwarded", result.CanonicalSync)
+	}
+	if canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); canonicalHead != result.MergeSHA {
+		t.Fatalf("canonical HEAD = %s, want exact landing %s", canonicalHead, result.MergeSHA)
 	}
 	if !result.BranchDeleted {
 		t.Fatal("the source branch must be retired by the landing that made it redundant")
@@ -331,8 +411,9 @@ func TestLandRefusesADraftAndAFailedCheck(t *testing.T) {
 // subject, and every source commit named in the body.
 func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	fixture := newLandFixture(t, "feature/aggregate", "go.mod", "go.sum")
-
-	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	result, err := LandPullRequest(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +422,7 @@ func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	}
 	arguments := fixture.readState(t, "merge-args")
 	if !strings.Contains(arguments, "merge_method=squash") {
-		t.Fatalf("squash is the default landing route: %q", arguments)
+		t.Fatalf("explicit squash landing route: %q", arguments)
 	}
 	if !strings.Contains(arguments, "commit_title=feat: the change (#7)") {
 		t.Fatalf("the subject must be the pull request title, not the branch's first commit: %q", arguments)
@@ -354,14 +435,80 @@ func TestLandAggregatesSourceCommitsIntoTheSquashMessage(t *testing.T) {
 	if strings.Contains(arguments, "Co-Authored-By") {
 		t.Fatalf("trailers are provenance, not information about the change:\n%s", arguments)
 	}
+	if got := result.ManualEquivalent[3]; !strings.HasSuffix(got, "--squash") {
+		t.Fatalf("manual squash equivalent = %q", got)
+	}
 	if strings.Contains(arguments, "## Details") {
 		t.Fatalf("the body summary must stop at the first heading:\n%s", arguments)
+	}
+}
+
+func TestLandDefaultsToMergeCommit(t *testing.T) {
+	fixture := newLandFixture(t, "feature/merge-default", "go.mod")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", result.Outcome, result.Reason)
+	}
+	arguments := fixture.readState(t, "merge-args")
+	if !strings.Contains(arguments, "merge_method=merge") {
+		t.Fatalf("merge commit must be the default landing route: %q", arguments)
+	}
+	if strings.Contains(arguments, "commit_title=") || strings.Contains(arguments, "commit_message=") {
+		t.Fatalf("default merge must defer to repository PR-title/PR-body policy: %q", arguments)
+	}
+}
+
+func TestLandPreservesExplicitRebaseMethod(t *testing.T) {
+	fixture := newLandFixture(t, "feature/rebase-explicit", "go.mod")
+	options := landOptions(fixture)
+	options.MergeMethod = "rebase"
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", result.Outcome, result.Reason)
+	}
+	if arguments := fixture.readState(t, "merge-args"); !strings.Contains(arguments, "merge_method=rebase") {
+		t.Fatalf("explicit rebase method was not preserved: %q", arguments)
+	}
+	if got := result.ManualEquivalent[3]; !strings.HasSuffix(got, "--rebase") {
+		t.Fatalf("manual rebase equivalent = %q", got)
+	}
+}
+
+func TestLandRequiresExplicitSquashForKeepCommits(t *testing.T) {
+	fixture := newLandFixture(t, "feature/keep-method", "go.mod")
+	for _, testCase := range []struct {
+		name     string
+		method   string
+		explicit bool
+	}{
+		{name: "default merge", method: "merge"},
+		{name: "explicit merge", method: "merge", explicit: true},
+		{name: "explicit rebase", method: "rebase", explicit: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			options := landOptions(fixture)
+			options.MergeMethod = testCase.method
+			options.MergeMethodExplicit = testCase.explicit
+			options.KeepCommits = []string{fixture.commitSHAs[0]}
+			options.Reason = "it must stand alone"
+			if _, err := LandPullRequest(context.Background(), options); err == nil || !strings.Contains(err.Error(), "explicit --merge-method squash") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
 func TestLandRefusesKeepCommitsWithoutAReason(t *testing.T) {
 	fixture := newLandFixture(t, "feature/keep", "go.mod", "go.sum")
 	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	options.MergeMethodExplicit = true
 	options.KeepCommits = []string{fixture.commitSHAs[0]}
 
 	result, err := LandPullRequest(context.Background(), options)
@@ -379,6 +526,8 @@ func TestLandRefusesKeepCommitsWithoutAReason(t *testing.T) {
 func TestLandRefusesAKeptCommitThatIsNotOnTheBranch(t *testing.T) {
 	fixture := newLandFixture(t, "feature/keep-unknown", "go.mod")
 	options := landOptions(fixture)
+	options.MergeMethod = "squash"
+	options.MergeMethodExplicit = true
 	options.KeepCommits = []string{strings.Repeat("b", 40)}
 	options.Reason = "it is worth its own commit"
 
@@ -616,6 +765,28 @@ func TestEveryLandingLeavesOneEventAndARefusalSavesNothing(t *testing.T) {
 	}
 }
 
+// A saturated host that kills one `gh api` read by signal must not make
+// `wb pr land` fail outright: the read recovers in-process on the next
+// attempt, exactly the incident this AC (transient-github-read-recovers-in-
+// process) exists to close.
+func TestLandRecoversFromASignalKilledPullRequestReadThenSucceeds(t *testing.T) {
+	fixture := newLandFixture(t, "bump/signal-killed", "go.mod")
+	fixture.failNextPullRequestReadWithSignalKilled(t)
+	options := landOptions(fixture)
+	options.ApprovedBy = "review.md"
+
+	landed, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("a transient signal-killed read must recover in-process: %v", err)
+	}
+	if landed.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", landed.Outcome, landed.Reason)
+	}
+	if landed.Evidence["github_read_retries"] == "" {
+		t.Fatalf("evidence = %#v, want the recovered retry recorded", landed.Evidence)
+	}
+}
+
 type recordingEvents struct{ events []streams.Event }
 
 func (recorder *recordingEvents) Append(event streams.Event) error {
@@ -680,6 +851,54 @@ func TestLandRetiresTheWorktreeThatProducedTheBranch(t *testing.T) {
 	}
 	if len(result.CleanupReports) == 0 {
 		t.Fatal("retiring a worktree must leave its durable receipt")
+	}
+}
+
+// The pull request base proved during landing is the cleanup target even when
+// the immutable creation record names the integration branch the worktree was
+// originally stacked on. The historical record remains untouched; the exact
+// in-memory landing receipt authorizes this one cleanup transaction.
+func TestLandRetiresWorktreeWhenManifestBaseDiffersFromPullRequestBase(t *testing.T) {
+	fixture := newLandFixture(t, "bump/retargeted", "go.mod")
+	runEngineGit(t, fixture.canonical, "branch", "feature/integration", fixture.baseSHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "feature/integration")
+
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "bump-retargeted",
+		Base: "feature/integration", Branch: "bump/retargeted", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].Base != "feature/integration" {
+		t.Fatalf("created = %#v, want worktree recorded against feature/integration", created)
+	}
+
+	options := landOptions(fixture)
+	options.Keep = false
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if len(result.CleanedTasks) != 1 || result.CleanedTasks[0] != "bump-retargeted" {
+		t.Fatalf("cleaned tasks = %#v, want the retargeted worktree", result.CleanedTasks)
+	}
+	if len(result.CleanupReports) != 1 {
+		t.Fatalf("cleanup reports = %#v, want one append-only receipt", result.CleanupReports)
+	}
+	report, readErr := os.ReadFile(result.CleanupReports[0])
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(report), `"base": "main"`) || !strings.Contains(string(report), `"recorded_base": "feature/integration"`) {
+		t.Fatalf("cleanup receipt did not preserve proven and recorded targets:\n%s", report)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("the retargeted worktree survived landing cleanup: %v", statErr)
 	}
 }
 

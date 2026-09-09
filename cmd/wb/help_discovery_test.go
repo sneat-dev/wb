@@ -21,7 +21,7 @@ func TestRootHelpPromotesTheAgentWorktreeJourney(t *testing.T) {
 		"Inspect progress",
 		"wb worktree summary",
 		"Land and clean up",
-		"wb worktree merge",
+		"wb worktree land",
 		"wb commands --search",
 	} {
 		if !strings.Contains(help, want) {
@@ -158,8 +158,8 @@ func TestCommandSearchFindsTheFinishWorkCommand(t *testing.T) {
 	if document.SchemaVersion != 1 {
 		t.Fatalf("schema_version = %d, want 1", document.SchemaVersion)
 	}
-	if len(document.Commands) == 0 || document.Commands[0].Path != "wb worktree merge" {
-		t.Fatalf("first command = %+v, want wb worktree merge", document.Commands)
+	if len(document.Commands) == 0 || document.Commands[0].Path != "wb worktree land" {
+		t.Fatalf("first command = %+v, want wb worktree land", document.Commands)
 	}
 }
 

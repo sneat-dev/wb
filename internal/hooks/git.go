@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // SecureHooksGitHelperArgument selects the private WB child-process path that

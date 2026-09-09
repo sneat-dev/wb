@@ -35,6 +35,9 @@ type Layout struct {
 	Home          string
 	WorktreesRoot string
 	Legacy        bool
+	// Local is true only for a canonical repository's default
+	// <canonical>/.worktrees root. Home remains WB_HOME authority.
+	Local bool
 }
 
 // Resolution makes the migration policy explicit. Write is the only layout
@@ -142,7 +145,7 @@ evidence, and command reports. Do not delete this directory or its contents
 manually, even when no WB command is running. Use WB lifecycle commands so
 recovery and audit evidence is preserved.
 
-Learn more about the WB CLI at https://sneat.dev/workbench.
+Learn more about the WB CLI at https://sneat.work/bench.
 `
 
 // SeedReadme writes README.md into home if one isn't already there. An

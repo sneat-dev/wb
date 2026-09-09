@@ -12,9 +12,10 @@ Compose the low-level skills; do not restate their command details.
    or branches before creating another.
 3. Use `$wb-worktrees` to create all editable checkouts in one task.
 4. Use `$wb-hooks` to check or repair fleet-standard hooks.
-5. Implement and run the smallest targeted checks, then one complete local
-   pre-push path.
-6. Push once per meaningful revision and let the managed pre-push hook run.
+5. Implement and run only the smallest targeted checks needed for the changed
+   behavior. Do not repeat broad checks that the landing receipt or CI owns.
+6. Push once per meaningful revision and let the managed hook policy classify
+   any remaining local work.
 7. Hand each conflict-free completed batch to `$wb-merge` and use
    `wb worktree merge <source-worktree...> --route auto --cleanup --progress`; split it
    into `prepare` and `land` only when dependent agents need the candidate SHA

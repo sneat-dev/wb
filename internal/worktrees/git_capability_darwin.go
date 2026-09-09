@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const sandboxExecPath = "/usr/bin/sandbox-exec"
@@ -94,6 +94,16 @@ func lockDarwinCapabilityParents(capability gitFilesystemCapability) ([]darwinCa
 	parentPaths := make([]string, 0, len(capability.writeRoots))
 	seen := make(map[string]bool, len(capability.writeRoots))
 	for _, root := range capability.writeRoots {
+		// A shared root is one WB writes but does not own -- the ambient Go
+		// caches. Its parent is machine-global state (~/Library/Caches,
+		// ~/go/pkg), so freezing it would serialize every unrelated
+		// repository against every other, and an interrupted helper would
+		// leave a directory the whole machine depends on read-only. The
+		// rename race the freeze defends against is WB's own to lose only for
+		// roots WB created.
+		if root.shared {
+			continue
+		}
 		parentPath := filepath.Dir(root.path)
 		if parentPath == root.path {
 			return nil, fmt.Errorf("secure Git capability root has no mutable parent: %s", root.path)
@@ -196,6 +206,11 @@ func lockCapabilityParent(parent *os.File) error {
 
 func verifyDarwinCapabilityRoots(capability gitFilesystemCapability, byPath map[string]*os.File) error {
 	for _, root := range capability.writeRoots {
+		// Shared roots have no frozen parent by design, so there is no
+		// directory entry to re-verify against one.
+		if root.shared {
+			continue
+		}
 		parent, ok := byPath[filepath.Dir(root.path)]
 		if !ok {
 			return fmt.Errorf("%s has no held parent", root.path)

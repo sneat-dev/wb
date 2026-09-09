@@ -53,6 +53,7 @@ func newWorktreeCmd() *cobra.Command {
 		{newWorktreeCreateCmd(), "start"},
 		{newWorktreeAdoptCmd(), "start"},
 		{newWorktreeMergeCmd(), "finish"},
+		{newWorktreeLandCmd(), "finish"},
 		{newWorktreeEndCmd(), "finish"},
 		{newWorktreeCleanupCmd(), "finish"},
 		{newWorktreeGCCmd(), "finish"},
@@ -66,6 +67,7 @@ func newWorktreeCmd() *cobra.Command {
 		{newWorktreeCheckpointFetchCmd(), "recover"},
 		{newWorktreeOwnCmd(), "recover"},
 		{newWorktreeMarkerCmd(), "admin"},
+		{newWorktreeRelocateCmd(), "admin"},
 		{newWorktreeRenameCmd(), "admin"},
 		{newWorktreeCorrectIdentityCmd(), "admin"},
 		{newWorktreeSetCmd(), "admin"},
@@ -76,6 +78,120 @@ func newWorktreeCmd() *cobra.Command {
 		child.command.GroupID = child.group
 		command.AddCommand(child.command)
 	}
+	return command
+}
+
+func newWorktreeRelocateCmd() *cobra.Command {
+	var to, format string
+	var apply, jsonShortcut bool
+	command := &cobra.Command{
+		Use:   "relocate <task>",
+		Short: "Move managed worktrees between repository-local and configured shared layouts",
+		Long: `Plan or apply a physical layout move while preserving each task's branch and
+immutable Work Log claim. The default is a dry run. Pass --apply only after
+reviewing the exact source and destination paths.
+
+--to=local moves a managed checkout to <canonical>/.worktrees/<task>.
+--to=shared moves it to the configured user worktrees.root; it refuses when no
+shared root is configured. Changing that configuration never moves or hides an
+existing checkout. WB inventories every managed layout through the Git worktree
+registry and active claims, then rechecks the clean state, ownership lock,
+branch/head, source, and destination under the task lock immediately before
+the descriptor-anchored no-replace move. Git registration is repaired and
+verified before an append-only relocation receipt is recorded.
+
+Adopted external worktrees are reported but are never moved by this command.
+Use --filter to select repositories within a coordinated task. --format=json
+keeps stdout machine-readable; progress and diagnostics use stderr.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if jsonShortcut {
+				if command.Flags().Changed("format") && format != "json" {
+					return fmt.Errorf("--json cannot be combined with --format=%s", format)
+				}
+				format = "json"
+			}
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			progressDone := make(chan struct{})
+			progressStopped := make(chan struct{})
+			defer func() {
+				close(progressDone)
+				<-progressStopped
+			}()
+			go func() {
+				defer close(progressStopped)
+				ticker := time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-progressDone:
+						return
+					case <-ticker.C:
+						_, _ = fmt.Fprintf(command.ErrOrStderr(), "relocate %s still running; inspecting or moving managed worktrees\n", args[0])
+					}
+				}
+			}()
+			outcome, err := worktrees.Relocate(command.Context(), worktrees.RelocateOptions{
+				ProjectsRoot: projectsRoot, Task: args[0], Filter: filterFlag, To: to, Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			if apply {
+				markRelocatedCheckouts(command, outcome.Results)
+			}
+			for _, diagnostic := range outcome.Diagnostics {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: relocate skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message)
+			}
+			if format == "json" {
+				return json.NewEncoder(command.OutOrStdout()).Encode(outcome)
+			}
+			eligible, moved := 0, 0
+			for _, result := range outcome.Results {
+				switch {
+				case result.Applied:
+					moved++
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "relocated %s %s -> %s\n", result.Task, result.Repository, result.Destination); err != nil {
+						return err
+					}
+				case result.AlreadyThere:
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "already there %s %s %s\n", result.Task, result.Repository, result.Destination); err != nil {
+						return err
+					}
+				case result.Eligible:
+					eligible++
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "would relocate %s %s -> %s\n", result.Task, result.Repository, result.Destination); err != nil {
+						return err
+					}
+				default:
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "skip %s %s: %s\n", result.Task, result.Repository, result.Reason); err != nil {
+						return err
+					}
+				}
+			}
+			if apply {
+				if moved == 0 && eligible > 0 {
+					return fmt.Errorf("no planned worktree was relocated")
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "%d relocated\n", moved)
+				return err
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "%d eligible; dry-run only, pass --apply to relocate\n", eligible)
+			return err
+		},
+	}
+	command.Flags().StringVar(&to, "to", "", "destination layout: local or shared")
+	command.Flags().BoolVar(&apply, "apply", false, "perform the relocation; the default is a dry-run plan")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().BoolVar(&jsonShortcut, "json", false, "shortcut for --format=json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
@@ -814,7 +930,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 }
 
 func newWorktreeAbortCmd() *cobra.Command {
-	var base, disposition, successor, format string
+	var base, disposition, successor, absorbedBy, format string
 	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
@@ -830,10 +946,16 @@ declare the successor's exact --model or explicit unknown; --cli and
 known, never credentials. --apply with
 discarded removes only unlocked worktrees, retaining a bounded private capture
 of tracked and untracked bytes before deleting dirty ones, and removes their
-exact local branch refs only after that archive has been sealed. A discarded apply requires --remote;
-an exact matching remote source branch is then retired with force-with-lease.
+exact local branch refs only after that archive has been sealed. A discarded apply requires --remote,
+except for a proven pre-apply recycle reservation with no checkout, branch, or remote ref; an
+exact matching remote source branch is otherwise retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
+
+For a clean source retained after a squash landing, --disposition discarded
+--absorbed-by <merged-pr> verifies GitHub's merged PR metadata and rechecks
+the exact source head, fetched PR head, landing tree, and freshly fetched
+target before removal. It never accepts a commit-message reference as proof.
 
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
@@ -860,7 +982,8 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
-				ClaimID: claimID, Actor: actor, Reason: reason,
+				AbsorbedBy: absorbedBy,
+				ClaimID:    claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -954,6 +1077,7 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
+	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "merged pull request that proves a clean squash-absorbed source before discarded removal")
 	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
 	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
 	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
@@ -974,19 +1098,25 @@ func newWorktreeCreateCmd() *cobra.Command {
 	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
-		Short: "Create feature branches below WB's home worktrees directory",
+		Short: "Create isolated feature branches in the selected checkout root",
 		Long: `Create one isolated feature worktree per repository.
 
 WB reads even a dirty or off-base canonical clone without switching or updating any local branch, index, or working tree. It fetches the exact requested base
-from origin, then creates each
-worktree from that verified commit at:
+from origin, then creates each worktree from that verified commit. By default the
+checkout is created at:
 
-  <wb-home>/worktrees/<task>/<owner>/<repository>
+  <canonical-repository>/.worktrees/<task>
 
-<wb-home> is ~/.wb by default. Set $WB_HOME to use a different directory.
-New work never silently falls back to <projects-root>/.wb; when WB_HOME is not
-explicit, existing legacy worktrees there remain guardable, listable, and
-cleanable during migration.
+To select a shared checkout root, set ~/.config/wb/worktrees.yaml:
+
+  version: 1
+  worktrees:
+    root: /absolute/shared/root
+
+That creates <root>/<task>/<owner>/<repository>. WB_HOME remains the private
+authority for Work Logs, locks, and receipts; setting $WB_HOME does not change
+the default checkout location. Existing legacy worktrees remain guardable,
+listable, and cleanable during migration.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
@@ -1700,8 +1830,12 @@ func newWorktreeListCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "list [task]",
 		Short: "List live WB-managed task worktrees and their lifecycle state",
-		Long: `List live linked checkout inventory below <wb-home>/worktrees (see
-'wb worktree create --help' for how <wb-home> is resolved).
+		Long: `List live WB-managed linked checkout inventory across every
+resolver-recognized layout: repository-local <canonical>/.worktrees, the
+currently configured shared root, and historic WB-home or projects-root
+layouts corroborated by Git's worktree registry and active claims. Changing
+worktrees.root never hides or moves an existing checkout; use
+'wb worktree relocate' for an explicit physical move.
 
 The default report uses only local Git data. Pass --github to include open and
 exact fetched origin-target and pull request evidence used by worktree cleanup.

@@ -20,11 +20,13 @@ status: Implementing
 - `wb remote status` — cross-machine worklist from the store, with `STALE`
   flags for old snapshots and error rows for undecodable entries
 - `wb remote machines` — one line per machine with publish age
+- `wb remote enroll` — verify and privately install a hosted-hub machine
+  credential, then restart a running daemon
 - `wb sync --publish` — publish after a successful sync
 
-The only provider is `git`: a team (or personal) repository holding
-`machines/<login>/<machine>/snapshot.yaml`, cloned to the canonical fleet
-location. Design: `docs/superpowers/specs/2026-08-23-remote-state-design.md`.
+The `git` provider uses a team or personal state repository. The `hub`
+provider uses authenticated outbound HTTPS for hosted snapshots and repository
+events. Design: `docs/superpowers/specs/2026-08-23-remote-state-design.md`.
 
 ## Problem
 
@@ -44,9 +46,9 @@ location.
 
 #### REQ: remote-provider-pluggable
 
-The store MUST be reachable through a pluggable provider abstraction. The
-only implementation MUST be `git`. No provider or the code around it MUST
-import any synchestra module.
+The store MUST be reachable through a pluggable provider abstraction with
+`git` and authenticated HTTPS `hub` implementations. No provider or the code
+around it MUST import any synchestra module.
 
 #### REQ: remote-write-scope
 
@@ -84,7 +86,14 @@ pushed state.
 flag a machine as stale exactly when its effective heartbeat (the later of
 `published_at` and `last_seen_at`) is older than the `--stale` window, and
 MUST render an error row for any entry that cannot be decoded rather than
-dropping it.
+dropping it. When the provider can read machine snapshots and claims together,
+the command MUST refresh the provider once and derive both projections from
+that same refreshed view. It MUST emit concise progress to stderr immediately
+and at least every ten seconds until the read terminates, including when stdout
+uses a machine-readable format; progress MUST NOT contaminate stdout.
+The hosted provider MUST return its machine snapshot view with an empty claims
+projection until hosted claims are implemented, rather than failing a valid
+status read through the unsupported standalone claims operation.
 
 #### REQ: remote-machines-rendering
 
@@ -95,6 +104,16 @@ key off SEEN, not PUBLISHED alone.
 #### REQ: remote-status-exit-code
 
 `wb remote status` MUST exit 0 when some entries are undecodable.
+
+#### REQ: secure-hub-enrollment
+
+`wb remote enroll` MUST accept the opaque machine credential only from
+explicitly selected stdin, verify it with the configured HTTPS hub before
+persisting it, and never include it in argv, stdout, configuration, or WB
+telemetry. It MUST store the credential in a mode-0600 file, atomically update
+only the hub-owned fields in the `remote` configuration while preserving other
+settings, and restart a running daemon by default so event polling adopts the
+new credential without operator guesswork.
 
 ## Acceptance Criteria
 
@@ -131,7 +150,18 @@ push rejection.
 view — worklist with staleness and error rows, and a one-line-per-machine
 summary carrying both the publish age and the effective-heartbeat (SEEN)
 age — and a store containing undecodable entries never blocks a zero exit
-code.
+code. A batched provider status read performs one refresh for machines and
+claims, and long reads remain visibly alive on stderr without changing the
+machine-readable stdout document.
+
+### AC: secure-hub-enrollment
+
+**Requirements:** remote-state#req:secure-hub-enrollment
+
+Piping the one-time dashboard credential into `wb remote enroll --machine
+<name> --token-stdin` verifies access before writing, leaves the credential
+only in its private file, preserves unrelated `wb.yaml` settings, reports paths
+without echoing the token, and restarts the daemon when it is already running.
 
 ## Open Questions
 

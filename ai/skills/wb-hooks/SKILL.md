@@ -55,9 +55,22 @@ wb hooks agent install
 
 It fails open without exception — an unreadable payload, an unknown tool, a
 shell construct it cannot model, and a WB too old to know the subcommand all
-allow the call. It never refuses a read, never refuses a write inside a linked
-worktree, and leaves `git fetch`, `git merge --ff-only`, `git status`, and
+allow the call. It leaves `git fetch`, `git merge --ff-only`, `git status`, and
 `git log` alone inside a canonical clone.
+
+Inside a WB-managed worktree, the same hook redirects CPU-heavy validation to
+the governed command gateway. Agents run `go test`, `go vet`, `go build`, and
+common Node/Rust test, build, lint, and E2E commands as:
+
+```sh
+wb run -- go test ./internal/worktrees
+```
+
+That boundary gives validation an operation ID and privacy-safe timing receipt,
+and lets a local scheduler queue or coalesce it. Run `gofmt` and Prettier
+directly on edited files; immediate formatting is deliberately outside the
+queue. Unmanaged worktrees and human shells are unaffected because this is an
+agent PreToolUse policy, not a shell wrapper.
 
 Rehearse a decision against a saved payload without a pipe:
 

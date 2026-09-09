@@ -147,7 +147,7 @@ func TestReceiveIdenticalRetryReturnsReceiptWithoutDuplicateReceiverEffects(t *t
 	if worktreeCalls != 1 || worktreeCreations != 1 {
 		t.Fatalf("worktree receiver calls=%d creations=%d, want exactly 1/1", worktreeCalls, worktreeCreations)
 	}
-	worktreesOnDisk, err := filepath.Glob(filepath.Join(home, "worktrees", "session-"+request.HandoffID, "*", "*"))
+	worktreesOnDisk, err := filepath.Glob(expectedWorktree)
 	if err != nil {
 		t.Fatal(err)
 	}

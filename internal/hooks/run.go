@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/envguard"
 )
 
 type RunOptions struct {
@@ -202,29 +203,39 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 	if wbExecutable == "" {
 		wbExecutable, _ = os.Executable()
 	}
-	cmd.Env = append(gitDirectoryEnvironmentCleared(os.Environ()),
-		"WB_HOOK="+block.Hook.Name,
-		"WB_PROFILE="+block.Profile,
-		"WB_BLOCK="+block.ID,
-		"WB_REPO_ROOT="+policy.RepoRoot,
-		"WB_REPO_SLUG="+context.repository,
-		"WB_HEAD_SHA="+context.commit,
-		"WB_BRANCH="+context.branch,
-		"WB_HOOKS_CONFIG="+block.Hook.ConfigPath,
-		"WB_HOOK_RUNTIME_ROOT="+layout.Root,
-		"WB_HOOK_CACHE_ROOT="+layout.CacheRoot,
-		"WB_HOOK_METRICS_PATH="+policy.Metrics.Path,
-		"WB_HOOK_PENDING_ROOT="+layout.PendingMetricsRoot,
-		"WB_HOOK_REPORT_ROOT="+layout.ReportRoot,
-		"WB_EXECUTABLE="+wbExecutable,
-		"WB_PROJECTS_ROOT="+options.ProjectsRoot,
-		"GOPATH="+layout.GoPath,
-		"GOCACHE="+layout.GoCache,
-		"GOMODCACHE="+layout.GoModCache,
-		"GOTMPDIR="+layout.GoTmpDir,
-		"TMPDIR="+layout.GoTmpDir,
-		"XDG_CACHE_HOME="+layout.XDGCacheHome,
-	)
+	overrides := []string{
+		"WB_HOOK=" + block.Hook.Name,
+		"WB_PROFILE=" + block.Profile,
+		"WB_BLOCK=" + block.ID,
+		"WB_REPO_ROOT=" + policy.RepoRoot,
+		"WB_REPO_SLUG=" + context.repository,
+		"WB_HEAD_SHA=" + context.commit,
+		"WB_BRANCH=" + context.branch,
+		"WB_HOOKS_CONFIG=" + block.Hook.ConfigPath,
+		"WB_HOOK_RUNTIME_ROOT=" + layout.Root,
+		"WB_HOOK_METRICS_PATH=" + policy.Metrics.Path,
+		"WB_HOOK_PENDING_ROOT=" + layout.PendingMetricsRoot,
+		"WB_HOOK_REPORT_ROOT=" + layout.ReportRoot,
+		"WB_EXECUTABLE=" + wbExecutable,
+		"WB_PROJECTS_ROOT=" + options.ProjectsRoot,
+	}
+	// GOPATH, GOCACHE, GOMODCACHE, GOTMPDIR, TMPDIR and XDG_CACHE_HOME are
+	// deliberately NOT overridden. Go's build and module caches, and
+	// golangci-lint's cache, are content-addressed and meant to be shared
+	// machine-wide. Pointing hooks at a private per-repository tree made every
+	// hook run compile and lint from cold seconds after an agent had warmed the
+	// user's real cache with the same inputs, and duplicated tens of gigabytes
+	// across repositories. Hooks inherit the ambient cache environment.
+	// The built-in Go pre-commit/pre-push blocks shell out to `go vet`/
+	// `go test`/`go build` themselves; give them the same GOWORK=off
+	// isolation the quality gate applies, unless policy.RepoRoot tracks its
+	// own go.work in HEAD. Every other WB_AGENT_* variable is stripped for
+	// every hook block regardless of language -- an operating agent's
+	// identity has no business reaching a hook's subprocess under test.
+	if block.Hook.Template == BuiltinGoPreCommit || block.Hook.Template == BuiltinGoPrePush {
+		overrides = append(envguard.GoEnvOverrides(policy.RepoRoot), overrides...)
+	}
+	cmd.Env = envguard.SanitizeEnv(gitDirectoryEnvironmentCleared(os.Environ()), overrides...)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

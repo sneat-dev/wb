@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 // ErrNotFound is returned when no stream with that name exists.
@@ -128,8 +128,13 @@ func (store *Store) List() ([]Stream, []Unreadable, error) {
 		if !entry.IsDir() {
 			continue
 		}
+		// .fleet is the reserved event-only log for landings outside a stream.
+		// It deliberately has no stream state. Lstat is intentional: a dangling
+		// stream.json symlink is not safely absent and must remain unreadable.
 		if entry.Name() == reservedFleetMetadataDirectory {
-			continue
+			if _, err := os.Lstat(store.statePath(entry.Name())); os.IsNotExist(err) {
+				continue
+			}
 		}
 		stream, err := store.Load(entry.Name())
 		if err != nil {
@@ -414,12 +419,69 @@ func (store *Store) RepositoryStream(repository string) (Stream, bool, []Unreada
 		if _, ok := stream.Member(repository); ok {
 			return stream, true, unreadable, nil
 		}
+		// A repository admitted only as a linked consumer still carries live
+		// local links this stream must be able to undo and guard landing for
+		// — treating it as unheld here would let a second stream claim it
+		// and would let refuseLinkedRepositoryWorktrees miss its links.
+		if _, ok := stream.LinkedConsumer(repository); ok {
+			return stream, true, unreadable, nil
+		}
+	}
+	// A newer stream schema must still fail closed for a repository it may
+	// contain. It must not, however, stop an unrelated repository from landing.
+	// Schema 2 kept members[].repository and added linked_consumers[].repository
+	// for local-only consumers. Those two stable indexes are enough to prove a
+	// repository is unrelated without decoding link reversal detail this binary
+	// does not understand. Later schemas, malformed records, and incomplete
+	// indexes remain unreadable and therefore keep the global guard.
+	relevantUnreadable := unreadable[:0]
+	for _, entry := range unreadable {
+		excludes, known := unreadableStreamExcludesRepository(entry.Path, repository)
+		if known && excludes {
+			continue
+		}
+		relevantUnreadable = append(relevantUnreadable, entry)
 	}
 	// "No stream holds this repository" is only true of the streams WB could
 	// read. An unreadable record may be the one that holds it, so the caller
 	// is handed the list rather than a bare false — the guard decides what to
 	// do about an answer it cannot fully stand behind.
-	return Stream{}, false, unreadable, nil
+	return Stream{}, false, relevantUnreadable, nil
+}
+
+func unreadableStreamExcludesRepository(path, repository string) (excludes, known bool) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var index struct {
+		SchemaVersion int `json:"schema_version"`
+		Members       []struct {
+			Repository string `json:"repository"`
+		} `json:"members"`
+		LinkedConsumers []struct {
+			Repository string `json:"repository"`
+		} `json:"linked_consumers"`
+	}
+	if err := json.Unmarshal(contents, &index); err != nil || index.SchemaVersion != 2 || len(index.Members)+len(index.LinkedConsumers) == 0 {
+		return false, false
+	}
+	repositories := make([]string, 0, len(index.Members)+len(index.LinkedConsumers))
+	for _, member := range index.Members {
+		repositories = append(repositories, member.Repository)
+	}
+	for _, consumer := range index.LinkedConsumers {
+		repositories = append(repositories, consumer.Repository)
+	}
+	for _, indexedRepository := range repositories {
+		if strings.TrimSpace(indexedRepository) == "" {
+			return false, false
+		}
+		if indexedRepository == repository {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 // LiveLinksForWorktree returns every live link recorded against one consumer
@@ -447,6 +509,14 @@ func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) 
 				links = append(links, StreamLink{Stream: stream.Name, Repository: member.Repository, Link: link})
 			}
 		}
+		for _, consumer := range stream.LinkedConsumers {
+			if normalizePath(consumer.Worktree) != resolved {
+				continue
+			}
+			for _, link := range consumer.Links {
+				links = append(links, StreamLink{Stream: stream.Name, Repository: consumer.Repository, Link: link})
+			}
+		}
 	}
 	return links, nil
 }
@@ -457,6 +527,59 @@ type StreamLink struct {
 	Stream     string `json:"stream"`
 	Repository string `json:"repository"`
 	Link       Link   `json:"link"`
+}
+
+// LinkSourcesForWorktree returns every live link, across every open stream,
+// whose Library points AT this worktree — the opposite direction from
+// LiveLinksForWorktree. A worktree reported here is not a linked consumer; it
+// is the unpublished source a consumer elsewhere still resolves instead of a
+// published version.
+//
+// This is the state half of the guard that keeps `wb worktree cleanup` (and
+// any verb that removes a managed worktree while landing, such as `wb pr
+// land` and `wb worktree merge`) from deleting a checkout another stream's
+// consumer still depends on. On 2026-09-07 exactly this happened: a provider
+// worktree was removed while a live stream's `go.work` still named it, and
+// every composed Go command in the consumer failed until the entry was
+// repointed by hand.
+func (store *Store) LinkSourcesForWorktree(worktree string) ([]StreamLinkSource, error) {
+	resolved := normalizePath(worktree)
+	all, _, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	var sources []StreamLinkSource
+	for _, stream := range all {
+		if !stream.Open() {
+			continue
+		}
+		for _, member := range stream.Members {
+			for _, link := range member.Links {
+				if normalizePath(link.Library) != resolved {
+					continue
+				}
+				sources = append(sources, StreamLinkSource{
+					Stream:             stream.Name,
+					ConsumerRepository: member.Repository,
+					ConsumerWorktree:   member.Worktree,
+					Link:               link,
+				})
+			}
+		}
+	}
+	return sources, nil
+}
+
+// StreamLinkSource is one live link whose unpublished source is a worktree
+// under consideration for removal, qualified by the stream and consumer
+// holding it, so a refusal can name both without a second lookup.
+type StreamLinkSource struct {
+	Stream             string `json:"stream"`
+	ConsumerRepository string `json:"consumer_repository"`
+	// ConsumerWorktree is the linked consumer's worktree path, so a refusal
+	// can name the exact repoint command without a second lookup.
+	ConsumerWorktree string `json:"consumer_worktree"`
+	Link             Link   `json:"link"`
 }
 
 func normalizePath(path string) string {

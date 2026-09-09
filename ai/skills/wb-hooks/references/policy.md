@@ -63,11 +63,11 @@ layer above always runs first, regardless of tier):
 - **Tier 1** (`go vet` / `lint`): runs on any push that is not a pure
   remote-ref deletion (40- or 64-zero-SHA) and not confined to the
   `refs/wb/checkpoints/*` checkpoint namespace.
-- **Tier 2** (`go test` / `test`): runs only on a *publication* push — the
-  default branch, a tag, or a branch with an open pull request. An unresolved
-  PR status (no network, or the bounded `gh` lookup timed out or missed)
-  degrades to Tier 1, never silently up to Tier 2; CI is the real gate for a
-  publication push either way.
+- **Tier 2** marks a *publication* push — the default branch, a tag, or a branch
+  with an open pull request — but runs the same static checks as Tier 1. Tests,
+  builds, coverage, and race belong to the landing receipt and CI. An
+  unresolved PR status (no network, or the bounded `gh` lookup timed out or
+  missed) degrades to Tier 1; CI remains the publication gate.
 
 Every invocation prints one line naming the tier and the reason. There is no
 Git-hook-bypass escape hatch: Tier 0 is mandatory on every push, including a

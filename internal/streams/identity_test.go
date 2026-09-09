@@ -52,6 +52,81 @@ func TestDiscoverPublishedPrefersBackendGoModAndReadsLibsPackages(t *testing.T) 
 	}
 }
 
+func TestDiscoverNpmPackagesAndDeclarationsAcrossNestedWorkspaces(t *testing.T) {
+	library := writeTree(t, map[string]string{
+		"frontend/package.json":           `{"name":"frontend-root","private":true}`,
+		"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
+		"frontend/libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`,
+		"landings/package.json":           `{"name":"landing-root"}`,
+		"landings/pnpm-workspace.yaml":    "packages: []\n",
+		"landings/apps/site/package.json": `{"name":"site"}`,
+	})
+	identities, err := DiscoverPublished(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 || identities[0].Name != "@acme/core" || identities[0].Workspace != "frontend" {
+		t.Fatalf("identities = %#v, want only the nested frontend library", identities)
+	}
+	consumer := writeTree(t, map[string]string{
+		"frontend/package.json":        `{"dependencies":{"@acme/core":"^1.0.0"}}`,
+		"frontend/pnpm-workspace.yaml": "packages: []\n",
+		"landings/package.json":        `{"dependencies":{"elsewhere":"1.0.0"}}`,
+		"landings/pnpm-workspace.yaml": "packages: []\n",
+	})
+	declarations, err := DiscoverDeclarations(consumer, identities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(declarations) != 1 || declarations[0].Manifest != "frontend/package.json" || declarations[0].Workspace != "frontend" {
+		t.Fatalf("declarations = %#v, want nested frontend declaration", declarations)
+	}
+}
+
+func TestNpmDiscoveryDoesNotFollowWorkspaceSymlinks(t *testing.T) {
+	root := writeTree(t, map[string]string{"package.json": `{"private":true}`})
+	outside := writeTree(t, map[string]string{
+		"pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
+		"libs/core/package.json": `{"name":"@acme/escaped"}`,
+	})
+	if err := os.Symlink(outside, filepath.Join(root, "frontend")); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := DiscoverPublished(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 0 {
+		t.Fatalf("identities = %#v, want symlinked workspace ignored", identities)
+	}
+}
+
+func TestNpmDiscoveryIgnoresManagedCheckoutsAndFrontendCaches(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"package.json":                         `{"private":true}`,
+		".worktrees/stale/libs/a/package.json": `{"name":"@acme/stale"}`,
+		".angular/cache/libs/b/package.json":   `{"name":"@acme/cache"}`,
+		".nx/cache/libs/c/package.json":        `{"name":"@acme/nx-cache"}`,
+		"coverage/libs/d/package.json":         `{"name":"@acme/coverage"}`,
+		"libs/real/package.json":               `{"name":"@acme/real"}`,
+	})
+	identities, err := DiscoverPublished(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 || identities[0].Name != "@acme/real" {
+		t.Fatalf("identities = %#v, want only source package", identities)
+	}
+}
+
+func TestPreflightKeepsPublicRepositoryRootProviderIdentity(t *testing.T) {
+	root := writeTree(t, map[string]string{"package.json": `{"name":"@acme/root-package"}`})
+	names, finding := collectNpmPackageNames(PreflightInput{Repository: "acme/root", Path: root})
+	if finding.Status != PreflightPass || len(names) != 1 || names[0] != "@acme/root-package" {
+		t.Fatalf("names = %v, finding = %#v; want existing root provider compatibility", names, finding)
+	}
+}
+
 func TestDiscoverPublishedFallsBackToTheModuleRoot(t *testing.T) {
 	root := writeTree(t, map[string]string{"go.mod": "module github.com/acme/library\n"})
 	identities, err := DiscoverPublished(root)

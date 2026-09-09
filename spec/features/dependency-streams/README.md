@@ -431,8 +431,11 @@ the folded bodies.
 
 #### REQ: keeping-a-commit-separate-is-reasoned-and-must-build
 
-An agent MAY keep specific commits out of the aggregate:
-`--keep-commits <sha>[,<sha>...] --reason "<text>"`. WB MUST then rebase the
+An agent MAY keep specific commits out of an explicitly selected squash:
+`--merge-method squash --keep-commits <sha>[,<sha>...] --reason "<text>"`.
+WB MUST refuse `--keep-commits` with the default merge method, explicit merge,
+or explicit rebase; merge already preserves all reviewed commits and rebase is
+a different landing contract. WB MUST then rebase the
 pull request so the kept commits land as their **own commits, in their original
 relative order**, with everything else squashed into one aggregated commit, and
 MUST record the source→landed SHA pairs in the stream ledger — a rebase landing
@@ -671,7 +674,11 @@ every landed stream forever.
 `wb deps propagate local <library-worktree> --to <consumer-worktree>...` MUST
 discover the library's published identities from the library worktree itself:
 the Go module path from `backend/go.mod` (or the module root, where the
-repository has no `backend/`), and npm package names from `libs/**/package.json`.
+repository has no `backend/`), and npm package names from `libs/**/package.json`
+in every repository-owned npm workspace, including a nested `frontend/`
+workspace. The command MUST be invoked with the repository-root worktrees that
+the stream records; npm install, build, link, and undo operations MUST run in
+the specific nested workspace that owns each manifest.
 Discovery MUST be evidence-based and MUST NOT accept an operator-supplied
 package name as a substitute; a consumer that does not depend on any discovered
 identity MUST be reported and skipped rather than linked.
@@ -697,9 +704,35 @@ directive to `go.mod`.
 
 #### REQ: npm-consumers-link-through-a-built-dist
 
-For an npm consumer, WB MUST build the library using the repository's own build
-target, then link the built output into the consumer's `node_modules` using the
-package manager's own link mechanism, so no tracked file changes.
+For an npm consumer, WB MUST run a frozen install in each affected npm workspace,
+build the library from the npm workspace that owns the published package, then
+link the built output into the declaring consumer workspace's `node_modules`
+using the package manager's own link mechanism, so no tracked file changes. The
+built package MUST be staged inside the consumer's installed peer context before
+linking: linking directly to the provider's dist makes Node resolve Angular and
+other peer dependencies from the provider, creating duplicate framework
+singletons and incompatible private types. WB MUST preserve the original
+installed package and MUST NOT modify pnpm's global content-addressable store.
+When the provider publishes several packages used in the same consumer
+workspace, every staged package MUST resolve its declared staged siblings to
+the same staged identities used by the consumer root. WB MUST derive those
+edges from `dependencies`, `peerDependencies`, and `optionalDependencies`,
+preflight the complete sibling graph before changing it, and leave external
+peers in the consumer's installed dependency context. A failed preflight MUST
+create no partial sibling graph, and retry after the conflict is corrected MUST
+succeed without changing tracked configuration.
+Before reporting the link successful, WB MUST also walk the consumer's actual
+installed runtime dependency graph with Node's CommonJS and ESM resolvers. Every
+reachable installed package that declares a linked identity MUST resolve it to
+the same canonical package root as the consumer. This includes published pnpm
+packages outside the provider: their isolated peer context can otherwise retain
+the published singleton while the application uses WB's staged singleton. A
+split identity MUST fail the operation and name the declaring package and edge;
+the recorded live link and its exact `--undo` recovery remain authoritative.
+WB MUST NOT silently delete framework build caches when the link topology
+changes. A running frontend build must be restarted; if its resolver cache
+retains the prior target, the operator explicitly clears that generated cache
+and rebuilds.
 
 The build MUST be **cached against the library's content hash** and rebuilt
 whenever that hash moves. Building once and reusing it across an iterative stream
@@ -756,12 +789,22 @@ restore those published versions and remove the link. `--undo` MUST succeed even
 if the library worktree has since been removed, because the recorded state — not
 the library — is the source of truth for reversal.
 
+The record MUST distinguish a pre-operation intent from an applied npm link.
+Undoing an intent whose build failed before linking MUST preserve the published
+package already installed in `node_modules`. An applied npm link MUST leave an
+untracked marker beside the link and record the generated peer-context stage so
+an interrupted record update remains reversible without guessing whether the
+published package was replaced.
+
 #### REQ: merge-refuses-a-linked-worktree
 
 `wb worktree merge` MUST refuse to push or land a worktree that has a live link
-recorded in stream state, or a `go.work` containing a `use` entry, and MUST name
-the offending link and the command that clears it. The refusal MUST be based on
-both signals independently: state alone would miss a hand-written `go.work`, and
+recorded in stream state, or a `go.work` containing an unpublished `use` entry,
+and MUST name the offending link and the command that clears it. A relative
+entry is intrinsic rather than unpublished only when `go.work` is unchanged
+from `HEAD`, the entry remains physically inside the repository, and the
+module's `go.mod` is also tracked in `HEAD`. The refusal MUST be based on both
+signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
@@ -1610,9 +1653,9 @@ Applications of `one-verb-per-operation`, each derived from a multi-call
 sequence performed by hand during the 2026-09-02/03 release night. Each is its
 own Feature, not part of this one:
 
-- **`wb pr land <repo#n>`** — verify head, mergeability and green checks, squash
-  with the pull request title as the subject, delete the branch, report the
-  resulting commit SHA.
+- **`wb pr land <repo#n>`** — verify head, mergeability and green checks, create
+  a merge commit by default (or honor an explicit squash/rebase method), delete
+  the branch, report the resulting commit SHA.
 - **`wb release verify <repo>`** — confirm the tag, the publish workflow run, and
   the registry `dist-tags` agree, and name the one that disagrees.
 - **`wb deploy watch <repo>`** — follow the CI and deploy runs to a green result
@@ -1712,7 +1755,7 @@ and `--force` proceeds with the reason recorded.
 **Requirements:** dependency-streams#req:the-squash-message-aggregates-the-source-commits, dependency-streams#req:keeping-a-commit-separate-is-reasoned-and-must-build
 
 **Given** a reviewed pull request whose branch carries five commits
-**When** it is landed with `--keep-commits <two of those shas> --reason "…"`
+**When** it is landed with `--merge-method squash --keep-commits <two of those shas> --reason "…"`
 **Then** the base receives **three** commits — the two kept ones, in their
 original relative order, and one aggregated commit whose body lists the other
 three by short SHA and subject and carries the reason; the ledger records each
@@ -1845,12 +1888,43 @@ the published version instead.
 
 **Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
 
-**Given** an npm consumer depending on a package the library publishes
+**Given** an npm consumer depending on a package the library publishes, with
+either or both repositories placing their npm workspace below `frontend/`
 **When** the operator links it locally
-**Then** the library is built once with the repository's own build target and
-linked from its dist into the consumer's `node_modules`; `pnpm-workspace.yaml`
+**Then** repository-root stream membership remains authoritative; the frozen
+install, library build, link, and undo run in the owning npm workspaces; the
+library is built once with that workspace's own build target and linked from its
+dist into the declaring workspace's `node_modules`; `pnpm-workspace.yaml`
 and every `package.json` are byte-identical to their committed contents; and no
 override, alias, or `workspace:` entry is introduced anywhere in tracked config.
+
+### AC: npm-staged-siblings-share-one-runtime-identity
+
+**Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
+
+**Given** a pnpm consumer using staged `app`, `core`, and `auth-core` packages,
+where app declares core, core declares auth-core, and the packages share an
+external Angular peer
+**When** WB links all provider packages into the consumer workspace
+**Then** imports from both the consumer root and every staged sibling resolve
+core and auth-core to the same staged paths; Angular resolves from the
+consumer's installed peer context; a conflicting sibling path is refused before
+any sibling edge is created; retry succeeds after that conflict is removed; and
+undo restores every original pnpm symlink while removing every WB stage and
+marker.
+
+### AC: npm-installed-runtime-graph-has-no-split-linked-identity
+
+**Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
+
+**Given** a pnpm consumer whose root uses WB's staged `core`, while a reachable
+published package has an isolated peer-context edge to the published `core`
+**When** WB reconciles the provider siblings
+**Then** Node's `createRequire(...).resolve()` and `import.meta.resolve()` walk
+the installed graph from the consumer manifest, compare canonical package
+roots, and refuse the operation with the published package and `core` edge
+instead of reporting a locally linked success; no browser suite is required to
+detect the split, and the live-link receipt continues to require exact undo.
 
 ### AC: verify-reports-every-consumer-single-worker
 
@@ -1879,12 +1953,14 @@ reading the removed library worktree.
 
 **Requirements:** dependency-streams#req:merge-refuses-a-linked-worktree
 
-**Given** a consumer worktree with a live link, and separately a worktree with a
-hand-written `go.work` containing a `use` entry and no stream record
-**When** `wb worktree merge` is run on either
+**Given** a consumer worktree with a live link, separately a worktree with a
+hand-written `go.work` containing a `use` entry and no stream record, and a
+repository with a committed `go.work` whose relative entries point only to
+committed modules in that repository
+**When** `wb worktree merge` is run on each
 **Then** it refuses before any push, names the link or the `use` entry and the
 command that clears it, and no flag combination both bypasses the guard and
-pushes.
+pushes; the committed intrinsic workspace is accepted.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 
@@ -2158,7 +2234,7 @@ worktree hard-links into it, and `~/.wb/worklogs`, `~/.wb/sessions`,
 **Given** a green pull request with a claimed worktree, on a machine with `gh`
 2.45 installed
 **When** the operator runs `wb pr land` with no flags
-**Then** the pull request lands without falling back to raw `gh pr merge`, the
+**Then** the pull request lands with a merge commit without falling back to raw `gh pr merge`, the
 worktree is removed and its claim released, `--keep` is the only way to retain
 them; and after `wb stream end`, none of the stream's worktrees remain.
 
@@ -2335,7 +2411,7 @@ upload manually report artefact?"*
 
 **One data contract.** A versioned **stream report** JSON — events plus derived
 metrics, defined in **Appendix: the stream report data contract** below — is the
-single input to all four modes. The web app at `wb.sneat.dev` is a static site
+single input to all four modes. The web app at `sneat.work/bench` is a static site
 deployed like the other landings (Cloudflare) and versioned **with** the data
 contract. Redaction is identical in every mode.
 
@@ -2344,7 +2420,7 @@ Delivery order, cheapest and most private first:
 **(0) Export a file.** `wb report export <stream> [--format json|html]` writes
 **one** file: the redacted stream report, or a self-contained HTML replay of the
 shape of `stream-analytics/stream-timeline.html`. The user opens it directly, or
-drops it onto `wb.sneat.dev` ("Open a report": drag-and-drop or file picker),
+drops it onto `sneat.work/bench` ("Open a report": drag-and-drop or file picker),
 where it is parsed **in the browser** with no upload unless the user then chooses
 to publish. Sharing is sending the file. This mode needs no server and no
 account, which is why it ships first.
@@ -2353,7 +2429,7 @@ account, which is why it ships first.
 a random token, and serves the report JSON plus a live SSE event stream from the
 stream's event log. The web app reads it via
 `?source=localhost:<port>#<token>`, with a CORS allow-list of exactly
-`https://wb.sneat.dev` and localhost, and
+`https://sneat.work` and localhost, and
 `Access-Control-Allow-Private-Network: true` for Chrome's Private Network Access
 check. Because Safari and locked-down browsers may refuse a private-network
 request regardless, `--open` MUST also serve an **embedded copy** of the web app
@@ -2361,11 +2437,11 @@ as an offline fallback. Nothing leaves the machine in this mode.
 
 **(2) Published snapshot.** `wb report publish` runs the redaction pass and
 uploads to **founder-owned private storage first** (bucket plus signed links; a
-wb cloud later), yielding `wb.sneat.dev/?snapshot=<id>`. Visibility — private
+wb cloud later), yielding `sneat.work/bench/?snapshot=<id>`. Visibility — private
 link, unlisted, or public — is chosen at publish time, never inherited.
 
 **(3) Live relay.** `wb serve --publish` relays events to the cloud as they
-happen so viewers can follow on `wb.sneat.dev` — *"think twitch for AI agent
+happen so viewers can follow on `sneat.work/bench` — *"think twitch for AI agent
 sessions"*. It needs the cloud, so it is last.
 
 This supersedes the earlier one-line sharing note: the constraints that matter —
@@ -2426,15 +2502,11 @@ if the ledger shows it pays**. The ledger specified above is what would answer
 that, which is the reason to ship it first.
 
 *(The former question 3 — whether agent pull requests should be squashed or have
-their raw commits kept — is **resolved**. Founder, 2026-09-03: squash by default,
-and the squash message **aggregates** the source commits, so the branch's own
-messages survive inside one commit rather than being discarded by the squash or
-scattered across the history by a rebase. An agent may promote specific commits
-to their own place with `--keep-commits … --reason …`, which is reasoned rather
-than default, and each promoted commit must build on its own. See
-`the-squash-message-aggregates-the-source-commits` and
-`keeping-a-commit-separate-is-reasoned-and-must-build`, with
-AC `five-commits-land-as-three-with-the-aggregate-naming-the-rest`.)*
+their raw commits kept — was superseded by the founder's 2026-09-06 tooling
+policy: merge commit by default. The merge commit preserves the reviewed pull
+request boundary and its commits. Explicit `--merge-method squash` retains the
+aggregated-message contract, while explicit rebase and reasoned
+`--merge-method squash --keep-commits … --reason …` remain available.)*
 
 *(The former question 4 — whether own-library bumps keep flowing through
 Renovate — is **resolved**. Founder, 2026-09-03: "Yes, renovate should bump deps

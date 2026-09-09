@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const (
@@ -27,7 +29,58 @@ const (
 	defaultBaseBackoff   = 250 * time.Millisecond
 	defaultMaxBackoff    = 5 * time.Second
 	defaultCommandTimout = 15 * time.Second
+
+	// defaultMinAPIAttemptTimeout floors the per-attempt exec timeout for `gh
+	// api` and `gh pr view` commands. A saturated host that would otherwise
+	// kill the gh subprocess by signal before GitHub answers gets a full
+	// attempt instead of losing the whole retry budget to one slow call.
+	defaultMinAPIAttemptTimeout = 30 * time.Second
+
+	// defaultMaxRetryElapsed caps the total wall-clock time an in-process
+	// retry loop spends recovering from transient GitHub read failures, so a
+	// persistently saturated host still fails (and reports resumable
+	// guidance) within a bound instead of retrying indefinitely.
+	defaultMaxRetryElapsed = 45 * time.Second
 )
+
+// ErrTransientRetriesExhausted marks an error returned after every in-process
+// retry attempt for a transient GitHub read failure was exhausted (attempt
+// cap or elapsed budget). Callers that can name a resumable command (for
+// example `wb pr land` or `wb ci wait`) should check for it with errors.Is
+// and append that guidance; the observer package has no such context.
+var ErrTransientRetriesExhausted = errors.New("github transient read retries exhausted")
+
+// RetryTelemetry accumulates the in-process GitHub read retries performed
+// while it is attached to a context via WithRetryTelemetry. Count is the
+// number of retries attempted (not the number of calls), and LastReason
+// records the most recent retry's classified cause.
+type RetryTelemetry struct {
+	Count      int
+	LastReason string
+}
+
+type retryTelemetryContextKey struct{}
+
+// WithRetryTelemetry attaches a RetryTelemetry accumulator to ctx. Every
+// retried GitHub read (Get/apiGet and Read) made below the returned context
+// increments it, so a caller can report `github_read_retries` on its own
+// receipt after the call returns, whether the call ultimately succeeded or
+// failed.
+func WithRetryTelemetry(ctx context.Context, telemetry *RetryTelemetry) context.Context {
+	if telemetry == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, retryTelemetryContextKey{}, telemetry)
+}
+
+func recordRetryTelemetry(ctx context.Context, cause string) {
+	telemetry, _ := ctx.Value(retryTelemetryContextKey{}).(*RetryTelemetry)
+	if telemetry == nil {
+		return
+	}
+	telemetry.Count++
+	telemetry.LastReason = cause
+}
 
 type GetRequest struct {
 	Dir         string
@@ -38,6 +91,7 @@ type GetRequest struct {
 	Query       map[string]string
 	Accept      string
 	FreshWindow time.Duration
+	Progress    progress.Reporter
 }
 
 type Response struct {
@@ -66,6 +120,15 @@ type Observer struct {
 	MaxAttempts int
 	BaseBackoff time.Duration
 	MaxBackoff  time.Duration
+	// MinAPIAttemptTimeout floors the per-attempt exec timeout for `gh api`
+	// and `gh pr view` commands. Defaults to defaultMinAPIAttemptTimeout (30s)
+	// when unset; never applied when the caller's own context already carries
+	// an explicit deadline, which remains authoritative.
+	MinAPIAttemptTimeout time.Duration
+	// MaxRetryElapsed caps the total wall-clock time spent retrying a single
+	// GitHub read across all attempts. Defaults to defaultMaxRetryElapsed
+	// (45s) when unset.
+	MaxRetryElapsed time.Duration
 }
 
 type commandResult struct {
@@ -101,6 +164,17 @@ var (
 	defaultObserver *Observer
 )
 
+type progressContextKey struct{}
+
+// WithProgress attaches one transport-neutral progress sink to GitHub reads
+// made below ctx. An explicit GetRequest.Progress takes precedence.
+func WithProgress(ctx context.Context, reporter progress.Reporter) context.Context {
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressContextKey{}, reporter)
+}
+
 func Default() *Observer {
 	defaultOnce.Do(func() {
 		defaultObserver = &Observer{}
@@ -121,6 +195,9 @@ func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
 }
 
 func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {
+	if request.Progress == nil {
+		request.Progress, _ = ctx.Value(progressContextKey{}).(progress.Reporter)
+	}
 	request.Endpoint = strings.TrimSpace(request.Endpoint)
 	if request.Endpoint == "" {
 		return Response{}, errors.New("GitHub endpoint is required")
@@ -180,7 +257,7 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (response Respon
 			headers["If-Modified-Since"] = entry.LastModified
 		}
 	}
-	httpResult, err := o.apiGet(ctx, request.Dir, request.Endpoint, request.Query, request.Accept, headers)
+	httpResult, err := o.apiGet(ctx, request, headers)
 	if err != nil {
 		return Response{}, err
 	}
@@ -237,21 +314,62 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (response Respon
 }
 
 func (o *Observer) Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	result := o.Execute(ctx, dir, args...)
-	if result.Err != nil {
-		message := strings.TrimSpace(string(result.Stderr))
-		if stdout := strings.TrimSpace(string(result.Stdout)); stdout != "" {
-			if message != "" {
-				message += ": "
+	reporter, _ := ctx.Value(progressContextKey{}).(progress.Reporter)
+	maxAttempts := o.maxAttempts()
+	floor := o.attemptTimeoutFloor(args)
+	startedAt := o.now()
+	var lastCause string
+	attemptsUsed := 0
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// The remaining budget is checked BEFORE starting this attempt, and
+		// the attempt's own timeout is clamped to it, so a stalling attempt
+		// can never push total wall-clock time past MaxRetryElapsed: checking
+		// only after an attempt completes let one attempt run the full
+		// per-attempt floor even when that floor alone was under the cap,
+		// then still permit a further full attempt afterward.
+		remaining := o.remainingBudget(startedAt)
+		if remaining <= 0 {
+			break
+		}
+		attemptTimeout := floor
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		attemptsUsed = attempt + 1
+		attemptCtx, cancelAttempt := o.attemptContext(ctx, attemptTimeout)
+		result := o.Execute(attemptCtx, dir, args...)
+		timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		cancelAttempt()
+		if result.Err == nil {
+			return append([]byte(nil), result.Stdout...), nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The caller's own context is cancelled or expired; that is
+			// authoritative and must never be reported as a saturated-host
+			// transient failure, which would be decorated with resume
+			// guidance the caller never asked for.
+			return nil, ctxErr
+		}
+		message := commandFailureMessage(result)
+		cause, retryable := retryableReadFailure(ctx, timedOut, result, message)
+		lastCause = cause
+		elapsedExceeded := o.remainingBudget(startedAt) <= 0
+		if !retryable || attempt+1 >= maxAttempts || elapsedExceeded {
+			if retryable && attemptsUsed > 1 {
+				return nil, fmt.Errorf("%w: gh %s failed after %d attempts (last cause: %s): %s",
+					ErrTransientRetriesExhausted, strings.Join(args, " "), attemptsUsed, lastCause, message)
 			}
-			message += stdout
+			return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), result.Err, message)
 		}
-		if message == "" {
-			message = result.Err.Error()
+		delay, reason := o.retryDelay(attempt, nil)
+		recordRetryTelemetry(ctx, cause)
+		reportRetryProgress(reporter, repositoryArgument(args), "github_read", attempt+1, maxAttempts, cause, delay, reason)
+		if sleepErr := o.sleep(ctx, delay); sleepErr != nil {
+			return nil, fmt.Errorf("gh %s retry after %s: %w", strings.Join(args, " "), cause, sleepErr)
 		}
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), result.Err, message)
 	}
-	return append([]byte(nil), result.Stdout...), nil
+	return nil, fmt.Errorf("%w: gh %s did not return a response after %d attempts (last cause: %s)",
+		ErrTransientRetriesExhausted, strings.Join(args, " "), attemptsUsed, lastCause)
 }
 
 func (o *Observer) Execute(ctx context.Context, dir string, args ...string) CommandResponse {
@@ -262,7 +380,11 @@ func (o *Observer) Execute(ctx context.Context, dir string, args ...string) Comm
 	return CommandResponse{Stdout: append([]byte(nil), result.Stdout...), Stderr: append([]byte(nil), result.Stderr...), ExitCode: result.ExitCode, Err: result.Err}
 }
 
-func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[string]string, accept string, conditional map[string]string) (httpResponse, error) {
+func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional map[string]string) (httpResponse, error) {
+	dir := request.Dir
+	endpoint := request.Endpoint
+	query := request.Query
+	accept := request.Accept
 	args := []string{"api", endpoint, "--include"}
 	if len(query) > 0 {
 		args = append(args, "--method", "GET")
@@ -289,10 +411,34 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		}
 	}
 	var lastErr error
-	for attempt := 0; attempt < o.maxAttempts(); attempt++ {
-		commandCtx, cancel := withCommandTimeout(ctx)
-		result := o.runner()(commandCtx, dir, args...)
-		cancel()
+	maxAttempts := o.maxAttempts()
+	floor := o.minAPIAttemptTimeout()
+	startedAt := o.now()
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// See the matching comment in Read: the remaining budget is checked
+		// BEFORE this attempt starts, and the attempt's timeout is clamped to
+		// it, so MaxRetryElapsed bounds real wall-clock time instead of being
+		// checked only after an attempt that was itself under the cap.
+		remaining := o.remainingBudget(startedAt)
+		if remaining <= 0 {
+			break
+		}
+		attemptTimeout := floor
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		attemptCtx, cancelAttempt := o.attemptContext(ctx, attemptTimeout)
+		result := o.runner()(attemptCtx, dir, args...)
+		timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		cancelAttempt()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The caller's own context is cancelled or expired; that is
+			// authoritative and must never be reported as a saturated-host
+			// transient failure (ErrTransientRetriesExhausted), which would be
+			// decorated with resume guidance the caller never asked for.
+			return httpResponse{}, ctxErr
+		}
+		elapsedExceeded := o.remainingBudget(startedAt) <= 0
 		response, parseErr := parseIncludedResponse(result.Stdout)
 		commandOK := result.Err == nil && result.ExitCode == 0
 		if parseErr != nil && commandOK {
@@ -304,15 +450,19 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		if parseErr == nil && (commandOK || response.StatusCode == 304) {
 			return response, nil
 		}
-		if parseErr == nil && isThrottleStatus(response.StatusCode) {
+		if parseErr == nil && isRetryableHTTPResponse(response) {
 			delay, reason := o.retryDelay(attempt, response.Headers)
-			if attempt+1 >= o.maxAttempts() {
-				return httpResponse{}, fmt.Errorf("GitHub throttled %s after %d attempts: %s", endpoint, attempt+1, reason)
+			cause := fmt.Sprintf("HTTP %d", response.StatusCode)
+			if attempt+1 >= maxAttempts || elapsedExceeded {
+				return httpResponse{}, fmt.Errorf("%w: GitHub %s returned %s after %d attempts",
+					ErrTransientRetriesExhausted, endpoint, cause, attempt+1)
 			}
+			recordRetryTelemetry(ctx, cause)
+			reportRetry(request, attempt+1, maxAttempts, cause, delay, reason)
 			if sleepErr := o.sleep(ctx, delay); sleepErr != nil {
-				return httpResponse{}, sleepErr
+				return httpResponse{}, fmt.Errorf("GitHub %s retry after %s: %w", endpoint, cause, sleepErr)
 			}
-			lastErr = fmt.Errorf("GitHub throttled %s: %s", endpoint, reason)
+			lastErr = fmt.Errorf("%w: GitHub %s returned %s", ErrTransientRetriesExhausted, endpoint, cause)
 			continue
 		}
 		if parseErr == nil {
@@ -330,6 +480,21 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 			if message == "" {
 				message = strings.TrimSpace(string(result.Stdout))
 			}
+			if isTemporaryCommandFailure(ctx, timedOut, result.Err, message) {
+				delay, reason := o.retryDelay(attempt, nil)
+				cause := temporaryFailureCause(message, result.Err)
+				if attempt+1 >= maxAttempts || elapsedExceeded {
+					return httpResponse{}, fmt.Errorf("%w: gh api %s failed temporarily after %d attempts: %s",
+						ErrTransientRetriesExhausted, endpoint, attempt+1, cause)
+				}
+				recordRetryTelemetry(ctx, cause)
+				reportRetry(request, attempt+1, maxAttempts, cause, delay, reason)
+				if sleepErr := o.sleep(ctx, delay); sleepErr != nil {
+					return httpResponse{}, fmt.Errorf("GitHub %s retry after %s: %w", endpoint, cause, sleepErr)
+				}
+				lastErr = fmt.Errorf("%w: gh api %s failed temporarily: %s", ErrTransientRetriesExhausted, endpoint, cause)
+				continue
+			}
 			return httpResponse{}, fmt.Errorf("gh api %s: %w: %s", endpoint, result.Err, message)
 		}
 		return httpResponse{}, parseErr
@@ -338,6 +503,177 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		return httpResponse{}, lastErr
 	}
 	return httpResponse{}, fmt.Errorf("GitHub did not return a response for %s", endpoint)
+}
+
+func reportRetry(request GetRequest, attempt, maxAttempts int, cause string, delay time.Duration, delayReason string) {
+	reportRetryProgress(request.Progress, request.Repository, "github_api", attempt, maxAttempts, cause, delay, delayReason)
+}
+
+func reportRetryProgress(reporter progress.Reporter, repository, operation string, attempt, maxAttempts int, cause string, delay time.Duration, delayReason string) {
+	detail := fmt.Sprintf("attempt %d/%d failed: %s; retrying in %s", attempt, maxAttempts, cause, delay)
+	if delayReason != "" {
+		detail += " (" + delayReason + ")"
+	}
+	progress.Report(reporter, progress.Event{
+		Operation: operation, Phase: "retry", Repository: repository,
+		Detail: detail, State: progress.Waiting,
+	})
+}
+
+func commandFailureMessage(result CommandResponse) string {
+	message := strings.TrimSpace(string(result.Stderr))
+	if stdout := strings.TrimSpace(string(result.Stdout)); stdout != "" {
+		if message != "" {
+			message += ": "
+		}
+		message += stdout
+	}
+	if message == "" && result.Err != nil {
+		message = result.Err.Error()
+	}
+	return message
+}
+
+func retryableReadFailure(outerCtx context.Context, timedOut bool, result CommandResponse, message string) (string, bool) {
+	if outerCtx.Err() != nil {
+		// The caller's own context is already cancelled or expired; that is
+		// authoritative and must never be reclassified as a transient,
+		// retryable GitHub read failure just because the last observed
+		// output also happened to mention an HTTP status or rate limit.
+		return "", false
+	}
+	lower := strings.ToLower(message)
+	for _, status := range []int{429, 502, 503, 504} {
+		for _, marker := range []string{fmt.Sprintf("http %d", status), fmt.Sprintf("status code %d", status)} {
+			if strings.Contains(lower, marker) {
+				return fmt.Sprintf("HTTP %d", status), true
+			}
+		}
+	}
+	if strings.Contains(lower, "secondary rate limit") || strings.Contains(lower, "rate limit exceeded") {
+		return "GitHub rate limit", true
+	}
+	if isTemporaryCommandFailure(outerCtx, timedOut, result.Err, message) {
+		return temporaryFailureCause(message, result.Err), true
+	}
+	return "", false
+}
+
+func repositoryArgument(args []string) string {
+	for index, arg := range args {
+		if arg == "--repo" && index+1 < len(args) {
+			return strings.TrimSpace(args[index+1])
+		}
+		if strings.HasPrefix(arg, "--repo=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--repo="))
+		}
+	}
+	return ""
+}
+
+func isRetryableHTTPResponse(response httpResponse) bool {
+	switch response.StatusCode {
+	case 429, 502, 503, 504:
+		return true
+	case 403:
+		if strings.TrimSpace(response.Headers["retry-after"]) != "" {
+			return true
+		}
+		if strings.TrimSpace(response.Headers["x-ratelimit-remaining"]) == "0" {
+			return true
+		}
+		body := strings.ToLower(string(response.Body))
+		return strings.Contains(body, "secondary rate limit") || strings.Contains(body, "rate limit exceeded")
+	default:
+		return false
+	}
+}
+
+// isTemporaryCommandFailure classifies a failed gh invocation as transient or
+// authoritative. outerCtx is the context the caller passed in for the whole
+// (possibly multi-attempt) operation, never the per-attempt context: if
+// outerCtx is already done, that cancellation or deadline is authoritative
+// and nothing is retryable. timedOut reports that THIS attempt's own bounded
+// per-attempt timeout expired (the gh subprocess was killed by signal because
+// its exec context ran out, typically surfacing as "signal: killed") while
+// outerCtx was still live — that is exactly the transient case a saturated
+// host produces, and it is safe to retry with a fresh per-attempt timeout.
+func isTemporaryCommandFailure(outerCtx context.Context, timedOut bool, err error, message string) bool {
+	if err == nil {
+		return false
+	}
+	if outerCtx.Err() != nil {
+		// The caller's own context is cancelled or has run out of time; that
+		// is authoritative and never a reason to keep retrying in-process.
+		return false
+	}
+	if timedOut {
+		return true
+	}
+	// "signal: killed" and "deadline exceeded" are checked against err.Error()
+	// ONLY, never against combined stdout+stderr: those two fragments name the
+	// exact process-kill semantics the timedOut check above already detects
+	// reliably from exec.CommandContext, and command OUTPUT (a PR title, body,
+	// or log line quoting that literal text) is attacker- or author-influenced
+	// content that must never be able to make an authoritative failure look
+	// like a saturated host that is safe to retry.
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(errText, "signal: killed") || strings.Contains(errText, "deadline exceeded") {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return true
+	}
+	combined := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
+	for _, fragment := range []string{
+		"error connecting to api.github.com",
+		"connection reset",
+		"connection refused",
+		"connection closed",
+		"server closed idle connection",
+		"temporary failure",
+		"temporarily unavailable",
+		"tls handshake timeout",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(combined, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func temporaryFailureCause(message string, err error) string {
+	// Mirrors isTemporaryCommandFailure above: "signal: killed" and "deadline
+	// exceeded" are matched against err.Error() only, never against command
+	// output, so the reported cause always agrees with what actually made the
+	// failure retryable.
+	errText := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, cause := range []string{"signal: killed", "deadline exceeded"} {
+		if strings.Contains(errText, cause) {
+			return cause
+		}
+	}
+	combined := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
+	for _, cause := range []string{
+		"error connecting to api.github.com",
+		"connection reset",
+		"connection refused",
+		"connection closed",
+		"server closed idle connection",
+		"temporary failure",
+		"temporarily unavailable",
+		"tls handshake timeout",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(combined, cause) {
+			return cause
+		}
+	}
+	return "temporary network failure"
 }
 
 func (o *Observer) pathsForKey(key string) (cachePath, lockPath string, err error) {
@@ -413,6 +749,50 @@ func (o *Observer) maxBackoff() time.Duration {
 	return defaultMaxBackoff
 }
 
+func (o *Observer) minAPIAttemptTimeout() time.Duration {
+	if o.MinAPIAttemptTimeout > 0 {
+		return o.MinAPIAttemptTimeout
+	}
+	return defaultMinAPIAttemptTimeout
+}
+
+func (o *Observer) maxRetryElapsed() time.Duration {
+	if o.MaxRetryElapsed > 0 {
+		return o.MaxRetryElapsed
+	}
+	return defaultMaxRetryElapsed
+}
+
+// remainingBudget returns how much of MaxRetryElapsed is left before
+// startedAt's retry loop must stop, checked BEFORE an attempt starts so a
+// stalling attempt itself can never push the loop's wall-clock time past the
+// cap. A non-positive result means no further attempt may begin.
+func (o *Observer) remainingBudget(startedAt time.Time) time.Duration {
+	return o.maxRetryElapsed() - o.now().Sub(startedAt)
+}
+
+// attemptTimeoutFloor picks the per-attempt exec timeout floor for one gh
+// invocation: `gh api` and `gh pr view` never get less than
+// minAPIAttemptTimeout (a saturated host still owes those calls a real shot
+// at GitHub answering); every other gh command keeps the shorter general
+// default.
+func (o *Observer) attemptTimeoutFloor(args []string) time.Duration {
+	if isAPIOrPRViewCommand(args) {
+		return o.minAPIAttemptTimeout()
+	}
+	return defaultCommandTimout
+}
+
+func isAPIOrPRViewCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "api" {
+		return true
+	}
+	return args[0] == "pr" && len(args) > 1 && args[1] == "view"
+}
+
 func (o *Observer) stateDir() string {
 	if strings.TrimSpace(o.StateDir) != "" {
 		return o.StateDir
@@ -474,11 +854,16 @@ func runGH(ctx context.Context, dir string, args ...string) commandResult {
 	return result
 }
 
-func withCommandTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+// attemptContext derives one attempt's bounded exec context, called fresh
+// inside each retry-loop iteration so a killed or timed-out attempt never
+// consumes the budget of the attempts that follow it. When the caller's own
+// ctx already carries an explicit deadline, that deadline is authoritative
+// and is not extended or shortened here — only its cancellation propagates.
+func (o *Observer) attemptContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, defaultCommandTimout)
+	return context.WithTimeout(ctx, timeout)
 }
 
 func readCacheEntry(path string) (*cacheEntry, error) {
@@ -663,10 +1048,6 @@ func httpTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid HTTP time %q", value)
-}
-
-func isThrottleStatus(status int) bool {
-	return status == 403 || status == 429
 }
 
 func acquireLock(path string) (func() error, error) {

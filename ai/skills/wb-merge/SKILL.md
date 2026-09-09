@@ -19,9 +19,11 @@ wb worktree merge <source-worktree...> --route auto --cleanup --format json
 `wb worktree merge`, `wb worktree merge prepare`, `wb worktree merge land` and
 `wb worktree merge resume` all **refuse before any push**
 a worktree that holds a live local link — a link recorded in stream state, or a
-`go.work` carrying a `use` entry. Such a worktree builds against an
-*unpublished* working tree, so landing it would publish a commit whose CI ran
-against something the registry never carried.
+`go.work` carrying an unpublished `use` entry. A committed `go.work` may name
+committed modules inside the same repository; WB accepts that intrinsic
+workspace. Untracked, modified, external, escaping, or untracked-module entries
+still build against an *unpublished* working tree, so landing would publish a
+commit whose CI ran against something the registry never carried.
 
 The two signals are checked independently: state alone would miss a hand-written
 `go.work`, and `go.work` alone would miss an npm link. Either one refuses, with
@@ -40,8 +42,31 @@ wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
 **There is no flag that both bypasses this guard and pushes.** Do not hand-roll
 `git push` around it.
 
+## Only one landing owner per (repository, target)
+
+`wb pr land`, `wb worktree merge`, `merge prepare`, `merge land`, `merge
+resume`, and `merge revert` all acquire a durable landing-lane record for the
+(repository, target branch) before doing any work that would otherwise have to
+be re-prepared or stranded. A different **live** WB session already driving
+that lane is **refused**, naming that session's WB session ID, pid,
+runtime/model, how long it has held the lane, and the receipt it is driving.
+Ask it to hand off with `wb session request-handoff <id>`, or override with
+`--take-over-lane --lane-reason <text>` (the same flag name on every landing
+command now — the reason is recorded on the lane and, for `worktree merge`,
+on the receipt's `lane_owner` field, so `--format json` shows it). A session
+whose registry entry is gone is taken over automatically with a printed note;
+a live session is **never** taken over implicitly, no matter how old its
+heartbeat looks — a heartbeat refresh runs for the whole duration of any CI
+wait the lane holds, so a live, actively-landing session's lane never goes
+stale out from under it. The same session resuming or retrying simply
+refreshes its own lane. A lane record that cannot be parsed refuses the same
+way a live owner does, naming the corrupt file, rather than being treated as
+free. This is the mechanical enforcement of "one landing owner per repository
+and target branch" — see `[[land-work-dont-queue-it]]`.
+
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
-landing the stream itself is rebase-and-merge. See the `wb-streams` skill.
+landing uses the repository-approved merge method, with merge commits preferred
+for ancestry-preserving tooling. See the `wb-streams` skill.
 
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
@@ -52,21 +77,21 @@ For conflict-free receipt-backed automation, read
 
 **When the work is already on GitHub as one pull request and it is ready to
 land, use [`wb pr land`](references/pr-land.md) instead** — it verifies the head
-and its checks, squashes with an aggregated message, proves the merge reached
-the base, deletes the branch, and retires the worktree, all as one verb.
+and its checks, creates a merge commit by default, proves the merge reached the
+base, deletes the branch, and retires the worktree, all as one verb. Explicit
+`--merge-method squash` and `--merge-method rebase` remain available.
 **Never run `gh pr merge` by hand**: that is the measured root cause of sixty
 abandoned worktrees, because the cleanup that should follow it never ran.
 
-The dedicated merger agent validates the candidate first. A passing candidate
+The designated landing owner validates the candidate first. A passing candidate
 records that a target baseline was not needed; a failing candidate triggers an
 exact target-snapshot validation so unchanged target failures remain diagnostic
 rather than blocking a fix. It never waits for current target CI to turn green;
 the candidate may fix a red target. The merger owns fetching and
 fast-forwarding, integration validation, exact-head CI, the merge and immediate
-push, post-merge target CI, release/install evidence, and cleanup. Main and
-planning agents hand work to the merger and receive only behavioral, design,
-or authority blockers. The invoking harness assigns this mechanical role to a
-faster, lower-cost model with adequate repository and CI capability. Every
+push, post-merge target CI, release/install evidence, and cleanup. The primary agent owns landing unless it explicitly delegates the complete
+lifecycle to a merger. Delegation is optional and must preserve one owner per
+repository and target; unavailable subagents must not block authorized landing. Every
 Work Log creator MUST pass the exact model identifier when the runtime exposes
 it, or the literal `unknown` when it does not; never infer or guess a model ID
 and never omit `--model`.
@@ -123,7 +148,8 @@ than a fictional queue.
    The dedicated merger checkout must be clean before every integration and
    push; unrelated dirty state is a blocker, not an exception.
    Integrate the compatible batch through the approved target integration
-   route, validate after each merge, then run the full target verification.
+   route, then validate the final compatible batch once under the tracked quality
+   policy. Repeat validation only for changed input or a concrete unresolved risk.
    Before candidate CI, prove the candidate head contains the freshly fetched
    exact target SHA and that the target has a nonempty server-enforced strict
    required-status-check policy. If the target advances, rebase or reintegrate

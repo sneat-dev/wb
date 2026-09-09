@@ -9,7 +9,7 @@ their own `wb <command> --help` and remain scoped to that command.
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`acknowledge-stranded-landing`/`acknowledge-receipt-collision`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
+acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -30,6 +30,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 |---|---:|---:|---:|---:|
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
+| `worker connect` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |
@@ -46,26 +48,29 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
+| `fleet merge-policy` | yes | yes | yes | yes |
 | `fleet prs` | rejected | rejected | yes | yes |
-| `remote publish`, `remote status`, `remote machines` | yes | `remote publish` only | rejected | yes |
+| `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
-| `worktree list`, `cleanup`, `gc`, `rename`, `summary` | yes | yes | rejected | yes |
+| `repo transfer cleanup` | yes | rejected | rejected | yes |
+| `worktree list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree end` | yes | rejected | rejected | yes |
-| `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-stranded-landing`, `merge acknowledge-receipt-collision`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
+| `worktree land` (`worktree merge` alias), `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
+| `plugin list`, `codegrapher status`, `install`, `update` | rejected | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |
@@ -108,6 +113,10 @@ a general force flag.
   This lets one repository blocked on something abort cannot fix stop
   blocking the rest of the task without ever widening into #76's cross-repo
   blast-radius concern.
+- `worktree abort --absorbed-by <merged-pr>` is accepted only with the
+  terminal `--disposition discarded`. It fetches and verifies the named PR
+  receipt before a clean source is removed; `--absorbed-by` never widens a
+  handoff or converts a commit message into deletion authority.
 - `--non-interactive` disables every live terminal UI and progress line,
   including sync, status, fleet quality checks, CI waits, dependency campaigns,
   npm publication, remote publication, and hierarchical migration.
@@ -127,3 +136,11 @@ when the command consumes it; otherwise the command must reject it. The
 conformance test `TestPersistentFlagMatrix` exercises every root-flag ×
 leaf-command cell; focused negative cases remain in
 `TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem`.
+
+`daemon operation wait` accepts `--progress=false` for terminal-only output or
+`--progress-file <path>` to append human heartbeats separately. These flags are
+independent of `--format` / `--json`; failure receipts retain error details.
+
+`worktree merge resume` accepts `--prepare-timeout`, `--check-timeout`, and
+`--shard-attempt-timeout` when recovering an interrupted preparing receipt.
+Unspecified validation limits retain the persisted values.

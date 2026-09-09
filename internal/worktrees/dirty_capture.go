@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // Dirty captures are deliberately bounded. A discard command is not allowed

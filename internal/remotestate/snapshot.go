@@ -49,6 +49,7 @@ type Snapshot struct {
 	WBVersion           string            `yaml:"wb_version" json:"wb_version"`
 	ProjectsRoot        string            `yaml:"projects_root" json:"projects_root"`
 	RepositoriesScanned int               `yaml:"repositories_scanned" json:"repositories_scanned"`
+	KnownRepositories   []string          `yaml:"known_repositories,omitempty" json:"known_repositories,omitempty"`
 	Repositories        []RepositoryState `yaml:"repositories" json:"repositories"`
 	Worktrees           []WorktreeState   `yaml:"worktrees" json:"worktrees"`
 }
@@ -91,13 +92,29 @@ type RepositoryState struct {
 // or not its owning session is still alive.
 type WorktreeState struct {
 	Task       string `yaml:"task" json:"task"`
+	Stream     string `yaml:"stream,omitempty" json:"stream,omitempty"`
 	Repository string `yaml:"repository" json:"repository"`
 	Branch     string `yaml:"branch" json:"branch"`
 	HeadSHA    string `yaml:"head_sha" json:"head_sha"`
 	Dir        string `yaml:"dir" json:"dir"`
+	Lifecycle  string `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 	// OwnerState is worktrees.ListResult.OwnerState: "active", "orphaned", or
 	// "unknown". Empty only if the underlying scan left it unset.
-	OwnerState string `yaml:"owner_state,omitempty" json:"owner_state,omitempty"`
+	OwnerState     string            `yaml:"owner_state,omitempty" json:"owner_state,omitempty"`
+	Owner          string            `yaml:"owner,omitempty" json:"owner,omitempty"`
+	LastActivityAt time.Time         `yaml:"last_activity_at,omitempty" json:"last_activity_at,omitempty"`
+	NeedsAttention bool              `yaml:"needs_attention,omitempty" json:"needs_attention,omitempty"`
+	Attention      string            `yaml:"attention,omitempty" json:"attention,omitempty"`
+	PullRequest    *PullRequestState `yaml:"pull_request,omitempty" json:"pull_request,omitempty"`
+}
+
+// PullRequestState is the navigable PR evidence that was available when the
+// machine published its worktree snapshot. It deliberately omits commit and
+// local checkout details that the hosted dashboard does not need.
+type PullRequestState struct {
+	Number int    `yaml:"number" json:"number"`
+	URL    string `yaml:"url" json:"url"`
+	State  string `yaml:"state" json:"state"`
 }
 
 // RepositoryInput is the per-repository scan result Build consumes. Err set
@@ -145,8 +162,10 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 	snap.SchemaVersion = SchemaVersion
 	snap.RepositoriesScanned = len(repos)
 	snap.Repositories = make([]RepositoryState, 0)
+	snap.KnownRepositories = make([]string, 0, len(repos))
 	snap.Worktrees = make([]WorktreeState, 0, len(wts))
 	for _, in := range repos {
+		snap.KnownRepositories = append(snap.KnownRepositories, in.Repository)
 		if in.Err != nil {
 			snap.Repositories = append(snap.Repositories, RepositoryState{Repository: in.Repository, Path: in.Path, Status: StatusError, Error: in.Err.Error()})
 			continue
@@ -179,9 +198,49 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 		}
 		snap.Repositories = append(snap.Repositories, state)
 	}
+	sort.Strings(snap.KnownRepositories)
 	sort.Slice(snap.Repositories, func(i, j int) bool { return snap.Repositories[i].Repository < snap.Repositories[j].Repository })
 	for _, wt := range wts {
-		snap.Worktrees = append(snap.Worktrees, WorktreeState{Task: wt.Task, Repository: wt.Repository, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir, OwnerState: wt.OwnerState})
+		stream := worktrees.ParentEffort(wt.Task)
+		if stream == "" {
+			stream = wt.Task
+		}
+		state := WorktreeState{
+			Task: wt.Task, Stream: stream, Repository: wt.Repository,
+			Branch: wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir,
+			Lifecycle: "working", OwnerState: wt.OwnerState, Owner: wt.Owner,
+			LastActivityAt: wt.LastActivityAt,
+		}
+		if state.LastActivityAt.IsZero() {
+			state.LastActivityAt = wt.LastCommit
+		}
+		switch {
+		case wt.IntegratedAtOrigin || wt.MergedPullRequest != nil:
+			state.Lifecycle = "merged"
+		case wt.OpenPullRequest != nil:
+			state.Lifecycle = "review"
+		case wt.SupersededAtOrigin:
+			state.Lifecycle = "superseded"
+		}
+		pullRequest := wt.OpenPullRequest
+		if pullRequest == nil {
+			pullRequest = wt.MergedPullRequest
+		}
+		if pullRequest != nil {
+			state.PullRequest = &PullRequestState{Number: pullRequest.Number, URL: pullRequest.URL, State: pullRequest.State}
+		}
+		if wt.OwnerState == "orphaned" {
+			state.NeedsAttention = true
+			state.Attention = "owner session is no longer active"
+		}
+		if wt.SupersessionRejection != "" {
+			state.NeedsAttention = true
+			state.Attention = "supersession evidence requires review"
+		} else if wt.AbsorbedByRejection != "" {
+			state.NeedsAttention = true
+			state.Attention = "absorption evidence requires review"
+		}
+		snap.Worktrees = append(snap.Worktrees, state)
 	}
 	sort.Slice(snap.Worktrees, func(i, j int) bool {
 		if snap.Worktrees[i].Task != snap.Worktrees[j].Task {

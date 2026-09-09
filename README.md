@@ -4,20 +4,50 @@ Fleet-wide operations across **your** GitHub repositories, from the
 terminal: keep every local clone in sync with GitHub, and run config-driven
 recipes across every repo that matches — no per-repo scripting.
 
-Part of the [Sneat Developer Platform](https://sneat.dev/workbench/). The CLI
+Part of [Sneat.work](https://sneat.work/bench). The CLI
 and executable stay intentionally short: `wb`.
 
-The public [wb.sneat.dev](https://wb.sneat.dev) site is tracked in
-[`website/`](website/README.md). It has its own Astro build and CI gate while
-remaining versioned beside the CLI it presents.
+The canonical public Workbench site is [sneat.work/bench](https://sneat.work/bench).
+For the product story, decision guide, and measured evidence, see
+[Why/when to use WB CLI? How it saves you time and money.](docs/why-use-wb.md)
+
+## WB
+
+Public Workbench projections are opt-in from this repository's root README:
+[Workbench dashboard](https://sneat.work/bench).
 
 ## Install
+
+On macOS or Linux, install the published Homebrew cask:
+
+```sh
+brew install --cask sneat-dev/tap/wb
+```
+
+On macOS or Linux, the release installer selects the matching platform and
+architecture:
+
+```sh
+curl -fsSL https://sneat.work/bench/install/get-cli | sh
+```
+
+To build from source with Go instead:
 
 ```sh
 go install github.com/sneat-dev/wb/cmd/wb@latest
 ```
 
-A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
+On Windows, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
+an administrator PowerShell session and complete its one-time setup after any
+prompted restart. Then install the supported Linux release through WSL:
+
+```powershell
+wsl --install
+wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'
+```
+
+Native Windows releases are not currently published; the supported Windows
+path is WB running in WSL.
 
 ## Agent skills
 
@@ -71,6 +101,8 @@ wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
+wb plugin list --format=json # typed lifecycle registry for preconfigured local tools
+wb codegrapher status|install|update # inspect or manage CodeGrapher (install/update require --yes)
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
@@ -89,7 +121,7 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 Keep canonical clones at `<projects-root>/<owner>/<repository>` clean when
 possible, but never mutate one to make it eligible for creation. WB leaves its
 currently checked-out branch, index, and working tree untouched while it
-creates every feature branch in its shared worktree hierarchy:
+creates every feature branch in its managed worktree location:
 
 ```sh
 # From any checkout of sneat-bots; owner/repository is derived from origin.
@@ -110,12 +142,31 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. Worktrees are created at
-`~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
-explicit alternative. New work never silently falls back to the historic
-`<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
-guards, lists, and cleans linked worktrees there during migration. Existing
-branches and worktrees are rejected unless `--resume` is explicit.
+contains active local work. By default, a worktree is created at
+`<canonical-repository>/.worktrees/<task>`. `WB_HOME` remains the private
+authority for Work Logs, task locks, receipts, and reports; setting it never
+changes the default checkout placement. To use one shared checkout root across
+repositories, set a user-only root in `~/.config/wb/worktrees.yaml`:
+
+```yaml
+version: 1
+worktrees:
+  root: ~/.wb/worktrees
+```
+
+WB expands `~` and creates that checkout at
+`<root>/<task>/<owner>/<repository>`. The root must be absolute after
+expansion; repository policy can configure branch naming but cannot choose a
+checkout root. The account running WB therefore needs access to both its
+`WB_HOME` state and the selected checkout root. New
+work never silently falls back to the historic `<projects-root>/.wb` directory;
+existing linked worktrees governed by the same `WB_HOME` remain discoverable
+and manageable during migration, and WB never relocates them merely because the
+default changed. WB adds a local
+Git exclude for the untracked `.worktrees/` directory so Git status stays
+clean; scanners and build tools that do not honor Git excludes must still avoid
+that directory deliberately.
+Existing branches and worktrees are rejected unless `--resume` is explicit.
 
 Resume recovers the registered branch and active Work Log claim before reading
 today's branch-prefix policy, so a policy change cannot strand or split an
@@ -337,6 +388,12 @@ only after merge to `main` and removal or audited recycle of every related
 worktree and branch; a task effort has the same requirement after merge to its
 feature branch. A validated branch is not terminal.
 
+If rename stops after reserving a destination prompt but before publishing its
+first checkout claim, recover that prompt-only reservation with `wb worktree
+abort <next-task> --disposition discarded --apply`. It retains the private
+prompt archive and does not require `--remote`, because that reservation has
+no branch or remote ref to retire.
+
 Use `wb worktree abort <task> --disposition handoff|not_landed --successor
 <agent-or-session> --model <exact-successor-model-or-unknown>` or explicit
 `--disposition discarded` for
@@ -531,7 +588,23 @@ wb sync -o your-org            # sync only one org
 wb sync -j 16                  # more parallelism
 ```
 
-### `wb run` — config-driven recipes
+### `wb run` — governed commands and config-driven recipes
+
+Use `--` to execute a command through WB. The command keeps its stdin, stdout,
+stderr, and exit code. This synchronous gateway is compatible with future WB
+scheduling and operation receipts, so agents do not need to change command
+syntax when those controls are enabled. In a managed worktree it records
+privacy-safe requested/terminal events under `.wb/local/run/events.jsonl`,
+including wall/CPU duration and an argument digest but never raw arguments or
+command output. The child receives its operation ID as `WB_OPERATION_ID`.
+CPU-heavy commands share a machine-wide `CPUCount-1` budget through leases under
+the projects root, leaving one logical CPU responsive for the harness and OS.
+
+```sh
+wb run -- go test ./internal/worktrees -run TestCreate
+wb run -- git status --short
+wb run --history --days 7
+```
 
 `wb run <recipe>` applies one recipe, defined in a YAML config, across every
 repo it matches. **Dry-run by default** — pass `--apply` to commit & push.
@@ -549,7 +622,12 @@ Flags:
 |------|---------|---------|
 | `--apply` | off (dry-run) | Commit & push changes. Without it, only reports what would change. |
 | `--config PATH` | `~/.config/wb/wb.yaml` | Path to the recipe config. |
+| `--days` | `14` | History window; requires `--history`. |
+| `--history` | off | Summarize governed command cost in the current worktree. |
+| `--json` | off | Emit the history summary as JSON. |
 | `--list` | off | Print configured recipe names and exit. |
+
+Recipe-only flags are rejected in command mode.
 
 #### Config format
 
@@ -679,7 +757,9 @@ go_test:
   packages: [./internal/worktrees]
 ```
 
-`wb worktree merge` validates the candidate first using this policy. It runs
+`wb worktree land` validates the candidate first using this policy, proves the
+remote landing receipt, and cleans the source by default. The legacy
+`wb worktree merge` spelling keeps cleanup opt-in. Candidate validation runs
 the exact target snapshot only if the candidate fails and inherited-failure
 comparison is needed, avoiding a redundant full baseline on green candidates.
 Verification runs `go vet ./...`, `go test ./...`,
@@ -820,9 +900,10 @@ wb deps bump go --fleet \
 ```
 
 Canonical clones remain untouched, including dirty clones. WB fetches
-`origin/<ref>` (`main` by default) and creates branches and worktrees below
-`<wb-home>/worktrees/<operation>/<org>/<repo>` (normally
-`~/.wb/worktrees/...`). Without publication
+`origin/<ref>` (`main` by default) and creates branches with a checkout at
+`<canonical-repository>/.worktrees/<operation>` by default. A user-only
+`worktrees.root` setting selects `<root>/<operation>/<org>/<repo>` instead;
+`WB_HOME` still holds private lifecycle state. Without publication
 flags, verified changes remain in those local worktrees. `--push` implies
 `--commit`; `--pr` implies push and commit; and `--merge` implies all prior
 stages. Local lint, test, and build checks are enabled by default; use
@@ -1250,6 +1331,18 @@ Repository-backed nodes link to both GitHub and
 call, import, and impact exploration beneath WB's fleet-level topology. These
 links are deterministic and passive: WB does not query CodeGrapher, publish a
 snapshot, or trigger indexing while generating a report.
+
+Install and inspect the local CodeGrapher CLI through WB's default tool plugin:
+
+```sh
+wb codegrapher status --format=json
+wb codegrapher install --yes
+wb codegrapher update --yes
+```
+
+This local-tool lifecycle does not index or synchronize a repository. A graph
+refresh will be added only after CodeGrapher can attest the exact repository
+revision it processed.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and
@@ -1819,15 +1912,16 @@ With `profiles.auto: true`, the built-in detectors currently contribute:
 
 | Profile | Detection | Pre-commit block | Pre-push block |
 |---|---|---|---|
-| `go` | `go.mod` | `gofmt` on staged Go files | `go vet ./...`, then `go test ./...` |
-| `node` | `package.json` | — | run `lint` and `test` scripts when present, using the detected lockfile's package manager |
+| `go` | `go.mod` | `gofmt` plus touched-package `go vet` | `go vet ./...`; tests and coverage run during landing/CI |
+| `node` | `package.json` | configured changed-file formatting/lint | run `lint` when present; tests and builds run during landing/CI |
 
 A Go-only repository therefore runs the base and Go blocks, a Node-only
 repository runs the base and Node blocks, and a mixed repository runs all
 relevant blocks. A pure remote-ref deletion has no Go object to publish, so
-the Go block records success without running vet/test; base, worktree, custom,
-and metrics policy still run, and any mixed or non-deletion push runs the full
-Go checks. General deterministic cache and durable metrics write authority for
+the Go block records success without running vet; base, worktree, custom, and
+metrics policy still run, and any mixed or non-deletion push runs static Go
+checks. The classifier retains publication identity for telemetry without
+duplicating CI's tests. General deterministic cache and durable metrics write authority for
 secure hook execution remains tracked in [#61](https://github.com/sneat-dev/wb/issues/61).
 Custom definitions use repository-relative `any_files` and
 `all_files` detectors; standard glob patterns are supported. A definition with
@@ -2124,6 +2218,23 @@ reminds a new session to register itself (`wb session register`) and repeats
 the drift warning above in its opening context; `wb skills hook install`
 merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
 `wb` never edits that file on its own outside this explicit subcommand.
+
+## Operations dashboard
+
+`wb daemon serve` starts the embedded read-only dashboard and versioned JSON
+API at `http://127.0.0.1:8766` by default. It shows managed worktrees and
+privacy-safe `wb run --` cost from the last 14 days.
+
+```sh
+wb daemon serve
+curl http://127.0.0.1:8766/api/v1/health
+curl http://127.0.0.1:8766/api/v1/overview
+```
+
+The command refuses non-loopback listeners. For access from another registered
+machine, publish the loopback service through an authenticated Cloudflare
+Tunnel. The MVP API is read-only and does not expose arbitrary command
+execution.
 
 ## Build from source
 

@@ -112,14 +112,19 @@ rather than attempting a swap wb publishes no asset for.
 
 #### REQ: wb-homebrew-cask
 
-wb MUST configure Homebrew as its managing package manager, with the upgrade
-command `brew upgrade --cask wb` and structured executable argv `brew`,
-`upgrade`, `--cask`, `wb`. wb ships as a cask, not a formula, so the command
-MUST carry `--cask`. After confirmation it MUST run that argv through the
-shared updater, then probe the stable `wb` launcher using `version --json`.
-Homebrew remains the only writer of its cask binary. `--dry-run` MUST not run
-the manager and a managed version pin MUST be refused. Scoop and WinGet MUST
-NOT be configured while wb publishes no Windows build.
+wb MUST configure Homebrew as its managing package manager, with the display
+command `brew update && brew upgrade --cask wb` and two ordered structured
+steps: `brew update`, then `brew upgrade --cask wb`. wb ships as a cask, not a
+formula, so the upgrade step MUST carry `--cask`. Refreshing Homebrew metadata
+prevents a stale custom tap from reporting the old cask as current. After
+confirmation the shared updater MUST run both steps without a shell, then probe
+the stable `wb` launcher using `version --json` and require the exact known
+GitHub release. Homebrew remains the only writer of its cask binary. A failed
+refresh MUST stop before upgrade, and a successful manager process that leaves
+an older WB binary MUST produce a warning and MUST NOT print a verified-version
+claim or run skills sync. `--dry-run` MUST not run the manager and a managed
+version pin MUST be refused. Scoop and WinGet MUST NOT be configured while wb
+publishes no Windows build.
 
 #### REQ: wb-version-identity
 
@@ -188,12 +193,15 @@ for a wb user specifically.
 
 **Given** a wb binary whose resolved path is inside a Homebrew Caskroom or Cellar
 **When** the user runs `wb self-update`, including with `--yes` and with `--version <tag>`
-**Then** it asks for confirmation (unless `--yes`), runs `brew upgrade --cask wb`
-with structured argv, exits `0` after a successful manager command, and performs
-no download, no direct write, and no replacement. A managed version pin is
-refused, and `--dry-run` reports the manager command without running it. After
-the upgrade, skill sync resolves the stable `wb` launcher again rather than a
-removed old Caskroom binary.
+**Then** it asks for confirmation (unless `--yes`), runs `brew update` and then
+`brew upgrade --cask wb` with structured argv, exits `0` after successful
+manager commands, and performs no download, no direct write, and no replacement.
+A failed refresh prevents the upgrade; a managed version pin is refused; and
+`--dry-run` reports both steps without running them. After the upgrade, the
+shared provider resolves the stable `wb` launcher, proves `version --json`
+contains the exact known release, and only then lets WB claim that version and
+sync its embedded skills. A stale installed version produces warnings without a
+false verification claim.
 
 ### AC: homebrew-version-summary-is-readable-and-machine-safe
 
@@ -203,7 +211,7 @@ removed old Caskroom binary.
 published WB release
 **When** the user runs `wb self-update --dry-run` in text and JSON modes
 **Then** the command resolves release availability once, reports the current and
-latest versions and `brew upgrade --cask wb`, and does not run Homebrew. Text
+latest versions and `brew update && brew upgrade --cask wb`, and does not run Homebrew. Text
 uses labelled ASCII rows with terminal-aware color; redirected output has no
 ANSI escapes. JSON stdout contains one document with the version and manager
 fields, while any human-readable preview goes to stderr.

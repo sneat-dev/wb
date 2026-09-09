@@ -21,12 +21,6 @@ const pendingMetricsReceiptSchemaVersion = 1
 // directory.
 type ExecutionLayout struct {
 	Root               string
-	CacheRoot          string
-	GoPath             string
-	GoCache            string
-	GoModCache         string
-	GoTmpDir           string
-	XDGCacheHome       string
 	ReportRoot         string
 	PendingMetricsRoot string
 }
@@ -56,16 +50,8 @@ func ResolveExecutionLayout(repoRoot, projectsRoot string) (ExecutionLayout, err
 		pathSegments = append(pathSegments, sanitizeRuntimeSegment(segment))
 	}
 	root := filepath.Join(pathSegments...)
-	cacheRoot := filepath.Join(root, "cache")
-	goPath := filepath.Join(cacheRoot, "go")
 	return ExecutionLayout{
 		Root:               root,
-		CacheRoot:          cacheRoot,
-		GoPath:             goPath,
-		GoCache:            filepath.Join(cacheRoot, "go-build"),
-		GoModCache:         filepath.Join(goPath, "pkg", "mod"),
-		GoTmpDir:           filepath.Join(cacheRoot, "tmp"),
-		XDGCacheHome:       filepath.Join(cacheRoot, "xdg"),
 		ReportRoot:         filepath.Join(root, "reports"),
 		PendingMetricsRoot: filepath.Join(root, "pending-metrics"),
 	}, nil
@@ -105,12 +91,6 @@ func ReplayPendingMetrics(repoPath, configPath, projectsRoot string) (int, error
 func ensureExecutionLayout(layout ExecutionLayout) error {
 	for _, path := range []string{
 		layout.Root,
-		layout.CacheRoot,
-		layout.GoPath,
-		layout.GoCache,
-		layout.GoModCache,
-		layout.GoTmpDir,
-		layout.XDGCacheHome,
 		layout.ReportRoot,
 		layout.PendingMetricsRoot,
 	} {

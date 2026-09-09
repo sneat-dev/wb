@@ -446,12 +446,19 @@ sweep.
 
 Secondary rate limits, not the hourly quota, are the failure mode a bounded
 sweep actually meets: GitHub answers a burst of concurrent requests with `403`
-and a `Retry-After` header well before 5,000 requests are spent.
+or `429` and a `Retry-After` header well before 5,000 requests are spent.
 
 WB MUST honour `Retry-After`, MUST back off exponentially on repeated
 throttling rather than retrying immediately, and MUST surface throttling in the
 streamed progress so an operator can see it happening rather than infer it from
 slowness.
+
+The shared GitHub read policy also retries `502`, `503`, `504`, and recognized
+temporary network failures. It MUST NOT retry authentication, authorization,
+ordinary forbidden, policy, identity-drift, or semantic failures. Every retry
+stays inside the caller's total timeout and reports attempt/max, cause, and
+delay. Mutations use receipt-specific recovery instead of blind replay after an
+ambiguous response.
 
 A candidate whose hosted evidence was not obtained — rate-limited, timed out,
 unauthenticated, or abandoned after retries — MUST surface as `unreadable`. It

@@ -16,8 +16,17 @@
     "commands": [
       "wb-install"
     ],
+    "codegrapher": [
+      "wb-fleet"
+    ],
     "coverage": [
       "wb-fleet"
+    ],
+    "dashboard": [
+      "wb-daemon"
+    ],
+    "daemon": [
+      "wb-daemon"
     ],
     "deps": [
       "wb-deps",
@@ -35,6 +44,9 @@
     "migrate": [
       "wb-migrate"
     ],
+    "plugin": [
+      "wb-fleet"
+    ],
     "remote": [
       "wb-fleet"
     ],
@@ -42,6 +54,10 @@
       "wb-fleet"
     ],
     "run": [
+      "wb-run"
+    ],
+    "worker": [
+      "wb-daemon",
       "wb-run"
     ],
     "self-update": [

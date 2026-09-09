@@ -173,7 +173,12 @@ if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
-  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","app":{"id":42}}]}'
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","html_url":"https://github.com/acme/app/actions/runs/123/job/456","app":{"id":42}}]}'
+  exit 0
+fi
+if [ "$1" = run ] && [ "$2" = view ]; then
+  echo 'compile error: unexpected type'
+  echo 'token ghp_notForOutput'
   exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
@@ -195,7 +200,7 @@ exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--format=json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
@@ -203,6 +208,55 @@ exit 30
 	if code != exitFindings || output.Status != "failed" || len(output.Checks) != 1 ||
 		output.Checks[0].Bucket != "fail" || output.Checks[0].Name != "check-run:CI" {
 		t.Fatalf("failed-check receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.FailureDetails) != 1 || output.FailureDetails[0].RunURL != "https://github.com/acme/app/actions/runs/123" ||
+		output.FailureDetails[0].JobURL != "https://github.com/acme/app/actions/runs/123/job/456" ||
+		!strings.Contains(output.FailureDetails[0].Excerpt, "compile error") || strings.Contains(output.FailureDetails[0].Excerpt, "ghp_notForOutput") {
+		t.Fatalf("failed job diagnostic = %+v", output.FailureDetails)
+	}
+}
+
+func TestCIWaitFailedTerminalCheckUsesAnnotationsBeforeUnavailableLogs(t *testing.T) {
+	t.Setenv("WB_HOME", t.TempDir())
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -Fq '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -Fq '/check-runs/101461768420/annotations?per_page=100'; then
+  echo '[{"path":"cmd/wb/ci.go","start_line":17,"end_line":17,"message":"unchecked error"},{"path":"cmd/wb/ci.go","start_line":17,"end_line":17,"message":"unchecked error"},{"path":"internal/orchestrate/ciwait.go","start_line":1001,"end_line":1001,"message":"unchecked error"},{"path":"cmd/wb/ci_wait_progress.go","start_line":84,"end_line":84,"message":"unchecked error"}]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -Fq '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":101461768420,"name":"errcheck","status":"completed","conclusion":"failure","html_url":"https://github.com/acme/app/actions/runs/123/job/456","app":{"id":42}},{"id":101461768421,"name":"tests","status":"in_progress","conclusion":"","html_url":"https://github.com/acme/app/actions/runs/123/job/457","app":{"id":42}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -Fq '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = run ] && [ "$2" = view ]; then
+  echo 'logs are unavailable while the workflow is running' >&2
+  exit 31
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--format=json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("machine JSON was not preserved: %v; stdout=%s", err, stdout.String())
+	}
+	if code != exitFindings || output.Status != "failed" || len(output.FailureDetails) != 1 || len(output.FailureDetails[0].Annotations) != 3 || output.FailureDetails[0].Excerpt != "" {
+		t.Fatalf("annotation failure receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.FailureDetails[0].Annotations[0].Path != "cmd/wb/ci.go" || output.FailureDetails[0].Annotations[0].StartLine != 17 || output.FailureDetails[0].Annotations[0].Message != "unchecked error" {
+		t.Fatalf("first annotation = %#v", output.FailureDetails[0].Annotations[0])
 	}
 }
 func TestCIWaitResumesDirectTargetSlicesUntilExactHeadPasses(t *testing.T) {
@@ -1155,12 +1209,42 @@ func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 	}
 }
 
+func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
+	command := newCIWaitCmd()
+	var output bytes.Buffer
+	command.SetOut(&output)
+	err := printCIWait(command, ciWaitOutput{PullRequestWaitResult: orchestrate.PullRequestWaitResult{
+		Status:     orchestrate.PullRequestWaitFailed,
+		Repository: "acme/app",
+		Target:     "main",
+		Head:       ciWaitHead,
+		Reason:     "check failed",
+		FailureDetails: []orchestrate.CIFailureDetail{{
+			Check: "check-run:test", RunURL: "https://github.com/acme/app/actions/runs/123",
+			JobURL:      "https://github.com/acme/app/actions/runs/123/job/456",
+			Annotations: []orchestrate.CIFailureAnnotation{{Path: "cmd/wb/ci.go", StartLine: 17, Message: "unchecked error"}},
+			Excerpt:     "compile failed",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"failed check-run:test", "run: https://github.com/acme/app/actions/runs/123", "job: https://github.com/acme/app/actions/runs/123/job/456", "annotation: cmd/wb/ci.go:17: unchecked error", "failed-step tail:\ncompile failed"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("failure output missing %q: %s", want, output.String())
+		}
+	}
+}
+
 func writeCIWaitExecutable(t *testing.T, path, contents string) {
 	t.Helper()
 	// Every fake GitHub process must observe only the responses prepared by
 	// this test. Reusing the real per-user observer cache lets another test or
 	// WB process supply a fresh cached response for the same acme/app fixture.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Sharded package tests are separate processes. Isolate WB's private state
+	// too, so a concurrent shard cannot supply or replace observer evidence.
+	t.Setenv("WB_HOME", t.TempDir())
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}

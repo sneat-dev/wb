@@ -403,6 +403,7 @@
               "path": "wb ci audit",
               "flags": [
                 "--fleet",
+                "--format",
                 "--json",
                 "--strict"
               ],
@@ -421,6 +422,7 @@
               "contains": [
                 "--strict",
                 "--fleet",
+                "--format",
                 "--json"
               ]
             }
@@ -472,6 +474,7 @@
             {
               "path": "wb ci wait",
               "flags": [
+                "--format",
                 "--head",
                 "--interval",
                 "--json",
@@ -641,12 +644,22 @@
               "path": "cmd/wb/ci_wait_test.go",
               "name": "TestCIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "name": "TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate."
+      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command. The legacy orchestrated merge path now uses this same stabilized, producer-aware waiter, requires an up-to-date candidate plus a strict server freshness fence, and guards the merge with the exact head. Current-target red CI is baseline diagnostic evidence, not a blocker. Its stable reread proves bounded observed-set quiescence, not that a future optional workflow can never register; repository release evidence remains separate. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with its own >=30s per-attempt timeout and backoff before reaching this loop; only an authoritative failure or exhausted retries surfaces, folded into the same pending/resumable path as a slice deadline."
     },
     {
       "id": "wb.ci.wait.merge-queue",
@@ -765,6 +778,42 @@
         }
       },
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
+    },
+    {
+      "id": "wb.codegrapher.install",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher install", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation; --dry-run emits structured platform-specific argv.", "macOS/Linux use the CodeGrapher Homebrew cask; Windows uses the published Go module and accepts an exact version.", "Re-probes the executable after success and refuses a false verification claim."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher install --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher install --dry-run --format=json", "wb codegrapher install --yes"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherInstallRequiresExplicitApproval", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "CodeGrapher is WB's default preconfigured local-tool plugin; install does not index a repository."
+    },
+    {
+      "id": "wb.codegrapher.status",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher status", "flags": ["--format", "--json"], "modes": ["Runs the discovered executable's version command and reports resolved path, exact version, available build provenance, repository, module path, manager classification, and platform.", "A missing or non-runnable executable is a machine-readable finding."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher status --help", "contains": ["exact provenance", "--format", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher status --format=json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusReportsInstalledBinaryProvenance", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusMissingIsMachineReadableFinding", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status observes the executable an agent would invoke rather than trusting a package-manager database."
+    },
+    {
+      "id": "wb.codegrapher.update",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher update", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation and uses the same platform channel and post-command executable proof as install."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher update --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher update --yes"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Update is explicit and never runs as part of WB sync or daemon activity."
     },
     {
       "id": "wb.commands",
@@ -1028,15 +1077,18 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--check-interval",
+                "--check-timeout",
                 "--cleanup",
                 "--cli",
                 "--format",
                 "--model",
                 "--on-failure",
+                "--prepare-timeout",
                 "--progress",
                 "--provider",
                 "--retry",
                 "--route",
+                "--shard-attempt-timeout",
                 "--target",
                 "--timeout"
               ],
@@ -1282,6 +1334,227 @@
         }
       },
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
+    },
+    {
+      "id": "wb.daemon.operation.cancel",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{"path": "wb daemon operation cancel", "flags": ["--format", "--json"], "modes": ["Cancels one queued or running authenticated local operation"]}],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb daemon operation cancel --help", "contains": ["--format", "--json", "operation-id"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation cancel <operation-id>"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt", "kind": "integration"}],
+          "limitation": null
+        }
+      },
+      "notes": "The read-only dashboard remains on loopback TCP and cannot route to these mutation handlers."
+    },
+    {
+      "id": "wb.daemon.operation.get",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation get", "flags": ["--format", "--json"], "modes": ["Reads one bounded durable operation receipt"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation get --help", "contains": ["--format", "--json", "operation-id"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation get <operation-id> --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_local_unix_test.go", "name": "TestDaemonLocalTransportRequiresTokenAndProtectsSocket", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The receipt excludes argv and authentication material."
+    },
+    {
+      "id": "wb.daemon.operation.submit",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation submit", "flags": ["--cpu-units", "--format", "--idempotency-key", "--json", "--wait"], "modes": ["After an external administrator opt-in, submits bounded raw argv only through the authenticated local transport and returns a payload-bound receipt"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation submit --help", "contains": ["--cpu-units", "--idempotency-key", "--wait", "command"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation submit --format json -- go test ./internal/worktrees"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Raw execution defaults to denied and the daemon revalidates an administrator-owned external mode-0600 policy at submission and launch. POSIX uses a mode-0600 Unix socket. Windows exposes the named-pipe endpoint contract and fails closed until the native adapter is enabled. Arbitrary environment overrides and idempotency payload mismatches are rejected before persistence."
+    },
+    {
+      "id": "wb.daemon.operation.wait",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation wait", "flags": ["--after-cursor", "--format", "--json", "--progress", "--progress-file", "--timeout"], "modes": ["Waits in bounded ten-second calls until terminal; --progress-file routes human heartbeats away from agent streams, and --progress=false suppresses them"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation wait --help", "contains": ["--after-cursor", "--timeout", "operation-id"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation wait <operation-id> --timeout 15m"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "A lost client can resume from the opaque cursor without losing the durable receipt."
+    },
+    {
+      "id": "wb.daemon.restart",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon restart", "flags": ["--format", "--if-running", "--json"], "modes": ["Restarts with a durable queue ownership handoff", "--if-running is safe after verified self-update"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon restart --help", "contains": ["--format", "--if-running", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon restart --if-running"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "A verified self-update invokes restart only when a managed daemon was already running."
+    },
+    {
+      "id": "wb.daemon.serve",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon serve",
+              "flags": [
+                "--listen"
+              ],
+              "modes": [
+                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon serve --help",
+              "contains": [
+                "--listen",
+                "Cloudflare Tunnel",
+                "loopback"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon serve"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/dashboard/dashboard_test.go",
+              "name": "TestDashboardServesUIAndHealth",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonRequiresLoopbackListener",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cloudflare Tunnel is a transport option; authorization remains separate and remote arbitrary argv is excluded."
+    },
+    {
+      "id": "wb.daemon.start",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon start", "flags": ["--format", "--json", "--listen"], "modes": ["Idempotently starts the loopback daemon and hands off an older installed executable"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon start --help", "contains": ["--format", "--json", "--listen"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon start"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The state record pins executable SHA-256, version, revision, and queue generation before a replacement starts."
+    },
+    {
+      "id": "wb.daemon.status",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status is bootstrap-safe and does not auto-start the daemon."
+    },
+    {
+      "id": "wb.daemon.stop",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon stop", "flags": ["--format", "--json"], "modes": ["Marks queue ownership draining before requesting process termination"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon stop --help", "contains": ["--format", "--json", "Drain"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon stop"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The loopback MVP preserves the durable handoff record while draining."
+    },
+    {
+      "id": "wb.dashboard",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{
+            "path": "wb dashboard",
+            "flags": ["--format", "--json", "--local"],
+            "modes": [
+              "Opens the hosted cross-machine dashboard in the platform browser by default.",
+              "--local starts or reuses the loopback daemon and opens its local dashboard.",
+              "JSON and non-interactive invocations return the resolved URL without launching a browser."
+            ]
+          }],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb dashboard --help", "contains": ["hosted cross-machine", "--format", "--json", "--local"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb dashboard", "wb dashboard --local", "wb dashboard --format=json"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardOpensHostedURL", "kind": "unit"},
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardJSONDoesNotOpenBrowser", "kind": "unit"},
+            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardLocalStartsDaemonAndOpensItsURL", "kind": "unit"},
+            {"path": "cmd/wb/browser_test.go", "name": "TestBrowserCommandUsesPlatformMechanism", "kind": "unit"}
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The hosted and local dashboards share a short human entry point while machine callers receive a side-effect-free URL receipt."
     },
     {
       "id": "wb.deps.bump",
@@ -2961,6 +3234,18 @@
       "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
     },
     {
+      "id": "wb.fleet.merge-policy",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet merge-policy", "flags": ["--apply", "--format", "--json", "--org", "--parallel", "--repo", "--report-dir", "--resume", "--user"], "modes": ["Audit is read-only and reports repository-owned required-linear-history and pull-request-method drift separately from higher-level or merge-queue conflicts.", "Apply requires explicit --org, --repo, or --user scope; an explicit organization list restricts owners and never adds unselected member organizations.", "The desired repository policy enables merge commits only with PR_TITLE and PR_BODY.", "Apply leases classic protection and removes only its dedicated required-linear-history setting; repository rulesets change pull-request methods only when they exclude merge, while preserving unrelated protections.", "Organization and enterprise rulesets are audit-only higher-level authorities whose conflicts block repository fallback; merge queues remain preserved blockers.", "Repository reads and setting mutations default to WB's CPU budget, explicit --parallel overrides the bound, shared rulesets remain serialized, every mutation checkpoints the report, and progress appears at least every nine seconds; --resume re-observes live authorities and carries partial actions forward.", "Exit 0 compliant or fully applied, 1 drift/conflict/error, 2 usage."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet merge-policy --help", "contains": ["read-only", "--apply", "--parallel", "--format", "--json", "required-linear-history", "merge-queue", "never weakens"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/merge-policy.md", "marker": "# Audit and apply GitHub merge policy", "examples": ["wb fleet merge-policy --filter sneat-dev/wb", "wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift", "kind": "integration"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyRepositoryRulesetPreservesUnrelatedProtections", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRunMergePolicyResumeCarriesPartialActions", "kind": "integration"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Repository ruleset apply is supported; classic protection is inspected separately, while organization and enterprise rulesets are audit-only and block conflicting repository fallback."
+    },
+    {
       "id": "wb.fleet.overview",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
@@ -3331,8 +3616,9 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
+                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
-                "Never refuses a read, a linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
+                "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
               ]
             }
           ],
@@ -3382,6 +3668,11 @@
               "kind": "unit"
             },
             {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
               "path": "cmd/wb/hooks_agent_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
               "kind": "integration"
@@ -3390,7 +3681,7 @@
           "limitation": null
         }
       },
-      "notes": "Refuses an agent tool call that would write into a canonical clone, one layer earlier than any Git hook can see. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, and known generators \u2014 and every unmodelled construct, including an interpreter given an inline script and a working directory reached through a variable, is allowed rather than guessed at."
+      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands \u2014 while every unmodelled construct is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -3405,6 +3696,7 @@
               "flags": [
                 "--config",
                 "--fleet",
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -3423,6 +3715,7 @@
               "contains": [
                 "--config",
                 "--fleet",
+                "--format",
                 "--json"
               ]
             }
@@ -3582,6 +3875,7 @@
                 "--config",
                 "--days",
                 "--file",
+                "--format",
                 "--json",
                 "--repo"
               ],
@@ -3675,6 +3969,7 @@
                 "--config",
                 "--days",
                 "--file",
+                "--format",
                 "--json",
                 "--repo"
               ],
@@ -3693,6 +3988,7 @@
               "contains": [
                 "--days",
                 "--repo",
+                "--format",
                 "--json"
               ]
             }
@@ -4016,6 +4312,18 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.plugin.list",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb plugin list", "flags": ["--format", "--json"], "modes": ["Lists every typed built-in plugin with its stable ID, default-enabled state, command path, lifecycle verbs, and summary."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb plugin list --help", "contains": ["preconfigured", "--format", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb plugin list --format=json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherIsTheDefaultTypedPlugin", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The initial registry contains the CodeGrapher reference plugin only; registration itself carries no background behavior."
+    },
+    {
       "id": "wb.pr.land",
       "feature_refs": [
         "spec/features/dependency-streams/README.md"
@@ -4033,25 +4341,27 @@
                 "--format",
                 "--keep",
                 "--keep-commits",
+                "--lane-reason",
                 "--merge-method",
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
                 "--subject",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
                 "Cleanup is the default: the task's worktree is retired and its claim released unless --keep is passed, because the measured failure was an opt-in cleanup that was never passed",
                 "Every GitHub call goes through gh api with an endpoint, and pagination follows GitHub's own link header, so the verb works against the installed gh 2.45 rather than requiring --slurp or gh pr checks --json",
                 "The head SHA is sent as a merge lease, so a branch that moved after its checks were observed is refused by GitHub itself rather than landed unverified",
-                "Squash is the default and the message is built: the subject is the pull request title, and the body carries the summary, one line per source commit, the pull request number and the review reference",
-                "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
+                "Merge commit is the default and preserves the reviewed branch commits; explicit --merge-method squash retains the aggregated title/body contract and explicit rebase remains available",
+                "--keep-commits requires explicit --merge-method squash and a mandatory --reason; it rebuilds the branch so the named commits land as their own, in order, with the rest aggregated, while merge/rebase combinations are refused",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
                 "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
-                "The live-link refusal runs whatever --keep says — --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed — and a stream WB cannot read stops the landing rather than being reported as no link",
+                "The live-link refusal runs whatever --keep says \u2014 --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed \u2014 and a stream WB cannot read stops the landing rather than being reported as no link",
                 "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
-                "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
+                "Every invocation writes exactly one stream event \u2014 success, findings or refusal, and including --keep \u2014 carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
                 "Source commits are paired with the commits that landed them by git patch-id --stable over the base's new commits, never by the scratch worktree's SHAs, which exist nowhere after a rebase merge",
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
@@ -4068,7 +4378,7 @@
               "command": "wb pr land --help",
               "contains": [
                 "CLEANUP IS THE DEFAULT",
-                "SQUASH IS THE DEFAULT",
+                "MERGE COMMIT IS THE DEFAULT",
                 "--keep-commits",
                 "--reason",
                 "made from the diff",
@@ -4108,6 +4418,11 @@
             {
               "path": "internal/orchestrate/pr_land_test.go",
               "name": "TestLandRefusesADraftAndAFailedCheck",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandDefaultsToMergeCommit",
               "kind": "integration"
             },
             {
@@ -4174,12 +4489,17 @@
               "path": "cmd/wb/deps_propagate_test.go",
               "name": "TestEveryLandingVerbRefusesALiveLink",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRecoversFromASignalKilledPullRequestReadThenSucceeds",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path."
+      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with bounded retries and a >=30s per-attempt timeout; only an authoritative failure or exhausted retries reaches the caller, naming the last cause plus the exact resumable `wb pr land` invocation, with `github_read_retries` recorded on the evidence when recovery happened."
     },
     {
       "id": "wb.remote.claim",
@@ -4195,6 +4515,7 @@
               "path": "wb remote claim",
               "flags": [
                 "--force",
+                "--format",
                 "--json",
                 "--note",
                 "--stale",
@@ -4268,6 +4589,7 @@
             {
               "path": "wb remote claims",
               "flags": [
+                "--format",
                 "--json",
                 "--stale"
               ],
@@ -4320,6 +4642,80 @@
       "notes": "wb remote claims exits 0 even when some claim files are undecodable."
     },
     {
+      "id": "wb.remote.enroll",
+      "feature_refs": [
+        "spec/features/remote-state/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote enroll",
+              "flags": [
+                "--format",
+                "--json",
+                "--machine",
+                "--restart-daemon",
+                "--token-file",
+                "--token-stdin",
+                "--url"
+              ],
+              "modes": [
+                "Verifies an explicitly piped one-time machine credential, stores it outside configuration with private permissions, updates only hub-owned remote settings, and restarts a running daemon by default without exposing the credential."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote enroll --help",
+              "contains": [
+                "--machine",
+                "--token-stdin",
+                "--restart-daemon"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote enroll --machine studio-mac --token-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_enroll_test.go",
+              "name": "TestRemoteEnrollKeepsCredentialOutOfOutputAndConfig",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/wbconfig/remote_test.go",
+              "name": "TestSetRemoteHubPreservesUnrelatedConfiguration",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The credential is accepted only from explicitly selected stdin and is verified before either the credential file or configuration is written."
+    },
+    {
       "id": "wb.remote.machines",
       "feature_refs": [
         "spec/features/remote-state/README.md"
@@ -4332,6 +4728,7 @@
             {
               "path": "wb remote machines",
               "flags": [
+                "--format",
                 "--json",
                 "--stale"
               ],
@@ -4348,6 +4745,7 @@
             {
               "command": "wb remote machines --help",
               "contains": [
+                "--format",
                 "--json",
                 "--stale"
               ]
@@ -4396,6 +4794,7 @@
               "path": "wb remote publish",
               "flags": [
                 "--dry-run",
+                "--format",
                 "--json",
                 "--parallel"
               ],
@@ -4414,6 +4813,7 @@
               "command": "wb remote publish --help",
               "contains": [
                 "--dry-run",
+                "--format",
                 "--json",
                 "<login>/<machine>"
               ]
@@ -4462,6 +4862,7 @@
               "path": "wb remote release",
               "flags": [
                 "--force",
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -4531,12 +4932,13 @@
             {
               "path": "wb remote status",
               "flags": [
+                "--format",
                 "--json",
                 "--machine",
                 "--stale"
               ],
               "modes": [
-                "Renders the cross-machine worklist from the remote store, flagging a machine STALE by its effective heartbeat (publish or claim activity, whichever is newer); entries that cannot be decoded become error rows and do not change the exit code."
+                "Renders the cross-machine worklist from one refreshed remote-store view, flagging a machine STALE by its effective heartbeat (publish or claim activity, whichever is newer); entries that cannot be decoded become error rows and do not change the exit code; long reads emit progress to stderr without contaminating machine-readable stdout."
               ]
             }
           ],
@@ -4580,7 +4982,7 @@
           "limitation": null
         }
       },
-      "notes": "wb remote status exits 0 even when some entries have errors."
+      "notes": "wb remote status reads machines and claims through one provider refresh when supported, emits a stderr heartbeat at least every ten seconds while waiting, and exits 0 even when some entries have errors."
     },
     {
       "id": "wb.repo.ignore",
@@ -4790,6 +5192,72 @@
       "notes": "Repo status never scans the projects-root fleet; use wb fleet status for that worklist."
     },
     {
+      "id": "wb.repo.transfer.cleanup",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb repo transfer cleanup",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json",
+                "--receipt"
+              ],
+              "modes": [
+                "Plans from an immutable pending receipt by default and securely retires only the exact identity-bound replacement quarantine with --apply.",
+                "Fails closed when the receipt, repository identity, quarantine identity, or platform deletion guarantee cannot be corroborated."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb repo transfer cleanup --help",
+              "contains": [
+                "--receipt",
+                "--apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "The durable recovery command is emitted directly by repository transfer processing; a standalone operator runbook is not yet published."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/repo_transfer_test.go",
+              "name": "TestRepoTransferCleanupRequiresReceiptAsUsage",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/repository_relocate_test.go",
+              "name": "TestRelocateRepositoryReturnsResumableCleanupPending",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/repository_relocate_test.go",
+              "name": "TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerifiesOrigin",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cleanup receipts remain append-only. Unix retirement is descriptor-relative; native Windows records stable handle identity and preserves the quarantine when an equally strong deletion primitive is unavailable."
+    },
+    {
       "id": "wb.root.filter",
       "feature_refs": [
         "docs/cli-flag-matrix.md"
@@ -4978,6 +5446,15 @@
               "modes": [
                 "Filters coordinated recycle candidates."
               ]
+            },
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--filter"
+              ],
+              "modes": [
+                "Filters coordinated relocation candidates."
+              ]
             }
           ],
           "limitation": null
@@ -5053,11 +5530,29 @@
             {
               "path": "wb run",
               "flags": [
+                "--allow-saturated-host",
                 "--apply",
+                "--async",
                 "--config",
-                "--list"
+                "--days",
+                "--history",
+                "--idempotency-key",
+                "--format",
+                "--json",
+                "--list",
+                "--queue",
+                "--quiet",
+                "--worker"
               ],
               "modes": [
+                "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
+                "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
+                "An exact retry after a lost file-bridge response reattaches to the unresolved envelope-bound idempotency key; --idempotency-key distinguishes intentional identical submissions.",
+                "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
+                "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
+                "Before admitting CPU-heavy command-mode work, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides and is recorded on the run receipt.",
+                "Reports its place in the shared CPU-lease queue on stderr, even without a terminal: an immediate admitted/queued line naming its position and what it waits on, a heartbeat at most every 10s while still queued, and admitted-after-wait/done receipt lines; --quiet silences them.",
+                "--queue lists every currently held and waiting CPU lease slot (pid, age, worktree, summary) without submitting a command.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
             }
@@ -5071,8 +5566,15 @@
               "command": "wb run --help",
               "contains": [
                 "--apply",
+                "--async",
                 "--config",
-                "--list"
+                "--history",
+                "--idempotency-key",
+                "--list",
+                "--queue",
+                "--quiet",
+                "--worker",
+                "run -- <command>"
               ]
             }
           ],
@@ -5085,7 +5587,11 @@
               "path": "ai/skills/wb-run/SKILL.md",
               "marker": "# WB run",
               "examples": [
-                "wb run --list"
+                "wb run --list",
+                "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
+                "wb run -- go test ./internal/worktrees -run TestCreate",
+                "wb run --history --days 7",
+                "wb run --queue"
               ]
             }
           ],
@@ -5094,6 +5600,71 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "cmd/wb/run_command_test.go",
+              "name": "TestRunAsyncFlagRequiresCommandMode",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_command_test.go",
+              "name": "TestRunCommandPreservesStreamsAndExitCode",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/runlog/runlog_test.go",
+              "name": "TestRecorderWritesPrivacySafeLifecycleEvents",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runlog/runlog_test.go",
+              "name": "TestRecordQueueAdmittedAtIsAdditive",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/queue_test.go",
+              "name": "TestAcquireCoordinatesIndependentCallers",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestRegisterReportsPositionAndTotalAmongWaiters",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/visibility_test.go",
+              "name": "TestListQueueReportsRunningAndWaitingEntries",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_progress_test.go",
+              "name": "TestRunQueueProgressFormatsQueuedHeartbeatAdmittedAndDoneLines",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandReportsQueueVisibilityOnStderr",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunCommandQuietSuppressesQueueVisibilityLines",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunHistoryRecordsQueueWaitAndAdmissionTime",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_queue_test.go",
+              "name": "TestRunQueueListsRunningAndWaitingEntries",
+              "kind": "integration"
+            },
             {
               "path": "internal/orchestrate/engine_integration_test.go",
               "name": "TestRunIsolatesDirtyCanonicalClone",
@@ -5108,7 +5679,7 @@
           "limitation": null
         }
       },
-      "notes": "Apply follows recipe publication policy; selection should be narrowed before fleet mutation."
+      "notes": "Command execution uses worker-level cross-process leases below the projects root so independent agents share one CPUCount-1 budget. Apply follows recipe publication policy; selection should be narrowed before fleet mutation."
     },
     {
       "id": "wb.self-update",
@@ -5408,9 +5979,14 @@
               "flags": [
                 "--context-file",
                 "--format",
+                "--pid",
+                "--runtime",
+                "--model",
+                "--wb-session-id",
                 "--override-secret"
               ],
               "modes": [
+                "Resolves the calling session and, when none is registered, registers one from the declared --pid/--runtime/--model, an existing WB_AGENT_* declaration, or the nearest recognised harness in the process tree -- recording an undeducible runtime or model as unknown, never refusing a park for missing metadata, and reporting registered_at_park with the new wb_session_id; --wb-session-id targets an already-registered session and creates none.",
                 "Scans the continuation against gitleaks-derived named secret patterns before storing anything; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.",
                 "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."
@@ -5428,7 +6004,10 @@
                 "--context-file",
                 "bounded agent-authored continuation file",
                 "--format",
-                "--override-secret"
+                "--override-secret",
+                "Registration is not a precondition",
+                "--wb-session-id",
+                "registered_at_park"
               ]
             }
           ],
@@ -5439,7 +6018,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Park and resume a registered session",
+              "marker": "## Park and resume an agent session",
               "examples": [
                 "wb session park --context-file <file>"
               ]
@@ -5500,6 +6079,26 @@
             {
               "path": "internal/secretscan/scan_test.go",
               "name": "TestNeverEchoesMatchedSecret",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkRegistersAnUnregisteredSessionBeforeParking",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/session/autoregister_test.go",
+              "name": "TestResolveOrRegisterRegistersAnUnregisteredProcessWithInferredIdentity",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/session/autoregister_test.go",
+              "name": "TestInferRecordPrefersDeclarationsThenEnvironmentThenUnknown",
               "kind": "unit"
             }
           ],
@@ -5895,7 +6494,7 @@
           "limitation": null
         }
       },
-      "notes": "The PID must be the agent process, not the shell running the command; $PPID from a harness tool call is correct. A start-up hook cannot supply it, because a hook's parent is an intermediate shell rather than the agent."
+      "notes": "The PID must be the live harness process, not WB itself or an intermediate shell. $PPID from a harness tool call is correct; when shell tail-exec makes the live Codex app-server WB's direct parent, WB accepts it only with kernel evidence for the codex executable and app-server role. A shell-safe form for older builds is `wb session register --pid \"$PPID\" --runtime codex --model <exact-model>; status=$?; exit \"$status\"`. A start-up hook cannot supply the PID because its parent is an intermediate shell."
     },
     {
       "id": "wb.session.request-handoff",
@@ -6019,7 +6618,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Park and resume a registered session",
+              "marker": "## Park and resume an agent session",
               "examples": [
                 "wb session resume <parked-session-id>"
               ]
@@ -6313,14 +6912,15 @@
                 "--dir",
                 "--dry-run",
                 "--format",
-                "--harness"
+                "--harness",
+                "--newer-compatible"
               ],
               "modes": [
-                "Installs every Agent Skill embedded in this wb build into each targeted harness skills directory (Claude ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills), reading nothing from a source checkout.",
+                "Installs the immutable WB plugin revision embedded in this wb build into each targeted harness skills directory through github.com/strongo/cli-helpers/skillsync, reading nothing from a source checkout or network by default.",
                 "With no --dir or --harness, every present harness is synced; --harness names claude, cursor, codex, or all; --dir targets an explicit path.",
-                "Idempotent: unchanged skills are reported and left untouched; a skill this build no longer ships, previously installed by an earlier sync, is removed.",
-                "A directory occupying a shipped skill's name that was never installed by wb is reported as a conflict (exit code 1) and left untouched rather than overwritten.",
-                "Records the wb version that performed the sync in a marker file next to the installed skills, which the running wb compares against on every invocation."
+                "--newer-compatible explicitly selects a newer compatible published plugin release; ordinary sync remains matched to the installed CLI.",
+                "The shared engine owns target locking, verified legacy-marker import, plugin-scoped ownership, idempotent updates, conflict refusal, and crash-safe replacement.",
+                "Records provider-neutral plugin provenance and the WB supplier version next to the installed skills, which the SessionStart hook compares with the running wb."
               ]
             }
           ],
@@ -6336,6 +6936,7 @@
                 "--dry-run",
                 "--format",
                 "--harness",
+                "--newer-compatible",
                 "harness skills directory"
               ]
             }
@@ -6375,20 +6976,20 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_harness_test.go",
-              "name": "TestResolveSkillsSyncTargetsDefaultsToPresentHarnesses",
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness",
               "kind": "unit"
             },
             {
-              "path": "internal/skills/sync_test.go",
-              "name": "TestSyncNeverOverwritesAPreExistingUnmanagedDirectory",
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncConfigBindsTheEmbeddedWBPluginToThisBuild",
               "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "This is the fix for an orchestrator session missing a wb skill entirely: wb installed globally has no source checkout for a harness to auto-discover ai/skills/ from, so this command embeds and installs them directly. 'wb self-update' runs it automatically after a successful update."
+      "notes": "This is the fix for an orchestrator session missing a wb skill entirely: wb installed globally has no source checkout for a harness to auto-discover ai/skills/ from. WB embeds its publishable plugin revision and delegates synchronization to strongo/cli-helpers v0.9.0; 'wb self-update' runs the CLI-matched sync automatically after a successful update."
     },
     {
       "id": "wb.status",
@@ -6749,7 +7350,8 @@
     {
       "id": "wb.stream.start",
       "feature_refs": [
-        "spec/features/dependency-streams/README.md"
+        "spec/features/dependency-streams/README.md",
+        "spec/features/worktree-lifecycle/README.md"
       ],
       "since": "unreleased",
       "surfaces": {
@@ -6775,6 +7377,7 @@
               ],
               "modes": [
                 "Creates one worktree per repository on branch stream/<name> through the existing wb worktree create path, each with a DRAFT pull request to its base",
+                "Writes the WB effort and stream identifiers into each pull-request body as visible text and versioned machine-readable provenance",
                 "The first repository is the library unless --library names another; the role is recorded because propagation direction is not symmetric",
                 "Every fence runs before the first side effect: name validation, the one-open-stream-per-repository refusal, and the fleet readiness checks",
                 "Readiness per member: wb hooks check, an npm provider-identity scan, a red-base check, and a stream-PR concurrency check for cancel-in-progress",
@@ -7465,6 +8068,7 @@
             {
               "path": "wb version",
               "flags": [
+                "--format",
                 "--json"
               ],
               "modes": [
@@ -7480,6 +8084,7 @@
             {
               "command": "wb version --help",
               "contains": [
+                "--format",
                 "--json",
                 "build revision"
               ]
@@ -7520,6 +8125,99 @@
       "notes": "The JSON form is intended for provenance checks and automation."
     },
     {
+      "id": "wb.worker.connect",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worker connect",
+              "flags": [
+                "--cpu-capacity",
+                "--format",
+                "--id",
+                "--json",
+                "--root"
+              ],
+              "modes": [
+                "Registers one stable sandbox worker with exact build, protocol, OS, architecture, CPU capacity, and explicitly permitted canonical roots.",
+                "Long-polls the authenticated local Connect RPC queue, independently refuses working directories outside the permitted roots, executes with the worker's inherited sandbox and environment, heartbeats every five seconds, and returns bounded terminal receipts.",
+                "Keeps execution inside the harness sandbox when local sockets are denied by using the authenticated, owner-only project-root file bridge without creating a second scheduler.",
+                "Reconnects after daemon handoff with a new worker generation; queued work remains eligible while interrupted running leases become recovery_required."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worker connect --help",
+              "contains": [
+                "--cpu-capacity",
+                "--format",
+                "--id",
+                "--json",
+                "--root",
+                "sandbox"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb worker connect --id codex-local --root /absolute/projects/root"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/daemon/worker_test.go",
+              "name": "TestQueuedOperationCannotCrossWorkersThatShareARoot",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/daemon/worker_test.go",
+              "name": "TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worker_test.go",
+              "name": "TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "name": "TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "name": "TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Normal worker operations never persist environment overrides. POSIX prefers the protected socket and uses the authenticated owner-only project-root file bridge only for sandbox permission or reachability failures. The administrator-owned raw daemon execution policy remains a fallback only for wb daemon operation submit. Windows preserves the current-user named-pipe endpoint contract and fails closed until native transport or owner-only bridge ACL verification is available."
+    },
+    {
       "id": "wb.worktree.abort",
       "feature_refs": [
         "spec/features/work-log/README.md",
@@ -7536,6 +8234,7 @@
                 "--all",
                 "--apply",
                 "--actor",
+                "--absorbed-by",
                 "--base",
                 "--claim",
                 "--cli",
@@ -7549,6 +8248,8 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "a proven unclaimed pre-apply recycle reservation is terminalized without --remote while its immutable prompt archive remains retained",
+                "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
@@ -7573,6 +8274,7 @@
                 "--cli",
                 "--provider",
                 "--remote",
+                "--absorbed-by",
                 "--all",
                 "resumable",
                 "discarded",
@@ -7591,6 +8293,8 @@
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
+                "wb worktree abort next-task --disposition discarded --apply",
+                "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
@@ -7600,6 +8304,21 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesSquashSourceAdvanceAtRemovalBoundary",
+              "kind": "integration"
+            },
             {
               "path": "internal/worktrees/abort_test.go",
               "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
@@ -7939,7 +8658,8 @@
                 "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
                 "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
-                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed",
+                "A never-published integration-lane candidate is still refused unless its worktree-merge receipt carries a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement bound to the receipt's unchanged bytes with a target head ancestor of the fetched origin target; a missing/stale/tampered one keeps refusing with a hint naming the receipt, a valid one reports `proof: absorbed_conflict_acknowledgement`"
               ]
             }
           ],
@@ -8370,7 +9090,7 @@
                 "Captures uncommitted work as a git stash commit in the repository the worktree was cut from, BEFORE anything is removed, and prints the exact recoverable SHA",
                 "A dirty worktree is not a refusal; a capture that fails stops the removal, because retiring a checkout whose work could not be preserved loses data irrecoverably",
                 "Seals a closing note into the Work Log; a note that cannot be sealed never strands the worktree",
-                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply",
+                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply -- including recognizing a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement as landing proof for a never-pushed integration candidate",
                 "Releases the fleet-wide claim only once every worktree is gone",
                 "Without --apply it reports exactly what it would do and changes nothing"
               ]
@@ -8845,6 +9565,91 @@
         }
       },
       "notes": "Safe default inspect surface. Prompt bodies are never included; use wb worktree log for the private agent dump."
+    },
+    {
+      "id": "wb.worktree.land",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree land",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--allow-saturated-host",
+                "--check-interval",
+                "--check-timeout",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--lane-reason",
+                "--model",
+                "--on-failure",
+                "--prepare-timeout",
+                "--progress",
+                "--provider",
+                "--retry",
+                "--route",
+                "--shard-attempt-timeout",
+                "--take-over-lane",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default.",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree land --help",
+              "contains": [
+                "wb worktree land .",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree land <source-worktree...> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeLandDefaultsToCleanup",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The primary completion verb validates one candidate, proves the remote landing receipt, and defaults receipt-gated cleanup on."
     },
     {
       "id": "wb.worktree.list",
@@ -9928,6 +10733,7 @@
       "id": "wb.worktree.merge",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/worktree-lifecycle/README.md",
         "spec/features/modern-cli-help-discovery/README.md"
       ],
       "since": "unreleased",
@@ -9940,22 +10746,30 @@
               "flags": [
                 "--agent-id",
                 "--agent-runtime",
+                "--allow-saturated-host",
                 "--check-interval",
+                "--check-timeout",
                 "--cleanup",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
                 "--on-failure",
+                "--prepare-timeout",
                 "--progress",
                 "--provider",
                 "--retry",
                 "--route",
+                "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
               "modes": [
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
-                "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup."
+                "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup.",
+                "After a verified batch landing, reconciles an absorbed source pull request only when its exact current head, base repository, and base branch still match the landing evidence.",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
             }
           ],
@@ -10007,12 +10821,129 @@
               "path": "cmd/wb/help_discovery_test.go",
               "name": "TestPrimaryWorktreeHelpContainsCopyableExamples",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_source_prs_test.go",
+              "name": "TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_source_prs_test.go",
+              "name": "TestReconcileAbsorbedSourcePullRequestRefusesDriftedIdentity",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/prmeta/prmeta_test.go",
+              "name": "TestAppendAddsStableEffortAndStreamWithoutBranchOrWorktree",
+              "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "This runnable parent is the promoted default journey; prepare, land, resume, and revert remain explicit recovery and control surfaces."
+      "notes": "The legacy merge spelling keeps cleanup opt-in. Prepare, receipt-land, resume, and revert remain explicit recovery and control surfaces."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-absorbed-conflict",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-absorbed-conflict",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--derived-path",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry, path by path identical-blob content absorption, or lines-absorbed proof for a *.jsonl append-only ledger path",
+                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree",
+                "Repeatable --derived-path audits an operator exclusion for one known generated-index shape (spec/**/README.md) that also exists on the fetched target, recorded in the sidecar alongside the actor and reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-absorbed-conflict --help",
+              "contains": [
+                "graph ancestor",
+                "identical blob",
+                "lines_absorbed",
+                "--derived-path",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictProvesAncestorAndContentAbsorbedSourcesAndFreesLane",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictRefusals",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictLinesAbsorbedJSONLPath",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictLinesAbsorbedRefusesMissingLine",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictDerivedPathExcusesGeneratedIndex",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_absorbed_conflict_test.go",
+              "name": "TestAcknowledgeAbsorbedConflictDerivedPathRefusals",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovers an unpublished prepare conflict whose every receipted source worktree is already gone -- the one case neither resume nor prepare-conflict-replacement/supersede-validation-failed can reach, since both require an exact clean receipted source worktree to still exist. Containment is proved per source, path by path against the freshly fetched target: graph ancestry for the whole source, exact blob equality, a lines-absorbed proof for a *.jsonl append-only ledger path (every line the source added relative to its merge-base present verbatim as a line in the target's copy), or an operator-audited --derived-path exclusion for a generated spec/**/README.md index that also exists on the target -- and rechecked live under the lane lock at apply time. It never deletes the preserved, unpublished candidate worktree."
     },
     {
       "id": "wb.worktree.merge.acknowledge-landed-failed",
@@ -10035,8 +10966,8 @@
                 "--reason"
               ],
               "modes": [
-                "Proves an exact clean candidate and every exact clean receipted source are contained in the freshly fetched remote target",
-                "Acknowledges only stale prepare validation_failed or landed_post_target_ci_failed receipts without falsely making either a successful landing"
+                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; only the landed failed-validation form may preserve subsequently advanced source worktrees",
+                "Acknowledges only stale prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed receipts without falsely making a failed validation successful"
               ]
             }
           ],
@@ -10095,6 +11026,83 @@
         }
       },
       "notes": "The acknowledgement is not a landing receipt and never rewrites the historical merge receipt or Work Log; exact source and candidate claims/cleanliness, ancestry, and freshly fetched current-target evidence are mandatory."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-missing-cleanup",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-missing-cleanup",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves a landed cleanup-pending receipt remains in the freshly fetched remote target and every receipted worktree and branch is absent",
+                "Records an immutable acknowledgement for legacy missing terminal Work Log evidence without fabricating Work Logs"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-missing-cleanup --help",
+              "contains": [
+                "separate immutable acknowledgement",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestAcknowledgeMissingCleanupRecoversOnlyAfterExactAssetsAreGone",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestMissingCleanupAcknowledgementFailsClosedAfterReceiptTamper",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovery is limited to exact landed cleanup-pending receipts whose worktrees and local and remote branches are already absent; normal terminal Work Log proof remains authoritative whenever available."
     },
     {
       "id": "wb.worktree.merge.acknowledge-receipt-collision",
@@ -10188,6 +11196,195 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-retired-publication",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-publication",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves, from a fresh gh pr view read and a freshly fetched current remote target, that a conflict/validation_failed/checks_failed receipt's exact published pull request was closed without ever merging, that its remote candidate branch carries no ref, and that neither its published nor preserved candidate landed",
+                "Accepts only a prepare- or land-phase receipt with no recorded landing SHA and an exact published pull request; a pull request proved MERGED refuses closed, pointing at acknowledge-stranded-landing instead",
+                "Requires the preserved candidate worktree for read-only git object resolution, never rewrites the historical receipt or any Work Log, and never deletes that candidate worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-publication --help",
+              "contains": [
+                "closed without ever merging",
+                "acknowledge-stranded-landing",
+                "force-push",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationProvesClosedPullRequestAndFreesLane",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenMerged",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenStillOpen",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenBranchStillPublished",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRefusesWhenCandidateLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestAcknowledgeRetiredPublicationRequiresActorAndReasonWithApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestRetiredPublicationAcknowledgementTamperingKeepsLaneBlocked",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestValidateRetiredPublicationReceiptRefusesWrongShape",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_publication_test.go",
+              "name": "TestEffectiveUnpublishedConflictAcceptsValidRetiredPublicationAcknowledgement",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovers a conflict/validation_failed/checks_failed receipt stuck after publishing a candidate whose target then advanced past it, once the operator has closed the stale pull request unmerged and deleted its remote branch by hand. A subsequent prepare of the exact same sources supersedes the stuck receipt under a fresh operation, integration branch, and empty pull request rather than resuming the retired publication."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-retired-unpublished-validation-failure",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-unpublished-validation-failure",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Accepts only an unpublished prepare/validation_failed receipt with no landing SHA, pull request, or published candidate SHA",
+                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed",
+                "Writes only an append-only acknowledgement; the receipt, candidate, sources, branches, and Work Logs remain unchanged while a different source set may acquire the lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-unpublished-validation-failure --help",
+              "contains": [
+                "receipt never published",
+                "actively claimed",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_test.go",
+              "name": "TestAcknowledgeUnpublishedValidationFailureFreesLane",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This retires only an unpublished failed preparation after proving its exact source work remains preserved; malformed acknowledgement evidence keeps the lane blocked."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
@@ -10263,6 +11460,13 @@
         }
       },
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
+    },
+    {
+      "id": "wb.worktree.merge.adopt-published-candidate",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {"runtime":{"status":"Full","commands":[{"path":"wb worktree merge adopt-published-candidate","flags":["--actor","--apply","--format","--initiator","--mode","--reason"],"modes":["Dry-run is the default; --apply requires --actor and --reason","Accepts only an open same-repository pull request at the exact receipted candidate branch and SHA, exact target, active claims, clean worktrees, and exact remote ref","Writes an append-only acknowledgement and never force-pushes or rewrites the historical receipt"]}],"limitation":null},"help":{"status":"Full","anchors":[{"command":"wb worktree merge adopt-published-candidate --help","contains":["open","exact","dry-run","--apply","--actor","--initiator","--mode","--reason"]}],"limitation":null},"ai_skill":{"status":"Full","skills":[{"path":"ai/skills/wb-merge/references/worktree-merge.md","marker":"# Mechanical worktree merge","examples":["wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>"]}],"limitation":null},"tests":{"status":"Full","references":[{"path":"internal/orchestrate/worktree_merge_adopt_published_test.go","name":"TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh","kind":"integration"},{"path":"cmd/wb/worktree_merge_test.go","name":"TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney","kind":"integration"}],"limitation":null}},
+      "notes": "Adoption recovers only a lost local publication acknowledgement; ordinary prepare consumes the append-only proof and can advance a clean descendant with a non-force PR branch update."
     },
     {
       "id": "wb.worktree.merge.correct-self-supersession",
@@ -10363,18 +11567,23 @@
             {
               "path": "wb worktree merge land",
               "flags": [
+                "--allow-saturated-host",
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
                 "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
-                "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"
+                "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested",
+                "For an already-published candidate whose target advanced, merges the new target into the published head (recording a target_refreshes entry), re-validates the exact resulting candidate, and fast-forward pushes the same PR branch instead of refusing to rewrite it; a merge conflict reports the conflicting paths without pushing",
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally. Also applies to merge resume."
               ]
             }
           ],
@@ -10443,19 +11652,26 @@
               "flags": [
                 "--agent-id",
                 "--agent-runtime",
+                "--allow-saturated-host",
+                "--check-timeout",
                 "--cli",
                 "--format",
+                "--lane-reason",
                 "--model",
+                "--prepare-timeout",
                 "--progress",
                 "--provider",
                 "--rebatch-receipt",
                 "--retry",
+                "--shard-attempt-timeout",
+                "--take-over-lane",
                 "--target",
                 "--timeout"
               ],
               "modes": [
                 "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, reports stage and validation progress on stderr when requested, and persists a resumable receipt",
                 "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at).",
                 "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR",
                 "With --rebatch-receipt, replaces one unlanded prepared lane only with a new candidate whose source set retains every old ref at a descendant head and adds a distinct ref; target drift and dirty or ambiguous identity are refused, while immutable evidence is linked by an append-only acknowledgement"
               ]
@@ -10515,6 +11731,111 @@
         }
       },
       "notes": "Prepared means local and validated, not remotely landed."
+    },
+    {
+      "id": "wb.worktree.merge.prepare-conflict-replacement",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge prepare-conflict-replacement",
+              "flags": [
+                "--actor",
+                "--agent-id",
+                "--agent-runtime",
+                "--apply",
+                "--cli",
+                "--expected-current-target",
+                "--expected-immutable-claim-sha256",
+                "--expected-receipt-sha256",
+                "--expected-source-sha",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--progress",
+                "--provider",
+                "--reason",
+                "--retry",
+                "--timeout"
+              ],
+              "modes": [
+                "Dry-runs exact receipt, immutable-claim, unpublished conflict candidate, current target, and receipted-source proof without creating a worktree",
+                "Creates one deterministic clean WB-managed replacement under the receipt-owned lane, retaining both the receipted candidate and a clean observed strict descendant as required roots without writing a receipt or acknowledgement"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge prepare-conflict-replacement --help",
+              "contains": [
+                "unpublished",
+                "supersede-validation-failed",
+                "--expected-receipt-sha256",
+                "--expected-immutable-claim-sha256",
+                "--expected-current-target",
+                "--expected-source-sha",
+                "--progress",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason> --progress"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementBreaksReceiptOwnedLaneCycle",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementRefusesPublishedAndMismatchedSources",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementRetiresNewCandidateAfterEvidenceDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovery-only constructor leaves the historical conflict receipt and every Work Log immutable. It creates no merge receipt, so the existing supersede-validation-failed acknowledgement remains the only lane-releasing transition."
     },
     {
       "id": "wb.worktree.merge.prepare-published-forward-repair",
@@ -10634,19 +11955,29 @@
             {
               "path": "wb worktree merge resume",
               "flags": [
+                "--allow-saturated-host",
                 "--check-interval",
+                "--check-timeout",
+                "--prepare-timeout",
+                "--shard-attempt-timeout",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
                 "--stop-before-merge",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
-                "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge"
+                "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally.",
+                "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
+                "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed",
+                "When the target has advanced past a published candidate's recorded target SHA, WB refreshes it instead of refusing: merges the freshly fetched target (and any already-advanced candidate descendant) into the published head, records a target_refreshes entry, re-validates the exact resulting candidate, and fast-forward pushes the same PR branch; a merge conflict reports the conflicting paths and leaves the receipt prepare/conflict without pushing, and no target advance is a no-op"
               ]
             }
           ],
@@ -10693,12 +12024,42 @@
               "path": "cmd/wb/worktree_merge_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeRevalidatesValidationFailedReceiptThenPublishes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeRefusesPublishWhenValidationIdentityMismatchesCandidate",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestRequireWorktreeMergePublishedValidationRefusesUnvalidatedCandidate",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments."
+      "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments. A prepare/validation_failed receipt (or an interrupted prepare/preparing receipt) is re-validated for the exact candidate SHA before any publish or landing transition; every such transition refuses unless the receipt has left validation_failed and its recorded validation identity still names that exact candidate. Resuming a land-phase receipt (an open PR or a direct-push target already recorded) applies the same exact-candidate re-validation whenever the candidate has advanced past the SHA that was last proven or published, before the same guard runs; the only exception is an already-published candidate whose PublishedCandidateSHA still names the exact current candidate and whose status has not itself reverted to validation_failed, where the earlier push gate and remote CI checks are the proof instead."
     },
     {
       "id": "wb.worktree.merge.revert",
@@ -10713,17 +12074,21 @@
             {
               "path": "wb worktree merge revert",
               "flags": [
+                "--allow-saturated-host",
                 "--check-interval",
                 "--cleanup",
                 "--format",
+                "--lane-reason",
                 "--on-failure",
                 "--progress",
                 "--retry",
                 "--route",
+                "--take-over-lane",
                 "--timeout"
               ],
               "modes": [
-                "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route"
+                "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route",
+                "Before preparing the revert candidate, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
             }
           ],
@@ -10884,7 +12249,8 @@
               ],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
-                "Accepts only prepare validation_failed receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
+                "Accepts only unpublished prepare validation_failed or conflict receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs",
+                "For a clean unpublished conflict candidate that advanced after its receipt, binds the observed strict descendant and requires the replacement to contain both candidate revisions"
               ]
             }
           ],
@@ -10926,6 +12292,11 @@
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
               "name": "TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingReceipt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestSupersedeConflictWorktreeMergeRoundTripsToNextPrepare",
               "kind": "integration"
             },
             {
@@ -11136,6 +12507,88 @@
         }
       },
       "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
+    },
+    {
+      "id": "wb.worktree.relocate",
+      "feature_refs": [
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--apply",
+                "--format",
+                "--initiator",
+                "--json",
+                "--mode",
+                "--to"
+              ],
+              "modes": [
+                "Dry-run is the default and --apply is required to move a checkout",
+                "--to=local selects the canonical repository .worktrees root; --to=shared requires the current user-configured worktrees.root",
+                "The task, branch, immutable Work Log claim, and checkout contents are preserved",
+                "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
+                "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
+                "An adopted external worktree is reported but never moved",
+                "A retry at an already relocated destination is a no-op and returns the existing receipt"
+              ]
+            }
+          ],
+          "limitation": "A partial physical move that fails before its receipt is recorded remains visible in Git's registry and requires the supported recovery path; automatic crash replay is not implemented."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree relocate --help",
+              "contains": [
+                "--to=local",
+                "--to=shared",
+                "--apply",
+                "descriptor-anchored",
+                "append-only relocation receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Relocate a still-active task deliberately",
+              "examples": [
+                "wb worktree relocate <task> --to local",
+                "wb worktree relocate <task> --to shared --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateMovesManagedSharedWorktreeToLocalAndPreservesClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateRefusesExternalAndDirtyWorktrees",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Changing layout configuration only chooses new checkout placement. Existing managed worktrees remain discoverable until an explicit relocation applies."
     },
     {
       "id": "wb.worktree.rename",

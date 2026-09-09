@@ -20,6 +20,67 @@ func TestStoreCreateRefusesASecondStreamOfTheSameName(t *testing.T) {
 	}
 }
 
+// This fixture is a trimmed copy of a real stream-state file a dev build of
+// WB wrote with schema_version 2 and a top-level linked_consumers array
+// (github.com/sneat-dev/wb, commit e0c6f16 "feat: register local-only stream
+// consumers" — never merged to main). A build whose SchemaVersion constant
+// stayed at 1 refused this file outright; loading it here proves the current
+// build reads it, and that Members and LinkedConsumers both round-trip.
+func TestStoreLoadsRealSchemaTwoLinkedConsumersFixture(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "stream_schema_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("splitus-contactus-invite-local-20260906"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(store.Dir("splitus-contactus-invite-local-20260906"), "stream.json")
+	if err := os.WriteFile(statePath, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := store.Load("splitus-contactus-invite-local-20260906")
+	if err != nil {
+		t.Fatalf("Load() on a real schema-2 fixture = %v, want success", err)
+	}
+	if stream.SchemaVersion != 2 {
+		t.Fatalf("SchemaVersion = %d, want 2", stream.SchemaVersion)
+	}
+	if _, ok := stream.Member("sneat-co/contactus"); !ok {
+		t.Fatal("Members did not round-trip the fixture's library member")
+	}
+	if len(stream.LinkedConsumers) != 1 || stream.LinkedConsumers[0].Repository != "sneat-co/debtus" {
+		t.Fatalf("LinkedConsumers = %#v, want the fixture's sneat-co/debtus entry", stream.LinkedConsumers)
+	}
+	if len(stream.LinkedConsumers[0].Links) != 2 {
+		t.Fatalf("LinkedConsumers[0].Links = %d, want 2", len(stream.LinkedConsumers[0].Links))
+	}
+	live := stream.LiveLinks()
+	var sawLinkedConsumer bool
+	for _, link := range live {
+		if link.Member.Repository == "sneat-co/debtus" {
+			sawLinkedConsumer = true
+		}
+	}
+	if !sawLinkedConsumer {
+		t.Fatal("LiveLinks() did not include the linked-consumer's links")
+	}
+
+	// A read must never rewrite the file on disk.
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("Load() rewrote the state file; a read must be side-effect free")
+	}
+}
+
 func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Load("absent"); !errors.Is(err, ErrNotFound) {
@@ -34,6 +95,51 @@ func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
 	_, err := store.Load("broken")
 	if err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want a parse failure distinct from ErrNotFound", err)
+	}
+}
+
+// .fleet is the reserved event-only directory for landings outside a stream.
+// It has no stream.json, so inventory must not mistake it for corrupt stream
+// state. A state file there, however, is malformed state and must still be
+// surfaced rather than hidden by the reservation.
+func TestStoreListIgnoresOnlyTheEventOnlyFleetDirectory(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir(".fleet"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir(".fleet"), "events.jsonl"), []byte("event\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	streams, unreadable, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 0 || len(unreadable) != 0 {
+		t.Fatalf("event-only .fleet inventory = streams %#v, unreadable %#v; want neither", streams, unreadable)
+	}
+
+	if err := os.WriteFile(filepath.Join(store.Dir(".fleet"), "stream.json"), []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, unreadable, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != ".fleet" {
+		t.Fatalf("inventory with .fleet/stream.json = %#v, want the malformed state fail-closed", unreadable)
+	}
+	if err := os.Remove(filepath.Join(store.Dir(".fleet"), "stream.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("missing-stream.json", filepath.Join(store.Dir(".fleet"), "stream.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, unreadable, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != ".fleet" {
+		t.Fatalf("inventory with dangling .fleet/stream.json = %#v, want the unsafe state surfaced", unreadable)
 	}
 }
 
@@ -147,6 +253,77 @@ func TestLiveLinksForWorktreeFindsLinksAcrossOpenStreams(t *testing.T) {
 	}
 }
 
+// LinkSourcesForWorktree is the opposite direction from LiveLinksForWorktree:
+// it protects the library worktree a consumer's link points AT, not the
+// consumer worktree holding the link. It must find both mechanisms, resolve
+// through symlinks, and ignore ended streams — an ended stream released its
+// repositories and no longer strands anyone.
+func TestLinkSourcesForWorktreeFindsBothMechanismsAcrossOpenStreams(t *testing.T) {
+	base := t.TempDir()
+	store := OpenAt(filepath.Join(base, "streams"))
+	library := filepath.Join(base, "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Stream{
+		Name: "npm-consumer",
+		Members: []Member{{
+			Repository: "acme/frontend", Worktree: filepath.Join(base, "frontend"),
+			Links: []Link{{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: MechanismPnpmLink, Identity: "@acme/core",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Stream{
+		Name: "go-consumer",
+		Members: []Member{{
+			Repository: "acme/backend", Worktree: filepath.Join(base, "backend"),
+			Links: []Link{{
+				Library: library, LibraryRepository: "acme/library",
+				Mechanism: MechanismGoWork, Identity: "acme.example/library",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ended := time.Now().UTC()
+	if _, err := store.Create(Stream{
+		Name: "closed-consumer", EndedAt: &ended,
+		Members: []Member{{
+			Repository: "acme/legacy", Worktree: filepath.Join(base, "legacy"),
+			Links: []Link{{Library: library, LibraryRepository: "acme/library", Mechanism: MechanismGoWork, Identity: "acme.example/library"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sources, err := store.LinkSourcesForWorktree(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources = %#v, want exactly the two open streams' links, not the ended one", sources)
+	}
+	byStream := map[string]StreamLinkSource{}
+	for _, source := range sources {
+		byStream[source.Stream] = source
+	}
+	npm, ok := byStream["npm-consumer"]
+	if !ok || npm.ConsumerRepository != "acme/frontend" || npm.ConsumerWorktree != filepath.Join(base, "frontend") || npm.Link.Mechanism != MechanismPnpmLink {
+		t.Fatalf("npm-consumer source = %#v", npm)
+	}
+	goSource, ok := byStream["go-consumer"]
+	if !ok || goSource.ConsumerRepository != "acme/backend" || goSource.Link.Mechanism != MechanismGoWork {
+		t.Fatalf("go-consumer source = %#v", goSource)
+	}
+	if none, err := store.LinkSourcesForWorktree(filepath.Join(base, "other")); err != nil || len(none) != 0 {
+		t.Fatalf("sources for an unrelated worktree = %#v (err %v)", none, err)
+	}
+}
+
 func TestValidateNameRejectsAnythingThatCouldNotBeATaskName(t *testing.T) {
 	for _, name := range []string{"", "-leading", "has space", "has/slash", ".."} {
 		if err := ValidateName(name); err == nil {
@@ -193,5 +370,65 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 	}
 	if len(unreadable) != 1 || unreadable[0].Name != "broken" {
 		t.Fatalf("unreadable = %#v, want only the truncated stream record surfaced to the caller", unreadable)
+	}
+}
+
+// Schema version 2 is a fully understood, current format (it added
+// LinkedConsumers for admitted alternate managed worktrees): such a record
+// loads completely, so it is never reported as unreadable. RepositoryStream
+// treats a repository recorded only as a linked consumer as held too — it
+// carries live local links this stream's undo and landing guard must reach,
+// so a second stream must not be able to claim it either.
+func TestRepositoryStreamReadsSchemaTwoLinkedConsumers(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("known"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":2,"members":[{"repository":"acme/member"}],"linked_consumers":[{"repository":"acme/linked"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("known"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 0 {
+		t.Fatalf("unrelated repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+	if _, held, unreadable, err := store.RepositoryStream("acme/linked"); err != nil || !held || len(unreadable) != 0 {
+		t.Fatalf("linked-consumer repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+	if _, held, unreadable, err := store.RepositoryStream("acme/member"); err != nil || !held || len(unreadable) != 0 {
+		t.Fatalf("member repository: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+}
+
+// An incomplete schema-2 member (missing the "repository" field) still
+// decodes to a valid, readable Stream — it simply carries a member with an
+// empty repository, which matches nothing.
+func TestRepositoryStreamReadsSchemaTwoMemberMissingRepositoryField(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("incomplete"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":2,"members":[{"future_repository":"acme/app"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("incomplete"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 0 {
+		t.Fatalf("incomplete member: held=%t unreadable=%#v err=%v", held, unreadable, err)
+	}
+}
+
+func TestRepositoryStreamKeepsUnknownFutureSchemaUnreadable(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`{"schema_version":3,"members":[{"repository":"acme/other"}]}`)
+	if err := os.WriteFile(filepath.Join(store.Dir("future"), "stream.json"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held, unreadable, err := store.RepositoryStream("acme/unrelated"); err != nil || held || len(unreadable) != 1 {
+		t.Fatalf("unknown schema: held=%t unreadable=%#v err=%v", held, unreadable, err)
 	}
 }

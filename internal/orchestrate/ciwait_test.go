@@ -12,6 +12,40 @@ import (
 	"time"
 )
 
+func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
+	t.Parallel()
+	runID, jobID, ok := githubActionsRunAndJob("https://github.com/acme/app/actions/runs/123456/job/7890")
+	if !ok || runID != "123456" || jobID != "7890" {
+		t.Fatalf("actions link parsed as run=%q job=%q ok=%t", runID, jobID, ok)
+	}
+	if _, _, ok := githubActionsRunAndJob("https://github.com/acme/app/checks/1"); ok {
+		t.Fatal("non-Actions check link was accepted")
+	}
+
+	lines := make([]string, 0, maxFailedJobLogLines+2)
+	for index := 0; index < maxFailedJobLogLines+2; index++ {
+		lines = append(lines, fmt.Sprintf("line %d", index))
+	}
+	lines = append(lines, "token ghp_secretTokenShouldNotAppear")
+	excerpt := failedJobLogExcerpt(strings.Join(lines, "\n"), maxFailedJobLogLines)
+	for _, want := range []string{"… earlier failed-job log lines omitted …", "line 2", "[REDACTED]"} {
+		if !strings.Contains(excerpt, want) {
+			t.Errorf("excerpt missing %q: %q", want, excerpt)
+		}
+	}
+	if strings.Contains(excerpt, "ghp_secretTokenShouldNotAppear") {
+		t.Fatalf("excerpt leaked token-shaped content: %q", excerpt)
+	}
+}
+
+func TestCompactFailureAnnotationIsSingleLineAndBounded(t *testing.T) {
+	t.Parallel()
+	got := compactFailureAnnotation("  first\nsecond\tthird  ", 14)
+	if got != "first second …" {
+		t.Fatalf("compact annotation = %q", got)
+	}
+}
+
 func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
 	checks := []RemoteCheck{
 		{Name: "build", Bucket: "pass", Link: "https://example.test/build", AppID: 22},
@@ -30,6 +64,30 @@ func TestWaitForCommitChecksRejectsSliceAboveForegroundCeiling(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "at most") {
 		t.Fatalf("overlong wait error = %v", err)
+	}
+}
+
+func TestRequiredChecksReceiptKeepsPlanLimitedPolicyFailClosedByDefault(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, _, _, unavailable, reason := requiredChecksReceipt(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main",
+	}, nil)
+	if unavailable != "" || !strings.Contains(reason, "HTTP 403") {
+		t.Fatalf("default policy receipt must fail closed: unavailable=%q reason=%q", unavailable, reason)
 	}
 }
 

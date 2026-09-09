@@ -260,7 +260,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"main`, a feature branch, or a task branch",
 		"dedicated merger checkout must be clean",
 		"Preserve both stated intents",
-		"validate after each merge, then run the full target verification",
+		"validate the final compatible batch once",
 		"validates the candidate first",
 		"target baseline was not needed",
 		"never waits for current target CI to turn green",
@@ -275,8 +275,8 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"Merge-group observation is planned",
 		"keep the PR unmerged",
 		"post-merge target CI",
-		"behavioral, design,",
-		"or authority blockers",
+		"The primary agent owns landing unless it explicitly delegates",
+		"unavailable subagents must not block authorized landing",
 		"one exclusive logical merger lane per",
 		"`(repository, target branch)`",
 		"independent of the calling session",
@@ -436,12 +436,12 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 		}
 	}
 	tidyIndex := strings.Index(string(contents), "run: go mod tidy -diff")
-	formatIndex := strings.Index(string(contents), "- name: gofmt")
+	formatIndex := strings.Index(string(contents), "- name: Check Go formatting (read-only)")
 	if tidyIndex < 0 {
 		t.Fatalf("%s does not fail when go.mod or go.sum needs go mod tidy", workflowPath)
 	}
 	if formatIndex < 0 || tidyIndex > formatIndex {
-		t.Fatalf("%s must run go mod tidy -diff before formatting, build, and test gates", workflowPath)
+		t.Fatalf("%s must run go mod tidy -diff before its formatting check", workflowPath)
 	}
 	if strings.Contains(string(contents), "run: go mod tidy\n") {
 		t.Fatalf("%s mutates release source with bare go mod tidy instead of checking its diff", workflowPath)

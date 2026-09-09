@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -19,6 +20,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureHooksGitHelperArgument {
 		os.Exit(RunSecureHooksGitHelper(os.Args[2:]))
 	}
+	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
+	// before any hooks test runs.
+	testenv.IsolateProcess()
 	os.Exit(m.Run())
 }
 
@@ -1191,15 +1195,14 @@ func TestRepositoryPolicyUsesShardedCoverageForGoPrePush(t *testing.T) {
 	for _, marker := range []string{
 		"hooks push-tier",
 		"go vet ./...",
-		"go run ./cmd/wb coverage .",
-		"--test-shards 8",
-		"--shard-package ./internal/worktrees",
-		"--minimum 58",
-		"--format summary",
-		"--report-dir",
 	} {
 		if !strings.Contains(string(contents), marker) {
 			t.Fatalf("repository Go pre-push template is missing %q:\n%s", marker, contents)
+		}
+	}
+	for _, forbidden := range []string{"go test", "go run ./cmd/wb coverage", "--test-shards"} {
+		if strings.Contains(string(contents), forbidden) {
+			t.Fatalf("repository Go pre-push template still runs %q:\n%s", forbidden, contents)
 		}
 	}
 }

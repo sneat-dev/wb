@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 
 func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {
 	var output bytes.Buffer
-	writer := &worktreeMergeLineWriter{out: &output}
+	writer := &progressLineWriter{out: &output}
 	for _, text := range []string{"\rworktree merge: preparing", "\rworktree merge: waiting", "\n"} {
 		if _, err := writer.Write([]byte(text)); err != nil {
 			t.Fatal(err)
@@ -34,7 +35,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
@@ -46,19 +47,24 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
 		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
 	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if prepare.Flags().Lookup(flag) == nil {
+			t.Errorf("merge prepare is missing --%s", flag)
+		}
+	}
 	if route := command.Flags().Lookup("route"); route == nil || route.DefValue != "auto" {
 		t.Fatalf("--route = %#v, want auto", route)
 	}
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-receipt-collision", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-missing-cleanup", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair", "prepare-conflict-replacement"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue
 		}
 		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && name != "acknowledge-stranded-landing" && name != "acknowledge-receipt-collision" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
+		if name != "acknowledge-landed-failed" && name != "acknowledge-stranded-landing" && name != "acknowledge-missing-cleanup" && name != "acknowledge-receipt-collision" && name != "adopt-published-candidate" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
 	}
@@ -66,9 +72,19 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || resume == nil || resume.Flags().Lookup("stop-before-merge") == nil {
 		t.Fatalf("merge resume must expose --stop-before-merge: command=%v err=%v", resume, err)
 	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if resume.Flags().Lookup(flag) == nil {
+			t.Errorf("merge resume is missing --%s", flag)
+		}
+	}
 	land, _, err := command.Find([]string{"land"})
 	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
 		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
+	}
+	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+		if land.Flags().Lookup(flag) != nil {
+			t.Errorf("merge land must not expose --%s", flag)
+		}
 	}
 	ack, _, err := command.Find([]string{"acknowledge-landed-failed"})
 	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {
@@ -86,6 +102,14 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
 	}
+	missingCleanup, _, err := command.Find([]string{"acknowledge-missing-cleanup"})
+	if err != nil || missingCleanup == nil || missingCleanup.Flags().Lookup("apply") == nil || missingCleanup.Flags().Lookup("actor") == nil || missingCleanup.Flags().Lookup("reason") == nil {
+		t.Fatalf("acknowledge-missing-cleanup flags = %#v err=%v", missingCleanup, err)
+	}
+	adoption, _, err := command.Find([]string{"adopt-published-candidate"})
+	if err != nil || adoption == nil || adoption.Flags().Lookup("apply") == nil || adoption.Flags().Lookup("actor") == nil || adoption.Flags().Lookup("reason") == nil {
+		t.Fatalf("adopt-published-candidate flags = %#v err=%v", adoption, err)
+	}
 	correct, _, err := command.Find([]string{"correct-self-supersession"})
 	if err != nil || correct == nil || correct.Flags().Lookup("apply") == nil || correct.Flags().Lookup("actor") == nil || correct.Flags().Lookup("reason") == nil || correct.Flags().Lookup("expected-supersession-sha256") == nil || correct.Flags().Lookup("expected-immutable-claim-sha256") == nil {
 		t.Fatalf("correct-self-supersession flags = %#v err=%v", correct, err)
@@ -94,6 +118,21 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 		if !strings.Contains(command.Long, phrase) {
 			t.Errorf("merge help is missing %q", phrase)
 		}
+	}
+}
+
+func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
+	command := newWorktreeLandCmd()
+	if command.Name() != "land" {
+		t.Fatalf("Name() = %q", command.Name())
+	}
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Errorf("land is missing --%s", flag)
+		}
+	}
+	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "true" {
+		t.Fatalf("land --cleanup = %#v, want default true", cleanup)
 	}
 }
 
@@ -242,6 +281,191 @@ func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
 			t.Fatalf("decode supersede output %q: %v", stdout.String(), err)
 		}
 		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, originalReceipt, acknowledgement.AcknowledgementPath)
+	})
+
+	t.Run("supersede-validation-failed legacy receipt derives candidate from validation revision", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 2)
+		legacy := fixture.receipt
+		if legacy.Validation.Path != legacy.Candidate.Worktree || legacy.Validation.Revision != legacy.Candidate.SHA {
+			t.Fatalf("fixture lacks candidate validation evidence: %#v", legacy.Validation)
+		}
+		legacy.Candidate.SHA = ""
+		legacyContents, err := json.MarshalIndent(legacy, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyContents = append(legacyContents, '\n')
+		if err := os.WriteFile(fixture.receiptPath, legacyContents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, source.WorktreeDir, "push", "origin", source.Branch)
+		}
+		replacement := createCLIWorktreeSource(t, fixture, "legacy-supersede-replacement", "feature/legacy-supersede-replacement", "replacement.txt", "replacement\n")
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+source.Branch)
+		}
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, replacement.WorktreeDir,
+			"--apply", "--actor", "test-operator", "--reason", "legacy-receipt-regression",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("legacy supersede apply failed: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeValidationFailureSupersession
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode legacy supersede output %q: %v", stdout.String(), err)
+		}
+		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, legacyContents, acknowledgement.AcknowledgementPath)
+		if _, err := os.Stat(fixture.receiptPath + ".legacy-validation-failed.identity.ack.json"); err != nil {
+			t.Fatalf("legacy identity acknowledgement missing: %v", err)
+		}
+	})
+
+	t.Run("supersede-validation-failed legacy receipt refuses validation revision drift", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		legacy := fixture.receipt
+		legacy.Candidate.SHA = ""
+		legacy.Validation.Revision = "0000000000000000000000000000000000000000"
+		contents, err := json.MarshalIndent(legacy, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents = append(contents, '\n')
+		if err := os.WriteFile(fixture.receiptPath, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root := newRootCmd()
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, fixture.sources[0].WorktreeDir,
+		})
+		err = root.Execute()
+		if err == nil || !strings.Contains(err.Error(), "does not match immutable validation revision") {
+			t.Fatalf("legacy drift error = %v", err)
+		}
+		if _, statErr := os.Stat(fixture.receiptPath + ".legacy-validation-failed.identity.ack.json"); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("legacy drift wrote an acknowledgement: %v", statErr)
+		}
+	})
+}
+
+func TestWorktreeMergePrepareSelectsSuccessorAfterSupersededConflictReceipt(t *testing.T) {
+	prepareSupersededConflict := func(t *testing.T) (cliWorktreeMergeFixture, orchestrate.WorktreeMergeValidationFailureSupersession) {
+		t.Helper()
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		receipt := fixture.receipt
+		receipt.Status = orchestrate.WorktreeMergeConflict
+		receipt.Failure = "historical merge conflict"
+		receiptBytes, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fixture.receiptPath, append(receiptBytes, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runCLIWorktreeGit(t, fixture.sources[0].WorktreeDir, "push", "origin", fixture.sources[0].Branch)
+		writeCLIWorktreeFile(t, filepath.Join(fixture.canonical, "target.txt"), "target\n")
+		runCLIWorktreeGit(t, fixture.canonical, "add", "target.txt")
+		runCLIWorktreeGit(t, fixture.canonical, "commit", "-m", "test: advance target for conflict supersession")
+		runCLIWorktreeGit(t, fixture.canonical, "push", "origin", "main")
+		replacement := createCLIWorktreeSource(t, fixture, "conflict-supersede-replacement", "feature/conflict-supersede-replacement", "replacement.txt", "replacement\n")
+		runCLIWorktreeGit(t, replacement.WorktreeDir, "fetch", "origin")
+		runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+fixture.sources[0].Branch)
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, replacement.WorktreeDir,
+			"--apply", "--actor", "test-operator", "--reason", "prepare successor after conflict supersession",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("supersede conflict receipt: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeValidationFailureSupersession
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode supersession output %q: %v", stdout.String(), err)
+		}
+		return fixture, acknowledgement
+	}
+
+	t.Run("valid acknowledgement permits a fresh prepare with the original source", func(t *testing.T) {
+		fixture, acknowledgement := prepareSupersededConflict(t)
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test", "--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("fresh prepare rejected valid supersession %s: %v\nstderr: %s", acknowledgement.AcknowledgementPath, err, stderr.String())
+		}
+		var successor orchestrate.WorktreeMergeReceipt
+		if err := json.Unmarshal(stdout.Bytes(), &successor); err != nil {
+			t.Fatalf("decode prepare output %q: %v", stdout.String(), err)
+		}
+		if successor.Status != orchestrate.WorktreeMergePrepared || successor.ReceiptPath == fixture.receiptPath || successor.Candidate.SHA == "" {
+			t.Fatalf("fresh prepare did not create a distinct prepared successor: %+v", successor)
+		}
+
+		var retryOutput, retryError bytes.Buffer
+		retry := newRootCmd()
+		retry.SetOut(&retryOutput)
+		retry.SetErr(&retryError)
+		retry.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test", "--format", "json",
+		})
+		if err := retry.Execute(); err != nil {
+			t.Fatalf("retry prepare rejected existing successor %s: %v\nstderr: %s", successor.ReceiptPath, err, retryError.String())
+		}
+		var retried orchestrate.WorktreeMergeReceipt
+		if err := json.Unmarshal(retryOutput.Bytes(), &retried); err != nil {
+			t.Fatalf("decode retry output %q: %v", retryOutput.String(), err)
+		}
+		if retried.ID != successor.ID || retried.ReceiptPath != successor.ReceiptPath || retried.Candidate != successor.Candidate {
+			t.Fatalf("retry did not return the unchanged successor: got=%+v want=%+v", retried, successor)
+		}
+	})
+
+	t.Run("tampered acknowledgement leaves the conflict receipt blocking", func(t *testing.T) {
+		fixture, acknowledgement := prepareSupersededConflict(t)
+		contents, err := os.ReadFile(acknowledgement.AcknowledgementPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tampered := strings.Replace(string(contents), acknowledgement.ID, "tampered", 1)
+		if tampered == string(contents) {
+			t.Fatal("fixture acknowledgement did not contain its ID")
+		}
+		if err := os.WriteFile(acknowledgement.AcknowledgementPath, []byte(tampered), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		root := newRootCmd()
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test",
+		})
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+			t.Fatalf("tampered acknowledgement released the lane: %v", err)
+		}
 	})
 }
 

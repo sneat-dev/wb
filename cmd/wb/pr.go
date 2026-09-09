@@ -22,10 +22,10 @@ func newPRCmd() *cobra.Command {
 }
 
 func newPRLandCmd() *cobra.Command {
-	var format, approvedBy, subject, reason, mergeMethod string
+	var format, approvedBy, subject, reason, laneReason, mergeMethod string
 	var keepCommits []string
-	var keep, allowUnfenced, nonInteractive bool
-	var pollInterval, slice time.Duration
+	var keep, allowUnfenced, nonInteractive, takeOverLane bool
+	var pollInterval, totalTimeout time.Duration
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
 		Short: "Verify, land, and tidy up after one pull request",
@@ -47,20 +47,18 @@ installed.
 CLEANUP IS THE DEFAULT. The task's worktree is retired and its claim released
 unless --keep is passed. An opt-in cleanup is a cleanup that does not happen.
 
-SQUASH IS THE DEFAULT, and the squash message AGGREGATES the branch: the
-subject is the pull request's title — GitHub otherwise substitutes the branch's
-first commit subject, which is how a "wip(...)" message lands on main and
-cannot be corrected without rewriting history — and the body carries the pull
-request's summary, one line per source commit, the pull request number, and the
-review that authorized it.
+MERGE COMMIT IS THE DEFAULT. It keeps the reviewed commits and records the pull
+request boundary without rewriting either. Use --merge-method squash when one
+aggregated commit is intentional; WB then builds its subject and body from the
+pull request and source commits rather than accepting an accidental first
+commit message. Explicit --merge-method rebase remains available.
 
---keep-commits <sha>[,<sha>...] --reason "<text>" is the exception: wb rebuilds
-the branch so those commits land as their own commits, in order, with the rest
-squashed into one aggregated commit that records the reason. --reason is
-mandatory, because a commit standing alone in the history of a default branch
-has to say why. Each kept commit must build on its own; one that does not is
-refused, naming a smaller set, because a commit that does not build is not a
-place anyone can bisect to.
+--keep-commits <sha>[,<sha>...] is the explicit squash hybrid and therefore
+requires --merge-method squash plus --reason "<text>". wb rebuilds the branch so
+those commits land as their own commits, in order, with the rest squashed into
+one aggregated commit that records the reason. Each kept commit must build on
+its own; one that does not is refused, naming a smaller set, because a commit
+that does not build is not a place anyone can bisect to.
 
 REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,
 package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — lands on
@@ -68,6 +66,16 @@ its batch verification with no review ledger entry. The classification is made f
 never from the title, author or labels: a bot-titled bump that
 also edits a source file is not mechanical, and is refused without
 --approved-by <review-file-or-comment-url>.
+
+LANDING LANE. Only one live WB session may drive 'wb pr land' or
+'wb worktree merge' toward a given (repository, target) at a time. A
+different live session already landing here is refused, naming that session,
+its pid, and the receipt it is driving; ask it to hand off with
+'wb session request-handoff <id>', or force the issue with
+--take-over-lane --lane-reason "<text>" (the reason is recorded on the lane
+and the receipt). A session whose registry entry is gone is taken over
+automatically with a printed note; a live session is never taken over
+implicitly, no matter how old its heartbeat looks.
 
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused.`,
@@ -79,7 +87,8 @@ wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
 
 # Keep one commit in its own place in the history
 wb pr land sneat-co/sneat-go#1041 --approved-by review.md \
-  --keep-commits 4f2a1c9 --reason "the migration must be revertable on its own"
+  --merge-method squash --keep-commits 4f2a1c9 \
+  --reason "the migration must be revertable on its own"
 
 # Machine-readable envelope
 wb pr land sneat-co/sneat-go#1041 --format json`,
@@ -88,41 +97,54 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if len(splitCommaSeparated(keepCommits)) > 0 && (!command.Flags().Changed("merge-method") || mergeMethod != "squash") {
+				return usageError("--keep-commits requires explicit --merge-method squash")
+			}
+			if takeOverLane && strings.TrimSpace(laneReason) == "" {
+				return usageError("--take-over-lane requires --lane-reason <text>")
+			}
 			repository, number, err := splitPullRequestSelector(args[0])
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
+			progress.start(repository, number, "", "")
 			// The landing guard runs before anything else, including the
 			// GitHub read: a worktree of this repository still building against
 			// an unpublished tree makes every check observation meaningless.
+			progress.live.update("pr land: local link preflight: " + repository + ": started")
 			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
 				return err
 			}
+			progress.live.update("pr land: local link preflight: " + repository + ": completed")
 			events, streamName := landingEventLog(repository)
-			progress := newCIWaitProgress(command.ErrOrStderr(), !nonInteractive)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
-				Repository:        repository,
-				PullRequest:       number,
-				ProjectsRoot:      projectsRoot,
-				Keep:              keep,
-				ApprovedBy:        approvedBy,
-				MergeMethod:       mergeMethod,
-				Subject:           subject,
-				KeepCommits:       splitCommaSeparated(keepCommits),
-				Reason:            reason,
-				AllowUnfenced:     allowUnfenced,
-				Slice:             slice,
-				CheckPollInterval: pollInterval,
-				Progress:          progress.report,
-				Events:            events,
-				Stream:            streamName,
+				Repository:          repository,
+				PullRequest:         number,
+				ProjectsRoot:        projectsRoot,
+				Keep:                keep,
+				ApprovedBy:          approvedBy,
+				MergeMethod:         mergeMethod,
+				MergeMethodExplicit: command.Flags().Changed("merge-method"),
+				Subject:             subject,
+				KeepCommits:         splitCommaSeparated(keepCommits),
+				Reason:              reason,
+				AllowUnfenced:       allowUnfenced,
+				Slice:               totalTimeout,
+				CheckPollInterval:   pollInterval,
+				Progress:            progress.report,
+				OperationProgress:   progress.operationReporter("pr land"),
+				Events:              events,
+				Stream:              streamName,
+				Lane:                landingLaneGuardRequest("wb pr land", laneReason, takeOverLane),
 			})
 			if err != nil {
+				progress.fail(err)
 				return err
 			}
-			if result.Checks != nil {
-				progress.finish(*result.Checks)
-			}
+			progress.finishOperation("pr land: " + string(result.Outcome))
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -152,16 +174,18 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	}
 	command.Flags().BoolVar(&keep, "keep", false, "retain the task's worktree and claim instead of retiring them")
 	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file or a comment URL")
-	command.Flags().StringVar(&subject, "subject", "", "override the squash subject (default: the pull request title)")
-	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land as their own commits; requires --reason")
-	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
-	command.Flags().StringVar(&mergeMethod, "merge-method", "squash", "squash, merge, or rebase")
+	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
+	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
+	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; required with --keep-commits")
+	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
-	command.Flags().DurationVar(&pollInterval, "poll-interval", 0, "interval between check observations")
-	command.Flags().DurationVar(&slice, "timeout", 0, "bound on this foreground wait; a pending result is resumable")
+	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
+	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
-	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump")
+	addLandingLaneTakeoverFlag(command, &takeOverLane)
+	command.Flags().StringVar(&laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
+	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump take over lane")
 	return markLandingGuard(command, landingGuardByPullRequest)
 }
 
