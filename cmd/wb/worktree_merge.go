@@ -541,9 +541,10 @@ func newWorktreeMergeAcknowledgeStrandedLandingCmd() *cobra.Command {
 		Use:   "acknowledge-stranded-landing <merge-receipt>",
 		Short: "Acknowledge a proved stranded pull-request landing without rewriting its receipt",
 		Long: `Prove, using only GitHub's own remote state, that a land conflict
-receipt's exact published pull request reports MERGED and that its server
-merge commit and preserved candidate are both contained in the freshly
-fetched current remote target, then record a separate audited acknowledgement
+receipt's published pull request reports MERGED at its receipted candidate
+or a strict descendant, and that its server merge commit, observed head, and
+preserved candidate are contained in the freshly fetched current remote target,
+then record a separate audited acknowledgement
 so a fresh candidate can own the lane. This accepts only a land-phase conflict
 receipt that never recorded a landing SHA but did publish an exact candidate
 in a pull request: the case where a resume's own landing-result read failed
@@ -580,8 +581,12 @@ refuses closed.`,
 			if ack.CandidateLandingTreeSHA != "" {
 				candidateLanding = fmt.Sprintf("%s (tree %s)", candidateLanding, ack.CandidateLandingTreeSHA)
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\ncandidate-landing: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
-				ack.Status, ack.ReceiptPath, ack.CandidateSHA, candidateLanding, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			pullRequestHead := ack.CandidateSHA
+			if ack.PullRequestHeadSHA != "" {
+				pullRequestHead = ack.PullRequestHeadSHA
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\npull-request-head: %s\ncandidate-landing: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateSHA, pullRequestHead, candidateLanding, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			}

@@ -19,9 +19,10 @@ const (
 )
 
 // WorktreeMergeStrandedLandingAcknowledgement is a separate, append-only
-// acknowledgement for a land/conflict receipt whose exact published pull
-// request is proved MERGED, and whose merge commit and preserved candidate
-// are both proved contained in the freshly fetched current remote target,
+// acknowledgement for a land/conflict receipt whose published pull request
+// is proved MERGED at the receipted candidate or a strict descendant, and
+// whose merge commit, observed head, and preserved candidate are all proved
+// contained in the freshly fetched current remote target,
 // using only GitHub's remote state. This receipt shape exists precisely
 // because the candidate (and every receipted source) worktree is already
 // gone -- typically because a resume's landing-result read failed on pure
@@ -44,6 +45,12 @@ type WorktreeMergeStrandedLandingAcknowledgement struct {
 	ReceiptTargetSHA    string              `json:"receipt_target_sha"`
 	CandidateSHA        string              `json:"candidate_sha"`
 	PullRequest         string              `json:"pull_request"`
+	// PullRequestHeadSHA records a strict descendant of CandidateSHA that
+	// GitHub reports as the merged pull request head. It is empty when the PR
+	// head still exactly matches CandidateSHA. A descendant is accepted only
+	// when GitHub proves both its ancestry and its containment in the current
+	// remote target.
+	PullRequestHeadSHA string `json:"pull_request_head_sha,omitempty"`
 	// ProvedLandingSHA is GitHub's own server merge-result commit for
 	// PullRequest, discovered live by this acknowledgement. The historical
 	// receipt's own LandingSHA is deliberately left empty by this recovery
@@ -78,8 +85,9 @@ type WorktreeMergeStrandedLandingAcknowledgementOptions struct {
 }
 
 // AcknowledgeStrandedPullRequestLanding proves, using only GitHub's remote
-// state, that a land/conflict receipt's exact published candidate merged and
-// remains reachable from the current remote target, then records a separate
+// state, that a land/conflict receipt's published candidate, or a strict
+// descendant retaining it, merged and remains reachable from the current
+// remote target, then records a separate
 // audited acknowledgement so a fresh forward candidate can own the lane. It
 // never reads or requires the candidate or any receipted source worktree:
 // that infrastructure being gone is exactly the failure this recovers from.
@@ -113,7 +121,7 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	// Every dynamic proof is queried live, under the lane lock: GitHub, never
 	// a local worktree or any evidence gathered before this lock, is
 	// authoritative for whether this candidate landed and still does.
-	landingSHA, currentTarget, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLanding(ctx, receipt)
+	landingSHA, currentTarget, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLanding(ctx, receipt)
 	if proofErr != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, proofErr
 	}
@@ -129,7 +137,7 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		ReceiptPath:   receiptPath, AcknowledgementPath: ackPath,
 		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
 		Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA,
-		CandidateSHA: receipt.Candidate.SHA, PullRequest: receipt.PullRequest,
+		CandidateSHA: receipt.Candidate.SHA, PullRequest: receipt.PullRequest, PullRequestHeadSHA: pullRequestHeadSHA,
 		ProvedLandingSHA: landingSHA, CurrentTargetSHA: currentTarget,
 		CandidateLanding: candidateLanding, CandidateLandingTreeSHA: candidateLandingTreeSHA,
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...),
@@ -138,6 +146,7 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	ack.ID = strandedLandingAcknowledgementID(ack)
 	if existing, readErr := readStrandedLandingAcknowledgement(ackPath, receipt); readErr == nil {
 		if existing.ProvedLandingSHA != landingSHA || existing.CurrentTargetSHA != currentTarget ||
+			existing.PullRequestHeadSHA != pullRequestHeadSHA ||
 			existing.CandidateLanding != candidateLanding || existing.CandidateLandingTreeSHA != candidateLandingTreeSHA {
 			return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("acknowledgement %s binds different landing or target evidence", ackPath)
 		}
@@ -194,44 +203,62 @@ type strandedPullRequestLandingView struct {
 }
 
 // proveStrandedPullRequestLanding proves a stranded receipt's landing using
-// only GitHub's remote state: the exact published pull request reports
-// MERGED at the receipted candidate head, the exact server merge commit and
-// the receipted candidate are both reachable from the freshly fetched current
-// target, and the receipted candidate still contains its own recorded
-// pre-merge target. Every call passes an empty working directory: none of
+// only GitHub's remote state: the published pull request reports MERGED at
+// the receipted candidate head or a strict descendant, the exact server merge
+// commit, observed head, and receipted candidate are reachable from the freshly
+// fetched current target, and the receipted candidate still contains its own
+// recorded pre-merge target. Every call passes an empty working directory: none of
 // this proof may depend on a local worktree, because this receipt shape is
 // defined by that worktree already being gone.
-func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeReceipt) (landingSHA, currentTargetSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
+func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeReceipt) (landingSHA, currentTargetSHA, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
 	output, readErr := githubRead(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
 		"--json", "state,mergedAt,mergeCommit,headRefOid,baseRefName")
 	if readErr != nil {
-		return "", "", "", "", fmt.Errorf("read pull-request landing state: %w", readErr)
+		return "", "", "", "", "", fmt.Errorf("read pull-request landing state: %w", readErr)
 	}
 	var view strandedPullRequestLandingView
 	if jsonErr := json.Unmarshal([]byte(output), &view); jsonErr != nil {
-		return "", "", "", "", fmt.Errorf("decode pull-request landing state: %w", jsonErr)
+		return "", "", "", "", "", fmt.Errorf("decode pull-request landing state: %w", jsonErr)
 	}
 	if view.BaseRefName != receipt.Target {
-		return "", "", "", "", fmt.Errorf("pull request %s targets %s, not receipted target %s", receipt.PullRequest, view.BaseRefName, receipt.Target)
+		return "", "", "", "", "", fmt.Errorf("pull request %s targets %s, not receipted target %s", receipt.PullRequest, view.BaseRefName, receipt.Target)
 	}
+	if view.HeadRefOID == "" {
+		return "", "", "", "", "", fmt.Errorf("pull request %s returned no head commit", receipt.PullRequest)
+	}
+	observedPullRequestHead := ""
 	if view.HeadRefOID != receipt.Candidate.SHA {
-		return "", "", "", "", fmt.Errorf("pull request %s head %s does not match exact receipted candidate %s", receipt.PullRequest, view.HeadRefOID, receipt.Candidate.SHA)
+		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID); !contains {
+			if reason == "" {
+				reason = fmt.Sprintf("pull request %s head %s does not contain exact receipted candidate %s", receipt.PullRequest, view.HeadRefOID, receipt.Candidate.SHA)
+			}
+			return "", "", "", "", "", errors.New(reason)
+		}
+		observedPullRequestHead = view.HeadRefOID
 	}
 	if view.State != "MERGED" {
-		return "", "", "", "", fmt.Errorf("pull request %s is %s, not MERGED", receipt.PullRequest, view.State)
+		return "", "", "", "", "", fmt.Errorf("pull request %s is %s, not MERGED", receipt.PullRequest, view.State)
 	}
 	if view.MergedAt == "" || view.MergeCommit.OID == "" {
-		return "", "", "", "", fmt.Errorf("pull request %s reports MERGED without a merge time or server merge commit", receipt.PullRequest)
+		return "", "", "", "", "", fmt.Errorf("pull request %s reports MERGED without a merge time or server merge commit", receipt.PullRequest)
 	}
 	currentTarget, headReason := targetHead(ctx, receipt.Repository, receipt.Target)
 	if currentTarget == "" {
-		return "", "", "", "", fmt.Errorf("read current remote target %s: %s", receipt.Target, headReason)
+		return "", "", "", "", "", fmt.Errorf("read current remote target %s: %s", receipt.Target, headReason)
 	}
 	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, view.MergeCommit.OID, currentTarget); !contains {
 		if reason == "" {
 			reason = fmt.Sprintf("current remote target %s does not contain proved merge commit %s", currentTarget, view.MergeCommit.OID)
 		}
-		return "", "", "", "", errors.New(reason)
+		return "", "", "", "", "", errors.New(reason)
+	}
+	if observedPullRequestHead != "" {
+		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, observedPullRequestHead, currentTarget); !contains {
+			if reason == "" {
+				reason = fmt.Sprintf("current remote target %s does not contain observed pull request head %s", currentTarget, observedPullRequestHead)
+			}
+			return "", "", "", "", "", errors.New(reason)
+		}
 	}
 	// A plain (non-squash, non-rebase) merge keeps the receipted candidate as
 	// an ancestor of the current target: prefer that direct ancestry proof.
@@ -246,13 +273,13 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, currentTarget); !contains {
 		identical, treeSHA, treeErr := candidateTreeIdenticalToMergeCommit(ctx, receipt.Repository, view.MergeCommit.OID, receipt.Candidate.SHA)
 		if treeErr != nil {
-			return "", "", "", "", treeErr
+			return "", "", "", "", "", treeErr
 		}
 		if !identical {
 			if reason == "" {
 				reason = fmt.Sprintf("current remote target %s does not contain receipted candidate %s", currentTarget, receipt.Candidate.SHA)
 			}
-			return "", "", "", "", errors.New(reason)
+			return "", "", "", "", "", errors.New(reason)
 		}
 		proofKind = "tree-identical"
 		landingTreeSHA = treeSHA
@@ -261,9 +288,9 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 		if reason == "" {
 			reason = fmt.Sprintf("receipted candidate %s no longer contains its own recorded pre-merge target %s", receipt.Candidate.SHA, receipt.TargetSHA)
 		}
-		return "", "", "", "", errors.New(reason)
+		return "", "", "", "", "", errors.New(reason)
 	}
-	return view.MergeCommit.OID, currentTarget, proofKind, landingTreeSHA, nil
+	return view.MergeCommit.OID, currentTarget, observedPullRequestHead, proofKind, landingTreeSHA, nil
 }
 
 type githubCommitTreeView struct {
@@ -313,6 +340,12 @@ func strandedLandingAcknowledgementID(ack WorktreeMergeStrandedLandingAcknowledg
 		ack.CandidateLanding, ack.CandidateLandingTreeSHA,
 	} {
 		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	if ack.PullRequestHeadSHA != "" {
+		_, _ = hash.Write([]byte("pull-request-head"))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(ack.PullRequestHeadSHA))
 		_, _ = hash.Write([]byte{0})
 	}
 	for _, source := range ack.Sources {
@@ -379,6 +412,7 @@ func readStrandedLandingAcknowledgement(path string, receipt WorktreeMergeReceip
 		ack.ReceiptStatus != receipt.Status || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
 		ack.ReceiptTargetSHA != receipt.TargetSHA || ack.CandidateSHA != receipt.Candidate.SHA || ack.PullRequest != receipt.PullRequest ||
 		ack.ProvedLandingSHA == "" || ack.CurrentTargetSHA == "" || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
+		ack.PullRequestHeadSHA == ack.CandidateSHA ||
 		(ack.CandidateLanding != "ancestor" && ack.CandidateLanding != "tree-identical") ||
 		(ack.CandidateLanding == "tree-identical" && ack.CandidateLandingTreeSHA == "") ||
 		(ack.CandidateLanding == "ancestor" && ack.CandidateLandingTreeSHA != "") ||

@@ -168,10 +168,11 @@ worktree was already removed before a resume could confirm the server
 landing -- use `acknowledge-stranded-landing` instead. It never reads or
 requires the candidate or any receipted source worktree. It proves, using
 only GitHub's own remote state, that the receipted pull request reports
-MERGED at the exact receipted candidate head, that the server merge commit
-and the receipted candidate are both contained in the freshly fetched current
-remote target, and that the receipted candidate still contains its own
-recorded pre-merge target. It accepts only a conflict receipt that never
+MERGED at the exact receipted candidate head or a strict descendant, that a
+descendant retains the candidate by ancestry, that the server merge commit,
+observed head, and receipted candidate are contained in the freshly fetched
+current remote target, and that the receipted candidate still contains its
+own recorded pre-merge target. It accepts only a conflict receipt that never
 recorded a landing SHA but did publish an exact candidate in a pull request; a
 receipt that already has a landing SHA is `acknowledge-landed-failed`'s
 territory instead. It writes a separate audited acknowledgement and frees the
