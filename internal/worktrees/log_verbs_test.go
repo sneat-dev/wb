@@ -257,6 +257,77 @@ func TestLogFinalizeReportRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestLogIntegrateAcceptsCheckpointedManualConflictResolution(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "log-integrate-resolved-conflict",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "README.md")
+	gitTest(t, worktree, "commit", "-m", "source change")
+	if _, err := LogCheckpoint(context.Background(), LogCheckpointOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Message: "source ready",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "README.md"), []byte("target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "README.md")
+	gitTest(t, fixture.canonical, "commit", "-m", "target change")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	conflictedTarget := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+
+	conflicted, err := LogIntegrate(context.Background(), LogIntegrateOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main", Strategy: "merge",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflicted.Applied || conflicted.Projection == nil || conflicted.Projection.Conflict != "integrate_conflict" {
+		t.Fatalf("conflicted integrate = %#v", conflicted)
+	}
+	if _, err := LogIntegrate(context.Background(), LogIntegrateOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main", Strategy: "merge",
+	}); err == nil || !strings.Contains(err.Error(), "does not contain attempted target") {
+		t.Fatalf("unresolved checkpoint retry error = %v", err)
+	}
+
+	if _, err := gitTestRun(worktree, "merge", "--no-edit", conflictedTarget); err == nil {
+		t.Fatal("manual merge unexpectedly avoided the recorded conflict")
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("source and target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "README.md")
+	gitTest(t, worktree, "commit", "-m", "resolve target conflict")
+	if _, err := LogCheckpoint(context.Background(), LogCheckpointOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Message: "conflict resolved",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture.pushRemoteCommit(t, "next target change")
+	integrated, err := LogIntegrate(context.Background(), LogIntegrateOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main", Strategy: "merge",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !integrated.Applied || integrated.Projection == nil || integrated.Projection.Conflict != "resolved" {
+		t.Fatalf("integrated after manual resolution = %#v", integrated)
+	}
+}
+
 func TestLogRecoverDryRunAndApply(t *testing.T) {
 	fixture := newGitFixture(t)
 	promptPath := writeWorkLogPromptFile(t, "recover journey\n")

@@ -166,8 +166,8 @@ func TestWorktreeMergeReportSidecarSuffixParity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			inResolve := resolveSet[name]
 			inActive := activeSet[name]
-			if inResolve != inActive {
-				t.Errorf("suffix constant %s is treated as a non-receipt report sidecar by only one scan: %s=%v %s=%v",
+			if !inResolve || !inActive {
+				t.Errorf("suffix constant %s must be treated as a non-receipt report sidecar by both scans: %s=%v %s=%v",
 					name, resolveFunc, inResolve, activeFunc, inActive)
 			}
 		})

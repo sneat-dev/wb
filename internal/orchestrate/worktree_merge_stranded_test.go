@@ -2,11 +2,41 @@ package orchestrate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *testing.T) {
+	ack := WorktreeMergeStrandedLandingAcknowledgement{
+		ReceiptID: "receipt", ReceiptPath: "/receipts/receipt.json", ReceiptSHA256: "receipt-hash",
+		ReceiptStatus: WorktreeMergeConflict, ReceiptTargetSHA: "target", CandidateSHA: "candidate",
+		PullRequest: "https://example.test/acme/app/pull/1", ProvedLandingSHA: "landing",
+		CurrentTargetSHA: "current", CandidateLanding: "ancestor",
+		Sources: []WorktreeMergeSource{{Task: "task", Worktree: "/worktree", Branch: "feature", SHA: "source"}},
+	}
+	legacyHash := sha256.New()
+	for _, value := range []string{
+		ack.ReceiptID, ack.ReceiptPath, ack.ReceiptSHA256, string(ack.ReceiptStatus), ack.ReceiptTargetSHA,
+		ack.CandidateSHA, ack.PullRequest, ack.ProvedLandingSHA, ack.CurrentTargetSHA,
+		ack.CandidateLanding, ack.CandidateLandingTreeSHA,
+		ack.Sources[0].Task, ack.Sources[0].Worktree, ack.Sources[0].Branch, ack.Sources[0].SHA,
+	} {
+		_, _ = legacyHash.Write([]byte(value))
+		_, _ = legacyHash.Write([]byte{0})
+	}
+	legacyID := hex.EncodeToString(legacyHash.Sum(nil))
+	if got := strandedLandingAcknowledgementID(ack); got != legacyID {
+		t.Fatalf("exact-head acknowledgement ID = %s, want legacy %s", got, legacyID)
+	}
+	ack.PullRequestHeadSHA = "descendant"
+	if got := strandedLandingAcknowledgementID(ack); got == legacyID {
+		t.Fatal("descendant acknowledgement ID must bind the observed pull request head")
+	}
+}
 
 // installStrandedLandingGH fakes the exact `gh` invocations
 // proveStrandedPullRequestLanding issues: a PR-view read (state, target head,
@@ -19,10 +49,11 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
 	bin := t.TempDir()
 	script := filepath.Join(bin, "gh")
 	body := "#!/bin/sh\nset -eu\ncase \"$*\" in\n  'pr view " + pullRequest + ` --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+    pr_head="${WB_TEST_PR_HEAD_SHA:-$WB_TEST_CANDIDATE_SHA}"
     if [ "$WB_TEST_PR_STATE" = MERGED ]; then
-      printf '{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$WB_TEST_CANDIDATE_SHA" "$WB_TEST_MERGE_COMMIT_SHA"
+      printf '{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$pr_head" "$WB_TEST_MERGE_COMMIT_SHA"
     else
-      printf '{"state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_PR_STATE" "$WB_TEST_CANDIDATE_SHA"
+      printf '{"state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_PR_STATE" "$pr_head"
     fi ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)"
@@ -156,6 +187,85 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	}
 	if next.Status != WorktreeMergePrepared || next.Candidate.SHA == "" {
 		t.Fatalf("new merge preflight = %+v", next)
+	}
+}
+
+func TestAcknowledgeStrandedPullRequestLandingAcceptsLandedStrictDescendantHead(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "stranded-descendant-source", "feature/stranded-descendant", "media.txt", "media\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeConflict
+	receipt.PullRequest = "https://example.test/acme/app/pull/96"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.Failure = "candidate worktree disappeared before landing confirmation"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "ci.txt"), "validate backend and edge\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "ci.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "ci: validate backend and edge")
+	pullRequestHead := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", pullRequestHead+":refs/heads/stranded-descendant-head")
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", pullRequestHead)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	if err := os.RemoveAll(receipt.Candidate.Worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_PR_HEAD_SHA", pullRequestHead)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", pullRequestHead)
+
+	ack, err := AcknowledgeStrandedPullRequestLanding(context.Background(), WorktreeMergeStrandedLandingAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "GitHub proves the strict descendant head landed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.PullRequestHeadSHA != pullRequestHead || ack.CandidateLanding != "ancestor" || ack.ProvedLandingSHA != pullRequestHead {
+		t.Fatalf("descendant acknowledgement = %+v", ack)
+	}
+}
+
+func TestAcknowledgeStrandedPullRequestLandingRefusesHeadThatDoesNotContainCandidate(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "stranded-unrelated-head-source", "feature/stranded-unrelated-head", "media.txt", "media\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeConflict
+	receipt.PullRequest = "https://example.test/acme/app/pull/97"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_PR_HEAD_SHA", receipt.TargetSHA)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", receipt.TargetSHA)
+
+	if _, err := AcknowledgeStrandedPullRequestLanding(context.Background(), WorktreeMergeStrandedLandingAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "attempt",
+	}); err == nil {
+		t.Fatalf("expected refusal for unrelated pull request head, got %v", err)
+	}
+	if _, statErr := os.Stat(strandedLandingAcknowledgementPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("refused acknowledgement wrote a file: %v", statErr)
 	}
 }
 

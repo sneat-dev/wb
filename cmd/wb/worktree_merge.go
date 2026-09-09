@@ -541,9 +541,10 @@ func newWorktreeMergeAcknowledgeStrandedLandingCmd() *cobra.Command {
 		Use:   "acknowledge-stranded-landing <merge-receipt>",
 		Short: "Acknowledge a proved stranded pull-request landing without rewriting its receipt",
 		Long: `Prove, using only GitHub's own remote state, that a land conflict
-receipt's exact published pull request reports MERGED and that its server
-merge commit and preserved candidate are both contained in the freshly
-fetched current remote target, then record a separate audited acknowledgement
+receipt's published pull request reports MERGED at its receipted candidate
+or a strict descendant, and that its server merge commit, observed head, and
+preserved candidate are contained in the freshly fetched current remote target,
+then record a separate audited acknowledgement
 so a fresh candidate can own the lane. This accepts only a land-phase conflict
 receipt that never recorded a landing SHA but did publish an exact candidate
 in a pull request: the case where a resume's own landing-result read failed
@@ -580,8 +581,12 @@ refuses closed.`,
 			if ack.CandidateLandingTreeSHA != "" {
 				candidateLanding = fmt.Sprintf("%s (tree %s)", candidateLanding, ack.CandidateLandingTreeSHA)
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\ncandidate-landing: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
-				ack.Status, ack.ReceiptPath, ack.CandidateSHA, candidateLanding, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			pullRequestHead := ack.CandidateSHA
+			if ack.PullRequestHeadSHA != "" {
+				pullRequestHead = ack.PullRequestHeadSHA
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\npull-request-head: %s\ncandidate-landing: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateSHA, pullRequestHead, candidateLanding, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			}
@@ -863,7 +868,11 @@ after an ordinary clean strict-descendant repair; the replacement identity then
 binds its observed head while preserving the original source SHA. The failed candidate itself need not be an
 ancestor. When an unpublished conflict candidate has advanced to a clean strict
 descendant, the acknowledgement also binds that observed commit and the
-replacement must contain both candidate revisions. This is a dry-run by
+replacement must contain both candidate revisions. For the legacy unpublished
+conflict shape whose writer omitted candidate.SHA, WB derives it only from the
+clean claimed candidate worktree after proving the receipt target and every
+receipted source are ancestors and the candidate is neither published nor
+landed; apply persists that identity in a separate sidecar. This is a dry-run by
 default; --apply requires --actor and --reason
 and writes only a separate append-only supersession acknowledgement. The
 historical merge receipt and every Work Log remain immutable. Any missing

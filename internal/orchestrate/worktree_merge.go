@@ -2281,6 +2281,7 @@ var worktreeMergeReportSidecarSuffixes = []string{
 	worktreeMergeConflictCandidateAdvanceSuffix,
 	worktreeMergeValidationFailureSupersessionSuffix,
 	worktreeMergeLegacyValidationFailureIdentitySuffix,
+	worktreeMergeLegacyConflictIdentitySuffix,
 	worktreeMergeSelfSupersessionCorrectionSuffix,
 	worktreeMergePreparedRebatchSuffix,
 	worktreeMergePublishedCandidateAdoptionSuffix,

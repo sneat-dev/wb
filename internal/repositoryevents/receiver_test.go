@@ -103,10 +103,24 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		}
 	}
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 	processor := &concurrencyProcessor{started: make(chan string, 3), release: release, activeByRepo: map[string]int{}, maxByRepo: map[string]int{}}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go queue.Run(ctx, processor, nil)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		queue.Run(ctx, processor, nil)
+	}()
+	t.Cleanup(func() {
+		releaseAll()
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Error("queue did not stop")
+		}
+	})
 	started := map[string]bool{}
 	for len(started) < 2 {
 		select {
@@ -119,7 +133,7 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 	if !started["event-a1"] || !started["event-b1"] || started["event-a2"] {
 		t.Fatalf("initial starts = %+v", started)
 	}
-	close(release)
+	releaseAll()
 	select {
 	case id := <-processor.started:
 		if id != "event-a2" {
@@ -132,6 +146,12 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 	defer processor.mu.Unlock()
 	if processor.maxByRepo[first.Repository] != 1 || processor.maxActiveTotal < 2 {
 		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue did not stop")
 	}
 }
 
