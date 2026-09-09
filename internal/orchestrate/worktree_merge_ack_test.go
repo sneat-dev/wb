@@ -738,6 +738,14 @@ func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescenda
 		runEngineGit(t, source.Worktree, "add", "source-descendant.txt")
 		runEngineGit(t, source.Worktree, "commit", "-m", "test: advance receipted source")
 		advancedSource := strings.TrimSpace(runEngineGit(t, source.Worktree, "rev-parse", "HEAD"))
+		runEngineGit(t, fixture.canonical, "rm", "target.txt")
+		writeEngineFile(t, filepath.Join(fixture.canonical, "source.txt"), "source\n")
+		writeEngineFile(t, filepath.Join(fixture.canonical, "source-descendant.txt"), "descendant\n")
+		runEngineGit(t, fixture.canonical, "add", "source.txt", "source-descendant.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: absorb advanced source tree")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		runEngineGit(t, replacement.WorktreeDir, "fetch", "origin")
+		runEngineGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/main")
 		runEngineGit(t, replacement.WorktreeDir, "merge", "--no-edit", advancedSource)
 
 		ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
@@ -764,6 +772,14 @@ func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescenda
 		writeEngineFile(t, filepath.Join(source.Worktree, "source-descendant.txt"), "descendant\n")
 		runEngineGit(t, source.Worktree, "add", "source-descendant.txt")
 		runEngineGit(t, source.Worktree, "commit", "-m", "test: advance receipted source")
+		runEngineGit(t, fixture.canonical, "rm", "target.txt")
+		writeEngineFile(t, filepath.Join(fixture.canonical, "source.txt"), "source\n")
+		writeEngineFile(t, filepath.Join(fixture.canonical, "source-descendant.txt"), "descendant\n")
+		runEngineGit(t, fixture.canonical, "add", "source.txt", "source-descendant.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: absorb advanced source tree")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		runEngineGit(t, replacement.WorktreeDir, "fetch", "origin")
+		runEngineGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/main")
 
 		_, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
 			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
