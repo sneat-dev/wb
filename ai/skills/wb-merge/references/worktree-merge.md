@@ -203,6 +203,12 @@ claim identity, clean worktree, or receipt integrity refuses closed.
 If an unpublished conflict candidate has advanced to a clean strict descendant,
 WB records that observed commit in the supersession and requires the replacement
 to contain both the receipted candidate and the observed descendant.
+For the legacy unpublished-conflict shape whose receipt omitted the candidate
+SHA, WB derives it only from the exact clean active-claim candidate worktree,
+proves it contains the receipt target and every receipted source, and proves it
+is neither published nor landed. Apply stores that correlation in a separate
+receipt-hash-bound identity sidecar before storing the supersession; global lane
+scans require both sidecars and fail closed if either is missing or altered.
 
 When an unpublished prepare `conflict` receipt is stuck because every one of
 its receipted source worktrees is already gone -- so neither resume nor

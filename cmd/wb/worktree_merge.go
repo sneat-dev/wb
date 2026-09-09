@@ -868,7 +868,11 @@ after an ordinary clean strict-descendant repair; the replacement identity then
 binds its observed head while preserving the original source SHA. The failed candidate itself need not be an
 ancestor. When an unpublished conflict candidate has advanced to a clean strict
 descendant, the acknowledgement also binds that observed commit and the
-replacement must contain both candidate revisions. This is a dry-run by
+replacement must contain both candidate revisions. For the legacy unpublished
+conflict shape whose writer omitted candidate.SHA, WB derives it only from the
+clean claimed candidate worktree after proving the receipt target and every
+receipted source are ancestors and the candidate is neither published nor
+landed; apply persists that identity in a separate sidecar. This is a dry-run by
 default; --apply requires --actor and --reason
 and writes only a separate append-only supersession acknowledgement. The
 historical merge receipt and every Work Log remain immutable. Any missing
