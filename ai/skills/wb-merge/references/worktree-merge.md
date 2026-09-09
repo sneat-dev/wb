@@ -168,10 +168,11 @@ worktree was already removed before a resume could confirm the server
 landing -- use `acknowledge-stranded-landing` instead. It never reads or
 requires the candidate or any receipted source worktree. It proves, using
 only GitHub's own remote state, that the receipted pull request reports
-MERGED at the exact receipted candidate head, that the server merge commit
-and the receipted candidate are both contained in the freshly fetched current
-remote target, and that the receipted candidate still contains its own
-recorded pre-merge target. It accepts only a conflict receipt that never
+MERGED at the exact receipted candidate head or a strict descendant, that a
+descendant retains the candidate by ancestry, that the server merge commit,
+observed head, and receipted candidate are contained in the freshly fetched
+current remote target, and that the receipted candidate still contains its
+own recorded pre-merge target. It accepts only a conflict receipt that never
 recorded a landing SHA but did publish an exact candidate in a pull request; a
 receipt that already has a landing SHA is `acknowledge-landed-failed`'s
 territory instead. It writes a separate audited acknowledgement and frees the
@@ -202,6 +203,12 @@ claim identity, clean worktree, or receipt integrity refuses closed.
 If an unpublished conflict candidate has advanced to a clean strict descendant,
 WB records that observed commit in the supersession and requires the replacement
 to contain both the receipted candidate and the observed descendant.
+For the legacy unpublished-conflict shape whose receipt omitted the candidate
+SHA, WB derives it only from the exact clean active-claim candidate worktree,
+proves it contains the receipt target and every receipted source, and proves it
+is neither published nor landed. Apply stores that correlation in a separate
+receipt-hash-bound identity sidecar before storing the supersession; global lane
+scans require both sidecars and fail closed if either is missing or altered.
 
 When an unpublished prepare `conflict` receipt is stuck because every one of
 its receipted source worktrees is already gone -- so neither resume nor

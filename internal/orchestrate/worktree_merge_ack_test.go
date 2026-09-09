@@ -1581,6 +1581,81 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	}
 }
 
+func TestLegacyConflictSupersessionCorrelatesMissingCandidateSHA(t *testing.T) {
+	fixture, receipt, _ := supersessionFixture(t)
+	candidateSHA := receipt.Candidate.SHA
+	receipt.Status = WorktreeMergeConflict
+	receipt.Candidate.SHA = ""
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Match the recovered production shape: the original source advanced by
+	// fast-forwarding through the clean conflict candidate, then added a tested
+	// strict-descendant repair. The receipt keeps its original source SHA.
+	sourceWorktree := receipt.Sources[0].Worktree
+	runEngineGit(t, sourceWorktree, "merge", "--ff-only", candidateSHA)
+	runEngineGit(t, sourceWorktree, "fetch", "origin")
+	runEngineGit(t, sourceWorktree, "merge", "--no-edit", "origin/main")
+	writeEngineFile(t, filepath.Join(sourceWorktree, "repair.txt"), "repair\n")
+	runEngineGit(t, sourceWorktree, "add", "repair.txt")
+	runEngineGit(t, sourceWorktree, "commit", "-m", "test: repair legacy conflict")
+
+	ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: sourceWorktree,
+		Apply: true, Actor: "reviewer", Reason: "correlate clean unpublished legacy conflict candidate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.OriginalCandidate.SHA != candidateSHA || ack.Replacement.Worktree != sourceWorktree {
+		t.Fatalf("unexpected correlated supersession: %+v", ack)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("legacy conflict receipt changed while recording sidecars: err=%v", readErr)
+	}
+	identityPath := legacyConflictIdentityPath(receipt.ReceiptPath)
+	identityBefore, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatalf("legacy conflict identity was not persisted: %v", err)
+	}
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("legacy conflict supersession = %t, err=%v", superseded, err)
+	}
+	if active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(receipt.ReceiptPath), receipt.Lane); err != nil || active != nil {
+		t.Fatalf("global lane scan did not accept persisted legacy conflict identity: active=%+v err=%v", active, err)
+	}
+
+	t.Run("missing identity fails closed", func(t *testing.T) {
+		if err := os.Remove(identityPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || !strings.Contains(err.Error(), "read legacy conflict identity") {
+			t.Fatalf("missing identity result = %v", err)
+		}
+		if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("tampered identity fails closed", func(t *testing.T) {
+		tampered := strings.Replace(string(identityBefore), ack.OriginalCandidate.SHA, strings.Repeat("0", 40), 1)
+		if err := os.WriteFile(identityPath, []byte(tampered), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || !strings.Contains(err.Error(), "invalid immutable evidence") {
+			t.Fatalf("tampered identity result = %v", err)
+		}
+		if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation(t *testing.T) {
 	fixture, receipt, _ := supersessionFixture(t)
 	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
