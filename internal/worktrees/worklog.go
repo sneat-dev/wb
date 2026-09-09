@@ -226,6 +226,29 @@ type workLogTerminalRecord struct {
 	Orphaned         *workLogOrphanedEvidence        `json:"orphaned_evidence,omitempty"`
 	DirtyCapture     *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 	Supersession     *SupersessionReceipt            `json:"supersession,omitempty"`
+	// FinalizeReport is set only when this terminal was sealed by
+	// `wb worktree log finalize`. It is nil for every other disposition
+	// (recycled, removed, superseded, orphaned, handoff, ...).
+	FinalizeReport *workLogFinalizeReport `json:"finalize_report,omitempty"`
+}
+
+// workLogFinalizeReport is the optional completion evidence `wb worktree log
+// finalize --report/--report-stdin` attaches to a sealed terminal. ReportPath
+// names the private copy of the report body under WB_HOME; the body itself is
+// never stored inline here and never enters source Git. FinalizedAt is not
+// tracked separately -- it is the terminal's own SealedAt, since a
+// FinalizeReport exists only on a terminal that finalize itself sealed.
+type workLogFinalizeReport struct {
+	Result     string `json:"terminal_result"`
+	Message    string `json:"terminal_message,omitempty"`
+	ReportPath string `json:"report_path,omitempty"`
+}
+
+func sameFinalizeReport(left, right *workLogFinalizeReport) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // TerminalWorkLogExpectation identifies one worktree which was already
@@ -469,7 +492,7 @@ func validateRemovedTerminalOutbox(home string, claim workLogClaim, terminal wor
 	expected := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expected) {
 		return errors.New("immutable terminal outbox does not corroborate cleanup authority")
 	}
@@ -494,6 +517,11 @@ type workLogPublicEvent struct {
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
 	DirtyCapture    *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 	Supersession    *SupersessionReceipt            `json:"supersession,omitempty"`
+	// FinalizeReport mirrors the sealed terminal's finalize evidence into the
+	// outbox receipt so a downstream Synchestra consumer sees the same
+	// terminal_result/terminal_message/report_path a local reader gets from
+	// wb worktree list/summary/log show.
+	FinalizeReport *workLogFinalizeReport `json:"finalize_report,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1038,6 +1066,43 @@ func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection,
 		return workLogClaim{}, projection, "", err
 	}
 	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
+}
+
+// readWorkLogTerminalRecord resolves the worktree's untrusted projection the
+// same way activeWorkLogClaim does, but for a claim that has already been
+// sealed. It returns (nil, nil) for a checkout with no work-log projection at
+// all or one whose projection is still active; every other outcome is an
+// error. Callers such as `wb worktree list`/`summary`/`log show` use this to
+// surface finalize evidence for a worktree that has not yet been cleaned up.
+func readWorkLogTerminalRecord(home, worktree string) (*workLogTerminalRecord, error) {
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if projection.Lifecycle != "terminal" {
+		return nil, nil
+	}
+	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+		return nil, fmt.Errorf("corroborate terminal work-log claim: %w", err)
+	}
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = runDir.Close() }()
+	terminals, err := openPrivateChild(runDir, "terminals", false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = terminals.Close() }()
+	var terminal workLogTerminalRecord
+	if err := readJSONAt(terminals, projection.ClaimID+".json", &terminal); err != nil {
+		return nil, err
+	}
+	return &terminal, nil
 }
 
 // CorrectExecutionIdentity appends exactly one correction to an immutable
@@ -1871,18 +1936,97 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 }
 
 func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil, nil)
 }
 
 func sealWorkLogForSupersession(home, worktree, finalCommit string, receipt *SupersessionReceipt) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt, nil)
 }
 
 func sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition string, supersession *SupersessionReceipt) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, supersession)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, supersession, nil)
 }
 
-func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) error {
+// sealWorkLogForFinalize is sealWorkLogForRecycle's finalize-specific sibling.
+// It carries the optional `wb worktree log finalize --report/--report-stdin`
+// evidence (terminal result, message, and the private report file's path)
+// into the immutable terminal and its outbox receipt. Every other seal path
+// passes a nil report and is unaffected: recycled, removed, superseded,
+// orphaned, and handoff terminals never carry finalize evidence.
+func sealWorkLogForFinalize(home, worktree, finalCommit, disposition string, report *workLogFinalizeReport) error {
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, nil, report)
+}
+
+// MaxFinalizeReportBytes bounds `wb worktree log finalize --report/
+// --report-stdin`. A lane's completion report is meant to be read, not to
+// carry an attachment; the cap keeps one oversized report from bloating
+// WB_HOME and rejects it with a clear error before anything is written.
+const MaxFinalizeReportBytes = 1 << 20 // 1 MiB
+
+// finalizeReportFileName is the deterministic name `wb worktree log finalize
+// --report` writes under <WB_HOME>/worklogs/<effort>/runs/<run>/reports/, so
+// a retried finalize call for the same task/repository lands on the same
+// file instead of accumulating one per attempt.
+func finalizeReportFileName(task, repository string) (string, error) {
+	owner, name, err := splitRepository(repository)
+	if err != nil {
+		return "", fmt.Errorf("resolve report file name: %w", err)
+	}
+	task = strings.TrimSpace(task)
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid task identity %q for report file name", task)
+	}
+	return task + "--" + owner + "--" + name + ".md", nil
+}
+
+// writeWorkLogFinalizeReport copies an agent's finalize report body into the
+// Work Log's private store under WB_HOME -- never into source Git -- at a
+// deterministic path so a retried finalize call for the same effort/run and
+// checkout identity overwrites the same file rather than accumulating one per
+// attempt. It returns the absolute path so the caller can bind it into the
+// sealed terminal and outbox receipt.
+func writeWorkLogFinalizeReport(home, effort, run, task, repository string, body []byte) (string, error) {
+	if len(body) > MaxFinalizeReportBytes {
+		return "", fmt.Errorf("finalize report exceeds %d bytes (%d MiB cap)", MaxFinalizeReportBytes, MaxFinalizeReportBytes/(1<<20))
+	}
+	fileName, err := finalizeReportFileName(task, repository)
+	if err != nil {
+		return "", err
+	}
+	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = runDir.Close() }()
+	reports, err := openPrivateChild(runDir, "reports", true)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = reports.Close() }()
+	if err := writeBytesAtomicAt(reports, fileName, body, 0o600); err != nil {
+		return "", fmt.Errorf("write finalize report: %w", err)
+	}
+	return filepath.Join(runPath, "reports", fileName), nil
+}
+
+// readWorkLogFinalizeReportBody reads back the private report body a sealed
+// finalize terminal points at. It is used only by the bare `wb worktree log`
+// dump, exactly like an original prompt body: `wb worktree log show` and
+// `wb worktree list`/`summary` see report_path but never the body itself.
+func readWorkLogFinalizeReportBody(reportPath string) (string, error) {
+	directory, err := openAbsoluteDirectoryNoFollow(filepath.Dir(reportPath), false)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = directory.Close() }()
+	content, err := readBytesAt(directory, filepath.Base(reportPath))
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, report *workLogFinalizeReport) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1922,7 +2066,7 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	} else if dirty == nil && supersession != nil {
 		sealedAt, err = writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, "", "", nil, supersession)
 	} else {
-		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession)
+		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession, report)
 	}
 	if err != nil {
 		return err
@@ -2041,7 +2185,7 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	expectedEvent := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expectedEvent) {
 		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
 	}
@@ -2221,7 +2365,7 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, nil, nil)
 }
 
 func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, evidence *workLogOrphanedEvidence) (time.Time, error) {
@@ -2230,23 +2374,23 @@ func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogCla
 		!evidence.RemoteBranchAbsent || !evidence.TerminalAbsent {
 		return time.Time{}, fmt.Errorf("orphaned terminal requires complete negative authority evidence")
 	}
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil, nil, nil)
 }
 
 func writeWorkLogTerminalWithDirtyCapture(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, dirty *DirtyWorktreeEvidence) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty, nil, nil)
 }
 
 func writeWorkLogTerminalWithSupersession(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, supersession *SupersessionReceipt) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, supersession)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, supersession, nil)
 }
 
-func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) (time.Time, error) {
+func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, finalizeReport *workLogFinalizeReport) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty, Supersession: supersession}
+		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty, Supersession: supersession, FinalizeReport: finalizeReport}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -2256,7 +2400,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) {
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) || !sameFinalizeReport(existing.FinalizeReport, finalizeReport) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -2273,7 +2417,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
-		ExternalHandoff: external, DirtyCapture: dirty, Supersession: supersession}
+		ExternalHandoff: external, DirtyCapture: dirty, Supersession: supersession, FinalizeReport: finalizeReport}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}

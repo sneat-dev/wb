@@ -59,6 +59,22 @@ type WorkLogClaimView struct {
 	ClaimPath       string    `json:"claim_path,omitempty"`
 }
 
+// WorkLogTerminalView is the redacted terminal record for a claim `wb
+// worktree log finalize` has sealed. TerminalResult/TerminalMessage/
+// ReportPath are populated only when the terminal was sealed by finalize
+// (never for a recycled, removed, superseded, orphaned, or handoff
+// disposition); ReportPath names the private copy of a --report body under
+// WB_HOME but never carries the body itself -- that stays private local data,
+// exposed only through WorkLogView.FinalizeReportBody in the bare agent dump.
+type WorkLogTerminalView struct {
+	Disposition     string    `json:"disposition"`
+	FinalCommit     string    `json:"final_commit,omitempty"`
+	SealedAt        time.Time `json:"sealed_at"`
+	TerminalResult  string    `json:"terminal_result,omitempty"`
+	TerminalMessage string    `json:"terminal_message,omitempty"`
+	ReportPath      string    `json:"report_path,omitempty"`
+}
+
 // WorkLogGitEvidence is live checkout state observed when the dump is taken.
 type WorkLogGitEvidence struct {
 	Branch string `json:"branch,omitempty"`
@@ -79,14 +95,20 @@ type OriginalPromptView struct {
 // WorkLogView is the agent bootstrap payload for one worktree: identity, the
 // exact initial prompt, every later steering instruction, and live Git state.
 type WorkLogView struct {
-	Worktree       string              `json:"worktree"`
-	Manifest       *Manifest           `json:"manifest,omitempty"`
-	Prompts        []PromptRecord      `json:"prompts"`
-	OriginalPrompt *OriginalPromptView `json:"original_prompt,omitempty"`
-	Claim          *WorkLogClaimView   `json:"claim,omitempty"`
-	Owners         []OwnerView         `json:"owners,omitempty"`
-	Git            WorkLogGitEvidence  `json:"git"`
-	Notes          []string            `json:"notes,omitempty"`
+	Worktree       string               `json:"worktree"`
+	Manifest       *Manifest            `json:"manifest,omitempty"`
+	Prompts        []PromptRecord       `json:"prompts"`
+	OriginalPrompt *OriginalPromptView  `json:"original_prompt,omitempty"`
+	Claim          *WorkLogClaimView    `json:"claim,omitempty"`
+	Terminal       *WorkLogTerminalView `json:"terminal,omitempty"`
+	Owners         []OwnerView          `json:"owners,omitempty"`
+	Git            WorkLogGitEvidence   `json:"git"`
+	Notes          []string             `json:"notes,omitempty"`
+	// FinalizeReportBody is the exact `wb worktree log finalize
+	// --report/--report-stdin` body, populated only when
+	// LoadWorkLogOptions.IncludePromptBodies is set and Terminal carries a
+	// ReportPath -- the same redaction rule as OriginalPrompt/Prompts bodies.
+	FinalizeReportBody string `json:"finalize_report_body,omitempty"`
 }
 
 // LoadWorkLogOptions selects which private records to include. Agents need
@@ -148,7 +170,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 
 	if homeErr != nil {
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
-	} else if claim, _, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {
+	} else if claim, projection, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {
 		resolvedRepository, resolvedWorktree := claim.Repository, claim.Worktree
 		if filepath.Clean(root) != filepath.Clean(claim.Worktree) {
 			if resolution, resolutionErr := latestRelocationResolution(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
@@ -175,6 +197,46 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		}
 	} else if errors.Is(claimErr, errWorkLogProjectionNotFound) {
 		view.Notes = append(view.Notes, "no active work-log projection; this checkout may predate Hybrid Work Log create")
+	} else if projection.Lifecycle == "terminal" {
+		if terminal, terminalErr := readWorkLogTerminalRecord(home, root); terminalErr == nil && terminal != nil {
+			claim := terminal.workLogClaim
+			view.Claim = &WorkLogClaimView{
+				EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
+				Task: claim.Task, Repository: claim.Repository, Worktree: claim.Worktree,
+				Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+				Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
+				Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
+				Model: claim.Model, ModelProvenance: claim.ModelProvenance,
+				CLI: claim.CLI, Provider: claim.Provider,
+				PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
+			}
+			view.Terminal = &WorkLogTerminalView{
+				Disposition: terminal.Disposition, FinalCommit: terminal.FinalCommit, SealedAt: terminal.SealedAt,
+			}
+			if terminal.FinalizeReport != nil {
+				view.Terminal.TerminalResult = terminal.FinalizeReport.Result
+				view.Terminal.TerminalMessage = terminal.FinalizeReport.Message
+				view.Terminal.ReportPath = terminal.FinalizeReport.ReportPath
+				if options.IncludePromptBodies && terminal.FinalizeReport.ReportPath != "" {
+					if body, bodyErr := readWorkLogFinalizeReportBody(terminal.FinalizeReport.ReportPath); bodyErr == nil {
+						view.FinalizeReportBody = body
+					} else {
+						view.Notes = append(view.Notes, fmt.Sprintf("finalize report unavailable: %v", bodyErr))
+					}
+				}
+			}
+			if options.IncludePromptBodies {
+				if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
+					view.OriginalPrompt = original
+				} else if originalErr != nil {
+					view.Notes = append(view.Notes, fmt.Sprintf("original prompt unavailable: %v", originalErr))
+				}
+			}
+		} else if terminalErr != nil {
+			view.Notes = append(view.Notes, fmt.Sprintf("terminal work-log claim not usable: %v", terminalErr))
+		} else {
+			view.Notes = append(view.Notes, "work-log projection is terminal but no terminal record was found")
+		}
 	} else {
 		view.Notes = append(view.Notes, fmt.Sprintf("active work-log claim not usable: %v", claimErr))
 	}
@@ -366,6 +428,30 @@ func FormatWorkLogViewText(view WorkLogView) string {
 		b.WriteString("\n")
 	}
 
+	if view.Terminal != nil {
+		b.WriteString("## Terminal\n")
+		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
+		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
+		if view.Terminal.TerminalResult != "" {
+			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
+		}
+		if view.Terminal.TerminalMessage != "" {
+			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
+		}
+		if view.Terminal.ReportPath != "" {
+			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
+		}
+		b.WriteString("\n")
+		if view.FinalizeReportBody != "" {
+			b.WriteString("### Finalize report\n")
+			b.WriteString(view.FinalizeReportBody)
+			if !strings.HasSuffix(view.FinalizeReportBody, "\n") {
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	b.WriteString("## Owners\n")
 	if len(view.Owners) == 0 {
 		b.WriteString("(none recorded; treated as orphaned)\n\n")
@@ -491,6 +577,22 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
 		}
 		b.WriteString("\n")
+	}
+
+	if view.Terminal != nil {
+		b.WriteString("## Terminal\n")
+		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
+		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
+		if view.Terminal.TerminalResult != "" {
+			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
+		}
+		if view.Terminal.TerminalMessage != "" {
+			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
+		}
+		if view.Terminal.ReportPath != "" {
+			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
+		}
+		b.WriteString("Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n\n")
 	}
 
 	b.WriteString("## Prompt sequence\n")

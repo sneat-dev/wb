@@ -11,7 +11,7 @@ wb worktree log show . --format json
 wb worktree log refresh .
 wb worktree log recover .
 wb worktree log sync .
-wb worktree log finalize . --result success
+wb worktree log finalize . --result success --report report.md --apply
 ```
 
 For an internally-created dependency-campaign worktree whose immutable
@@ -35,6 +35,32 @@ bodies for agent bootstrap; prefer `log show` when bodies must stay redacted.
 `log sync` stays offline until a Synchestra endpoint is configured and retains
 the local outbox. `log handoff` / `log finalize` record local events first;
 pass `--apply` to transfer or seal the hybrid claim.
+
+`log finalize` also accepts `--report <path>` (or `--report-stdin`) to attach
+the agent's full completion report:
+
+```sh
+wb worktree log finalize . --result success --message "shipped the thing" --report report.md --apply
+```
+
+WB copies the report body into the private Work Log store under `WB_HOME` --
+never into source Git -- and records `terminal_result`, `terminal_message`,
+`finalized_at`, and `report_path` on the sealed terminal. A lead session polling
+the fleet reads that a lane finished, without an ad hoc reports path, through:
+
+```sh
+wb worktree list --finalized --format json
+wb worktree list --not-finalized --format json
+wb worktree summary <task>
+```
+
+`summary` prints the terminal result, message, and report path; `list`
+exposes the same fields (JSON, and the text state column as
+`finalized-success`/`finalized-failure`). The report body itself stays
+private local data: only the bare `wb worktree log` dump reads it back, the
+same rule as an original prompt body; `log show` sees `report_path` but never
+the body. Storing the report requires `--apply` -- without it the report is
+accepted but not persisted. A report over 1 MiB is refused.
 
 `log init` also appends the invoking agent/session to the worktree's local
 owner history. Read [ownership.md](ownership.md) for PID liveness and takeover
