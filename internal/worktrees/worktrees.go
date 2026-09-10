@@ -1856,15 +1856,12 @@ func branchWorktreeCanonical(ctx context.Context, canonical *canonicalRepository
 }
 
 func validBranch(ctx context.Context, branch string) bool {
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		return false
+	if cached, ok := validBranchMemo.Load(branch); ok {
+		return cached.(bool)
 	}
-	if !filepath.IsAbs(gitPath) {
-		gitPath, err = filepath.Abs(gitPath)
-		if err != nil {
-			return false
-		}
+	gitPath := validBranchGit()
+	if gitPath == "" {
+		return false
 	}
 	command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
 	// This syntax-only Git command must not inherit a worktree that cleanup has
@@ -1873,7 +1870,13 @@ func validBranch(ctx context.Context, branch string) bool {
 	// validation independent of the caller's current directory.
 	command.Dir = os.TempDir()
 	command.Env = console.Env()
-	return command.Run() == nil
+	valid := command.Run() == nil
+	// A cancelled context makes Run fail for reasons unrelated to the name;
+	// never remember that as a verdict about the string.
+	if ctx.Err() == nil {
+		validBranchMemo.Store(branch, valid)
+	}
+	return valid
 }
 
 func canonicalCoordinates(projectsRoot, root string) (owner, name string, err error) {
@@ -1899,6 +1902,19 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 const gitCancellationGraceDelay = 5 * time.Second
 
 func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, args ...string) (string, error) {
+	// Serve a repeated read-only query from the command-scoped memo when one
+	// is installed. Only plain queries qualify: a call carrying extra
+	// descriptors is authority-bearing and always runs.
+	var memo *gitQueryMemo
+	var memoKey string
+	if extraFiles == nil && memoizableGitQuery(args) {
+		if memo = gitQueryMemoFrom(ctx); memo != nil {
+			memoKey = gitQueryMemoKey(dir, args)
+			if output, ok := memo.get(memoKey); ok {
+				return output, nil
+			}
+		}
+	}
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = extraFiles
@@ -1917,7 +1933,13 @@ func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, a
 		}
 		return "", fmt.Errorf("git %s in %s: %s", strings.Join(args, " "), dir, detail)
 	}
-	return strings.TrimSpace(string(output)), nil
+	result := strings.TrimSpace(string(output))
+	// Remember only a completed success. A failure may be transient and a
+	// cancelled context produces output unrelated to the query.
+	if memo != nil && ctx.Err() == nil {
+		memo.put(memoKey, result)
+	}
+	return result, nil
 }
 
 const sandboxTempDirectoryWarning = "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
