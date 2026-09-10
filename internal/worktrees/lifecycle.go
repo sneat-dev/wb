@@ -1009,6 +1009,9 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 // such as .claude, .github, source, and generated trees from being re-read as
 // task-level repositories.
 func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
+	// Listing is read-only, so repeated Git queries within this one command
+	// may share their answers. See gitQueryMemo for the measured cost.
+	ctx = withGitQueryMemo(ctx)
 	options.OwnerState = strings.TrimSpace(options.OwnerState)
 	if options.OwnerState != "" && options.OwnerState != "active" && options.OwnerState != "orphaned" {
 		return ListOutcome{}, fmt.Errorf("unsupported owner state %q; use active or orphaned", options.OwnerState)
@@ -3750,14 +3753,38 @@ func worktreeOwnerName(owners []OwnerView, state string) string {
 }
 
 func isAncestor(ctx context.Context, repository, ancestor, descendant string) (bool, error) {
-	command := exec.CommandContext(ctx, "git", "-C", repository, "merge-base", "--is-ancestor", ancestor, descendant)
+	// A commit is trivially its own ancestor. One fleet listing issued 71 of
+	// these self-comparisons as real git processes.
+	if ancestor == descendant {
+		return true, nil
+	}
+	memo := gitQueryMemoFrom(ctx)
+	args := []string{"merge-base", "--is-ancestor", ancestor, descendant}
+	memoKey := gitQueryMemoKey(repository, args)
+	if memo != nil {
+		if cached, ok := memo.get(memoKey); ok {
+			return cached == "true", nil
+		}
+	}
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository}, args...)...)
 	command.Env = console.Env()
 	err := command.Run()
+	remember := func(verdict bool) {
+		if memo != nil && ctx.Err() == nil {
+			if verdict {
+				memo.put(memoKey, "true")
+			} else {
+				memo.put(memoKey, "false")
+			}
+		}
+	}
 	if err == nil {
+		remember(true)
 		return true, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		remember(false)
 		return false, nil
 	}
 	return false, fmt.Errorf("check whether %s is merged into %s: %w", ancestor, descendant, err)
