@@ -405,10 +405,12 @@
                 "--fleet",
                 "--format",
                 "--json",
-                "--strict"
+                "--strict",
+                "--target"
               ],
               "modes": [
-                "Audits one repository or an explicitly selected local fleet without mutating it."
+                "Audits one repository or an explicitly selected local fleet without mutating it.",
+                "With --target <branch>, also fetches the target and compares every numeric min_test_coverage_percent against the same workflow file there, reporting a coverage-floor-lowered finding for any threshold that dropped; a no-op when the current branch already equals --target."
               ]
             }
           ],
@@ -423,7 +425,8 @@
                 "--strict",
                 "--fleet",
                 "--format",
-                "--json"
+                "--json",
+                "--target"
               ]
             }
           ],
@@ -454,12 +457,22 @@
               "path": "internal/ciaudit/audit_test.go",
               "name": "TestAuditReportsMissingThresholdsAndDeployRebuild",
               "kind": "integration"
+            },
+            {
+              "path": "internal/ciaudit/unpinned_test.go",
+              "name": "TestAuditReportsUnpinnedToolInstalls",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/ciaudit/target_test.go",
+              "name": "TestCompareCoverageFloorsReportsALoweredFloor",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks."
+      "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks. --target is the one path that runs git (fetch + show) rather than reading local files only."
     },
     {
       "id": "wb.ci.wait",

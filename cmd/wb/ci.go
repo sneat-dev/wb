@@ -230,17 +230,26 @@ func newCIAuditCmd() *cobra.Command {
 		fleetMode bool
 		strict    bool
 		jsonOut   bool
+		target    string
 	)
 	cmd := &cobra.Command{
 		Use:   "audit [repository-path]",
 		Short: "Check coverage gates and build-artifact promotion",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Check coverage gates and build-artifact promotion.
+
+Pass --target <branch> to additionally compare every numeric
+min_test_coverage_percent against the same workflow file on the fetched
+target branch (lesson l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit):
+a threshold lower here than on the target is a coverage-floor-lowered
+finding. This is a no-op when the current branch already equals --target, and
+fetches origin/<target> (the one place this command is not read-only).`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
 			}
-			code, err := runCIAudit(path, projectsRoot, filterFlag, fleetMode, strict, jsonOut)
+			code, err := runCIAudit(path, projectsRoot, filterFlag, target, fleetMode, strict, jsonOut)
 			if err != nil {
 				return err
 			}
@@ -255,6 +264,7 @@ func newCIAuditCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
+	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors against this fetched target branch")
 	addJSONFormatFlags(cmd, &jsonOut)
 	return cmd
 }
@@ -270,7 +280,7 @@ type exitError struct {
 
 func (e *exitError) Error() string { return e.message }
 
-func runCIAudit(path, root, filter string, fleetMode, strict, jsonOut bool) (int, error) {
+func runCIAudit(path, root, filter, target string, fleetMode, strict, jsonOut bool) (int, error) {
 	paths := []string{path}
 	if fleetMode {
 		repos, err := discover.ScanLocal(root)
@@ -295,6 +305,19 @@ func runCIAudit(path, root, filter string, fleetMode, strict, jsonOut bool) (int
 		report, err := ciaudit.Audit(absolute)
 		if err != nil {
 			return 1, err
+		}
+		if target != "" {
+			targetFindings, err := ciaudit.CompareCoverageFloors(absolute, target)
+			if err != nil {
+				return 1, err
+			}
+			report.Findings = append(report.Findings, targetFindings...)
+			sort.Slice(report.Findings, func(i, j int) bool {
+				if report.Findings[i].Code == report.Findings[j].Code {
+					return report.Findings[i].File < report.Findings[j].File
+				}
+				return report.Findings[i].Code < report.Findings[j].Code
+			})
 		}
 		reports = append(reports, report)
 	}
