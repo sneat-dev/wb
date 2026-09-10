@@ -32,6 +32,11 @@ type FirestoreBackend interface {
 type FirestoreTransaction interface {
 	Get(context.Context, string, string, any) (bool, error)
 	Set(context.Context, string, string, any) error
+	// Delete removes one document inside the same atomic update. Provider-owned
+	// stores need it to consume a pending installation state once it has been
+	// transitioned or completed, and to drop acknowledged pending event
+	// references, so that a replay cannot observe state that was already spent.
+	Delete(context.Context, string, string) error
 }
 
 // FirestoreProjectionStore maps the documented Workbench collections to the

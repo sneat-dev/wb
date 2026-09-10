@@ -72,6 +72,10 @@ func (fake *firestoreFake) Set(_ context.Context, collection, id string, value a
 	}
 	return err
 }
+func (fake *firestoreFake) Delete(_ context.Context, collection, id string) error {
+	delete(fake.documents, fake.key(collection, id))
+	return nil
+}
 func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(FirestoreTransaction) error) error {
 	if fake.updateAtomic != nil {
 		return fake.updateAtomic(ctx, fn)
@@ -295,5 +299,36 @@ func TestFirestoreProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T
 	}
 	if queued, err := store.CommitDeliveryAndWakeup(ctx, "delivery-1", Wakeup{Key: "github.com/acme/app"}); err != nil || queued {
 		t.Fatalf("duplicate commit = %v, %v", queued, err)
+	}
+}
+
+// A provider-owned store consumes a pending installation state by deleting it
+// inside the same atomic update that transitions it, so a replay cannot read a
+// state that was already spent. The port must therefore expose Delete on the
+// transaction, and the host's transaction must honor it.
+func TestFirestoreTransactionDeleteConsumesDocumentAtomically(t *testing.T) {
+	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
+	ctx := context.Background()
+	if err := fake.Set(ctx, "installation-states", "digest-1", map[string]string{"kind": "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	err := fake.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+		var state map[string]string
+		found, getErr := tx.Get(ctx, "installation-states", "digest-1", &state)
+		if getErr != nil || !found {
+			return fmt.Errorf("pending state must be readable inside the update: found=%v err=%v", found, getErr)
+		}
+		return tx.Delete(ctx, "installation-states", "digest-1")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after map[string]string
+	found, err := fake.Get(ctx, "installation-states", "digest-1", &after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("a consumed installation state must not be readable after the atomic delete")
 	}
 }
