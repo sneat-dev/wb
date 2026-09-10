@@ -147,6 +147,7 @@ func Audit(root string) (Report, error) {
 		})
 	}
 	report.ArtifactPromotion = report.HasDeploy && artifactProducer && verifiedConsumers > 0 && !hasArtifactFinding(report.Findings)
+	report.Findings = append(report.Findings, unpinnedToolFindings(workflows)...)
 	sort.Slice(report.Findings, func(i, j int) bool {
 		if report.Findings[i].Code == report.Findings[j].Code {
 			return report.Findings[i].File < report.Findings[j].File
