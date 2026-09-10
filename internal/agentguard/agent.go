@@ -202,6 +202,14 @@ func inspectDispatchIntoLiveClaim(input toolInput, cwd, projectsRoot string) *fi
 				// work, not a second, conflicting dispatch.
 				continue
 			}
+			if strings.Contains(input.Prompt, worktreePath) {
+				// The brief names the claimed worktree's own path: the
+				// coordinator that holds the claim is dispatching a lane
+				// INTO it (the dominant fleet workflow: create the
+				// worktree, then brief an agent to work there), not a
+				// second dispatch competing for the same change.
+				continue
+			}
 			if !claimLive(projectsRoot, manifest.EffortID) {
 				continue
 			}
