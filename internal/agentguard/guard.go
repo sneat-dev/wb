@@ -22,11 +22,15 @@ type ToolCall struct {
 
 // toolInput holds the tool-specific keys the guard understands. Claude Code
 // documents `command` for Bash and `file_path` for Write and Edit;
-// `notebook_path` covers NotebookEdit.
+// `notebook_path` covers NotebookEdit; `model` and `prompt` cover the `Agent`
+// (subagent dispatch) tool, and `run_in_background` covers Bash.
 type toolInput struct {
-	Command      string `json:"command"`
-	FilePath     string `json:"file_path"`
-	NotebookPath string `json:"notebook_path"`
+	Command         string `json:"command"`
+	FilePath        string `json:"file_path"`
+	NotebookPath    string `json:"notebook_path"`
+	Model           string `json:"model"`
+	Prompt          string `json:"prompt"`
+	RunInBackground bool   `json:"run_in_background"`
 }
 
 // Decision is the guard's answer for one tool call.
@@ -71,6 +75,10 @@ func Inspect(call ToolCall, options Options) (decision Decision) {
 	switch {
 	case call.ToolName == "Bash":
 		result = inspectBash(input.Command, call.CWD, options.ProjectsRoot)
+	case call.ToolName == "Agent" || call.ToolName == "Task":
+		// "Task" is the harness's earlier/alternate name for the same
+		// subagent-dispatch tool; both are judged identically.
+		result = inspectAgentDispatch(input, call.CWD, options.ProjectsRoot)
 	case isFileWriteTool(call.ToolName):
 		result = inspectFileTool(input, options.ProjectsRoot)
 	}
@@ -120,6 +128,14 @@ func inspectFileTool(input toolInput, projectsRoot string) *finding {
 // just the rule: a refusal an agent cannot act on becomes a refusal it works
 // around.
 func refusal(result finding) string {
+	// Message is set by policies that are not about a canonical-clone write —
+	// missing-model dispatch, hook bypass, auto-tagging, a literal report
+	// path, a claimed repository — and carries its own complete, self-quoting
+	// text. Those policies never set Location/Detail in the shape the
+	// canonical-clone wording below assumes.
+	if result.Message != "" {
+		return result.Message
+	}
 	if len(result.GovernedCommand) > 0 {
 		return governedCommandRefusal(result)
 	}
