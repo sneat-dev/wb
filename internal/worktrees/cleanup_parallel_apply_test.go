@@ -168,10 +168,12 @@ func TestCleanupAppliesDifferentRepositoriesConcurrently(t *testing.T) {
 	_, libHeads := prepareMergedTaskInRepositories(t, fixture, "task-in-lib", "lib")
 	installMergedPullRequestFixtures(t, append(appHeads, libHeads...), testMergedAt)
 
-	// The owner directory is shared by every repository under it, and macOS's
-	// capability guard freezes it around each sandboxed Git call. A sweep that
+	// The owner directory is shared by every repository under it. A sweep that
 	// applies two of its repositories at once must give it back exactly as it
-	// found it.
+	// found it: no helper may leave its mode changed. (The macOS backend once
+	// froze this directory around each Git call, which is why the invariant
+	// was first written down; it now holds trivially there and remains a
+	// regression check that nothing else touches it.)
 	owner := filepath.Join(fixture.projectsRoot, "acme")
 	ownerMode := modeOfDirectory(t, owner)
 
