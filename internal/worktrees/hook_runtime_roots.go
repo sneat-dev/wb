@@ -34,7 +34,7 @@ func appendSecureHookExecutionCapabilityRoots(repoPath string, roots []gitFilesy
 			continue
 		}
 		handles = append(handles, secureHookRootHandle{path: cachePath, directory: cacheRoot})
-		roots = append(roots, gitFilesystemCapabilityRoot{path: cachePath, directory: cacheRoot, shared: true})
+		roots = append(roots, gitFilesystemCapabilityRoot{path: cachePath, directory: cacheRoot})
 	}
 
 	policy, err := hooks.LoadPolicy(repoPath, "")
