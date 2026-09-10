@@ -45,13 +45,46 @@ and a canonical clone is ruined by the write: a `git checkout -- .` that
 discards an unlanded lesson never commits anything.
 
 `wb hooks agent pre-tool-use` closes that gap. It reads a Claude Code
-PreToolUse payload on stdin and refuses a tool call that would write inside
-`<projects-root>/<owner>/<repository>`, naming `wb worktree create` as the
-remedy. Register it once per machine:
+PreToolUse payload on stdin and carries these policies:
+
+- **Canonical-clone write** — refuses a tool call that would write inside
+  `<projects-root>/<owner>/<repository>`, naming `wb worktree create` as the
+  remedy.
+- **Hook bypass** — refuses `--no-verify`/`-n` on `git commit`/`push`/`merge`,
+  `git -c core.hooksPath=…`, and `git config core.hooksPath`, in any
+  WB-managed checkout (canonical clone or linked worktree, not only the
+  former). A red hook is informational output about real risk, never an
+  obstacle; `wb worktree rescue --push` is the sanctioned recovery path and is
+  never itself refused.
+- **Auto-tagging** — refuses a hand-pushed `git tag`/`git push --tags`/
+  `git push origin <tag>` in a repository whose own CI already tags it: an
+  explicit `agent.autoTags: true` in `.wb/hooks.yaml` (or the global hooks
+  policy), or a `strongo/cicd` reusable workflow with no
+  `disable-version-bumping: true` beside it.
+- **Governed heavy validation** — redirects CPU-heavy validation inside a
+  WB-managed worktree to the governed command gateway (see below).
+- **Missing model** (`Agent`/`Task` tool) — refuses a subagent dispatch that
+  names no `model`; an omitted model silently inherits the parent's.
+- **Literal report path** (`Agent`/`Task` tool) — refuses a dispatch prompt
+  that hand-writes a WB report path (e.g. `$HOME/.wb/reports/...`) instead of
+  deriving it from `wb worktree log finalize --report`.
+- **Dispatch into a live claim** (`Agent`/`Task` tool) — refuses a dispatch
+  naming a repository another live WB claim already covers, read locally from
+  the repository's own `.worktrees/` manifests and the local wb-state mirror
+  (no network). A dispatch from inside the claimed worktree itself is treated
+  as that lane continuing its own work, not a second claim.
+
+Register it once per machine:
 
 ```sh
 wb hooks agent install
 ```
+
+Re-running `install` is idempotent, including across a policy rollout: if an
+already-registered entry's matcher is narrower than the current policy set
+needs (e.g. an install from before the `Agent`/`Task` policies existed), it
+widens the matcher in place rather than leaving it stale or adding a
+duplicate entry.
 
 It fails open without exception — an unreadable payload, an unknown tool, a
 shell construct it cannot model, and a WB too old to know the subcommand all

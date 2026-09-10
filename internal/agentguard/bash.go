@@ -19,6 +19,12 @@ type finding struct {
 	// inside a managed worktree; ordinary human shells and foreign checkouts
 	// remain outside this agent-hook policy.
 	GovernedCommand []string
+	// Message, when set, is the complete refusal text and bypasses every
+	// other field's wording in refusal(). Policies that are not about a
+	// canonical-clone write (missing-model dispatch, hook bypass,
+	// auto-tagging, a literal report path, a claimed repository) set this
+	// instead of relying on the canonical-clone phrasing built from Location.
+	Message string
 }
 
 // inspectBash reports whether a Bash command would write inside a canonical

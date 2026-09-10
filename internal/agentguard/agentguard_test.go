@@ -224,9 +224,6 @@ func TestBashRefusesWritesIntoACanonicalClone(t *testing.T) {
 		{"cherry-pick", "git cherry-pick abc123", repositories.Canonical},
 		{"non-fast-forward merge", "git merge feature/x", repositories.Canonical},
 		{"pull without --ff-only", "git pull", repositories.Canonical},
-		{"hooks bypass, the commit that landed anyway", `git -c core.hooksPath=/dev/null commit -q -m x`, repositories.Canonical},
-		{"hooks bypass by any casing", `git -c CORE.HOOKSPATH=/dev/null commit -m x`, repositories.Canonical},
-		{"no-verify bypass", "git push --no-verify origin main", repositories.Canonical},
 		{"git -C reaching into a clone from elsewhere", "git -C " + repositories.Canonical + " reset --hard", repositories.Worktree},
 		{"cd then write", "cd " + repositories.Canonical + " && git add -A", repositories.Worktree},
 		{"redirection into a clone", "echo hi > " + filepath.Join(repositories.Canonical, "note.md"), repositories.Worktree},
@@ -304,6 +301,77 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 		{"a write in an unrelated directory", "rm -rf /tmp/scratch", "/tmp"},
 		{"a working directory reached through a variable", `cd "$REPO" && git reset --hard`, repositories.Canonical},
 		{"a heredoc body that looks like shell", "cat <<'EOF' | wc -l\ngit reset --hard\nEOF", repositories.Canonical},
+	}
+	for _, testCase := range commands {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if decision.Deny {
+				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", testCase.command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestHooksAreNeverBypassedInAnyManagedWorktree pins
+// lesson:work-preservation-is-never-grounds-to-bypass-a-hook /
+// rule:hooks-are-never-bypassed: a hook bypass has no legitimate reading
+// anywhere WB manages, not only a canonical clone (the original scope of
+// internal/agentguard/git.go before this policy), and the refusal message is
+// distinct from the canonical-clone wording.
+func TestHooksAreNeverBypassedInAnyManagedWorktree(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []struct {
+		name    string
+		command string
+		cwd     string
+	}{
+		{"hooks bypass, the commit that landed anyway", `git -c core.hooksPath=/dev/null commit -q -m x`, repositories.Canonical},
+		{"hooks bypass by any casing", `git -c CORE.HOOKSPATH=/dev/null commit -m x`, repositories.Canonical},
+		{"hooks bypass in a linked worktree, not only the canonical clone", `git -c core.hooksPath=/dev/null commit -m x`, repositories.Worktree},
+		{"hooks bypass in a nested worktree", `git -c core.hooksPath=/dev/null commit -m x`, repositories.Nested},
+		{"no-verify bypass on commit", "git commit --no-verify -m x", repositories.Canonical},
+		{"no-verify bypass on push", "git push --no-verify origin main", repositories.Canonical},
+		{"no-verify bypass on push, in a worktree", "git push --no-verify origin main", repositories.Worktree},
+		{"no-verify bypass on merge", "git merge --no-verify feature/x", repositories.Canonical},
+		{"-n short flag on commit means --no-verify", "git commit -n -m x", repositories.Canonical},
+		{"git config sets core.hooksPath", "git config core.hooksPath /dev/null", repositories.Worktree},
+		{"git config reads core.hooksPath", "git config --get core.hooksPath", repositories.Worktree},
+		{"git config unsets core.hooksPath", "git config --unset core.hooksPath", repositories.Canonical},
+	}
+	for _, testCase := range commands {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a hook bypass", testCase.command)
+			}
+			for _, expected := range []string{"hooks-are-never-bypassed", "managed hooks", "wb worktree rescue --push"} {
+				if !strings.Contains(decision.Reason, expected) {
+					t.Fatalf("refusal for %q does not name %q:\n%s", testCase.command, expected, decision.Reason)
+				}
+			}
+			if strings.Contains(decision.Reason, "must stay clean") {
+				t.Fatalf("hook-bypass refusal for %q used the canonical-clone wording:\n%s", testCase.command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestHookBypassFalsePositives pins the constructs that look similar to a
+// hook bypass but are not one, per the same short-flag ambiguity the git.go
+// bypassesManagedHooks doc comment explains: `-n` means something else on
+// push and merge than it does on commit.
+func TestHookBypassFalsePositives(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []struct {
+		name    string
+		command string
+		cwd     string
+	}{
+		{"push -n is --dry-run, not --no-verify", "git push -n origin main", repositories.Canonical},
+		{"merge -n is --no-stat, not --no-verify", "git merge -n --ff-only origin/main", repositories.Canonical},
+		{"an unrelated git config key", "git config user.email agent@example.test", repositories.Canonical},
+		{"a config value that merely mentions hooksPath in prose", "git config commit.template hooksPath-notes.txt", repositories.Canonical},
+		{"hooks bypass outside any managed checkout", "git -c core.hooksPath=/dev/null commit -m x", "/tmp/scratch"},
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
