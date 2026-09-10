@@ -36,11 +36,15 @@ const landlockWriteAccess = unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
 
 // landlockDevNullAccess is deliberately narrower than landlockWriteAccess:
 // Git routinely opens /dev/null to discard output, a plain write/truncate on
-// an existing device node, never a create or remove. The macOS sandbox
-// backend grants the equivalent literal allowance for the same reason (see
-// sandboxProfile in git_capability_darwin.go); Landlock needs its own
+// an existing device node, never a create or remove. Landlock needs its own
 // explicit rule because it has no notion of a profile-wide default path.
 const landlockDevNullAccess = unix.LANDLOCK_ACCESS_FS_WRITE_FILE | unix.LANDLOCK_ACCESS_FS_TRUNCATE
+
+// platformGitFilesystemCapabilityConfines reports whether this backend
+// actually restricts where the Git child may write. Landlock does.
+func platformGitFilesystemCapabilityConfines() bool {
+	return true
+}
 
 func platformGitFilesystemCapabilityAvailable() error {
 	version, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, unix.LANDLOCK_CREATE_RULESET_VERSION)

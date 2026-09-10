@@ -8,6 +8,10 @@ func platformGitFilesystemCapabilityAvailable() error {
 	return fmt.Errorf("secure Git capability is unavailable on this platform")
 }
 
+func platformGitFilesystemCapabilityConfines() bool {
+	return false
+}
+
 func runPlatformGitWithFilesystemCapability(_ gitFilesystemCapability, _ string, _ []string, _ []string) int {
 	return 1
 }
