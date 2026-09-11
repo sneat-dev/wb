@@ -531,6 +531,15 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 		{"brace list on pr", "gh {pr,issue} merge 1041", repositories.Worktree},
 		{"brace list in a shell payload", "sh -c 'gh pr {merge,} 1041'", repositories.Worktree},
 		{"brace list with the number attached", "gh pr merge{,} 1041", repositories.Worktree},
+		// wb#500 fifth review, S3: the REST and GraphQL merge routes land a
+		// pull request exactly as gh pr merge does.
+		{"REST merge with -X", "gh api -X PUT repos/sneat-co/sneat-go/pulls/1041/merge", repositories.Worktree},
+		{"REST merge with --method and a leading slash", "gh api --method PUT /repos/sneat-co/sneat-go/pulls/1041/merge -f merge_method=squash", repositories.Worktree},
+		{"REST merge with --method= and placeholders", "gh api --method=put 'repos/{owner}/{repo}/pulls/1041/merge'", repositories.Worktree},
+		{"REST merge with an attached -XPUT and a query string", "gh api -XPUT repos/sneat-co/sneat-go/pulls/1041/merge?x=1", repositories.Worktree},
+		{"REST merge with the method after the endpoint", "gh api repos/sneat-co/sneat-go/pulls/1041/merge -X PUT", repositories.Worktree},
+		{"GraphQL mergePullRequest", `gh api graphql -f query='mutation { mergePullRequest(input:{pullRequestId:"x"}) { clientMutationId } }'`, repositories.Worktree},
+		{"GraphQL mergePullRequest behind -R", "gh api -R sneat-co/sneat-go graphql -F query=@merge.graphql -f x=mergePullRequest", repositories.Worktree},
 		// wb#500 final review, S3: a shell keyword opens a command in the
 		// same segment, so a loop or conditional body is inspected.
 		{"a for loop body", `for n in 12 13; do gh pr merge "$n" --squash; done`, repositories.Worktree},
@@ -621,6 +630,15 @@ func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
 		"gh search issues pr merge --repo sneat-co/sneat-go",
 		"gh search prs merge",
 		"gh pr list --search merge",
+		// wb#500 fifth review, S3: only the merge routes of gh api are
+		// refused. Reading the same endpoints, or any other, stays allowed.
+		"gh api repos/sneat-co/sneat-go/pulls/1041",
+		"gh api repos/sneat-co/sneat-go/pulls/1041/merge",
+		"gh api -X GET repos/sneat-co/sneat-go/pulls/1041/merge",
+		"gh api -X PUT repos/sneat-co/sneat-go/pulls/1041/update-branch",
+		"gh api -X PUT repos/sneat-co/sneat-go/pulls/1041/merge --help",
+		`gh api graphql -f query='{ repository(owner:"sneat-co", name:"sneat-go") { pullRequest(number:1041) { merged } } }'`,
+		"gh api --method PATCH repos/sneat-co/sneat-go/pulls/1041 -f state=closed",
 		"gh -h pr merge 1041",
 		"gh -- pr merge 1041",
 		"gh pr -- merge 1041",

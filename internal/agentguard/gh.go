@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,18 +46,100 @@ const ghPrMergeOverrideEnv = "WB_AGENTGUARD_ALLOW_GH_PR_MERGE"
 // nothing to do with which directory the agent happened to be sitting in, so
 // neither does the refusal.
 func inspectGh(words []string, projectsRoot string, override string) *finding {
-	expanded, merges := ghResolvesToPrMerge(words)
-	if !merges {
-		return nil
-	}
-	if ghRequestsHelp(expanded) {
+	headline := ""
+	switch expanded, merges := ghResolvesToPrMerge(words); {
+	case merges:
+		if ghRequestsHelp(expanded) {
+			return nil
+		}
+		headline = "gh pr merge lands outside WB's landing verbs."
+	case isGhAPIMerge(words):
+		headline = "gh api merges a pull request outside WB's landing verbs."
+	default:
 		return nil
 	}
 	if reason := strings.TrimSpace(override); reason != "" {
 		recordGhPrMergeOverride(projectsRoot, words, reason)
 		return nil
 	}
-	return &finding{Message: ghPrMergeRefusal(words)}
+	return &finding{Message: ghPrMergeRefusal(headline, words)}
+}
+
+// ghAPIValueFlags are gh api's own flags that take a value, plus the
+// inherited --repo/-R, from `gh api --help` (gh 2.100.0). The walk needs them
+// only so a value is never mistaken for the endpoint; the values themselves
+// are still scanned for the GraphQL mutation name.
+var ghAPIValueFlags = map[string]bool{
+	"--cache": true, "--field": true, "--header": true, "--hostname": true, "--input": true,
+	"--jq": true, "--method": true, "--preview": true, "--raw-field": true, "--repo": true,
+	"--template": true,
+	"-F":         true, "-H": true, "-R": true, "-X": true, "-f": true, "-p": true, "-q": true, "-t": true,
+}
+
+var ghAPIMergeEndpoint = regexp.MustCompile(`(?i)(^|/)repos/[^/]+/[^/]+/pulls/[^/]+/merge/?$`)
+
+// isGhAPIMerge reports whether words is a `gh api` call that merges a pull
+// request without going through `gh pr merge`: a PUT to the REST merge
+// endpoint (`repos/{owner}/{repo}/pulls/{n}/merge`, with or without a
+// leading slash, host or query string) or a GraphQL call whose words name
+// the mergePullRequest mutation. Both land a real pull request exactly as
+// `gh pr merge` does, and both are one `gh api --help` away from an agent
+// that has just been refused (wb#500 fifth review, S3). A mutation read from
+// an --input file, and any other endpoint, are not inspected.
+func isGhAPIMerge(words []string) bool {
+	arguments := words[1:]
+	first := cobraSubcommandIndex(arguments, ghRootNoValueFlags)
+	if first < 0 || arguments[first] != "api" {
+		return false
+	}
+	method, endpoint, mutation := "GET", "", false
+	rest := arguments[first+1:]
+	for _, word := range rest {
+		if strings.Contains(word, "mergePullRequest") {
+			mutation = true
+		}
+	}
+	for index := 0; index < len(rest); index++ {
+		word := rest[index]
+		switch {
+		case word == "--help" || word == "-h":
+			// A help flag no value-taking flag consumed prints help. A
+			// value-taking flag skips its value below before this is read.
+			return false
+		case word == "--":
+			if endpoint == "" && index+1 < len(rest) {
+				endpoint = rest[index+1]
+			}
+			index = len(rest)
+		case word == "-X" || word == "--method":
+			if index+1 < len(rest) {
+				method = rest[index+1]
+				index++
+			}
+		case strings.HasPrefix(word, "--method="):
+			method = strings.TrimPrefix(word, "--method=")
+		case strings.HasPrefix(word, "-X") && len(word) > 2:
+			method = word[2:]
+		case strings.HasPrefix(word, "--"):
+			if !strings.Contains(word, "=") && ghAPIValueFlags[word] {
+				index++
+			}
+		case strings.HasPrefix(word, "-") && len(word) > 1:
+			if len(word) == 2 && ghAPIValueFlags[word] {
+				index++
+			}
+		case endpoint == "" && word != "":
+			endpoint = word
+		}
+	}
+	if strings.EqualFold(endpoint, "graphql") {
+		return mutation
+	}
+	path := endpoint
+	if cut := strings.IndexAny(path, "?#"); cut >= 0 {
+		path = path[:cut]
+	}
+	return strings.EqualFold(method, "PUT") && ghAPIMergeEndpoint.MatchString(path)
 }
 
 // ghPrMergeLongValueFlags and ghPrMergeShortValueFlags name gh pr merge's own
@@ -315,9 +398,9 @@ func cobraSubcommandIndex(arguments []string, noValueFlags map[string]bool) int 
 // request with no local worktree — plus the escape hatch, since a refusal
 // this guard cannot itself judge (a pull request WB never created a worktree
 // for) must still have a way through.
-func ghPrMergeRefusal(words []string) string {
+func ghPrMergeRefusal(headline string, words []string) string {
 	var message strings.Builder
-	message.WriteString("gh pr merge lands outside WB's landing verbs.\n\n")
+	message.WriteString(headline + "\n\n")
 	message.WriteString("rule: land-with-wb-verb (sneat-co/backstage)\n\n")
 	fmt.Fprintf(&message, "Refused: %s\n\n", strings.Join(words, " "))
 	message.WriteString("Land the work through WB instead:\n")
