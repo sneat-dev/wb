@@ -13,9 +13,18 @@ import (
 
 // ghPrMergeOverrideEnv is the escape hatch for the gh pr merge refusal below.
 // A non-empty value is the operator's recorded reason for bypassing
-// `wb worktree land` / `wb pr land` for this one call — set it, rerun the
-// exact same Bash call, and the override is written to
-// <wbhome>/agentguard/gh-pr-merge-overrides.jsonl before the call proceeds.
+// `wb worktree land` / `wb pr land` for this one call.
+//
+// It must be read as an inline `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"`
+// prefix on the exact same Bash call being rerun — directly, or through
+// `env` — never from the hook process's own ambient environment. The
+// PreToolUse hook is spawned by the harness for every tool call, in a
+// process tree separate from whatever shell ran an `export`, so an ambient
+// read cannot be scoped to "the one call it is set on" the way the refusal
+// text promises: the only environment a human or agent can reliably put a
+// value into per call is the words of that call itself (wb#500 review,
+// Should-fix 3). leadingAssignmentValue in bash.go extracts it from there and
+// passes it in as override.
 //
 // This mirrors --allow-saturated-host and --take-over-lane elsewhere in WB:
 // an override is never silent, it is always named and recorded, so a fleet
@@ -34,15 +43,53 @@ const ghPrMergeOverrideEnv = "WB_AGENTGUARD_ALLOW_GH_PR_MERGE"
 // to use (rule:land-with-wb-verb, sneat-co/backstage). That failure mode has
 // nothing to do with which directory the agent happened to be sitting in, so
 // neither does the refusal.
-func inspectGh(words []string, projectsRoot string) *finding {
+func inspectGh(words []string, projectsRoot string, override string) *finding {
 	if !isGhPrMerge(words) {
 		return nil
 	}
-	if reason := strings.TrimSpace(os.Getenv(ghPrMergeOverrideEnv)); reason != "" {
+	if ghRequestsHelp(words) {
+		return nil
+	}
+	if reason := strings.TrimSpace(override); reason != "" {
 		recordGhPrMergeOverride(projectsRoot, words, reason)
 		return nil
 	}
 	return &finding{Message: ghPrMergeRefusal(words)}
+}
+
+// ghPrMergeValueFlags names gh pr merge's own flags, plus gh's global
+// --repo/-R, that consume the very next word as a value (`gh pr merge --help
+// --repo owner/repo`). A `--help`/`-h` token immediately after one of these
+// is that flag's VALUE, not a help request: gh's flag parser (pflag) never
+// special-cases --help ahead of ordinary parsing, it hands a value-taking
+// flag the next token unconditionally, so `gh pr merge 123 --subject --help`
+// really does merge with the literal subject text "--help" — it does not
+// print help and do nothing, the way a genuine `gh pr merge --help` does (see
+// wb#500 review, Blocker 1). Sourced from `gh pr merge --help`'s own FLAGS
+// and INHERITED FLAGS sections.
+var ghPrMergeValueFlags = map[string]bool{
+	"--repo": true, "-R": true,
+	"--subject": true, "-t": true,
+	"--body": true, "-b": true,
+	"--body-file": true, "-F": true,
+	"--match-head-commit": true,
+	"--author-email":      true, "-A": true,
+}
+
+// ghRequestsHelp reports whether words is genuinely asking `gh pr merge` for
+// its help text: a bare --help/-h that is not itself the value a preceding
+// value-taking flag consumed. See ghPrMergeValueFlags.
+func ghRequestsHelp(words []string) bool {
+	for index := 1; index < len(words); index++ {
+		if words[index] != "--help" && words[index] != "-h" {
+			continue
+		}
+		if ghPrMergeValueFlags[words[index-1]] {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // isGhPrMerge reports whether words invokes `gh pr merge`, tolerant of a
@@ -89,8 +136,11 @@ func ghPrMergeRefusal(words []string) string {
 	message.WriteString("challenge the same instruction twice.\n\n")
 	message.WriteString("If the verb genuinely refuses this landing, report the exact refusal and file\n")
 	message.WriteString("a sneat-dev/wb issue instead of hand-rolling gh/git steps.\n\n")
-	fmt.Fprintf(&message, "Escape hatch: set %s=\"<reason>\" and rerun this exact call to\n", ghPrMergeOverrideEnv)
-	message.WriteString("bypass this refusal once; the reason is recorded.\n")
+	fmt.Fprintf(&message, "Escape hatch: prefix this exact call with %s=\"<reason>\"\n", ghPrMergeOverrideEnv)
+	message.WriteString("(directly, or via `env`) and rerun it to bypass this refusal once; the\n")
+	message.WriteString("reason is recorded. Setting the variable ahead of time in the shell or\n")
+	message.WriteString("session that launched this agent does nothing — only a value on the words\n")
+	message.WriteString("of this exact call is ever read.\n")
 	return message.String()
 }
 

@@ -65,6 +65,21 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 	if absolute, ok := absolutePath(sessionCwd); ok {
 		workingDirectory = absolute
 	}
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0)
+}
+
+// maxShellUnwrapDepth bounds how many `bash -c`/`sh -c`/`zsh -c` payloads this
+// scanner recurses into (see shellInterpreters below). A real invocation is
+// unwrapped once or twice; the bound exists only to guarantee termination
+// against a pathological or adversarial chain, and hitting it fails open
+// exactly like every other construct this scanner cannot model — see the
+// package doc's "known blind spots".
+const maxShellUnwrapDepth = 8
+
+// inspectBashDepth is inspectBash's recursive engine. depth counts how many
+// `-c` payloads have already been unwrapped to reach command, so recursion
+// into a nested `bash -c "bash -c '...'"` terminates.
+func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int) *finding {
 	for _, current := range splitSegments(command) {
 		if result := inspectRedirects(current, workingDirectory, projectsRoot); result != nil {
 			return result
@@ -78,25 +93,72 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 			workingDirectory = applyChangeDirectory(workingDirectory, words[1:])
 			continue
 		}
+		// wb#500 review (Blocker 2): gh.go's doc comment, ai/skills/wb-hooks/
+		// SKILL.md and ai/capabilities.json all claimed the gh pr merge
+		// refusal reaches "chained, subshelled ... everywhere", but a
+		// `bash -c "gh pr merge 123"` payload read as one opaque quoted word
+		// and nothing inside it was ever inspected. Recurse into the payload
+		// with the same inspector so a shape it refuses directly is refused
+		// the same way wrapped in bash/sh/zsh -c, including when that payload
+		// itself chains or nests another `-c` once more.
+		if shellInterpreters[name] && depth < maxShellUnwrapDepth {
+			if payload, ok := shellDashCPayload(words); ok {
+				if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1); result != nil {
+					return result
+				}
+				continue
+			}
+		}
 		// wb#493: a read-only `--help`/`-h`/`help` invocation of an otherwise
 		// guarded tool was refused the same as the write it was only asking
 		// about — `specscore feature change-status --help` named a write verb
 		// in its arguments and the verb scan does not know where in the
-		// invocation that verb sits. Every guarded tool here treats --help as
-		// terminal: it prints help and does nothing else, regardless of what
-		// else is on the line, so skipping every write check for it never
-		// hides a real write.
-		if requestsHelp(words) {
+		// invocation that verb sits. Every tool in helpBypassTools treats
+		// --help as terminal: it prints help and does nothing else, regardless
+		// of what else is on the line, so skipping every write check for it
+		// never hides a real write. The set is deliberately narrow — see
+		// helpBypassTools's own doc — so this can never again turn into the
+		// wb#500 review's Blocker 1, where the same scan, applied to every
+		// tool, let `rm -rf <canonical-clone-file> -h` and
+		// `gh pr merge 123 --subject --help` both through.
+		if helpBypassTools[name] && requestsHelp(words) {
 			continue
 		}
 		if managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
 			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
 		}
-		if result := inspectCommand(name, words, workingDirectory, projectsRoot); result != nil {
+		if result := inspectCommand(name, words, current.Words, workingDirectory, projectsRoot); result != nil {
 			return result
 		}
 	}
 	return nil
+}
+
+// shellInterpreters names the shells whose `-c <payload>` this guard recurses
+// into with the same inspector. See inspectBashDepth's wb#500 comment.
+var shellInterpreters = map[string]bool{"bash": true, "sh": true, "zsh": true}
+
+// shellDashCPayload reports the command-string argument to a shell's `-c`
+// flag, tolerant of it being bundled with other short flags (`-lc`, `-ic`,
+// the common "login shell running one command" spelling agent harnesses use).
+// bash/sh/zsh all treat -c the same way: once it is seen, the very next word
+// is the command string, never another shell flag, so the first word after it
+// is always the payload.
+func shellDashCPayload(words []string) (string, bool) {
+	for index := 1; index < len(words); index++ {
+		word := words[index]
+		if !strings.HasPrefix(word, "-") || strings.HasPrefix(word, "--") {
+			continue
+		}
+		if !strings.ContainsRune(word[1:], 'c') {
+			continue
+		}
+		if index+1 < len(words) {
+			return words[index+1], true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // managedWorktree reports whether directory is enclosed by a WB worktree
@@ -169,10 +231,37 @@ func packageManagerValidation(arguments []string) bool {
 	return false
 }
 
+// helpBypassTools names the tools wb#493 exists for. Each treats
+// --help/-h/help as terminal — it prints help and does nothing else,
+// regardless of what write verb also appears elsewhere on the line — so
+// skipping their write-verb check for a genuine help request never hides a
+// real write.
+//
+// The set is deliberately narrow and must stay that way:
+//
+//   - It must never include a file mutator (rm, mv, cp, chmod, chown, rsync,
+//     ...): -h means something else entirely on several of them (rsync's
+//     human-readable sizes; BSD chmod/chown/cp's "operate on the symlink
+//     itself"), so treating it as a help request there silently turns off
+//     the canonical-clone guard for an ordinary, unrelated flag.
+//   - It must never include gh: `gh pr merge`'s own -h/--help recognition
+//     lives in gh.go's ghRequestsHelp, because a value-taking flag positioned
+//     just before it (`gh pr merge 123 --subject --help`) makes --help the
+//     VALUE of --subject, not a help request — pflag hands a value-taking
+//     flag the very next token unconditionally, so that call really does
+//     merge with the literal subject text "--help". A blind "--help anywhere"
+//     scan, applied ahead of gh's own guard the way it once was, let that
+//     merge through unrefused (wb#500 review, Blocker 1).
+var helpBypassTools = map[string]bool{
+	"specscore": true, "go": true,
+	"npm": true, "pnpm": true, "yarn": true, "bun": true,
+}
+
 // requestsHelp reports whether a command's own words ask only for its help
 // text: `--help`/`-h` anywhere in the invocation, or a bare `help` subcommand
 // for the tools that use one (`go help build`, `specscore help feature
-// change-status`, `npm help install`). See wb#493.
+// change-status`, `npm help install`). See wb#493. Callers must gate this on
+// helpBypassTools first — see its doc for why.
 func requestsHelp(words []string) bool {
 	for _, word := range words[1:] {
 		if word == "--help" || word == "-h" {
@@ -217,13 +306,18 @@ func inspectRedirects(current segment, workingDirectory, projectsRoot string) *f
 }
 
 // inspectCommand dispatches one simple command to whichever recogniser knows
-// about it, and allows anything unrecognised.
-func inspectCommand(name string, words []string, workingDirectory, projectsRoot string) *finding {
+// about it, and allows anything unrecognised. rawWords are the segment's
+// words before commandWords stripped any leading environment assignment or
+// transparent prefix (sudo, env, ...) — inspectGh needs them to read an
+// inline WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" that prefixes this exact
+// call, the only place that override is honoured (see gh.go).
+func inspectCommand(name string, words []string, rawWords []string, workingDirectory, projectsRoot string) *finding {
 	switch name {
 	case "git":
 		return inspectGit(words[1:], workingDirectory, projectsRoot)
 	case "gh":
-		return inspectGh(words, projectsRoot)
+		override, _ := leadingAssignmentValue(rawWords, ghPrMergeOverrideEnv)
+		return inspectGh(words, projectsRoot, override)
 	case "wb":
 		// WB is the remedy the refusal names, and the only tool authorised to
 		// write into a canonical clone. Refusing it would make the guard's own
@@ -282,6 +376,60 @@ func isEnvironmentAssignment(word string) bool {
 		}
 	}
 	return true
+}
+
+// splitAssignment splits a word already known to be a `VAR=value` assignment
+// (see isEnvironmentAssignment) into its name and value.
+func splitAssignment(word string) (name, value string) {
+	index := strings.IndexByte(word, '=')
+	return word[:index], word[index+1:]
+}
+
+// leadingAssignmentValue reports the value a leading `VAR=value` prefix on
+// words assigns to variable — directly (`VAR=value gh ...`), or via `env`
+// (`env VAR=value gh ...`) — using the same prefix-stripping rules as
+// commandWords. Only a leading assignment counts: that is what scopes an
+// inline override to the one command it prefixes, the same way a shell does.
+// The last matching assignment before the real program name wins, mirroring
+// a shell's own "last one wins" semantics for a repeated variable.
+//
+// This exists for inspectGh's escape hatch (wb#500 review, Should-fix 3):
+// commandWords strips a leading assignment and discards it, because every
+// other caller only wants the real program name. inspectGh is the one caller
+// that needs the assignment itself, read from the words of the exact call it
+// prefixes — never from the hook process's own ambient environment, which
+// would silently cover every gh pr merge for the rest of a session instead of
+// the one call an operator meant to allow.
+func leadingAssignmentValue(words []string, variable string) (string, bool) {
+	value, found := "", false
+	for len(words) > 0 {
+		word := words[0]
+		if isEnvironmentAssignment(word) {
+			if name, assigned := splitAssignment(word); name == variable {
+				value, found = assigned, true
+			}
+			words = words[1:]
+			continue
+		}
+		switch filepath.Base(word) {
+		case "sudo", "nohup", "command", "nice", "time", "stdbuf", "exec":
+			words = words[1:]
+			continue
+		case "env":
+			words = words[1:]
+			for len(words) > 0 && (isEnvironmentAssignment(words[0]) || strings.HasPrefix(words[0], "-")) {
+				if isEnvironmentAssignment(words[0]) {
+					if name, assigned := splitAssignment(words[0]); name == variable {
+						value, found = assigned, true
+					}
+				}
+				words = words[1:]
+			}
+			continue
+		}
+		break
+	}
+	return value, found
 }
 
 // isVariableNameCharacter reports whether a rune may appear at position in a
