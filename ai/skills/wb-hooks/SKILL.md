@@ -73,6 +73,18 @@ PreToolUse payload on stdin and carries these policies:
   the repository's own `.worktrees/` manifests and the local wb-state mirror
   (no network). A dispatch from inside the claimed worktree itself is treated
   as that lane continuing its own work, not a second claim.
+- **Land with the WB verb** — refuses `gh pr merge` (any flags, chained,
+  subshelled) everywhere, naming `wb worktree land`/`wb land` and
+  `wb pr land <owner/repo#n>` instead (rule `land-with-wb-verb`,
+  `sneat-co/backstage`). `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` is the
+  explicit, recorded escape hatch for the one call it is set on. `gh pr
+  view`/`checks`/`list` and every other read-only `gh` subcommand are never
+  refused.
+
+A read-only `--help`/`-h`/`help` invocation of a tool this guard otherwise
+judges by write verb (`specscore`, `go`, `npm`/`pnpm`/`yarn`/`bun`) is never
+refused — it prints help and does nothing else, regardless of what verb also
+appears on the line (wb#493).
 
 Register it once per machine:
 

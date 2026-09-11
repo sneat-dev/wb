@@ -78,6 +78,17 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 			workingDirectory = applyChangeDirectory(workingDirectory, words[1:])
 			continue
 		}
+		// wb#493: a read-only `--help`/`-h`/`help` invocation of an otherwise
+		// guarded tool was refused the same as the write it was only asking
+		// about — `specscore feature change-status --help` named a write verb
+		// in its arguments and the verb scan does not know where in the
+		// invocation that verb sits. Every guarded tool here treats --help as
+		// terminal: it prints help and does nothing else, regardless of what
+		// else is on the line, so skipping every write check for it never
+		// hides a real write.
+		if requestsHelp(words) {
+			continue
+		}
 		if managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
 			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
 		}
@@ -158,6 +169,20 @@ func packageManagerValidation(arguments []string) bool {
 	return false
 }
 
+// requestsHelp reports whether a command's own words ask only for its help
+// text: `--help`/`-h` anywhere in the invocation, or a bare `help` subcommand
+// for the tools that use one (`go help build`, `specscore help feature
+// change-status`, `npm help install`). See wb#493.
+func requestsHelp(words []string) bool {
+	for _, word := range words[1:] {
+		if word == "--help" || word == "-h" {
+			return true
+		}
+	}
+	rest := firstNonFlag(words[1:])
+	return len(rest) > 0 && rest[0] == "help"
+}
+
 func firstNonFlag(words []string) []string {
 	for len(words) > 0 && strings.HasPrefix(words[0], "-") {
 		words = words[1:]
@@ -197,6 +222,8 @@ func inspectCommand(name string, words []string, workingDirectory, projectsRoot 
 	switch name {
 	case "git":
 		return inspectGit(words[1:], workingDirectory, projectsRoot)
+	case "gh":
+		return inspectGh(words, projectsRoot)
 	case "wb":
 		// WB is the remedy the refusal names, and the only tool authorised to
 		// write into a canonical clone. Refusing it would make the guard's own

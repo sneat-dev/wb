@@ -312,6 +312,53 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 	}
 }
 
+// TestBashAllowsHelpInvocationsOfGuardedTools pins wb#493: a read-only
+// `--help`/`-h`/`help` invocation of a tool this guard otherwise judges by
+// write verb was refused exactly like the write it was only asking about,
+// because the verb scan matches anywhere in the argument list. Every one of
+// these treats --help as terminal — it prints help and does nothing else —
+// so none of them can smuggle a real write past the guard this way.
+func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		"specscore feature change-status x --to Approved --help",
+		"specscore feature change-status x -h",
+		"specscore help feature change-status",
+		"go mod tidy --help",
+		"go help mod tidy",
+		"pnpm install --help",
+		"npm help install",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused a read-only --help invocation:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestBashStillRefusesWritesNamedAlongsideHelpText covers the write side of
+// wb#493: --help is only ever a terminal, non-mutating request, so appending
+// it to an unrelated write must never suppress that write's refusal, and a
+// bare "help" appearing as an ORDINARY ARGUMENT (not the subcommand position)
+// must not be mistaken for the help subcommand either.
+func TestBashStillRefusesWritesNamedAlongsideHelpText(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		"specscore feature change-status x --to Approved",
+		"specscore lesson new help",
+		"go mod tidy",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a write; want deny", command)
+			}
+		})
+	}
+}
+
 // TestHooksAreNeverBypassedInAnyManagedWorktree pins
 // lesson:work-preservation-is-never-grounds-to-bypass-a-hook /
 // rule:hooks-are-never-bypassed: a hook bypass has no legitimate reading
@@ -380,6 +427,104 @@ func TestHookBypassFalsePositives(t *testing.T) {
 				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", testCase.command, decision.Reason)
 			}
 		})
+	}
+}
+
+// TestBashRefusesGhPrMerge pins rule:land-with-wb-verb (sneat-co/backstage):
+// three merger lanes reimplemented landing step by step with `gh pr merge`
+// instead of the `wb worktree land` / `wb pr land` verbs their own contract
+// already named. The refusal fires regardless of chaining, subshells, and
+// working directory — none of that is what made those lanes go around WB.
+func TestBashRefusesGhPrMerge(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []struct {
+		name    string
+		command string
+		cwd     string
+	}{
+		{"plain merge", "gh pr merge", repositories.Canonical},
+		{"merge by number", "gh pr merge 1041", repositories.Worktree},
+		{"merge with flags", "gh pr merge 1041 --squash --admin", "/tmp"},
+		{"a global flag before pr", "gh --repo sneat-co/sneat-go pr merge 1041", repositories.Worktree},
+		{"chained after a read", "gh pr checks 1041 && gh pr merge 1041", repositories.Worktree},
+		{"chained with ;", "gh pr view 1041; gh pr merge 1041", repositories.Worktree},
+		{"inside a subshell", "(gh pr merge 1041)", repositories.Worktree},
+		{"behind a pipeline", "true | gh pr merge 1041", repositories.Worktree},
+	}
+	for _, testCase := range commands {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed the call; want deny", testCase.command)
+			}
+			for _, expected := range []string{"land-with-wb-verb", "wb worktree land", "wb pr land", ghPrMergeOverrideEnv} {
+				if !strings.Contains(decision.Reason, expected) {
+					t.Fatalf("refusal for %q does not name %q:\n%s", testCase.command, expected, decision.Reason)
+				}
+			}
+		})
+	}
+}
+
+// TestBashAllowsGhReadsAndTheWBLandingVerbs is the other half of the
+// contract: `gh pr merge` is the only refused shape, `wb` itself (the remedy
+// the refusal names) is always allowed, and every other `gh pr` subcommand
+// stays read-only from this guard's perspective.
+func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		"gh pr view 1041",
+		"gh pr checks 1041",
+		"gh pr list",
+		"gh pr status",
+		"gh pr diff 1041",
+		"gh repo view",
+		"wb worktree land .",
+		"wb pr land sneat-co/sneat-go#1041",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestGhPrMergeOverrideEscapeHatchIsRecorded covers the explicit, recorded
+// escape hatch: an empty or unset override still refuses, and a non-empty
+// override allows the exact call through and appends one audited line naming
+// the command and the reason — never a silent bypass.
+func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
+	repositories := newFixture(t)
+	t.Run("empty override still refuses", func(t *testing.T) {
+		t.Setenv(ghPrMergeOverrideEnv, "")
+		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+			t.Fatal("an empty override allowed gh pr merge through")
+		}
+	})
+	t.Run("whitespace-only override still refuses", func(t *testing.T) {
+		t.Setenv(ghPrMergeOverrideEnv, "   ")
+		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+			t.Fatal("a whitespace-only override allowed gh pr merge through")
+		}
+	})
+
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	t.Setenv(ghPrMergeOverrideEnv, "wb worktree land refuses this exact receipt, escalating to sneat-dev/wb#999")
+	decision := Inspect(bashCall("gh pr merge 1041 --admin", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+	if decision.Deny {
+		t.Fatalf("a non-empty override still refused the call:\n%s", decision.Reason)
+	}
+	recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+	if err != nil {
+		t.Fatalf("read the override record: %v", err)
+	}
+	for _, expected := range []string{"land-with-wb-verb", "gh pr merge 1041 --admin", "escalating to sneat-dev/wb#999", "recorded_at"} {
+		if !strings.Contains(string(recorded), expected) {
+			t.Fatalf("override record does not contain %q:\n%s", expected, recorded)
+		}
 	}
 }
 

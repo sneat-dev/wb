@@ -87,6 +87,15 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
   - Dispatch into a live claim (Agent/Task tool): refuses a dispatch that
     names a repository another live WB claim already covers. See lesson
     a-brief-was-dispatched-for-work-already-under-an-active-wb-claim.
+  - Land with the WB verb: refuses 'gh pr merge' (any flags, chained,
+    subshelled) and names 'wb worktree land <worktree>' and
+    'wb pr land <owner/repo#n>' instead. See rule land-with-wb-verb
+    (sneat-co/backstage). WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" is the
+    explicit, recorded escape hatch for the one call it is set on.
+
+A read-only '--help'/'-h'/'help' invocation of a tool this guard otherwise
+judges by write verb ('specscore', 'go', 'npm'/'pnpm'/'yarn'/'bun') is never
+refused. See wb#493.
 
 This command fails open without exception. An unreadable payload, an
 unrecognised tool, a shell construct it cannot model, a path it cannot
