@@ -46,12 +46,24 @@ type finding struct {
 //     verbs, go mod tidy / go generate, gofmt -w, package-manager installs,
 //     formatter --write / --fix runs.
 //
+// Every recogniser sees the program through two layers. stripCommandPrefixes
+// reads past leading assignments, the shell keywords, and the wrapper programs
+// named in transparentCommandPrefixes together with their own options.
+// shellDashCPayloads reads the -c payload of bash, sh, zsh, dash and ksh.
+//
 // Known blind spots, all of which fail open:
 //
-//   - An interpreter given an inline script (python3 - <<EOF, node -e, a
-//     shell function) that writes files. The heredoc body is skipped on
-//     purpose so it is never misread as shell, which also means its contents
-//     are never inspected.
+//   - An interpreter given an inline script (python3 -c, python3 - <<EOF,
+//     node -e, a shell function) that writes files. The heredoc body is
+//     skipped on purpose so it is never misread as shell, which also means
+//     its contents are never inspected.
+//   - A command the shell builds or reads at run time. That covers eval, a
+//     here-string fed to a shell (bash <<< '...'), a script file (./land.sh,
+//     bash script.sh), backticks, a command substitution's output used as a
+//     command word, ANSI-C quoting ($'...') and env -S's split string.
+//   - A wrapper program that is not in transparentCommandPrefixes (ssh, watch,
+//     arch, script, ...), and an interpreter that is not in shellInterpreters
+//     (fish, csh).
 //   - A working directory established through a variable (cd "$REPO"), a
 //     command substitution, or a shell function. The scanner does not expand,
 //     so it marks the working directory unknown and allows what follows.
@@ -65,46 +77,51 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 	if absolute, ok := absolutePath(sessionCwd); ok {
 		workingDirectory = absolute
 	}
-	return inspectBashDepth(command, workingDirectory, projectsRoot, 0)
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false)
 }
 
-// maxShellUnwrapDepth bounds how many `bash -c`/`sh -c`/`zsh -c` payloads this
-// scanner recurses into (see shellInterpreters below). A real invocation is
-// unwrapped once or twice; the bound exists only to guarantee termination
-// against a pathological or adversarial chain, and hitting it fails open
-// exactly like every other construct this scanner cannot model — see the
-// package doc's "known blind spots".
+// maxShellUnwrapDepth bounds how many shell -c payloads this scanner recurses
+// into (see shellInterpreters below). A real invocation is unwrapped once or
+// twice. The bound exists only to guarantee termination against a
+// pathological or adversarial chain, and hitting it fails open exactly like
+// every other construct this scanner cannot model. See inspectBash's "known
+// blind spots".
 const maxShellUnwrapDepth = 8
 
 // inspectBashDepth is inspectBash's recursive engine. depth counts how many
-// `-c` payloads have already been unwrapped to reach command, so recursion
-// into a nested `bash -c "bash -c '...'"` terminates.
-func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int) *finding {
+// -c payloads have already been unwrapped to reach command, so recursion into
+// a nested `bash -c "bash -c '...'"` terminates. governed is true when command
+// is a payload that `wb run --` runs, so the governed-validation gate never
+// sends back to wb run what wb run is already running.
+func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int, governed bool) *finding {
 	for _, current := range splitSegments(command) {
 		if result := inspectRedirects(current, workingDirectory, projectsRoot); result != nil {
 			return result
 		}
-		words := commandWords(current.Words)
+		stripped := stripCommandPrefixes(current.Words)
+		words := stripped.Words
 		if len(words) == 0 {
 			continue
 		}
+		segmentGoverned := governed || stripped.Governed
 		name := filepath.Base(words[0])
 		if name == "cd" || name == "pushd" {
 			workingDirectory = applyChangeDirectory(workingDirectory, words[1:])
 			continue
 		}
-		// wb#500 review (Blocker 2): gh.go's doc comment, ai/skills/wb-hooks/
-		// SKILL.md and ai/capabilities.json all claimed the gh pr merge
-		// refusal reaches "chained, subshelled ... everywhere", but a
-		// `bash -c "gh pr merge 123"` payload read as one opaque quoted word
-		// and nothing inside it was ever inspected. Recurse into the payload
-		// with the same inspector so a shape it refuses directly is refused
-		// the same way wrapped in bash/sh/zsh -c, including when that payload
-		// itself chains or nests another `-c` once more.
-		if shellInterpreters[name] && depth < maxShellUnwrapDepth {
-			if payload, ok := shellDashCPayload(words); ok {
-				if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1); result != nil {
-					return result
+		// wb#500 review (Blocker 2): a `bash -c "gh pr merge 123"` payload
+		// read as one opaque quoted word, so nothing inside it was ever
+		// inspected. Recurse into the payload with the same inspector, so a
+		// shape refused directly is refused the same way when wrapped,
+		// including when the payload chains or nests another -c. The final
+		// review (S2) showed the payload is not simply the word after -c; see
+		// shellDashCPayloads.
+		if readings, ok := shellInterpreters[name]; ok && depth < maxShellUnwrapDepth {
+			if payloads := shellDashCPayloads(words, readings); len(payloads) > 0 {
+				for _, payload := range payloads {
+					if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1, segmentGoverned); result != nil {
+						return result
+					}
 				}
 				continue
 			}
@@ -135,7 +152,11 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int)
 		if helpBypassTools[name] && requestsHelp(name, words) {
 			continue
 		}
-		if managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
+		// `wb run -- <command>` is the gateway this gate sends heavy
+		// validation to. The command it runs is still judged by every other
+		// policy below (a gh pr merge, a canonical-clone write), but it is
+		// never sent back to wb run.
+		if !segmentGoverned && managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
 			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
 		}
 		if result := inspectCommand(name, words, current.Words, workingDirectory, projectsRoot); result != nil {
@@ -145,29 +166,117 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int)
 	return nil
 }
 
-// shellInterpreters names the shells whose `-c <payload>` this guard recurses
-// into with the same inspector. See inspectBashDepth's wb#500 comment.
-var shellInterpreters = map[string]bool{"bash": true, "sh": true, "zsh": true}
+// shellOptionReading is one way a shell reads the option words in front of
+// its -c payload. The shells agree on everything shellDashCPayloads relies on
+// and differ only in which options take a value.
+type shellOptionReading struct {
+	// attachedO makes -o take the rest of its own word as its value when any
+	// remains (`-oerrexit`), and the next word only when nothing remains.
+	// zsh and ksh read it that way. bash and dash give every o in a word the
+	// next word, so `bash -oerrexit -c ...` spends "-c" as the option name
+	// and fails.
+	attachedO bool
+	// valueO makes -O/+O take the next word: bash's shopt names, as in
+	// `-O extglob`. On zsh, -O is the one-letter CORRECT_ALL flag and takes
+	// nothing.
+	valueO bool
+	// longValues are the long options that take the next word: bash's
+	// --rcfile and --init-file.
+	longValues map[string]bool
+}
 
-// shellDashCPayload reports the command-string argument to a shell's `-c`
-// flag, tolerant of it being bundled with other short flags (`-lc`, `-ic`,
-// the common "login shell running one command" spelling agent harnesses use).
-// bash/sh/zsh all treat -c the same way: once it is seen, the very next word
-// is the command string, never another shell flag, so the first word after it
-// is always the payload.
-func shellDashCPayload(words []string) (string, bool) {
+var (
+	bashOptionReading = shellOptionReading{valueO: true, longValues: map[string]bool{"--rcfile": true, "--init-file": true}}
+	zshOptionReading  = shellOptionReading{attachedO: true}
+)
+
+// shellInterpreters names the shells whose -c payload this guard recurses
+// into with the same inspector, and how each reads its option words.
+//
+// sh gets both readings because it is a different shell on different
+// machines: bash on macOS by default, zsh when /private/var/select/sh points
+// there, dash on Debian. Inspecting a payload the actual sh would not run
+// only ever refuses a call that fails anyway. dash reads -o the way bash
+// does and rejects -O, so the bash reading covers it. See inspectBashDepth's
+// wb#500 comment.
+var shellInterpreters = map[string][]shellOptionReading{
+	"bash": {bashOptionReading},
+	"dash": {bashOptionReading},
+	"sh":   {bashOptionReading, zshOptionReading},
+	"zsh":  {zshOptionReading},
+	"ksh":  {zshOptionReading},
+}
+
+// shellDashCPayloads reports every word that one of readings would run as the
+// command string of a shell's -c flag. It returns none when the shell has no
+// -c payload.
+//
+// The payload is not "the word after -c" (wb#500 final review, S2). The shell
+// reads option words until the first word that is not one, and that word is
+// the payload. Every shape below ran a marker payload on the real bash 3.2,
+// sh, zsh 5.9, dash and ksh on macOS:
+//
+//   - -c anywhere among the option words, alone or inside a cluster (-lc, -ec,
+//     -xc, -ceo pipefail), and +c as well.
+//   - Option words after -c: -e, -x, +x, -o pipefail, +o errexit, and on bash
+//     -O extglob.
+//   - -- and a lone - end the option words, so the word after them is the
+//     payload.
+//
+// Each o in a cluster takes a value; see shellOptionReading. Words after the
+// payload become $0, $1, ... and never run. A word before -c that is not an
+// option is a script file, so there is no payload: `bash script.sh -c x` runs
+// script.sh.
+func shellDashCPayloads(words []string, readings []shellOptionReading) []string {
+	var payloads []string
+	for _, reading := range readings {
+		payload, ok := shellDashCPayload(words, reading)
+		if ok && !containsWord(payloads, payload) {
+			payloads = append(payloads, payload)
+		}
+	}
+	return payloads
+}
+
+// shellDashCPayload is shellDashCPayloads for one reading.
+func shellDashCPayload(words []string, reading shellOptionReading) (string, bool) {
+	sawC := false
 	for index := 1; index < len(words); index++ {
 		word := words[index]
-		if !strings.HasPrefix(word, "-") || strings.HasPrefix(word, "--") {
-			continue
+		switch {
+		case word == "--" || word == "-":
+			if sawC && index+1 < len(words) {
+				return words[index+1], true
+			}
+			return "", false
+		case strings.HasPrefix(word, "--"):
+			if reading.longValues[word] {
+				index++
+			}
+		case strings.HasPrefix(word, "-") || strings.HasPrefix(word, "+"):
+			letters := word[1:]
+		cluster:
+			for position := 0; position < len(letters); position++ {
+				switch letters[position] {
+				case 'c':
+					sawC = true
+				case 'o':
+					if reading.attachedO && position+1 < len(letters) {
+						break cluster
+					}
+					index++
+				case 'O':
+					if reading.valueO {
+						index++
+					}
+				}
+			}
+		default:
+			if sawC {
+				return word, true
+			}
+			return "", false
 		}
-		if !strings.ContainsRune(word[1:], 'c') {
-			continue
-		}
-		if index+1 < len(words) {
-			return words[index+1], true
-		}
-		return "", false
 	}
 	return "", false
 }
@@ -409,10 +518,10 @@ func inspectRedirects(current segment, workingDirectory, projectsRoot string) *f
 
 // inspectCommand dispatches one simple command to whichever recogniser knows
 // about it, and allows anything unrecognised. rawWords are the segment's
-// words before commandWords stripped any leading environment assignment or
-// transparent prefix (sudo, env, ...) — inspectGh needs them to read an
-// inline WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" that prefixes this exact
-// call, the only place that override is honoured (see gh.go).
+// words before stripCommandPrefixes removed any leading assignment or
+// transparent prefix (sudo, env, ...). inspectGh needs them to read an inline
+// WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" on this exact call, the only
+// place that override is honoured (see gh.go).
 func inspectCommand(name string, words []string, rawWords []string, workingDirectory, projectsRoot string) *finding {
 	switch name {
 	case "git":
@@ -442,44 +551,229 @@ func inspectCommand(name string, words []string, rawWords []string, workingDirec
 	return nil
 }
 
-// transparentCommandPrefixes names the wrapper commands commandWords and
-// leadingAssignmentValue both strip to reach the real program name — a
-// process that runs its argument as-is, changing nothing about how the guard
-// should read it. Kept as the one shared table so the two prefix-stripping
-// walks (the general one every recogniser sees the program name through, and
-// inspectGh's escape-hatch-only one that also needs the assignment itself)
-// can never drift apart: a wrapper added to one without the other would make
-// an override prefixed with it silently stop being recognised even though the
-// dispatch it prefixes is still stripped down to the real program and
-// refused (wb#500 second review, Nit 2).
-var transparentCommandPrefixes = map[string]bool{
-	"sudo": true, "nohup": true, "command": true, "nice": true,
-	"time": true, "stdbuf": true, "exec": true,
+// commandPrefix describes one word that runs the command written after it,
+// so the guard has to read past it to reach the real program. It is either a
+// shell reserved word or a wrapper program. The fields say which of the
+// following words belong to the prefix rather than to the command it runs.
+type commandPrefix struct {
+	// keyword marks a shell reserved word. It has no options of its own, so
+	// the very next word starts the command.
+	keyword bool
+	// shortValues are the option letters that take a value: the rest of
+	// their word when any remains (-n10, -oL, -I{}), otherwise the next word
+	// (-n 10, -o L, -I {}). Every other letter is a flag. The first word
+	// that does not start with "-" ends the options, and so does "--".
+	shortValues string
+	// longValues are the long options that take the next word when written
+	// without "=" (sudo --user alex).
+	longValues map[string]bool
+	// operands counts the positional words between the options and the
+	// command, such as timeout's DURATION.
+	operands int
+	// exportsAssignments marks a prefix after which a VAR=value word still
+	// reaches the program's environment: the shell keywords, time, env and
+	// sudo. After any other wrapper, the shell or the wrapper tries to run
+	// VAR=value itself as the program and fails ("nice: VAR=x: No such file
+	// or directory"). Confirmed against bash 3.2 and zsh 5.9 on macOS.
+	exportsAssignments bool
+	// arguments, when set, replaces the option walk. It returns the command
+	// words, or false when the invocation runs no command of the caller's.
+	arguments func(arguments []string) ([]string, bool)
+	// governed marks a prefix that runs the command through WB's governed
+	// gateway, so the governed-validation gate must not refuse it again.
+	governed bool
 }
 
-// commandWords drops leading environment assignments and transparent command
-// prefixes so the recognisers see the real program name.
-func commandWords(words []string) []string {
+// transparentCommandPrefixes is the one table stripCommandPrefixes reads.
+// Both walks use it: the program-name walk that every recogniser sees the
+// program through, and the override walk inspectGh needs
+// (leadingAssignmentValue). One table means the two can never drift apart
+// (wb#500 second review, Nit 2).
+//
+// Each wrapper also lists its own options. A wrapper is only transparent once
+// its options and their values are skipped too: `sudo -u alex gh pr merge 1`
+// has to reach gh instead of stopping at "alex" (wb#500 final review, S3).
+// The option letters are the union of the macOS (BSD) and GNU spellings, from
+// each program's manual.
+//
+// The reader splits segments at ; && || | & newline ( ) { }. So a loop or
+// conditional body reaches here as `do gh pr merge "$n"` or
+// `then gh pr merge 1`, and the reserved words below are stripped so the body
+// is inspected. A wrapper that is not in this table (ssh, watch, arch, script,
+// ...) is not seen through.
+var transparentCommandPrefixes = map[string]commandPrefix{
+	"!":      {keyword: true, exportsAssignments: true},
+	"if":     {keyword: true, exportsAssignments: true},
+	"then":   {keyword: true, exportsAssignments: true},
+	"else":   {keyword: true, exportsAssignments: true},
+	"elif":   {keyword: true, exportsAssignments: true},
+	"while":  {keyword: true, exportsAssignments: true},
+	"until":  {keyword: true, exportsAssignments: true},
+	"do":     {keyword: true, exportsAssignments: true},
+	"coproc": {keyword: true, exportsAssignments: true},
+	// time is a reserved word in bash (time -p) and in zsh. /usr/bin/time
+	// takes -o file, and GNU's also takes -f format.
+	"time": {shortValues: "fo", longValues: setOf("--format", "--output"), exportsAssignments: true},
+	"sudo": {
+		shortValues: "aCcDgpRrTtUu",
+		longValues: setOf("--auth-type", "--chdir", "--chroot", "--close-from", "--command-timeout", "--group",
+			"--host", "--login-class", "--other-user", "--prompt", "--role", "--type", "--user"),
+		exportsAssignments: true,
+	},
+	// env -S's value is a whole command line that env splits itself. It is
+	// skipped as a value here, not read as the command.
+	"env":        {shortValues: "CLPSUau", longValues: setOf("--argv0", "--chdir", "--split-string", "--unset"), exportsAssignments: true},
+	"nice":       {shortValues: "n", longValues: setOf("--adjustment")},
+	"nohup":      {},
+	"stdbuf":     {shortValues: "eio", longValues: setOf("--error", "--input", "--output")},
+	"exec":       {shortValues: "a"},
+	"command":    {},
+	"builtin":    {},
+	"noglob":     {},
+	"nocorrect":  {},
+	"timeout":    {shortValues: "ks", longValues: setOf("--kill-after", "--signal"), operands: 1},
+	"caffeinate": {shortValues: "tw"},
+	"xargs": {
+		shortValues: "EIJLPRSadns",
+		longValues:  setOf("--arg-file", "--delimiter", "--max-args", "--max-chars", "--max-procs", "--process-slot-var"),
+	},
+	"wb": {arguments: wbRunCommand, governed: true},
+}
+
+func setOf(words ...string) map[string]bool {
+	set := make(map[string]bool, len(words))
+	for _, word := range words {
+		set[word] = true
+	}
+	return set
+}
+
+// strippedCommand is one segment's words with every leading assignment and
+// transparent prefix removed.
+type strippedCommand struct {
+	// Words start at the real program name.
+	Words []string
+	// Assignments are the VAR=value words that the shell, env or sudo really
+	// puts into the program's environment. Those are the ones at the start of
+	// the segment, or right after a prefix with exportsAssignments set.
+	Assignments []string
+	// Governed is set when a prefix runs the command through `wb run --`.
+	Governed bool
+}
+
+// stripCommandPrefixes walks past leading assignments and the prefixes in
+// transparentCommandPrefixes, in any order and any number
+// (`if ! sudo -u alex nice -n 5 gh ...`), so every recogniser sees the real
+// program name.
+//
+// It skips every VAR=value word on the way, even one that no shell would
+// export (`nice VAR=x gh ...` fails, because nice tries to run "VAR=x"), so
+// the program name never hides behind a word the guard misjudged. Only the
+// exported ones are reported in Assignments, because only those can carry an
+// override to the program; see leadingAssignmentValue.
+func stripCommandPrefixes(words []string) strippedCommand {
+	var stripped strippedCommand
+	exported := true
 	for len(words) > 0 {
 		word := words[0]
 		if isEnvironmentAssignment(word) {
-			words = words[1:]
-			continue
-		}
-		if transparentCommandPrefixes[filepath.Base(word)] {
-			words = words[1:]
-			continue
-		}
-		if filepath.Base(word) == "env" {
-			words = words[1:]
-			for len(words) > 0 && (isEnvironmentAssignment(words[0]) || strings.HasPrefix(words[0], "-")) {
-				words = words[1:]
+			if exported {
+				stripped.Assignments = append(stripped.Assignments, word)
 			}
+			words = words[1:]
 			continue
 		}
-		break
+		prefix, ok := transparentCommandPrefixes[filepath.Base(word)]
+		if !ok {
+			break
+		}
+		switch {
+		case prefix.arguments != nil:
+			command, runs := prefix.arguments(words[1:])
+			if !runs {
+				stripped.Words = words
+				return stripped
+			}
+			words = command
+		case prefix.keyword:
+			words = words[1:]
+		default:
+			words = skipPrefixOptions(words[1:], prefix)
+		}
+		exported = prefix.exportsAssignments
+		stripped.Governed = stripped.Governed || prefix.governed
 	}
-	return words
+	stripped.Words = words
+	return stripped
+}
+
+// skipPrefixOptions drops a wrapper's own options, their values and its
+// operands from arguments, the words after the wrapper's name, and returns
+// the words of the command it runs. See commandPrefix for the rules.
+func skipPrefixOptions(arguments []string, prefix commandPrefix) []string {
+	for len(arguments) > 0 {
+		word := arguments[0]
+		if word == "--" {
+			arguments = arguments[1:]
+			break
+		}
+		if !strings.HasPrefix(word, "-") {
+			break
+		}
+		arguments = arguments[1:]
+		takesNext := false
+		if strings.HasPrefix(word, "--") {
+			takesNext = !strings.Contains(word, "=") && prefix.longValues[word]
+		} else {
+			takesNext = clusterTakesNextWord(word[1:], prefix.shortValues)
+		}
+		if takesNext && len(arguments) > 0 {
+			arguments = arguments[1:]
+		}
+	}
+	for range prefix.operands {
+		if len(arguments) > 0 {
+			arguments = arguments[1:]
+		}
+	}
+	return arguments
+}
+
+// clusterTakesNextWord reports whether a getopt-style short-option cluster
+// (the letters after "-") takes the next word as a value. It does when the
+// cluster's first value-taking letter is also its last letter: the n in
+// `-n 10`, or in `-in 10` when i is a flag. Letters after the value-taking
+// letter are its value (`-n10`, `-oL`, `-I{}`), and nothing more is consumed.
+func clusterTakesNextWord(letters, valueLetters string) bool {
+	for position, letter := range letters {
+		if strings.ContainsRune(valueLetters, letter) {
+			return position == len(letters)-1
+		}
+	}
+	return false
+}
+
+// wbRootNoValueFlags are wb's root flags that take no value, for
+// cobraSubcommandIndex. Every other root flag (--projects-root, --filter,
+// --org) takes one.
+var wbRootNoValueFlags = map[string]bool{"--non-interactive": true, "--help": true, "-h": true}
+
+// wbRunCommand returns the command that `wb [flags] run [flags] -- <command>`
+// runs. It returns false for every other wb invocation, including
+// `wb run <recipe>`, which runs no command of the caller's. wb itself is
+// otherwise exempt from this guard (see inspectCommand), so this is the only
+// wb shape that is unwrapped.
+func wbRunCommand(arguments []string) ([]string, bool) {
+	index := cobraSubcommandIndex(arguments, wbRootNoValueFlags)
+	if index < 0 || arguments[index] != "run" {
+		return nil, false
+	}
+	for position := index + 1; position < len(arguments); position++ {
+		if arguments[position] == "--" {
+			return arguments[position+1:], true
+		}
+	}
+	return nil, false
 }
 
 func isEnvironmentAssignment(word string) bool {
@@ -502,49 +796,27 @@ func splitAssignment(word string) (name, value string) {
 	return word[:index], word[index+1:]
 }
 
-// leadingAssignmentValue reports the value a leading `VAR=value` prefix on
-// words assigns to variable — directly (`VAR=value gh ...`), or via `env`
-// (`env VAR=value gh ...`) — using the same prefix-stripping rules as
-// commandWords. Only a leading assignment counts: that is what scopes an
-// inline override to the one command it prefixes, the same way a shell does.
-// The last matching assignment before the real program name wins, mirroring
-// a shell's own "last one wins" semantics for a repeated variable.
+// leadingAssignmentValue reports the value that an exported VAR=value word
+// on words assigns to variable. Exported means written where the shell
+// really puts it into the program's environment: at the start of the call
+// (`VAR=value gh ...`), through env (`env -u X VAR=value gh ...`) or sudo, or
+// after a shell keyword (`do VAR=value gh ...`); see stripCommandPrefixes.
+// The last matching assignment wins, mirroring a shell's own "last one wins"
+// for a repeated variable.
 //
-// This exists for inspectGh's escape hatch (wb#500 review, Should-fix 3):
-// commandWords strips a leading assignment and discards it, because every
-// other caller only wants the real program name. inspectGh is the one caller
-// that needs the assignment itself, read from the words of the exact call it
-// prefixes — never from the hook process's own ambient environment, which
-// would silently cover every gh pr merge for the rest of a session instead of
-// the one call an operator meant to allow.
+// This exists for inspectGh's escape hatch (wb#500 review, Should-fix 3). It
+// is read from the words of the exact call it prefixes, never from the hook
+// process's own ambient environment, which would silently cover every gh pr
+// merge for the rest of a session instead of the one call an operator meant
+// to allow. An assignment no shell would export (`nice VAR=value gh ...`,
+// which fails because nice tries to run "VAR=value") is not honoured: the
+// guard refuses that call and records nothing (wb#500 final review, Nit 3).
 func leadingAssignmentValue(words []string, variable string) (string, bool) {
 	value, found := "", false
-	for len(words) > 0 {
-		word := words[0]
-		if isEnvironmentAssignment(word) {
-			if name, assigned := splitAssignment(word); name == variable {
-				value, found = assigned, true
-			}
-			words = words[1:]
-			continue
+	for _, assignment := range stripCommandPrefixes(words).Assignments {
+		if name, assigned := splitAssignment(assignment); name == variable {
+			value, found = assigned, true
 		}
-		if transparentCommandPrefixes[filepath.Base(word)] {
-			words = words[1:]
-			continue
-		}
-		if filepath.Base(word) == "env" {
-			words = words[1:]
-			for len(words) > 0 && (isEnvironmentAssignment(words[0]) || strings.HasPrefix(words[0], "-")) {
-				if isEnvironmentAssignment(words[0]) {
-					if name, assigned := splitAssignment(words[0]); name == variable {
-						value, found = assigned, true
-					}
-				}
-				words = words[1:]
-			}
-			continue
-		}
-		break
 	}
 	return value, found
 }

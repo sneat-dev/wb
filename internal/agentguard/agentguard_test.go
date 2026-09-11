@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -505,6 +506,70 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 		{"chained with ;", "gh pr view 1041; gh pr merge 1041", repositories.Worktree},
 		{"inside a subshell", "(gh pr merge 1041)", repositories.Worktree},
 		{"behind a pipeline", "true | gh pr merge 1041", repositories.Worktree},
+		// wb#500 final review, S1: gh picks the subcommand with cobra's
+		// lookup, so a flag between pr and merge, or a flag the lookup reads
+		// as taking the next word, still reaches the merge.
+		{"-R between pr and merge", "gh pr -R sneat-co/sneat-go merge 1041", repositories.Worktree},
+		{"--repo between pr and merge, flags after", "gh pr --repo sneat-co/sneat-go merge 1041 --squash", repositories.Worktree},
+		{"an attached -R value between pr and merge", "gh pr -Rsneat-co/sneat-go merge 1041", repositories.Worktree},
+		{"--repo=value between pr and merge", "gh pr --repo=sneat-co/sneat-go merge 1041", repositories.Worktree},
+		{"-R before pr", "gh -R sneat-co/sneat-go pr merge 1041", repositories.Worktree},
+		{"a merge flag before pr that the lookup reads as taking the number", "gh --squash 1041 pr merge", repositories.Worktree},
+		{"a merge flag between pr and merge that the lookup reads as taking the number", "gh pr --squash 1041 merge", repositories.Worktree},
+		{"a short merge flag between pr and merge", "gh pr -s 1041 merge", repositories.Worktree},
+		{"an =value flag between pr and merge", "gh pr --admin=true merge 1041", repositories.Worktree},
+		// wb#500 final review, S3: a shell keyword opens a command in the
+		// same segment, so a loop or conditional body is inspected.
+		{"a for loop body", `for n in 12 13; do gh pr merge "$n" --squash; done`, repositories.Worktree},
+		{"a multi-line for loop body", "for n in 12 13\ndo\n  gh pr merge \"$n\"\ndone", repositories.Worktree},
+		{"a while-read loop body", `while read n; do gh pr merge "$n"; done < prs.txt`, repositories.Worktree},
+		{"an if condition", "if gh pr merge 1041; then echo merged; fi", repositories.Worktree},
+		{"a then branch", "if true; then gh pr merge 1041; fi", repositories.Worktree},
+		{"an else branch", "if false; then :; else gh pr merge 1041; fi", repositories.Worktree},
+		{"an elif condition", "if false; then :; elif gh pr merge 1041; then :; fi", repositories.Worktree},
+		{"an until condition", "until gh pr merge 1041; do sleep 5; done", repositories.Worktree},
+		{"negated with !", "! gh pr merge 1041", repositories.Worktree},
+		{"stacked keywords", "if ! gh pr merge 1041; then echo failed; fi", repositories.Worktree},
+		{"coproc", "coproc gh pr merge 1041", repositories.Worktree},
+		// S3: a wrapper is seen through only once its own options and their
+		// values are skipped too.
+		{"nice -n", "nice -n 10 gh pr merge 1041", repositories.Worktree},
+		{"nice -N", "nice -10 gh pr merge 1041", repositories.Worktree},
+		{"nice --adjustment value", "nice --adjustment 5 gh pr merge 1041", repositories.Worktree},
+		{"sudo -u", "sudo -u alex gh pr merge 1041", repositories.Worktree},
+		{"sudo with several options", "sudo -E -u alex -g staff gh pr merge 1041", repositories.Worktree},
+		{"sudo --user value", "sudo --user alex gh pr merge 1041", repositories.Worktree},
+		{"sudo --user=value", "sudo --user=alex gh pr merge 1041", repositories.Worktree},
+		{"sudo clustered -iu value", "sudo -iu alex gh pr merge 1041", repositories.Worktree},
+		{"time -p", "time -p gh pr merge 1041", repositories.Worktree},
+		{"/usr/bin/time -o file", "/usr/bin/time -o /tmp/timing gh pr merge 1041", repositories.Worktree},
+		{"stdbuf -oL", "stdbuf -oL gh pr merge 1041", repositories.Worktree},
+		{"stdbuf -o L", "stdbuf -o L gh pr merge 1041", repositories.Worktree},
+		{"exec -a", "exec -a name gh pr merge 1041", repositories.Worktree},
+		{"exec -la", "exec -la name gh pr merge 1041", repositories.Worktree},
+		{"command -p", "command -p gh pr merge 1041", repositories.Worktree},
+		{"builtin command", "builtin command gh pr merge 1041", repositories.Worktree},
+		{"zsh noglob", "noglob gh pr merge 1041", repositories.Worktree},
+		{"nohup", "nohup gh pr merge 1041", repositories.Worktree},
+		{"timeout DURATION", "timeout 60 gh pr merge 1041", repositories.Worktree},
+		{"timeout options and DURATION", "timeout -s KILL -k 5 60 gh pr merge 1041", repositories.Worktree},
+		{"timeout --signal=value", "timeout --signal=KILL 60 gh pr merge 1041", repositories.Worktree},
+		{"caffeinate -i", "caffeinate -i gh pr merge 1041", repositories.Worktree},
+		{"caffeinate -t value", "caffeinate -t 5 gh pr merge 1041", repositories.Worktree},
+		{"xargs", "echo 1041 | xargs gh pr merge", repositories.Worktree},
+		{"xargs -n 1", "echo 12 13 | xargs -n 1 gh pr merge --squash", repositories.Worktree},
+		{"xargs -n1", "echo 12 13 | xargs -n1 gh pr merge", repositories.Worktree},
+		{"xargs -I {}", "echo 1041 | xargs -I {} gh pr merge {}", repositories.Worktree},
+		{"xargs -I{}", "echo 1041 | xargs -I{} gh pr merge {}", repositories.Worktree},
+		{"env -u value", "env -u GH_TOKEN gh pr merge 1041", repositories.Worktree},
+		{"env -i", "env -i gh pr merge 1041", repositories.Worktree},
+		{"env -P value", "env -P /usr/bin gh pr merge 1041", repositories.Worktree},
+		{"an assignment before a wrapper", "FOO=bar nice gh pr merge 1041", repositories.Worktree},
+		{"wb run --", "wb run -- gh pr merge 1041", repositories.Worktree},
+		{"wb run with its own flags", "wb run --quiet -- gh pr merge 1041", repositories.Worktree},
+		{"a wb root flag before run", "wb --projects-root /tmp/projects run -- gh pr merge 1041", repositories.Worktree},
+		{"stacked wrappers with options", "sudo -u alex nice -n 5 timeout 60 gh pr merge 1041", repositories.Worktree},
+		{"an absolute wrapper path", "/usr/bin/env gh pr merge 1041", repositories.Worktree},
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -536,11 +601,58 @@ func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
 		"gh repo view",
 		"wb worktree land .",
 		"wb pr land sneat-co/sneat-go#1041",
+		// wb#500 final review, S1: only a call gh resolves to pr merge is
+		// refused. Against gh 2.100.0 these print help, search, or fail with
+		// unknown command.
+		"gh help pr merge",
+		"gh search issues pr merge --repo sneat-co/sneat-go",
+		"gh search prs merge",
+		"gh pr list --search merge",
+		"gh -h pr merge 1041",
+		"gh -- pr merge 1041",
+		"gh pr -- merge 1041",
+		"wb land .",
+		"wb run -- gh pr view 1041",
+		`for n in 12 13; do gh pr view "$n"; done`,
+		"if gh pr checks 1041; then wb pr land sneat-co/sneat-go#1041; fi",
+		"echo 1041 | xargs gh pr view",
+		"timeout 60 gh pr checks 1041 --watch",
+		"sudo -u alex gh pr view 1041",
+		"command -v gh",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestBashGhPrMergeTextIsNotACall pins the no-false-positive half of the
+// land-with-wb-verb policy. The words "gh pr merge" in a commit message, a
+// heredoc body, a search pattern or an echo are text, not a call, and the
+// wider keyword and wrapper walk (wb#500 final review, S3) must not start
+// reading them as one.
+func TestBashGhPrMergeTextIsNotACall(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		`git commit -m "docs: replace gh pr merge 12 with wb land"`,
+		"git commit -F - <<'EOF'\nland: stop running gh pr merge 12 by hand\nEOF",
+		"cat > notes.md <<'EOF'\nfor n in 12 13; do gh pr merge \"$n\"; done\nEOF",
+		`grep -rn "gh pr merge" docs/`,
+		`rg 'gh pr merge' --type md`,
+		`echo "never run gh pr merge 12"`,
+		`printf '%s\n' "gh pr merge" | xargs echo`,
+		`if grep -q "gh pr merge" notes.md; then echo found; fi`,
+		`bash -c 'echo gh pr merge 12'`,
+		"gh pr merge --help",
+		"wb pr land sneat-co/sneat-go#12",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused text that only mentions gh pr merge:\n%s", command, decision.Reason)
 			}
 		})
 	}
@@ -558,6 +670,11 @@ func TestGhPrMergeHelpAloneIsStillAllowed(t *testing.T) {
 		"gh pr merge 1041 --help",
 		"gh pr merge 1041 --squash --help",
 		"gh --repo sneat-co/sneat-go pr merge --help",
+		"gh help pr merge",
+		"gh --help pr merge 1041",
+		"gh pr --help merge 1041",
+		"gh pr -R sneat-co/sneat-go merge --help",
+		"gh pr merge 1041 -sh",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
@@ -593,6 +710,8 @@ func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
 		{"gh pr merge with --help swallowed as --subject's value", "gh pr merge 123 --subject --help"},
 		{"gh pr merge with -h swallowed as -t's value", "gh pr merge 123 -t -h"},
 		{"gh pr merge with --help swallowed as --body's value", "gh pr merge 123 --body --help --squash"},
+		{"gh pr merge with --help swallowed by the clustered -st", "gh pr merge 123 -st --help"},
+		{"gh pr merge with --help after the -- terminator, a positional argument", "gh pr merge -- --help"},
 		{"rm -rf with a trailing -h", "rm -rf " + target + " -h"},
 		{"rsync -h, whose real meaning is human-readable sizes", "rsync -h " + target + " /tmp/out"},
 		{"chmod -h, whose real meaning is operate on the symlink", "chmod -h 0644 " + target},
@@ -780,6 +899,38 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 		{"chained with && inside the payload", `bash -c "gh pr view 123 && gh pr merge 123"`},
 		{"chained with ; inside the payload", `bash -c "gh pr view 123; gh pr merge 123"`},
 		{"a canonical-clone write inside the payload, not only gh", `bash -c "git reset --hard"`},
+		// wb#500 final review, S2: the payload is the first word after the
+		// option words, not the word after -c. Every shape here ran a marker
+		// payload on the real shell.
+		{"bash -c -e: an option word after -c", `bash -c -e 'gh pr merge 123'`},
+		{"bash -c --", `bash -c -- 'gh pr merge 123'`},
+		{"bash -c -: a lone dash ends the options", `bash -c - 'gh pr merge 123'`},
+		{"sh -c -x", `sh -c -x 'gh pr merge 123'`},
+		{"sh -c +x", `sh -c +x 'gh pr merge 123'`},
+		{"zsh -c -e", `zsh -c -e 'gh pr merge 123'`},
+		{"bash -o pipefail -c", `bash -o pipefail -c 'gh pr merge 123'`},
+		{"bash -c -o pipefail", `bash -c -o pipefail 'gh pr merge 123'`},
+		{"bash +o errexit -c", `bash +o errexit -c 'gh pr merge 123'`},
+		{"bash -O extglob -c", `bash -O extglob -c 'gh pr merge 123'`},
+		{"bash -c -O extglob", `bash -c -O extglob 'gh pr merge 123'`},
+		{"zsh -O is a flag, not a shopt name", `zsh -O -c 'gh pr merge 123'`},
+		{"zsh -oerrexit: an attached option name", `zsh -oerrexit -c 'gh pr merge 123'`},
+		{"ksh -oerrexit", `ksh -oerrexit -c 'gh pr merge 123'`},
+		{"sh -oerrexit: sh may be zsh", `sh -oerrexit -c 'gh pr merge 123'`},
+		{"bash -ceo pipefail: an o inside a cluster", `bash -ceo pipefail 'gh pr merge 123'`},
+		{"bash -eco pipefail", `bash -eco pipefail 'gh pr merge 123'`},
+		{"bash +c", `bash +c 'gh pr merge 123'`},
+		{"bash --norc -c", `bash --norc -c 'gh pr merge 123'`},
+		{"bash --rcfile file -c", `bash --rcfile /dev/null -c 'gh pr merge 123'`},
+		{"dash -c", `dash -c 'gh pr merge 123'`},
+		{"dash -c -e", `dash -c -e 'gh pr merge 123'`},
+		{"ksh -c", `ksh -c 'gh pr merge 123'`},
+		{"words after the payload are $0 and $1", `bash -c 'gh pr merge 123' arg0 arg1`},
+		{"zsh -c -b", `zsh -c -b 'gh pr merge 123'`},
+		{"an absolute shell path", `/bin/bash -c 'gh pr merge 123'`},
+		{"a wrapper with options before the shell", `sudo -u alex bash -c 'gh pr merge 123'`},
+		{"a loop inside the payload", `bash -c 'for n in 1 2; do gh pr merge "$n"; done'`},
+		{"wb run -- bash -c", `wb run -- bash -c 'gh pr merge 123'`},
 	}
 	for _, testCase := range refused {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -793,6 +944,8 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 	allowed := []string{
 		`bash -c "gh pr view 123"`,
 		`bash -c "echo gh pr merge 123"`,
+		`bash -o pipefail -c "gh pr view 123"`,
+		`bash -c -e "gh pr merge --help"`,
 	}
 	for _, command := range allowed {
 		t.Run(command, func(t *testing.T) {
@@ -803,28 +956,50 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 	}
 }
 
-// TestShellDashCPayloadEdgeCases covers shellDashCPayload directly for the
-// two shapes TestBashUnwrapsShellDashC cannot reach through Inspect alone: no
-// -c token anywhere (an interpreter invocation this scanner has no payload to
-// recurse into, so it must fall through to an ordinary — and here, harmless —
-// command lookup) and -c as the very last word with no following payload (a
-// malformed invocation; the real shells would themselves error on it).
+// TestShellDashCPayloadEdgeCases covers shellDashCPayloads directly, per
+// shell, for the option shapes the real shells were probed with (wb#500 final
+// review, S2). The payload is the first word after the option words, not the
+// word after -c, and bash, zsh and sh read -o/-O differently. A nil want means
+// the shell has no payload to run: a script file, a missing payload, or an
+// option that spent the -c word as its own value, in which case the real
+// shell fails without running anything.
 func TestShellDashCPayloadEdgeCases(t *testing.T) {
+	const payload = "gh pr merge 123"
 	cases := []struct {
-		name    string
-		words   []string
-		payload string
-		ok      bool
+		name  string
+		words []string
+		want  []string
 	}{
-		{"no -c token at all", []string{"bash", "script.sh"}, "", false},
-		{"-c is the last word, no payload follows", []string{"bash", "-c"}, "", false},
-		{"bundled -lc still finds the payload", []string{"bash", "-lc", "gh pr merge 123"}, "gh pr merge 123", true},
+		{"no -c token at all", []string{"bash", "script.sh"}, nil},
+		{"-c is the last word, no payload follows", []string{"bash", "-c"}, nil},
+		{"a script file before -c runs the script", []string{"bash", "script.sh", "-c", payload}, nil},
+		{"bundled -lc", []string{"bash", "-lc", payload}, []string{payload}},
+		{"an option word after -c", []string{"bash", "-c", "-e", payload}, []string{payload}},
+		{"-- after -c", []string{"bash", "-c", "--", payload}, []string{payload}},
+		{"a lone - after -c", []string{"bash", "-c", "-", payload}, []string{payload}},
+		{"+x after -c", []string{"sh", "-c", "+x", payload}, []string{payload}},
+		{"+c", []string{"bash", "+c", payload}, []string{payload}},
+		{"-o and its value before -c", []string{"bash", "-o", "pipefail", "-c", payload}, []string{payload}},
+		{"-o and its value after -c", []string{"bash", "-c", "-o", "pipefail", payload}, []string{payload}},
+		{"+o and its value", []string{"bash", "+o", "errexit", "-c", payload}, []string{payload}},
+		{"an o inside a cluster takes the next word", []string{"bash", "-ceo", "pipefail", payload}, []string{payload}},
+		{"bash -O takes a shopt name", []string{"bash", "-O", "extglob", "-c", payload}, []string{payload}},
+		{"bash -O spends -c as its value", []string{"bash", "-O", "-c", payload}, nil},
+		{"bash -oerrexit spends -c as the option name", []string{"bash", "-oerrexit", "-c", payload}, nil},
+		{"bash --rcfile takes a value", []string{"bash", "--rcfile", "/dev/null", "-c", payload}, []string{payload}},
+		{"dash reads -o like bash", []string{"dash", "-o", "errexit", "-c", payload}, []string{payload}},
+		{"zsh -O is a flag", []string{"zsh", "-O", "-c", payload}, []string{payload}},
+		{"zsh -O extglob runs a script named extglob", []string{"zsh", "-O", "extglob", "-c", payload}, nil},
+		{"zsh takes an attached -o value", []string{"zsh", "-oerrexit", "-c", payload}, []string{payload}},
+		{"ksh takes an attached -o value", []string{"ksh", "-oerrexit", "-c", payload}, []string{payload}},
+		{"sh is read both as bash and as zsh", []string{"sh", "-oerrexit", "-c", payload}, []string{payload}},
+		{"words after the payload are $0 and $1", []string{"bash", "-c", payload, "arg0", "arg1"}, []string{payload}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			payload, ok := shellDashCPayload(testCase.words)
-			if ok != testCase.ok || payload != testCase.payload {
-				t.Fatalf("shellDashCPayload(%v) = (%q, %v), want (%q, %v)", testCase.words, payload, ok, testCase.payload, testCase.ok)
+			got := shellDashCPayloads(testCase.words, shellInterpreters[testCase.words[0]])
+			if !slices.Equal(got, testCase.want) {
+				t.Fatalf("shellDashCPayloads(%q) = %q, want %q", testCase.words, got, testCase.want)
 			}
 		})
 	}
@@ -914,36 +1089,62 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 			t.Fatalf("override record does not contain the env-prefixed reason:\n%s", recorded)
 		}
 	})
-	// wb#500 second review, Nit 2: commandWords (which decides gh is the real
-	// program and dispatches to inspectGh) and leadingAssignmentValue (which
-	// extracts the override from the very same words) used to hardcode the
-	// transparent-prefix list twice. A wrapper recognised by one but not the
-	// other would silently break the override for exactly this shape — the
-	// dispatch would still see through it to gh and refuse the call, but the
-	// override extraction would not see through it to find the assignment,
-	// so an operator's correctly-placed override would stop working the
-	// moment a new wrapper was added to only one of the two copies. Now that
-	// both read transparentCommandPrefixes, any wrapper in that table works
-	// for both at once — proven here with "nice", not "env", which every
-	// other case in this test already exercises.
-	t.Run("an override prefixed with a non-env transparent wrapper is honoured the same way", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("WB_HOME", home)
-		command := "nice " + ghPrMergeOverrideEnv + `="reason via nice, sneat-dev/wb#999" gh pr merge 1041`
-		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
-		if decision.Deny {
-			t.Fatalf("a nice-prefixed override still refused the call:\n%s", decision.Reason)
-		}
-		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
-		if err != nil {
-			t.Fatalf("read the override record: %v", err)
-		}
-		if !strings.Contains(string(recorded), "reason via nice, sneat-dev/wb#999") {
-			t.Fatalf("override record does not contain the nice-prefixed reason:\n%s", recorded)
-		}
-	})
+	// wb#500 second review, Nit 2, and final review, Nit 3: the override is
+	// read through the same prefix walk that decides gh is the program
+	// (stripCommandPrefixes), so a wrapper can never make the refusal see gh
+	// while the override walk misses the assignment. The walk honours an
+	// assignment only where the shell really exports it to gh: at the start
+	// of the call, through env or sudo, or after a shell keyword. After any
+	// other wrapper the shell cannot run the call at all ("nice:
+	// VAR=reason: No such file or directory"), so the guard refuses it and
+	// records nothing.
+	honoured := []struct {
+		name    string
+		command string
+		reason  string
+	}{
+		{"ahead of a wrapper", ghPrMergeOverrideEnv + `="reason ahead of nice, sneat-dev/wb#999" nice gh pr merge 1041`, "reason ahead of nice, sneat-dev/wb#999"},
+		{"after env's own options", "env -u GH_DEBUG " + ghPrMergeOverrideEnv + `="reason after env -u, sneat-dev/wb#999" gh pr merge 1041`, "reason after env -u, sneat-dev/wb#999"},
+		{"after sudo's own options", "sudo -u alex " + ghPrMergeOverrideEnv + `="reason after sudo -u, sneat-dev/wb#999" gh pr merge 1041`, "reason after sudo -u, sneat-dev/wb#999"},
+		{"inside a loop body", `for n in 1041; do ` + ghPrMergeOverrideEnv + `="reason in a loop, sneat-dev/wb#999" gh pr merge "$n"; done`, "reason in a loop, sneat-dev/wb#999"},
+		{"ahead of wb run --", ghPrMergeOverrideEnv + `="reason ahead of wb run, sneat-dev/wb#999" wb run -- gh pr merge 1041`, "reason ahead of wb run, sneat-dev/wb#999"},
+	}
+	for _, testCase := range honoured {
+		t.Run("an override "+testCase.name+" is honoured and recorded", func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("WB_HOME", home)
+			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if decision.Deny {
+				t.Fatalf("Inspect(%q) refused a call carrying an exported override:\n%s", testCase.command, decision.Reason)
+			}
+			recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+			if err != nil {
+				t.Fatalf("read the override record: %v", err)
+			}
+			if !strings.Contains(string(recorded), testCase.reason) {
+				t.Fatalf("override record does not contain %q:\n%s", testCase.reason, recorded)
+			}
+		})
+	}
+	notExported := []string{
+		"nice " + ghPrMergeOverrideEnv + `="reason nice cannot pass on" gh pr merge 1041`,
+		"timeout 60 " + ghPrMergeOverrideEnv + `="reason timeout cannot pass on" gh pr merge 1041`,
+		"wb run -- " + ghPrMergeOverrideEnv + `="reason wb run cannot pass on" gh pr merge 1041`,
+		"echo 1041 | xargs " + ghPrMergeOverrideEnv + `="reason xargs cannot pass on" gh pr merge`,
+	}
+	for _, command := range notExported {
+		t.Run("an override the shell never exports is refused and not recorded: "+command, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("WB_HOME", home)
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+				t.Fatalf("Inspect(%q) honoured an override the shell never puts in gh's environment", command)
+			}
+			if _, err := os.Stat(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl")); !os.IsNotExist(err) {
+				t.Fatalf("a refused call left an override record (stat error: %v)", err)
+			}
+		})
+	}
 }
-
 func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
@@ -966,6 +1167,10 @@ func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
 		"npx nx affected --target=test",
 		"cargo test --workspace",
 		"cd internal && go test ./runlog",
+		"timeout 600 go test ./...",
+		"nice -n 10 go test ./...",
+		`for p in ./a ./b; do go test "$p"; done`,
+		"if true; then go vet ./...; fi",
 	}
 	for _, command := range denied {
 		t.Run(command, func(t *testing.T) {
@@ -999,6 +1204,11 @@ func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.
 		"wb run -- pnpm test",
 		"go env GOMODCACHE",
 		"pnpm install",
+		"wb run --quiet -- go test ./internal/runlog",
+		"wb run -- timeout 600 go test ./...",
+		"wb run -- bash -c 'go vet ./... && go test ./...'",
+		"wb --projects-root /tmp/projects run -- go test ./...",
+		"command -v go",
 	}
 	for _, command := range allowed {
 		t.Run(command, func(t *testing.T) {
@@ -1264,20 +1474,93 @@ func TestSplitSegmentsSkipsHeredocBodies(t *testing.T) {
 	}
 }
 
-// TestCommandWordsSeesThroughPrefixes keeps `sudo`, `env FOO=bar`, and a bare
-// assignment from hiding the program that follows.
+// TestCommandWordsSeesThroughPrefixes keeps leading assignments, shell
+// keywords and wrapper programs, with their own options and values, from
+// hiding the program that follows (wb#500 final review, S3). It also pins
+// what is NOT a prefix: a `for` word list, `wb` without run --, and a
+// recipe-mode `wb run`.
 func TestCommandWordsSeesThroughPrefixes(t *testing.T) {
-	cases := map[string][]string{
-		"sudo rm -rf x":         {"sudo", "rm", "-rf", "x"},
-		"FOO=bar git reset":     {"FOO=bar", "git", "reset"},
-		"env FOO=bar git reset": {"env", "FOO=bar", "git", "reset"},
-		"time git reset":        {"time", "git", "reset"},
+	cases := []struct {
+		command  string
+		want     string
+		governed bool
+	}{
+		{"sudo rm -rf x", "rm -rf x", false},
+		{"FOO=bar git reset", "git reset", false},
+		{"env FOO=bar git reset", "git reset", false},
+		{"time git reset", "git reset", false},
+		{"time -p git reset", "git reset", false},
+		{"/usr/bin/time -o out git reset", "git reset", false},
+		{"sudo -u alex -g staff rm x", "rm x", false},
+		{"sudo --user alex rm x", "rm x", false},
+		{"sudo -u alex FOO=bar rm x", "rm x", false},
+		{"nice -n 10 git reset", "git reset", false},
+		{"nice -n10 git reset", "git reset", false},
+		{"nice -10 git reset", "git reset", false},
+		{"stdbuf -oL git reset", "git reset", false},
+		{"stdbuf -o L git reset", "git reset", false},
+		{"exec -a name git reset", "git reset", false},
+		{"command -p git reset", "git reset", false},
+		{"builtin command git reset", "git reset", false},
+		{"nohup git reset", "git reset", false},
+		{"timeout 60 git reset", "git reset", false},
+		{"timeout -s KILL -k 5 60 git reset", "git reset", false},
+		{"timeout --kill-after=5 60 git reset", "git reset", false},
+		{"caffeinate -i git reset", "git reset", false},
+		{"caffeinate -t 5 git reset", "git reset", false},
+		{"xargs git reset", "git reset", false},
+		{"xargs -n 1 git reset", "git reset", false},
+		{"xargs -I {} git reset", "git reset", false},
+		{"xargs -0 -P 4 git reset", "git reset", false},
+		{"env -u X git reset", "git reset", false},
+		{"env -i FOO=bar git reset", "git reset", false},
+		{"env -- git reset", "git reset", false},
+		{"do git reset", "git reset", false},
+		{"then git reset", "git reset", false},
+		{"else git reset", "git reset", false},
+		{"elif git reset", "git reset", false},
+		{"if ! git reset", "git reset", false},
+		{"while git reset", "git reset", false},
+		{"until git reset", "git reset", false},
+		{"coproc git reset", "git reset", false},
+		{"sudo -u alex nice -n 5 timeout 60 git reset", "git reset", false},
+		{"wb run -- git reset", "git reset", true},
+		{"wb run --quiet -- git reset", "git reset", true},
+		{"wb --projects-root /p run -- git reset", "git reset", true},
+		{"nice wb run -- git reset", "git reset", true},
+		{"for n in git reset", "for n in git reset", false},
+		{"wb run refresh-ci", "wb run refresh-ci", false},
+		{"wb worktree land .", "wb worktree land .", false},
 	}
-	for name, words := range cases {
-		t.Run(name, func(t *testing.T) {
-			got := commandWords(words)
-			if len(got) == 0 || (got[0] != "rm" && got[0] != "git") {
-				t.Fatalf("commandWords(%v) = %v", words, got)
+	for _, testCase := range cases {
+		t.Run(testCase.command, func(t *testing.T) {
+			stripped := stripCommandPrefixes(strings.Fields(testCase.command))
+			if got := strings.Join(stripped.Words, " "); got != testCase.want || stripped.Governed != testCase.governed {
+				t.Fatalf("stripCommandPrefixes(%q) = %q (governed %v), want %q (governed %v)", testCase.command, got, stripped.Governed, testCase.want, testCase.governed)
+			}
+		})
+	}
+}
+
+// TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker pins that the
+// wider prefix walk (wb#500 final review, S3) serves every recogniser, not
+// only gh's. `sudo -u x rm ...` in a canonical clone was allowed before it.
+func TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker(t *testing.T) {
+	repositories := newFixture(t)
+	target := filepath.Join(repositories.Canonical, "README.md")
+	commands := []string{
+		"sudo -u alex rm -rf " + target,
+		"nice -n 10 rm " + target,
+		"if true; then git reset --hard; fi",
+		"for n in 1; do git reset --hard; done",
+		"timeout 60 git reset --hard",
+		"echo x | xargs -I{} rm " + target,
+		"wb run -- go mod tidy",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a canonical-clone write behind a keyword or wrapper", command)
 			}
 		})
 	}

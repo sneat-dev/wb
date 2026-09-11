@@ -32,9 +32,10 @@ import (
 // deliberately overridden, and why".
 const ghPrMergeOverrideEnv = "WB_AGENTGUARD_ALLOW_GH_PR_MERGE"
 
-// inspectGh judges one `gh ...` invocation. Only `gh pr merge` is judged;
-// every other gh subcommand — `pr view`, `pr checks`, `pr list`, and so on —
-// is read-only from this guard's perspective and always allowed.
+// inspectGh judges one `gh ...` invocation. Only a call that gh resolves to
+// `pr merge` is judged (see isGhPrMerge). Every other gh command — `pr view`,
+// `pr checks`, `pr list`, `help pr merge`, `search issues pr merge`, and so
+// on — is always allowed by this policy.
 //
 // This is deliberately NOT gated to a canonical clone or a managed worktree.
 // Three merger lanes reimplemented landing step by step with `gh pr merge`,
@@ -57,58 +58,150 @@ func inspectGh(words []string, projectsRoot string, override string) *finding {
 	return &finding{Message: ghPrMergeRefusal(words)}
 }
 
-// ghPrMergeValueFlags names gh pr merge's own flags, plus gh's global
-// --repo/-R, that consume the very next word as a value (`gh pr merge --help
-// --repo owner/repo`). A `--help`/`-h` token immediately after one of these
-// is that flag's VALUE, not a help request: gh's flag parser (pflag) never
-// special-cases --help ahead of ordinary parsing, it hands a value-taking
-// flag the next token unconditionally, so `gh pr merge 123 --subject --help`
-// really does merge with the literal subject text "--help" — it does not
-// print help and do nothing, the way a genuine `gh pr merge --help` does (see
-// wb#500 review, Blocker 1). Sourced from `gh pr merge --help`'s own FLAGS
-// and INHERITED FLAGS sections.
-var ghPrMergeValueFlags = map[string]bool{
-	"--repo": true, "-R": true,
-	"--subject": true, "-t": true,
-	"--body": true, "-b": true,
-	"--body-file": true, "-F": true,
-	"--match-head-commit": true,
-	"--author-email":      true, "-A": true,
+// ghPrMergeLongValueFlags and ghPrMergeShortValueFlags name gh pr merge's own
+// flags, plus the inherited --repo/-R, that take a value; ghPrMergeShortBoolFlags
+// names its one-letter boolean flags (-d --delete-branch, -m --merge, -r
+// --rebase, -s --squash). All three are sourced from `gh pr merge --help`'s
+// FLAGS and INHERITED FLAGS sections (gh 2.100.0). -h is help.
+var ghPrMergeLongValueFlags = map[string]bool{
+	"--repo": true, "--subject": true, "--body": true, "--body-file": true,
+	"--match-head-commit": true, "--author-email": true,
 }
+
+const (
+	ghPrMergeShortValueFlags = "RtbFA"
+	ghPrMergeShortBoolFlags  = "dmrs"
+)
 
 // ghRequestsHelp reports whether words is genuinely asking `gh pr merge` for
-// its help text: a bare --help/-h that is not itself the value a preceding
-// value-taking flag consumed. See ghPrMergeValueFlags.
+// its help text. It walks the words the way gh's flag parser (pflag) does,
+// because a help-looking word is not always a help request:
+//
+//   - `--help`, or `-h` alone or inside a cluster of boolean short flags
+//     (`-sh`), prints help and merges nothing.
+//   - A value-taking flag with no attached value consumes the very next word
+//     whatever it looks like. `--subject --help`, `-t -h` and the cluster
+//     `-st --help` (-s is boolean, -t takes the next word) all merge, with the
+//     literal subject "--help" (wb#500 review, Blocker 1).
+//   - `--` ends flag parsing, so a `--help` after it is a positional argument.
+//     `gh pr merge -- --help` really tries to merge a pull request selected
+//     by "--help" (confirmed against gh 2.100.0).
 func ghRequestsHelp(words []string) bool {
 	for index := 1; index < len(words); index++ {
-		if words[index] != "--help" && words[index] != "-h" {
-			continue
+		word := words[index]
+		switch {
+		case word == "--":
+			return false
+		case word == "--help":
+			return true
+		case strings.HasPrefix(word, "--"):
+			if !strings.Contains(word, "=") && ghPrMergeLongValueFlags[word] {
+				index++
+			}
+		case strings.HasPrefix(word, "-") && len(word) > 1:
+			help, consumesNext := ghShortFlagCluster(word[1:])
+			if help {
+				return true
+			}
+			if consumesNext {
+				index++
+			}
 		}
-		if ghPrMergeValueFlags[words[index-1]] {
-			continue
-		}
-		return true
 	}
 	return false
 }
 
-// isGhPrMerge reports whether words invokes `gh pr merge`, tolerant of a
-// global flag (and its value) before `pr` — `gh --repo owner/repo pr merge`
-// — and any flags after `merge` (`gh pr merge 123 --squash --admin`).
-//
-// It finds the first bare "pr" word rather than requiring it immediately
-// after "gh", because a global flag's own value (`owner/repo` for `--repo`)
-// is not itself flag-prefixed and would otherwise be mistaken for the
-// subcommand. Once "pr" is found, only a flag may separate it from "merge".
-func isGhPrMerge(words []string) bool {
-	for index := 1; index < len(words); index++ {
-		if words[index] != "pr" {
-			continue
+// ghShortFlagCluster reads one short-flag cluster (the letters after "-")
+// the way pflag does: boolean letters in turn, until a help letter (help), a
+// value-taking letter (which takes the rest of the cluster as its value, or
+// the next word when it is the last letter), or an unknown letter (pflag
+// rejects the whole call there, so nothing after it matters).
+func ghShortFlagCluster(letters string) (help, consumesNext bool) {
+	for position, letter := range letters {
+		switch {
+		case letter == 'h':
+			return true, false
+		case strings.ContainsRune(ghPrMergeShortValueFlags, letter):
+			return false, position == len(letters)-1
+		case !strings.ContainsRune(ghPrMergeShortBoolFlags, letter):
+			return false, false
 		}
-		rest := firstNonFlag(words[index+1:])
-		return len(rest) > 0 && rest[0] == "merge"
 	}
-	return false
+	return false, false
+}
+
+// ghRootNoValueFlags and ghPrNoValueFlags are the only flags gh's command
+// lookup knows at the `gh` and `gh pr` levels that take no value (`gh --help`
+// and `gh pr --help`, gh 2.100.0). See isGhPrMerge for why that is all it
+// needs to know.
+var (
+	ghRootNoValueFlags = map[string]bool{"--help": true, "--version": true}
+	ghPrNoValueFlags   = map[string]bool{"--help": true}
+)
+
+// isGhPrMerge reports whether gh would run `pr merge` for words.
+//
+// It mirrors how gh picks a subcommand before it parses a single flag:
+// cobra's Command.Find. At each level, first `gh` and then `gh pr`, Find
+// strips the flags from the arguments and takes the first word left as the
+// subcommand name. Find knows only the flags defined at that level, and it
+// assumes every flag it does NOT know takes the next word as its value,
+// unless the value is attached with "=" or, for a short flag, the word is
+// longer than two characters (`-Ro/r`). `--` ends the lookup. For the second
+// level, Find re-reads the same arguments with the "pr" word removed, using
+// gh pr's own flags (wb#500 final review, S1).
+//
+// Confirmed against gh 2.100.0 with a nonexistent repository:
+//
+//   - `gh pr -R o/r merge 1`, `gh pr --repo o/r merge 1 --squash` and
+//     `gh -R o/r pr merge 1` all reach the merge.
+//   - So do `gh --squash 1 pr merge`, `gh pr --squash 1 merge` and
+//     `gh pr -s 1 merge`. Find reads the unknown --squash/-s as taking "1",
+//     then gh pr merge's own parser reads --squash/-s as the boolean it is and
+//     "1" as the pull request. That is why "skip flags, only -R/--repo takes
+//     a value" would miss them.
+//   - `gh help pr merge` prints help, and `gh search issues pr merge` searches.
+//   - `gh -h pr merge 1` fails with unknown command "merge": gh defines no -h
+//     at the root, so Find reads it as taking "pr". `gh -- pr merge 1` and
+//     `gh pr -- merge 1` fail with unknown command too.
+func isGhPrMerge(words []string) bool {
+	arguments := words[1:]
+	first := cobraSubcommandIndex(arguments, ghRootNoValueFlags)
+	if first < 0 || arguments[first] != "pr" {
+		return false
+	}
+	rest := make([]string, 0, len(arguments)-1)
+	rest = append(rest, arguments[:first]...)
+	rest = append(rest, arguments[first+1:]...)
+	second := cobraSubcommandIndex(rest, ghPrNoValueFlags)
+	return second >= 0 && rest[second] == "merge"
+}
+
+// cobraSubcommandIndex mirrors cobra's stripFlags. It returns the index in
+// arguments of the first word cobra's Command.Find would take as a
+// subcommand name, or -1 when there is none. noValueFlags are the flags
+// defined at this level that take no value. Every other flag is assumed to
+// take the next word, exactly as cobra assumes. It serves every cobra-based
+// CLI this guard reads: gh here, and wb for `wb run --` (wbRunCommand).
+func cobraSubcommandIndex(arguments []string, noValueFlags map[string]bool) int {
+	for index := 0; index < len(arguments); index++ {
+		word := arguments[index]
+		switch {
+		case word == "--":
+			return -1
+		case strings.HasPrefix(word, "--"):
+			if !strings.Contains(word, "=") && !noValueFlags[word] {
+				index++
+			}
+		case strings.HasPrefix(word, "-"):
+			if len(word) == 2 && !strings.Contains(word, "=") && !noValueFlags[word] {
+				index++
+			}
+		case word != "":
+			return index
+		}
+	}
+	return -1
 }
 
 // ghPrMergeRefusal writes the message the agent reads. It names both landing
@@ -137,10 +230,10 @@ func ghPrMergeRefusal(words []string) string {
 	message.WriteString("If the verb genuinely refuses this landing, report the exact refusal and file\n")
 	message.WriteString("a sneat-dev/wb issue instead of hand-rolling gh/git steps.\n\n")
 	fmt.Fprintf(&message, "Escape hatch: prefix this exact call with %s=\"<reason>\"\n", ghPrMergeOverrideEnv)
-	message.WriteString("(directly, or via `env`) and rerun it to bypass this refusal once; the\n")
-	message.WriteString("reason is recorded. Setting the variable ahead of time in the shell or\n")
-	message.WriteString("session that launched this agent does nothing — only a value on the words\n")
-	message.WriteString("of this exact call is ever read.\n")
+	message.WriteString("(directly, or via `env`) and rerun it to bypass this refusal once; the guard\n")
+	message.WriteString("records the reason when it allows the call. Setting the variable ahead of\n")
+	message.WriteString("time in the shell or session that launched this agent does nothing — only a\n")
+	message.WriteString("value on the words of this exact call is ever read.\n")
 	return message.String()
 }
 
@@ -152,7 +245,10 @@ type ghPrMergeOverride struct {
 	RecordedAt string `json:"recorded_at"`
 }
 
-// recordGhPrMergeOverride appends one audited line for an overridden refusal.
+// recordGhPrMergeOverride appends one audited line when the guard allows a
+// call because of the override. The line records the guard's decision, not
+// that the call ran: the hook runs before the call, and the call can still be
+// declined at the permission prompt or fail (wb#500 final review, Nit 3).
 // It is best-effort and never blocks the call it is recording: a guard that
 // can fail closed because its OWN bookkeeping failed would be worse than the
 // defect it exists to catch (see checkout.go's package doc, "fail open,
