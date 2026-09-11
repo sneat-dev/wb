@@ -201,10 +201,10 @@ poll observation: the event, the repository, and what the hub did with it.
 --quiet silences those console lines. wb daemon start never passes it, so a
 detached daemon's log file keeps every line.
 
-With hub.github.app set as well, signed GitHub deliveries at
-/v0/workbench/github/webhook are verified and enqueued, repositories the App
-covers come off the poller, and the start line ends with webhook=on and the
-public URL. wb starts no tunnel: forward that URL to this listener yourself
+With hub.github.app set, signed GitHub deliveries at
+/v0/workbench/github/webhook are verified and enqueued, the poller is not
+started at all (only the repository an event names is pulled), and the start
+line ends with webhook=on and the public URL. wb starts no tunnel: forward that URL to this listener yourself
 with your own cloudflared or ngrok credentials — see hub/README.md.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
