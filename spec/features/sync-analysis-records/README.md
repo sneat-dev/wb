@@ -1,4 +1,14 @@
-# Per-repository sync analysis records
+---
+format: https://specscore.md/feature-specification
+status: Implemented
+---
+
+# Feature: Per-repository sync analysis records
+
+> [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/sync-analysis-records?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/sync-analysis-records?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/sync-analysis-records?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/sync-analysis-records?op=request-change) |
+
+**Status:** Implemented
+**Source Ideas:** —
 
 ## Outcome
 
@@ -35,3 +45,13 @@ https://sneat.work/bench/app/sync-report?repo=<owner/repository>&ref=<commit-sha
 
 The URL is a data contract for WB web/CLI views. It does not couple the stored
 records to one presentation layout.
+
+The viewer page lives in the embedded dashboard at `hub/web/src/pages/app/sync-report.astro`
+and links to the records directory on GitHub at the immutable commit.
+
+## Open Questions
+
+None at this time.
+
+---
+*This document follows the https://specscore.md/feature-specification*
