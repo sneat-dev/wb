@@ -491,41 +491,248 @@ func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
 	}
 }
 
+// TestGhPrMergeHelpAloneIsStillAllowed pins the false-positive half of the
+// wb#500 review's Blocker 1: a genuine `gh pr merge --help`/`-h` — nothing
+// else on the line that could consume it as a value — prints help and merges
+// nothing, so it must stay allowed exactly as it was before the fix.
+func TestGhPrMergeHelpAloneIsStillAllowed(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		"gh pr merge --help",
+		"gh pr merge -h",
+		"gh pr merge 1041 --help",
+		"gh pr merge 1041 --squash --help",
+		"gh --repo sneat-co/sneat-go pr merge --help",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused a genuine --help request:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestBashHelpTokenNeverBypassesAnUnrelatedGuard pins the wb#500 review's
+// Blocker 1 head-on: the old `requestsHelp` check scanned every word of
+// EVERY guarded command for a bare --help/-h and, if found anywhere, skipped
+// every check for that whole line — including the canonical-clone
+// file-mutator guard and the gh pr merge refusal, neither of which has
+// anything to do with wb#493's read-only --help/-h/help carve-out. Two
+// concrete shapes from the review:
+//
+//   - `gh pr merge 123 --subject --help` is a REAL merge, not a help
+//     request: --subject takes the next token unconditionally as its value,
+//     so gh never sees --help as a flag at all (see gh.go's
+//     ghPrMergeValueFlags).
+//   - `-h` is not "help" on rsync (human-readable sizes) or BSD chmod/
+//     chown/cp (operate on the symlink itself); it is an ordinary flag that
+//     must never turn off the canonical-clone guard for those tools.
+func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
+	repositories := newFixture(t)
+	target := filepath.Join(repositories.Canonical, "spec", "lessons", "x.md")
+	commands := []struct {
+		name    string
+		command string
+	}{
+		{"gh pr merge with --help swallowed as --subject's value", "gh pr merge 123 --subject --help"},
+		{"gh pr merge with -h swallowed as -t's value", "gh pr merge 123 -t -h"},
+		{"gh pr merge with --help swallowed as --body's value", "gh pr merge 123 --body --help --squash"},
+		{"rm -rf with a trailing -h", "rm -rf " + target + " -h"},
+		{"rsync -h, whose real meaning is human-readable sizes", "rsync -h " + target + " /tmp/out"},
+		{"chmod -h, whose real meaning is operate on the symlink", "chmod -h 0644 " + target},
+		{"chown -h, whose real meaning is operate on the symlink", "chown -h me:me " + target},
+		{"cp -h, whose real meaning is operate on the symlink", "cp -h /tmp/src " + target},
+	}
+	for _, testCase := range commands {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a real write/merge because of an unrelated -h/--help token", testCase.command)
+			}
+		})
+	}
+}
+
+// TestHelpBypassNeverAppliesOutsideItsOwnAllowlist pins the scoping half of
+// the Blocker 1 fix: the wb#493 --help/-h/help carve-out only ever applies to
+// the specscore/go/npm-family tools it was built for (helpBypassTools), never
+// to gh (which has its own, value-flag-aware recognition in gh.go) or to any
+// file mutator.
+func TestHelpBypassNeverAppliesOutsideItsOwnAllowlist(t *testing.T) {
+	if helpBypassTools["gh"] {
+		t.Fatal("helpBypassTools must never include gh: its --help/-h recognition belongs in gh.go's ghRequestsHelp, value-flag aware")
+	}
+	for name := range fileMutators {
+		if helpBypassTools[name] {
+			t.Fatalf("helpBypassTools must never include the file mutator %q", name)
+		}
+	}
+	for _, name := range []string{"sed", "gsed", "perl", "ruby"} {
+		if helpBypassTools[name] {
+			t.Fatalf("helpBypassTools must never include the in-place editor %q", name)
+		}
+	}
+}
+
+// TestBashUnwrapsShellDashC pins the wb#500 review's Blocker 2: gh.go's doc
+// comment, ai/skills/wb-hooks/SKILL.md and ai/capabilities.json all claimed
+// the gh pr merge refusal reaches "chained, subshelled" invocations
+// everywhere, but `bash -c "gh pr merge 123"` read as one opaque quoted word
+// and was never unwrapped — commandWords/inspectCommand never saw a
+// recognisable `gh`. Covers single and double quotes, a payload nested once
+// (bash -c wrapping another bash -c), a chain inside the payload, and the
+// `-lc` spelling agent harnesses commonly use for a login shell running one
+// command.
+func TestBashUnwrapsShellDashC(t *testing.T) {
+	repositories := newFixture(t)
+	refused := []struct {
+		name    string
+		command string
+	}{
+		{"bash -c, double-quoted payload", `bash -c "gh pr merge 123"`},
+		{"bash -c, single-quoted payload", `bash -c 'gh pr merge 123'`},
+		{"sh -c, double-quoted payload", `sh -c "gh pr merge 123"`},
+		{"zsh -c, double-quoted payload", `zsh -c "gh pr merge 123"`},
+		{"bash -lc, the login-shell spelling agent harnesses use", `bash -lc "gh pr merge 123"`},
+		{"nested once: bash -c wrapping another bash -c", `bash -c "bash -c 'gh pr merge 123'"`},
+		{"chained with && inside the payload", `bash -c "gh pr view 123 && gh pr merge 123"`},
+		{"chained with ; inside the payload", `bash -c "gh pr view 123; gh pr merge 123"`},
+		{"a canonical-clone write inside the payload, not only gh", `bash -c "git reset --hard"`},
+	}
+	for _, testCase := range refused {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a call wrapped in a shell -c payload; want deny", testCase.command)
+			}
+		})
+	}
+
+	allowed := []string{
+		`bash -c "gh pr view 123"`,
+		`bash -c "echo gh pr merge 123"`,
+	}
+	for _, command := range allowed {
+		t.Run(command, func(t *testing.T) {
+			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+				t.Fatalf("Inspect(%q) refused a legitimate call inside a shell -c payload:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestShellDashCPayloadEdgeCases covers shellDashCPayload directly for the
+// two shapes TestBashUnwrapsShellDashC cannot reach through Inspect alone: no
+// -c token anywhere (an interpreter invocation this scanner has no payload to
+// recurse into, so it must fall through to an ordinary — and here, harmless —
+// command lookup) and -c as the very last word with no following payload (a
+// malformed invocation; the real shells would themselves error on it).
+func TestShellDashCPayloadEdgeCases(t *testing.T) {
+	cases := []struct {
+		name    string
+		words   []string
+		payload string
+		ok      bool
+	}{
+		{"no -c token at all", []string{"bash", "script.sh"}, "", false},
+		{"-c is the last word, no payload follows", []string{"bash", "-c"}, "", false},
+		{"bundled -lc still finds the payload", []string{"bash", "-lc", "gh pr merge 123"}, "gh pr merge 123", true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			payload, ok := shellDashCPayload(testCase.words)
+			if ok != testCase.ok || payload != testCase.payload {
+				t.Fatalf("shellDashCPayload(%v) = (%q, %v), want (%q, %v)", testCase.words, payload, ok, testCase.payload, testCase.ok)
+			}
+		})
+	}
+}
+
+// TestBashAllowsAnInterpreterWithNoDashC covers the same shape through the
+// public Inspect entry point: `bash script.sh` names no -c payload to
+// recurse into, so it falls through like any other unrecognised command —
+// this guard does not (and, per its own package doc, must not try to) read
+// what a script file contains.
+func TestBashAllowsAnInterpreterWithNoDashC(t *testing.T) {
+	repositories := newFixture(t)
+	if decision := Inspect(bashCall("bash script.sh", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+		t.Fatalf("Inspect(%q) refused an interpreter invocation with no -c payload:\n%s", "bash script.sh", decision.Reason)
+	}
+}
+
 // TestGhPrMergeOverrideEscapeHatchIsRecorded covers the explicit, recorded
-// escape hatch: an empty or unset override still refuses, and a non-empty
-// override allows the exact call through and appends one audited line naming
-// the command and the reason — never a silent bypass.
+// escape hatch as the refusal text now documents it: an inline
+// `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` assignment prefixing the exact
+// `gh pr merge` call being rerun — directly, or via `env` — allows that call
+// through and appends one audited line naming the command and the reason.
+// wb#500 review, Should-fix 3: the pre-fix implementation read this override
+// from the hook process's own ambient environment via os.Getenv, which the
+// PreToolUse hook cannot receive scoped to one call — it runs in a process
+// tree the Bash tool's shell never reaches — so an ambient value would have
+// silently allowed every gh pr merge for the rest of a session instead of
+// "the one call it is set on" the way both the refusal text and
+// hooks_agent.go's doc comment promised. The ambient case below pins that it
+// is no longer honoured at all.
 func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 	repositories := newFixture(t)
-	t.Run("empty override still refuses", func(t *testing.T) {
-		t.Setenv(ghPrMergeOverrideEnv, "")
+	t.Run("no override still refuses", func(t *testing.T) {
 		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
-			t.Fatal("an empty override allowed gh pr merge through")
+			t.Fatal("an unset override allowed gh pr merge through")
 		}
 	})
-	t.Run("whitespace-only override still refuses", func(t *testing.T) {
-		t.Setenv(ghPrMergeOverrideEnv, "   ")
-		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
-			t.Fatal("a whitespace-only override allowed gh pr merge through")
+	t.Run("empty inline override still refuses", func(t *testing.T) {
+		command := ghPrMergeOverrideEnv + `="" gh pr merge 1041`
+		if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+			t.Fatal("an empty inline override allowed gh pr merge through")
 		}
 	})
-
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
-	t.Setenv(ghPrMergeOverrideEnv, "wb worktree land refuses this exact receipt, escalating to sneat-dev/wb#999")
-	decision := Inspect(bashCall("gh pr merge 1041 --admin", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
-	if decision.Deny {
-		t.Fatalf("a non-empty override still refused the call:\n%s", decision.Reason)
-	}
-	recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
-	if err != nil {
-		t.Fatalf("read the override record: %v", err)
-	}
-	for _, expected := range []string{"land-with-wb-verb", "gh pr merge 1041 --admin", "escalating to sneat-dev/wb#999", "recorded_at"} {
-		if !strings.Contains(string(recorded), expected) {
-			t.Fatalf("override record does not contain %q:\n%s", expected, recorded)
+	t.Run("whitespace-only inline override still refuses", func(t *testing.T) {
+		command := ghPrMergeOverrideEnv + `="   " gh pr merge 1041`
+		if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+			t.Fatal("a whitespace-only inline override allowed gh pr merge through")
 		}
-	}
+	})
+	t.Run("an ambient environment override is never honoured", func(t *testing.T) {
+		t.Setenv(ghPrMergeOverrideEnv, "an ambient value must never be read")
+		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
+			t.Fatal("an ambient environment override allowed gh pr merge through with no inline prefix")
+		}
+	})
+	t.Run("a direct inline override is recorded and allows the call", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("WB_HOME", home)
+		command := ghPrMergeOverrideEnv + `="wb worktree land refuses this exact receipt, escalating to sneat-dev/wb#999" gh pr merge 1041 --admin`
+		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+		if decision.Deny {
+			t.Fatalf("a non-empty inline override still refused the call:\n%s", decision.Reason)
+		}
+		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		if err != nil {
+			t.Fatalf("read the override record: %v", err)
+		}
+		for _, expected := range []string{"land-with-wb-verb", "gh pr merge 1041 --admin", "escalating to sneat-dev/wb#999", "recorded_at"} {
+			if !strings.Contains(string(recorded), expected) {
+				t.Fatalf("override record does not contain %q:\n%s", expected, recorded)
+			}
+		}
+	})
+	t.Run("an override via env is honoured the same way", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("WB_HOME", home)
+		command := "env " + ghPrMergeOverrideEnv + `="reason via env, sneat-dev/wb#999" gh pr merge 1041`
+		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+		if decision.Deny {
+			t.Fatalf("an env-prefixed override still refused the call:\n%s", decision.Reason)
+		}
+		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		if err != nil {
+			t.Fatalf("read the override record: %v", err)
+		}
+		if !strings.Contains(string(recorded), "reason via env, sneat-dev/wb#999") {
+			t.Fatalf("override record does not contain the env-prefixed reason:\n%s", recorded)
+		}
+	})
 }
 
 func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
