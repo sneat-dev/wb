@@ -1349,6 +1349,91 @@
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
     },
     {
+      "id": "wb.create",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/modern-cli-help-discovery/README.md",
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb create",
+              "flags": [
+                "--agent",
+                "--agent-runtime",
+                "--base",
+                "--branch",
+                "--branch-prefix",
+                "--cli",
+                "--effort",
+                "--format",
+                "--initiator",
+                "--model",
+                "--mode",
+                "--no-claim",
+                "--original-prompt-file",
+                "--provider",
+                "--resume",
+                "--run"
+              ],
+              "modes": [
+                "Identical root-level alias for `wb worktree create`, built from the exact same constructor: same flags, same help text, same exit codes.",
+                "Creates one isolated feature worktree per repository, deriving owner/repository from the current checkout's origin remote when none is supplied.",
+                "Accepts every repository a cross-repository round touches in a single call, so the round stays one task, not one task per repository."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb create --help",
+              "contains": [
+                "--original-prompt-file",
+                "--agent-runtime",
+                "--branch-prefix",
+                "without switching or updating",
+                "active Work Log claim",
+                "audited handoff"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "## Route by situation",
+              "examples": [
+                "wb create <task> <owner/repository>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestCreateAliasSharesWorktreeCreateContract",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Promoted to a root-level command so the primary starting verb is reachable without the worktree noun; wb create and wb worktree create resolve through the identical constructor and can never drift apart."
+    },
+    {
       "id": "wb.daemon.operation.cancel",
       "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
       "since": "unreleased",
@@ -3630,6 +3715,8 @@
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
                 "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Refuses gh pr merge (any flags, chained, subshelled) everywhere, naming wb worktree land/wb land and wb pr land (rule land-with-wb-verb, sneat-co/backstage); WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" is the explicit, recorded escape hatch.",
+                "A read-only --help/-h/help invocation of a tool this guard otherwise judges by write verb (specscore, go, npm/pnpm/yarn/bun) is never refused (wb#493).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
               ]
@@ -3683,6 +3770,21 @@
             {
               "path": "internal/agentguard/agentguard_test.go",
               "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashRefusesGhPrMerge",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGhPrMergeOverrideEscapeHatchIsRecorded",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsHelpInvocationsOfGuardedTools",
               "kind": "unit"
             },
             {
@@ -4107,6 +4209,92 @@
         }
       },
       "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
+    },
+    {
+      "id": "wb.land",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb land",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--allow-saturated-host",
+                "--check-interval",
+                "--check-timeout",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--lane-reason",
+                "--model",
+                "--on-failure",
+                "--prepare-timeout",
+                "--progress",
+                "--provider",
+                "--retry",
+                "--route",
+                "--shard-attempt-timeout",
+                "--take-over-lane",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Identical root-level alias for `wb worktree land`, built from the exact same constructor: same flags, same help text, same exit codes.",
+                "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default.",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb land --help",
+              "contains": [
+                "wb worktree land .",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "## wb land: the root-level alias",
+              "examples": [
+                "wb land <source-worktree...> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestLandAliasSharesWorktreeLandContract",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Promoted to a root-level command so the primary completion verb is reachable without the worktree noun; wb land and wb worktree land resolve through the identical constructor and can never drift apart."
     },
     {
       "id": "wb.layout.audit",
