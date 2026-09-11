@@ -98,9 +98,17 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     one call; the hook process's own ambient environment is never read, so a
     value set ahead of time cannot silently cover a whole session.
 
-A read-only '--help'/'-h'/'help' invocation of 'specscore', 'go',
-'npm'/'pnpm'/'yarn'/'bun' is never refused for that reason alone (wb#493). gh
-pr merge's own '--help'/'-h' recognition is separate and value-flag aware:
+A 'specscore'/'go'/'npm'/'pnpm'/'yarn'/'bun' invocation is never refused for
+naming a write verb when its own words are shaped as a bare help request
+(wb#493): a subcommand chain with no other flag at all, trailing in exactly
+one '--help'/'-h' and nothing after it, or the literal word 'help' first with
+no flag anywhere in the rest. Any other flag on the line — one positioned to
+be swallowed as an earlier flag's own value ('specscore change-status <id>
+--caller --help --to Approved' really calls change-status, because '--caller'
+takes the next token unconditionally as its value), or a '--' separator that
+hands '--help' to a script instead of the wrapper ('npm run build --
+--help' really runs the build script) — is inspected normally instead.
+gh pr merge's own '--help'/'-h' recognition is separate and value-flag aware:
 'gh pr merge 123 --subject --help' is a real merge, because '--subject' takes
 the next token unconditionally as its value and never sees '--help' as a
 flag; a bare, unconsumed '--help'/'-h' is what is ever treated as help.

@@ -113,14 +113,18 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int)
 		// guarded tool was refused the same as the write it was only asking
 		// about — `specscore feature change-status --help` named a write verb
 		// in its arguments and the verb scan does not know where in the
-		// invocation that verb sits. Every tool in helpBypassTools treats
-		// --help as terminal: it prints help and does nothing else, regardless
-		// of what else is on the line, so skipping every write check for it
-		// never hides a real write. The set is deliberately narrow — see
-		// helpBypassTools's own doc — so this can never again turn into the
-		// wb#500 review's Blocker 1, where the same scan, applied to every
-		// tool, let `rm -rf <canonical-clone-file> -h` and
-		// `gh pr merge 123 --subject --help` both through.
+		// invocation that verb sits. requestsHelp only recognises a bare
+		// shape — a subcommand chain with no other flag, trailing in exactly
+		// one --help/-h, or a bare `help` subcommand with no flag anywhere —
+		// so skipping every write check for it never hides a real write. Any
+		// other flag mixed onto the line, including one positioned to swallow
+		// --help/-h as its own value, is inspected normally instead of
+		// bypassed; see requestsHelp's own doc. The set is deliberately
+		// narrow — see helpBypassTools's own doc — so this can never again
+		// turn into the wb#500 review's Blocker 1 (`rm -rf
+		// <canonical-clone-file> -h`, `gh pr merge 123 --subject --help`) or
+		// its second-round Should-fix 1 (`specscore ... --caller --help --to
+		// Approved`, `npm run build -- --help`).
 		if helpBypassTools[name] && requestsHelp(words) {
 			continue
 		}
@@ -232,10 +236,10 @@ func packageManagerValidation(arguments []string) bool {
 }
 
 // helpBypassTools names the tools wb#493 exists for. Each treats
-// --help/-h/help as terminal — it prints help and does nothing else,
-// regardless of what write verb also appears elsewhere on the line — so
-// skipping their write-verb check for a genuine help request never hides a
-// real write.
+// --help/-h/help as terminal when requestsHelp recognises the invocation's
+// shape as a genuine help request (see requestsHelp) — it prints help and
+// does nothing else — so skipping their write-verb check for that shape
+// never hides a real write.
 //
 // The set is deliberately narrow and must stay that way:
 //
@@ -257,19 +261,61 @@ var helpBypassTools = map[string]bool{
 	"npm": true, "pnpm": true, "yarn": true, "bun": true,
 }
 
-// requestsHelp reports whether a command's own words ask only for its help
-// text: `--help`/`-h` anywhere in the invocation, or a bare `help` subcommand
-// for the tools that use one (`go help build`, `specscore help feature
-// change-status`, `npm help install`). See wb#493. Callers must gate this on
-// helpBypassTools first — see its doc for why.
+// requestsHelp reports whether a command's own words are shaped as a genuine
+// help request, never merely whether --help/-h/help appears somewhere on the
+// line. It recognises exactly two shapes, after the program name:
+//
+//   - Zero or more subcommand words, none of them starting with "-", followed
+//     by exactly one final --help or -h with nothing after it. `specscore
+//     feature change-status --help`, `go mod tidy --help`, `pnpm install -h`.
+//   - The literal word "help" first, with no word anywhere after it starting
+//     with "-". `go help build`, `specscore help feature change-status`,
+//     `npm help install`.
+//
+// Anything else — any other flag mixed onto the line, --help/-h not the very
+// last word, more than one --help/-h, or a `--` argument separator anywhere —
+// is not recognised, and the caller inspects the command normally instead of
+// bypassing it. This is deliberately conservative rather than value-flag
+// aware per tool (contrast gh.go's ghPrMergeValueFlags, built for the one
+// command this guard already knows every value-taking flag of): a flag
+// positioned just before --help/-h can swallow it as that flag's own value
+// instead of a genuine help request — pflag hands a value-taking flag the
+// next token unconditionally, so `specscore feature change-status <id>
+// --caller --help --to Approved` really calls change-status with
+// --caller="--help", it does not print help (wb#500 second review,
+// Should-fix 1) — and a `--` separator hands everything after it to the
+// program being invoked, not to the wrapper, so `npm run build -- --help`
+// really runs the build script with --help as ITS argument; npm never sees a
+// help request at all (same review). Requiring the bare shape above costs
+// this bypass nothing wb#493 needs — every motivating invocation there is
+// already bare — while never trusting a flag's position without knowing that
+// tool's own flag grammar.
+//
+// See wb#493. Callers must gate this on helpBypassTools first — see its doc
+// for why.
 func requestsHelp(words []string) bool {
-	for _, word := range words[1:] {
-		if word == "--help" || word == "-h" {
-			return true
+	arguments := words[1:]
+	if len(arguments) == 0 {
+		return false
+	}
+	if arguments[0] == "help" {
+		for _, word := range arguments[1:] {
+			if strings.HasPrefix(word, "-") {
+				return false
+			}
+		}
+		return true
+	}
+	last := len(arguments) - 1
+	if arguments[last] != "--help" && arguments[last] != "-h" {
+		return false
+	}
+	for _, word := range arguments[:last] {
+		if strings.HasPrefix(word, "-") {
+			return false
 		}
 	}
-	rest := firstNonFlag(words[1:])
-	return len(rest) > 0 && rest[0] == "help"
+	return true
 }
 
 func firstNonFlag(words []string) []string {

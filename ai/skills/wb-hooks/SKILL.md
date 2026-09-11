@@ -85,14 +85,22 @@ PreToolUse payload on stdin and carries these policies:
   time cannot silently cover a whole session. `gh pr view`/`checks`/`list`
   and every other read-only `gh` subcommand are never refused.
 
-A read-only `--help`/`-h`/`help` invocation of `specscore`, `go`,
-`npm`/`pnpm`/`yarn`/`bun` is never refused for that reason alone — it prints
-help and does nothing else, regardless of what verb also appears on the line
-(wb#493). `gh pr merge`'s own `--help`/`-h` recognition is separate and
-value-flag aware: `gh pr merge 123 --subject --help` is a real merge, because
-`--subject` takes the next token unconditionally as its value and never sees
-`--help` as a flag; only a bare, unconsumed `--help`/`-h` is ever treated as
-help.
+A `specscore`/`go`/`npm`/`pnpm`/`yarn`/`bun` invocation is never refused for
+naming a write verb when its own words are shaped as a bare help request
+(wb#493): a subcommand chain with no other flag at all, trailing in exactly
+one `--help`/`-h` and nothing after it (`specscore feature change-status
+--help`, `go mod tidy --help`), or the literal word `help` first with no flag
+anywhere in the rest (`go help build`, `npm help install`). Any other flag on
+the line is inspected normally instead — including one positioned to be
+swallowed as an earlier flag's own value (`specscore feature change-status
+<id> --caller --help --to Approved` really calls change-status, because
+`--caller` takes the next token unconditionally as its value and never sees
+`--help` as a flag) and a `--` separator that hands `--help` to a script
+instead of the wrapper (`npm run build -- --help` really runs the build
+script with `--help` as its own argument). `gh pr merge`'s own `--help`/`-h`
+recognition is separate and value-flag aware: `gh pr merge 123 --subject
+--help` is a real merge, for the identical reason; only a bare, unconsumed
+`--help`/`-h` is ever treated as help.
 
 Register it once per machine:
 

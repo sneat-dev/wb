@@ -315,24 +315,72 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 // TestBashAllowsHelpInvocationsOfGuardedTools pins wb#493: a read-only
 // `--help`/`-h`/`help` invocation of a tool this guard otherwise judges by
 // write verb was refused exactly like the write it was only asking about,
-// because the verb scan matches anywhere in the argument list. Every one of
-// these treats --help as terminal — it prints help and does nothing else —
-// so none of them can smuggle a real write past the guard this way.
+// because the verb scan matches anywhere in the argument list. Every command
+// here is a bare help request — a subcommand chain (or none) trailing in one
+// --help/-h, or a bare `help` subcommand — with no other flag mixed onto the
+// line, exactly the shape requestsHelp recognises after the wb#500 second
+// review's Should-fix 1 (see TestBashCommandsWithAFlagBesideHelpAreInspected
+// NormallyNotBypassed for the shapes that no longer qualify).
 func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
 	repositories := newFixture(t)
 	commands := []string{
-		"specscore feature change-status x --to Approved --help",
+		"specscore feature change-status --help",
 		"specscore feature change-status x -h",
 		"specscore help feature change-status",
 		"go mod tidy --help",
 		"go help mod tidy",
+		"go help build",
 		"pnpm install --help",
+		"pnpm --help",
 		"npm help install",
+		"npm help run",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a read-only --help invocation:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed pins the
+// wb#500 second review's Should-fix 1 head-on: the pre-fix requestsHelp
+// treated --help/-h as terminal no matter where else on the line it sat, so
+// a value-taking flag positioned just before it could swallow it as that
+// flag's own value, and a `--` separator could hand it to a script instead
+// of the wrapper — in both cases the tool never saw a help request at all,
+// yet the whole line was waved through as if it had. Reproduced against the
+// real binaries before this fix (see the review): `specscore feature
+// change-status <id> --caller --help --to Approved` gets past flag parsing
+// and only fails on project lookup, proving --caller consumed --help as its
+// value; `npm run build -- --help` and `pnpm run build -- --help` actually
+// run the build script, proving -- handed --help to the script. Now that
+// requestsHelp only recognises a bare shape, none of these are treated as
+// help: the specscore line is inspected normally and refused as a
+// change-status write inside a canonical clone, and the npm/pnpm lines still
+// hit the governed-validation gate inside a managed worktree — see
+// TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite and
+// TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation for the
+// full repro.
+func TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed(t *testing.T) {
+	repositories := newFixture(t)
+	// Every one of these has --help/-h as the final word but at least one
+	// other flag earlier on the line, so requestsHelp must not recognise any
+	// of them as a bare help request — they fall through to normal
+	// inspection, which is a write refusal for the ones that name a write
+	// verb with the clone as the working directory.
+	commands := []string{
+		"specscore feature change-status x --to Approved --help",
+		"specscore feature change-status x --to Approved -h",
+		"go mod tidy -x --help",
+		"pnpm install --no-optional --help",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) treated a flag-plus-help line as a bare help request; want it inspected (and refused) normally", command)
 			}
 		})
 	}
@@ -549,6 +597,76 @@ func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
 			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a real write/merge because of an unrelated -h/--help token", testCase.command)
+			}
+		})
+	}
+}
+
+// TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite pins the wb#500
+// second review's Should-fix 1, specscore half: the pre-fix requestsHelp
+// scanned every word for a bare --help/-h and stopped there, so
+// `specscore feature change-status <id> --caller --help --to Approved` was
+// waved through as a help request even though --caller is a value-taking
+// flag that consumes the very next token — the literal string "--help" —
+// as its own value. Confirmed against the real specscore binary in the
+// review: the call gets past flag parsing and fails only on project lookup,
+// never printing help, proving it is a genuine change-status write. Now that
+// requestsHelp requires a bare trailing --help/-h with no other flag on the
+// line, this is inspected normally and refused exactly like any other
+// change-status call with the clone as the working directory.
+func TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite(t *testing.T) {
+	repositories := newFixture(t)
+	commands := []string{
+		"specscore feature change-status wb-land-discoverability --caller --help --to Approved",
+		"specscore feature change-status wb-land-discoverability --caller=--help --to Approved",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed a real change-status write because --help sat on the line; want deny", command)
+			}
+			if !strings.Contains(decision.Reason, "change-status") {
+				t.Fatalf("refusal for %q does not name the change-status write:\n%s", command, decision.Reason)
+			}
+		})
+	}
+}
+
+// TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation pins the
+// wb#500 second review's Should-fix 1, npm-family half: the pre-fix
+// requestsHelp treated `npm run build -- --help` as a help request because
+// --help appeared on the line at all, but a `--` separator hands everything
+// after it to the script npm/pnpm invokes, not to npm/pnpm itself — the
+// script actually runs. Confirmed against the real npm and pnpm binaries in
+// the review: a script that touches a marker file on execution left the
+// marker behind, proving the build ran for real. Now that requestsHelp
+// refuses to recognise a line with a `--` separator as help, this is
+// inspected normally and still hits the governed-validation gate inside a
+// managed worktree, the same as a bare `npm run build`.
+func TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{
+		"npm run build -- --help",
+		"pnpm run build -- --help",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny {
+				t.Fatalf("Inspect(%q) allowed direct heavy validation because --help sat on the line; want the governed-validation gate", command)
+			}
+			for _, expected := range []string{"wb run --", "durable ID"} {
+				if !strings.Contains(decision.Reason, expected) {
+					t.Fatalf("refusal for %q is missing %q:\n%s", command, expected, decision.Reason)
+				}
 			}
 		})
 	}
