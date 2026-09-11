@@ -127,6 +127,33 @@ the hosted instance does and the operator's tunnel forwards
 does not manage the tunnel process in this feature; a later feature may spawn
 cloudflared or ngrok with operator credentials.
 
+### Console log of every event
+
+The operator runs `wb daemon serve` in a terminal and wants to see the hub
+work without opening the dashboard. Every event the hub handles, whether it
+arrived by webhook or was produced by the poller, writes one line to the
+daemon's console (stderr, stdout stays reserved for command output) at the
+moment the hub decides what to do with it:
+
+```
+14:02:11 push            github.com/sneat-dev/wb          default branch main -> 3f1c2a9; queued for laptop
+14:02:11 push            github.com/sneat-dev/wb-state    ignored: not on default branch
+14:05:40 repository      github.com/sneat-dev/wb-hub      renamed from sneat-dev/workbench-gh-app; queued for laptop
+14:06:02 installation    sneat-dev                        repositories added: 2; entitlements refreshed
+14:06:30 poll            github.com/sneat-dev/wb          no change
+14:07:15 push            github.com/sneat-dev/wb          duplicate delivery 8a1f...; dropped
+```
+
+Columns are: local time, event name as GitHub names it (`poll` for the
+poller), the organisation or repository the event is about, and the action
+taken in plain words: queued for which machines, ignored and why, dropped as
+a duplicate, or rejected with the reason (bad signature, unknown
+installation). Secrets, payload bodies and tokens never appear. The same
+lines are kept in the daemon log file the existing `wb daemon` already
+writes, so a detached daemon can be inspected with `wb daemon status` and
+the log. A `--quiet` flag on `wb daemon serve` silences the console lines
+without touching the log file.
+
 ### Dashboard
 
 `hub/web` is built by `pnpm build` and its `dist/` is embedded in the wb
@@ -168,6 +195,16 @@ canonical clone as the hosted path does today.
 The same journeys pass with `engine: memory` and `engine: ingitdb`; the
 hosted instance's dalgo2firestore path is exercised by the existing sneat-go
 wiring and is not changed by this feature.
+
+### AC: every-event-is-narrated-on-the-console
+
+Given `wb daemon serve` running in a terminal, each webhook delivery and each
+poll observation produces exactly one console line naming the event, the
+organisation or repository, and the action taken, including ignored,
+duplicate and rejected outcomes; the line appears before the HTTP response
+to GitHub is sent for webhooks. No token, secret or payload body appears in
+any line. `--quiet` suppresses the console lines and the log file still
+records them.
 
 ### AC: whole-journey-e2e
 
