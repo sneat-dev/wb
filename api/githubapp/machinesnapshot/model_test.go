@@ -65,6 +65,24 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 		t.Fatalf("noncanonical repository err = %v", err)
 	}
 	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Repositories = []string{"github.com/acme/.github", "github.com/acme/widgets"}
+	snapshot.Worktrees[0].Repository = "acme/.github"
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("a repository named .github is valid on GitHub: %v", err)
+	}
+	for _, name := range []string{".", "..", ""} {
+		snapshot = validSnapshot(time.Now().UTC())
+		snapshot.Repositories = []string{"github.com/acme/" + name}
+		if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+			t.Fatalf("repository name %q err = %v", name, err)
+		}
+	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Repositories = []string{"github.com/.acme/widgets"}
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("dotted owner err = %v", err)
+	}
+	snapshot = validSnapshot(time.Now().UTC())
 	snapshot.Worktrees[0].AttentionReason = "/Users/alice/private output"
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("unsafe attention err = %v", err)
