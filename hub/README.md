@@ -69,8 +69,12 @@ is resolved through the same bearer path a request takes.
 
 ### Webhook mode
 
-Polling is the default and needs nothing but a token. Register a GitHub App
-only when you want push latency instead of an interval. Add:
+Polling is the default and needs nothing but a token, on a 20-minute
+interval unless `hub.github.poll_interval` says otherwise (floor 30s). It
+costs two API calls per repository per tick from the token owner's hourly
+budget of 5000, which every tool using that account shares, so keep the
+interval long or use a dedicated token. Register a GitHub App when you want
+push latency instead. Add:
 
 ```yaml
 hub:
@@ -90,11 +94,11 @@ verifies them. The daemon's start line then ends with
 `webhook=on public_url=…`, and `wb daemon status` reports `hub_webhook=true`.
 Set the App's webhook URL to `<public_url>/v0/workbench/github/webhook`.
 
-Repositories an installation of your App covers are taken off the poller, so
-each push arrives once. Coverage is read from the installation bindings this
-hub holds; while it holds none, polling continues alongside the webhook and
-the two deduplicate through the event store, which is also what happens when
-you stop the tunnel. Nothing is lost either way.
+In webhook mode the poller is not started at all, even with a token file:
+the App reports every default-branch push and rename, and the daemon pulls
+only the repository an event names. `token_file` is optional in this mode.
+If the tunnel is down, GitHub keeps the deliveries and retries them, and the
+App's Advanced tab lets you redeliver any of them.
 
 The connect, setup and OAuth-callback routes under
 `/v0/workbench/github/installations/` answer `503
