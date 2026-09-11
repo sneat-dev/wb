@@ -135,6 +135,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newStatusCmd(), rootGroupFleet),
 		groupedRootCommand(newFleetCmd(), rootGroupFleet),
 		groupedRootCommand(newSyncCmd(), rootGroupFleet),
+		groupedRootCommand(newSyncReportCmd(), rootGroupFleet),
 		groupedRootCommand(newRepoCmd(), rootGroupFleet),
 		groupedRootCommand(newCoverageCmd(), rootGroupQuality),
 		groupedRootCommand(newVerifyCmd(), rootGroupQuality),
@@ -168,8 +169,9 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"dashboard":    true,
-		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"sync-report publish": true,
+		"dashboard":           true,
+		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		"worker connect": true,
 		"deps graph":     true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
