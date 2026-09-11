@@ -104,15 +104,27 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
         caffeinate, xargs and 'wb run --', together with each wrapper's own
         options and their values;
       - in the -c payload of bash, sh, zsh, dash and ksh, taken the way
-        that shell takes it (bounded depth).
+        that shell takes it (bounded depth);
+      - through the shell's brace expansion of any word ('gh pr {merge,} 1'
+        is 'gh pr merge 1' on bash, sh and zsh), and whatever the letter
+        case of the program name ('Gh pr merge 1' runs gh on macOS).
+    The 'gh api' routes that merge a pull request are refused under the
+    same policy with the same escape hatch: a PUT to
+    repos/<owner>/<repo>/pulls/<n>/merge and a GraphQL call naming the
+    mergePullRequest mutation. GET .../merge, every other method and
+    endpoint, a GraphQL query and 'gh api ... --help' stay allowed.
+    A '#' that starts a word opens a comment, as bash reads it; nothing
+    after it on that line is inspected ('ls # && gh pr merge 1' is allowed).
     Not inspected, so still allowed:
-      - 'gh api' merge routes: REST PUT .../pulls/<n>/merge and the GraphQL
-        mergePullRequest mutation;
-      - gh aliases and extensions;
+      - gh aliases and extensions, and a GraphQL mutation read from
+        'gh api --input <file>';
       - scripts run from files, eval, here-strings, backticks, a quoted
         "$( )", ANSI-C $'...' quoting and 'env -S';
+      - a word the shell builds by parameter or glob expansion
+        ('gh pr ${X:-merge} 1', 'gh pr merge$X 1'): words are read
+        literally, brace lists excepted;
       - other interpreters ('python3 -c', 'node -e') and wrappers not
-        listed above ('ssh', 'watch');
+        listed above ('ssh', 'watch', 'doas', 'parallel', 'find -exec');
       - 'git push' to the base branch, and 'hub merge'.
     Escape hatch: put WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" on that
     exact call, where the shell really puts it into gh's environment: at

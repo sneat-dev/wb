@@ -92,16 +92,34 @@ PreToolUse payload on stdin and carries these policies:
   - in the `-c` payload of `bash`, `sh`, `zsh`, `dash` and `ksh`, taken the
     way that shell takes it (the first word after its option words, so
     `bash -c -e '…'`, `bash -o pipefail -c '…'` and `bash -c -- '…'` count),
-    recursing up to a depth of 8.
+    recursing up to a depth of 8;
+  - through the shell's brace expansion of any word (`gh pr {merge,} 1`
+    is `gh pr merge 1` on bash, sh and zsh), and whatever the letter case
+    of the program name (`Gh pr merge 1` runs gh on macOS's
+    case-insensitive file system).
+
+  The `gh api` routes that merge a pull request are refused under the same
+  policy, with the same escape hatch: a `PUT` to
+  `repos/<owner>/<repo>/pulls/<n>/merge` (`-X`, `-XPUT`, `--method` or
+  `--method=`, any letter case, with or without a leading slash or query
+  string) and a GraphQL call whose words name the `mergePullRequest`
+  mutation. `GET …/merge`, every other method and endpoint, a GraphQL
+  query and `gh api … --help` stay allowed.
+
+  A `#` that starts a word opens a comment, exactly as bash reads it, so
+  nothing after it on that line is inspected or refused (`ls # && gh pr
+  merge 1` is allowed).
 
   **Not inspected, so still allowed:**
-  - `gh api` merge routes: the REST `PUT …/pulls/<n>/merge` and the GraphQL
-    `mergePullRequest` mutation;
-  - `gh` aliases and extensions;
+  - `gh` aliases and extensions, and a GraphQL mutation read from
+    `gh api --input <file>`;
   - scripts run from files, `eval`, here-strings, backticks, a quoted
     `"$( … )"`, ANSI-C `$'…'` quoting and `env -S`;
+  - a word the shell builds by parameter or glob expansion (`gh pr
+    ${X:-merge} 1`, `gh pr merge$X 1`): words are read literally and never
+    expanded, brace lists excepted;
   - other interpreters (`python3 -c`, `node -e`) and wrappers not listed
-    above (`ssh`, `watch`);
+    above (`ssh`, `watch`, `doas`, `parallel`, `find -exec`);
   - `git push` to the base branch, and `hub merge`.
 
   **Escape hatch:** put `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` on
