@@ -780,6 +780,12 @@ remote landing receipt, and cleans the source by default. The legacy
 `wb worktree merge` spelling keeps cleanup opt-in. Candidate validation runs
 the exact target snapshot only if the candidate fails and inherited-failure
 comparison is needed, avoiding a redundant full baseline on green candidates.
+`wb land` is the identical root-level alias — finish work with the verb, never
+`gh pr merge`. A round that touches several repositories is one task
+(`wb worktree create <task> owner/repo1 owner/repo2 ...`), never one
+separately-named task per repository — but one `wb worktree land`/`wb land`
+call only takes worktrees of a single repository, so that one task still
+lands with one call per repository.
 Verification runs `go vet ./...`, `go test ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.

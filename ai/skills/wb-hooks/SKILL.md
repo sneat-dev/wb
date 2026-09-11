@@ -73,6 +73,108 @@ PreToolUse payload on stdin and carries these policies:
   the repository's own `.worktrees/` manifests and the local wb-state mirror
   (no network). A dispatch from inside the claimed worktree itself is treated
   as that lane continuing its own work, not a second claim.
+- **Land with the WB verb** — refuses every call that `gh` itself would run
+  as `pr merge`, naming `wb worktree land`/`wb land` and
+  `wb pr land <owner/repo#n>` instead (rule `land-with-wb-verb`,
+  `sneat-co/backstage`). It reads gh's arguments the way gh's own command
+  lookup does, so a flag before `pr` or between `pr` and `merge` does not
+  hide the call (`gh pr -R o/r merge 1`, `gh pr --squash 1 merge`), while
+  `gh help pr merge`, `gh search issues pr merge` and `gh pr merge --help`
+  are allowed. It finds the call:
+  - chained with `&&`, `||`, `;`, `|` or a newline, or inside `( )`, `{ }`
+    or an unquoted `$( )`;
+  - in an `if`/`elif`/`while`/`until` condition, a `then`/`else` branch, a
+    loop's `do` body, or after `!` or `coproc`;
+  - behind `VAR=value` assignments, and behind `sudo`, `env`, `nice`,
+    `nohup`, `time`, `stdbuf`, `exec`, `command`, `builtin`, `noglob`,
+    `nocorrect`, `timeout`, `caffeinate`, `xargs` and `wb run --`, together
+    with each wrapper's own options and their values;
+  - in the `-c` payload of `bash`, `sh`, `zsh`, `dash` and `ksh`, taken the
+    way that shell takes it (the first word after its option words, so
+    `bash -c -e '…'`, `bash -o pipefail -c '…'` and `bash -c -- '…'` count),
+    recursing up to a depth of 8;
+  - through the shell's brace expansion of any word (`gh pr {merge,} 1`
+    is `gh pr merge 1` on bash, sh and zsh), and whatever the letter case
+    of the program name (`Gh pr merge 1` runs gh on macOS's
+    case-insensitive file system).
+
+  The `gh api` routes that merge a pull request are refused under the same
+  policy, with the same escape hatch: a `PUT` to
+  `repos/<owner>/<repo>/pulls/<n>/merge` (`-X`, `-XPUT`, `--method` or
+  `--method=`, any letter case, with or without a leading slash or query
+  string) and a GraphQL call whose words name the `mergePullRequest`
+  mutation. `GET …/merge`, every other method and endpoint, a GraphQL
+  query and `gh api … --help` stay allowed.
+
+  A `#` that starts a word opens a comment, exactly as bash reads it, so
+  nothing after it on that line is inspected or refused (`ls # && gh pr
+  merge 1` is allowed).
+
+  **Not inspected, so still allowed:**
+  - `gh` aliases and extensions, and a GraphQL mutation read from
+    `gh api --input <file>`;
+  - scripts run from files, `eval`, here-strings, backticks, a quoted
+    `"$( … )"`, ANSI-C `$'…'` quoting and `env -S`;
+  - a word the shell builds by parameter or glob expansion (`gh pr
+    ${X:-merge} 1`, `gh pr merge$X 1`): words are read literally and never
+    expanded, brace lists excepted;
+  - other interpreters (`python3 -c`, `node -e`) and wrappers not listed
+    above (`ssh`, `watch`, `doas`, `parallel`, `find -exec`);
+  - `git push` to the base branch, and `hub merge`.
+
+  **Escape hatch:** put `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` on
+  that exact call, where the shell really puts it into gh's environment.
+  That means at the start of the call, or right after `env`, `sudo`, `time`
+  or a shell keyword. It lets that one call through, and the guard records
+  the reason when it allows the call. The record proves only that the guard
+  allowed the call, not that the call ran. The hook process's own ambient
+  environment is never read, so a value set ahead of time cannot silently
+  cover a whole session. This policy refuses nothing else: `gh pr
+  view`/`checks`/`list` and every other gh command pass it.
+
+A `specscore`/`go`/`npm`/`pnpm`/`yarn`/`bun` invocation is never refused for
+naming a write verb when its own words are shaped as a genuine help request
+(wb#493), but which shape counts depends on the tool:
+
+- `specscore` is cobra-based, so its own trailing `--help`/`-h` always prints
+  help no matter how many subcommand words precede it: a subcommand chain
+  with no other flag at all, trailing in exactly one `--help`/`-h` and
+  nothing after it (`specscore feature change-status --help`), or the
+  literal word `help` first with no flag anywhere in the rest (`specscore
+  help feature change-status`).
+- `go`/`npm`/`pnpm`/`yarn`/`bun` get only the bare top-level shape — exactly
+  `<tool> --help`/`<tool> -h` with nothing else after the program name
+  (`go --help`, `pnpm -h`), or `<tool> help` followed by zero or more
+  non-flag words (`go help build`, `npm help install`) — because each of
+  these five has at least one subcommand that passes positional arguments
+  straight through to a script or program instead of stopping at its own
+  flag parser. Confirmed against the real binaries: `pnpm run build --help`
+  and `bun run build --help` ran the build script, and `go run . --help` ran
+  the program; pnpm/yarn/bun also run a package.json script when invoked
+  WITHOUT `run` (`pnpm build --help` runs the `build` script too), so no
+  denylist of pass-through verbs is safe for them either.
+
+Any other flag on the line is inspected normally instead — including one
+positioned to be swallowed as an earlier flag's own value (`specscore feature
+change-status <id> --caller --help --to Approved` really calls change-status,
+because `--caller` takes the next token unconditionally as its value and
+never sees `--help` as a flag), a `--` separator that hands `--help` to a
+script instead of the wrapper (`npm run build -- --help` really runs the
+build script with `--help` as its own argument), and — for the five non-cobra
+tools only — any subcommand word at all in front of `--help`/`-h` (`npm run
+build --help`, `go test ./... -h`, `pnpm build --help`). For these tools,
+"inspected normally" means the line still hits the governed-validation gate
+inside a managed worktree exactly like the same command without `--help`
+would. `gh pr merge`'s own `--help`/`-h` recognition is separate and reads
+the flags the way gh does:
+- `gh pr merge 123 --subject --help` and `gh pr merge 123 -st --help` are
+  real merges, for the identical reason: `--subject`, like the `-t` that
+  ends `-st`, takes the next token as its value.
+- `gh pr merge -- --help` is a real merge too, because `--` makes `--help`
+  a positional argument.
+- Only a `--help`/`-h` that no value-taking flag consumed and that comes
+  before any `--` is treated as help. It may stand alone or sit in a
+  cluster of boolean short flags such as `-sh`.
 
 Register it once per machine:
 

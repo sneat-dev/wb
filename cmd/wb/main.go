@@ -43,10 +43,17 @@ const rootLongHelp = `Workbench CLI — fleet-wide operations across your GitHub
 
 The fastest agent workflow is:
 
-  Start isolated work   wb worktree create <task> <owner/repository>
+  Start isolated work   wb create <task> <owner/repository>...
   Inspect progress      wb worktree summary <task>
   Open fleet dashboard  wb dashboard
-  Land and clean up     wb worktree land <worktree>
+  Land and clean up     wb land <worktree>...
+  Land an open PR       wb pr land <owner/repo#n>
+
+wb create/wb land are root-level aliases for wb worktree create/wb worktree
+land, built from the same code so they never drift apart. wb land takes
+worktrees of ONE repository only per call — it refuses worktrees from more
+than one repository — so a task spanning several repositories still needs
+one wb land call per repository, not one call for the whole task.
 
 Not sure which command matches an intent? Search the structured catalog:
 
@@ -119,6 +126,8 @@ func newRootCmd() *cobra.Command {
 	configureRootHelp(root)
 	root.AddCommand(
 		groupedRootCommand(newWorktreeCmd(), rootGroupAgent),
+		groupedRootCommand(newCreateCmd(), rootGroupAgent),
+		groupedRootCommand(newLandCmd(), rootGroupAgent),
 		groupedRootCommand(newPRCmd(), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(), rootGroupAgent),
@@ -177,7 +186,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"remote status": true, "remote machines": true, "remote enroll": true,
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"layout audit": true, "layout clean": true, "archive clean": true,
-		"worktree abort": true, "worktree create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
+		"worktree abort": true, "worktree create": true, "create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
 		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"pr land":        true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,

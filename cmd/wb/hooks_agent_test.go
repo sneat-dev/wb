@@ -163,6 +163,91 @@ func TestAgentHookWritesTheDenyDocument(t *testing.T) {
 	}
 }
 
+// TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall drives the escape
+// hatch end to end through the real `wb hooks agent pre-tool-use` entry
+// point, with a JSON payload on stdin exactly the way the harness sends one
+// — not by calling agentguard.Inspect directly. wb#500 review, Should-fix 3:
+// the pre-fix implementation read WB_AGENTGUARD_ALLOW_GH_PR_MERGE from the
+// hook process's own ambient environment via os.Getenv. That process is
+// spawned fresh by the harness's PreToolUse mechanism for every tool call —
+// a tree the Bash tool's shell never reaches — so an ambient value can never
+// be scoped to "the one call it is set on" the way the refusal text and this
+// command's own doc comment promise; at best it is a human export that
+// silently allows every gh pr merge for the rest of a session. This proves
+// the fix end to end: only a value inline on the refused Bash command's own
+// words is ever honoured, and the ambient case is proven to do nothing here,
+// not only in the internal/agentguard package's own unit tests.
+func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
+	projectsRoot, canonical, _ := agentGuardFixture(t)
+
+	t.Run("no override at all still refuses through the real entry point", func(t *testing.T) {
+		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": "gh pr merge 1041"})
+		code, stdout, _ := runAgentHook(t, projectsRoot, payload)
+		if code != exitOK {
+			t.Fatalf("exit code %d, want 0 (fail open)", code)
+		}
+		if !strings.Contains(stdout, `"deny"`) {
+			t.Fatalf("gh pr merge with no override was not refused: %q", stdout)
+		}
+	})
+
+	t.Run("an ambient WB_AGENTGUARD_ALLOW_GH_PR_MERGE is never honoured", func(t *testing.T) {
+		t.Setenv("WB_AGENTGUARD_ALLOW_GH_PR_MERGE", "set ahead of time in the process env, not on the call")
+		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": "gh pr merge 1041"})
+		code, stdout, _ := runAgentHook(t, projectsRoot, payload)
+		if code != exitOK {
+			t.Fatalf("exit code %d, want 0 (fail open)", code)
+		}
+		if !strings.Contains(stdout, `"deny"`) {
+			t.Fatalf("an ambient override with no inline prefix allowed gh pr merge through: %q", stdout)
+		}
+	})
+
+	t.Run("an override inline on the exact call is honoured and recorded", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("WB_HOME", home)
+		command := `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="wb worktree land refuses this exact receipt, sneat-dev/wb#999" gh pr merge 1041 --admin`
+		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": command})
+		code, stdout, stderr := runAgentHook(t, projectsRoot, payload)
+		if code != exitOK {
+			t.Fatalf("exit code %d, want 0", code)
+		}
+		if stdout != "" {
+			t.Fatalf("an inline override was refused instead of allowed: stdout=%q stderr=%q", stdout, stderr)
+		}
+		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		if err != nil {
+			t.Fatalf("read the override record: %v", err)
+		}
+		for _, expected := range []string{"land-with-wb-verb", "gh pr merge 1041 --admin", "sneat-dev/wb#999", "recorded_at"} {
+			if !strings.Contains(string(recorded), expected) {
+				t.Fatalf("override record does not contain %q:\n%s", expected, recorded)
+			}
+		}
+	})
+
+	t.Run("an override via env is honoured the same way", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("WB_HOME", home)
+		command := `env WB_AGENTGUARD_ALLOW_GH_PR_MERGE="reason via env, sneat-dev/wb#999" gh pr merge 1041`
+		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": command})
+		code, stdout, stderr := runAgentHook(t, projectsRoot, payload)
+		if code != exitOK {
+			t.Fatalf("exit code %d, want 0", code)
+		}
+		if stdout != "" {
+			t.Fatalf("an env-prefixed override was refused instead of allowed: stdout=%q stderr=%q", stdout, stderr)
+		}
+		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		if err != nil {
+			t.Fatalf("read the override record: %v", err)
+		}
+		if !strings.Contains(string(recorded), "reason via env, sneat-dev/wb#999") {
+			t.Fatalf("override record does not contain the env-prefixed reason:\n%s", recorded)
+		}
+	})
+}
+
 // TestAgentHookReadsAPayloadFile covers the --input path used for testing an
 // installation without a pipe.
 func TestAgentHookReadsAPayloadFile(t *testing.T) {

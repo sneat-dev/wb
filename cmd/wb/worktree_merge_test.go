@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -133,6 +136,44 @@ func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
 	}
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "true" {
 		t.Fatalf("land --cleanup = %#v, want default true", cleanup)
+	}
+}
+
+// TestLandAliasSharesWorktreeLandContract pins that `wb land` is not a second
+// implementation: it is built from the exact same constructor as
+// `wb worktree land`, so its flags, defaults, and landing-guard addressing
+// can never drift from the nested command's, and it resolves under the
+// AGENT WORKFLOW root group next to `wb worktree create`.
+func TestLandAliasSharesWorktreeLandContract(t *testing.T) {
+	alias := newLandCmd()
+	nested := newWorktreeLandCmd()
+	if alias.Name() != "land" || nested.Name() != "land" {
+		t.Fatalf("Name() = %q / %q, want land / land", alias.Name(), nested.Name())
+	}
+	aliasFlags := map[string]string{}
+	alias.Flags().VisitAll(func(flag *pflag.Flag) { aliasFlags[flag.Name] = flag.DefValue })
+	nestedFlags := map[string]string{}
+	nested.Flags().VisitAll(func(flag *pflag.Flag) { nestedFlags[flag.Name] = flag.DefValue })
+	if len(aliasFlags) == 0 {
+		t.Fatal("wb land defines no flags")
+	}
+	if !reflect.DeepEqual(aliasFlags, nestedFlags) {
+		t.Fatalf("wb land flags = %v, want identical to wb worktree land: %v", aliasFlags, nestedFlags)
+	}
+	if alias.Annotations[landingGuardAnnotation] != landingGuardByWorktree {
+		t.Fatalf("wb land landing-guard annotation = %q, want %q", alias.Annotations[landingGuardAnnotation], landingGuardByWorktree)
+	}
+
+	root := newRootCmd()
+	found, _, err := root.Find([]string{"land"})
+	if err != nil {
+		t.Fatalf("resolve wb land: %v", err)
+	}
+	if found.CommandPath() != "wb land" {
+		t.Fatalf("CommandPath() = %q, want %q", found.CommandPath(), "wb land")
+	}
+	if found.GroupID != rootGroupAgent {
+		t.Fatalf("wb land GroupID = %q, want %q (AGENT WORKFLOW)", found.GroupID, rootGroupAgent)
 	}
 }
 

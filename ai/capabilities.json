@@ -1349,6 +1349,91 @@
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
     },
     {
+      "id": "wb.create",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/modern-cli-help-discovery/README.md",
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb create",
+              "flags": [
+                "--agent",
+                "--agent-runtime",
+                "--base",
+                "--branch",
+                "--branch-prefix",
+                "--cli",
+                "--effort",
+                "--format",
+                "--initiator",
+                "--model",
+                "--mode",
+                "--no-claim",
+                "--original-prompt-file",
+                "--provider",
+                "--resume",
+                "--run"
+              ],
+              "modes": [
+                "Identical root-level alias for `wb worktree create`, built from the exact same constructor: same flags, same help text, same exit codes.",
+                "Creates one isolated feature worktree per repository, deriving owner/repository from the current checkout's origin remote when none is supplied.",
+                "Accepts every repository a cross-repository round touches in a single call, so the round stays one task, not one task per repository."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb create --help",
+              "contains": [
+                "--original-prompt-file",
+                "--agent-runtime",
+                "--branch-prefix",
+                "without switching or updating",
+                "active Work Log claim",
+                "audited handoff"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "## Route by situation",
+              "examples": [
+                "wb create <task> <owner/repository>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestCreateAliasSharesWorktreeCreateContract",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Promoted to a root-level command so the primary starting verb is reachable without the worktree noun; wb create and wb worktree create resolve through the identical constructor and can never drift apart."
+    },
+    {
       "id": "wb.daemon.operation.cancel",
       "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
       "since": "unreleased",
@@ -3670,6 +3755,17 @@
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
                 "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
+                "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
+                "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth); through the shell's brace expansion of any word (gh pr {merge,} 1); and whatever the letter case of the program name (Gh pr merge 1 runs gh on macOS).",
+                "Also refuses the gh api routes that merge a pull request, under the same policy and escape hatch: a PUT to repos/<owner>/<repo>/pulls/<n>/merge and a GraphQL call naming the mergePullRequest mutation. GET .../merge, other methods and endpoints, GraphQL queries and gh api ... --help stay allowed. A # that starts a word opens a comment, as bash reads it, and nothing after it is inspected.",
+                "Does not inspect gh aliases and extensions, a GraphQL mutation read from gh api --input <file>, scripts run from files, eval, here-strings, backticks, a quoted \"$( )\", ANSI-C $'...' quoting, env -S, a word built by parameter or glob expansion (gh pr ${X:-merge} 1), other interpreters (python3 -c, node -e), unlisted wrappers (ssh, watch, doas, parallel, find -exec), git push to the base branch, or hub merge.",
+                "The escape hatch is WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" on that exact call, where the shell really exports it to gh: at the start of the call, or right after env, sudo, time or a shell keyword. It lets that one call through, and the guard records the reason when it allows the call. The record proves only that the guard allowed the call, not that the call ran, and the hook process's own ambient environment is never read.",
+                "A specscore/go/npm/pnpm/yarn/bun invocation bypasses its write-verb check only for a genuine help request (wb#493); which shape counts depends on the tool, because --help/-h behaves differently once a subcommand precedes it.",
+                "cobra-based specscore accepts a subcommand chain trailing in exactly one --help/-h with nothing after, or the word help first with no flag anywhere else.",
+                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser — confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
+                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead — for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
+                "gh pr merge's own --help/-h recognition is separate and reads the flags the way gh does. A --help consumed by a value-taking flag (gh pr merge 123 --subject --help, gh pr merge 123 -st --help) is a real merge, not a help request, and so is a --help placed after -- (gh pr merge -- --help).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
               ]
@@ -3726,8 +3822,98 @@
               "kind": "unit"
             },
             {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashRefusesGhPrMerge",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGhPrMergeOverrideEscapeHatchIsRecorded",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsHelpInvocationsOfGuardedTools",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashUnwrapsShellDashC",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestShellDashCPayloadEdgeCases",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestCommandWordsSeesThroughPrefixes",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsGhReadsAndTheWBLandingVerbs",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashGhPrMergeTextIsNotACall",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGhPrMergeHelpAloneIsStillAllowed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestHelpBypassNeverAppliesOutsideItsOwnAllowlist",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashHelpTokenNeverBypassesAnUnrelatedGuard",
+              "kind": "unit"
+            },
+            {
               "path": "cmd/wb/hooks_agent_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall",
               "kind": "integration"
             }
           ],
@@ -4147,6 +4333,92 @@
         }
       },
       "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
+    },
+    {
+      "id": "wb.land",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb land",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--allow-saturated-host",
+                "--check-interval",
+                "--check-timeout",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--lane-reason",
+                "--model",
+                "--on-failure",
+                "--prepare-timeout",
+                "--progress",
+                "--provider",
+                "--retry",
+                "--route",
+                "--shard-attempt-timeout",
+                "--take-over-lane",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Identical root-level alias for `wb worktree land`, built from the exact same constructor: same flags, same help text, same exit codes.",
+                "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default.",
+                "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb land --help",
+              "contains": [
+                "wb worktree land .",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "## wb land: the root-level alias",
+              "examples": [
+                "wb land <source-worktree...> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestLandAliasSharesWorktreeLandContract",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Promoted to a root-level command so the primary completion verb is reachable without the worktree noun; wb land and wb worktree land resolve through the identical constructor and can never drift apart."
     },
     {
       "id": "wb.layout.audit",

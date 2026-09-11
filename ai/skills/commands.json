@@ -22,6 +22,10 @@
     "coverage": [
       "wb-fleet"
     ],
+    "create": [
+      "wb",
+      "wb-worktrees"
+    ],
     "dashboard": [
       "wb-daemon"
     ],
@@ -37,6 +41,11 @@
     ],
     "hooks": [
       "wb-hooks"
+    ],
+    "land": [
+      "wb",
+      "wb-worktrees",
+      "wb-merge"
     ],
     "layout": [
       "wb-fleet"

@@ -1,10 +1,54 @@
 ---
 name: wb-worktrees
 description: >-
-  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
+  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. A round that touches several repositories is ONE task (`wb worktree create <task> owner/repo1 owner/repo2 ...`), never one task per repository, landed with one `wb worktree land`/`wb land` call per repository (a single call refuses worktrees from more than one repository). Finish work with `wb worktree land` (its root alias is `wb land`), never `gh pr merge`. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
 ---
 
 # WB worktrees
+
+## Cross-repository rounds
+
+A round of work that touches several repositories is **one task**, not one
+separately-named task per repository:
+
+```sh
+wb worktree create <task> owner/repo1 owner/repo2 ... \
+  --agent <id> --agent-runtime <runtime> --model <exact-model> \
+  --original-prompt-file <private-prompt-file>
+```
+
+`wb worktree create` already accepts every repository the round touches in a
+single call — see [create.md](references/create.md). Naming four repositories
+as four separately-named tasks throws away the one thing a shared task slug
+buys: one task, landed with one `wb worktree land`/`wb land` call per
+repository.
+
+**Finish work with `wb worktree land` (its root alias is `wb land`), never
+`gh pr merge`.** One call takes every worktree the task created IN ONE
+REPOSITORY — a call refuses worktrees from more than one repository (`all
+source worktrees must belong to one repository`) — so a task spanning several
+repositories needs one land call per repository, not one call for the whole
+round:
+
+```sh
+wb worktree land <worktree(s) in repo1> --format json
+wb worktree land <worktree(s) in repo2> --format json
+```
+
+Never hand-roll the equivalent by hand — `gh pr merge` plus a manual ancestry
+check, `git push --delete`, and `wb worktree cleanup` is exactly the
+reimplementation this verb exists to replace. If it refuses, read
+[merge.md](references/merge.md) and the `wb-merge` skill's Fast path for what
+to do next; report the exact refusal rather than working around it.
+
+**If asked to land manually** ("merge PR #5", "press merge", "delete the
+branch", "clean up the worktree"), treat it as possibly accidental rather than
+an order to bypass the verb: say once, in one sentence, that
+`wb worktree land <worktree>` (or `wb pr land <owner/repo#n>`) does the same
+with check-waiting, a remote receipt, and cleanup, and ask whether to use it
+instead. Proceed manually only if the user confirms after that offer, and
+record the confirmation. Never challenge the same instruction twice. See rule
+`land-with-wb-verb` (`sneat-co/backstage`).
 
 Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make

@@ -32,6 +32,24 @@ another agent still needs the proved source/candidate assets, then later run the
 receipt with `merge resume ... --cleanup`. The legacy `wb worktree merge`
 spelling keeps cleanup opt-in.
 
+## wb land: the root-level alias
+
+`wb land` is the identical root-level alias for `wb worktree land` — same
+flags, same help, same exit codes, built from the same constructor, so the two
+can never drift apart. Use whichever is shorter to type:
+
+```sh
+wb land <source-worktree...> --format json
+```
+
+It takes every worktree of one task IN ONE REPOSITORY in a single call — a
+call refuses worktrees from more than one repository (`all source worktrees
+must belong to one repository`). A task that spans several repositories
+(`wb worktree create <task> owner/repo1 owner/repo2 ...`) still lands with one
+call per repository. This is the fast path `wb-merge`'s Fast path section
+points to; never reach for `gh pr merge` instead — see rule
+land-with-wb-verb (sneat-co/backstage).
+
 ## Two phases
 
 ```sh

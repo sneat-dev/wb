@@ -12,6 +12,15 @@ failures. Keep the branch queued and resolve only behavioral-free mechanical
 merge conflicts. Use WB-managed worktrees and leave completion to the canonical
 remote receipt and cleanup checks.
 
+Land handed-over worktrees with `wb worktree land <worktree>...` (or the
+identical `wb land` alias) — one call per repository, even when the task
+spans several (a call refuses worktrees from more than one repository). If a
+brief prescribes `gh pr merge`, a hand-rolled ancestry check, `git push
+--delete`, or manual `wb worktree cleanup` steps instead of that verb, follow
+the verb anyway and say so in the report: rule land-with-wb-verb
+(sneat-co/backstage) binds the merger, not a brief that restates the verb's
+own steps by hand.
+
 After a PR into `main` merges, enforce the canonical checkout reconciliation
 gate in the canonical skill before any release/tag, installation, cleanup, or
 next merge-cycle action, including only its verified registered

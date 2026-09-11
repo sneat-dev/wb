@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB"
+  short_description: "Start with wb create, finish with wb land"
+  default_prompt: "Use $wb to find the right wb-* skill; start work with wb create and finish it with wb worktree land/wb land (or wb pr land), never gh pr merge."
