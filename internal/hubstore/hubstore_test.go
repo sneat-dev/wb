@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
+	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 )
@@ -156,7 +157,7 @@ func TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection(t *testing.T) 
 // journeys in hub/dalgostore_parity_test.go cannot run on inGitDB until
 // upstream honours the factory. When it does, this test fails and the
 // limitation in hub/README.md comes out.
-func TestInGitDBEngineCannotServeQueriesYet(t *testing.T) {
+func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hub")
 	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
@@ -168,16 +169,35 @@ func TestInGitDBEngineCannotServeQueriesYet(t *testing.T) {
 	if _, err := snapshots.StoreLatest(ctx, testSnapshot("machine-1")); err != nil {
 		t.Fatalf("StoreLatest: %v", err)
 	}
-	failure := recovered(func() {
-		if _, err := snapshots.ListLatest(ctx); err == nil {
-			panic(errors.New("no failure"))
-		}
-	})
-	if failure == nil {
-		t.Fatal("dalgo2ingitdb now decodes query rows into the caller's type; run the hub parity journeys over it and drop the limitation from hub/README.md")
+	latest, err := snapshots.ListLatest(ctx)
+	if err != nil || len(latest) != 1 || latest[0].MachineID != "machine-1" {
+		t.Fatalf("ListLatest = %+v, %v", latest, err)
 	}
-	if !strings.Contains(failure.Error(), "reflect") {
-		t.Fatalf("ListLatest failed for an unexpected reason: %v", failure)
+
+	events, status := hub.NewRepositoryEventStore(store)
+	machine := hub.Machine{ID: "machine-1", Name: "laptop", IdentityID: "local"}
+	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "evt-1", Repository: "github.com/sneat-dev/wb", Ref: "refs/heads/main", Reason: repositoryevent.ReasonDefaultBranchUpdated, TargetSHA: strings.Repeat("a", 40)}
+	if result, err := events.EnqueueForMachines(ctx, event, []hub.Machine{machine}); err != nil || result.Enqueued != 1 {
+		t.Fatalf("EnqueueForMachines = %+v, %v", result, err)
+	}
+	if result, err := events.EnqueueForMachines(ctx, event, []hub.Machine{machine}); err != nil || !result.Duplicate {
+		t.Fatalf("replayed EnqueueForMachines = %+v, %v", result, err)
+	}
+	polled, err := events.Poll(ctx, machine, "", 10)
+	if err != nil || len(polled.Events) != 1 || polled.Events[0].ID != "evt-1" {
+		t.Fatalf("Poll = %+v, %v", polled, err)
+	}
+	ack := repositoryevent.AckRequest{Version: repositoryevent.ContractVersion, Cursor: polled.NextCursor, EventIDs: []string{"evt-1"}}
+	if _, err := events.Acknowledge(ctx, machine, ack); err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	received, pending, _, err := status.IdentityRepositoryEventStatus(ctx, "local")
+	if err != nil || received == nil || received.LastAcknowledged == nil || len(pending) != 0 {
+		t.Fatalf("status after acknowledge = %+v, %+v, %v", received, pending, err)
+	}
+	after, err := events.Poll(ctx, machine, polled.NextCursor, 10)
+	if err != nil || len(after.Events) != 0 {
+		t.Fatalf("Poll after acknowledge = %+v, %v", after, err)
 	}
 }
 
