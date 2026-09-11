@@ -24,18 +24,11 @@ import (
 // slash-joined collection paths, JSON round-tripping of every stored struct,
 // and a genuine transaction.
 //
-// WithInterleavedReadsAndWritesInTransaction is required, not convenience:
-// RepositoryEventStore.EnqueueForMachines reads the per-identity status
-// document after it has already written the sequence, marker and queue
-// documents in the same transaction. dalgo2memory's Firestore profile rejects
-// that read the way the real Firestore client does (errReadAfterWrite), so the
-// strict profile cannot run the enqueue journey at all. See the note on
-// TestDALgoDocumentStoreRunsTheRepositoryEventJourney.
+// The strict Firestore profile is deliberate: like the real client it rejects
+// a transactional read that follows a write, so these journeys also prove the
+// stores order every read before the first write.
 func newDALgoDocumentStore() githubapp.DocumentStore {
-	return dalgostore.New(dalgo2memory.New(
-		dalgo2memory.FirestoreProfile(),
-		dalgo2memory.WithInterleavedReadsAndWritesInTransaction(),
-	))
+	return dalgostore.New(dalgo2memory.New(dalgo2memory.FirestoreProfile()))
 }
 
 // TestDALgoDocumentStoreRunsTheInstallationJourney walks issue → transition →
