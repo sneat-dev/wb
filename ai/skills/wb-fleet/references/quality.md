@@ -38,7 +38,19 @@ Choose one verification surface:
 - `coverage` measures statement-weighted Go coverage.
 - `verify` runs selected conventional Go and Node checks.
 - `check --profile fast|full|ci` uses a stable policy; `ci` also runs
-  SpecScore lint when `spec/` exists.
+  SpecScore lint whenever `spec/` exists, except in an external SpecScore
+  Plans store such as `sneat-co/workbench`, where the check is reported
+  skipped. A store has no root `specscore.yaml` (a symlink counts), a root
+  `.gitignore` line `/.specscore-lifecycle.lock`
+  (`REQ:external-store-lifecycle-lock`), and nothing under `spec/` except
+  `spec/plans/README.md`, `spec/plans/{host}/{owner}/{repo}/README.md` and
+  entries beneath `spec/plans/{host}/{owner}/{repo}/{plan-id}/`, with at
+  least one entry inside a namespace; `{host}` must look like a hostname.
+  SpecScore lint does not apply to that layout (it cannot run without a
+  config, and reports `readme-exists` and `plan-hierarchy` violations with
+  one), and wb does not validate those Plans. Any other `spec/` shape,
+  including an empty or symlinked one, runs lint and fails without a
+  config.
 
 For a selected fleet:
 

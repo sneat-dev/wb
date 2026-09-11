@@ -191,8 +191,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 	if containsCheck(checks, CheckSpec) {
 		specRoot := filepath.Join(path, "spec")
 		if _, err := os.Stat(specRoot); err == nil {
-			entry := runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
-			report.Results = append(report.Results, entry)
+			report.Results = append(report.Results, specLintOrSkip(ctx, options, path, specRoot))
 		} else if !os.IsNotExist(err) {
 			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)})
 		} else {
@@ -231,6 +230,191 @@ func containsCheck(checks []Check, want Check) bool {
 		}
 	}
 	return false
+}
+
+// specLintOrSkip decides whether spec/ requires specscore spec lint or is an
+// external SpecScore Plans store, for which SpecScore lint does not apply.
+// sneat-co/workbench is the canonical example: SpecScore's Plan repository
+// routing stores other projects' Plans there under
+// spec/plans/{host}/{owner}/{repo}/... (specscore/specscore
+// spec/features/repo-config "Plan repository routing" and spec/features/plan
+// REQ:external-source-namespace). Without a specscore.yaml, specscore spec
+// lint cannot run at all; with one, specscore 0.49.0 reports structural
+// violations (readme-exists, plan-hierarchy) for that layout. wb therefore
+// reports the check skipped and does not validate those Plans. A repository
+// with a root specscore.yaml entry always runs lint.
+func specLintOrSkip(ctx context.Context, options RunOptions, path, specRoot string) VerificationEntry {
+	specConfig := filepath.Join(path, "specscore.yaml")
+	if _, configErr := os.Lstat(specConfig); configErr != nil {
+		if !os.IsNotExist(configErr) {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)}
+		}
+		external, externalErr := isExternalPlansStore(path, specRoot)
+		if externalErr != nil {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore Plans layout %q: %v", specRoot, externalErr)}
+		}
+		if external {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "external SpecScore Plans store (no specscore.yaml): SpecScore lint does not apply to the spec/plans/{host}/{owner}/{repo}/ layout, and wb does not validate these Plans"}
+		}
+	}
+	return runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
+}
+
+// externalStoreLifecycleLockRule is the anchored ignore rule every external
+// Plan-store repository carries (specscore/specscore spec/features/plan
+// REQ:external-store-lifecycle-lock).
+const externalStoreLifecycleLockRule = "/.specscore-lifecycle.lock"
+
+// isExternalPlansStore reports whether the repository at path is an external
+// SpecScore Plans store. All of these must hold:
+//   - the root .gitignore is a regular file with the exact line
+//     /.specscore-lifecycle.lock;
+//   - every non-directory entry under specRoot is a regular file that fits
+//     externalPlansStorePath. The walk inspects every non-directory entry,
+//     not only regular files, so symlinks fail closed: a symlinked spec/ or
+//     spec/plans, a symlink anywhere beneath them (which could escape the
+//     namespace, see REQ:external-source-namespace), a FIFO or any other
+//     special entry disqualifies the store and lint runs;
+//   - at least one of those entries lies inside a
+//     spec/plans/{host}/{owner}/{repo}/ namespace, so an empty spec/, one
+//     holding only directories, or one holding only spec/plans/README.md
+//     still runs lint.
+//
+// Any other spec/ content -- a SpecScore project's own spec/features or
+// spec/ideas, or a same-repository spec/plans/{plan-id} tree -- disqualifies
+// the layout, and the caller runs specscore spec lint as usual.
+func isExternalPlansStore(path, specRoot string) (bool, error) {
+	ignored, err := ignoresLifecycleLock(filepath.Join(path, ".gitignore"))
+	if err != nil || !ignored {
+		return false, err
+	}
+	fits := true
+	namespaced := 0
+	err = filepath.WalkDir(specRoot, func(walkPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(specRoot, walkPath)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		if !entry.Type().IsRegular() || !externalPlansStorePath(rel) {
+			fits = false
+			return filepath.SkipAll
+		}
+		if rel != "plans/README.md" {
+			namespaced++
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return fits && namespaced > 0, nil
+}
+
+// ignoresLifecycleLock reports whether gitignore is a regular file holding
+// the exact line externalStoreLifecycleLockRule. As git does, it drops a
+// trailing CR and trailing spaces before comparing. A missing or symlinked
+// .gitignore (git does not read an in-tree symlinked .gitignore) does not
+// qualify.
+func ignoresLifecycleLock(gitignore string) (bool, error) {
+	info, err := os.Lstat(gitignore)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	contents, err := os.ReadFile(gitignore)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimRight(strings.TrimSuffix(line, "\r"), " ")
+		if line == externalStoreLifecycleLockRule {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// externalPlansStorePath reports whether rel -- a spec/-relative, slash
+// separated path of a non-directory entry -- fits the external Plans-store
+// layout:
+//   - plans/README.md, the optional aggregate index;
+//   - plans/{host}/{owner}/{repo}/README.md, a namespace index (exactly
+//     README.md; no other file sits at namespace level);
+//   - plans/{host}/{owner}/{repo}/{plan-id}/..., anything at least one
+//     directory below the repo segment.
+//
+// {host} must look like a hostname (see plansStoreHost), and {owner} and
+// {repo} must be non-empty without a leading dot. SpecScore Plan slugs cannot
+// contain a dot (REQ:plan-slug-format), so the hostname rule separates an
+// external namespace from a same-repository nested plan such as
+// plans/phase-1/core/loop/task/README.md.
+func externalPlansStorePath(rel string) bool {
+	segments := strings.Split(rel, "/")
+	if len(segments) < 2 || segments[0] != "plans" {
+		return false
+	}
+	if len(segments) == 2 {
+		// spec/plans/README.md is the optional aggregate index; any other
+		// file directly under spec/plans/ is the same-repository flat layout
+		// (spec/plans/{plan-slug}.md), not an external namespace.
+		return segments[1] == "README.md"
+	}
+	if len(segments) < 5 {
+		// Shorter than spec/plans/{host}/{owner}/{repo}/{something}: a file
+		// at host or owner level.
+		return false
+	}
+	if !plansStoreHost(segments[1]) || !plansStoreOwnerOrRepo(segments[2]) || !plansStoreOwnerOrRepo(segments[3]) {
+		return false
+	}
+	// segments[4:] is either the namespace index README.md or content
+	// beneath a plan-id directory.
+	remainder := segments[4:]
+	if len(remainder) == 1 {
+		return remainder[0] == "README.md"
+	}
+	return true
+}
+
+// plansStoreHost reports whether segment looks like a hostname: lowercase
+// letters, digits, '-' and '.', at least one dot, and dot-separated labels
+// that are non-empty and neither start nor end with '-'. That rules out a
+// leading or trailing dot or hyphen, "..", ".git" and "not a host".
+func plansStoreHost(segment string) bool {
+	labels := strings.Split(segment, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// plansStoreOwnerOrRepo reports whether segment is a usable owner or
+// repository segment: non-empty with no leading dot, which rules out ".",
+// ".." and ".git".
+func plansStoreOwnerOrRepo(segment string) bool {
+	return segment != "" && segment[0] != '.'
 }
 
 func goCommand(check Check, singleWorker bool) []string {
