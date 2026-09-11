@@ -316,22 +316,29 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 // `--help`/`-h`/`help` invocation of a tool this guard otherwise judges by
 // write verb was refused exactly like the write it was only asking about,
 // because the verb scan matches anywhere in the argument list. Every command
-// here is a bare help request — a subcommand chain (or none) trailing in one
-// --help/-h, or a bare `help` subcommand — with no other flag mixed onto the
-// line, exactly the shape requestsHelp recognises after the wb#500 second
-// review's Should-fix 1 (see TestBashCommandsWithAFlagBesideHelpAreInspected
-// NormallyNotBypassed for the shapes that no longer qualify).
+// here is recognised as help by its own tool's shape (see requestsHelp):
+// cobra-based specscore keeps a subcommand chain (or none) trailing in one
+// --help/-h, or a bare `help` subcommand, but go/npm/pnpm/yarn/bun only
+// recognise the bare `<tool> --help`/`<tool> -h` invocation or `<tool> help
+// ...` — a subcommand in front of --help/-h is NOT safe on those five
+// (wb#500 third review) and is inspected normally instead of bypassed (see
+// TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools and
+// TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed for the
+// shapes that no longer qualify, or never did).
 func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
 	repositories := newFixture(t)
 	commands := []string{
 		"specscore feature change-status --help",
 		"specscore feature change-status x -h",
 		"specscore help feature change-status",
-		"go mod tidy --help",
+		"specscore --help",
+		"go --help",
+		"go -h",
 		"go help mod tidy",
 		"go help build",
-		"pnpm install --help",
 		"pnpm --help",
+		"yarn --help",
+		"bun --help",
 		"npm help install",
 		"npm help run",
 	}
@@ -666,6 +673,62 @@ func TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation(t *testi
 			for _, expected := range []string{"wb run --", "durable ID"} {
 				if !strings.Contains(decision.Reason, expected) {
 					t.Fatalf("refusal for %q is missing %q:\n%s", command, expected, decision.Reason)
+				}
+			}
+		})
+	}
+}
+
+// TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools pins the
+// wb#500 third review: go/npm/pnpm/yarn/bun each have at least one subcommand
+// that passes positional arguments straight through to a script or program
+// instead of stopping at their own flag parser, so a subcommand word in front
+// of --help/-h is not a safe help shape for them the way it is for
+// cobra-based specscore. Confirmed against the real binaries: `pnpm run
+// build --help` and `bun run build --help` ran the build script, and `go run
+// . --help` ran the program. pnpm, yarn, and bun also run a package.json
+// script when invoked WITHOUT "run" (`pnpm build --help` runs the "build"
+// script too), so bareStyleHelp trusts nothing but the bare top-level
+// invocation for these five tools — see requestsHelp's own doc.
+//
+// Each pair here asserts the --help line lands on exactly the same side of
+// the governed-validation gate as the same command without --help: `npm run
+// build --help` is inspected normally and still hits the gate a bare `npm
+// run build` does (uniformly with the others, even though the real npm
+// prints help for that one and never runs the script — the point is one
+// rule, not per-tool leniency); `go run . --help` is inspected normally and,
+// like a bare `go run .`, does not hit the gate at all, because "run" is not
+// one of go's governed verbs (test/vet/build).
+func TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pairs := []struct{ withHelp, withoutHelp string }{
+		{"pnpm run build --help", "pnpm run build"},
+		{"bun run build --help", "bun run build"},
+		{"yarn build --help", "yarn build"},
+		{"pnpm build --help", "pnpm build"},
+		{"go run . --help", "go run ."},
+		{"go test ./... -h", "go test ./..."},
+		{"npm run build --help", "npm run build"},
+	}
+	for _, pair := range pairs {
+		t.Run(pair.withHelp, func(t *testing.T) {
+			withHelp := Inspect(bashCall(pair.withHelp, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			withoutHelp := Inspect(bashCall(pair.withoutHelp, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if withHelp.Deny != withoutHelp.Deny {
+				t.Fatalf("Inspect(%q).Deny = %v but Inspect(%q).Deny = %v; --help must not change which side of the governed-validation gate the call lands on", pair.withHelp, withHelp.Deny, pair.withoutHelp, withoutHelp.Deny)
+			}
+			if withHelp.Deny {
+				for _, expected := range []string{"wb run --", "durable ID"} {
+					if !strings.Contains(withHelp.Reason, expected) {
+						t.Fatalf("refusal for %q is missing %q:\n%s", pair.withHelp, expected, withHelp.Reason)
+					}
 				}
 			}
 		})

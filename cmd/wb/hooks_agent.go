@@ -99,15 +99,30 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     value set ahead of time cannot silently cover a whole session.
 
 A 'specscore'/'go'/'npm'/'pnpm'/'yarn'/'bun' invocation is never refused for
-naming a write verb when its own words are shaped as a bare help request
-(wb#493): a subcommand chain with no other flag at all, trailing in exactly
-one '--help'/'-h' and nothing after it, or the literal word 'help' first with
-no flag anywhere in the rest. Any other flag on the line — one positioned to
-be swallowed as an earlier flag's own value ('specscore change-status <id>
---caller --help --to Approved' really calls change-status, because '--caller'
-takes the next token unconditionally as its value), or a '--' separator that
-hands '--help' to a script instead of the wrapper ('npm run build --
---help' really runs the build script) — is inspected normally instead.
+naming a write verb when its own words are shaped as a genuine help request
+(wb#493), but which shape counts depends on the tool. 'specscore' is
+cobra-based, so a trailing '--help'/'-h' always prints help no matter how many
+subcommand words precede it: a subcommand chain with no other flag at all,
+trailing in exactly one '--help'/'-h' and nothing after it, or the literal
+word 'help' first with no flag anywhere in the rest. 'go'/'npm'/'pnpm'/'yarn'/
+'bun' get only the bare top-level shape — exactly '<tool> --help'/'<tool> -h'
+with nothing else after the program name, or '<tool> help' followed by zero or
+more non-flag words — because each has at least one subcommand that passes
+positional arguments straight through to a script or program instead of
+stopping at its own flag parser: against the real binaries, 'pnpm run build
+--help' and 'bun run build --help' ran the build script, and 'go run . --help'
+ran the program; pnpm/yarn/bun also run a package.json script when invoked
+WITHOUT 'run' ('pnpm build --help' runs the 'build' script too), so no
+denylist of pass-through verbs is safe for them either. Any other flag on the
+line — one positioned to be swallowed as an earlier flag's own value
+('specscore change-status <id> --caller --help --to Approved' really calls
+change-status, because '--caller' takes the next token unconditionally as its
+value), a '--' separator that hands '--help' to a script instead of the
+wrapper ('npm run build -- --help' really runs the build script), or (for the
+five non-cobra tools) any subcommand word at all in front of '--help'/'-h'
+('npm run build --help', 'go test ./... -h') — is inspected normally instead,
+which for these tools means it still hits the governed-validation gate inside
+a managed worktree exactly like the same command without '--help' would.
 gh pr merge's own '--help'/'-h' recognition is separate and value-flag aware:
 'gh pr merge 123 --subject --help' is a real merge, because '--subject' takes
 the next token unconditionally as its value and never sees '--help' as a
