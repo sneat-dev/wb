@@ -87,15 +87,23 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
   - Dispatch into a live claim (Agent/Task tool): refuses a dispatch that
     names a repository another live WB claim already covers. See lesson
     a-brief-was-dispatched-for-work-already-under-an-active-wb-claim.
-  - Land with the WB verb: refuses 'gh pr merge' (any flags, chained,
-    subshelled) and names 'wb worktree land <worktree>' and
-    'wb pr land <owner/repo#n>' instead. See rule land-with-wb-verb
-    (sneat-co/backstage). WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>" is the
-    explicit, recorded escape hatch for the one call it is set on.
+  - Land with the WB verb: refuses 'gh pr merge' under any flags, chained
+    with '&&'/';', subshelled with parentheses or piped, and wrapped in
+    'bash -c'/'sh -c'/'zsh -c' (recursed into the payload, bounded depth, so
+    a payload that itself wraps another 'bash -c' is still caught) — and
+    names 'wb worktree land <worktree>' and 'wb pr land <owner/repo#n>'
+    instead. See rule land-with-wb-verb (sneat-co/backstage). Prefixing that
+    exact call's own words with WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"
+    (directly, or via 'env') is the explicit, recorded escape hatch for that
+    one call; the hook process's own ambient environment is never read, so a
+    value set ahead of time cannot silently cover a whole session.
 
-A read-only '--help'/'-h'/'help' invocation of a tool this guard otherwise
-judges by write verb ('specscore', 'go', 'npm'/'pnpm'/'yarn'/'bun') is never
-refused. See wb#493.
+A read-only '--help'/'-h'/'help' invocation of 'specscore', 'go',
+'npm'/'pnpm'/'yarn'/'bun' is never refused for that reason alone (wb#493). gh
+pr merge's own '--help'/'-h' recognition is separate and value-flag aware:
+'gh pr merge 123 --subject --help' is a real merge, because '--subject' takes
+the next token unconditionally as its value and never sees '--help' as a
+flag; a bare, unconsumed '--help'/'-h' is what is ever treated as help.
 
 This command fails open without exception. An unreadable payload, an
 unrecognised tool, a shell construct it cannot model, a path it cannot
