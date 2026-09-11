@@ -30,7 +30,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	ctx := context.Background()
 
 	withToken := memoryHubConfig(t)
-	mount, err := mountHub(ctx, withToken, "127.0.0.1:8791", narrate.Writer{})
+	mount, err := mountHub(ctx, withToken, "127.0.0.1:8791", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
@@ -43,7 +43,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	}
 
 	withoutToken := hubTestConfig(t, "hub:\n  store:\n    engine: memory\n")
-	silent, err := mountHub(ctx, withoutToken, "127.0.0.1:8792", narrate.Writer{})
+	silent, err := mountHub(ctx, withoutToken, "127.0.0.1:8792", narrate.Writer{}, nil)
 	if err != nil || silent == nil {
 		t.Fatalf("mountHub = %v, %v", silent, err)
 	}
@@ -95,7 +95,7 @@ func TestHubGitHubTokenIsReadPerTickAndNeverNarrated(t *testing.T) {
 func TestHubHealthReportsPollingAndDeliveryMarkers(t *testing.T) {
 	ctx := context.Background()
 	configPath := memoryHubConfig(t)
-	mount, err := mountHub(ctx, configPath, "127.0.0.1:8793", narrate.Writer{})
+	mount, err := mountHub(ctx, configPath, "127.0.0.1:8793", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}

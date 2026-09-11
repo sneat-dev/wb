@@ -1,10 +1,11 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Implemented
 ---
 # Plan: Self-hosted bench implementation plan
 
-**Status:** Approved
+**Status:** Implemented
+**Reconciled:** 2026-09-11
 **Source Feature:** self-hosted-bench
 **Date:** 2026-09-11
 **Owner:** alex
@@ -48,7 +49,7 @@ narrates through the daemon's existing logger rather than a new one.
 **Id:** task-1
 **Verifies:** self-hosted-bench#ac:serve-without-app-or-public-url, self-hosted-bench#ac:store-engine-is-configuration
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
 
 Add the `hub:` section to `internal/wbconfig` with `store.engine` (memory,
 ingitdb, openvaultdb; default ingitdb under `~/.wb/hub`), `github.token_file`,
@@ -76,7 +77,7 @@ refusal, and a serve-and-fetch test that reads `/bench/dashboard/` and
 **Id:** task-2
 **Verifies:** self-hosted-bench#ac:poll-detects-default-branch-update, self-hosted-bench#ac:poll-detects-rename, self-hosted-bench#ac:every-event-is-narrated-on-the-console
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add `hub/poller`: for each repository in the machine's published inventory,
 read `GET /repos/{owner}/{repo}` and the default branch head, compare with
@@ -102,7 +103,7 @@ console lines for every outcome.
 **Id:** task-3
 **Verifies:** self-hosted-bench#ac:whole-journey-e2e, self-hosted-bench#ac:serve-without-app-or-public-url
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Wire `hub.github.app` into the mounted handler so signed deliveries at
 `/v0/workbench/github/webhook` are verified and enqueued exactly as the
@@ -130,4 +131,10 @@ and `ai/capabilities.json` for `--quiet` and the status additions.
   build tag; choose in Task 1 and document it.
 
 ---
+
+## Resolution
+
+**Reconciled Approved → Implemented outside the tracked `change-status` flow** (3 task(s) marked complete; this did not walk the legal-transition matrix).
+
+Tasks 1 and 2 landed on main as 8a26d81 and 1b7c3f7; Task 3 (webhook mode, release build of the dashboard, whole-journey e2e) is implemented on self-hosted-bench-task-3.
 *This document follows the https://specscore.md/plan-specification*

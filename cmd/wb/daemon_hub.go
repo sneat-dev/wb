@@ -47,9 +47,20 @@ type hubMount struct {
 	// Interval is the configured poll interval, reported by
 	// `wb daemon status` whether or not polling is active.
 	Interval time.Duration
-	closer   io.Closer
-	status   *hub.StatusService
-	viewer   hub.Viewer
+	// Webhook is nil unless hub.github.app is configured.
+	Webhook *webhookMode
+	closer  io.Closer
+	status  *hub.StatusService
+	viewer  hub.Viewer
+}
+
+// hubTuning overrides the two values a whole-journey end-to-end test cannot
+// live with: GitHub's origin, which a test replaces with a fake server, and
+// the poll interval, whose 30s configuration floor is far longer than a test
+// may run. Nothing outside a test sets it; production passes nil.
+type hubTuning struct {
+	APIBaseURL   string
+	PollInterval time.Duration
 }
 
 // Close releases the store engine. Safe on a nil mount so callers can defer
@@ -123,7 +134,7 @@ func (mount *hubMount) StartLine() string {
 	if mount == nil {
 		return ""
 	}
-	return fmt.Sprintf("WB hub: engine=%s store=%s dashboard=%s", mount.Engine, mount.Store, mount.DashboardURL)
+	return fmt.Sprintf("WB hub: engine=%s store=%s dashboard=%s%s", mount.Engine, mount.Store, mount.DashboardURL, mount.Webhook.StartSuffix())
 }
 
 type fixedViewerResolver struct{ viewer hub.Viewer }
@@ -135,7 +146,7 @@ func (resolver fixedViewerResolver) Viewer(*http.Request) (hub.Viewer, error) {
 // mountHub builds the hub and the embedded dashboard when wb.yaml has a hub
 // section. It returns (nil, nil) when the section is absent, which is the
 // path every operator who does not self-host takes.
-func mountHub(ctx context.Context, configPath, listenAddress string, writer narrate.Writer) (*hubMount, error) {
+func mountHub(ctx context.Context, configPath, listenAddress string, writer narrate.Writer, tuning *hubTuning) (*hubMount, error) {
 	cfg, found, err := hubconfig.Load(configPath)
 	if err != nil || !found {
 		return nil, err
@@ -144,7 +155,7 @@ func mountHub(ctx context.Context, configPath, listenAddress string, writer narr
 	if err != nil {
 		return nil, err
 	}
-	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress, writer)
+	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress, writer, tuning)
 	if err != nil {
 		_ = closer.Close()
 		return nil, err
@@ -153,7 +164,7 @@ func mountHub(ctx context.Context, configPath, listenAddress string, writer narr
 	return mount, nil
 }
 
-func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string, writer narrate.Writer) (*hubMount, error) {
+func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string, writer narrate.Writer, tuning *hubTuning) (*hubMount, error) {
 	machine, err := localMachineName(configPath)
 	if err != nil {
 		return nil, err
@@ -163,8 +174,12 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		return nil, err
 	}
 	credentials, resolver, snapshots := hub.NewMachineStores(store)
-	_, bindings, entitlements, lifecycle := hub.NewInstallationStores(store)
+	states, bindings, _, lifecycle := hub.NewInstallationStores(store)
 	events, eventStatus := hub.NewRepositoryEventStore(store)
+	webhook, err := newWebhookMode(cfg, states, bindings, pepper)
+	if err != nil {
+		return nil, err
+	}
 
 	viewer := hub.Viewer{Authenticated: true, IdentityID: localIdentityID, DisplayName: machine}
 	enrollment := &hub.MachineEnrollmentService{Store: credentials, Pepper: pepper}
@@ -177,12 +192,15 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Enrollment:     enrollment,
 		Snapshots:      snapshotService,
 		RepositoryEvents: &hub.RepositoryEventService{
-			Snapshots: snapshots, Entitlements: entitlements, Lifecycle: lifecycle, Store: events,
+			Snapshots: snapshots, Entitlements: localRepositoryEntitlements{identityID: localIdentityID}, Lifecycle: lifecycle, Store: events,
 			Narrate: writer.Write,
 		},
-		Status: status,
-		// Installations, Projection and WebhookSecret stay unset: every route
-		// family they gate answers 503 until Task 3 wires the GitHub App.
+		Status:        status,
+		Installations: webhook.Installations(),
+		WebhookSecret: webhook.WebhookSecret(),
+		// Projection stays unset: the hosted instance projects deliveries into
+		// its own dashboard read model, which a loopback hub reads from the
+		// same store the events are written to.
 		AllowedOrigin: "http://" + listenAddress,
 		Narrate:       writer.Write,
 	})
@@ -195,8 +213,9 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Store:        cfg.Location(),
 		Machine:      machine,
 		DashboardURL: "http://" + listenAddress + web.MountPath + "dashboard/",
-		Poller:       newHubPoller(cfg, store, snapshots, events, machine, writer),
-		Interval:     cfg.GitHub.PollInterval,
+		Poller:       newHubPoller(cfg, store, snapshots, events, machine, writer, webhook, tuning),
+		Interval:     pollInterval(cfg, tuning),
+		Webhook:      webhook,
 		status:       status,
 		viewer:       viewer,
 		Mounts: map[string]http.Handler{
@@ -209,20 +228,40 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 // newHubPoller builds the polling ingester, or returns nil when no token file
 // is configured. Polling is the only ingestion a self-hoster gets by default,
 // and a token is the only thing it needs.
-func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer) *poller.Poller {
+func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer, webhook *webhookMode, tuning *hubTuning) *poller.Poller {
 	if strings.TrimSpace(cfg.GitHub.TokenFile) == "" {
 		return nil
 	}
+	baseURL := ""
+	if tuning != nil {
+		baseURL = tuning.APIBaseURL
+	}
 	return poller.New(poller.Options{
 		Client:       &http.Client{Timeout: 30 * time.Second},
+		APIBaseURL:   baseURL,
 		Token:        hubGitHubToken(cfg.GitHub.TokenFile),
 		Snapshots:    snapshots,
 		Events:       events,
 		Observations: hub.NewPollObservationStore(store),
 		Machine:      hub.Machine{ID: hub.MachineID(localIdentityID, machine), Name: machine, IdentityID: localIdentityID},
-		Interval:     cfg.GitHub.PollInterval,
+		Interval:     pollInterval(cfg, tuning),
 		Narrate:      writer.Write,
+		// Webhook mode takes repositories off the poller: an App that
+		// delivers them pushes faster than any interval, and the fallback is
+		// automatic because a binding that disappears makes them polled again.
+		Covered: webhook.Covered,
 	})
+}
+
+// pollInterval is the configured interval, or the test override when one is
+// injected. The configuration floor is deliberately not applied to the
+// override: it exists to protect GitHub's rate limit, and a test's fake
+// GitHub has none.
+func pollInterval(cfg hubconfig.Config, tuning *hubTuning) time.Duration {
+	if tuning != nil && tuning.PollInterval > 0 {
+		return tuning.PollInterval
+	}
+	return cfg.GitHub.PollInterval
 }
 
 // hubGitHubToken reads the operator's token from its file on every tick, so
