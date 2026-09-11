@@ -1,0 +1,11 @@
+---
+import DashboardView from '../components/DashboardView.astro';
+import { dashboardShell } from '../data/dashboard';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const dashboard = dashboardShell({ kind: 'user' });
+---
+
+<BaseLayout title="Workbench dashboard — progress with receipts" description="See workbench lifecycle timing, verified outcomes, CI and cleanup signals, and privacy-respecting contribution trends." path="/dashboard/">
+  <DashboardView {dashboard} />
+</BaseLayout>
