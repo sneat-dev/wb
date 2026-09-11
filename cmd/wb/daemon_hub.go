@@ -213,7 +213,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Store:        cfg.Location(),
 		Machine:      machine,
 		DashboardURL: "http://" + listenAddress + web.MountPath + "dashboard/",
-		Poller:       newHubPoller(cfg, store, snapshots, events, machine, writer, webhook, tuning),
+		Poller:       newHubPoller(cfg, store, snapshots, events, machine, writer, tuning),
 		Interval:     pollInterval(cfg, tuning),
 		Webhook:      webhook,
 		status:       status,
@@ -228,8 +228,13 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 // newHubPoller builds the polling ingester, or returns nil when no token file
 // is configured. Polling is the only ingestion a self-hoster gets by default,
 // and a token is the only thing it needs.
-func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer, webhook *webhookMode, tuning *hubTuning) *poller.Poller {
-	if strings.TrimSpace(cfg.GitHub.TokenFile) == "" {
+func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer, tuning *hubTuning) *poller.Poller {
+	// Webhook mode replaces polling outright: the operator installed the App
+	// on the repositories they care about, so GitHub pushes every default-
+	// branch update and rename, and only the repository named by an event is
+	// pulled. Polling alongside it would spend the shared per-user API budget
+	// on repositories that already report themselves (founder, 2026-09-11).
+	if cfg.GitHub.App != nil || strings.TrimSpace(cfg.GitHub.TokenFile) == "" {
 		return nil
 	}
 	baseURL := ""
@@ -246,10 +251,6 @@ func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots
 		Machine:      hub.Machine{ID: hub.MachineID(localIdentityID, machine), Name: machine, IdentityID: localIdentityID},
 		Interval:     pollInterval(cfg, tuning),
 		Narrate:      writer.Write,
-		// Webhook mode takes repositories off the poller: an App that
-		// delivers them pushes faster than any interval, and the fallback is
-		// automatic because a binding that disappears makes them polled again.
-		Covered: webhook.Covered,
 	})
 }
 

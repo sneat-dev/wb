@@ -51,6 +51,18 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	if silent.Poller != nil {
 		t.Fatal("a hub with no token file has nothing to ask GitHub with")
 	}
+
+	// Webhook mode replaces polling even when a token file is present: the
+	// App reports every push, so only the repository an event names is pulled.
+	withApp := appHubConfig(t, "0123456789abcdef0123456789abcdef")
+	webhook, err := mountHub(ctx, withApp, "127.0.0.1:8793", narrate.Writer{}, nil)
+	if err != nil || webhook == nil {
+		t.Fatalf("mountHub = %v, %v", webhook, err)
+	}
+	defer func() { _ = webhook.Close() }()
+	if webhook.Poller != nil {
+		t.Fatal("a hub in webhook mode must not poll GitHub")
+	}
 	// startPolling is safe on both, and on a mount that does not exist.
 	stopped, cancel := context.WithCancel(ctx)
 	cancel()
@@ -102,7 +114,7 @@ func TestHubHealthReportsPollingAndDeliveryMarkers(t *testing.T) {
 	defer func() { _ = mount.Close() }()
 
 	health := mount.health(ctx)
-	if !health.Mounted || !health.Polling || health.PollIntervalSeconds != 60 {
+	if !health.Mounted || !health.Polling || health.PollIntervalSeconds != 1200 {
 		t.Fatalf("health = %+v", health)
 	}
 	if health.LastEventReceived != nil || health.LastEventAcknowledged != nil {
@@ -156,7 +168,7 @@ func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	status := newDaemonController(deps, root).status(t, "127.0.0.1:8765")
-	if !status.Polling || status.PollInterval != "1m0s" || status.RepositoriesPolled != 7 {
+	if !status.Polling || status.PollInterval != "20m0s" || status.RepositoriesPolled != 7 {
 		t.Fatalf("hub status = %+v", status)
 	}
 	if status.LastEventReceived == nil || status.LastEventAcknowledged == nil {
@@ -195,7 +207,7 @@ func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
 	var out bytes.Buffer
 	err := writeDaemonResult(&out, "text", daemonResult{Action: "status", Hub: daemonHubStatus{
 		Mounted: true, Engine: "memory", Store: "(in-memory; discarded on exit)", Listen: "127.0.0.1:8766",
-		Polling: true, PollInterval: "1m0s", RepositoriesPolled: 7,
+		Polling: true, PollInterval: "20m0s", RepositoriesPolled: 7,
 		LastEventReceived:     &daemonHubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
 		LastEventAcknowledged: &daemonHubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
 	}})
@@ -203,7 +215,7 @@ func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"hub_polling=true", "hub_poll_interval=1m0s", "hub_repositories_polled=7",
+		"hub_polling=true", "hub_poll_interval=20m0s", "hub_repositories_polled=7",
 		`hub_last_event_received="poll:acme_app:default_branch_updated:abc"`,
 		`hub_last_event_acknowledged="poll:acme_app:default_branch_updated:abc"`,
 	} {
@@ -403,7 +415,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		t.Fatalf("health is not JSON: %v\n%s", err, body)
 	}
-	if payload.Hub == nil || !payload.Hub.Mounted || !payload.Hub.Polling || payload.Hub.PollIntervalSeconds != 60 {
+	if payload.Hub == nil || !payload.Hub.Mounted || !payload.Hub.Polling || payload.Hub.PollIntervalSeconds != 1200 {
 		t.Fatalf("health hub block = %+v (%s)", payload.Hub, body)
 	}
 	// --quiet was passed, so the hub's per-event lines are silenced while the

@@ -51,8 +51,10 @@ way it does for hosted events today.
 If I later want push latency instead of polling, I register a GitHub App,
 point its webhook at a tunnel I run with my own cloudflared or ngrok
 credentials, and give the daemon the App's secrets. Events then arrive by
-webhook, and polling stops for repositories the App covers. If I stop the
-tunnel, polling resumes and nothing is lost.
+webhook and the daemon polls nothing: only the repository an event names is
+pulled. If I stop the tunnel, deliveries wait in GitHub's retry queue and
+nothing is lost; there is no polling fallback because it would spend the
+per-user API budget every tool shares (founder, 2026-09-11).
 
 ## Behavior
 
@@ -80,7 +82,7 @@ hub:
     url: http://127.0.0.1:8080                    # openvaultdb server
   github:
     token_file: <absolute private path>           # required for polling
-    poll_interval: 60s                            # bounded, default 60s
+    poll_interval: 20m                            # bounded, default 20m
     app:                                          # optional: webhook mode
       app_id: 123
       private_key_file: <absolute private path>
@@ -116,14 +118,16 @@ enqueues the same `repositoryevent.Event` the webhook path would produce
 machine. Event IDs are derived from repository, reason and target so replays
 deduplicate. The poller respects GitHub's rate-limit headers, backs off on
 errors, and never runs more than one request per repository per interval.
-Repositories covered by an installed GitHub App in webhook mode are skipped
-by the poller.
+The poller only exists without an App: in webhook mode it is not started.
 
 ### Webhook mode
 
 When `hub.github.app` is configured the hub verifies deliveries exactly as
-the hosted instance does and the operator's tunnel forwards
-`<public_url>/v0/workbench/github/webhook` to the loopback port. The daemon
+the hosted instance does and the operator's tunnel or reverse proxy forwards
+`<public_url>/v0/workbench/github/webhook` to the loopback port. The poller
+is not started in this mode, whether or not a token file is set: the App
+reports every default-branch push and rename, and the daemon pulls only the
+repository an event names. The daemon
 does not manage the tunnel process in this feature; a later feature may spawn
 cloudflared or ngrok with operator credentials.
 
@@ -218,8 +222,10 @@ None at this time. Resolved 2026-09-11 with the founder's approval:
 
 - Default store engine for self-hosting is inGitDB: durable, inspectable
   files under `~/.wb/hub`, no server, no CGO.
-- Polling interval defaults to 60s with a 30s floor; GitHub's rate-limit
-  headers cap it further when needed.
+- Polling interval defaults to 20 minutes with a 30s floor (founder,
+  2026-09-11: a one-minute default drained the shared per-user API budget
+  on a 379-repository fleet within minutes); GitHub's rate-limit headers
+  cap it further when needed.
 - The dashboard is embedded in the binary; the release job builds `hub/web`
   with Node before goreleaser runs. The founder confirmed the size cost
   (about 0.5 MB on a 28 MB binary) is acceptable.
