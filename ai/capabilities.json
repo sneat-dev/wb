@@ -3829,8 +3829,43 @@
               "kind": "unit"
             },
             {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashUnwrapsShellDashC",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestHelpBypassNeverAppliesOutsideItsOwnAllowlist",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashHelpTokenNeverBypassesAnUnrelatedGuard",
+              "kind": "unit"
+            },
+            {
               "path": "cmd/wb/hooks_agent_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall",
               "kind": "integration"
             }
           ],
