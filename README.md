@@ -787,13 +787,21 @@ Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
 default) runs lint/test/build, and `ci` additionally runs `specscore spec lint`
-for repositories with `spec/` and a root `specscore.yaml`. When `spec/` exists
-with no `specscore.yaml` and every file under it fits the external SpecScore
-Plans-store layout (`spec/plans/{host}/{owner}/{repo}/...`, per
-specscore/specscore's Plan repository routing), the check is skipped instead
-of failed — that repository is validated from its source projects and must
-not gain a `specscore.yaml` of its own. Any other unconfigured `spec/` shape
-still runs lint and fails loudly. `--timeout` applies to each external command;
+for every repository with `spec/`, except an external SpecScore Plans store
+(e.g. sneat-co/workbench, per specscore/specscore's Plan repository routing),
+for which the check is reported skipped. wb treats a repository as one only
+when its root has no `specscore.yaml` entry (a symlink counts), its root
+`.gitignore` is a regular file with the line `/.specscore-lifecycle.lock`, and
+every non-directory entry under `spec/` is `spec/plans/README.md`, a namespace
+index `spec/plans/{host}/{owner}/{repo}/README.md`, or lies beneath a plan
+directory `spec/plans/{host}/{owner}/{repo}/{plan-id}/`, with at least one
+entry inside a namespace. `{host}` must look like a hostname (lowercase, at
+least one dot), and `{owner}` and `{repo}` must not start with a dot.
+SpecScore lint does not apply to that layout: without a `specscore.yaml` it
+cannot run, and with one, specscore 0.49.0 reports structural violations
+(`readme-exists`, `plan-hierarchy`). wb does not validate these Plans. Any
+other `spec/`, including an empty one or one reached through a symlink, runs
+lint, which fails without a config. `--timeout` applies to each external command;
 `--retry=N` retries only failed commands N additional times; and
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.
