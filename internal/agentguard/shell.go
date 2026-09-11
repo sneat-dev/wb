@@ -78,11 +78,37 @@ func (r *shellReader) read() []segment {
 			r.readOutputRedirect()
 		case '&', '|', ';':
 			r.readOperator()
-		case '(', ')', '{', '}':
-			// A subshell or group boundary ends the current command. The
-			// grouping itself carries no meaning the guard needs.
+		case '(', ')':
+			// A subshell boundary ends the current command. The grouping
+			// itself carries no meaning the guard needs.
 			r.index++
 			r.endSegment(string(character))
+		case '{', '}':
+			// A brace is a group boundary only when it stands as its own
+			// word (`{ gh pr merge 1; }`). Inside a word it is brace
+			// expansion (`gh pr {merge,} 1`) or a parameter expansion
+			// (`${X:-merge}`), and the word must survive intact so a gh
+			// walker can read it (wb#500 fifth review, S2).
+			if r.braceIsWord() {
+				r.index++
+				r.endSegment(string(character))
+			} else {
+				r.word.WriteByte(character)
+				r.hasWord = true
+				r.index++
+			}
+		case '#':
+			// A comment starts only where a word could start (bash: "a word
+			// beginning with #"). `echo a#b` is one word, and
+			// `# use wb pr land; never gh pr merge` is not a command
+			// (wb#500 fifth review, false refusal 1).
+			if r.hasWord || r.pendingRedirect {
+				r.word.WriteByte(character)
+				r.hasWord = true
+				r.index++
+			} else {
+				r.skipComment()
+			}
 		case ' ', '\t', '\r':
 			r.index++
 			r.endWord()
@@ -250,6 +276,32 @@ func (r *shellReader) readRawWord() string {
 		}
 	}
 	return builder.String()
+}
+
+// braceIsWord reports whether the { or } at the reader's index is a whole
+// word: nothing of a word is pending in front of it and a word separator, an
+// operator or the end of input follows it.
+func (r *shellReader) braceIsWord() bool {
+	if r.hasWord {
+		return false
+	}
+	next := r.index + 1
+	if next >= len(r.input) {
+		return true
+	}
+	switch r.input[next] {
+	case ' ', '\t', '\r', '\n', ';', '&', '|', ')', '(':
+		return true
+	}
+	return false
+}
+
+// skipComment advances to the end of the line without consuming the newline,
+// so the line still ends the segment and any heredoc bodies still follow it.
+func (r *shellReader) skipComment() {
+	for r.index < len(r.input) && r.input[r.index] != '\n' {
+		r.index++
+	}
 }
 
 func (r *shellReader) skipSpaces() {

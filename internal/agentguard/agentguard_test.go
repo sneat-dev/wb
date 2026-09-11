@@ -3,6 +3,7 @@ package agentguard
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -648,6 +649,12 @@ func TestBashGhPrMergeTextIsNotACall(t *testing.T) {
 		`bash -c 'echo gh pr merge 12'`,
 		"gh pr merge --help",
 		"wb pr land sneat-co/sneat-go#12",
+		// wb#500 fifth review, false refusal 1: a comment is not a command,
+		// even when it holds an operator the reader would otherwise split on.
+		"# never gh pr merge; use wb pr land",
+		"ls # && gh pr merge 12",
+		"wb pr land sneat-co/sneat-go#12 # not gh pr merge; the verb waits for checks\necho done",
+		"{ gh pr view 12; }",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
@@ -1583,5 +1590,35 @@ func TestRefusalNamesTheRemedy(t *testing.T) {
 		if !strings.Contains(decision.Reason, expected) {
 			t.Fatalf("refusal is missing %q:\n%s", expected, decision.Reason)
 		}
+	}
+}
+
+// TestSplitSegmentsCommentsAndBraces pins the two reader rules the wb#500
+// fifth review added: a # that starts a word opens a comment to the end of
+// the line, and a brace is a group boundary only when it is a whole word.
+func TestSplitSegmentsCommentsAndBraces(t *testing.T) {
+	cases := []struct {
+		command string
+		want    [][]string
+	}{
+		{"ls # && gh pr merge 1", [][]string{{"ls"}}},
+		{"# a comment; still a comment\necho done", [][]string{{"echo", "done"}}},
+		{"echo a#b #c", [][]string{{"echo", "a#b"}}},
+		{"cat <<'EOF' # comment\nbody\nEOF\necho after", [][]string{{"cat"}, {"echo", "after"}}},
+		{"{ gh pr merge 1; }", [][]string{{"gh", "pr", "merge", "1"}}},
+		{"gh pr {merge,} 1", [][]string{{"gh", "pr", "{merge,}", "1"}}},
+		{"echo ${X:-merge}", [][]string{{"echo", "${X:-merge}"}}},
+		{"{ echo a; } && echo b", [][]string{{"echo", "a"}, {"echo", "b"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			var got [][]string
+			for _, segment := range splitSegments(tc.command) {
+				got = append(got, segment.Words)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("splitSegments(%q) words = %v, want %v", tc.command, got, tc.want)
+			}
+		})
 	}
 }
