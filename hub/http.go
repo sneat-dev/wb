@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/hub/narrate"
 )
 
 const (
@@ -41,6 +42,11 @@ type HandlerOptions struct {
 	Projection       ProjectionProcessor
 	WebhookSecret    []byte
 	AllowedOrigin    string
+	// Narrate receives one line for every delivery the handler itself
+	// rejects, written before the response to GitHub is sent. Deliveries the
+	// handler accepts are narrated by RepositoryEventService instead, so each
+	// delivery produces exactly one line. Optional.
+	Narrate func(narrate.Line)
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -402,19 +408,38 @@ func (h apiHandler) ackEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// narrateRejection writes the one line a rejected delivery gets, before the
+// response to GitHub is sent. The subject is whatever repository the delivery
+// has already been attributed to; an unverified payload has none, and is
+// narrated against github.com rather than against a name the request itself
+// supplied.
+func (h apiHandler) narrateRejection(r *http.Request, repository, reason string) {
+	if h.options.Narrate == nil {
+		return
+	}
+	subject := repository
+	if strings.TrimSpace(subject) == "" {
+		subject = "github.com"
+	}
+	h.options.Narrate(narrate.Line{At: time.Now(), Event: r.Header.Get("X-GitHub-Event"), Subject: subject, Action: "rejected: " + reason})
+}
+
 func (h apiHandler) webhook(w http.ResponseWriter, r *http.Request) {
 	if len(h.options.WebhookSecret) < MinimumWebhookSecretBytes || h.options.RepositoryEvents == nil {
+		h.narrateRejection(r, "", "webhook not configured")
 		writeError(w, http.StatusServiceUnavailable, "webhook_unavailable")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
 	payload, e := io.ReadAll(r.Body)
 	if e != nil {
+		h.narrateRejection(r, "", "unreadable request body")
 		writeError(w, http.StatusBadRequest, "invalid_webhook")
 		return
 	}
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if !verifyWebhookSignature(h.options.WebhookSecret, payload, signature) {
+		h.narrateRejection(r, "", "bad signature")
 		writeError(w, http.StatusUnauthorized, "invalid_webhook_signature")
 		return
 	}
@@ -429,6 +454,13 @@ func (h apiHandler) webhook(w http.ResponseWriter, r *http.Request) {
 		delivery.Repository = canonicalRepository(envelope.Repository.FullName)
 	}
 	if _, e := h.options.RepositoryEvents.EnqueueWebhook(r.Context(), delivery); e != nil {
+		// Past signature verification, every way the service refuses a
+		// delivery means the hub cannot attribute it to an installation it
+		// knows: an installation it has no binding for, or a payload whose
+		// installation and repository identifiers it will not trust. The
+		// reason is deliberately coarse so no part of the payload reaches the
+		// console.
+		h.narrateRejection(r, delivery.Repository, "unknown installation")
 		writeError(w, http.StatusServiceUnavailable, "webhook_event_enqueue_failed")
 		return
 	}

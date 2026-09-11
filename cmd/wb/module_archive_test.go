@@ -28,9 +28,12 @@ func TestModuleArchiveIncludesCmdWBEmbedInputs(t *testing.T) {
 	t.Parallel()
 
 	root := moduleArchiveTestRoot(t)
-	requiredFiles := append(cmdWBEmbedFiles(t, root),
+	requiredFiles := append(publishedEmbedFiles(cmdWBEmbedFiles(t, root)),
 		"internal/secretscan/gitleaks/LICENSE",
 		"internal/secretscan/gitleaks/PROVENANCE.md",
+		// The placeholder is what makes hub/web's go:embed compile from a
+		// clean clone, so it is required even though the rest of dist is not.
+		benchDashboardPlaceholder,
 	)
 	sort.Strings(requiredFiles)
 
@@ -92,6 +95,29 @@ func TestModuleArchiveUsesCommittedPublicationSnapshot(t *testing.T) {
 			t.Fatalf("module archive unexpectedly includes %s", excluded)
 		}
 	}
+}
+
+const (
+	benchDashboardDist        = "hub/web/dist/"
+	benchDashboardPlaceholder = benchDashboardDist + ".gitkeep"
+)
+
+// publishedEmbedFiles drops the built bench dashboard from the required set.
+// hub/web/dist is Astro build output: it is git-ignored except for the
+// placeholder, so a `go install github.com/sneat-dev/wb/cmd/wb@<revision>`
+// deliberately gets a binary whose /bench/ route serves the "not built" page
+// rather than a stale dashboard committed months earlier. Releases build it
+// with Node before goreleaser runs. Everything else a cmd/wb dependency
+// embeds is still committed source and is still required here.
+func publishedEmbedFiles(files []string) []string {
+	published := make([]string, 0, len(files))
+	for _, file := range files {
+		if strings.HasPrefix(file, benchDashboardDist) {
+			continue
+		}
+		published = append(published, file)
+	}
+	return published
 }
 
 func createModuleArchiveFromVCS(t *testing.T, archive io.Writer, moduleVersion module.Version, root string) {

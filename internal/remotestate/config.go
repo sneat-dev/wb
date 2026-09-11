@@ -3,6 +3,7 @@ package remotestate
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -136,9 +137,8 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("remote.repo %q must be <owner>/<name>, each matching %s", cfg.Repo, repoPart)
 	}
 	if cfg.Provider == "hub" {
-		parsed, err := url.Parse(strings.TrimSpace(cfg.URL))
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-			return Config{}, errors.New("remote.url must be an HTTPS origin without credentials, query, or fragment")
+		if err := ValidateHubURL(cfg.URL); err != nil {
+			return Config{}, err
 		}
 		if !filepath.IsAbs(cfg.TokenFile) {
 			return Config{}, errors.New("remote.token_file must be an absolute path")
@@ -151,4 +151,42 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("remote.publish.unpushed %q must be %q or %q", cfg.Publish.Unpushed, RedactNone, RedactUnpushed)
 	}
 	return cfg, nil
+}
+
+// ErrHubURL is the single explanation both the configuration loader and the
+// HTTP provider give for a hub endpoint they will not talk to.
+var ErrHubURL = errors.New("remote.url must be an HTTPS origin without credentials, query, or fragment, or an http:// origin on a loopback host")
+
+// ValidateHubURL accepts an HTTPS origin, and an http:// origin only when its
+// host is a loopback address.
+//
+// Plain http is otherwise refused because a machine credential travels in the
+// Authorization header on every request. A loopback origin is the one case
+// where there is no network to intercept: the self-hosted bench in
+// spec/features/self-hosted-bench runs the hub inside the same daemon the
+// provider talks to, reachable only from this machine, and demanding a
+// certificate for 127.0.0.1 would mean "deploy a service" rather than
+// "run wb".
+func ValidateHubURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ErrHubURL
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+	}
+	return ErrHubURL
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

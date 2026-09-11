@@ -805,9 +805,9 @@ func TestCoverageRepositoryEventBranches(t *testing.T) {
 		{ID: "delivery", Event: "repository", Payload: []byte(`{"action":"renamed","repository":{"id":1,"full_name":"acme/new","default_branch":"main"},"changes":{"repository":{"name":{"from":"bad/name"}}},"installation":{"id":123}}`)},
 	}
 	for index, delivery := range unsupported {
-		_, _, _ = translateWebhook(delivery)
+		_, _, _, _ = translateWebhook(delivery)
 		if index == 0 {
-			if _, _, err := translateWebhook(delivery); err == nil {
+			if _, _, _, err := translateWebhook(delivery); err == nil {
 				t.Fatal("invalid delivery ID accepted")
 			}
 		}
@@ -841,7 +841,7 @@ func TestCoverageRepositoryEventBranches(t *testing.T) {
 		t.Fatalf("lifecycle store failure=%v", err)
 	}
 	invalidPush := WebhookDelivery{ID: "delivery-invalid-event", Event: "push", Payload: []byte(`{"ref":"refs/heads/main","after":"bad","repository":{"id":7,"full_name":"acme/app","default_branch":"main"},"installation":{"id":123}}`)}
-	if _, _, err := translateWebhook(invalidPush); err == nil {
+	if _, _, _, err := translateWebhook(invalidPush); err == nil {
 		t.Fatal("invalid translated push event accepted")
 	}
 	if canonicalRepository(" github.com/acme/app ") != "github.com/acme/app" || canonicalRepository("Acme/App") != "github.com/acme/app" {

@@ -23,6 +23,7 @@ package dalgostore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -95,10 +96,33 @@ func (store documentStore) Query(ctx context.Context, collection string, equals 
 	}
 	documents := reflect.MakeSlice(target.Type(), 0, len(records))
 	for _, found := range records {
-		documents = reflect.Append(documents, reflect.ValueOf(found.Data()).Elem())
+		value, err := queryRow(found.Data(), element)
+		if err != nil {
+			return fmt.Errorf("query %s: %w", collection, err)
+		}
+		documents = reflect.Append(documents, value)
 	}
 	target.Set(documents)
 	return nil
+}
+
+// queryRow returns the row as a value of the caller's element type. An adapter
+// that honours the record factory hands back *element; one that rebuilds rows
+// generically (dalgo2ingitdb returns map[string]any) is decoded through JSON,
+// which is the same encoding every stored struct already round-trips.
+func queryRow(data any, element reflect.Type) (reflect.Value, error) {
+	if typed := reflect.ValueOf(data); typed.IsValid() && typed.Kind() == reflect.Pointer && typed.Type().Elem() == element {
+		return typed.Elem(), nil
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return reflect.Value{}, fmt.Errorf("encode query row: %w", err)
+	}
+	decoded := reflect.New(element)
+	if err := json.Unmarshal(encoded, decoded.Interface()); err != nil {
+		return reflect.Value{}, fmt.Errorf("decode query row into %s: %w", element, err)
+	}
+	return decoded.Elem(), nil
 }
 
 // UpdateAtomic runs update inside a DALgo read-write transaction. DALgo retries

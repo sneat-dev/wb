@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,13 +12,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
+	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/repositoryevents"
@@ -45,6 +49,37 @@ type daemonResult struct {
 	State                    daemonPublicState `json:"state,omitempty"`
 	AlreadyRunning           bool              `json:"already_running,omitempty"`
 	AutomaticVersionHandoff  bool              `json:"automatic_version_handoff,omitempty"`
+	Hub                      daemonHubStatus   `json:"hub"`
+}
+
+// daemonHubStatus reports the self-hosted bench hub. It is read from wb.yaml
+// rather than from the daemon's state file: `wb daemon status` runs in a
+// different process from `wb daemon serve`, and the hub section is the same
+// declaration both of them act on, so reading it here needs no new schema and
+// cannot drift from what a restart would mount.
+type daemonHubStatus struct {
+	Mounted bool   `json:"mounted"`
+	Engine  string `json:"engine,omitempty"`
+	Store   string `json:"store,omitempty"`
+	Listen  string `json:"listen,omitempty"`
+	// Polling and PollInterval come from the same declaration a restart would
+	// act on. RepositoriesPolled and the delivery markers come from the
+	// running daemon's health endpoint, because only the serving process has
+	// them: reading the hub store from this process would open a second
+	// writer to the operator's inGitDB project.
+	Polling               bool                  `json:"polling"`
+	PollInterval          string                `json:"poll_interval,omitempty"`
+	RepositoriesPolled    int                   `json:"repositories_polled"`
+	LastEventReceived     *daemonHubEventMarker `json:"last_event_received,omitempty"`
+	LastEventAcknowledged *daemonHubEventMarker `json:"last_event_acknowledged,omitempty"`
+}
+
+// daemonHubEventMarker names the last repository event the hub received or
+// the daemon acknowledged.
+type daemonHubEventMarker struct {
+	ID         string    `json:"id,omitempty"`
+	Event      string    `json:"event,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 // daemonPublicState is intentionally narrower than the private state file:
@@ -92,6 +127,8 @@ type daemonDependencies struct {
 	restartTicker func(time.Duration) (<-chan time.Time, func())
 	rawPolicy     func(string) (bool, string, error)
 	localClient   func(string, string) (*http.Client, error)
+	hubConfigPath func() string
+	hubHealth     func(context.Context, string) (daemonHubStatus, error)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -110,7 +147,9 @@ func defaultDaemonDependencies() daemonDependencies {
 			ticker := time.NewTicker(interval)
 			return ticker.C, ticker.Stop
 		},
-		localClient: daemonLocalHTTPClient,
+		localClient:   daemonLocalHTTPClient,
+		hubConfigPath: wbconfig.DefaultPath,
+		hubHealth:     daemonHubHealth,
 		rawPolicy: func(root string) (bool, string, error) {
 			path, err := daemon.RawExecutionPolicyPath()
 			if err != nil {
@@ -132,6 +171,7 @@ func newDaemonCmdWithDependencies(deps daemonDependencies) *cobra.Command {
 
 func newDaemonServeCmd(deps daemonDependencies) *cobra.Command {
 	var listenAddress, stateFile string
+	var quiet bool
 	command := &cobra.Command{
 		Use: "serve", Short: "Serve the read-only dashboard and API on a loopback address",
 		Long: `Serve WB's embedded operations dashboard and versioned read-only API.
@@ -139,7 +179,19 @@ func newDaemonServeCmd(deps daemonDependencies) *cobra.Command {
 The listener is loopback-only. Publish it to registered machines through a
 protected Cloudflare Tunnel or another authenticated reverse proxy; do not bind
 the daemon directly to a public interface. Mutating operation RPCs are served
-only through the separately authenticated local transport.`,
+only through the separately authenticated local transport.
+
+When ~/.config/wb/wb.yaml has a hub: section, the same listener also serves the
+bench hub API under /v0/workbench/ and the embedded bench dashboard under
+/bench/, on the DALgo store engine that section names. Without a hub: section
+nothing changes, and the dashboard needs no sign-in because only this machine
+can reach the loopback address it is bound to.
+
+With hub.github.token_file set, a poller reads every repository this machine
+publishes and narrates one line on stderr for each webhook delivery and each
+poll observation: the event, the repository, and what the hub did with it.
+--quiet silences those console lines. wb daemon start never passes it, so a
+detached daemon's log file keeps every line.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireLoopbackAddress(listenAddress); err != nil {
@@ -161,12 +213,13 @@ only through the separately authenticated local transport.`,
 					return err
 				}
 			}
-			return serveDashboard(command, deps, listenAddress, daemon.Store{Path: stateFile}, ownerToken)
+			return serveDashboard(command, deps, listenAddress, daemon.Store{Path: stateFile}, ownerToken, quiet)
 		},
 	}
 	command.Flags().StringVar(&listenAddress, "listen", daemonDefaultListen, "loopback listen address")
 	command.Flags().StringVar(&stateFile, "lifecycle-state", "", "private lifecycle state path (used by daemon start)")
 	_ = command.Flags().MarkHidden("lifecycle-state")
+	command.Flags().BoolVar(&quiet, "quiet", false, "silence the hub's per-event console lines (the daemon log file still records them)")
 	return command
 }
 
@@ -287,6 +340,21 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 		_, err = fmt.Fprintf(out, ", api_probe_error=%q", result.ReachabilityError)
 	}
 	if err == nil {
+		_, err = fmt.Fprintf(out, ", hub_mounted=%t", result.Hub.Mounted)
+	}
+	if err == nil && result.Hub.Mounted {
+		_, err = fmt.Fprintf(out, ", hub_engine=%s, hub_store=%q, hub_listen=%s", result.Hub.Engine, result.Hub.Store, result.Hub.Listen)
+	}
+	if err == nil && result.Hub.Mounted {
+		_, err = fmt.Fprintf(out, ", hub_polling=%t, hub_poll_interval=%s, hub_repositories_polled=%d", result.Hub.Polling, result.Hub.PollInterval, result.Hub.RepositoriesPolled)
+	}
+	if err == nil && result.Hub.LastEventReceived != nil {
+		_, err = fmt.Fprintf(out, ", hub_last_event_received=%q", result.Hub.LastEventReceived.ID)
+	}
+	if err == nil && result.Hub.LastEventAcknowledged != nil {
+		_, err = fmt.Fprintf(out, ", hub_last_event_acknowledged=%q", result.Hub.LastEventAcknowledged.ID)
+	}
+	if err == nil {
 		_, err = fmt.Fprintln(out)
 	}
 	return err
@@ -342,6 +410,7 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 		return daemonResult{}, err
 	}
 	result := daemonResult{Action: "status", Managed: found, State: publicDaemonState(state)}
+	result.Hub = controller.hubStatus(ctx, state.Listen)
 	if !found {
 		return result, nil
 	}
@@ -383,6 +452,67 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 	}
 	result.ProvenanceMatches = state.Provenance.SameBinary(current)
 	return result, nil
+}
+
+// hubStatus reads the hub section the way serveDashboard will. A configuration
+// error is reported as "not mounted" rather than failing status: the operator
+// needs status most when serve is refusing to start.
+func (controller daemonController) hubStatus(ctx context.Context, listen string) daemonHubStatus {
+	path := wbconfig.DefaultPath()
+	if controller.deps.hubConfigPath != nil {
+		path = controller.deps.hubConfigPath()
+	}
+	cfg, found, err := hubconfig.Load(path)
+	if err != nil || !found {
+		return daemonHubStatus{}
+	}
+	status := daemonHubStatus{
+		Mounted: true, Engine: cfg.Store.Engine, Store: cfg.Location(), Listen: listen,
+		Polling: strings.TrimSpace(cfg.GitHub.TokenFile) != "", PollInterval: cfg.GitHub.PollInterval.String(),
+	}
+	health := controller.deps.hubHealth
+	if health == nil || listen == "" {
+		return status
+	}
+	// A daemon that is not running has nothing to report beyond the
+	// declaration, so an unreachable health endpoint is not an error here.
+	live, err := health(ctx, listen)
+	if err != nil {
+		return status
+	}
+	status.RepositoriesPolled = live.RepositoriesPolled
+	status.LastEventReceived = live.LastEventReceived
+	status.LastEventAcknowledged = live.LastEventAcknowledged
+	return status
+}
+
+// daemonHubHealth reads the hub block a running daemon publishes on its
+// health endpoint.
+func daemonHubHealth(ctx context.Context, listen string) (daemonHubStatus, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://"+listen+"/api/v1/health", nil)
+	if err != nil {
+		return daemonHubStatus{}, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return daemonHubStatus{}, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return daemonHubStatus{}, fmt.Errorf("health endpoint returned %s", response.Status)
+	}
+	var payload struct {
+		Hub *daemonHubStatus `json:"hub"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return daemonHubStatus{}, err
+	}
+	if payload.Hub == nil {
+		return daemonHubStatus{}, errors.New("health endpoint reported no hub")
+	}
+	return *payload.Hub, nil
 }
 
 func (controller daemonController) Start(ctx context.Context, listen string) (daemonResult, error) {
@@ -612,7 +742,7 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 	return daemonResult{}, fmt.Errorf("daemon did not become ready within %s; inspect %s", daemonReadyTimeout, daemonLogPath(controller.root))
 }
 
-func serveDashboard(command *cobra.Command, deps daemonDependencies, address string, store daemon.Store, ownerToken string) error {
+func serveDashboard(command *cobra.Command, deps daemonDependencies, address string, store daemon.Store, ownerToken string, quiet bool) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("listen for WB daemon: %w", err)
@@ -661,7 +791,20 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 			_ = store.Save(current)
 		}
 	}()
-	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{ProjectsRoot: projectsRoot, Version: collectVersion().Version}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	hubConfigPath := wbconfig.DefaultPath
+	if deps.hubConfigPath != nil {
+		hubConfigPath = deps.hubConfigPath
+	}
+	// Narration goes to stderr, which is where the detached daemon's log file
+	// already points, so there is no second writer to mirror into.
+	narrator := narrate.Writer{Out: command.ErrOrStderr(), Quiet: quiet}
+	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("mount the bench hub: %w", err)
+	}
+	defer func() { _ = mount.Close() }()
+	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{ProjectsRoot: projectsRoot, Version: collectVersion().Version, Mounts: mount.handlers(), Hub: mount.hubHealth()}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(rpcPath, authenticatedDaemonHandler(ownerToken, rpcHandler))
@@ -684,10 +827,16 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_ = server.Shutdown(shutdown)
 		_ = rpcServer.Shutdown(shutdown)
 	}()
+	// The poller is bound to the server's context, so a shutdown stops it
+	// without a second lifecycle to get wrong.
+	mount.startPolling(ctx)
 	go daemonHeartbeat(command.ErrOrStderr(), ctx, address)
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "WB dashboard: http://%s\n", listener.Addr()); err != nil {
 		_ = listener.Close()
 		return err
+	}
+	if line := mount.StartLine(); line != "" {
+		_, _ = fmt.Fprintln(command.ErrOrStderr(), line)
 	}
 	errorsCh := make(chan error, 3)
 	go func() { errorsCh <- server.Serve(listener) }()

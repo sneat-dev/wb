@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -196,4 +197,28 @@ func TestProviderDoesNotRetryAuthenticationFailureOrLeakCredential(t *testing.T)
 
 func response(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+}
+
+// TestNewAcceptsALoopbackHTTPHub is the constructor half of the relaxation:
+// the in-process provider a self-hosted daemon configures talks plain HTTP to
+// its own listener, and nothing else.
+func TestNewAcceptsALoopbackHTTPHub(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "hub.token")
+	if err := os.WriteFile(tokenFile, []byte("token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, accepted := range []string{"http://127.0.0.1:8766", "http://localhost:8766", "https://wb-github-app.sneat.dev"} {
+		provider, err := New(Options{BaseURL: accepted, Machine: "laptop", TokenFile: tokenFile})
+		if err != nil || provider == nil {
+			t.Fatalf("New(%q) = %v, %v", accepted, provider, err)
+		}
+		if provider.baseURL != strings.TrimSuffix(accepted, "/") {
+			t.Fatalf("baseURL = %q, want %q", provider.baseURL, accepted)
+		}
+	}
+	for _, rejected := range []string{"http://bench.example", "http://10.0.0.1:8766"} {
+		if _, err := New(Options{BaseURL: rejected, Machine: "laptop", TokenFile: tokenFile}); !errors.Is(err, remotestate.ErrHubURL) {
+			t.Fatalf("New(%q) = %v, want ErrHubURL", rejected, err)
+		}
+	}
 }

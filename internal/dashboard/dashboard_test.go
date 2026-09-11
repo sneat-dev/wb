@@ -79,3 +79,56 @@ func TestOverviewPersistsReadOnlyFleetIndex(t *testing.T) {
 		t.Fatalf("second inventory = %#v, first generated at %s", second.Inventory, first.GeneratedAt)
 	}
 }
+
+// TestMountsAreServedNextToTheExistingRoutes is what lets `wb daemon serve`
+// host the bench hub and its dashboard on the same loopback listener without
+// moving anything that was already there.
+func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
+	mounted := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("mounted " + request.URL.Path))
+	})
+	handler := NewHandler(Options{
+		ProjectsRoot: t.TempDir(),
+		Version:      "test",
+		Mounts: map[string]http.Handler{
+			"/v0/workbench/": mounted,
+			"/bench/":        mounted,
+			// Refused shapes: a prefix must start and end with "/", and a nil
+			// handler is ignored rather than panicking the mux.
+			"no-slash/": mounted,
+			"/no-slash": mounted,
+			"/nil/":     nil,
+		},
+	})
+
+	for _, target := range []string{"/v0/workbench/github/status", "/bench/dashboard/", "/bench"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Body.String(), "mounted ") {
+			t.Fatalf("%s = %d %q", target, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	// The pre-existing routes keep answering exactly as before.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status"`) {
+		t.Fatalf("health = %d %q", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/nil/", nil))
+	if recorder.Code != http.StatusOK || strings.HasPrefix(recorder.Body.String(), "mounted ") {
+		t.Fatalf("a nil mount was registered: %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestNoMountsLeavesTheHandlerUnchanged is the promise made to every operator
+// who does not self-host.
+func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/bench/dashboard/", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<") {
+		t.Fatalf("/bench/dashboard/ = %d; want the catch-all index page", recorder.Code)
+	}
+}
