@@ -3755,12 +3755,16 @@
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
                 "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
-                "Refuses gh pr merge under any flags, chained with &&/;, subshelled with parentheses or piped, and wrapped in bash -c/sh -c/zsh -c (recursed into the payload, bounded depth), naming wb worktree land/wb land and wb pr land (rule land-with-wb-verb, sneat-co/backstage); prefixing that exact call's own words with WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" (directly, or via env) is the explicit, recorded escape hatch for that one call — the hook process's own ambient environment is never read.",
+                "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
+                "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
+                "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth).",
+                "Does not inspect gh api merge routes (REST PUT .../pulls/<n>/merge and the GraphQL mergePullRequest mutation), gh aliases and extensions, scripts run from files, eval, here-strings, backticks, a quoted \"$( )\", ANSI-C $'...' quoting, env -S, other interpreters (python3 -c, node -e), unlisted wrappers (ssh, watch), git push to the base branch, or hub merge.",
+                "The escape hatch is WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" on that exact call, where the shell really exports it to gh: at the start of the call, or right after env, sudo, time or a shell keyword. It lets that one call through, and the guard records the reason when it allows the call. The record proves only that the guard allowed the call, not that the call ran, and the hook process's own ambient environment is never read.",
                 "A specscore/go/npm/pnpm/yarn/bun invocation bypasses its write-verb check only for a genuine help request (wb#493); which shape counts depends on the tool, because --help/-h behaves differently once a subcommand precedes it.",
                 "cobra-based specscore accepts a subcommand chain trailing in exactly one --help/-h with nothing after, or the word help first with no flag anywhere else.",
                 "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser — confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
                 "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead — for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
-                "gh pr merge's own --help/-h recognition is separate and value-flag aware, so a value-taking flag immediately before --help (gh pr merge 123 --subject --help) is a real merge, not a help request.",
+                "gh pr merge's own --help/-h recognition is separate and reads the flags the way gh does. A --help consumed by a value-taking flag (gh pr merge 123 --subject --help, gh pr merge 123 -st --help) is a real merge, not a help request, and so is a --help placed after -- (gh pr merge -- --help).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
               ]
@@ -3854,6 +3858,41 @@
             {
               "path": "internal/agentguard/agentguard_test.go",
               "name": "TestBashUnwrapsShellDashC",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestShellDashCPayloadEdgeCases",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestCommandWordsSeesThroughPrefixes",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsGhReadsAndTheWBLandingVerbs",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashGhPrMergeTextIsNotACall",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGhPrMergeHelpAloneIsStillAllowed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands",
               "kind": "unit"
             },
             {
