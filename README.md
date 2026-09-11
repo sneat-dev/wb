@@ -2251,6 +2251,16 @@ machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
 
+## Bench hub
+
+`hub/` is the server side of bench: the GitHub App, OAuth, installation,
+repository-event and status services that the CLI and dashboard talk to. A
+host mounts it on a `githubapp.FirestoreBackend` (the public wire contracts
+live in `api/githubapp` and its `machinesnapshot`/`repositoryevent`
+subpackages) and supplies its own Firebase, Firestore, and secret
+configuration adapters; see `hub/README.md` and `hub/docs/architecture.md`
+for the trust boundaries, protocols, and wire format.
+
 ## Build from source
 
 ```sh
