@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Approved
 ---
 
 # Feature: Self-hosted bench
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/self-hosted-bench?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/self-hosted-bench?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/self-hosted-bench?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/self-hosted-bench?op=request-change) |
-**Status:** Draft
+**Status:** Approved
 **Source Ideas:** —
 
 ## Summary
@@ -214,13 +214,15 @@ canonical clone fast-forward and the dashboard status update.
 
 ## Open Questions
 
-- Default store engine for self-hosting: inGitDB gives durable, inspectable
-  files with no server and no CGO; confirm it is acceptable as the default
-  before implementation.
-- Polling interval floor: 60s default; whether to allow below 30s.
-- Whether the embedded dashboard build runs in goreleaser (Node in the
-  release job) or is committed as a build artifact; the former keeps the
-  repository clean.
+None at this time. Resolved 2026-09-11 with the founder's approval:
+
+- Default store engine for self-hosting is inGitDB: durable, inspectable
+  files under `~/.wb/hub`, no server, no CGO.
+- Polling interval defaults to 60s with a 30s floor; GitHub's rate-limit
+  headers cap it further when needed.
+- The dashboard is embedded in the binary; the release job builds `hub/web`
+  with Node before goreleaser runs. The founder confirmed the size cost
+  (about 0.5 MB on a 28 MB binary) is acceptable.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
