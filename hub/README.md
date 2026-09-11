@@ -6,9 +6,10 @@ OAuth verification, installation entitlements, signed webhook translation,
 and durable repository-event delivery.
 
 The `api/githubapp` package in this same module owns only the daemon-facing
-wire models and client behavior. A host such as Sneat Go supplies Firebase,
-Firestore, and secret configuration adapters and mounts this package's
-handler on a `githubapp.FirestoreBackend`.
+wire models and client behavior. A host supplies Firebase identity and
+secret configuration adapters and mounts this package's handler on a
+`githubapp.DocumentStore` — in practice `githubapp/dalgostore.New(db)` over
+any DALgo engine.
 
 See [docs/architecture.md](docs/architecture.md) for the trust boundaries,
 protocols, authentication, wire format, delivery guarantees, and daemon

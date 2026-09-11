@@ -31,10 +31,10 @@ const (
 var errRepositoryEventStoreUnavailable = errors.New("workbench repository event store is unavailable")
 
 // NewRepositoryEventStore wires the provider-owned repository event store to
-// a host's github.com/sneat-dev/wb/api/githubapp FirestoreBackend. The
+// a host's github.com/sneat-dev/wb/api/githubapp DocumentStore. The
 // returned value implements both RepositoryEventStore and
 // RepositoryEventStatusStore.
-func NewRepositoryEventStore(backend githubapp.FirestoreBackend) (RepositoryEventStore, RepositoryEventStatusStore) {
+func NewRepositoryEventStore(backend githubapp.DocumentStore) (RepositoryEventStore, RepositoryEventStatusStore) {
 	store := repositoryEventStore{backend: backend}
 	return store, store
 }
@@ -77,7 +77,7 @@ type repositoryEventQueueState struct {
 }
 
 type repositoryEventStore struct {
-	backend githubapp.FirestoreBackend
+	backend githubapp.DocumentStore
 	now     func() time.Time
 }
 
@@ -101,7 +101,7 @@ func (store repositoryEventStore) EnqueueForMachines(ctx context.Context, event 
 	}
 	now := store.nowFunc()
 	eventDocumentID := repositoryEventDocumentID(event.ID)
-	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var marker repositoryEventMarker
 		found, getErr := transaction.Get(ctx, repositoryEventCollection, eventDocumentID, &marker)
 		if getErr != nil {
@@ -242,7 +242,7 @@ func (store repositoryEventStore) Acknowledge(ctx context.Context, machine Machi
 		return repositoryevent.AckResponse{}, repositoryevent.ErrInvalidCursor
 	}
 	now := store.nowFunc()
-	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var receipt repositoryEventPollReceipt
 		found, getErr := transaction.Get(ctx, repositoryEventQueuePollsCollection(machine.ID), repositoryEventPollReceiptID(request.Cursor), &receipt)
 		if getErr != nil || !found {
