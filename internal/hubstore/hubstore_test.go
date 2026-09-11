@@ -2,7 +2,6 @@ package hubstore
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,29 +198,6 @@ func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
 	if err != nil || len(after.Events) != 0 {
 		t.Fatalf("Poll after acknowledge = %+v, %v", after, err)
 	}
-}
-
-// recovered runs body and returns whatever it panicked with, as an error, or
-// nil when it returned normally.
-func recovered(body func()) (failure error) {
-	defer func() {
-		if value := recover(); value != nil {
-			if err, ok := value.(error); ok {
-				failure = err
-				return
-			}
-			failure = errors.New(strings.TrimSpace(strings.Join([]string{"panic:", toString(value)}, " ")))
-		}
-	}()
-	body()
-	return nil
-}
-
-func toString(value any) string {
-	if text, ok := value.(string); ok {
-		return text
-	}
-	return "non-string panic value"
 }
 
 func TestInGitDBEngineRefusesAnEmptyPathAndAnUnusableDirectory(t *testing.T) {
