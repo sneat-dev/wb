@@ -851,6 +851,34 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 			t.Fatalf("override record does not contain the env-prefixed reason:\n%s", recorded)
 		}
 	})
+	// wb#500 second review, Nit 2: commandWords (which decides gh is the real
+	// program and dispatches to inspectGh) and leadingAssignmentValue (which
+	// extracts the override from the very same words) used to hardcode the
+	// transparent-prefix list twice. A wrapper recognised by one but not the
+	// other would silently break the override for exactly this shape — the
+	// dispatch would still see through it to gh and refuse the call, but the
+	// override extraction would not see through it to find the assignment,
+	// so an operator's correctly-placed override would stop working the
+	// moment a new wrapper was added to only one of the two copies. Now that
+	// both read transparentCommandPrefixes, any wrapper in that table works
+	// for both at once — proven here with "nice", not "env", which every
+	// other case in this test already exercises.
+	t.Run("an override prefixed with a non-env transparent wrapper is honoured the same way", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("WB_HOME", home)
+		command := "nice " + ghPrMergeOverrideEnv + `="reason via nice, sneat-dev/wb#999" gh pr merge 1041`
+		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+		if decision.Deny {
+			t.Fatalf("a nice-prefixed override still refused the call:\n%s", decision.Reason)
+		}
+		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		if err != nil {
+			t.Fatalf("read the override record: %v", err)
+		}
+		if !strings.Contains(string(recorded), "reason via nice, sneat-dev/wb#999") {
+			t.Fatalf("override record does not contain the nice-prefixed reason:\n%s", recorded)
+		}
+	})
 }
 
 func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {

@@ -386,6 +386,21 @@ func inspectCommand(name string, words []string, rawWords []string, workingDirec
 	return nil
 }
 
+// transparentCommandPrefixes names the wrapper commands commandWords and
+// leadingAssignmentValue both strip to reach the real program name — a
+// process that runs its argument as-is, changing nothing about how the guard
+// should read it. Kept as the one shared table so the two prefix-stripping
+// walks (the general one every recogniser sees the program name through, and
+// inspectGh's escape-hatch-only one that also needs the assignment itself)
+// can never drift apart: a wrapper added to one without the other would make
+// an override prefixed with it silently stop being recognised even though the
+// dispatch it prefixes is still stripped down to the real program and
+// refused (wb#500 second review, Nit 2).
+var transparentCommandPrefixes = map[string]bool{
+	"sudo": true, "nohup": true, "command": true, "nice": true,
+	"time": true, "stdbuf": true, "exec": true,
+}
+
 // commandWords drops leading environment assignments and transparent command
 // prefixes so the recognisers see the real program name.
 func commandWords(words []string) []string {
@@ -395,11 +410,11 @@ func commandWords(words []string) []string {
 			words = words[1:]
 			continue
 		}
-		switch filepath.Base(word) {
-		case "sudo", "nohup", "command", "nice", "time", "stdbuf", "exec":
+		if transparentCommandPrefixes[filepath.Base(word)] {
 			words = words[1:]
 			continue
-		case "env":
+		}
+		if filepath.Base(word) == "env" {
 			words = words[1:]
 			for len(words) > 0 && (isEnvironmentAssignment(words[0]) || strings.HasPrefix(words[0], "-")) {
 				words = words[1:]
@@ -457,11 +472,11 @@ func leadingAssignmentValue(words []string, variable string) (string, bool) {
 			words = words[1:]
 			continue
 		}
-		switch filepath.Base(word) {
-		case "sudo", "nohup", "command", "nice", "time", "stdbuf", "exec":
+		if transparentCommandPrefixes[filepath.Base(word)] {
 			words = words[1:]
 			continue
-		case "env":
+		}
+		if filepath.Base(word) == "env" {
 			words = words[1:]
 			for len(words) > 0 && (isEnvironmentAssignment(words[0]) || strings.HasPrefix(words[0], "-")) {
 				if isEnvironmentAssignment(words[0]) {
