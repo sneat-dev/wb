@@ -28,6 +28,12 @@ type Options struct {
 	CacheTTL           time.Duration
 	InventoryIndexPath string
 	InventoryIndexTTL  time.Duration
+	// Mounts attaches extra subtrees to the same loopback listener, keyed by
+	// the path prefix each one owns (it must start and end with "/"). A
+	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
+	// embedded dashboard under /bench/; without a hub section the map is
+	// empty and the served routes are exactly what they were.
+	Mounts map[string]http.Handler
 }
 
 type Machine struct {
@@ -84,7 +90,37 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("GET /api/v1/overview", server.overview)
-	return securityHeaders(mux)
+	return securityHeaders(withMounts(options.Mounts, mux))
+}
+
+// withMounts routes a prefix to its own handler before the dashboard mux sees
+// the request. It is a prefix check rather than extra mux patterns because
+// the mux's catch-all "GET /" index conflicts with any subtree pattern under
+// Go's routing precedence rules, and because a mounted subtree serves every
+// method — the hub answers POST on enrollment and webhook paths.
+func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler {
+	routes := make(map[string]http.Handler, len(mounts))
+	for prefix, handler := range mounts {
+		if handler == nil || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
+			continue
+		}
+		routes[prefix] = handler
+	}
+	if len(routes) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		for prefix, handler := range routes {
+			// "/bench" reaches the same mount as "/bench/": the trailing
+			// slash is what an operator omits, and the mounted handler is the
+			// one that knows where to redirect them.
+			if request.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(request.URL.Path, prefix) {
+				handler.ServeHTTP(writer, request)
+				return
+			}
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func (server *service) index(writer http.ResponseWriter, _ *http.Request) {

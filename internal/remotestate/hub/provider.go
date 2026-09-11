@@ -53,9 +53,8 @@ type Provider struct {
 
 // New validates the endpoint and credential source without making a request.
 func New(options Options) (*Provider, error) {
-	parsed, err := url.Parse(strings.TrimSpace(options.BaseURL))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, errors.New("remote.url must be an HTTPS origin without credentials, query, or fragment")
+	if err := remotestate.ValidateHubURL(options.BaseURL); err != nil {
+		return nil, err
 	}
 	if err := machinesnapshot.ValidateIdentity(options.Machine); err != nil {
 		return nil, errors.New("remote.machine is invalid for the HTTP hub provider")
@@ -85,7 +84,7 @@ func New(options Options) (*Provider, error) {
 		return nil, errors.New("injected hub credential must contain one non-empty token")
 	}
 	return &Provider{
-		baseURL: strings.TrimRight(parsed.String(), "/"), machine: options.Machine,
+		baseURL: strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"), machine: options.Machine,
 		token: token, tokenFile: strings.TrimSpace(options.TokenFile),
 		client: client, sleep: sleep, retryDelays: append([]time.Duration(nil), retryDelays...),
 	}, nil
