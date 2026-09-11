@@ -45,6 +45,15 @@ const (
 var safeIdentity = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var safeRepositoryPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// safeRepositoryName is the repository half of owner/name. Unlike an owner, a
+// GitHub repository name may start with a dot: every organisation's
+// community-health repository is literally named ".github".
+var safeRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func validRepositoryName(name string) bool {
+	return name != "." && name != ".." && safeRepositoryName.MatchString(name)
+}
+
 var (
 	ErrInvalidSnapshot  = errors.New("invalid hosted machine snapshot")
 	ErrStaleSnapshot    = errors.New("hosted machine snapshot is older than the current snapshot")
@@ -198,7 +207,7 @@ func validateCanonicalRepository(repository string) error {
 		return errors.New("repository must be a bounded github.com/owner/repository identity")
 	}
 	parts := strings.Split(strings.TrimPrefix(repository, "github.com/"), "/")
-	if len(parts) != 2 || !safeRepositoryPart.MatchString(parts[0]) || !safeRepositoryPart.MatchString(parts[1]) {
+	if len(parts) != 2 || !safeRepositoryPart.MatchString(parts[0]) || !validRepositoryName(parts[1]) {
 		return errors.New("repository must be a bounded github.com/owner/repository identity")
 	}
 	return nil
@@ -223,7 +232,7 @@ func (worktree Worktree) validate() error {
 	}
 	owner, name, found := strings.Cut(worktree.Repository, "/")
 	if len(worktree.Repository) > MaxRepositoryLen || !found || strings.Contains(name, "/") ||
-		!safeRepositoryPart.MatchString(owner) || !safeRepositoryPart.MatchString(name) {
+		!safeRepositoryPart.MatchString(owner) || !validRepositoryName(name) {
 		return errors.New("repository must be a bounded owner/name")
 	}
 	if len(worktree.Branch) > MaxBranchLength || len(worktree.Lifecycle) > MaxStatusLength || len(worktree.OwnerState) > MaxStatusLength {
