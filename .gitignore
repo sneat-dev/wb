@@ -1,4 +1,7 @@
 dist/
+node_modules/
+.astro/
+test-results/
 *.o
 *.exe
 *.test

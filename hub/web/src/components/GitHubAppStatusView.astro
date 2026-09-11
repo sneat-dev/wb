@@ -1,0 +1,523 @@
+---
+import { githubAppStatusURL } from '../data/github-app';
+
+const filters = [
+  ['all', 'All installations'],
+  ['pending', 'Pending refreshes'],
+  ['error', 'Needs attention'],
+] as const;
+---
+
+<section class="github-status-hero">
+  <div class="container github-status-hero-inner">
+    <div>
+      <a class="github-status-back" href={`${import.meta.env.BASE_URL}dashboard/`}><span aria-hidden="true">←</span> Dashboard</a>
+      <p class="eyebrow">GitHub delivery</p>
+      <h1>Keep every checkout current.</h1>
+      <p class="lead">Connect the Workbench GitHub App, see which machines can act, and follow each repository update from webhook receipt to local acknowledgement.</p>
+    </div>
+    <aside class="github-status-indicator" data-github-indicator data-state="loading" aria-label="GitHub App connection status">
+      <span class="github-status-dot" aria-hidden="true"></span>
+      <div><strong data-github-indicator-label>Checking connection</strong><span data-github-generated>Waiting for the authorized source</span></div>
+      <button type="button" data-github-refresh>Refresh</button>
+    </aside>
+  </div>
+</section>
+
+<section class="container github-status-shell" data-github-status data-endpoint={githubAppStatusURL} aria-busy="true">
+  <div class="github-status-state" data-github-state="loading" role="status">
+    <span class="github-status-spinner" aria-hidden="true"></span>
+    <div><strong>Loading GitHub App status</strong><p>Checking the authorized connection and latest delivery receipt.</p></div>
+  </div>
+
+  <div class="github-status-state github-status-state-error" data-github-state="error" role="alert" hidden>
+    <div><strong>Status unavailable</strong><p data-github-error-message>The authorized status source did not respond.</p></div>
+    <button type="button" data-github-retry>Retry</button>
+  </div>
+
+  <div data-github-content hidden>
+    <section class="github-connection-card" aria-labelledby="github-connection-title">
+      <div>
+        <p class="card-kicker">Connection</p>
+        <h2 id="github-connection-title" data-github-connection-title>GitHub App</h2>
+        <p data-github-connection-copy></p>
+      </div>
+      <a class="btn btn-primary" data-github-connect target="_blank" rel="noopener" hidden>Connect GitHub <span aria-hidden="true">↗</span></a>
+    </section>
+
+    <section class="github-overview" aria-label="GitHub App overview">
+      <article><p>Installations</p><strong data-github-installation-count>0</strong><span data-github-installation-detail>No installations reported</span></article>
+      <article><p>Registered machines</p><strong data-github-machine-count>0</strong><span data-github-machine-detail>No machines reported</span></article>
+      <article><p>Pending refreshes</p><strong data-github-pending-count>0</strong><span>Awaiting local acknowledgement</span></article>
+      <article><p>Actionable errors</p><strong data-github-error-count>0</strong><span>Connection or delivery issues</span></article>
+    </section>
+
+    <section class="github-status-section machine-enrollment" aria-labelledby="machine-enrollment-title">
+      <div class="github-section-head"><div><p class="eyebrow">Machine enrollment</p><h2 id="machine-enrollment-title">Register this machine</h2></div><p>Re-enrolling the same machine rotates its previous credential.</p></div>
+      <div class="enrollment-grid">
+        <form data-machine-enrollment novalidate>
+          <label for="machine-name">Machine name</label>
+          <p id="machine-name-help">Use letters, numbers, dots, dashes, or underscores so operators can recognize this machine across the Workbench fleet.</p>
+          <div class="enrollment-controls">
+            <input id="machine-name" name="name" type="text" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" aria-describedby="machine-name-help machine-name-error" placeholder="alex-laptop" />
+            <button type="submit">Enroll machine</button>
+          </div>
+          <p class="field-error" id="machine-name-error" data-machine-enrollment-error role="alert" hidden></p>
+        </form>
+        <aside class="enrollment-note"><strong>One-time credential</strong><p>The token appears once after enrollment. Copy it into the WB daemon when prompted; this page does not save it in browser storage.</p></aside>
+      </div>
+      <div class="enrollment-result" data-machine-enrollment-result aria-live="polite" hidden>
+        <div><strong data-machine-enrollment-title>Machine enrolled</strong><p data-machine-enrollment-identity></p></div>
+        <code data-machine-enrollment-token></code>
+        <div class="enrollment-result-actions">
+          <button type="button" data-machine-token-copy>Copy token</button>
+          <button type="button" class="btn-secondary" data-machine-token-clear>Clear token</button>
+        </div>
+        <p data-machine-token-message>Copy this token now. It will not be shown again.</p>
+      </div>
+    </section>
+
+    <section class="github-status-section" aria-labelledby="delivery-progress-title">
+      <div class="github-section-head"><div><p class="eyebrow">Delivery progress</p><h2 id="delivery-progress-title">Receipt to acknowledgement</h2></div><p>Times come from the authorized control plane.</p></div>
+      <div class="delivery-markers">
+        <article><span class="delivery-step">01</span><div><strong>Last event received</strong><p data-github-last-received>No receipt reported yet.</p><code data-github-received-id hidden></code></div></article>
+        <span class="delivery-line" aria-hidden="true"></span>
+        <article><span class="delivery-step">02</span><div><strong>Last event acknowledged</strong><p data-github-last-acknowledged>No acknowledgement reported yet.</p><code data-github-acknowledged-id hidden></code></div></article>
+      </div>
+    </section>
+
+    <section class="github-status-section" aria-labelledby="registered-machines-title">
+      <div class="github-section-head"><div><p class="eyebrow">Workers</p><h2 id="registered-machines-title">Registered machines</h2></div><p>Machine presence only; worktree details remain on the dashboard.</p></div>
+      <div class="machine-list" data-github-machines></div>
+      <p class="github-empty" data-github-machines-empty>No registered machines were returned for this account.</p>
+    </section>
+
+    <section class="github-status-section" aria-labelledby="installations-title">
+      <div class="github-section-head"><div><p class="eyebrow">Enrollment</p><h2 id="installations-title">GitHub installations</h2></div><p data-github-filter-summary>Showing all installations.</p></div>
+      <nav class="github-filter-tabs" aria-label="Filter GitHub installations">
+        {filters.map(([id, label]) => <a href={`?state=${id}`} data-github-filter={id} aria-current={id === 'all' ? 'page' : undefined}>{label}</a>)}
+      </nav>
+      <div class="installation-list" data-github-installations></div>
+      <p class="github-empty" data-github-installations-empty>No GitHub App installations match this filter.</p>
+    </section>
+
+    <section class="github-status-section" aria-labelledby="pending-refreshes-title">
+      <div class="github-section-head"><div><p class="eyebrow">Queue</p><h2 id="pending-refreshes-title">Pending repository refreshes</h2></div><p>Each row waits for a registered machine to pull the latest remote version.</p></div>
+      <div class="github-table-wrap" data-github-pending-table hidden>
+        <table>
+          <thead><tr><th scope="col">Repository</th><th scope="col">Event</th><th scope="col">Queued</th><th scope="col">Machine</th></tr></thead>
+          <tbody data-github-pending></tbody>
+        </table>
+      </div>
+      <p class="github-empty" data-github-pending-empty>No repository refreshes are waiting.</p>
+    </section>
+
+    <section class="github-status-section" data-github-errors-section aria-labelledby="github-errors-title" hidden>
+      <div class="github-section-head"><div><p class="eyebrow">Needs attention</p><h2 id="github-errors-title">Actionable errors</h2></div></div>
+      <div class="github-error-list" data-github-errors></div>
+    </section>
+  </div>
+</section>
+
+<script>
+  import {
+    enrollMachine,
+    githubStatusErrorMessage,
+    installationMatchesFilter,
+    parseGitHubAppStatus,
+    type DeliveryMarker,
+    type GitHubAppStatus,
+    type GitHubStatusFilter,
+    machineNameError,
+  } from '../data/github-app';
+
+  const root = document.querySelector<HTMLElement>('[data-github-status]');
+  const content = root?.querySelector<HTMLElement>('[data-github-content]');
+  const loading = root?.querySelector<HTMLElement>('[data-github-state="loading"]');
+  const errorState = root?.querySelector<HTMLElement>('[data-github-state="error"]');
+  const errorMessage = root?.querySelector<HTMLElement>('[data-github-error-message]');
+  const retry = root?.querySelector<HTMLButtonElement>('[data-github-retry]');
+  const refreshStatus = document.querySelector<HTMLButtonElement>('[data-github-refresh]');
+  const indicator = document.querySelector<HTMLElement>('[data-github-indicator]');
+  const indicatorLabel = indicator?.querySelector<HTMLElement>('[data-github-indicator-label]');
+  const generated = indicator?.querySelector<HTMLElement>('[data-github-generated]');
+  let currentStatus: GitHubAppStatus | undefined;
+
+  const enrollmentForm = root?.querySelector<HTMLFormElement>('[data-machine-enrollment]');
+  const machineName = enrollmentForm?.querySelector<HTMLInputElement>('[name="name"]');
+  const enrollmentError = root?.querySelector<HTMLElement>('[data-machine-enrollment-error]');
+  const enrollmentResult = root?.querySelector<HTMLElement>('[data-machine-enrollment-result]');
+  const enrollmentToken = root?.querySelector<HTMLElement>('[data-machine-enrollment-token]');
+  const enrollmentIdentity = root?.querySelector<HTMLElement>('[data-machine-enrollment-identity]');
+  const enrollmentTitle = root?.querySelector<HTMLElement>('[data-machine-enrollment-title]');
+  const tokenMessage = root?.querySelector<HTMLElement>('[data-machine-token-message]');
+  const copyToken = root?.querySelector<HTMLButtonElement>('[data-machine-token-copy]');
+  const clearToken = root?.querySelector<HTMLButtonElement>('[data-machine-token-clear]');
+
+  const text = (selector: string, value: string) => {
+    const node = root?.querySelector<HTMLElement>(selector);
+    if (node) node.textContent = value;
+  };
+
+  const timeLabel = (value?: string) => {
+    if (!value) return undefined;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  };
+
+  function selectedFilter(): GitHubStatusFilter {
+    const value = new URLSearchParams(window.location.search).get('state');
+    return value === 'pending' || value === 'error' ? value : 'all';
+  }
+
+  function setFilter(filter: GitHubStatusFilter, push = false): void {
+    root?.querySelectorAll<HTMLElement>('[data-github-filter]').forEach((link) => {
+      if (link.dataset.githubFilter === filter) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    if (push) {
+      const url = new URL(window.location.href);
+      if (filter === 'all') url.searchParams.delete('state');
+      else url.searchParams.set('state', filter);
+      window.history.pushState({}, '', url);
+    }
+    if (currentStatus) renderInstallations(currentStatus, filter);
+  }
+
+  function renderMarker(selector: string, idSelector: string, marker: DeliveryMarker | undefined, fallback: string): void {
+    const description = root?.querySelector<HTMLElement>(selector);
+    const identity = root?.querySelector<HTMLElement>(idSelector);
+    if (!description || !identity) return;
+    if (!marker) {
+      description.textContent = fallback;
+      identity.hidden = true;
+      return;
+    }
+    description.textContent = `${marker.event ? `${marker.event} · ` : ''}${timeLabel(marker.occurred_at) ?? marker.occurred_at}`;
+    identity.textContent = marker.delivery_id ? `Delivery ${marker.delivery_id}` : '';
+    identity.hidden = !marker.delivery_id;
+  }
+
+  function renderInstallations(status: GitHubAppStatus, filter: GitHubStatusFilter): void {
+    const list = root?.querySelector<HTMLElement>('[data-github-installations]');
+    const empty = root?.querySelector<HTMLElement>('[data-github-installations-empty]');
+    if (!list || !empty) return;
+    const installations = status.installations.filter((installation) => installationMatchesFilter(installation, status, filter));
+    list.replaceChildren(...installations.map((installation) => {
+      const article = document.createElement('article');
+      article.className = 'installation-row';
+      article.dataset.state = installation.state;
+      const heading = document.createElement('div');
+      const title = document.createElement('strong'); title.textContent = installation.account;
+      const detail = document.createElement('p');
+      const repoLabel = installation.repositories === undefined ? 'Repository count unavailable' : `${installation.repositories} ${installation.repositories === 1 ? 'repository' : 'repositories'}`;
+      detail.textContent = `${installation.account_type ?? 'GitHub account'} · ${installation.repository_selection ?? 'selection unavailable'} · ${repoLabel}`;
+      heading.append(title, detail);
+      const badge = document.createElement('span'); badge.className = 'status-badge'; badge.textContent = installation.state;
+      article.append(heading, badge);
+      if (installation.manage_url) {
+        const manage = document.createElement('a'); manage.href = installation.manage_url; manage.target = '_blank'; manage.rel = 'noopener'; manage.textContent = 'Manage ↗';
+        article.append(manage);
+      }
+      return article;
+    }));
+    empty.hidden = installations.length > 0;
+    text('[data-github-filter-summary]', filter === 'pending' ? 'Showing installations with queued refreshes.' : filter === 'error' ? 'Showing suspended, revoked, or errored installations.' : 'Showing all installations.');
+  }
+
+  function render(status: GitHubAppStatus): void {
+    currentStatus = status;
+    root?.setAttribute('aria-busy', 'false');
+    if (loading) loading.hidden = true;
+    if (errorState) errorState.hidden = true;
+    if (content) content.hidden = false;
+
+    const connected = status.connection.state === 'connected';
+    indicator?.setAttribute('data-state', connected ? 'connected' : status.connection.state === 'attention' ? 'attention' : 'disconnected');
+    if (indicatorLabel) indicatorLabel.textContent = connected ? 'GitHub connected' : status.connection.state === 'attention' ? 'Connection needs attention' : 'GitHub not connected';
+    if (generated) generated.textContent = `Checked ${timeLabel(status.generated_at) ?? status.generated_at}`;
+
+    text('[data-github-connection-title]', status.connection.app_name ?? 'Workbench GitHub App');
+    text('[data-github-connection-copy]', connected
+      ? `Connected${status.connection.account ? ` as ${status.connection.account}` : ''}. Webhook events can schedule repository refreshes on registered machines.`
+      : status.connection.state === 'attention'
+        ? 'The existing connection needs attention before event-driven refreshes can continue.'
+        : 'Install and authorize the GitHub App to receive repository updates.');
+    const connect = root?.querySelector<HTMLAnchorElement>('[data-github-connect]');
+    if (connect) {
+      connect.hidden = !status.connection.connect_url;
+      if (status.connection.connect_url) connect.href = status.connection.connect_url;
+      connect.textContent = connected ? 'Manage connection ↗' : 'Connect GitHub ↗';
+    }
+
+    text('[data-github-installation-count]', String(status.installations.length));
+    text('[data-github-installation-detail]', status.installations.length === 0 ? 'No installations reported' : `${status.installations.filter(({ state }) => state === 'installed').length} active`);
+    text('[data-github-machine-count]', String(status.machines.length));
+    text('[data-github-machine-detail]', status.machines.length === 0 ? 'No machines reported' : `${status.machines.filter(({ state }) => state === 'online').length} online`);
+    text('[data-github-pending-count]', String(status.pending_refreshes.length));
+    text('[data-github-error-count]', String(status.errors.length));
+
+    renderMarker('[data-github-last-received]', '[data-github-received-id]', status.delivery?.last_received, 'No receipt reported yet.');
+    renderMarker('[data-github-last-acknowledged]', '[data-github-acknowledged-id]', status.delivery?.last_acknowledged, 'No acknowledgement reported yet.');
+
+    const machines = root?.querySelector<HTMLElement>('[data-github-machines]');
+    const machinesEmpty = root?.querySelector<HTMLElement>('[data-github-machines-empty]');
+    if (machines && machinesEmpty) {
+      machines.replaceChildren(...status.machines.map((machine) => {
+        const card = document.createElement('article'); card.className = 'machine-card'; card.dataset.state = machine.state ?? 'unknown';
+        const state = document.createElement('span'); state.className = 'machine-state'; state.textContent = machine.state ?? 'registered';
+        const name = document.createElement('strong'); name.textContent = machine.name;
+        const seen = document.createElement('p'); seen.textContent = machine.last_seen_at ? `Last seen ${timeLabel(machine.last_seen_at) ?? machine.last_seen_at}` : 'Last seen time unavailable';
+        card.append(state, name, seen); return card;
+      }));
+      machinesEmpty.hidden = status.machines.length > 0;
+    }
+
+    renderInstallations(status, selectedFilter());
+
+    const pendingTable = root?.querySelector<HTMLElement>('[data-github-pending-table]');
+    const pendingBody = root?.querySelector<HTMLTableSectionElement>('[data-github-pending]');
+    const pendingEmpty = root?.querySelector<HTMLElement>('[data-github-pending-empty]');
+    if (pendingTable && pendingBody && pendingEmpty) {
+      pendingBody.replaceChildren(...status.pending_refreshes.map((refresh) => {
+        const row = document.createElement('tr');
+        for (const [label, value] of [
+          ['Repository', refresh.repository],
+          ['Event', refresh.event ?? 'Event unavailable'],
+          ['Queued', timeLabel(refresh.queued_at) ?? refresh.queued_at],
+          ['Machine', refresh.machine_id ?? 'Awaiting assignment'],
+        ]) {
+          const cell = document.createElement('td'); cell.dataset.label = label; cell.textContent = value; row.append(cell);
+        }
+        return row;
+      }));
+      pendingTable.hidden = status.pending_refreshes.length === 0;
+      pendingEmpty.hidden = status.pending_refreshes.length > 0;
+    }
+
+    const errorsSection = root?.querySelector<HTMLElement>('[data-github-errors-section]');
+    const errors = root?.querySelector<HTMLElement>('[data-github-errors]');
+    if (errorsSection && errors) {
+      errorsSection.hidden = status.errors.length === 0;
+      errors.replaceChildren(...status.errors.map((item) => {
+        const article = document.createElement('article'); article.className = 'github-action-error';
+        const copy = document.createElement('div');
+        const title = document.createElement('strong'); title.textContent = item.code.replaceAll('_', ' ');
+        const message = document.createElement('p'); message.textContent = item.message;
+        copy.append(title, message); article.append(copy);
+        if (item.action_url) {
+          const action = document.createElement('a'); action.href = item.action_url; action.target = '_blank'; action.rel = 'noopener'; action.textContent = `${item.action ?? 'Open GitHub'} ↗`; article.append(action);
+        }
+        return article;
+      }));
+    }
+  }
+
+  async function load(): Promise<void> {
+    root?.setAttribute('aria-busy', 'true');
+    if (loading) loading.hidden = false;
+    if (errorState) errorState.hidden = true;
+    retry?.setAttribute('disabled', 'true');
+    refreshStatus?.setAttribute('disabled', 'true');
+    indicator?.setAttribute('data-state', 'loading');
+    if (indicatorLabel) indicatorLabel.textContent = 'Checking connection';
+    try {
+      const endpoint = root?.dataset.endpoint;
+      if (!endpoint) throw new Error('GitHub App status endpoint is unavailable.');
+      const response = await fetch(endpoint, { headers: { accept: 'application/json' }, cache: 'no-store', credentials: 'include' });
+      const body: unknown = await response.json().catch(() => undefined);
+      const code = body && typeof body === 'object' && 'error' in body ? (body as { error?: unknown }).error : undefined;
+      if (!response.ok) throw new Error(githubStatusErrorMessage(response.status, code));
+      const status = parseGitHubAppStatus(body);
+      if (!status) throw new Error('The authorized GitHub App source returned an invalid response.');
+      render(status);
+    } catch (error) {
+      root?.setAttribute('aria-busy', 'false');
+      if (loading) loading.hidden = true;
+      if (content) content.hidden = !currentStatus;
+      if (errorState) errorState.hidden = false;
+      if (errorMessage) errorMessage.textContent = error instanceof Error ? error.message : githubStatusErrorMessage(0);
+      indicator?.setAttribute('data-state', 'attention');
+      if (indicatorLabel) indicatorLabel.textContent = 'Status unavailable';
+      if (generated) generated.textContent = 'No authorized status loaded';
+    } finally {
+      retry?.removeAttribute('disabled');
+      refreshStatus?.removeAttribute('disabled');
+    }
+  }
+
+  root?.querySelectorAll<HTMLAnchorElement>('[data-github-filter]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      const filter = link.dataset.githubFilter;
+      if (filter === 'all' || filter === 'pending' || filter === 'error') setFilter(filter, true);
+    });
+  });
+  window.addEventListener('popstate', () => setFilter(selectedFilter()));
+  retry?.addEventListener('click', load);
+  enrollmentForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!machineName || !enrollmentError || !enrollmentResult || !enrollmentToken) return;
+    const validationError = machineNameError(machineName.value);
+    enrollmentError.hidden = !validationError;
+    enrollmentError.textContent = validationError ?? '';
+    machineName.setAttribute('aria-invalid', validationError ? 'true' : 'false');
+    if (validationError) {
+      machineName.focus();
+      return;
+    }
+    const submit = enrollmentForm.querySelector<HTMLButtonElement>('button[type="submit"]');
+    submit?.setAttribute('disabled', 'true');
+    machineName.setAttribute('disabled', 'true');
+    enrollmentResult.hidden = true;
+    enrollmentToken.textContent = '';
+    try {
+      const enrollment = await enrollMachine(machineName.value);
+      if (enrollmentTitle) enrollmentTitle.textContent = `${enrollment.machine.name} enrolled`;
+      if (enrollmentIdentity) enrollmentIdentity.textContent = `Bound to ${enrollment.identity.display_name ?? enrollment.identity.id} · enrolled ${timeLabel(enrollment.enrolled_at) ?? enrollment.enrolled_at}`;
+      enrollmentToken.textContent = enrollment.token;
+      if (tokenMessage) tokenMessage.textContent = 'Copy this token now. It will not be shown again.';
+      enrollmentResult.hidden = false;
+      copyToken?.focus();
+      if (currentStatus) {
+        const machine = { id: enrollment.machine.id, name: enrollment.machine.name, state: 'unknown' as const };
+        currentStatus = { ...currentStatus, machines: [...currentStatus.machines.filter(({ id }) => id !== machine.id), machine] };
+        render(currentStatus);
+      }
+    } catch (error) {
+      enrollmentError.textContent = error instanceof Error ? error.message : 'This machine could not be enrolled.';
+      enrollmentError.hidden = false;
+    } finally {
+      submit?.removeAttribute('disabled');
+      machineName.removeAttribute('disabled');
+    }
+  });
+  copyToken?.addEventListener('click', async () => {
+    const token = enrollmentToken?.textContent;
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      if (tokenMessage) tokenMessage.textContent = 'Token copied. Clear it from this page after the WB daemon accepts it.';
+    } catch {
+      if (tokenMessage) tokenMessage.textContent = 'Copy failed. Select the token manually, then clear it from this page.';
+    }
+  });
+  clearToken?.addEventListener('click', () => {
+    if (enrollmentToken) enrollmentToken.textContent = '';
+    if (enrollmentResult) enrollmentResult.hidden = true;
+    machineName?.focus();
+  });
+  refreshStatus?.addEventListener('click', load);
+  setFilter(selectedFilter());
+  void load();
+</script>
+
+<style is:global>
+  .github-status-hero { padding: clamp(3rem, 7vw, 6rem) 0 clamp(2.2rem, 5vw, 4rem); border-bottom: 1px solid var(--line); background: radial-gradient(circle at 80% 20%, #ffe6dc 0, transparent 28%), linear-gradient(125deg, #f0efff 0%, var(--paper) 62%); }
+  .github-status-hero-inner { display: flex; justify-content: space-between; gap: 2rem; align-items: end; }
+  .github-status-back { display: inline-flex; gap: .35rem; margin-bottom: 1.5rem; color: var(--ink-3); font-size: .78rem; font-weight: 700; }
+  .github-status-hero h1 { max-width: 12ch; font-size: clamp(2.65rem, 5.2vw, 4.7rem); }
+  .github-status-hero .lead { max-width: 63ch; margin-top: 1rem; }
+  .github-status-indicator { display: flex; gap: .7rem; min-width: 225px; padding: .9rem 1rem; border: 1px solid #d8d4ff; border-radius: var(--radius-sm); background: #ffffffb8; box-shadow: var(--shadow); }
+  .github-status-indicator > div { display: grid; gap: .08rem; }
+  .github-status-indicator strong { font-size: .86rem; }
+  .github-status-indicator span:not(.github-status-dot) { color: var(--ink-3); font-family: var(--font-mono); font-size: .67rem; }
+  .github-status-indicator button { align-self: center; margin-left: .35rem; padding: .38rem .55rem; border-color: var(--line); background: white; color: var(--ink-2); font-size: .68rem; }
+  .github-status-dot { width: .65rem; height: .65rem; margin-top: .28rem; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px #fff0cc; }
+  [data-state="connected"] .github-status-dot { background: var(--green); box-shadow: 0 0 0 4px #daf8e9; }
+  [data-state="loading"] .github-status-dot { background: var(--indigo); box-shadow: 0 0 0 4px #e7e5ff; }
+
+  .github-status-shell { padding-block: clamp(2rem, 4vw, 4rem) clamp(4rem, 7vw, 7rem); }
+  .github-status-shell [hidden] { display: none; }
+  .github-status-state { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 1rem 1.2rem; border: 1px solid #d9d6ff; border-radius: var(--radius-sm); background: #f6f5ff; }
+  .github-status-state strong { display: block; font-family: var(--font-display); }
+  .github-status-state p { margin-top: .15rem; color: var(--ink-2); font-size: .85rem; }
+  .github-status-state-error { border-color: #f1c7b8; background: #fff6f1; }
+  .github-status-spinner { width: 1.25rem; height: 1.25rem; flex: none; border: 2px solid #c5c1ff; border-top-color: var(--indigo); border-radius: 50%; animation: github-spin .8s linear infinite; }
+  @keyframes github-spin { to { transform: rotate(360deg); } }
+
+  .github-connection-card { display: flex; justify-content: space-between; align-items: center; gap: 2rem; padding: clamp(1.2rem, 3vw, 1.8rem); border: 1px solid #d8d4ff; border-radius: var(--radius); background: linear-gradient(135deg, #f6f5ff, #fff); box-shadow: 0 22px 46px -42px rgba(23, 22, 42, .8); }
+  .github-connection-card h2 { margin-top: .25rem; font-size: clamp(1.5rem, 3vw, 2.2rem); }
+  .github-connection-card p:not(.card-kicker) { max-width: 66ch; margin-top: .5rem; color: var(--ink-2); }
+  .github-overview { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin-top: 1rem; }
+  .github-overview article { min-height: 142px; display: flex; flex-direction: column; padding: 1.1rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+  .github-overview p, .github-overview span { color: var(--ink-3); font-size: .69rem; line-height: 1.4; }
+  .github-overview p { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .045em; }
+  .github-overview strong { margin: auto 0 .25rem; font-family: var(--font-display); font-size: 1.8rem; }
+
+  .enrollment-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, .8fr); gap: 1rem; }
+  .enrollment-grid form, .enrollment-note, .enrollment-result { padding: 1.15rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+  .enrollment-grid label { display: block; font-weight: 750; }
+  .enrollment-grid form > p, .enrollment-note p, .enrollment-result p { margin-top: .25rem; color: var(--ink-3); font-size: .78rem; }
+  .enrollment-controls { display: flex; gap: .65rem; margin-top: .85rem; }
+  .enrollment-controls input { min-width: 0; flex: 1; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--ink); font: inherit; }
+  .enrollment-controls input:focus { outline: 3px solid #dedbff; border-color: var(--indigo); }
+  .enrollment-controls input[aria-invalid="true"] { border-color: #c9613b; }
+  .field-error { color: #9a3b20 !important; font-weight: 650; }
+  .enrollment-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .8rem 1rem; align-items: center; margin-top: .75rem; border-color: #b9e7cf; background: #f0fbf5; }
+  .enrollment-result code { grid-column: 1 / -1; overflow-x: auto; padding: .8rem; border-radius: 8px; background: var(--ink); color: white; white-space: nowrap; }
+  .enrollment-result-actions { display: flex; gap: .45rem; }
+  .enrollment-result > p { grid-column: 1 / -1; }
+  .btn-secondary { border-color: var(--line); background: transparent; color: var(--ink-2); }
+
+  .github-status-section { margin-top: clamp(3.25rem, 6vw, 5.5rem); }
+  .github-section-head { display: flex; justify-content: space-between; gap: 2rem; align-items: end; margin-bottom: 1rem; }
+  .github-section-head h2 { font-size: clamp(1.75rem, 3vw, 2.6rem); }
+  .github-section-head > p { max-width: 44ch; color: var(--ink-2); font-size: .82rem; text-align: right; }
+  .delivery-markers { display: grid; grid-template-columns: minmax(0, 1fr) 4rem minmax(0, 1fr); align-items: center; }
+  .delivery-markers article { min-height: 140px; display: flex; gap: 1rem; padding: 1.2rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  .delivery-step { display: grid; place-items: center; width: 2rem; height: 2rem; flex: none; border-radius: 50%; background: var(--ink); color: white; font-family: var(--font-mono); font-size: .7rem; }
+  .delivery-markers p { margin-top: .4rem; color: var(--ink-2); font-size: .85rem; }
+  .delivery-markers code { display: inline-block; margin-top: .7rem; color: var(--indigo-deep); font-size: .7rem; }
+  .delivery-line { height: 1px; background: var(--line); }
+
+  .machine-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; }
+  .machine-card { padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+  .machine-state, .status-badge { display: inline-flex; width: fit-content; padding: .2rem .5rem; border-radius: 999px; background: #eef0f3; color: var(--ink-3); font-family: var(--font-mono); font-size: .62rem; font-weight: 750; text-transform: uppercase; }
+  .machine-card[data-state="online"] .machine-state, .installation-row[data-state="installed"] .status-badge { background: #dff7e9; color: #176b48; }
+  .machine-card strong { display: block; margin-top: 1rem; }
+  .machine-card p { margin-top: .25rem; color: var(--ink-3); font-size: .75rem; }
+
+  .github-filter-tabs { display: flex; flex-wrap: wrap; gap: .3rem; width: fit-content; margin-bottom: 1rem; padding: .28rem; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-2); }
+  .github-filter-tabs a { padding: .42rem .76rem; border-radius: 999px; color: var(--ink-2); font-size: .78rem; font-weight: 650; }
+  .github-filter-tabs a[aria-current="page"] { background: var(--ink); color: white; box-shadow: 0 4px 10px #17162a2b; }
+  .installation-list { display: grid; gap: .6rem; }
+  .installation-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 1rem; align-items: center; padding: 1rem 1.15rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+  .installation-row p { margin-top: .22rem; color: var(--ink-3); font-size: .76rem; }
+  .installation-row a { color: var(--indigo-deep); font-size: .76rem; font-weight: 700; }
+  .installation-row[data-state="suspended"] .status-badge, .installation-row[data-state="revoked"] .status-badge { background: #fff0cc; color: #874400; }
+
+  .github-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  .github-table-wrap table { width: 100%; border-collapse: collapse; text-align: left; }
+  .github-table-wrap th, .github-table-wrap td { padding: .85rem 1rem; border-bottom: 1px solid var(--line); font-size: .78rem; }
+  .github-table-wrap th { color: var(--ink-3); font-family: var(--font-mono); font-size: .66rem; letter-spacing: .04em; text-transform: uppercase; }
+  .github-table-wrap tr:last-child td { border-bottom: 0; }
+  .github-empty { padding: 1rem 1.15rem; border: 1px dashed var(--line); border-radius: var(--radius-sm); color: var(--ink-3); font-size: .82rem; }
+  .github-error-list { display: grid; gap: .65rem; }
+  .github-action-error { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 1.15rem; border: 1px solid #f1c7b8; border-radius: var(--radius-sm); background: #fff6f1; }
+  .github-action-error strong { text-transform: capitalize; }
+  .github-action-error p { margin-top: .2rem; color: var(--ink-2); font-size: .8rem; }
+  .github-action-error a { flex: none; color: #8c3c20; font-size: .78rem; font-weight: 750; }
+
+  @media (max-width: 900px) { .github-overview { grid-template-columns: repeat(2, 1fr); } .machine-list { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 700px) {
+    .github-status-hero-inner, .github-connection-card, .github-section-head { display: grid; }
+    .github-status-indicator { width: fit-content; }
+    .github-section-head > p { text-align: left; }
+    .delivery-markers { grid-template-columns: 1fr; gap: .65rem; }
+    .delivery-line { width: 1px; height: 1.5rem; margin-left: 2.2rem; }
+    .machine-list { grid-template-columns: 1fr; }
+    .enrollment-grid { grid-template-columns: 1fr; }
+    .installation-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .installation-row a { grid-column: 1 / -1; }
+    .github-table-wrap { overflow: visible; border: 0; background: transparent; }
+    .github-table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .github-table-wrap, .github-table-wrap tbody, .github-table-wrap tr, .github-table-wrap td { display: block; }
+    .github-table-wrap tr { margin-bottom: .7rem; padding: .55rem 1rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+    .github-table-wrap td { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .6rem; padding: .5rem 0; border-bottom: 1px solid var(--line); }
+    .github-table-wrap td::before { content: attr(data-label); color: var(--ink-3); font-family: var(--font-mono); font-size: .65rem; font-weight: 700; text-transform: uppercase; }
+    .github-action-error { align-items: start; }
+  }
+  @media (max-width: 480px) { .github-overview { grid-template-columns: 1fr; } .github-status-state, .github-action-error, .enrollment-result { display: grid; } .enrollment-controls { display: grid; } .enrollment-result-actions { grid-row: auto; } }
+  @media (prefers-reduced-motion: reduce) { .github-status-spinner { animation: none; } }
+</style>

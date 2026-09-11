@@ -1,0 +1,16 @@
+---
+import DashboardView from '../../../../components/DashboardView.astro';
+import { dashboardShell } from '../../../../data/dashboard';
+import BaseLayout from '../../../../layouts/BaseLayout.astro';
+
+export function getStaticPaths() {
+  return [{ params: { host: 'github.com', org: 'org', repo: 'repo' } }];
+}
+
+const { host, org, repo } = Astro.params;
+const dashboard = dashboardShell({ kind: 'repo', host: host!, org: org!, repo: repo! });
+---
+
+<BaseLayout title={`${dashboard.title} — Workbench dashboard`} description="Repository-level Workbench lifecycle, CI, cleanup, dependency and verified landing metrics." path={`/repo/${host}/${org}/${repo}/`}>
+  <DashboardView {dashboard} />
+</BaseLayout>

@@ -1,0 +1,168 @@
+---
+import '@fontsource-variable/space-grotesk/index.css';
+import '@fontsource-variable/inter/index.css';
+import '@fontsource-variable/jetbrains-mono/index.css';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  path?: string;
+}
+
+const { title, description, path = Astro.url.pathname } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const canonicalPath = path.startsWith(base) ? (path === base ? base.slice(0, -1) : path) : `${base.slice(0, -1)}${path}`;
+const canonical = new URL(canonicalPath, Astro.site ?? Astro.url.origin);
+const socialImage = new URL(`${base}og.png`, Astro.site ?? Astro.url.origin);
+// The marketing site (index, why, deps-policy, skills, and the in-page anchors on
+// its home page) lives in the separate hosted workbench-web repository, not in
+// this build. Those links stay absolute so they resolve even when this dashboard
+// is built and served on its own (e.g. by `wb serve`).
+const marketingHome = 'https://sneat.work/bench';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fbfaf7" />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Workbench · Sneat.work" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1733" />
+    <meta property="og:image:height" content="907" />
+    <meta property="og:image:alt" content="WB — One command. Every repository." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={socialImage} />
+    <link rel="canonical" href={canonical} />
+    <title>{title}</title>
+    <script is:inline>document.documentElement.classList.add('js');</script>
+    <slot name="head" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="container nav-shell">
+        <a class="wordmark" href={marketingHome} aria-label="WB — home">
+          <span class="wordmark-mark">wb</span>
+          <span class="wordmark-domain">sneat.work/bench</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href={`${base}dashboard/`}>Dashboard</a>
+          <a href={`${base}dashboard/github/`}>GitHub App</a>
+          <a href={`${marketingHome}/why/`}>Why WB</a>
+          <a href={`${marketingHome}/#deps-graph`}>Dependency graph</a>
+          <a href={`${marketingHome}/deps-policy/`}>Deps policy</a>
+          <a href={`${marketingHome}/#commands`}>Commands</a>
+          <a href={`${marketingHome}/skills/`}>AI skills</a>
+          <a href={`${marketingHome}/#install`}>Install</a>
+        </nav>
+        <a class="nav-github" href="https://github.com/sneat-dev/wb" target="_blank" rel="noopener">
+          GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </header>
+
+    <main id="main"><slot /></main>
+
+    <footer class="site-footer">
+      <div class="container footer-grid">
+        <div>
+          <a class="wordmark footer-wordmark" href={marketingHome}>
+            <span class="wordmark-mark">wb</span>
+            <span class="wordmark-domain">sneat.work/bench</span>
+          </a>
+          <p>Fleet-wide repository operations. Open source, local-first, and built to be inspected.</p>
+        </div>
+        <div class="footer-links">
+          <div>
+            <b>Workbench</b>
+            <a href={`${base}dashboard/`}>Dashboard</a>
+            <a href={`${base}dashboard/github/`}>GitHub App</a>
+            <a href={`${marketingHome}/why/`}>Why WB</a>
+            <a href={`${marketingHome}/#deps-graph`}>Dependency graph</a>
+            <a href={`${marketingHome}/deps-policy/`}>Deps policy</a>
+            <a href={`${marketingHome}/#commands`}>Commands</a>
+            <a href={`${marketingHome}/skills/`}>AI skills</a>
+            <a href={`${marketingHome}/#install`}>Install</a>
+          </div>
+          <div>
+            <b>Ecosystem</b>
+            <a href="https://sneat.work">Sneat.work</a>
+            <a href="https://github.com/sneat-dev/wb">Source</a>
+            <a href="https://sneat.co">Sneat Co.</a>
+          </div>
+        </div>
+      </div>
+      <div class="container footer-base">
+        <span>© {new Date().getFullYear()} Sneat Co.</span>
+        <span>Apache-2.0 licensed · built in Go</span>
+      </div>
+    </footer>
+
+    <script is:inline>
+      document.querySelectorAll('[data-copy]').forEach(function (button) {
+        button.addEventListener('click', async function () {
+          var value = button.getAttribute('data-copy') || '';
+          try {
+            await navigator.clipboard.writeText(value);
+            var before = button.textContent;
+            button.textContent = 'Copied';
+            button.classList.add('is-copied');
+            window.setTimeout(function () {
+              button.textContent = before;
+              button.classList.remove('is-copied');
+            }, 1500);
+          } catch (_) {
+            window.prompt('Copy this command:', value);
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-install-command]').forEach(function (install) {
+        var tabs = Array.from(install.querySelectorAll('[data-install-tab]'));
+        var panels = Array.from(install.querySelectorAll('[data-install-panel]'));
+        function select(tab, focus) {
+          var id = tab.getAttribute('data-install-tab');
+          tabs.forEach(function (item) {
+            var selected = item === tab;
+            item.setAttribute('aria-selected', selected ? 'true' : 'false');
+            item.setAttribute('tabindex', selected ? '0' : '-1');
+          });
+          panels.forEach(function (panel) { panel.hidden = panel.getAttribute('data-install-panel') !== id; });
+          if (focus) tab.focus();
+        }
+        tabs.forEach(function (tab, index) {
+          tab.addEventListener('click', function () { select(tab, false); });
+          tab.addEventListener('keydown', function (event) {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            var next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+            select(tabs[next], true);
+          });
+        });
+        if (/Windows/i.test(navigator.userAgent)) {
+          var windowsTab = tabs.find(function (tab) { return tab.getAttribute('data-install-tab') === 'windows'; });
+          if (windowsTab) select(windowsTab, false);
+        }
+      });
+
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('is-visible');
+            observer.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.12 });
+      document.querySelectorAll('[data-reveal]').forEach(function (node) { observer.observe(node); });
+    </script>
+    <slot name="scripts" />
+  </body>
+</html>
