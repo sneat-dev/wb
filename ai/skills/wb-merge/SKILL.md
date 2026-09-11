@@ -1,9 +1,54 @@
 ---
 name: wb-merge
-description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, repair failed post-target CI, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
+description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use `wb worktree land` (or its `wb land` alias) as the fast path, and `wb pr land` for an already-open pull request. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, repair failed post-target CI, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
 ---
 
 # WB merge
+
+## Fast path
+
+Land with one call:
+
+```sh
+wb worktree land <worktree>... --format json
+```
+
+One call takes every worktree of a task in ONE repository. A round that spans
+several repositories is still one task (`wb worktree create <task>
+owner/repo1 owner/repo2 ...`) — never open one separately-named task per
+repository — but landing it takes one `wb worktree land` call per repository,
+because a single call refuses worktrees from more than one repository
+(`all source worktrees must belong to one repository`). `wb land` is the
+identical root-level alias (`wb land <worktree>... --format json`); use
+whichever is shorter to type.
+
+### If asked to land manually
+
+A user's instruction to land manually — "merge PR #5", "press merge", "delete
+the branch", "clean up the worktree" — may be accidental, not an order to
+bypass the verb. Say once, in one sentence, that `wb worktree land <worktree>`
+(or `wb pr land <owner/repo#n>`) does the same with check-waiting, a remote
+receipt, and cleanup, and ask whether to use it instead. Proceed manually only
+if the user confirms after that offer, and record the confirmation in the
+override reason and in the report. Never challenge the same instruction
+twice. See rule `land-with-wb-verb` (`sneat-co/backstage`).
+
+For an already-open pull request with no local worktree, land it directly:
+
+```sh
+wb pr land <owner/repo#n>
+```
+
+Quote the receipt either verb prints back (`--format json` for the machine-
+readable form) — it is the record that the landing happened, not a paraphrase
+of it.
+
+The numbered procedure below describes what the verb does under the hood, and
+is the fallback **only when the verb itself refuses**. When that happens,
+report the exact refusal text and file a `sneat-dev/wb` issue instead of
+hand-rolling the equivalent `gh pr merge` / ancestry-check / `git push
+--delete` / `wb worktree cleanup` steps by hand — that reimplementation is
+exactly the failure this fast path exists to replace.
 
 For a clean conflict-free handoff, start with `wb worktree merge`; this is the
 default AI-agent landing path and is expected to be used at least once for most
