@@ -38,7 +38,17 @@ Choose one verification surface:
 - `coverage` measures statement-weighted Go coverage.
 - `verify` runs selected conventional Go and Node checks.
 - `check --profile fast|full|ci` uses a stable policy; `ci` also runs
-  SpecScore lint when `spec/` exists.
+  SpecScore lint when `spec/` exists and the repository has a root
+  `specscore.yaml`. When `spec/` exists with no `specscore.yaml`, and every
+  file under it fits the external SpecScore Plans-store layout
+  (`spec/plans/{host}/{owner}/{repo}/...` -- see
+  specscore/specscore's "Plan repository routing" and
+  `REQ:external-source-namespace`, e.g. `sneat-co/workbench`), the check is
+  skipped rather than failed: that repository is validated from its source
+  projects and must not gain a `specscore.yaml` of its own. Any other
+  `spec/` shape with no config (a SpecScore project that lost its
+  `specscore.yaml`, or the legacy flat `spec/plans/{slug}.md` layout) still
+  runs lint and fails loudly.
 
 For a selected fleet:
 

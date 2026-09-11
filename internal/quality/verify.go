@@ -191,8 +191,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 	if containsCheck(checks, CheckSpec) {
 		specRoot := filepath.Join(path, "spec")
 		if _, err := os.Stat(specRoot); err == nil {
-			entry := runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
-			report.Results = append(report.Results, entry)
+			report.Results = append(report.Results, specLintOrSkip(ctx, options, path, specRoot))
 		} else if !os.IsNotExist(err) {
 			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)})
 		} else {
@@ -231,6 +230,94 @@ func containsCheck(checks []Check, want Check) bool {
 		}
 	}
 	return false
+}
+
+// specLintOrSkip decides whether spec/ requires specscore spec lint or is an
+// external SpecScore Plans store that is validated from its source projects.
+// sneat-co/workbench is the canonical example: SpecScore routes other
+// projects' Plans there under spec/plans/{host}/{owner}/{repo}/..., and by
+// design that namespace MUST NOT gain a specscore.yaml (see
+// specscore/specscore spec/features/repo-config "Plan repository routing"
+// and spec/features/plan REQ:external-source-namespace). Without this
+// carve-out, spec lint runs unconditionally and every such repository fails
+// with "specscore.yaml is required but was not found", even though it
+// behaves exactly as designed. A repository that keeps its own
+// specscore.yaml is unaffected: it always runs lint, same as today.
+func specLintOrSkip(ctx context.Context, options RunOptions, path, specRoot string) VerificationEntry {
+	specConfig := filepath.Join(path, "specscore.yaml")
+	if _, configErr := os.Lstat(specConfig); configErr != nil {
+		if !os.IsNotExist(configErr) {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)}
+		}
+		external, externalErr := isExternalPlansStore(specRoot)
+		if externalErr != nil {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore Plans layout %q: %v", specRoot, externalErr)}
+		}
+		if external {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "external SpecScore Plans store (no specscore.yaml): Plans are validated from their source projects"}
+		}
+	}
+	return runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
+}
+
+// isExternalPlansStore reports whether every regular file under specRoot fits
+// the external SpecScore Plans-store layout: the optional aggregate index
+// spec/plans/README.md, a per-source namespace index
+// spec/plans/{host}/{owner}/{repo}/README.md, and arbitrary content beneath
+// spec/plans/{host}/{owner}/{repo}/{plan-id}/. Any other spec/ content — a
+// SpecScore project's own spec/features or spec/ideas, or a same-repository
+// flat spec/plans/{plan-slug}.md — disqualifies the layout, so the caller
+// falls back to running specscore spec lint as it does today.
+func isExternalPlansStore(specRoot string) (bool, error) {
+	fits := true
+	err := filepath.WalkDir(specRoot, func(walkPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(specRoot, walkPath)
+		if relErr != nil {
+			return relErr
+		}
+		if !externalPlansStorePath(filepath.ToSlash(rel)) {
+			fits = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return fits, nil
+}
+
+// externalPlansStorePath reports whether rel — a spec/-relative, slash
+// separated path — fits the external Plans-store layout described by
+// isExternalPlansStore.
+func externalPlansStorePath(rel string) bool {
+	segments := strings.Split(rel, "/")
+	if len(segments) < 2 || segments[0] != "plans" {
+		return false
+	}
+	if len(segments) == 2 {
+		// spec/plans/README.md is the optional aggregate index; any other
+		// file directly under spec/plans/ is the legacy same-repository flat
+		// layout (spec/plans/{plan-slug}.md), not an external namespace.
+		return segments[1] == "README.md"
+	}
+	if len(segments) < 5 {
+		// Shorter than spec/plans/{host}/{owner}/{repo}/{something}.
+		return false
+	}
+	// segments[1..3] are host/owner/repo; segments[4:] is either the
+	// namespace index README.md or content beneath a plan-id directory.
+	remainder := segments[4:]
+	if len(remainder) == 1 {
+		return remainder[0] == "README.md"
+	}
+	return true
 }
 
 func goCommand(check Check, singleWorker bool) []string {

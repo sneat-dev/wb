@@ -305,6 +305,117 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Fatalf("command = %q, want %q", got, want)
 		}
 	})
+
+	// The remaining subtests cover the external SpecScore Plans store shape
+	// (sneat-co/workbench is the canonical example): SpecScore routes other
+	// projects' Plans there under spec/plans/{host}/{owner}/{repo}/..., and by
+	// design that namespace MUST NOT gain a specscore.yaml (see
+	// specscore/specscore spec/features/repo-config "Plan repository routing"
+	// and spec/features/plan REQ:external-source-namespace). Without this
+	// carve-out, wb always runs specscore spec lint whenever spec/ exists, and
+	// that fails every such repository with "specscore.yaml is required but
+	// was not found" even though it behaves exactly as designed.
+
+	t.Run("external plans store without config is skipped", func(t *testing.T) {
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "README.md"), "# datatug Plans\n")
+		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1", "README.md"), "# Phase 1\n")
+		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1", "database-setup", "README.md"), "# Database setup\n")
+
+		report := Verify(context.Background(), "sneat-co/workbench", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 {
+			t.Fatalf("report = %+v", report)
+		}
+		result := report.Results[0]
+		if result.Status != StatusSkipped {
+			t.Fatalf("result = %+v", result)
+		}
+		if !strings.Contains(result.Detail, "external SpecScore Plans store") || !strings.Contains(result.Detail, "specscore.yaml") {
+			t.Fatalf("detail = %q, want it to name the external-store reason", result.Detail)
+		}
+	})
+
+	t.Run("spec tree without config still runs lint", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("test shell helper is POSIX-only")
+		}
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "spec", "features", "example", "README.md"), "# Example\n")
+		log := stubSpecscoreBinary(t, repository)
+
+		report := Verify(context.Background(), "example/features-only", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
+			t.Fatalf("report = %+v", report)
+		}
+		contents, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
+			t.Fatalf("command = %q, want %q (lint must run, not skip)", got, want)
+		}
+	})
+
+	t.Run("external plans mixed with another spec subtree runs lint", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("test shell helper is POSIX-only")
+		}
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "README.md"), "# datatug Plans\n")
+		writeQualityFile(t, filepath.Join(repository, "spec", "features", "example", "README.md"), "# Example\n")
+		log := stubSpecscoreBinary(t, repository)
+
+		report := Verify(context.Background(), "example/mixed-spec", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
+			t.Fatalf("report = %+v", report)
+		}
+		contents, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
+			t.Fatalf("command = %q, want %q (a non-Plans spec subtree must force lint)", got, want)
+		}
+	})
+
+	t.Run("flat plan file without config runs lint", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("test shell helper is POSIX-only")
+		}
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "user-auth.md"), "# User auth\n")
+		log := stubSpecscoreBinary(t, repository)
+
+		report := Verify(context.Background(), "example/flat-plan", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
+			t.Fatalf("report = %+v", report)
+		}
+		contents, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
+			t.Fatalf("command = %q, want %q (the legacy flat layout is not an external namespace)", got, want)
+		}
+	})
+}
+
+// stubSpecscoreBinary installs a "specscore" executable on PATH that appends
+// its arguments to a log file in repository and exits 0. It returns the log
+// path so a test can assert the exact command wb invoked.
+func stubSpecscoreBinary(t *testing.T, repository string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "commands.log")
+	writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
 }
 
 func TestParseChecks(t *testing.T) {

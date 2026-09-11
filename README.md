@@ -738,7 +738,10 @@ wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
 
 # CI profile adds SpecScore lint for repositories that contain spec/. A
 # specscore.yaml file makes that canonical root required, so a missing spec/
-# fails closed instead of being treated as non-applicable.
+# fails closed instead of being treated as non-applicable. spec/ with no
+# specscore.yaml is skipped only when it is an external SpecScore Plans
+# store (e.g. sneat-co/workbench); any other unconfigured spec/ still runs
+# lint and fails loudly.
 wb check --fleet --match 'sneat-co/*' --profile ci --parallel=2 \
   --timeout 10m --retry 1 --report-dir /tmp/wb-check
 
@@ -784,7 +787,13 @@ Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
 default) runs lint/test/build, and `ci` additionally runs `specscore spec lint`
-for repositories with `spec/`. `--timeout` applies to each external command;
+for repositories with `spec/` and a root `specscore.yaml`. When `spec/` exists
+with no `specscore.yaml` and every file under it fits the external SpecScore
+Plans-store layout (`spec/plans/{host}/{owner}/{repo}/...`, per
+specscore/specscore's Plan repository routing), the check is skipped instead
+of failed — that repository is validated from its source projects and must
+not gain a `specscore.yaml` of its own. Any other unconfigured `spec/` shape
+still runs lint and fails loudly. `--timeout` applies to each external command;
 `--retry=N` retries only failed commands N additional times; and
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.

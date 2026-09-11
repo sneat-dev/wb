@@ -62,7 +62,9 @@ Quality commands MUST continue after repository-level failures and report each a
 
 #### REQ: check-profiles
 
-`wb check` MUST provide named built-in profiles: `fast` runs lint, `full` runs lint, test, and build, and `ci` adds SpecScore lint when a repository has a `spec/` directory. When `specscore.yaml` explicitly configures SpecScore, `ci` MUST fail if the canonical `spec/` root is missing; repositories with neither the config nor the root remain non-applicable. `full` MUST be the default profile. A profile MUST use the same conventional Go and Node adapters as `wb verify`.
+`wb check` MUST provide named built-in profiles: `fast` runs lint, `full` runs lint, test, and build, and `ci` adds SpecScore lint when a repository has a `spec/` directory and a root `specscore.yaml`. When `specscore.yaml` explicitly configures SpecScore, `ci` MUST fail if the canonical `spec/` root is missing; repositories with neither the config nor the root remain non-applicable. `full` MUST be the default profile. A profile MUST use the same conventional Go and Node adapters as `wb verify`.
+
+When a repository's `spec/` directory exists but its root has no `specscore.yaml`, and every file under `spec/` fits the external SpecScore Plans-store layout (`spec/plans/README.md`, `spec/plans/{host}/{owner}/{repo}/README.md`, and anything beneath `spec/plans/{host}/{owner}/{repo}/{plan-id}/`, per SpecScore's Plan repository routing), `ci` MUST skip SpecScore lint rather than fail: that repository is an external Plans store validated from its source projects and, by SpecScore's own convention, must not gain a `specscore.yaml` of its own. Any other unconfigured `spec/` content -- a SpecScore project that lost its `specscore.yaml`, or a same-repository flat `spec/plans/{plan-slug}.md` -- MUST still run lint and fail exactly as when the layout does not apply.
 
 #### REQ: bounded-command-execution
 
