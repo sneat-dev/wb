@@ -89,7 +89,7 @@ homebrew_casks:
       - wb
     description: "wb — the Sneat workbench CLI: fleet-wide GitHub repo sync and config-driven recipes."
     homepage: https://sneat.work/bench
-    license: MIT
+    license: Apache-2.0
     repository:
       owner: sneat-dev
       name: homebrew-tap
