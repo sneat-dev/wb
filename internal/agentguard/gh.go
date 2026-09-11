@@ -45,10 +45,11 @@ const ghPrMergeOverrideEnv = "WB_AGENTGUARD_ALLOW_GH_PR_MERGE"
 // nothing to do with which directory the agent happened to be sitting in, so
 // neither does the refusal.
 func inspectGh(words []string, projectsRoot string, override string) *finding {
-	if !isGhPrMerge(words) {
+	expanded, merges := ghResolvesToPrMerge(words)
+	if !merges {
 		return nil
 	}
-	if ghRequestsHelp(words) {
+	if ghRequestsHelp(expanded) {
 		return nil
 	}
 	if reason := strings.TrimSpace(override); reason != "" {
@@ -175,6 +176,110 @@ func isGhPrMerge(words []string) bool {
 	rest = append(rest, arguments[first+1:]...)
 	second := cobraSubcommandIndex(rest, ghPrNoValueFlags)
 	return second >= 0 && rest[second] == "merge"
+}
+
+// ghResolvesToPrMerge is isGhPrMerge over every command line the shell's
+// brace expansion can make of words. `gh pr {merge,} 1` reaches gh as
+// `gh pr merge 1` on bash, sh and zsh alike (wb#500 fifth review, S2), so a
+// word carrying a brace list is read as each of its alternatives. It returns
+// the first expansion that merges, so the help check can read the flags of
+// the line gh would actually see.
+func ghResolvesToPrMerge(words []string) ([]string, bool) {
+	for _, candidate := range braceExpandWords(words, maxBraceExpansions) {
+		if isGhPrMerge(candidate) {
+			return candidate, true
+		}
+	}
+	return words, false
+}
+
+// maxBraceExpansions bounds how many command lines braceExpandWords produces.
+// A real call has one list with two or three alternatives; the bound only
+// guarantees termination against a pathological line, and hitting it fails
+// open like every other construct the reader cannot model.
+const maxBraceExpansions = 64
+
+// braceExpandWords returns every word list the shell's brace expansion makes
+// of words, in order, at most limit of them. A word without a brace list
+// stands for itself.
+func braceExpandWords(words []string, limit int) [][]string {
+	results := [][]string{{}}
+	for _, word := range words {
+		alternatives := braceExpansions(word, limit)
+		var next [][]string
+		for _, prefix := range results {
+			for _, alternative := range alternatives {
+				if len(next) >= limit {
+					return next
+				}
+				line := make([]string, 0, len(prefix)+1)
+				line = append(line, prefix...)
+				line = append(line, alternative)
+				next = append(next, line)
+			}
+		}
+		results = next
+	}
+	return results
+}
+
+// braceExpansions expands the first {a,b,...} list in word and recurses into
+// each result, the way the shell does: `m{erge,}` is "merge" and "m",
+// `{a,b}{c,d}` is ac, ad, bc, bd. A brace pair without a top-level comma
+// (`${X:-merge}`, `{}`) is not a list and is left as it is; the shell reads
+// it as a parameter expansion or literally, and neither is modelled here.
+func braceExpansions(word string, limit int) []string {
+	open, close, commas := firstBraceList(word)
+	if open < 0 {
+		return []string{word}
+	}
+	prefix, suffix := word[:open], word[close+1:]
+	inner := word[open+1 : close]
+	var results []string
+	start := 0
+	for _, comma := range append(commas, len(inner)) {
+		for _, expanded := range braceExpansions(prefix+inner[start:comma]+suffix, limit) {
+			if len(results) >= limit {
+				return results
+			}
+			results = append(results, expanded)
+		}
+		start = comma + 1
+	}
+	return results
+}
+
+// firstBraceList finds the first { ... } in word that holds at least one
+// comma at its own nesting depth, and reports the indexes of the braces and
+// of those commas, relative to the inner text. It returns open = -1 when
+// there is none.
+func firstBraceList(word string) (open, close int, commas []int) {
+	for start := 0; start < len(word); start++ {
+		if word[start] != '{' || (start > 0 && word[start-1] == '$') {
+			continue
+		}
+		depth := 0
+		var found []int
+		for index := start; index < len(word); index++ {
+			switch word[index] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					if len(found) > 0 {
+						return start, index, found
+					}
+					index = len(word)
+				}
+			case ',':
+				if depth == 1 {
+					found = append(found, index-start-1)
+				}
+			}
+		}
+	}
+	return -1, -1, nil
 }
 
 // cobraSubcommandIndex mirrors cobra's stripFlags. It returns the index in

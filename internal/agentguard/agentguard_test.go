@@ -525,6 +525,12 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 		{"upper-case program name", "GH pr merge 1041", repositories.Worktree},
 		{"upper-case program name behind a wrapper", "SUDO -u alex GH pr merge 1041", repositories.Worktree},
 		{"upper-case shell interpreter", "BASH -c 'gh pr merge 1041'", repositories.Worktree},
+		// wb#500 fifth review, S2: brace expansion builds the subcommand word.
+		{"brace list on merge", "gh pr {merge,} 1041", repositories.Worktree},
+		{"brace list inside merge", "gh pr m{erge,view} 1041", repositories.Worktree},
+		{"brace list on pr", "gh {pr,issue} merge 1041", repositories.Worktree},
+		{"brace list in a shell payload", "sh -c 'gh pr {merge,} 1041'", repositories.Worktree},
+		{"brace list with the number attached", "gh pr merge{,} 1041", repositories.Worktree},
 		// wb#500 final review, S3: a shell keyword opens a command in the
 		// same segment, so a loop or conditional body is inspected.
 		{"a for loop body", `for n in 12 13; do gh pr merge "$n" --squash; done`, repositories.Worktree},
@@ -1626,5 +1632,38 @@ func TestSplitSegmentsCommentsAndBraces(t *testing.T) {
 				t.Fatalf("splitSegments(%q) words = %v, want %v", tc.command, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBraceExpansions pins the shell's brace-list reading the gh walker uses.
+func TestBraceExpansions(t *testing.T) {
+	cases := []struct {
+		word string
+		want []string
+	}{
+		{"merge", []string{"merge"}},
+		{"{merge,}", []string{"merge", ""}},
+		{"m{erge,view}", []string{"merge", "mview"}},
+		{"{a,b}{c,d}", []string{"ac", "ad", "bc", "bd"}},
+		{"{a,{b,c}}", []string{"a", "b", "c"}},
+		{"${X:-merge}", []string{"${X:-merge}"}},
+		{"{}", []string{"{}"}},
+		{"{merge}", []string{"{merge}"}},
+		{"{1..3}", []string{"{1..3}"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.word, func(t *testing.T) {
+			if got := braceExpansions(tc.word, maxBraceExpansions); fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("braceExpansions(%q) = %q, want %q", tc.word, got, tc.want)
+			}
+		})
+	}
+	// The bound holds against a pathological line and fails open.
+	many := make([]string, 0, 12)
+	for range 12 {
+		many = append(many, "{a,b}")
+	}
+	if got := len(braceExpandWords(many, maxBraceExpansions)); got > maxBraceExpansions {
+		t.Fatalf("braceExpandWords produced %d lines, want at most %d", got, maxBraceExpansions)
 	}
 }
