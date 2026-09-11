@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -118,7 +117,7 @@ func signature(secret, payload string) string {
 // no installation service, nothing covered, and a start line that says so.
 func TestWithoutAnAppEverythingWebhookIsOff(t *testing.T) {
 	var absent *webhookMode
-	if absent.WebhookSecret() != nil || absent.Installations() != nil || absent.Covered("github.com/acme/app") {
+	if absent.WebhookSecret() != nil || absent.Installations() != nil {
 		t.Fatal("a hub with no App must offer no webhook wiring")
 	}
 	if absent.StartSuffix() != " webhook=off" {
@@ -220,72 +219,6 @@ func remove(t *testing.T, path string) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// TestAppCoverageTakesBoundRepositoriesOffThePoller is the skip rule: a
-// repository an installation of the operator's App lists is delivered by
-// webhook, so the poller must not spend a request on it.
-func TestAppCoverageTakesBoundRepositoriesOffThePoller(t *testing.T) {
-	bindings := &recordingBindings{repositories: []string{"acme/app"}}
-	now := time.Now()
-	coverage := &appCoverage{bindings: bindings, identity: localIdentityID, ttl: coverageTTL, now: func() time.Time { return now }}
-
-	if !coverage.Covered("github.com/acme/app") || !coverage.Covered("ACME/App") {
-		t.Fatal("a bound repository must be covered whatever its spelling")
-	}
-	if coverage.Covered("github.com/acme/other") {
-		t.Fatal("an unbound repository must still be polled")
-	}
-	if bindings.reads != 1 {
-		t.Fatalf("bindings read %d times; the answer must be cached within the TTL", bindings.reads)
-	}
-	now = now.Add(coverageTTL + time.Second)
-	if !coverage.Covered("github.com/acme/app") || bindings.reads != 2 {
-		t.Fatalf("the cache must expire after the TTL: reads = %d", bindings.reads)
-	}
-
-	// A store that cannot answer polls rather than skips: one wasted request
-	// costs nothing, a skipped push is lost.
-	bindings.err = errors.New("store is unavailable")
-	now = now.Add(coverageTTL + time.Second)
-	if coverage.Covered("github.com/acme/app") {
-		t.Fatal("an unreadable binding store must not stop the poller")
-	}
-	if newAppCoverage(nil).Covered("github.com/acme/app") {
-		t.Fatal("no binding store must not stop the poller")
-	}
-}
-
-type recordingBindings struct {
-	repositories []string
-	reads        int
-	err          error
-}
-
-func (store *recordingBindings) IdentityHasInstallation(context.Context, string, int64) (bool, error) {
-	return false, nil
-}
-
-func (store *recordingBindings) CompleteIdentityInstallationBinding(context.Context, hub.InstallationStateDigest, hub.InstallationState, time.Time, hub.IdentityInstallationBinding) error {
-	return nil
-}
-
-func (store *recordingBindings) ListIdentityInstallationBindings(_ context.Context, identityID string) ([]hub.IdentityInstallationBinding, error) {
-	store.reads++
-	if store.err != nil {
-		return nil, store.err
-	}
-	if identityID != localIdentityID {
-		return nil, nil
-	}
-	repositories := make([]hub.VerifiedRepository, 0, len(store.repositories))
-	for index, repository := range store.repositories {
-		repositories = append(repositories, hub.VerifiedRepository{ID: int64(index + 1), Repository: repository})
-	}
-	return []hub.IdentityInstallationBinding{{
-		IdentityID:   identityID,
-		Installation: hub.VerifiedInstallation{ID: 123, Repositories: repositories},
-	}}, nil
 }
 
 // TestLocalEntitlementsBelongToTheOneLocalIdentity pins the judgement the

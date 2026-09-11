@@ -9,37 +9,21 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 )
 
-// coverageTTL is how long the poller's "an App already covers this" answer is
-// reused before the installation bindings are read again. It is short enough
-// that connecting an installation takes effect within a tick or two, and long
-// enough that a tick over a large inventory reads the bindings once.
-const coverageTTL = 30 * time.Second
-
-// coverageTimeout bounds one bindings read. The poller asks on its own
-// goroutine and a store that does not answer must not hold up a tick: an
-// unanswered question means "not covered", which polls a repository that may
-// not have needed it rather than missing a push that did.
-const coverageTimeout = 5 * time.Second
-
 // webhookMode is everything hub.github.app adds to the mounted hub: the
 // secret every delivery is verified against, the installation service the
-// connect routes need, and the coverage rule that stops the poller asking
-// GitHub about repositories the App already pushes.
+// connect routes need.
 //
 // A nil *webhookMode is the default journey — no App, no public URL — so
 // every accessor below is safe on it and the caller needs no branch.
 type webhookMode struct {
 	secret        []byte
 	installations *hub.InstallationConnectionService
-	coverage      *appCoverage
 	publicURL     string
 }
 
@@ -83,7 +67,6 @@ func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bin
 			Bindings:    bindings,
 			StateSecret: installationStateSecret(pepper),
 		},
-		coverage:  newAppCoverage(bindings),
 		publicURL: app.PublicURL,
 	}, nil
 }
@@ -104,15 +87,6 @@ func (mode *webhookMode) Installations() *hub.InstallationConnectionService {
 		return nil
 	}
 	return mode.installations
-}
-
-// Covered is the poller's skip rule. Without an App nothing is covered, so
-// polling is the only ingester and every repository is asked about.
-func (mode *webhookMode) Covered(repository string) bool {
-	if mode == nil || mode.coverage == nil {
-		return false
-	}
-	return mode.coverage.Covered(repository)
 }
 
 // StartSuffix is what the daemon's start line says about webhook mode, so an
@@ -151,68 +125,4 @@ func (entitlements localRepositoryEntitlements) IdentityHasRepositoryEntitlement
 		return false, errors.New("a loopback hub has exactly one identity")
 	}
 	return true, nil
-}
-
-// appCoverage answers "does the operator's GitHub App already deliver
-// webhooks for this repository?" from the installation bindings the local
-// identity holds. The answer is cached for coverageTTL because the poller
-// asks once per repository per tick and the bindings change only when an
-// installation does.
-type appCoverage struct {
-	bindings hub.InstallationBindingStore
-	identity string
-	ttl      time.Duration
-	now      func() time.Time
-
-	mu        sync.Mutex
-	refreshed time.Time
-	covered   map[string]bool
-}
-
-func newAppCoverage(bindings hub.InstallationBindingStore) *appCoverage {
-	return &appCoverage{bindings: bindings, identity: localIdentityID, ttl: coverageTTL, now: time.Now}
-}
-
-// Covered reports whether any binding of the local identity lists repository.
-// A store that cannot be read answers "not covered": polling a repository the
-// App also delivers costs one request and deduplicates in the event store,
-// while skipping one it does not deliver loses the push entirely.
-func (coverage *appCoverage) Covered(repository string) bool {
-	coverage.mu.Lock()
-	defer coverage.mu.Unlock()
-	now := coverage.now()
-	if coverage.covered == nil || now.Sub(coverage.refreshed) >= coverage.ttl {
-		coverage.covered = coverage.read()
-		coverage.refreshed = now
-	}
-	return coverage.covered[canonicalRepository(repository)]
-}
-
-func (coverage *appCoverage) read() map[string]bool {
-	covered := make(map[string]bool)
-	if coverage.bindings == nil {
-		return covered
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), coverageTimeout)
-	defer cancel()
-	bindings, err := coverage.bindings.ListIdentityInstallationBindings(ctx, coverage.identity)
-	if err != nil {
-		return covered
-	}
-	for _, binding := range bindings {
-		for _, repository := range binding.Installation.Repositories {
-			covered[canonicalRepository(repository.Repository)] = true
-		}
-	}
-	return covered
-}
-
-// canonicalRepository is the one spelling coverage is keyed by. A binding
-// stores `owner/name`; a snapshot and the poller speak `github.com/owner/name`.
-func canonicalRepository(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" || strings.HasPrefix(value, "github.com/") {
-		return value
-	}
-	return "github.com/" + value
 }
