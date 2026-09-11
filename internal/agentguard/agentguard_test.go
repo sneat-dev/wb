@@ -519,6 +519,12 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 		{"a merge flag between pr and merge that the lookup reads as taking the number", "gh pr --squash 1041 merge", repositories.Worktree},
 		{"a short merge flag between pr and merge", "gh pr -s 1041 merge", repositories.Worktree},
 		{"an =value flag between pr and merge", "gh pr --admin=true merge 1041", repositories.Worktree},
+		// wb#500 fifth review, S1: macOS resolves the program name through a
+		// case-insensitive file system, so these run gh.
+		{"capitalised program name", "Gh pr merge 1041", repositories.Worktree},
+		{"upper-case program name", "GH pr merge 1041", repositories.Worktree},
+		{"upper-case program name behind a wrapper", "SUDO -u alex GH pr merge 1041", repositories.Worktree},
+		{"upper-case shell interpreter", "BASH -c 'gh pr merge 1041'", repositories.Worktree},
 		// wb#500 final review, S3: a shell keyword opens a command in the
 		// same segment, so a loop or conditional body is inspected.
 		{"a for loop body", `for n in 12 13; do gh pr merge "$n" --squash; done`, repositories.Worktree},

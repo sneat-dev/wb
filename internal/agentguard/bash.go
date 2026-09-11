@@ -80,6 +80,17 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false)
 }
 
+// programName is the name every recogniser is keyed by: the last path
+// element of the command word, lower-cased. macOS resolves a command through
+// a case-insensitive file system, so `Gh pr merge 1` and `GH pr merge 1`
+// run gh there exactly as `gh` does (confirmed against the real binary,
+// wb#500 fifth review, S1). On a case-sensitive system the odd spelling
+// simply fails to run, so lower-casing can only ever refuse a call that
+// would not have merged anyway.
+func programName(word string) string {
+	return strings.ToLower(filepath.Base(word))
+}
+
 // maxShellUnwrapDepth bounds how many shell -c payloads this scanner recurses
 // into (see shellInterpreters below). A real invocation is unwrapped once or
 // twice. The bound exists only to guarantee termination against a
@@ -104,7 +115,7 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int,
 			continue
 		}
 		segmentGoverned := governed || stripped.Governed
-		name := filepath.Base(words[0])
+		name := programName(words[0])
 		if name == "cd" || name == "pushd" {
 			workingDirectory = applyChangeDirectory(workingDirectory, words[1:])
 			continue
@@ -683,7 +694,7 @@ func stripCommandPrefixes(words []string) strippedCommand {
 			words = words[1:]
 			continue
 		}
-		prefix, ok := transparentCommandPrefixes[filepath.Base(word)]
+		prefix, ok := transparentCommandPrefixes[programName(word)]
 		if !ok {
 			break
 		}
