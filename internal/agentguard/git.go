@@ -1,6 +1,7 @@
 package agentguard
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -33,24 +34,127 @@ func inspectGit(arguments []string, workingDirectory, projectsRoot string) *find
 	if invocation.Subcommand == "" {
 		return nil
 	}
+	// A managed-hook bypass has no legitimate reading anywhere WB manages —
+	// not only a canonical clone. This is the exact construct that let a
+	// commit land on 2026-08-27 after WB's pre-commit block had already
+	// refused it (see lesson work-preservation-is-never-grounds-to-bypass-a-hook,
+	// rule:hooks-are-never-bypassed), and a linked worktree's pre-push hook is
+	// exactly as bypassable the same way. `wb` itself is never inspected here
+	// (see inspectCommand's "wb" case in bash.go), so the sanctioned recovery
+	// path — `wb worktree rescue --push` — is unaffected.
+	if bypassesManagedHooks(invocation) {
+		if location, ok := managedGitLocation(invocation.Directory, projectsRoot); ok {
+			return &finding{Message: hookBypassRefusal(location, invocation)}
+		}
+		return nil
+	}
+	if invocation.Subcommand == "tag" || invocation.Subcommand == "push" {
+		if result := inspectGitTagging(invocation.Subcommand, invocation.Arguments, invocation.Directory, projectsRoot); result != nil {
+			return result
+		}
+	}
 	location, ok := canonicalWorkingDirectory(invocation.Directory, projectsRoot)
 	if !ok {
 		return nil
-	}
-	// A managed-hook bypass aimed at a canonical clone has no legitimate
-	// reading. This is the exact construct that let a commit land on
-	// 2026-08-27 after WB's pre-commit block had already refused it, and it is
-	// why a hook alone was never going to be enough.
-	if invocation.HooksPathOverride || containsWord(invocation.Arguments, "--no-verify") {
-		return &finding{
-			Location: location,
-			Detail:   "git " + invocation.Subcommand + " with the repository's managed hooks disabled",
-		}
 	}
 	if !gitSubcommandWrites(invocation.Subcommand, invocation.Arguments) {
 		return nil
 	}
 	return &finding{Location: location, Detail: "git " + invocation.Subcommand}
+}
+
+// bypassesManagedHooks reports whether invocation disables Git's own hook
+// mechanism, by any of the three constructs the lesson names:
+//
+//  1. `-c core.hooksPath=...` on the invocation itself (HooksPathOverride,
+//     parsed in parseGitGlobals).
+//  2. `--no-verify` on commit, push, or merge — the flag every version of
+//     Git spells the same way for the hooks those three subcommands run.
+//     `-n` is Git's short spelling of `--no-verify`, but only for `commit`:
+//     `-n` means `--dry-run` on `push` and `--no-stat` on `merge`, and
+//     treating those as a hook bypass would refuse a routine, safe dry run —
+//     the false positive this guard exists to avoid. So the short flag is
+//     checked for `commit` only; `push`/`merge` are covered by the long
+//     `--no-verify` spelling alone.
+//  3. `git config core.hooksPath ...` (get, set, or unset) — a standing
+//     override that outlives the single invocation that made it, so reading
+//     or writing it is refused outright rather than judged by intent.
+func bypassesManagedHooks(invocation gitInvocation) bool {
+	if invocation.HooksPathOverride {
+		return true
+	}
+	switch invocation.Subcommand {
+	case "commit", "push", "merge":
+		if containsWord(invocation.Arguments, "--no-verify") {
+			return true
+		}
+		if invocation.Subcommand == "commit" && containsShortFlag(invocation.Arguments, 'n') {
+			return true
+		}
+	case "config":
+		if configNamesHooksPath(invocation.Arguments) {
+			return true
+		}
+	}
+	return false
+}
+
+// configNamesHooksPath reports whether a `git config` invocation names
+// core.hooksPath as the key it reads, sets, or removes — case-insensitively,
+// matching Git's own comparison (see isHooksPathOverride).
+func configNamesHooksPath(arguments []string) bool {
+	for _, argument := range arguments {
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		if isHooksPathOverride(argument) {
+			return true
+		}
+		// The key is the first non-flag argument; later arguments are the
+		// value being set. Stop at the first one considered.
+		return false
+	}
+	return false
+}
+
+// managedGitLocation reports the WB-managed checkout — canonical clone or
+// linked worktree, nested or not — that directory sits in, or false for
+// anywhere else: a foreign checkout, an unresolved directory, or a location
+// this guard cannot classify. A hook bypass is refused in any of them.
+func managedGitLocation(directory, projectsRoot string) (Location, bool) {
+	if directory == "" {
+		return Location{}, false
+	}
+	location := Classify(projectsRoot, directory)
+	if location.Kind == KindCanonical || location.Kind == KindLinked {
+		return location, true
+	}
+	return Location{}, false
+}
+
+// hookBypassRefusal writes the message for a construct that disables Git's
+// own managed hooks. It is deliberately distinct from the canonical-clone
+// wording: the construct is refused everywhere WB manages, not because the
+// location must "stay clean" but because the hook it disables is the safety
+// signal itself (see work-preservation-is-never-grounds-to-bypass-a-hook).
+func hookBypassRefusal(location Location, invocation gitInvocation) string {
+	root := location.Root
+	if root == "" {
+		root = "this checkout"
+	}
+	var message strings.Builder
+	fmt.Fprintf(&message, "git %s disables this checkout's managed hooks.\n", invocation.Subcommand)
+	fmt.Fprintf(&message, "Refused in: %s\n\n", root)
+	message.WriteString("rule: hooks-are-never-bypassed\n")
+	message.WriteString("(lesson work-preservation-is-never-grounds-to-bypass-a-hook)\n\n")
+	message.WriteString("A red hook is informational output about real risk, never an obstacle. Work\n")
+	message.WriteString("already committed in a WB worktree survives agent and session death on its\n")
+	message.WriteString("own — a push only protects against losing the machine — so \"preserve this\"\n")
+	message.WriteString("is never a reason to disable the hook that is telling you something is wrong.\n\n")
+	message.WriteString("Remedy: fix the failure the hook reported, or escalate instead of bypassing\n")
+	message.WriteString("it. If work genuinely needs rescuing onto a branch, use:\n")
+	message.WriteString("  wb worktree rescue --push\n")
+	return message.String()
 }
 
 // parseGitGlobals consumes Git's own options — the ones that come before the

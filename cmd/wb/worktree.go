@@ -776,24 +776,56 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 }
 
 func newWorktreeLogFinalizeCmd() *cobra.Command {
-	var resultValue, message, format string
-	var apply bool
+	var resultValue, message, format, reportFile string
+	var apply, reportStdin bool
 	command := &cobra.Command{
 		Use:   "finalize [worktree-path]",
 		Short: "Record a terminal result and optionally seal the claim",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Record a terminal result and, with --apply, seal the Hybrid claim.
+
+--report <path> or --report-stdin attaches an agent's full completion report
+(Markdown, typically) to the sealed terminal. WB copies the body into the
+private Work Log store under WB_HOME -- never into source Git -- at a
+deterministic path, and records report_path, terminal_result,
+terminal_message, and finalized_at on the terminal and its outbox receipt.
+'wb worktree list'/'summary'/'log show' then let a lead session read that a
+lane finished and where its report lives without agreeing on an arbitrary
+path. The report body itself stays private local data, read back only by the
+bare 'wb worktree log' dump, exactly like an original prompt body. A report
+over 1 MiB is refused. Storing the report requires --apply; without it the
+report is accepted but not persisted.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
+			}
+			if reportFile != "" && reportStdin {
+				return usageError("supply at most one of --report or --report-stdin")
 			}
 			_, releaseAdmission, err := requireMutationAdmission(command, true)
 			if err != nil {
 				return err
 			}
 			defer releaseAdmission()
+			var report []byte
+			switch {
+			case reportStdin:
+				report, err = readBounded(command.InOrStdin(), worktrees.MaxFinalizeReportBytes, "finalize report")
+				if err != nil {
+					return err
+				}
+			case reportFile != "":
+				report, err = os.ReadFile(reportFile)
+				if err != nil {
+					return fmt.Errorf("read report file: %w", err)
+				}
+				if len(report) > worktrees.MaxFinalizeReportBytes {
+					return fmt.Errorf("finalize report exceeds %d bytes (%d MiB cap)", worktrees.MaxFinalizeReportBytes, worktrees.MaxFinalizeReportBytes/(1<<20))
+				}
+			}
 			result, err := worktrees.LogFinalize(command.Context(), worktrees.LogFinalizeOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
-				Result: resultValue, Message: message, Apply: apply,
+				Result: resultValue, Message: message, Apply: apply, Report: report,
 			})
 			if err != nil {
 				return err
@@ -804,6 +836,8 @@ func newWorktreeLogFinalizeCmd() *cobra.Command {
 	command.Flags().StringVar(&resultValue, "result", "success", "success or failure")
 	command.Flags().StringVar(&message, "message", "", "terminal message")
 	command.Flags().BoolVar(&apply, "apply", false, "seal the hybrid claim terminal")
+	command.Flags().StringVar(&reportFile, "report", "", "path to a Markdown completion report to attach (requires --apply to persist)")
+	command.Flags().BoolVar(&reportStdin, "report-stdin", false, "read the completion report from stdin (requires --apply to persist)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -956,6 +990,24 @@ For a clean source retained after a squash landing, --disposition discarded
 --absorbed-by <merged-pr> verifies GitHub's merged PR metadata and rechecks
 the exact source head, fetched PR head, landing tree, and freshly fetched
 target before removal. It never accepts a commit-message reference as proof.
+A genuine "Create a merge commit" landing is verified too, even when the
+target advanced past the source's last sync with it before the merge and the
+PR head's tree therefore no longer equals the merge commit's tree: the exact
+source head's own Git ancestry into the freshly fetched target is checked
+instead of tree equality, so a landing shape squash's tree-equality proof
+would wrongly reject is still accepted on its own, topology-appropriate
+evidence. A merged pull request may be named by its bare number, a leading
+"#", or its full GitHub URL — all three resolve the same pull request.
+
+If 'wb worktree log finalize --apply' already sealed the exact worktree as
+landed before its branch was rebased onto a moved target (force-pushed with
+lease) and only the rebased head ever landed, --absorbed-by's proof above
+still verifies that landing; --disposition discarded then appends the same
+additive cleanup record 'wb worktree cleanup' writes for an advanced
+terminal instead of trying to reseal the immutable "landed" terminal as
+"discarded" at a different commit, which used to refuse with "immutable
+terminal conflicts with requested transition". The original finalize
+terminal is never rewritten.
 
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
@@ -1824,7 +1876,7 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 
 func newWorktreeListCmd() *cobra.Command {
 	var base, format, absorbedBy, ownerState string
-	var github bool
+	var github, finalized, notFinalized bool
 	var parallel int
 	var ttl time.Duration
 	command := &cobra.Command{
@@ -1851,6 +1903,18 @@ joined into this command.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if finalized && notFinalized {
+				return usageError("--finalized and --not-finalized cannot be combined")
+			}
+			var finalizedFilter *bool
+			switch {
+			case finalized:
+				value := true
+				finalizedFilter = &value
+			case notFinalized:
+				value := false
+				finalizedFilter = &value
+			}
 			task := ""
 			if len(args) == 1 {
 				task = args[0]
@@ -1861,6 +1925,7 @@ joined into this command.`,
 				Base:         base,
 				Filter:       filterFlag,
 				OwnerState:   ownerState,
+				Finalized:    finalizedFilter,
 				AbsorbedBy:   absorbedBy,
 				GitHub:       github,
 				Workers:      parallel,
@@ -1903,6 +1968,8 @@ joined into this command.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&ownerState, "only", "", "only worktrees with owner PID state: active or orphaned")
 	command.Flags().DurationVar(&ttl, "ttl", 7*24*time.Hour, "report a worktree older than this as expired")
+	command.Flags().BoolVar(&finalized, "finalized", false, "only worktrees whose claim was sealed by wb worktree log finalize")
+	command.Flags().BoolVar(&notFinalized, "not-finalized", false, "only worktrees not yet finalized by wb worktree log finalize")
 	return command
 }
 
@@ -1990,6 +2057,22 @@ Work Log archive/outbox evidence is written before any remote or local deletion.
 The same named dry-run/apply command inspects and resumes a durable exact-ref
 backlog if interruption happened after a worktree disappeared.
 
+If 'wb worktree log finalize --apply' already sealed the exact current HEAD as
+landed, cleanup corroborates that immutable terminal without ever rewriting
+it. A branch that earned more commits after finalize sealed an earlier head —
+a rebase or merge onto main, or a follow-up push, that then landed on the
+target as a merge commit — is still eligible: once the current head
+independently re-proves it is a Git descendant of the exact commit finalize
+sealed, cleanup appends a separate, additive cleanup record next to the
+sealed terminal instead of refusing outright. When the sealed commit was
+instead force-pushed onto a moved target (a rebase, not a plain follow-up
+commit) and is therefore no longer a Git descendant at all, cleanup falls
+back to proving the narrower, still-sufficient fact a clean rebase preserves:
+every one of the sealed commit's own non-merge patches (by stable
+git patch-id) is present somewhere in the current head's own history since
+their common ancestor. Only a landed terminal without a successor or exotic
+evidence (handoff, dirty capture, supersession) can be advanced this way.
+
 A branch whose exact head never reaches the target because a merger batched it
 onto a differently named integration branch and landed that branch once is
 still eligible, on evidence. WB reads GitHub's own commit-to-pull-request
@@ -1999,11 +2082,13 @@ then proves containment locally: merging the branch into that merge commit
 must add nothing to it, and merging it into the target must add nothing there
 either. Work that landed and was later reverted therefore stays blocked.
 
---absorbed-by <pr|commit> covers a landing GitHub cannot associate, such as
-content cherry-picked rather than merged into the integration branch. It only
-selects which receipt to verify; every proof above still runs, and the named
-commit must additionally be exactly where the work entered the target, so the
-flag can never make unlanded work eligible.
+--absorbed-by <pr-number|pr-url|commit> covers a landing GitHub cannot
+associate, such as content cherry-picked rather than merged into the
+integration branch. It only selects which receipt to verify; every proof
+above still runs, and the named commit must additionally be exactly where the
+work entered the target, so the flag can never make unlanded work eligible.
+A pull request may be named by its bare number, a leading "#", or its full
+GitHub URL — all three resolve the same pull request.
 
 --superseded-by <receipt.json> is the explicit trusted-reviewer receipt
 authority for an intentionally split branch whose original head did not land
@@ -2529,6 +2614,10 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 	for _, result := range results {
 		state := "active"
 		switch {
+		case result.TerminalResult == "success":
+			state = "finalized-success"
+		case result.TerminalResult == "failure":
+			state = "finalized-failure"
 		case !result.Clean:
 			state = "dirty"
 		case result.Locked:
@@ -2556,11 +2645,18 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 			}
 		}
 		age := worktreeAgeLabel(result)
-		if _, err := fmt.Fprintf(
-			command.OutOrStdout(),
-			"%s  %s  %s  %s  owner=%s  age=%s  %s\n",
+		line := fmt.Sprintf(
+			"%s  %s  %s  %s  owner=%s  age=%s  %s",
 			result.Task, result.Repository, branch, state, result.Owner, age, pr,
-		); err != nil {
+		)
+		if result.TerminalResult != "" {
+			report := result.ReportPath
+			if report == "" {
+				report = "-"
+			}
+			line += fmt.Sprintf("  report=%s", report)
+		}
+		if _, err := fmt.Fprintln(command.OutOrStdout(), line); err != nil {
 			return err
 		}
 	}
@@ -2629,6 +2725,21 @@ func printWorktreeSummary(command *cobra.Command, task string, results []worktre
 		if _, err := fmt.Fprintf(out, "target:   %s\n", integration); err != nil {
 			return err
 		}
+		if result.TerminalResult != "" {
+			if _, err := fmt.Fprintf(out, "finalize: %s at %s\n", result.TerminalResult, result.FinalizedAt.UTC().Format(time.RFC3339)); err != nil {
+				return err
+			}
+			if result.TerminalMessage != "" {
+				if _, err := fmt.Fprintf(out, "message:  %s\n", result.TerminalMessage); err != nil {
+					return err
+				}
+			}
+			if result.ReportPath != "" {
+				if _, err := fmt.Fprintf(out, "report:   %s\n", result.ReportPath); err != nil {
+					return err
+				}
+			}
+		}
 		switch {
 		case result.OpenPullRequest != nil:
 			if _, err := fmt.Fprintf(out, "pr:       open #%d %s\n", result.OpenPullRequest.Number, result.OpenPullRequest.URL); err != nil {
@@ -2654,6 +2765,9 @@ func printWorktreeSummary(command *cobra.Command, task string, results []worktre
 
 func worktreeSummaryState(result worktrees.ListResult) string {
 	parts := make([]string, 0, 3)
+	if result.TerminalResult != "" {
+		parts = append(parts, "finalized-"+result.TerminalResult)
+	}
 	if !result.Clean {
 		parts = append(parts, "dirty")
 	} else {

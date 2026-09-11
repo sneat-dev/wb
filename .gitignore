@@ -1,4 +1,17 @@
 dist/
+# hub/web/dist is the Astro build output and stays ignored, with one exception:
+# //go:embed refuses a directory that does not exist, so a clean clone must
+# still carry hub/web/dist/.gitkeep or hub/web/embed.go will not compile. Git
+# cannot re-include a file whose parent directory is excluded, so the directory
+# is re-included first and everything but the placeholder excluded again. The
+# Astro build copies hub/web/public/.gitkeep back into dist/, so building never
+# deletes the tracked file.
+!hub/web/dist/
+hub/web/dist/*
+!hub/web/dist/.gitkeep
+node_modules/
+.astro/
+test-results/
 *.o
 *.exe
 *.test

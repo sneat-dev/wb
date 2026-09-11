@@ -310,13 +310,13 @@ WB MUST provide the following deterministic command group:
 | `wb worktree log steer` | Append the next prompt ordinal with its exact bytes, digest, and explicit source; the agent-facing verb for recording steering. |
 | `wb worktree set --prompt` | Human-facing alias of `log steer` that records a `human_declared` prompt; the remedy the commit gate names when it refuses. |
 | `wb worktree orphans` | Read-only enumeration of every reachable linked worktree across all layout generations, grouped by effort parentage, with reconstructed identity and a recommended disposition per family. |
-| `wb worktree log show` | Read journal and live Git evidence without mutation; default text redacts private data and `--json` exposes the public projection only. |
+| `wb worktree log show` | Read journal and live Git evidence without mutation; default text redacts private data and `--json` exposes the public projection only; once finalized, includes the redacted terminal record (disposition, `terminal_result`, `terminal_message`, `report_path`) without the report body. |
 | `wb worktree log checkpoint` | Append a typed progress/checkpoint event, observed Git evidence, optional nullable usage, and update both projections. |
 | `wb worktree log refresh` | Fetch and measure target-ref divergence without changing the claimed worktree; record target SHA and freshness evidence. |
 | `wb worktree log integrate` | At a clean checkpoint, integrate the fetched target using the policy-selected rebase or merge strategy and record the result/conflict state. |
 | `wb worktree log handoff` | Create a bounded handoff summary and next action, then make the claim available only after the outgoing checkpoint is durable. |
 | `wb worktree log recover` | Rebuild derived state from journal plus Git, diagnose stale/lost claims, and require explicit takeover after dry-run evidence. |
-| `wb worktree log finalize` | Record terminal result or failure, release the claim, preserve recovery evidence, and enqueue final sync. |
+| `wb worktree log finalize` | Record terminal result or failure, release the claim, preserve recovery evidence, and enqueue final sync. Optional `--report <path>`/`--report-stdin` copies an agent's completion report into the private Work Log store under `WB_HOME` (never source Git) and records `terminal_result`, `terminal_message`, `finalized_at`, and `report_path` on the sealed terminal and its outbox receipt, capped at 1 MiB; `wb worktree list`/`summary` expose that metadata (`--finalized`/`--not-finalized` filter on it) and the bare `wb worktree log` dump reads back the report body, exactly like an original prompt body. |
 | `wb worktree log sync` | Drain idempotent local outbox events to the configured authoritative Synchestra endpoint and display its receipt plus server-reported replica cursor/health/lag. |
 | `wb worktree log archive` | After the seven-day Recent window, atomically move a finalized journal to the archive while preserving its events and public recovery evidence. |
 

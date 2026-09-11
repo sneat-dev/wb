@@ -459,6 +459,16 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				receiptPath = filepath.Join(reportsDir, operation+".json")
 				continue
 			}
+			if unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(existing); acknowledgementErr != nil {
+				return existing, acknowledgementErr
+			} else if unpublishedFailureAcknowledged {
+				// The failed preparation never published or landed and every exact
+				// source remains preserved. Keep the receipt immutable and allocate a
+				// fresh successor operation for a later attempt.
+				operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
+				receiptPath = filepath.Join(reportsDir, operation+".json")
+				continue
+			}
 			if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
 				return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
 			} else if adopted {
@@ -2254,6 +2264,47 @@ func conservativeWorktreeMergePRRoute(requested WorktreeMergeRoute, reason strin
 	return decision, nil
 }
 
+// worktreeMergeReportSidecarSuffixes lists every worktree-merge report
+// sidecar/acknowledgement filename suffix that decorates a *.json report file
+// but is never itself a receipt. resolveWorktreeMergeReceiptPath and
+// activeWorktreeMergeLaneReceipt both scan the same reports directory for
+// receipts and must skip exactly this set: a suffix present for one scan but
+// not the other lets that scan try to parse a sidecar as a receipt (some
+// sidecars carry receipt-shaped fields, including the receipt's own sha256)
+// or, for activeWorktreeMergeLaneReceipt, hard-fails the whole lane lookup
+// when the sidecar's identity does not check out as a receipt. Registering a
+// new sidecar suffix here, once, keeps both scans in sync by construction;
+// TestWorktreeMergeReportSidecarSuffixParity guards against a suffix being
+// wired into one scan's skip logic without the other.
+var worktreeMergeReportSidecarSuffixes = []string{
+	worktreeMergeLandedFailureAcknowledgementSuffix,
+	worktreeMergeConflictCandidateAdvanceSuffix,
+	worktreeMergeValidationFailureSupersessionSuffix,
+	worktreeMergeLegacyValidationFailureIdentitySuffix,
+	worktreeMergeLegacyConflictIdentitySuffix,
+	worktreeMergeSelfSupersessionCorrectionSuffix,
+	worktreeMergePreparedRebatchSuffix,
+	worktreeMergePublishedCandidateAdoptionSuffix,
+	worktreeMergeStrandedLandingAcknowledgementSuffix,
+	worktreeMergeReceiptCollisionAcknowledgementSuffix,
+	worktreeMergeMissingCleanupAcknowledgementSuffix,
+	worktreeMergeAbsorbedConflictAcknowledgementSuffix,
+	worktreeMergeRetiredPublicationAcknowledgementSuffix,
+	worktreeMergeUnpublishedValidationFailureAcknowledgementSuffix,
+}
+
+// isWorktreeMergeReportSidecar reports whether name is a worktree-merge
+// report sidecar/acknowledgement file rather than a receipt, per
+// worktreeMergeReportSidecarSuffixes.
+func isWorktreeMergeReportSidecar(name string) bool {
+	for _, suffix := range worktreeMergeReportSidecarSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -2282,7 +2333,7 @@ func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error)
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeConflictCandidateAdvanceSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) || strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeAbsorbedConflictAcknowledgementSuffix) {
+		if isWorktreeMergeReportSidecar(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(reports, entry.Name())
@@ -3739,6 +3790,33 @@ func validateWorktreeMergeSupersededOperationID(operation, receiptPath, lane str
 	return nil
 }
 
+// validateWorktreeMergeSupersededOperationIDMatchesRecordedSourceSet accepts
+// a deterministic supersession chain rooted in either the current sources or
+// one complete historical source set retained by an append-only refresh. The
+// chain validator still proves every predecessor path hash and suffix.
+func validateWorktreeMergeSupersededOperationIDMatchesRecordedSourceSet(receipt WorktreeMergeReceipt, receiptPath string) error {
+	currentErr := validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, receipt.Sources)
+	if currentErr == nil {
+		return nil
+	}
+	for _, refresh := range receipt.SourceRefreshes {
+		if len(refresh.Sources) == 0 || refresh.RecordedAt.IsZero() {
+			continue
+		}
+		complete := true
+		for _, source := range refresh.Sources {
+			if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+				complete = false
+				break
+			}
+		}
+		if complete && validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, refresh.Sources) == nil {
+			return nil
+		}
+	}
+	return currentErr
+}
+
 func mergeOperationSuffix(operation string) string {
 	if index := strings.LastIndex(operation, "-"); index >= 0 && index+1 < len(operation) {
 		return operation[index+1:]
@@ -3758,18 +3836,7 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeConflictCandidateAdvanceSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeSelfSupersessionCorrectionSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergePublishedCandidateAdoptionSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeAbsorbedConflictAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeRetiredPublicationAcknowledgementSuffix) {
+		if isWorktreeMergeReportSidecar(entry.Name()) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
@@ -3855,6 +3922,13 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 				return nil, retiredErr
 			}
 			if retiredAcknowledged {
+				continue
+			}
+			unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(receipt)
+			if acknowledgementErr != nil {
+				return nil, acknowledgementErr
+			}
+			if unpublishedFailureAcknowledged {
 				continue
 			}
 			return &receipt, nil

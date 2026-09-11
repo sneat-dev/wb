@@ -28,6 +28,38 @@ type Options struct {
 	CacheTTL           time.Duration
 	InventoryIndexPath string
 	InventoryIndexTTL  time.Duration
+	// Mounts attaches extra subtrees to the same loopback listener, keyed by
+	// the path prefix each one owns (it must start and end with "/"). A
+	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
+	// embedded dashboard under /bench/; without a hub section the map is
+	// empty and the served routes are exactly what they were.
+	Mounts map[string]http.Handler
+	// Hub reports the live state of a self-hosted bench hub for
+	// /api/v1/health. `wb daemon status` runs in a different process from
+	// `wb daemon serve`, so the numbers only this process knows — how many
+	// repositories the last poll tick read, and the delivery markers the hub's
+	// own StatusService resolves — reach it through the health endpoint rather
+	// than by opening the hub's store a second time. Nil when there is no hub.
+	Hub func(context.Context) HubHealth
+}
+
+// HubHealth is the self-hosted bench hub's live state, as /api/v1/health
+// reports it. Every field is derived from the hub's own services; none of it
+// is a secret.
+type HubHealth struct {
+	Mounted               bool               `json:"mounted"`
+	Polling               bool               `json:"polling"`
+	PollIntervalSeconds   float64            `json:"poll_interval_seconds,omitempty"`
+	RepositoriesPolled    int                `json:"repositories_polled"`
+	LastEventReceived     *HubDeliveryMarker `json:"last_event_received,omitempty"`
+	LastEventAcknowledged *HubDeliveryMarker `json:"last_event_acknowledged,omitempty"`
+}
+
+// HubDeliveryMarker names one repository event and when the hub handled it.
+type HubDeliveryMarker struct {
+	ID         string    `json:"id,omitempty"`
+	Event      string    `json:"event,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 type Machine struct {
@@ -84,7 +116,37 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("GET /api/v1/overview", server.overview)
-	return securityHeaders(mux)
+	return securityHeaders(withMounts(options.Mounts, mux))
+}
+
+// withMounts routes a prefix to its own handler before the dashboard mux sees
+// the request. It is a prefix check rather than extra mux patterns because
+// the mux's catch-all "GET /" index conflicts with any subtree pattern under
+// Go's routing precedence rules, and because a mounted subtree serves every
+// method — the hub answers POST on enrollment and webhook paths.
+func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler {
+	routes := make(map[string]http.Handler, len(mounts))
+	for prefix, handler := range mounts {
+		if handler == nil || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
+			continue
+		}
+		routes[prefix] = handler
+	}
+	if len(routes) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		for prefix, handler := range routes {
+			// "/bench" reaches the same mount as "/bench/": the trailing
+			// slash is what an operator omits, and the mounted handler is the
+			// one that knows where to redirect them.
+			if request.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(request.URL.Path, prefix) {
+				handler.ServeHTTP(writer, request)
+				return
+			}
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func (server *service) index(writer http.ResponseWriter, _ *http.Request) {
@@ -92,14 +154,18 @@ func (server *service) index(writer http.ResponseWriter, _ *http.Request) {
 	_, _ = writer.Write([]byte(indexHTML))
 }
 
-func (server *service) health(writer http.ResponseWriter, _ *http.Request) {
+func (server *service) health(writer http.ResponseWriter, request *http.Request) {
 	name, _ := os.Hostname()
-	writeJSON(writer, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"schema_version": APISchemaVersion,
 		"status":         "ready",
 		"machine":        name,
 		"wb_version":     server.options.Version,
-	})
+	}
+	if server.options.Hub != nil {
+		payload["hub"] = server.options.Hub(request.Context())
+	}
+	writeJSON(writer, http.StatusOK, payload)
 }
 
 func (server *service) overview(writer http.ResponseWriter, request *http.Request) {

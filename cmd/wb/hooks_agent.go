@@ -56,11 +56,37 @@ func newHooksAgentPreToolUseCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "pre-tool-use",
 		Short: "Judge one agent tool call before it runs (reads a PreToolUse payload on stdin)",
-		Long: `Refuse an agent tool call that would write into a canonical clone.
+		Long: `Refuse an agent tool call that violates one of this guard's policies.
 
 Reads a Claude Code PreToolUse payload as JSON on stdin and writes a deny
-document on stdout when the call would write inside <projects-root>/<owner>/
-<repository>. It writes nothing at all for every other outcome.
+document on stdout when the call matches one of the policies below. It writes
+nothing at all for every other outcome.
+
+Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
+
+  - Canonical-clone write: refuses a write inside <projects-root>/<owner>/
+    <repository> — the canonical clone every linked worktree in the fleet is
+    cut from.
+  - Hook bypass: refuses '--no-verify'/'-n' on git commit/push/merge,
+    'git -c core.hooksPath=...', and 'git config core.hooksPath', in any
+    WB-managed checkout (canonical clone or linked worktree). See
+    lesson work-preservation-is-never-grounds-to-bypass-a-hook.
+  - Auto-tagging: refuses a hand-pushed 'git tag'/'git push --tags'/
+    'git push origin <tag>' in a repository whose own CI already tags it
+    (an explicit 'agent.autoTags: true' in '.wb/hooks.yaml', or a
+    strongo/cicd reusable workflow with no 'disable-version-bumping: true').
+    See lessons l3/l11.
+  - Governed heavy validation: refuses 'go test'/'golangci-lint'/etc. run
+    directly inside a managed worktree instead of through 'wb run --'.
+  - Missing model (Agent/Task tool): refuses a subagent dispatch that names
+    no 'model'. See lesson l49.
+  - Literal report path (Agent/Task tool): refuses a dispatch prompt that
+    hand-writes a WB report path instead of deriving it from
+    'wb worktree log finalize --report'. See lesson
+    a-report-path-hand-written-into-a-brief-diverges-from-wb-home-on-the-target-host.
+  - Dispatch into a live claim (Agent/Task tool): refuses a dispatch that
+    names a repository another live WB claim already covers. See lesson
+    a-brief-was-dispatched-for-work-already-under-an-active-wb-claim.
 
 This command fails open without exception. An unreadable payload, an
 unrecognised tool, a shell construct it cannot model, a path it cannot
@@ -69,10 +95,10 @@ resolve, and an internal panic all produce silence, which Claude Code reads as
 a guard that could fail closed would be a worse defect than the one it exists
 to prevent.
 
-It never blocks a read, and never blocks a linked worktree — including a
-worktree nested inside a canonical clone. In a canonical clone it leaves the
-operations a clone exists for alone: git fetch, git merge --ff-only, git
-status, git log, git show, git ls-tree, and every other read.
+It never blocks a read, and never blocks a linked worktree's ordinary work —
+including a worktree nested inside a canonical clone. In a canonical clone it
+leaves the operations a clone exists for alone: git fetch, git merge
+--ff-only, git status, git log, git show, git ls-tree, and every other read.
 
 Install it with 'wb hooks agent install'.`,
 		Args:         cobra.NoArgs,
@@ -154,7 +180,11 @@ document without writing it.`,
 	return command
 }
 
-const agentHookMatcher = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+// agentHookMatcher names every tool this hook must see. Agent/Task are the
+// subagent-dispatch tool (Claude Code has used both names) and are required
+// for the missing-model, literal-report-path, and live-claim policies — none
+// of which existed when the matcher covered only file-writing tools.
+const agentHookMatcher = "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"
 
 // mergeAgentHookSettings returns the settings document with the guard
 // registered, and reports whether anything changed.
@@ -180,10 +210,24 @@ func mergeAgentHookSettings(path, shellCommand string) ([]byte, bool, error) {
 	}
 	entries, _ := hooks["PreToolUse"].([]any)
 	for _, entry := range entries {
-		if agentHookEntryPresent(entry, shellCommand) {
+		if !agentHookEntryPresent(entry, shellCommand) {
+			continue
+		}
+		if !agentHookEntryMatcherStale(entry) {
 			encoded, err := encodeSettings(settings)
 			return encoded, false, err
 		}
+		// The command is already registered but under an older, narrower
+		// matcher — e.g. one predating the Agent/Task policies. Widening the
+		// matcher in place, rather than appending a second entry, is what
+		// makes `wb hooks agent install` idempotent across a policy rollout:
+		// a fleet that already ran install once picks up the wider coverage
+		// the next time it runs install again, with no duplicate hook.
+		entry.(map[string]any)["matcher"] = agentHookMatcher
+		hooks["PreToolUse"] = entries
+		settings["hooks"] = hooks
+		encoded, err := encodeSettings(settings)
+		return encoded, true, err
 	}
 	entries = append(entries, map[string]any{
 		"matcher": agentHookMatcher,
@@ -199,6 +243,10 @@ func mergeAgentHookSettings(path, shellCommand string) ([]byte, bool, error) {
 	return encoded, true, err
 }
 
+// agentHookEntryPresent reports whether one hooks-list entry already carries
+// a handler running shellCommand. It only inspects the "hooks" handlers, not
+// "matcher", so it applies to any hook event's entry shape — SessionStart's
+// entries carry no matcher at all (see skills_hook_install.go).
 func agentHookEntryPresent(entry any, shellCommand string) bool {
 	object, ok := entry.(map[string]any)
 	if !ok {
@@ -215,6 +263,18 @@ func agentHookEntryPresent(entry any, shellCommand string) bool {
 		}
 	}
 	return false
+}
+
+// agentHookEntryMatcherStale reports whether a PreToolUse entry's matcher is
+// narrower than the one this install would write. Call only after
+// agentHookEntryPresent has confirmed the entry is WB's own.
+func agentHookEntryMatcherStale(entry any) bool {
+	object, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	matcher, _ := object["matcher"].(string)
+	return matcher != agentHookMatcher
 }
 
 func encodeSettings(settings map[string]any) ([]byte, error) {

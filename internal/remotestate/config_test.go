@@ -137,3 +137,65 @@ func TestLoadConfigMalformedYAMLIsPlainError(t *testing.T) {
 		t.Fatalf("\"parse config\" missing from %q", err.Error())
 	}
 }
+
+// TestValidateHubURLAcceptsLoopbackHTTP is what lets `wb daemon serve` point
+// the in-process provider at the hub it is itself hosting. Everything off the
+// loopback still has to be HTTPS, because the machine credential travels in
+// an Authorization header.
+func TestValidateHubURLAcceptsLoopbackHTTP(t *testing.T) {
+	for _, accepted := range []string{
+		"https://wb-github-app.sneat.dev",
+		"https://wb-github-app.sneat.dev/",
+		"http://127.0.0.1:8766",
+		"http://[::1]:8766",
+		"http://localhost:8766",
+		"http://LOCALHOST:8766",
+		"http://127.0.0.1:8766/",
+	} {
+		if err := ValidateHubURL(accepted); err != nil {
+			t.Fatalf("ValidateHubURL(%q) = %v, want it accepted", accepted, err)
+		}
+	}
+	for _, rejected := range []string{
+		"",
+		"http://example.com",
+		"http://10.0.0.1:8766",
+		"http://bench.internal:8766",
+		"ftp://127.0.0.1",
+		"https://user:pass@wb-github-app.sneat.dev",
+		"https://wb-github-app.sneat.dev?x=1",
+		"https://wb-github-app.sneat.dev#f",
+		"https://wb-github-app.sneat.dev/path",
+		"https://%zz",
+	} {
+		if err := ValidateHubURL(rejected); !errors.Is(err, ErrHubURL) {
+			t.Fatalf("ValidateHubURL(%q) = %v, want ErrHubURL", rejected, err)
+		}
+	}
+}
+
+// TestLoadConfigAcceptsALoopbackHubURL proves the relaxation reaches the
+// configuration loader, which is where a self-hosted remote: section lands.
+func TestLoadConfigAcceptsALoopbackHubURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	body := "remote:\n  provider: hub\n  url: http://127.0.0.1:8766\n  machine: laptop\n  token_file: " + filepath.Join(t.TempDir(), "hub.token") + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.URL != "http://127.0.0.1:8766" {
+		t.Fatalf("LoadConfig = %+v, %v", cfg, err)
+	}
+}
+
+// TestLoadConfigRejectsANonLoopbackHTTPHubURL keeps the relaxation narrow.
+func TestLoadConfigRejectsANonLoopbackHTTPHubURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	body := "remote:\n  provider: hub\n  url: http://bench.example\n  machine: laptop\n  token_file: /tmp/hub.token\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); !errors.Is(err, ErrHubURL) {
+		t.Fatalf("LoadConfig = %v, want ErrHubURL", err)
+	}
+}

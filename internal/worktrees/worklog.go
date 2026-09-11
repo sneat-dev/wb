@@ -66,6 +66,16 @@ rerun ` + "`merge prepare`" + `; WB records the failed landing and retains the l
 
 var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 
+// errImmutableTerminalConflict is returned by writeWorkLogTerminalWithEvidence
+// when a claim already has a sealed terminal that disagrees with the one
+// being requested (different FinalCommit, disposition, or evidence). It is a
+// sentinel, not just formatted text, so a caller — abort's discard path in
+// particular (S63) — can distinguish "this claim was already finalized under
+// a different, now-stale head" from every other seal failure and try the
+// narrower additive-cleanup-record authorization instead of surfacing a bare
+// refusal.
+var errImmutableTerminalConflict = errors.New("immutable terminal conflicts with requested transition")
+
 var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
 
 const (
@@ -226,6 +236,52 @@ type workLogTerminalRecord struct {
 	Orphaned         *workLogOrphanedEvidence        `json:"orphaned_evidence,omitempty"`
 	DirtyCapture     *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 	Supersession     *SupersessionReceipt            `json:"supersession,omitempty"`
+	// FinalizeReport is set only when this terminal was sealed by
+	// `wb worktree log finalize`. It is nil for every other disposition
+	// (recycled, removed, superseded, orphaned, handoff, ...).
+	FinalizeReport *workLogFinalizeReport `json:"finalize_report,omitempty"`
+}
+
+// workLogFinalizeReport is the optional completion evidence `wb worktree log
+// finalize --report/--report-stdin` attaches to a sealed terminal. ReportPath
+// names the private copy of the report body under WB_HOME; the body itself is
+// never stored inline here and never enters source Git. FinalizedAt is not
+// tracked separately -- it is the terminal's own SealedAt, since a
+// FinalizeReport exists only on a terminal that finalize itself sealed.
+type workLogFinalizeReport struct {
+	Result     string `json:"terminal_result"`
+	Message    string `json:"terminal_message,omitempty"`
+	ReportPath string `json:"report_path,omitempty"`
+}
+
+func sameFinalizeReport(left, right *workLogFinalizeReport) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+// workLogCleanupRecord is an additive, write-once authorization appended
+// after an exclusive "landed" terminal whose FinalCommit no longer names the
+// worktree's current head — a branch that earned more commits (a rebase or
+// merge onto main, or a follow-up push) after `wb worktree log finalize
+// --apply` sealed an earlier one, then landed on the target as a merge
+// commit. It never edits or reinterprets the terminal: finalize's own claim
+// continues to say, truthfully, that the work landed at its own
+// FinalCommit. This record separately and durably proves that every commit
+// added afterward is strictly additional — a Git descendant of that
+// FinalCommit, never a rewrite that could have discarded it — and that the
+// caller's own ordinary safety checks (clean, integrated at the exact
+// fetched target, no open PR) already re-verified the new head before this
+// was written. Write-once per claim, exactly like a terminal, so a
+// crash-interrupted retry composes safely and a later audit can see both the
+// original landing and the wider final commit cleanup actually removed.
+type workLogCleanupRecord struct {
+	Version             int       `json:"version"`
+	ClaimID             string    `json:"claim_id"`
+	TerminalFinalCommit string    `json:"terminal_final_commit"`
+	FinalCommit         string    `json:"final_commit"`
+	CleanedAt           time.Time `json:"cleaned_at"`
 }
 
 // TerminalWorkLogExpectation identifies one worktree which was already
@@ -469,7 +525,7 @@ func validateRemovedTerminalOutbox(home string, claim workLogClaim, terminal wor
 	expected := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expected) {
 		return errors.New("immutable terminal outbox does not corroborate cleanup authority")
 	}
@@ -494,6 +550,11 @@ type workLogPublicEvent struct {
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
 	DirtyCapture    *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 	Supersession    *SupersessionReceipt            `json:"supersession,omitempty"`
+	// FinalizeReport mirrors the sealed terminal's finalize evidence into the
+	// outbox receipt so a downstream Synchestra consumer sees the same
+	// terminal_result/terminal_message/report_path a local reader gets from
+	// wb worktree list/summary/log show.
+	FinalizeReport *workLogFinalizeReport `json:"finalize_report,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1038,6 +1099,43 @@ func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection,
 		return workLogClaim{}, projection, "", err
 	}
 	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
+}
+
+// readWorkLogTerminalRecord resolves the worktree's untrusted projection the
+// same way activeWorkLogClaim does, but for a claim that has already been
+// sealed. It returns (nil, nil) for a checkout with no work-log projection at
+// all or one whose projection is still active; every other outcome is an
+// error. Callers such as `wb worktree list`/`summary`/`log show` use this to
+// surface finalize evidence for a worktree that has not yet been cleaned up.
+func readWorkLogTerminalRecord(home, worktree string) (*workLogTerminalRecord, error) {
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if projection.Lifecycle != "terminal" {
+		return nil, nil
+	}
+	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+		return nil, fmt.Errorf("corroborate terminal work-log claim: %w", err)
+	}
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = runDir.Close() }()
+	terminals, err := openPrivateChild(runDir, "terminals", false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = terminals.Close() }()
+	var terminal workLogTerminalRecord
+	if err := readJSONAt(terminals, projection.ClaimID+".json", &terminal); err != nil {
+		return nil, err
+	}
+	return &terminal, nil
 }
 
 // CorrectExecutionIdentity appends exactly one correction to an immutable
@@ -1871,18 +1969,133 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 }
 
 func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil, nil)
+}
+
+// sealDiscardedWorkLogAfterAbsorbedByProof is abort's --disposition
+// discarded sibling of sealWorkLogForCleanup's own "already terminal" path
+// (S63): a worktree finalized "landed" before its branch was rebased onto a
+// moved target and then landed via merge commit passes abort's own
+// --absorbed-by verification (attestedAbsorbedReceipt /
+// verifyAttestedMergeCommitPullRequest, PR #467) just fine, but the ordinary
+// discard seal below still tries to write a NEW terminal disagreeing with
+// the sealed one (different FinalCommit, disposition "discarded" instead of
+// "landed") and is refused with errImmutableTerminalConflict. Once that
+// specific conflict is the ONLY problem — every other abort safety check
+// already passed by the time this is called — this composes with the exact
+// same additive, non-rewriting authorization cleanup already uses
+// (acceptAdvancedCleanupTerminal) instead of surfacing the refusal: the
+// terminal keeps saying, truthfully, that the work landed at its own sealed
+// FinalCommit, and a separate cleanup record proves the current head is
+// authorized too. A worktree with no existing terminal at all (the ordinary
+// abort case) is completely unaffected: the first seal attempt below
+// succeeds and this fallback is never reached.
+func sealDiscardedWorkLogAfterAbsorbedByProof(home, worktree, finalCommit string, dirty *DirtyWorktreeEvidence) error {
+	sealErr := sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, string(AbortDiscarded), dirty)
+	if sealErr == nil {
+		return nil
+	}
+	if !errors.Is(sealErr, errImmutableTerminalConflict) {
+		return sealErr
+	}
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if err != nil {
+		return sealErr
+	}
+	if advancedErr := acceptAdvancedCleanupTerminal(home, worktree, finalCommit, projection); advancedErr != nil {
+		return sealErr
+	}
+	return nil
 }
 
 func sealWorkLogForSupersession(home, worktree, finalCommit string, receipt *SupersessionReceipt) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt, nil)
 }
 
 func sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition string, supersession *SupersessionReceipt) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, supersession)
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, supersession, nil)
 }
 
-func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) error {
+// sealWorkLogForFinalize is sealWorkLogForRecycle's finalize-specific sibling.
+// It carries the optional `wb worktree log finalize --report/--report-stdin`
+// evidence (terminal result, message, and the private report file's path)
+// into the immutable terminal and its outbox receipt. Every other seal path
+// passes a nil report and is unaffected: recycled, removed, superseded,
+// orphaned, and handoff terminals never carry finalize evidence.
+func sealWorkLogForFinalize(home, worktree, finalCommit, disposition string, report *workLogFinalizeReport) error {
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, nil, report)
+}
+
+// MaxFinalizeReportBytes bounds `wb worktree log finalize --report/
+// --report-stdin`. A lane's completion report is meant to be read, not to
+// carry an attachment; the cap keeps one oversized report from bloating
+// WB_HOME and rejects it with a clear error before anything is written.
+const MaxFinalizeReportBytes = 1 << 20 // 1 MiB
+
+// finalizeReportFileName is the deterministic name `wb worktree log finalize
+// --report` writes under <WB_HOME>/worklogs/<effort>/runs/<run>/reports/, so
+// a retried finalize call for the same task/repository lands on the same
+// file instead of accumulating one per attempt.
+func finalizeReportFileName(task, repository string) (string, error) {
+	owner, name, err := splitRepository(repository)
+	if err != nil {
+		return "", fmt.Errorf("resolve report file name: %w", err)
+	}
+	task = strings.TrimSpace(task)
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid task identity %q for report file name", task)
+	}
+	return task + "--" + owner + "--" + name + ".md", nil
+}
+
+// writeWorkLogFinalizeReport copies an agent's finalize report body into the
+// Work Log's private store under WB_HOME -- never into source Git -- at a
+// deterministic path so a retried finalize call for the same effort/run and
+// checkout identity overwrites the same file rather than accumulating one per
+// attempt. It returns the absolute path so the caller can bind it into the
+// sealed terminal and outbox receipt.
+func writeWorkLogFinalizeReport(home, effort, run, task, repository string, body []byte) (string, error) {
+	if len(body) > MaxFinalizeReportBytes {
+		return "", fmt.Errorf("finalize report exceeds %d bytes (%d MiB cap)", MaxFinalizeReportBytes, MaxFinalizeReportBytes/(1<<20))
+	}
+	fileName, err := finalizeReportFileName(task, repository)
+	if err != nil {
+		return "", err
+	}
+	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = runDir.Close() }()
+	reports, err := openPrivateChild(runDir, "reports", true)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = reports.Close() }()
+	if err := writeBytesAtomicAt(reports, fileName, body, 0o600); err != nil {
+		return "", fmt.Errorf("write finalize report: %w", err)
+	}
+	return filepath.Join(runPath, "reports", fileName), nil
+}
+
+// readWorkLogFinalizeReportBody reads back the private report body a sealed
+// finalize terminal points at. It is used only by the bare `wb worktree log`
+// dump, exactly like an original prompt body: `wb worktree log show` and
+// `wb worktree list`/`summary` see report_path but never the body itself.
+func readWorkLogFinalizeReportBody(reportPath string) (string, error) {
+	directory, err := openAbsoluteDirectoryNoFollow(filepath.Dir(reportPath), false)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = directory.Close() }()
+	content, err := readBytesAt(directory, filepath.Base(reportPath))
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, report *workLogFinalizeReport) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1922,7 +2135,7 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	} else if dirty == nil && supersession != nil {
 		sealedAt, err = writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, "", "", nil, supersession)
 	} else {
-		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession)
+		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession, report)
 	}
 	if err != nil {
 		return err
@@ -1948,6 +2161,19 @@ func sealWorkLogForCleanup(home, worktree, finalCommit string) error {
 	// "removed" produces "immutable terminal conflicts with requested
 	// transition" and used to mask the real accept error (wb#313).
 	if hasExistingWorkLogTerminal(home, projection) {
+		// The exact-match path above refuses whenever the branch earned more
+		// commits after finalize sealed an earlier head (a rebase/merge onto
+		// main, or a follow-up push, landed later as a merge commit) — that
+		// commit-mismatch conflates with every other exact-match failure, so
+		// it always used to be a permanent refusal (wb#... "a finalized Work
+		// Log must not block retiring a worktree whose branch landed"). Try
+		// the narrower advanced-terminal authorization before giving up: it
+		// never rewrites the terminal, only appends a separate additive
+		// record once the current head is independently re-proved to be a
+		// descendant of the exact commit finalize sealed.
+		if advancedErr := acceptAdvancedCleanupTerminal(home, worktree, finalCommit, projection); advancedErr == nil {
+			return nil
+		}
 		return acceptErr
 	}
 	return sealWorkLogForRecycle(home, worktree, finalCommit, "removed")
@@ -2041,7 +2267,7 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	expectedEvent := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expectedEvent) {
 		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
 	}
@@ -2053,6 +2279,128 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 		if _, err := repairCurrentLocalProjection(worktree); err != nil {
 			return fmt.Errorf("repair local work-log projection after finalize: %w", err)
 		}
+	}
+	return nil
+}
+
+// acceptAdvancedCleanupTerminal authorizes cleanup of a worktree whose claim
+// was already finalized "landed" before its branch earned more commits — a
+// rebase or merge onto main, or a follow-up push, that then landed on the
+// target as a merge commit. finalize's terminal is exclusive and immutable,
+// so this never rewrites or reseals it; acceptExistingCleanupTerminal stays
+// the only writer of the terminal record, and continues to be tried first.
+//
+// Once the caller's own ordinary eligibility checks have already re-proved
+// the CURRENT head is safe to remove (clean, integrated at the exact fetched
+// target, no open PR), this narrowly re-proves the one fact that binds the
+// current head back to the sealed claim: that it is a Git descendant of the
+// exact commit finalize sealed, i.e. every intervening commit is additive,
+// never a history rewrite that could have discarded the finalized work. It
+// then durably records that authorization as a separate, additive `cleanup`
+// event — never touching the terminal — so a crash-interrupted retry
+// composes safely and a later audit can see both the original landing and
+// the wider final commit that cleanup actually removed.
+func acceptAdvancedCleanupTerminal(home, worktree, finalCommit string, projection workLogProjection) error {
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return fmt.Errorf("open private work-log run: %w", err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	if err != nil {
+		return err
+	}
+	defer claimLock()
+	currentProjection, err := readWorkLogProjection(worktree)
+	if err != nil || currentProjection != projection {
+		return fmt.Errorf("work-log projection changed while waiting for claim fence")
+	}
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return err
+	}
+	var claim workLogClaim
+	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
+	_ = claims.Close()
+	if readClaimErr != nil {
+		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
+	}
+	terminals, err := openPrivateChild(runDir, "terminals", false)
+	if err != nil {
+		return err
+	}
+	var terminal workLogTerminalRecord
+	readTerminalErr := readJSONAt(terminals, projection.ClaimID+".json", &terminal)
+	_ = terminals.Close()
+	if readTerminalErr != nil {
+		return fmt.Errorf("read immutable work-log terminal: %w", readTerminalErr)
+	}
+	expectedClaim := claim
+	expectedClaim.Lifecycle = "terminal"
+	// Every field except FinalCommit must match the exact-match check above;
+	// only a successful, ordinary "landed" terminal without any successor or
+	// exotic evidence is eligible to be advanced. A not_landed/failure,
+	// handoff, orphaned, dirty-capture, or superseded terminal never is —
+	// those already have their own, deliberately narrower resolution paths.
+	if !reflect.DeepEqual(terminal.workLogClaim, expectedClaim) || terminal.SealedAt.IsZero() ||
+		terminal.Disposition != "landed" || terminal.SuccessorClaimID != "" || terminal.SuccessorAgentID != "" ||
+		terminal.ExternalHandoff != nil || terminal.Orphaned != nil || terminal.DirtyCapture != nil || terminal.Supersession != nil {
+		return fmt.Errorf("immutable terminal does not authorize cleanup of an advanced claim")
+	}
+	if terminal.FinalCommit == finalCommit {
+		return fmt.Errorf("advanced cleanup requires a head that has moved past the sealed final commit")
+	}
+	descended, err := isAncestor(context.Background(), worktree, terminal.FinalCommit, finalCommit)
+	if err != nil {
+		return fmt.Errorf("check whether %s remains descended from the sealed final commit %s: %w", finalCommit, terminal.FinalCommit, err)
+	}
+	if !descended {
+		// Plain Git ancestry cannot see past a rebase (or an equivalent
+		// history rewrite that replays the same changes as new commits):
+		// force-pushing the sealed branch onto a moved target (S63) produces
+		// a head that shares no parent-child relationship with the sealed
+		// commit at all, even though every one of its patches survives
+		// unchanged. Fall back to proving that narrower, still-sufficient
+		// fact directly: every non-merge commit sealed at terminal.FinalCommit
+		// has an identical stable patch-id somewhere in the current head's
+		// own history since their common ancestor.
+		equivalent, patchErr := commitsShareEveryPatchIDByRebase(context.Background(), worktree, terminal.FinalCommit, finalCommit)
+		if patchErr != nil {
+			return fmt.Errorf("check whether %s carries every patch sealed at %s: %w", finalCommit, terminal.FinalCommit, patchErr)
+		}
+		if !equivalent {
+			return fmt.Errorf("current head %s is not a descendant of the sealed final commit %s, and does not carry every one of its patches either; the finalized work may have been discarded or altered", finalCommit, terminal.FinalCommit)
+		}
+	}
+	record := workLogCleanupRecord{Version: 1, ClaimID: claim.ClaimID, TerminalFinalCommit: terminal.FinalCommit,
+		FinalCommit: finalCommit, CleanedAt: time.Now().UTC()}
+	cleanups, err := openPrivateChild(runDir, "cleanups", true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = cleanups.Close() }()
+	cleanupName := claim.ClaimID + ".json"
+	var existing workLogCleanupRecord
+	if readCleanupErr := readJSONAt(cleanups, cleanupName, &existing); readCleanupErr == nil {
+		if existing.TerminalFinalCommit != record.TerminalFinalCommit || existing.FinalCommit != record.FinalCommit {
+			return fmt.Errorf("immutable cleanup record conflicts with requested transition")
+		}
+		record.CleanedAt = existing.CleanedAt
+	} else if !errors.Is(readCleanupErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect immutable cleanup record: %w", readCleanupErr)
+	} else if writeErr := writeJSONImmutableAt(cleanups, cleanupName, record, false); writeErr != nil {
+		return fmt.Errorf("write immutable cleanup record: %w", writeErr)
+	}
+	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = outbox.Close() }()
+	event := workLogPublicEvent{Version: 1, Type: "worktree.cleaned", At: record.CleanedAt, EffortID: claim.EffortID,
+		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
+		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: "removed"}
+	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-cleaned.json", event, true); err != nil {
+		return fmt.Errorf("write immutable cleanup outbox: %w", err)
 	}
 	return nil
 }
@@ -2221,7 +2569,7 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, nil, nil)
 }
 
 func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, evidence *workLogOrphanedEvidence) (time.Time, error) {
@@ -2230,23 +2578,23 @@ func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogCla
 		!evidence.RemoteBranchAbsent || !evidence.TerminalAbsent {
 		return time.Time{}, fmt.Errorf("orphaned terminal requires complete negative authority evidence")
 	}
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil, nil, nil)
 }
 
 func writeWorkLogTerminalWithDirtyCapture(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, dirty *DirtyWorktreeEvidence) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty, nil, nil)
 }
 
 func writeWorkLogTerminalWithSupersession(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, supersession *SupersessionReceipt) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, supersession)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, supersession, nil)
 }
 
-func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) (time.Time, error) {
+func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt, finalizeReport *workLogFinalizeReport) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty, Supersession: supersession}
+		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty, Supersession: supersession, FinalizeReport: finalizeReport}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -2256,8 +2604,8 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) {
-			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) || !sameFinalizeReport(existing.FinalizeReport, finalizeReport) {
+			return time.Time{}, errImmutableTerminalConflict
 		}
 		sealedAt = existing.SealedAt
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -2273,7 +2621,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
-		ExternalHandoff: external, DirtyCapture: dirty, Supersession: supersession}
+		ExternalHandoff: external, DirtyCapture: dirty, Supersession: supersession, FinalizeReport: finalizeReport}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}

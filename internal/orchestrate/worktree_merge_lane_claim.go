@@ -64,6 +64,7 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeLegacyConflictIdentitySuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) {
 			continue
 		}

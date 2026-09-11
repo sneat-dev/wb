@@ -18,30 +18,44 @@ const (
 	maxPublicLatestMerges = 100
 )
 
-// FirestoreBackend is the deliberately small seam implemented by the host's
-// Firestore client. Values are decoded into out by the backend. UpdateAtomic
-// must provide Firestore transaction semantics and may invoke its callback
-// more than once when the storage engine retries a conflict.
-type FirestoreBackend interface {
+// DocumentStore is the deliberately small seam over a hierarchical document
+// database. A collection is addressed by its slash-joined path
+// ("installations/42/chunks"), a document by its id within it. Values are
+// decoded into out by the store. Query takes equality filters only (a nil or
+// empty map is an unfiltered scan) and a limit, where 0 means unbounded; out
+// is a pointer to a slice of the document type. UpdateAtomic must provide
+// serializable transaction semantics and may invoke its callback more than
+// once when the storage engine retries a conflict.
+//
+// dalgostore.New implements it on DALgo, so the hosted instance runs on
+// dalgo2firestore and a self-hoster picks any DALgo engine. See
+// spec/decisions/0002-bench-open-source-and-self-hosting.md.
+type DocumentStore interface {
 	Get(context.Context, string, string, any) (bool, error)
 	Query(context.Context, string, map[string]any, int, any) error
 	Set(context.Context, string, string, any) error
-	UpdateAtomic(context.Context, func(FirestoreTransaction) error) error
+	UpdateAtomic(context.Context, func(DocumentTransaction) error) error
 }
 
-type FirestoreTransaction interface {
+type DocumentTransaction interface {
 	Get(context.Context, string, string, any) (bool, error)
 	Set(context.Context, string, string, any) error
+	// Delete removes one document inside the same atomic update. Provider-owned
+	// stores need it to consume a pending installation state once it has been
+	// transitioned or completed, and to drop acknowledged pending event
+	// references, so that a replay cannot observe state that was already spent.
+	Delete(context.Context, string, string) error
 }
 
-// FirestoreProjectionStore maps the documented Workbench collections to the
-// host backend. The adapter contains no cloud.google.com imports, keeping the
-// provider portable and letting Sneat Go supply its configured client.
-type FirestoreProjectionStore struct{ Backend FirestoreBackend }
+// DocumentProjectionStore maps the documented Workbench collections to the
+// host's document store. The adapter contains no cloud.google.com imports,
+// keeping the provider portable and letting the host supply its configured
+// engine.
+type DocumentProjectionStore struct{ Backend DocumentStore }
 
-func (store FirestoreProjectionStore) ListProjections(ctx context.Context, scope Scope) ([]ProjectionDocument, error) {
+func (store DocumentProjectionStore) ListProjections(ctx context.Context, scope Scope) ([]ProjectionDocument, error) {
 	if store.Backend == nil {
-		return nil, errors.New("firestore projection backend is not configured")
+		return nil, errors.New("projection document store is not configured")
 	}
 	var documents []ProjectionDocument
 	if err := store.Backend.Query(ctx, ProjectionCollection, map[string]any{"scope": scope}, 0, &documents); err != nil {
@@ -50,9 +64,9 @@ func (store FirestoreProjectionStore) ListProjections(ctx context.Context, scope
 	return documents, nil
 }
 
-func (store FirestoreProjectionStore) GetProjection(ctx context.Context, scope Scope, id string) (ProjectionDocument, error) {
+func (store DocumentProjectionStore) GetProjection(ctx context.Context, scope Scope, id string) (ProjectionDocument, error) {
 	if store.Backend == nil {
-		return ProjectionDocument{}, errors.New("firestore projection backend is not configured")
+		return ProjectionDocument{}, errors.New("projection document store is not configured")
 	}
 	var document ProjectionDocument
 	found, err := store.Backend.Get(ctx, ProjectionCollection, ProjectionKey(scope, id), &document)
@@ -65,9 +79,9 @@ func (store FirestoreProjectionStore) GetProjection(ctx context.Context, scope S
 	return document, nil
 }
 
-func (store FirestoreProjectionStore) ListSeries(ctx context.Context, scope Scope, id, metric string) (SeriesDocument, error) {
+func (store DocumentProjectionStore) ListSeries(ctx context.Context, scope Scope, id, metric string) (SeriesDocument, error) {
 	if store.Backend == nil {
-		return SeriesDocument{}, errors.New("firestore projection backend is not configured")
+		return SeriesDocument{}, errors.New("projection document store is not configured")
 	}
 	var documents []SeriesDocument
 	if err := store.Backend.Query(ctx, SeriesCollection, map[string]any{"scope": scope, "id": id, "metric": metric}, 1, &documents); err != nil {
@@ -79,9 +93,9 @@ func (store FirestoreProjectionStore) ListSeries(ctx context.Context, scope Scop
 	return SeriesDocument{}, ErrProjectionNotFound
 }
 
-func (store FirestoreProjectionStore) GetLeaderboard(ctx context.Context, metric string) (LeaderboardDocument, error) {
+func (store DocumentProjectionStore) GetLeaderboard(ctx context.Context, metric string) (LeaderboardDocument, error) {
 	if store.Backend == nil {
-		return LeaderboardDocument{}, errors.New("firestore projection backend is not configured")
+		return LeaderboardDocument{}, errors.New("projection document store is not configured")
 	}
 	var document LeaderboardDocument
 	found, err := store.Backend.Get(ctx, LeaderboardCollection, metric, &document)
@@ -94,9 +108,9 @@ func (store FirestoreProjectionStore) GetLeaderboard(ctx context.Context, metric
 	return document, nil
 }
 
-func (store FirestoreProjectionStore) ListPublicLatestMerges(ctx context.Context, limit int) (PublicLatestMerges, error) {
+func (store DocumentProjectionStore) ListPublicLatestMerges(ctx context.Context, limit int) (PublicLatestMerges, error) {
 	if store.Backend == nil {
-		return PublicLatestMerges{}, errors.New("firestore projection backend is not configured")
+		return PublicLatestMerges{}, errors.New("projection document store is not configured")
 	}
 	var document PublicLatestMerges
 	found, err := store.Backend.Get(ctx, MergeCollection, latestMergesDocument, &document)
@@ -112,20 +126,20 @@ func (store FirestoreProjectionStore) ListPublicLatestMerges(ctx context.Context
 	return document, nil
 }
 
-// FirestoreProjectionWriter applies complete batches by stable document key.
+// DocumentProjectionWriter applies complete batches by stable document key.
 // Set is intentionally idempotent, so a retry after a crash cannot duplicate
 // projections or public merges.
-type FirestoreProjectionWriter struct{ Backend FirestoreBackend }
+type DocumentProjectionWriter struct{ Backend DocumentStore }
 
-func (writer FirestoreProjectionWriter) WriteRepositories(ctx context.Context, deliveryID string, records []ProjectionDocument) error {
+func (writer DocumentProjectionWriter) WriteRepositories(ctx context.Context, deliveryID string, records []ProjectionDocument) error {
 	return writer.writeDocuments(ctx, deliveryID, ScopeRepository, records)
 }
-func (writer FirestoreProjectionWriter) WriteOrganizations(ctx context.Context, deliveryID string, records []ProjectionDocument) error {
+func (writer DocumentProjectionWriter) WriteOrganizations(ctx context.Context, deliveryID string, records []ProjectionDocument) error {
 	return writer.writeDocuments(ctx, deliveryID, ScopeOrganization, records)
 }
-func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, deliveryID string, batch RepositoryLatestMerges) error {
+func (writer DocumentProjectionWriter) WriteLatestMerges(ctx context.Context, deliveryID string, batch RepositoryLatestMerges) error {
 	if writer.Backend == nil {
-		return errors.New("firestore projection backend is not configured")
+		return errors.New("projection document store is not configured")
 	}
 	if err := validateProjectionDeliveryID(deliveryID); err != nil {
 		return err
@@ -133,7 +147,7 @@ func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, d
 	if err := validateProjectionSnapshot(ProjectionSnapshot{LatestMerges: &batch}); err != nil {
 		return err
 	}
-	return writer.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+	return writer.Backend.UpdateAtomic(ctx, func(tx DocumentTransaction) error {
 		var current PublicLatestMerges
 		if _, err := tx.Get(ctx, MergeCollection, latestMergesDocument, &current); err != nil {
 			return err
@@ -162,9 +176,9 @@ func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, d
 		return tx.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: entries})
 	})
 }
-func (writer FirestoreProjectionWriter) writeDocuments(ctx context.Context, deliveryID string, scope Scope, records []ProjectionDocument) error {
+func (writer DocumentProjectionWriter) writeDocuments(ctx context.Context, deliveryID string, scope Scope, records []ProjectionDocument) error {
 	if writer.Backend == nil {
-		return errors.New("firestore projection backend is not configured")
+		return errors.New("projection document store is not configured")
 	}
 	if err := validateProjectionDeliveryID(deliveryID); err != nil {
 		return err
@@ -192,40 +206,40 @@ type firestoreDeliveryRecord struct {
 	Attempts   int       `json:"attempts" firestore:"attempts"`
 }
 
-// FirestoreProjectionDeliveryStore provides the atomic claim and coalesced
+// DocumentProjectionDeliveryStore provides the atomic claim and coalesced
 // wakeup used by ProjectionEngine. An expired claim is recoverable.
-type FirestoreProjectionDeliveryStore struct {
-	Backend FirestoreBackend
+type DocumentProjectionDeliveryStore struct {
+	Backend DocumentStore
 	Now     func() time.Time
 	Lease   time.Duration
 }
 
-func (store FirestoreProjectionDeliveryStore) now() time.Time {
+func (store DocumentProjectionDeliveryStore) now() time.Time {
 	if store.Now != nil {
 		return store.Now()
 	}
 	return time.Now().UTC()
 }
-func (store FirestoreProjectionDeliveryStore) lease() time.Duration {
+func (store DocumentProjectionDeliveryStore) lease() time.Duration {
 	if store.Lease > 0 {
 		return store.Lease
 	}
 	return 5 * time.Minute
 }
-func (store FirestoreProjectionDeliveryStore) HasDelivery(ctx context.Context, id string) (bool, error) {
+func (store DocumentProjectionDeliveryStore) HasDelivery(ctx context.Context, id string) (bool, error) {
 	if store.Backend == nil {
-		return false, errors.New("firestore delivery backend is not configured")
+		return false, errors.New("delivery document store is not configured")
 	}
 	var record firestoreDeliveryRecord
 	found, err := store.Backend.Get(ctx, deliveryCollection, id, &record)
 	return found && record.Status == "committed", err
 }
-func (store FirestoreProjectionDeliveryStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
+func (store DocumentProjectionDeliveryStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
 	if store.Backend == nil {
-		return false, errors.New("firestore delivery backend is not configured")
+		return false, errors.New("delivery document store is not configured")
 	}
 	claimed := false
-	err := store.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+	err := store.Backend.UpdateAtomic(ctx, func(tx DocumentTransaction) error {
 		claimed = false
 		var record firestoreDeliveryRecord
 		found, err := tx.Get(ctx, deliveryCollection, id, &record)
@@ -245,15 +259,15 @@ func (store FirestoreProjectionDeliveryStore) ClaimDelivery(ctx context.Context,
 	})
 	return claimed, err
 }
-func (store FirestoreProjectionDeliveryStore) ReleaseDelivery(ctx context.Context, id string) error {
+func (store DocumentProjectionDeliveryStore) ReleaseDelivery(ctx context.Context, id string) error {
 	return store.updateStatus(ctx, id, "retryable")
 }
-func (store FirestoreProjectionDeliveryStore) CommitDeliveryAndWakeup(ctx context.Context, id string, wakeup Wakeup) (bool, error) {
+func (store DocumentProjectionDeliveryStore) CommitDeliveryAndWakeup(ctx context.Context, id string, wakeup Wakeup) (bool, error) {
 	if store.Backend == nil {
-		return false, errors.New("firestore delivery backend is not configured")
+		return false, errors.New("delivery document store is not configured")
 	}
 	committed := false
-	err := store.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+	err := store.Backend.UpdateAtomic(ctx, func(tx DocumentTransaction) error {
 		committed = false
 		var record firestoreDeliveryRecord
 		found, err := tx.Get(ctx, deliveryCollection, id, &record)
@@ -281,11 +295,11 @@ func wakeupDocumentID(key string) string {
 	return "wakeup_" + hex.EncodeToString(sum[:])
 }
 
-func (store FirestoreProjectionDeliveryStore) updateStatus(ctx context.Context, id, status string) error {
+func (store DocumentProjectionDeliveryStore) updateStatus(ctx context.Context, id, status string) error {
 	if store.Backend == nil {
-		return errors.New("firestore delivery backend is not configured")
+		return errors.New("delivery document store is not configured")
 	}
-	return store.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+	return store.Backend.UpdateAtomic(ctx, func(tx DocumentTransaction) error {
 		var record firestoreDeliveryRecord
 		found, err := tx.Get(ctx, deliveryCollection, id, &record)
 		if err != nil || !found {

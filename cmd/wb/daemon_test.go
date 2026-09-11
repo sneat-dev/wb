@@ -424,6 +424,10 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		version:    func() versionInfo { return versionInfo{Version: "test", Revision: "test-revision"} },
 		token:      func() (string, error) { pid++; return strings.Repeat("a", 30) + string(rune(pid)), nil },
 		health:     func(context.Context, string) error { return nil },
+		// Point the hub lookup at a path inside this test's own root, so a
+		// status assertion never depends on whether the machine running the
+		// suite happens to self-host bench.
+		hubConfigPath: func() string { return filepath.Join(root, "wb.yaml") },
 		rawPolicy: func(string) (bool, string, error) {
 			return true, "test-policy", nil
 		},

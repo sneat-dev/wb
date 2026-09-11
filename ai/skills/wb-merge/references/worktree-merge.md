@@ -15,6 +15,7 @@ wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <o
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -167,10 +168,11 @@ worktree was already removed before a resume could confirm the server
 landing -- use `acknowledge-stranded-landing` instead. It never reads or
 requires the candidate or any receipted source worktree. It proves, using
 only GitHub's own remote state, that the receipted pull request reports
-MERGED at the exact receipted candidate head, that the server merge commit
-and the receipted candidate are both contained in the freshly fetched current
-remote target, and that the receipted candidate still contains its own
-recorded pre-merge target. It accepts only a conflict receipt that never
+MERGED at the exact receipted candidate head or a strict descendant, that a
+descendant retains the candidate by ancestry, that the server merge commit,
+observed head, and receipted candidate are contained in the freshly fetched
+current remote target, and that the receipted candidate still contains its
+own recorded pre-merge target. It accepts only a conflict receipt that never
 recorded a landing SHA but did publish an exact candidate in a pull request; a
 receipt that already has a landing SHA is `acknowledge-landed-failed`'s
 territory instead. It writes a separate audited acknowledgement and frees the
@@ -201,6 +203,12 @@ claim identity, clean worktree, or receipt integrity refuses closed.
 If an unpublished conflict candidate has advanced to a clean strict descendant,
 WB records that observed commit in the supersession and requires the replacement
 to contain both the receipted candidate and the observed descendant.
+For the legacy unpublished-conflict shape whose receipt omitted the candidate
+SHA, WB derives it only from the exact clean active-claim candidate worktree,
+proves it contains the receipt target and every receipted source, and proves it
+is neither published nor landed. Apply stores that correlation in a separate
+receipt-hash-bound identity sidecar before storing the supersession; global lane
+scans require both sidecars and fail closed if either is missing or altered.
 
 When an unpublished prepare `conflict` receipt is stuck because every one of
 its receipted source worktrees is already gone -- so neither resume nor
@@ -247,6 +255,15 @@ worktree. It writes a separate audited acknowledgement and frees the merger
 lane: a subsequent `wb worktree merge prepare` of the exact same sources
 supersedes the stuck receipt under a fresh successor operation, integration
 branch, and empty pull request, rather than resuming the retired publication.
+
+When a prepare/`validation_failed` receipt never published or landed, but its
+immutable receipt still blocks a different source set from using the same
+repository target lane, use `acknowledge-retired-unpublished-validation-failure`. WB
+requires the candidate branch to be absent from the remote, proves the
+candidate is not reachable from the freshly fetched target, and requires every
+receipted source to remain clean, exact, and actively claimed. The append-only
+acknowledgement retires only the failed merge attempt; it does not delete or
+rewrite the candidate, source worktrees, branches, receipt, or Work Logs.
 A pull request still OPEN or proved MERGED, a candidate branch that still
 carries a remote ref, or a candidate already reachable from the current
 target refuses closed.

@@ -405,10 +405,12 @@
                 "--fleet",
                 "--format",
                 "--json",
-                "--strict"
+                "--strict",
+                "--target"
               ],
               "modes": [
-                "Audits one repository or an explicitly selected local fleet without mutating it."
+                "Audits one repository or an explicitly selected local fleet without mutating it.",
+                "With --target <branch>, also fetches the target and compares every numeric min_test_coverage_percent against the same workflow file there, reporting a coverage-floor-lowered finding for any threshold that dropped; a no-op when the current branch already equals --target."
               ]
             }
           ],
@@ -423,7 +425,8 @@
                 "--strict",
                 "--fleet",
                 "--format",
-                "--json"
+                "--json",
+                "--target"
               ]
             }
           ],
@@ -454,12 +457,22 @@
               "path": "internal/ciaudit/audit_test.go",
               "name": "TestAuditReportsMissingThresholdsAndDeployRebuild",
               "kind": "integration"
+            },
+            {
+              "path": "internal/ciaudit/unpinned_test.go",
+              "name": "TestAuditReportsUnpinnedToolInstalls",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/ciaudit/target_test.go",
+              "name": "TestCompareCoverageFloorsReportsALoweredFloor",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks."
+      "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks. --target is the one path that runs git (fetch + show) rather than reading local files only."
     },
     {
       "id": "wb.ci.wait",
@@ -1414,7 +1427,8 @@
     {
       "id": "wb.daemon.serve",
       "feature_refs": [
-        "spec/features/agent-sdlc-throughput/README.md"
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/self-hosted-bench/README.md"
       ],
       "since": "unreleased",
       "surfaces": {
@@ -1424,10 +1438,16 @@
             {
               "path": "wb daemon serve",
               "flags": [
-                "--listen"
+                "--listen",
+                "--quiet"
               ],
               "modes": [
-                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener"
+                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener",
+                "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /bench/ when wb.yaml has a hub: section",
+                "Polls GitHub for default-branch pushes and repository renames when hub.github.token_file is set, narrating one console line per webhook delivery and per poll observation",
+                "--quiet silences the console lines; wb daemon start never passes it, so the detached daemon log keeps every line",
+                "Verifies and enqueues signed GitHub deliveries at /v0/workbench/github/webhook when hub.github.app is configured, taking App-covered repositories off the poller; the start line ends with webhook=on public_url=... or webhook=off",
+                "Never starts a tunnel: the operator forwards <public_url>/v0/workbench/github/webhook to the loopback port with their own cloudflared or ngrok credentials (recipes in hub/README.md)"
               ]
             }
           ],
@@ -1440,8 +1460,11 @@
               "command": "wb daemon serve --help",
               "contains": [
                 "--listen",
+                "--quiet",
                 "Cloudflare Tunnel",
-                "loopback"
+                "loopback",
+                "hub",
+                "poller"
               ]
             }
           ],
@@ -1472,6 +1495,36 @@
               "path": "cmd/wb/daemon_test.go",
               "name": "TestDaemonRequiresLoopbackListener",
               "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_hub_test.go",
+              "name": "TestServeDashboardMountsTheHubAndDashboard",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_poller_test.go",
+              "name": "TestServeDashboardPublishesHubHealth",
+              "kind": "integration"
+            },
+            {
+              "path": "hub/poller/poller_test.go",
+              "name": "TestPollerRecordsFirstSightThenQueuesOnlyWhatChanged",
+              "kind": "unit"
+            },
+            {
+              "path": "hub/narrate/narrate_test.go",
+              "name": "TestWriterRendersEveryOutcomeInTheSpecifiedColumns",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_hub_webhook_test.go",
+              "name": "TestWebhookModeVerifiesDeliveriesWithTheOperatorsSecret",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/self_hosted_bench_e2e_test.go",
+              "name": "TestSelfHostedBenchWholeJourney",
+              "kind": "e2e"
             }
           ],
           "limitation": null
@@ -1493,13 +1546,13 @@
     },
     {
       "id": "wb.daemon.status",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md", "spec/features/self-hosted-bench/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one", "Reports whether the bench hub is mounted, with its store engine, store location, and listen address", "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged", "Reports whether webhook mode is on and the public URL GitHub delivers to"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_test.go", "name": "TestDaemonStatusReportsTheMountedHub", "kind": "unit"}, {"path": "cmd/wb/daemon_poller_test.go", "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_webhook_test.go", "name": "TestDaemonStatusReportsWebhookMode", "kind": "unit"}], "limitation": null}
       },
       "notes": "Status is bootstrap-safe and does not auto-start the daemon."
     },
@@ -9805,8 +9858,10 @@
               "flags": [
                 "--absorbed-by",
                 "--base",
+                "--finalized",
                 "--format",
                 "--github",
+                "--not-finalized",
                 "--only",
                 "--parallel",
                 "--ttl"
@@ -9817,7 +9872,8 @@
                 "Versioned JSON envelope exposes results, diagnostics, and lifecycle-artifact cleanup backlog; it replaces the legacy bare result array",
                 "A detached checkout is inventoried rather than warned about and dropped, so the pull-request review checkouts that make up most permanent worktree debt are visible and removable",
                 "Every row carries its owner, its age, and whether it passed --ttl, so an abandoned worktree is distinguishable from a paused one",
-                "Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are purged unconditionally and silently on this read path rather than logged once per artefact"
+                "Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are purged unconditionally and silently on this read path rather than logged once per artefact",
+                "terminal_result, terminal_message, finalized_at, and report_path are exposed (JSON and the text state column) once wb worktree log finalize seals a claim; --finalized/--not-finalized filter on that"
               ]
             }
           ],
@@ -9892,7 +9948,8 @@
                 "Read-only agent bootstrap dump of manifest, claim identity, exact original prompt, ordered prompt bodies, and live Git evidence for one worktree.",
                 "Mutating verbs are registered as subcommands under this parent.",
                 "Mutation verbs accept --mode agent only with a live registered session, or --mode manual with --initiator.",
-                "recover and archive remain read-only until --apply; show is always read-only."
+                "recover and archive remain read-only until --apply; show is always read-only.",
+                "Once finalized, includes the terminal record and, exactly like the original prompt body, the private finalize --report/--report-stdin body."
               ]
             }
           ],
@@ -10151,10 +10208,13 @@
                 "--apply",
                 "--format",
                 "--message",
+                "--report",
+                "--report-stdin",
                 "--result"
               ],
               "modes": [
-                "Records a terminal result; --apply seals the hybrid claim."
+                "Records a terminal result; --apply seals the hybrid claim.",
+                "--report/--report-stdin attaches a completion report; --apply persists it under WB_HOME."
               ]
             }
           ],
@@ -10167,7 +10227,8 @@
               "command": "wb worktree log finalize --help",
               "contains": [
                 "--apply",
-                "--result"
+                "--result",
+                "--report"
               ]
             }
           ],
@@ -10180,7 +10241,8 @@
               "path": "ai/skills/wb-worktrees/references/worklog.md",
               "marker": "# Work log verbs",
               "examples": [
-                "wb worktree log finalize . --result success"
+                "wb worktree log finalize . --result success",
+                "wb worktree log finalize . --result success --report report.md --apply"
               ]
             }
           ],
@@ -10600,7 +10662,8 @@
                 "--format"
               ],
               "modes": [
-                "Redacted inspect of journal and live Git evidence without prompt bodies."
+                "Redacted inspect of journal and live Git evidence without prompt bodies.",
+                "Once wb worktree log finalize has sealed the claim, includes the redacted terminal record (disposition, terminal_result, terminal_message, report_path) without the report body."
               ]
             }
           ],
@@ -11448,6 +11511,80 @@
         }
       },
       "notes": "This recovers a conflict/validation_failed/checks_failed receipt stuck after publishing a candidate whose target then advanced past it, once the operator has closed the stale pull request unmerged and deleted its remote branch by hand. A subsequent prepare of the exact same sources supersedes the stuck receipt under a fresh operation, integration branch, and empty pull request rather than resuming the retired publication."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-retired-unpublished-validation-failure",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-unpublished-validation-failure",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Accepts only an unpublished prepare/validation_failed receipt with no landing SHA, pull request, or published candidate SHA",
+                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed",
+                "Writes only an append-only acknowledgement; the receipt, candidate, sources, branches, and Work Logs remain unchanged while a different source set may acquire the lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-unpublished-validation-failure --help",
+              "contains": [
+                "receipt never published",
+                "actively claimed",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_test.go",
+              "name": "TestAcknowledgeUnpublishedValidationFailureFreesLane",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This retires only an unpublished failed preparation after proving its exact source work remains preserved; malformed acknowledgement evidence keeps the lane blocked."
     },
     {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
@@ -12957,7 +13094,8 @@
               ],
               "modes": [
                 "Requires one task name and prints a brief overview of every live worktree: path, branch, short head, clean/dirty/locked state, and origin-target integration",
-                "Optional --github attaches open or merged pull-request evidence"
+                "Optional --github attaches open or merged pull-request evidence",
+                "Once wb worktree log finalize has sealed a worktree's claim, prints its terminal result, message, and report path"
               ]
             }
           ],

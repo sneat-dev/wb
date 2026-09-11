@@ -1,0 +1,244 @@
+---
+import { worktreeStatuses } from '../data/worktrees';
+---
+
+<section class="dashboard-section fleet-worktrees" aria-labelledby="fleet-worktrees-title" data-fleet-worktrees>
+  <div class="section-inline-head fleet-worktrees-head">
+    <div>
+      <p class="eyebrow">Fleet inventory</p>
+      <h2 id="fleet-worktrees-title">Worktrees across machines</h2>
+    </div>
+    <p>One filtered view of every authorized WB machine.</p>
+  </div>
+
+  <form class="worktree-filters" data-worktree-filters aria-label="Filter worktrees">
+    <label>Machine<select name="machine" data-worktree-filter="machine"><option value="">All machines</option></select></label>
+    <label>Repository<select name="repository" data-worktree-filter="repository"><option value="">All repositories</option></select></label>
+    <label>Status<select name="status" data-worktree-filter="status"><option value="">All statuses</option>{worktreeStatuses.map((status) => <option value={status}>{status.replaceAll('_', ' ')}</option>)}</select></label>
+    <label class="worktree-task-filter">Task or stream<input type="search" name="task" placeholder="Filter by name" autocomplete="off" data-worktree-filter="task" /></label>
+    <label class="attention-filter"><input type="checkbox" name="attention" value="1" data-worktree-filter="attention" /> Needs attention</label>
+    <button type="reset" class="btn btn-secondary" data-worktree-reset>Clear</button>
+  </form>
+
+  <div class="worktree-result-summary" aria-live="polite">
+    <strong data-worktree-count>No live inventory loaded</strong>
+    <span data-worktree-filter-summary>Filters are saved in this page URL.</span>
+  </div>
+
+  <div class="worktree-states" aria-live="polite">
+    <section class="state-card" data-worktree-state="loading" hidden><span class="state-spinner" aria-hidden="true"></span><div><strong>Loading machine inventory</strong><p>Workbench is collecting authorized worktrees across your machines.</p></div></section>
+    <section class="state-card" data-worktree-state="empty" hidden><div><strong>No managed worktrees found</strong><p>The authorized fleet snapshot contains no worktrees.</p></div></section>
+    <section class="state-card" data-worktree-state="no-match" hidden><div><strong>No worktrees match these filters</strong><p>Clear a filter to see the rest of the authorized fleet.</p></div></section>
+    <section class="state-card state-error" data-worktree-state="unavailable"><div><strong>Machine inventory is unavailable</strong><p data-worktree-unavailable-message>Refresh an authorized snapshot to load worktrees from registered machines.</p></div></section>
+    <section class="state-card worktree-stale" data-worktree-state="stale" hidden><div><strong>Showing the last machine inventory</strong><p>The latest refresh failed. Rows below may be out of date.</p></div></section>
+  </div>
+
+  <div class="worktree-table-shell" data-worktree-table hidden>
+    <table>
+      <caption class="visually-hidden">Managed worktrees across authorized WB machines</caption>
+      <thead><tr><th scope="col">Repository</th><th scope="col">Task / stream</th><th scope="col">Branch</th><th scope="col">Status</th><th scope="col">PR</th><th scope="col">Machine</th><th scope="col">Last activity</th><th scope="col">Attention</th></tr></thead>
+      <tbody data-worktree-rows></tbody>
+    </table>
+  </div>
+  <div class="worktree-cards" data-worktree-cards hidden aria-label="Managed worktrees across authorized WB machines"></div>
+</section>
+
+<script>
+  import {
+    flattenFleetWorktrees,
+    isFleetSnapshot,
+    matchesWorktreeFilters,
+    worktreeFiltersFromSearch,
+    worktreeNeedsAttention,
+    worktreeStatus,
+    writeWorktreeFilters,
+    type FleetWorktreeRow,
+    type WorktreeFilters,
+  } from '../data/worktrees';
+
+  type FleetEventDetail = { state: 'loading' | 'current' | 'stale' | 'unavailable'; snapshot?: unknown };
+  const root = document.querySelector<HTMLElement>('[data-fleet-worktrees]');
+  const form = root?.querySelector<HTMLFormElement>('[data-worktree-filters]');
+  const table = root?.querySelector<HTMLElement>('[data-worktree-table]');
+  const tableBody = root?.querySelector<HTMLTableSectionElement>('[data-worktree-rows]');
+  const cards = root?.querySelector<HTMLElement>('[data-worktree-cards]');
+  const count = root?.querySelector<HTMLElement>('[data-worktree-count]');
+  const summary = root?.querySelector<HTMLElement>('[data-worktree-filter-summary]');
+  const unavailableMessage = root?.querySelector<HTMLElement>('[data-worktree-unavailable-message]');
+  const machineSelect = form?.elements.namedItem('machine') as HTMLSelectElement | null;
+  const repositorySelect = form?.elements.namedItem('repository') as HTMLSelectElement | null;
+  const statusSelect = form?.elements.namedItem('status') as HTMLSelectElement | null;
+  const taskInput = form?.elements.namedItem('task') as HTMLInputElement | null;
+  const attentionInput = form?.elements.namedItem('attention') as HTMLInputElement | null;
+  let rows: FleetWorktreeRow[] = [];
+  let filters = worktreeFiltersFromSearch(window.location.search);
+
+  function text(tag: string, value: string, className?: string): HTMLElement {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function statusLabel(value: string): string {
+    return value.replaceAll('_', ' ');
+  }
+
+  function activity(worktree: FleetWorktreeRow): HTMLElement {
+    if (!worktree.last_activity_at) return text('span', '—', 'worktree-muted');
+    const time = document.createElement('time');
+    time.dateTime = worktree.last_activity_at;
+    const date = new Date(worktree.last_activity_at);
+    time.textContent = Number.isNaN(date.valueOf()) ? worktree.last_activity_at : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    return time;
+  }
+
+  function pullRequest(worktree: FleetWorktreeRow): HTMLElement {
+    if (!worktree.pull_request) return text('span', '—', 'worktree-muted');
+    const link = document.createElement('a');
+    link.href = worktree.pull_request.url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = `#${worktree.pull_request.number}`;
+    link.setAttribute('aria-label', `Pull request ${worktree.pull_request.number}, ${worktree.pull_request.state}`);
+    return link;
+  }
+
+  function attention(worktree: FleetWorktreeRow): HTMLElement {
+    const needed = worktreeNeedsAttention(worktree);
+    const node = text('span', needed ? (worktree.attention_reason || 'Review') : 'Clear', `attention-pill ${needed ? 'needs-attention' : 'attention-clear'}`);
+    return node;
+  }
+
+  function machine(worktree: FleetWorktreeRow): HTMLElement {
+    const node = text('span', `${worktree.machine} · ${worktree.machine_state}`, `machine-pill machine-${worktree.machine_state}`);
+    if (worktree.machine_last_seen_at) node.title = `Last seen ${worktree.machine_last_seen_at}`;
+    return node;
+  }
+
+  function tableRow(worktree: FleetWorktreeRow): HTMLTableRowElement {
+    const row = document.createElement('tr');
+    const repository = document.createElement('th'); repository.scope = 'row'; repository.textContent = worktree.repository;
+    const task = document.createElement('td');
+    task.append(text('strong', worktree.stream || worktree.task));
+    if (worktree.stream) task.append(text('small', worktree.task));
+    const branch = document.createElement('td'); branch.append(text('code', worktree.branch));
+    const state = document.createElement('td'); state.append(text('span', statusLabel(worktreeStatus(worktree)), `worktree-status status-${worktreeStatus(worktree)}`));
+    const pr = document.createElement('td'); pr.append(pullRequest(worktree));
+    const machineCell = document.createElement('td'); machineCell.append(machine(worktree));
+    const lastActivity = document.createElement('td'); lastActivity.append(activity(worktree));
+    const attentionCell = document.createElement('td'); attentionCell.append(attention(worktree));
+    row.append(repository, task, branch, state, pr, machineCell, lastActivity, attentionCell);
+    return row;
+  }
+
+  function card(worktree: FleetWorktreeRow): HTMLElement {
+    const article = document.createElement('article'); article.className = 'worktree-card';
+    const header = document.createElement('header');
+    const identity = document.createElement('div');
+    identity.append(text('strong', worktree.repository), text('span', worktree.stream || worktree.task));
+    header.append(identity, attention(worktree));
+    const details = document.createElement('dl');
+    const values: Array<[string, Node]> = [
+      ['Task', document.createTextNode(worktree.task)],
+      ['Branch', text('code', worktree.branch)],
+      ['Status', text('span', statusLabel(worktreeStatus(worktree)), `worktree-status status-${worktreeStatus(worktree)}`)],
+      ['PR', pullRequest(worktree)],
+      ['Machine', machine(worktree)],
+      ['Last activity', activity(worktree)],
+    ];
+    for (const [label, value] of values) {
+      const group = document.createElement('div');
+      group.append(text('dt', label));
+      const detail = document.createElement('dd'); detail.append(value); group.append(detail); details.append(group);
+    }
+    article.append(header, details);
+    return article;
+  }
+
+  function showState(state?: FleetEventDetail['state'] | 'empty' | 'no-match'): void {
+    root?.querySelectorAll<HTMLElement>('[data-worktree-state]').forEach((node) => {
+      node.hidden = node.dataset.worktreeState !== state;
+    });
+  }
+
+  function optionValues(select: HTMLSelectElement | null, values: string[], label: string, selected: string): void {
+    if (!select) return;
+    select.replaceChildren(new Option(label, ''), ...values.map((value) => new Option(value, value)));
+    select.value = selected;
+  }
+
+  function syncControls(): void {
+    if (machineSelect) machineSelect.value = filters.machine;
+    if (repositorySelect) repositorySelect.value = filters.repository;
+    if (statusSelect) statusSelect.value = filters.status;
+    if (taskInput) taskInput.value = filters.task;
+    if (attentionInput) attentionInput.checked = filters.attention;
+  }
+
+  function updateRangeLinks(params: URLSearchParams): void {
+    document.querySelectorAll<HTMLAnchorElement>('[data-dashboard-range]').forEach((link) => {
+      const next = new URLSearchParams(params);
+      next.set('range', link.dataset.dashboardRange || '30d');
+      link.search = next.toString();
+    });
+  }
+
+  function applyFilters(updateURL: boolean): void {
+    const visible = rows.filter((worktree) => matchesWorktreeFilters(worktree, filters));
+    tableBody?.replaceChildren(...visible.map(tableRow));
+    cards?.replaceChildren(...visible.map(card));
+    if (table) table.hidden = visible.length === 0;
+    if (cards) cards.hidden = visible.length === 0;
+    const activeFilters = [filters.machine, filters.repository, filters.status, filters.task, filters.attention ? 'attention' : ''].filter(Boolean).length;
+    if (count) count.textContent = `${visible.length} of ${rows.length} worktree${rows.length === 1 ? '' : 's'}`;
+    if (summary) summary.textContent = activeFilters ? `${activeFilters} filter${activeFilters === 1 ? '' : 's'} active · saved in this page URL` : 'All authorized worktrees · filters are saved in this page URL';
+    showState(rows.length === 0 ? 'empty' : visible.length === 0 ? 'no-match' : undefined);
+    if (updateURL) {
+      const params = writeWorktreeFilters(new URLSearchParams(window.location.search), filters);
+      const query = params.toString();
+      const next = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', next);
+      updateRangeLinks(params);
+    }
+  }
+
+  function readControls(): WorktreeFilters {
+    return {
+      machine: machineSelect?.value ?? '',
+      repository: repositorySelect?.value ?? '',
+      status: statusSelect?.value ?? '',
+      task: taskInput?.value.trim() ?? '',
+      attention: attentionInput?.checked ?? false,
+    };
+  }
+
+  syncControls();
+  updateRangeLinks(new URLSearchParams(window.location.search));
+  form?.addEventListener('input', () => { filters = readControls(); applyFilters(true); });
+  form?.addEventListener('change', () => { filters = readControls(); applyFilters(true); });
+  form?.addEventListener('reset', () => {
+    window.setTimeout(() => { filters = readControls(); applyFilters(true); }, 0);
+  });
+
+  window.addEventListener('workbench:fleet', (event) => {
+    const detail = (event as CustomEvent<FleetEventDetail>).detail;
+    if (detail.state === 'loading') { showState('loading'); return; }
+    if (detail.state === 'stale') { showState(rows.length > 0 ? 'stale' : 'unavailable'); return; }
+    if (detail.state === 'unavailable') { showState('unavailable'); return; }
+    if (!isFleetSnapshot(detail.snapshot)) {
+      rows = [];
+      if (unavailableMessage) unavailableMessage.textContent = 'The authorized snapshot does not include a valid machine inventory yet.';
+      if (table) table.hidden = true;
+      if (cards) cards.hidden = true;
+      if (count) count.textContent = 'No live inventory loaded';
+      showState('unavailable');
+      return;
+    }
+    rows = flattenFleetWorktrees(detail.snapshot);
+    optionValues(machineSelect, [...new Set(rows.map(({ machine }) => machine))].sort(), 'All machines', filters.machine);
+    optionValues(repositorySelect, [...new Set(rows.map(({ repository }) => repository))].sort(), 'All repositories', filters.repository);
+    syncControls();
+    applyFilters(false);
+  });
+</script>

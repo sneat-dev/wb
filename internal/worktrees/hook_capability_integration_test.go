@@ -26,6 +26,16 @@ func TestSecureCleanupGitHelperRunsRealGoHookWithSharedCachesAndAuthorizedMetric
 	t.Setenv("GOWORK", filepath.Join(t.TempDir(), "outside.go.work"))
 	forbidden := filepath.Join(t.TempDir(), "must-not-write")
 	t.Setenv("WB_TEST_FORBIDDEN", forbidden)
+	// Only a confining backend (Landlock on Linux) can refuse the forbidden
+	// write. On macOS the helper runs Git plainly, so the hook must still run
+	// end to end -- that is the proof the pass-through works -- but the
+	// out-of-root write is expected to succeed there and is not asserted.
+	confines := platformGitFilesystemCapabilityConfines()
+	if confines {
+		t.Setenv("WB_TEST_EXPECT_CONFINEMENT", "1")
+	} else {
+		t.Setenv("WB_TEST_EXPECT_CONFINEMENT", "0")
+	}
 	installSecureHookCapabilityFixture(t, fixture.canonical)
 	gitTest(t, fixture.canonical, "add", ".wb", "go.mod", "main.go", "main_test.go")
 	gitTest(t, fixture.canonical, "commit", "-m", "configure secure hook capability fixture")
@@ -78,8 +88,10 @@ func TestSecureCleanupGitHelperRunsRealGoHookWithSharedCachesAndAuthorizedMetric
 			t.Fatalf("expected durable hook metrics or a replayable pending receipt at %s (pending=%v err=%v)", policy.Metrics.Path, pending, readErr)
 		}
 	}
-	if _, err := os.Lstat(forbidden); !os.IsNotExist(err) {
-		t.Fatalf("hook wrote outside declared roots: %v", err)
+	if confines {
+		if _, err := os.Lstat(forbidden); !os.IsNotExist(err) {
+			t.Fatalf("hook wrote outside declared roots: %v", err)
+		}
 	}
 	if status := gitTestOutput(t, fixture.canonical, "status", "--porcelain"); status != "" {
 		t.Fatalf("secure hook dirtied repository: %q", status)
@@ -99,7 +111,7 @@ set -eu
 report_dir="$WB_HOOK_REPORT_ROOT/secure-go"
 umask 077
 mkdir -p "$report_dir"
-if /bin/sh -c ': > "$1"' sh "$WB_TEST_FORBIDDEN" 2>/dev/null; then
+if [ "${WB_TEST_EXPECT_CONFINEMENT-1}" = "1" ] && /bin/sh -c ': > "$1"' sh "$WB_TEST_FORBIDDEN" 2>/dev/null; then
     echo "forbidden write unexpectedly succeeded" >&2
     exit 99
 fi

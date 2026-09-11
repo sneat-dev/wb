@@ -270,6 +270,65 @@ func TestMergeAgentHookSettingsIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestMergeAgentHookSettingsWidensAStaleMatcher covers a fleet install from
+// before the Agent/Task policies (missing model, literal report path, live
+// claim): re-running install must widen the existing entry's matcher in
+// place rather than leaving it stale or appending a duplicate. Without this,
+// `wb hooks agent install`'s "re-running it changes nothing once the entry is
+// present" guarantee would keep an already-installed fleet on the narrower,
+// pre-policy matcher forever, because the original idempotency check
+// compared the command only, never the matcher.
+func TestMergeAgentHookSettingsWidensAStaleMatcher(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	shellCommand := agentHookShellCommand("/usr/local/bin/wb")
+	staleMatcher := `{
+	  "hooks": {
+	    "PreToolUse": [
+	      {"matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": ` + jsonString(shellCommand) + `, "timeout": 10}]}
+	    ]
+	  }
+	}`
+	if err := os.WriteFile(path, []byte(staleMatcher), 0o644); err != nil {
+		t.Fatalf("seed the settings file: %v", err)
+	}
+
+	document, changed, err := mergeAgentHookSettings(path, shellCommand)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !changed {
+		t.Fatal("re-running install over a stale matcher reported no change")
+	}
+	if !strings.Contains(string(document), agentHookMatcher) {
+		t.Fatalf("the widened matcher is missing from %s", document)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(document, &settings); err != nil {
+		t.Fatalf("the merged document is not valid JSON: %v", err)
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	entries, _ := hooks["PreToolUse"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("widening the matcher produced %d entries, want the same one entry updated in place", len(entries))
+	}
+
+	// A third run, now that the matcher matches, must be a true no-op.
+	if err := os.WriteFile(path, document, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	again, changedAgain, err := mergeAgentHookSettings(path, shellCommand)
+	if err != nil {
+		t.Fatalf("third merge: %v", err)
+	}
+	if changedAgain {
+		t.Fatal("re-running install a second time, after the matcher was widened, reported a change")
+	}
+	if !bytes.Equal(document, again) {
+		t.Fatalf("re-running install rewrote the already-current document:\n%s\n---\n%s", document, again)
+	}
+}
+
 // TestMergeAgentHookSettingsCreatesAMissingFile covers a first install on a
 // machine with no settings file yet.
 func TestMergeAgentHookSettingsCreatesAMissingFile(t *testing.T) {

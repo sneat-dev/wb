@@ -1,0 +1,69 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Sync report — Workbench" description="Open an immutable, per-repository WB sync analysis." path="/app/sync-report/">
+  <meta slot="head" name="robots" content="noindex, nofollow" />
+  <section class="report-shell">
+    <div class="container report-container">
+      <p class="eyebrow">Fleet evidence</p>
+      <h1>Sync report</h1>
+      <p class="lead">One immutable sync run, stored as a dedicated InGitDB Markdown record for each repository.</p>
+
+      <div class="report-card" data-report-card aria-live="polite">
+        <div data-report-loading>
+          <h2>Locating report…</h2>
+          <p>Checking the repository, commit, and report identity from this link.</p>
+        </div>
+        <div data-report-invalid hidden>
+          <h2>This report link is incomplete</h2>
+          <p>A WB sync-report link must include a valid <code>repo</code>, immutable 40-character <code>ref</code>, and <code>report</code> ID.</p>
+        </div>
+        <div data-report-valid hidden>
+          <div class="identity-grid">
+            <div><span>Workbench repository</span><strong data-report-repository></strong></div>
+            <div><span>Report ID</span><strong data-report-id></strong></div>
+            <div><span>Immutable commit</span><code data-report-sha></code></div>
+            <div><span>Record prefix</span><code data-report-prefix></code></div>
+          </div>
+          <p class="access-note">The workbench repository may be private. GitHub will ask you to sign in with an account that can read it; WB never puts repository credentials in this URL.</p>
+          <a class="btn btn-primary" data-report-open target="_blank" rel="noopener">Open repository records on GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    import { syncReportLocation } from '../../data/sync-report';
+
+    const location = syncReportLocation(new URLSearchParams(window.location.search));
+    document.querySelector<HTMLElement>('[data-report-loading]')!.hidden = true;
+    const invalid = document.querySelector<HTMLElement>('[data-report-invalid]')!;
+    const valid = document.querySelector<HTMLElement>('[data-report-valid]')!;
+    if (!location) {
+      invalid.hidden = false;
+    } else {
+      valid.hidden = false;
+      document.querySelector<HTMLElement>('[data-report-repository]')!.textContent = location.repository;
+      document.querySelector<HTMLElement>('[data-report-id]')!.textContent = location.reportID;
+      document.querySelector<HTMLElement>('[data-report-sha]')!.textContent = location.commitSHA;
+      document.querySelector<HTMLElement>('[data-report-prefix]')!.textContent = location.recordPrefix;
+      document.querySelector<HTMLAnchorElement>('[data-report-open]')!.href = location.githubDirectoryURL;
+    }
+  </script>
+</BaseLayout>
+
+<style>
+  .report-shell { padding: clamp(4rem, 9vw, 8rem) 0; min-height: 65vh; }
+  .report-container { max-width: 880px; }
+  h1 { margin: .35rem 0 1rem; font-size: clamp(2.8rem, 7vw, 5.4rem); letter-spacing: -.055em; }
+  .lead { max-width: 700px; font-size: clamp(1.1rem, 2vw, 1.35rem); }
+  .report-card { margin-top: 2.5rem; padding: clamp(1.5rem, 4vw, 2.5rem); border: 1px solid var(--line); border-radius: 1.25rem; background: var(--paper); box-shadow: 0 20px 60px rgba(31, 42, 36, .08); }
+  .report-card h2 { margin-top: 0; }
+  .identity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: .85rem; background: var(--line); }
+  .identity-grid div { min-width: 0; padding: 1rem; background: var(--paper); }
+  .identity-grid span { display: block; margin-bottom: .4rem; color: var(--muted); font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .identity-grid strong, .identity-grid code { display: block; overflow-wrap: anywhere; }
+  .access-note { margin: 1.4rem 0; color: var(--muted); }
+  @media (max-width: 620px) { .identity-grid { grid-template-columns: 1fr; } }
+</style>

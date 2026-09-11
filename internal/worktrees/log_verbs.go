@@ -461,8 +461,22 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 	if projection.LastCheckpoint == nil || projection.LastCheckpoint.Dirty {
 		return LogVerbResult{}, fmt.Errorf("integrate requires a prior clean checkpoint")
 	}
+	resolvedConflict := false
 	if projection.Conflict != "" && projection.Conflict != "resolved" {
-		return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q", projection.Conflict)
+		if projection.Conflict != "integrate_conflict" || projection.LastTarget == nil ||
+			strings.TrimSpace(projection.LastTarget.SHA) == "" ||
+			strings.TrimSpace(projection.LastCheckpoint.Head) == "" ||
+			projection.LastCheckpoint.Head != gitEvidence.Head {
+			return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q", projection.Conflict)
+		}
+		containsTarget, ancestryErr := isAncestor(ctx, root, projection.LastTarget.SHA, gitEvidence.Head)
+		if ancestryErr != nil {
+			return LogVerbResult{}, fmt.Errorf("verify checkpointed integrate conflict resolution: %w", ancestryErr)
+		}
+		if !containsTarget {
+			return LogVerbResult{}, fmt.Errorf("integrate blocked by unresolved conflict %q: checkpoint %s does not contain attempted target %s", projection.Conflict, gitEvidence.Head, projection.LastTarget.SHA)
+		}
+		resolvedConflict = true
 	}
 
 	base := strings.TrimSpace(options.Base)
@@ -501,6 +515,9 @@ func LogIntegrate(ctx context.Context, options LogIntegrateOptions) (LogVerbResu
 		target.Ahead, target.Behind = ahead, behind
 	}
 	conflict := ""
+	if resolvedConflict {
+		conflict = "resolved"
+	}
 	result := "ok"
 	message := "integrated target into claim"
 	if integrateErr != nil {
@@ -852,6 +869,15 @@ type LogFinalizeOptions struct {
 	Result       string // success|failure
 	Message      string
 	Apply        bool
+	// Report is an optional Markdown completion report body. It is recorded
+	// only when Apply is set: WB copies it into the Work Log's private store
+	// under WB_HOME (never source Git) at a deterministic path and records
+	// report_path, terminal_result, terminal_message, and finalized_at on the
+	// sealed immutable terminal and its outbox receipt, where `wb worktree
+	// list`/`summary`/`log show` can read the metadata (never the body) and
+	// the bare `wb worktree log` dump can read the body. Rejected above
+	// MaxFinalizeReportBytes.
+	Report []byte
 }
 
 // LogFinalize records a terminal result and optionally seals the Hybrid claim.
@@ -869,11 +895,15 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 	default:
 		return LogVerbResult{}, fmt.Errorf("--result must be success or failure")
 	}
+	if len(options.Report) > MaxFinalizeReportBytes {
+		return LogVerbResult{}, fmt.Errorf("--report exceeds %d bytes (%d MiB cap)", MaxFinalizeReportBytes, MaxFinalizeReportBytes/(1<<20))
+	}
 	fence, err := withOptionalClaimFence(options.ProjectsRoot, root, true)
 	if err != nil {
 		return LogVerbResult{}, err
 	}
 	home := fence.home
+	claim := fence.claim
 	gitEvidence := observeLocalGit(ctx, root)
 	if gitEvidence.Dirty && result == "success" {
 		if fence.unlock != nil {
@@ -881,8 +911,9 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 		}
 		return LogVerbResult{}, fmt.Errorf("cannot finalize success on a dirty worktree")
 	}
+	message := strings.TrimSpace(options.Message)
 	event, projection, err := appendLocalEvent(root, LocalWorkLogEvent{
-		Type: LocalEventFinalize, Message: strings.TrimSpace(options.Message),
+		Type: LocalEventFinalize, Message: message,
 		Git: &gitEvidence, Result: result,
 	})
 	if fence.unlock != nil {
@@ -899,7 +930,20 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 		if result == "failure" {
 			disposition = string(AbortNotLanded)
 		}
-		if err := sealWorkLogForRecycle(home, root, gitEvidence.Head, disposition); err != nil {
+		var report *workLogFinalizeReport
+		if len(options.Report) > 0 {
+			task := strings.TrimSpace(claim.Task)
+			if task == "" {
+				task = claim.EffortID
+			}
+			reportPath, writeErr := writeWorkLogFinalizeReport(home, claim.EffortID, claim.RunID, task, claim.Repository, options.Report)
+			if writeErr != nil {
+				return LogVerbResult{}, fmt.Errorf("write finalize report: %w", writeErr)
+			}
+			report = &workLogFinalizeReport{Result: result, Message: message, ReportPath: reportPath}
+			notes = append(notes, "report copied to "+reportPath)
+		}
+		if err := sealWorkLogForFinalize(home, root, gitEvidence.Head, disposition, report); err != nil {
 			return LogVerbResult{}, err
 		}
 		applied = true
@@ -911,6 +955,9 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 		projection = repaired
 	} else {
 		notes = append(notes, "pass --apply to seal the hybrid claim")
+		if len(options.Report) > 0 {
+			notes = append(notes, "report not stored: pass --apply to persist it")
+		}
 	}
 	return LogVerbResult{
 		Worktree: root, Verb: "finalize", Event: &event, Projection: &projection,

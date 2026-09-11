@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +48,13 @@ type ListOptions struct {
 	Filter string
 	// OwnerState limits results by current owner PID liveness: active or orphaned.
 	OwnerState string
-	GitHub     bool
+	// Finalized narrows results by whether `wb worktree log finalize` sealed
+	// this checkout's claim: nil applies no filter, true keeps only checkouts
+	// with a recorded TerminalResult, false keeps only checkouts without one.
+	// It is independent of OwnerState/Base/Filter and applied after every
+	// other selection, exactly like OwnerState.
+	Finalized *bool
+	GitHub    bool
 	// AbsorbedBy points at the merged pull request or exact landing commit
 	// that carried a candidate's work into the target inside a differently
 	// named integration branch. It selects which receipt to verify and never
@@ -342,6 +349,19 @@ type ListResult struct {
 	// "in use" is decided from, because a live process id is evidence about a
 	// process and the question is about a worktree.
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	// TerminalResult, TerminalMessage, FinalizedAt, and ReportPath are
+	// populated only when `wb worktree log finalize --apply` sealed this
+	// worktree's claim: TerminalResult is "success" or "failure",
+	// TerminalMessage is the finalize --message text, FinalizedAt is when the
+	// terminal was sealed, and ReportPath names the private copy of a
+	// --report/--report-stdin body under WB_HOME (never the body itself,
+	// which stays private local data read only by the bare `wb worktree log`
+	// dump). A terminal claim sealed by any other disposition (recycled,
+	// removed, superseded, orphaned, handoff, ...) leaves all four empty.
+	TerminalResult  string    `json:"terminal_result,omitempty"`
+	TerminalMessage string    `json:"terminal_message,omitempty"`
+	FinalizedAt     time.Time `json:"finalized_at,omitempty"`
+	ReportPath      string    `json:"report_path,omitempty"`
 	// Landing is the commit-identity landing evidence for a head that is not
 	// itself contained in the target: the merged pull request of an ancestor,
 	// plus the local commits stacked on top of it. A squash merge produces
@@ -989,6 +1009,9 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 // such as .claude, .github, source, and generated trees from being re-read as
 // task-level repositories.
 func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
+	// Listing is read-only, so repeated Git queries within this one command
+	// may share their answers. See gitQueryMemo for the measured cost.
+	ctx = withGitQueryMemo(ctx)
 	options.OwnerState = strings.TrimSpace(options.OwnerState)
 	if options.OwnerState != "" && options.OwnerState != "active" && options.OwnerState != "orphaned" {
 		return ListOutcome{}, fmt.Errorf("unsupported owner state %q; use active or orphaned", options.OwnerState)
@@ -1123,6 +1146,16 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		filtered := outcome.Results[:0]
 		for _, result := range outcome.Results {
 			if result.OwnerState == options.OwnerState {
+				filtered = append(filtered, result)
+			}
+		}
+		outcome.Results = filtered
+	}
+	if options.Finalized != nil {
+		want := *options.Finalized
+		filtered := outcome.Results[:0]
+		for _, result := range outcome.Results {
+			if (result.TerminalResult != "") == want {
 				filtered = append(filtered, result)
 			}
 		}
@@ -3508,6 +3541,14 @@ func inspectLifecycleWorktree(
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
 		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
+			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
+			if terminal.FinalizeReport != nil {
+				result.TerminalResult = terminal.FinalizeReport.Result
+				result.TerminalMessage = terminal.FinalizeReport.Message
+				result.ReportPath = terminal.FinalizeReport.ReportPath
+				result.FinalizedAt = terminal.SealedAt
+			}
 		}
 	}
 	if withGitHub {
@@ -3615,7 +3656,18 @@ func inspectLifecycleWorktree(
 			}
 			result.IntegratedAtOrigin = result.RebaseMergedAtOrigin
 		}
-		if !result.IntegratedAtOrigin {
+		// An explicit --absorbed-by pointer is verified whenever it is
+		// supplied, not only when ordinary ancestry has already failed.
+		// AbsorbedAtOrigin used to be set only by this "batched onto a
+		// differently named integration branch" discovery path, so a branch
+		// simply pushed straight to a head that later became a merged pull
+		// request's own head — already IntegratedAtOrigin via plain Git
+		// ancestry — always failed an explicit --absorbed-by even though the
+		// landing was already proven; abort's own safety gate for
+		// --absorbed-by specifically requires AbsorbedAtOrigin, not just
+		// IntegratedAtOrigin. Running the check unconditionally when a
+		// pointer is supplied lets ordinary ancestry additionally satisfy it.
+		if !result.IntegratedAtOrigin || absorbedBy != "" {
 			receipt, rejection, err := absorbedLandingReceipt(
 				ctx, worktree, canonical, slug, head, base, result.RemoteTargetSHA, absorbedBy, pullRequests,
 			)
@@ -3701,14 +3753,38 @@ func worktreeOwnerName(owners []OwnerView, state string) string {
 }
 
 func isAncestor(ctx context.Context, repository, ancestor, descendant string) (bool, error) {
-	command := exec.CommandContext(ctx, "git", "-C", repository, "merge-base", "--is-ancestor", ancestor, descendant)
+	// A commit is trivially its own ancestor. One fleet listing issued 71 of
+	// these self-comparisons as real git processes.
+	if ancestor == descendant {
+		return true, nil
+	}
+	memo := gitQueryMemoFrom(ctx)
+	args := []string{"merge-base", "--is-ancestor", ancestor, descendant}
+	memoKey := gitQueryMemoKey(repository, args)
+	if memo != nil {
+		if cached, ok := memo.get(memoKey); ok {
+			return cached == "true", nil
+		}
+	}
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository}, args...)...)
 	command.Env = console.Env()
 	err := command.Run()
+	remember := func(verdict bool) {
+		if memo != nil && ctx.Err() == nil {
+			if verdict {
+				memo.put(memoKey, "true")
+			} else {
+				memo.put(memoKey, "false")
+			}
+		}
+	}
 	if err == nil {
+		remember(true)
 		return true, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		remember(false)
 		return false, nil
 	}
 	return false, fmt.Errorf("check whether %s is merged into %s: %w", ancestor, descendant, err)
@@ -3996,16 +4072,34 @@ func attestedAbsorbedReceipt(
 		return nil, rejection, err
 	}
 	if pullRequest != nil {
-		if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest); err != nil || rejection != "" {
-			return nil, rejection, err
+		// A numbered PR has a stronger, topology-aware proof than generic
+		// patch containment: the exact source head is in the fetched PR
+		// head, and the reported merge is in the fresh target. Two landing
+		// shapes are recognized. A squash (or rebase) landing creates a new
+		// commit disconnected from the source branch's own history, so tree
+		// equality between the PR head and the merge commit is the only
+		// available proof there. A genuine "Create a merge commit" landing
+		// instead keeps the exact source head reachable through the merge
+		// commit's own parent chain — Git ancestry, not tree equality, is the
+		// correct proof there, and unlike tree equality it is not defeated by
+		// the target having advanced past the source's last sync with it
+		// before the merge, which is the common case in an actively landing
+		// repository.
+		squashRejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
+		if err != nil {
+			return nil, "", err
 		}
-		// A numbered PR has a stronger, topology-aware squash proof: the exact
-		// source head is in the fetched PR head, that head has the landing tree,
-		// and the reported merge is in the fresh target. A three-way merge of a
-		// source into its squash landing can legitimately conflict after the
-		// integration branch amended the source's files, so generic patch
-		// containment would reject a receipt the PR evidence already proves.
-		return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+		if squashRejection == "" {
+			return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+		}
+		mergeCommitRejection, err := verifyAttestedMergeCommitPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
+		if err != nil {
+			return nil, "", err
+		}
+		if mergeCommitRejection == "" {
+			return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+		}
+		return nil, squashRejection + "; " + mergeCommitRejection, nil
 	}
 	landed, err := isAncestor(ctx, repository, landingSHA, target)
 	if err != nil {
@@ -4105,6 +4199,49 @@ func verifyAttestedSquashPullRequest(
 	return "", nil
 }
 
+// verifyAttestedMergeCommitPullRequest proves a genuine (non-squash,
+// non-rebase) "Create a merge commit" landing, tried after the squash shape
+// above finds a tree mismatch. Unlike a squash commit, a real merge commit's
+// tree can legitimately differ from its own PR head's tree — it only needs
+// to record whatever else the target carried at merge time — so tree
+// equality is the wrong test here and would reject a landing that Git's own
+// object graph already proves. The one fact that is both necessary and
+// sufficient is that the pull request really has a recorded merge commit and
+// that the exact source head — not merely the PR's reported head — is
+// reachable from it via `git merge-base --is-ancestor` into the freshly
+// fetched target. This is the same ordinary containment cleanup itself
+// already trusts without any receipt; it is re-run here only because
+// abort's own --absorbed-by safety gate requires the stronger,
+// explicitly-attested AbsorbedAtOrigin before it will rely on that ancestry.
+func verifyAttestedMergeCommitPullRequest(
+	ctx context.Context,
+	repository, sourceHead, target, absorbedBy string,
+	pullRequest *PullRequest,
+) (string, error) {
+	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
+		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.MergeSHA) {
+		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
+	}
+	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil {
+		return "", err
+	}
+	if !mergeInTarget {
+		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
+	}
+	sourceInTarget, err := isAncestor(ctx, repository, sourceHead, target)
+	if err != nil {
+		return "", err
+	}
+	if !sourceInTarget {
+		return fmt.Sprintf(
+			"--absorbed-by %s names a merge commit, but exact source head %s is not contained in the exact fetched origin/%s target %s (a squash or rebase landing needs the squash-tree proof instead)",
+			absorbedBy, sourceHead, pullRequest.Base, target,
+		), nil
+	}
+	return "", nil
+}
+
 // fetchExactRemotePullRequestHead obtains GitHub's stable numbered pull-head
 // ref without creating a local ref or touching FETCH_HEAD. An API-reported SHA
 // alone is not proof that the configured origin exposes the named pull request;
@@ -4158,19 +4295,42 @@ func fetchExactRemotePullRequestHeadWithRun(
 	return fetched, nil
 }
 
+// absorbedByPullRequestURLPattern matches a GitHub pull-request URL, web
+// (".../pull/<N>") or API (".../pulls/<N>") shape, with an optional
+// trailing path/query/fragment (e.g. "/files", "?diff=split"). The captured
+// repository slug is checked against the command's own --repository so a
+// URL naming a different repository is refused rather than silently
+// resolved against the wrong one.
+var absorbedByPullRequestURLPattern = regexp.MustCompile(`(?i)^https?://(?:www\.)?github\.com/([^/\s]+/[^/\s]+)/pulls?/(\d+)(?:[/?#].*)?$`)
+
 // resolveAbsorbedBy turns an operator pointer into one exact landing commit.
-// A pull-request number must name a pull request that really merged into this
-// exact base; anything else must resolve to a commit already present in the
-// canonical object database, which a genuine landing always is because the
-// target was just fetched.
+// A pull-request number, "#"-prefixed number, or full GitHub pull-request
+// URL must name a pull request that really merged into this exact base;
+// anything else must resolve to a commit already present in the canonical
+// object database, which a genuine landing always is because the target was
+// just fetched. All three pointer shapes are accepted consistently for both
+// squash and merge-commit landings (S63): a URL used to fail with "does not
+// resolve to a commit" because only a bare/"#"-prefixed number and a
+// commit-ish were ever tried.
 func resolveAbsorbedBy(
 	ctx context.Context,
 	worktree, repository, slug, base, absorbedBy string,
 ) (string, *PullRequest, string, error) {
-	pointer := strings.TrimPrefix(strings.TrimSpace(absorbedBy), "#")
-	if pointer == "" {
-		return "", nil, "--absorbed-by requires a pull request number or landing commit", nil
+	trimmed := strings.TrimSpace(absorbedBy)
+	if trimmed == "" {
+		return "", nil, "--absorbed-by requires a pull request number, pull request URL, or landing commit", nil
 	}
+	if match := absorbedByPullRequestURLPattern.FindStringSubmatch(trimmed); match != nil {
+		if !strings.EqualFold(match[1], slug) {
+			return "", nil, fmt.Sprintf("--absorbed-by URL %s names repository %q, not the requested %q", trimmed, match[1], slug), nil
+		}
+		number, err := strconv.Atoi(match[2])
+		if err != nil || number <= 0 {
+			return "", nil, fmt.Sprintf("--absorbed-by URL %s has an invalid pull request number", trimmed), nil
+		}
+		return resolveAbsorbedByPullRequest(ctx, worktree, slug, base, number)
+	}
+	pointer := strings.TrimPrefix(trimmed, "#")
 	if number, err := strconv.Atoi(pointer); err == nil {
 		if number <= 0 {
 			return "", nil, fmt.Sprintf("--absorbed-by pull request number %d is not positive", number), nil

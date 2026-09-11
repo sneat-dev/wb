@@ -1,0 +1,301 @@
+---
+import type { DashboardView as DashboardModel, TrendPoint } from '../data/dashboard';
+import { dashboardApiURLForScope, dashboardScopeID } from '../data/dashboard';
+import FleetWorktrees from './FleetWorktrees.astro';
+
+interface Props { dashboard: DashboardModel; }
+const { dashboard } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const ranges = [['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['all', 'All time']] as const;
+const max = (points: TrendPoint[]) => Math.max(...points.map(({ value }) => value), 1);
+const chartPoints = (points: TrendPoint[]) => points.map((point, index) => `${index * (100 / (points.length - 1))},${100 - ((point.value / max(points)) * 88 + 6)}`).join(' ');
+const rangeLabel = ranges.find(([id]) => id === dashboard.range)?.[1] ?? '30 days';
+const graph = dashboard.codeGraph;
+const availability = dashboard.availability ?? (dashboard.metrics.length > 0 ? 'live' : 'empty');
+const hasTrends = Object.values(dashboard.trends).some((points) => points.length > 0);
+const graphStateLabel = graph?.freshness.state === 'fresh'
+  ? 'Exact graph revision'
+  : graph?.freshness.state === 'stale'
+    ? 'Stale graph revision'
+    : graph?.freshness.state === 'incomplete'
+      ? 'Incomplete graph'
+      : 'Graph unavailable';
+const graphChangeGroups = graph ? [
+  ['Files', graph.changed.files],
+  ['Packages', graph.changed.packages],
+  ['Types', graph.changed.types],
+  ['Functions', graph.changed.functions],
+  ['Routes', graph.changed.routes],
+] as const : [];
+const dashboardEndpoint = dashboardApiURLForScope(dashboard.scope);
+const dashboardScopeIDValue = dashboardScopeID(dashboard.scope) ?? '';
+---
+
+<section class="dashboard-hero" data-dashboard-scope={dashboard.scope.kind} data-dashboard-scope-id={dashboardScopeIDValue}>
+  <div class="container dashboard-hero-inner">
+    <div>
+      <p class="eyebrow">{dashboard.eyebrow}</p>
+      <h1 data-dashboard-title>{dashboard.title}</h1>
+      <p class="lead">{dashboard.description}</p>
+    </div>
+    <aside class="dashboard-status" data-dashboard-status data-state={availability === 'live' ? 'current' : 'idle'} aria-label="Dashboard data status">
+      <span class="status-dot" aria-hidden="true"></span>
+      <div><strong data-dashboard-status-label>{availability === 'live' ? 'Authorized snapshot' : 'Awaiting authorized snapshot'}</strong><span data-dashboard-status-time>{dashboard.updatedAt}</span></div>
+    </aside>
+  </div>
+</section>
+
+<section class="dashboard-shell container" aria-label="Workbench dashboard">
+  <nav class="range-tabs" aria-label="Dashboard period" data-dashboard-ranges>
+    {ranges.map(([id, label]) => <a href={`?range=${id}`} data-dashboard-range={id} aria-current={id === dashboard.range ? 'page' : undefined}>{label}</a>)}
+  </nav>
+  <p class="range-summary" data-range-summary>Showing {rangeLabel.toLowerCase()} view. The authorized snapshot currently returns an aggregate summary; period filtering is unavailable.</p>
+
+  <div class="state-gallery" aria-live="polite">
+    <section class="state-card" data-dashboard-state="loading" hidden={availability !== 'loading'} aria-label="Loading dashboard"><span class="state-spinner" aria-hidden="true"></span><div><strong>Loading workbench signals</strong><p>Metrics will appear when the connection responds.</p></div></section>
+    <section class="state-card" data-dashboard-state="empty" hidden={availability !== 'empty'} aria-label="Empty dashboard"><div><strong>No published signals in this aggregate snapshot</strong><p>The authorized source returned zero repository, pull request, issue, and release signals for this scope.</p></div></section>
+    <section class="state-card state-error" data-dashboard-state="error" hidden={availability !== 'unavailable'} aria-label="Dashboard unavailable"><div><strong>Dashboard data is unavailable</strong><p>Your work is safe. Connect the authorized WB GitHub App before viewing telemetry.</p></div></section>
+  </div>
+
+  <section class="dashboard-snapshot-refresh" data-dashboard-refresh data-endpoint={dashboardEndpoint} aria-live="polite">
+    <div><strong>Load an authorized snapshot</strong><p data-dashboard-refresh-message>Snapshot data is fetched only after you request it.</p><span class="dashboard-refresh-state" data-dashboard-refresh-state data-state="idle">Snapshot not loaded</span></div>
+    <button type="button" data-dashboard-refresh-button>Refresh snapshot</button>
+  </section>
+  <p class="dashboard-snapshot-time" data-dashboard-snapshot-time hidden></p>
+  <div class="dashboard-metrics dashboard-metrics-snapshot" data-dashboard-snapshot-metrics hidden></div>
+
+  <FleetWorktrees />
+
+  {availability === 'live' ? <div class="dashboard-metrics">
+    {dashboard.metrics.map((metric) => (
+      <article class="metric-card">
+        <p>{metric.label}</p><strong>{metric.value}</strong><span class:list={[metric.trend && `trend-${metric.trend}`]}>{metric.detail}</span>
+      </article>
+    ))}
+  </div> : null}
+
+  {availability === 'live' && dashboard.phases.length > 0 && <div class="dashboard-grid dashboard-grid-primary">
+    <article class="dashboard-card phase-card">
+      <div class="card-head"><div><p class="card-kicker">Lifecycle</p><h2>Where create-to-land time goes</h2></div><span>Median</span></div>
+      <div class="phase-bars" role="img" aria-label="Create to land phase timing chart">
+        {dashboard.phases.map((phase) => <div class="phase-row"><span>{phase.name}</span><div><i style={`width:${phase.share}%`}></i></div><b>{phase.duration}</b></div>)}
+      </div>
+      <details class="table-equivalent"><summary>View phase timing as a table</summary><table><thead><tr><th scope="col">Phase</th><th scope="col">Duration</th><th scope="col">Relative share</th></tr></thead><tbody>{dashboard.phases.map((phase) => <tr><th scope="row">{phase.name}</th><td>{phase.duration}</td><td>{phase.share}%</td></tr>)}</tbody></table></details>
+    </article>
+  </div>}
+
+  {availability === 'live' && hasTrends && <div class="dashboard-grid chart-grid">
+    {[
+      { id: 'tokens', title: 'Token trend', subtitle: 'Tokens used', points: dashboard.trends.tokens },
+      { id: 'cost', title: 'Cost trend', subtitle: 'Relative cost', points: dashboard.trends.cost },
+      { id: 'landed', title: 'Landed outcomes', subtitle: 'Verified tasks', points: dashboard.trends.landed },
+    ].map((chart) => (
+      <article class="dashboard-card trend-card">
+        <div class="card-head"><div><p class="card-kicker">{chart.subtitle}</p><h2>{chart.title}</h2></div></div>
+        <svg viewBox="0 0 100 100" role="img" aria-labelledby={`${chart.id}-chart-title ${chart.id}-chart-desc`} preserveAspectRatio="none"><title id={`${chart.id}-chart-title`}>{chart.title}</title><desc id={`${chart.id}-chart-desc`}>A seven point trend over the selected period.</desc><polyline points={chartPoints(chart.points)} vector-effect="non-scaling-stroke" /></svg>
+        <div class="chart-labels" aria-hidden="true">{chart.points.map((point) => <span>{point.label}</span>)}</div>
+        <details class="table-equivalent"><summary>View chart data as a table</summary><table><thead><tr><th scope="col">Day</th><th scope="col">{chart.subtitle}</th></tr></thead><tbody>{chart.points.map((point) => <tr><th scope="row">{point.label}</th><td>{point.value}</td></tr>)}</tbody></table></details>
+      </article>
+    ))}
+  </div>}
+
+  {graph && <section class="dashboard-section codegraph-section" aria-labelledby="codegraph-changes">
+    <div class="section-inline-head">
+      <div><p class="eyebrow">Code intelligence</p><h2 id="codegraph-changes">Change scope and impact</h2></div>
+      {graph.explorer && <a href={graph.explorer.href} target="_blank" rel="noopener">{graph.explorer.label} in CodeGrapher <span aria-hidden="true">↗</span></a>}
+    </div>
+    <aside class:list={['graph-freshness', `graph-${graph.freshness.state}`, graph.freshness.access !== 'available' && 'graph-no-access']} aria-label="CodeGrapher graph freshness">
+      <div><strong>{graphStateLabel}</strong><span>{graph.freshness.indexedAt ?? 'No index timestamp available'}</span></div>
+      <dl>
+        <div><dt>Indexed SHA</dt><dd>{graph.freshness.indexedCommit ?? '—'}</dd></div>
+        <div><dt>Selected SHA</dt><dd>{graph.freshness.targetCommit ?? '—'}</dd></div>
+        <div><dt>Behind</dt><dd>{graph.freshness.commitsBehind === undefined ? '—' : `${graph.freshness.commitsBehind} commit${graph.freshness.commitsBehind === 1 ? '' : 's'}`}</dd></div>
+      </dl>
+      {graph.freshness.diagnostic && <p>{graph.freshness.diagnostic}</p>}
+    </aside>
+
+    <div class="codegraph-grid">
+      <article class="dashboard-card change-card">
+        <div class="card-head"><div><p class="card-kicker">Graph diff</p><h3>Changed code</h3></div><span>Advisory</span></div>
+        <div class="change-groups">
+          {graphChangeGroups.map(([label, changes]) => <section><div><strong>{label}</strong><b>{changes.length}</b></div>{changes.length > 0 ? <ul>{changes.map((change) => <li><code>{change.name}</code><span>{change.locator}</span></li>)}</ul> : <p>None reported</p>}</section>)}
+        </div>
+      </article>
+      <article class="dashboard-card impact-card">
+        <div class="card-head"><div><p class="card-kicker">Dependency graph</p><h3>Impact to inspect</h3></div><span>Not a receipt</span></div>
+        <div class="impact-bars" role="img" aria-label={`${graph.impact.affectedSymbols} affected symbols, ${graph.impact.affectedTests} directly affected tests, and ${graph.impact.likelyAffectedTests} likely affected tests`}>
+          {[
+            ['Affected symbols', graph.impact.affectedSymbols, 'impact-symbols'],
+            ['Affected tests', graph.impact.affectedTests, 'impact-tests'],
+            ['Likely tests', graph.impact.likelyAffectedTests, 'impact-likely'],
+          ].map(([label, value, className]) => <div class={className as string}><span>{label}</span><i style={`width:${Math.max(12, Math.min(100, Number(value) * 12))}%`}></i><b>{value}</b></div>)}
+        </div>
+        <p class="impact-note">Impact ranks graph neighbours for review. It neither runs tests nor proves that a test or route is safe.</p>
+        <details class="table-equivalent"><summary>View impact as a table</summary><table><thead><tr><th scope="col">Signal</th><th scope="col">Count</th></tr></thead><tbody><tr><th scope="row">Affected symbols</th><td>{graph.impact.affectedSymbols}</td></tr><tr><th scope="row">Affected tests</th><td>{graph.impact.affectedTests}</td></tr><tr><th scope="row">Likely affected tests</th><td>{graph.impact.likelyAffectedTests}</td></tr></tbody></table></details>
+      </article>
+    </div>
+  </section>}
+
+  {availability === 'live' && dashboard.merges.length > 0 && <section class="dashboard-section" aria-labelledby="latest-merges">
+    <div class="section-inline-head"><div><p class="eyebrow">Verified delivery</p><h2 id="latest-merges">Latest merges</h2></div><a href={`${base}dashboard/`}>View all work <span aria-hidden="true">→</span></a></div>
+    <div class="merge-list">
+      {dashboard.merges.map((merge) => <article class="merge-row"><div class="merge-title"><span class:list={['merge-outcome', merge.outcome === 'Attention' && 'merge-attention']}>{merge.outcome}</span><h3>{merge.title}</h3><time>{merge.landedAt}</time></div><div class="merge-links"><a href={merge.pullRequest.href}>↗ {merge.pullRequest.label}</a>{merge.issue && <a href={merge.issue.href}>↗ {merge.issue.label}</a>}<a href={merge.mergeCommit.href}>↗ {merge.mergeCommit.label}</a>{merge.release && <a href={merge.release.href}>↗ {merge.release.label}</a>}<a href={merge.receipt.href}>↗ {merge.receipt.label}</a></div></article>)}
+    </div>
+  </section>}
+
+  {availability === 'live' && dashboard.leaderboards.length > 0 && <section class="dashboard-section" aria-labelledby="leaderboards">
+    <div class="section-inline-head"><div><p class="eyebrow">Contribution, separated</p><h2 id="leaderboards">Leaderboards</h2></div><p>Participation is opt-in; private views are visible only to members.</p></div>
+    <div class="leaderboard-grid">
+      {dashboard.leaderboards.map((board) => <article class="leaderboard-card"><header><h3>{board.label}</h3><p>{board.description}</p></header><ol>{board.entries.map((entry) => <li><span class="leader-rank">{entry.rank}</span><div><strong>{entry.name}</strong><small>{entry.detail}</small></div><b>{entry.value}</b></li>)}</ol></article>)}
+    </div>
+  </section>}
+
+  <aside class="privacy-panel"><span aria-hidden="true">⌁</span><div><strong>Designed for public proof and private work.</strong><p>{dashboard.privacyNote}</p></div></aside>
+</section>
+
+<script>
+  import { authorizedDashboardTimestamp, dashboardApiURLForScope, dashboardErrorMessage, dashboardScopeFromPath, isAuthorizedDashboardResponse, isEmptyAuthorizedDashboardSummary, type AuthorizedDashboardSummary } from '../data/dashboard';
+
+  const params = new URLSearchParams(window.location.search);
+  const range = params.get('range');
+  if (range) {
+    const links = Array.from(document.querySelectorAll<HTMLElement>('[data-dashboard-range]'));
+    const selected = links.find((link) => link.getAttribute('data-dashboard-range') === range);
+    if (selected) {
+      for (const link of links) {
+        if (link === selected) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+      }
+      const label = selected.textContent?.trim().toLowerCase();
+      const summary = document.querySelector('[data-range-summary]');
+      if (label && summary) summary.textContent = `Showing ${label} view. The authorized snapshot currently returns an aggregate summary; period filtering is unavailable.`;
+    }
+  }
+
+  const refresh = document.querySelector<HTMLElement>('[data-dashboard-refresh]');
+  const refreshButton = refresh?.querySelector<HTMLButtonElement>('[data-dashboard-refresh-button]');
+  const refreshMessage = refresh?.querySelector<HTMLElement>('[data-dashboard-refresh-message]');
+  const refreshState = refresh?.querySelector<HTMLElement>('[data-dashboard-refresh-state]');
+  const snapshotMetrics = document.querySelector<HTMLElement>('[data-dashboard-snapshot-metrics]');
+  const snapshotTime = document.querySelector<HTMLElement>('[data-dashboard-snapshot-time]');
+  const dashboardStatus = document.querySelector<HTMLElement>('[data-dashboard-status]');
+  const dashboardStatusLabel = dashboardStatus?.querySelector<HTMLElement>('[data-dashboard-status-label]');
+  const dashboardStatusTime = dashboardStatus?.querySelector<HTMLElement>('[data-dashboard-status-time]');
+  const routeScope = dashboardScopeFromPath(window.location.pathname);
+  if (routeScope) {
+    const scopeID = routeScope.kind === 'user' ? '' : routeScope.kind === 'org' ? `${routeScope.host}/${routeScope.org}` : `${routeScope.host}/${routeScope.org}/${routeScope.repo}`;
+    refresh?.setAttribute('data-endpoint', dashboardApiURLForScope(routeScope));
+    const title = document.querySelector('[data-dashboard-title]');
+    if (title) title.textContent = routeScope.kind === 'user' ? 'Your Workbench' : scopeID;
+    const hero = document.querySelector<HTMLElement>('[data-dashboard-scope]');
+    hero?.setAttribute('data-dashboard-scope', routeScope.kind);
+    hero?.setAttribute('data-dashboard-scope-id', scopeID);
+    if (routeScope.kind !== 'user') {
+      const pageTitle = `${scopeID} — Workbench dashboard`;
+      document.title = pageTitle;
+      document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.setAttribute('content', pageTitle);
+    }
+    const canonical = new URL(window.location.href);
+    canonical.search = '';
+    canonical.hash = '';
+    if (!canonical.pathname.endsWith('/')) canonical.pathname += '/';
+    document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.setAttribute('href', canonical.toString());
+    document.querySelector<HTMLMetaElement>('meta[property="og:url"]')?.setAttribute('content', canonical.toString());
+  }
+
+  let lastSnapshotAt: string | undefined;
+
+  function showDashboardState(state?: 'loading' | 'empty' | 'error'): void {
+    document.querySelectorAll<HTMLElement>('[data-dashboard-state]').forEach((node) => {
+      node.hidden = node.getAttribute('data-dashboard-state') !== state;
+    });
+  }
+
+  function setDashboardStatus(state: 'idle' | 'loading' | 'current' | 'stale' | 'unavailable', label: string, timestamp: string): void {
+    if (dashboardStatus) dashboardStatus.dataset.state = state;
+    if (dashboardStatusLabel) dashboardStatusLabel.textContent = label;
+    if (dashboardStatusTime) dashboardStatusTime.textContent = timestamp;
+  }
+
+  function setRefreshState(state: 'idle' | 'loading' | 'current' | 'stale' | 'unavailable', message: string): void {
+    if (refreshState) {
+      refreshState.dataset.state = state;
+      refreshState.textContent = state === 'current' ? 'Snapshot current' : state === 'stale' ? 'Snapshot stale' : state === 'loading' ? 'Loading snapshot' : state === 'unavailable' ? 'Snapshot unavailable' : 'Snapshot not loaded';
+    }
+    if (refreshMessage) refreshMessage.textContent = message;
+  }
+
+  function showAuthorizedMetrics(summary: AuthorizedDashboardSummary, updatedAt: string): void {
+    if (!snapshotMetrics) return;
+    const metrics: Array<[string, number, string]> = [
+      ['Repositories', summary.repositories, 'Authorized repositories'],
+      ['Open pull requests', summary.open_pulls, 'Currently open'],
+      ['Merged pull requests', summary.merged_pulls, 'Recorded by the control plane'],
+      ['Open issues', summary.open_issues, 'Currently open'],
+      ['Releases', summary.releases, 'Recorded releases'],
+    ];
+    snapshotMetrics.replaceChildren(...metrics.map(([label, value, detail]) => {
+      const card = document.createElement('article'); card.className = 'metric-card';
+      const name = document.createElement('p'); name.textContent = label;
+      const amount = document.createElement('strong'); amount.textContent = String(value);
+      const note = document.createElement('span'); note.textContent = detail;
+      card.append(name, amount, note); return card;
+    }));
+    snapshotMetrics.hidden = false;
+    snapshotMetrics.dataset.state = 'current';
+    if (snapshotTime) {
+      snapshotTime.hidden = false;
+      snapshotTime.dataset.state = 'current';
+      snapshotTime.textContent = `Authorized snapshot from ${updatedAt}.`;
+    }
+  }
+
+  refreshButton?.addEventListener('click', async () => {
+    refreshButton.setAttribute('disabled', 'true');
+    window.dispatchEvent(new CustomEvent('workbench:fleet', { detail: { state: 'loading' } }));
+    showDashboardState('loading');
+    if (snapshotMetrics && !snapshotMetrics.hidden) snapshotMetrics.dataset.state = 'loading';
+    setRefreshState('loading', 'Loading an authorized Workbench snapshot…');
+    setDashboardStatus('loading', 'Loading authorized snapshot', lastSnapshotAt ?? 'Waiting for the authorized source');
+    try {
+      const endpoint = refresh?.getAttribute('data-endpoint');
+      if (!endpoint) throw new Error('dashboard scope is unavailable');
+      const response = await fetch(endpoint, { headers: { accept: 'application/json' }, cache: 'no-store', credentials: 'include' });
+      const body: unknown = await response.json().catch(() => undefined);
+      if (!body || typeof body !== 'object') throw new Error(response.ok ? 'the authorized source returned an invalid response' : `request failed (${response.status})`);
+      const responseBody = body as { summary?: unknown; error?: unknown; message?: unknown; fleet?: unknown };
+      const fleet = responseBody.fleet;
+      const failureCode = typeof responseBody.error === 'string' ? responseBody.error : typeof responseBody.message === 'string' ? responseBody.message : undefined;
+      const failureMessage = dashboardErrorMessage(failureCode);
+      if (!response.ok) throw new Error(failureMessage || `request failed (${response.status})`);
+      if (!routeScope || !isAuthorizedDashboardResponse(responseBody, routeScope)) throw new Error('the authorized source returned data for a different or incomplete scope');
+      lastSnapshotAt = authorizedDashboardTimestamp(responseBody, routeScope);
+      showAuthorizedMetrics(responseBody.summary, lastSnapshotAt);
+      const empty = isEmptyAuthorizedDashboardSummary(responseBody.summary);
+      showDashboardState(empty ? 'empty' : undefined);
+      setRefreshState('current', `Authorized snapshot loaded from ${lastSnapshotAt}.`);
+      setDashboardStatus('current', 'Authorized snapshot', lastSnapshotAt);
+      window.dispatchEvent(new CustomEvent('workbench:fleet', { detail: { state: 'current', snapshot: fleet } }));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'connection failed';
+      showDashboardState('error');
+      if (lastSnapshotAt && snapshotMetrics && snapshotTime) {
+        snapshotMetrics.dataset.state = 'stale';
+        snapshotTime.hidden = false;
+        snapshotTime.dataset.state = 'stale';
+        snapshotTime.textContent = `Showing the last authorized snapshot from ${lastSnapshotAt}; the latest refresh failed.`;
+        setRefreshState('stale', `Snapshot refresh failed: ${detail}. The displayed metrics are from ${lastSnapshotAt}.`);
+        setDashboardStatus('stale', 'Last authorized snapshot', lastSnapshotAt);
+        window.dispatchEvent(new CustomEvent('workbench:fleet', { detail: { state: 'stale' } }));
+      } else {
+        if (snapshotMetrics) snapshotMetrics.hidden = true;
+        if (snapshotTime) snapshotTime.hidden = true;
+        setRefreshState('unavailable', `Snapshot data is unavailable: ${detail}.`);
+        setDashboardStatus('unavailable', 'Snapshot unavailable', 'No authorized snapshot loaded');
+        window.dispatchEvent(new CustomEvent('workbench:fleet', { detail: { state: 'unavailable' } }));
+      }
+    } finally {
+      refreshButton.removeAttribute('disabled');
+    }
+  });
+</script>

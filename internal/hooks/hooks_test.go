@@ -88,6 +88,33 @@ metrics:
 	}
 }
 
+// TestLoadPolicyAcceptsAgentAutoTags is a regression test: internal/hooks'
+// YAML decoder rejects unknown top-level keys (decoder.KnownFields(true)),
+// so agentguard's `agent: autoTags: true` — a key this package's own schema
+// did not declare — would have made every `wb hooks` command error on any
+// repository that adopted the new agent-guard policy. See AgentConfig.
+func TestLoadPolicyAcceptsAgentAutoTags(t *testing.T) {
+	repo := initRepo(t)
+	configHome := t.TempDir()
+	stateHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	mustMkdirAll(t, filepath.Join(repo, ".wb"))
+	mustWrite(t, filepath.Join(repo, ".wb", "hooks.yaml"), `version: 1
+agent:
+  autoTags: true
+`)
+
+	policy, err := LoadPolicy(repo, "")
+	if err != nil {
+		t.Fatalf("LoadPolicy rejected a repository policy declaring agent.autoTags: %v", err)
+	}
+	if !policy.Agent.AutoTags {
+		t.Fatal("policy.Agent.AutoTags should be true")
+	}
+}
+
 func TestLoadPolicyRejectsUnknownAndMissingTemplates(t *testing.T) {
 	repo := initRepo(t)
 	isolateEnvironment(t)

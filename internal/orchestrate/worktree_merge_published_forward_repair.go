@@ -63,7 +63,7 @@ type WorktreeMergePublishedForwardRepairOptions struct {
 // guessing a branch from mutable filesystem state.
 func (options WorktreeMergePublishedForwardRepairOptions) RepairTask() string {
 	hash := sha256.New()
-	for _, value := range append([]string{strings.TrimSpace(options.ExpectedReceiptSHA256), strings.TrimSpace(options.ExpectedSupersessionSHA256)}, options.ExpectedSourceSHAs...) {
+	for _, value := range append([]string{strings.TrimSpace(options.ExpectedReceiptSHA256), strings.TrimSpace(options.ExpectedSupersessionSHA256), strings.TrimSpace(options.ExpectedCurrentTargetSHA)}, options.ExpectedSourceSHAs...) {
 		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
 	}
@@ -143,8 +143,17 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 		}
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	if _, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receiptPath), receipt, supersession); correctionErr == nil {
-		return WorktreeMergePublishedForwardRepair{}, errors.New("self-supersession already has a correction; refusing another forward-repair candidate")
+	correctionPath := selfSupersessionCorrectionPath(receiptPath)
+	correction, correctionErr := readSelfSupersessionCorrection(correctionPath, receipt, supersession)
+	correctionHash := ""
+	if correctionErr == nil {
+		if err := validatePublishedForwardRepairCorrectionBinding(correction, receipt, supersession, receiptHash, claimHash, supersessionHash); err != nil {
+			return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("existing self-supersession correction is invalid: %w", err)
+		}
+		correctionHash, err = worktreeMergeReceiptSHA256(correctionPath)
+		if err != nil {
+			return WorktreeMergePublishedForwardRepair{}, err
+		}
 	} else if !errors.Is(correctionErr, os.ErrNotExist) {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("existing self-supersession correction is invalid: %w", correctionErr)
 	}
@@ -166,10 +175,22 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	if currentTarget != options.ExpectedCurrentTargetSHA || currentTarget != supersession.CurrentTargetSHA {
+	if currentTarget != options.ExpectedCurrentTargetSHA {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not match pinned repair and self-supersession target evidence", currentTarget)
 	}
+	if currentTarget != supersession.CurrentTargetSHA {
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		if ancestorErr != nil || !contains {
+			return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not descend from self-supersession target %s", currentTarget, supersession.CurrentTargetSHA)
+		}
+	}
 	roots := publishedForwardRepairRoots(originalClaim.BaseSHA, receipt, supersession, currentTarget, sources)
+	if correctionHash != "" {
+		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_replacement", SHA: correction.CorrectedReplacement.SHA})
+		for _, source := range correction.Sources {
+			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_source:" + source.Task, SHA: source.SHA})
+		}
+	}
 	task := options.RepairTask()
 	branch := "wb/recovery/" + receipt.Target + "/" + mergeOperationSuffix(task) + "-published-forward-repair"
 	result = WorktreeMergePublishedForwardRepair{
@@ -182,7 +203,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 		return result, nil
 	}
 	beforePublishedForwardRepairCreate()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, repository, canonical, currentTarget); err != nil {
+	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	listed, err := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: options.ProjectsRoot, Task: task, Base: receipt.Target, Workers: 1})
@@ -253,7 +274,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	// Re-read every pre-existing boundary after construction. No new merge
 	// receipt is ever persisted, so a race cannot rewrite historic evidence.
 	beforePublishedForwardRepairFinalRevalidation()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, repository, canonical, currentTarget); err != nil {
+	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	for _, root := range roots {
@@ -355,7 +376,13 @@ func immutableHistoricalWorktreeMergeSources(receipt WorktreeMergeReceipt) []Wor
 }
 
 func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource) []WorktreeMergeValidationFailureSealRoot {
-	roots := []WorktreeMergeValidationFailureSealRoot{{Kind: "failed_candidate_claim_base", SHA: claimBase}, {Kind: "receipt_target", SHA: receipt.TargetSHA}, {Kind: "self_supersession_current_target", SHA: supersession.CurrentTargetSHA}, {Kind: "current_remote_target", SHA: currentTarget}}
+	roots := make([]WorktreeMergeValidationFailureSealRoot, 0, len(sources)+4+len(receipt.Sources))
+	// Merge complete current repair sources first. They commonly already retain
+	// the historical roots, avoiding content merges from obsolete side trees.
+	for _, source := range sources {
+		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "current_repair_source:" + source.Task, SHA: source.SHA})
+	}
+	roots = append(roots, []WorktreeMergeValidationFailureSealRoot{{Kind: "failed_candidate_claim_base", SHA: claimBase}, {Kind: "receipt_target", SHA: receipt.TargetSHA}, {Kind: "self_supersession_current_target", SHA: supersession.CurrentTargetSHA}, {Kind: "current_remote_target", SHA: currentTarget}}...)
 	for _, source := range receipt.Sources {
 		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "receipted_source:" + source.Task, SHA: source.SHA})
 	}
@@ -363,9 +390,6 @@ func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt,
 		for _, source := range refresh.Sources {
 			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "receipted_refresh_source:" + source.Task, SHA: source.SHA})
 		}
-	}
-	for _, source := range sources {
-		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "current_repair_source:" + source.Task, SHA: source.SHA})
 	}
 	return roots
 }
@@ -396,7 +420,7 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 	return nil
 }
 
-func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath, receiptHash, claimHash, supersessionHash string, sources []WorktreeMergeSource, repository, canonical, currentTarget string) error {
+func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash string, sources []WorktreeMergeSource, repository, canonical, currentTarget string) error {
 	receipt, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil || validateValidationFailedSupersessionReceipt(receipt, receiptPath) != nil {
 		return errors.New("failed receipt changed during published forward-repair construction")
@@ -417,13 +441,30 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	if err != nil {
 		return err
 	}
-	if current, hashErr := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 || supersession.CurrentTargetSHA != currentTarget {
+	if current, hashErr := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 {
 		return errors.New("self-supersession acknowledgement changed during published forward-repair construction")
 	}
-	if _, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receiptPath), receipt, supersession); correctionErr == nil {
-		return errors.New("self-supersession was corrected during published forward-repair construction")
+	if supersession.CurrentTargetSHA != currentTarget {
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		if ancestorErr != nil || !contains {
+			return errors.New("current target no longer descends from the self-supersession target during published forward-repair construction")
+		}
+	}
+	if currentCorrection, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receiptPath), receipt, supersession); correctionErr == nil {
+		if correctionHash == "" {
+			return errors.New("self-supersession was corrected during published forward-repair construction")
+		}
+		if current, hashErr := worktreeMergeReceiptSHA256(selfSupersessionCorrectionPath(receiptPath)); hashErr != nil || current != correctionHash {
+			return errors.New("self-supersession correction changed during published forward-repair construction")
+		}
+		if err := validatePublishedForwardRepairCorrectionBinding(currentCorrection, receipt, supersession, receiptHash, claimHash, supersessionHash); err != nil {
+			return err
+		}
+		_ = currentCorrection
 	} else if !errors.Is(correctionErr, os.ErrNotExist) {
 		return fmt.Errorf("self-supersession correction changed during published forward-repair construction: %w", correctionErr)
+	} else if correctionHash != "" {
+		return errors.New("self-supersession correction disappeared during published forward-repair construction")
 	}
 	refreshedSources, refreshedRepository, refreshedCanonical, err := inspectPublishedForwardRepairSources(ctx, options.ProjectsRoot, options.Sources, receipt.Target)
 	if err != nil {
@@ -441,6 +482,19 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	fetched, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil || fetched != currentTarget || fetched != options.ExpectedCurrentTargetSHA {
 		return errors.New("remote target drifted during published forward-repair construction")
+	}
+	return nil
+}
+
+func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSelfSupersessionCorrection, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, receiptHash, claimHash, supersessionHash string) error {
+	if correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash || correction.ImmutableClaimSHA256 != claimHash ||
+		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash ||
+		correction.OriginalCandidate != receipt.Candidate || correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA ||
+		correction.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
+		return errors.New("correction does not retain immutable receipt, claim, supersession, candidate, base, or target evidence")
+	}
+	if correction.CorrectedReplacement.SHA == "" || correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" {
+		return errors.New("correction has incomplete recorded replacement identity")
 	}
 	return nil
 }

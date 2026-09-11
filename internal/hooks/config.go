@@ -38,11 +38,27 @@ type MetricsConfig struct {
 	Labels  map[string]string `yaml:"labels" json:"labels,omitempty"`
 }
 
+// AgentConfig declares policy for `wb hooks agent pre-tool-use` — the
+// PreToolUse guard, not a Git hook. It lives in the same file as the Git
+// hooks policy because both are "how strict is this repository", but this
+// package only carries the field through decode/validate so the guard's own
+// package (internal/agentguard, which never spawns a process and reads this
+// file itself) can read it; nothing here acts on it.
+type AgentConfig struct {
+	// AutoTags declares that this repository's own CI already tags it (see
+	// lesson l3-check-existing-tags-before-tagging-a-lower-version-with-newer-code-hides-the-fix
+	// and lesson l11-find-out-whether-the-repo-auto-tags-before-you-hand-tag-it),
+	// so a hand-pushed `git tag`/`git push --tags` is refused. A pointer so an
+	// explicit `false` at the repository can override a `true` global policy.
+	AutoTags *bool `yaml:"autoTags" json:"autoTags,omitempty"`
+}
+
 type fileConfig struct {
 	Version  int                   `yaml:"version"`
 	Hooks    map[string]HookConfig `yaml:"hooks"`
 	Profiles ProfilesConfig        `yaml:"profiles"`
 	Metrics  MetricsConfig         `yaml:"metrics"`
+	Agent    AgentConfig           `yaml:"agent"`
 }
 
 // ResolvedHook is a validated hook entry ready to execute.
@@ -65,7 +81,14 @@ type Policy struct {
 	ProfileDefinitions map[string]ProfileDefinition
 	ActiveProfiles     []ActiveProfile
 	Metrics            MetricsPolicy
+	Agent              AgentPolicy
 	ExplicitPath       string
+}
+
+// AgentPolicy is the resolved (global-then-repository-layered) form of
+// AgentConfig — see AgentConfig for what AutoTags means.
+type AgentPolicy struct {
+	AutoTags bool
 }
 
 type MetricsPolicy struct {
@@ -215,6 +238,9 @@ func applyFile(policy *Policy, configPath string, cfg fileConfig) error {
 	}
 	if cfg.Metrics.Enabled != nil {
 		policy.Metrics.Enabled = *cfg.Metrics.Enabled
+	}
+	if cfg.Agent.AutoTags != nil {
+		policy.Agent.AutoTags = *cfg.Agent.AutoTags
 	}
 	if cfg.Metrics.Path != "" {
 		path := expandPath(cfg.Metrics.Path)

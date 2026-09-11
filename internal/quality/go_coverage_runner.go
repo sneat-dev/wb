@@ -336,7 +336,7 @@ func coverageDiagnosticFor(directory, repository, module string) *CoverageDiagno
 }
 
 func goListPackages(ctx context.Context, module, pattern string) ([]string, error) {
-	output, err := run(ctx, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
+	output, err := runStdout(ctx, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
 	if err != nil {
 		return nil, fmt.Errorf("go list %s: %w\n%s", pattern, err, strings.TrimSpace(output))
 	}

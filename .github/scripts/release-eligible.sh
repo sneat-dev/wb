@@ -20,7 +20,7 @@ case "$event_name:$ref" in
     fi
     while IFS= read -r path; do
       case "$path" in
-        .goreleaser.yml|api/*|cmd/*|internal/*|go.mod|go.sum|.github/workflows/go-ci.yml|.github/scripts/release-eligible.sh)
+        .goreleaser.yml|api/*|cmd/*|hub/*|internal/*|go.mod|go.sum|.github/workflows/go-ci.yml|.github/scripts/release-eligible.sh)
           eligible=true
           ;;
       esac
