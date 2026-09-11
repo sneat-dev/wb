@@ -12,6 +12,7 @@ Choose one command that answers the question:
 | Need | Command | Reference |
 |---|---|---|
 | Reconcile canonical clones with GitHub | `wb sync` | [sync.md](references/sync.md) |
+| Validate or publish per-repository sync analyses | `wb sync-report validate` / `wb sync-report publish` | [sync.md](references/sync.md) |
 | Fix a repository sync cannot pull | `wb repo init-remote` / `wb repo ignore` | [unsynced.md](references/unsynced.md) |
 | One glance at fleet size and attention | `wb fleet` / `wb fleet overview` | [status.md](references/status.md) |
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
@@ -35,6 +36,8 @@ only when fleet evidence is required.
 
 Reporting commands are non-mutating and support structured output. `sync`
 changes canonical clones, so preview it first.
+Use `wb sync-report` after an agent has analyzed sync findings and needs the
+dedicated InGitDB records validated or published.
 
 For a machine-readable remote PR snapshot:
 

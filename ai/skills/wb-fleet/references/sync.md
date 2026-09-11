@@ -72,6 +72,50 @@ resolution command: the inspect commands are read-only and safe as-is, while
 the resolution options are choices to make after reading their output, not a
 script to run top to bottom.
 
+## Persist an agent analysis
+
+The local issues file is a machine-generated handoff, not the durable analysis.
+After inspecting each entry, write one top-level Markdown file per repository
+to a private staging directory. Every file in one batch uses the same stable
+`report_id`; do not combine repositories in one document.
+
+```markdown
+---
+schema_version: 1
+report_id: sync-20260908T145950Z
+repository: owner/repository
+finding: unpushed_commits
+severity: attention
+state: open
+observed_at: 2026-09-08T14:59:50Z
+head_sha: 0123456789abcdef0123456789abcdef01234567
+title: Local commits are not on the upstream branch
+suggested_action: Inspect the commits and either publish or intentionally retire them.
+---
+## Evidence
+
+Explain what was inspected, what WB preserved, and the repository-specific
+reason for the suggested action. Do not include credentials or secrets.
+```
+
+Use lowercase finding slugs and RFC3339 timestamps. `severity` is `attention`,
+`error`, or `info`; `state` is `open` or `resolved`. Validate the entire batch
+before publication:
+
+```sh
+wb sync-report validate <records-directory>
+wb sync-report publish <records-directory> --repo <user/workbench-repository>
+```
+
+Publication revalidates with InGitDB, refuses a dirty workbench clone, writes
+the collection schema and deterministic record paths, commits only those owned
+paths, and pushes through WB's serialized retry path. Its output includes an
+immutable URL keyed by target repository, commit SHA, and report ID, for example
+`https://sneat.work/bench/app/sync-report?repo=owner%2Fworkbench&ref=<sha>&report=<id>`.
+Keep the staging directory until this command succeeds. If publication leaves
+an unpushed commit after two remote rejections, resolve that explicitly before
+retrying; do not regenerate a different report over the same evidence.
+
 ## Check the report is not stale before acting
 
 The report states its own scope on every run: whether it covered every visible

@@ -7902,6 +7902,145 @@
       "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved. Archived-repository deletion is opt-in via --prune-archived and always defers to internal/archiveprune's predicate. The issues report at ~/.wb/last-sync-issues.md is the stable path to hand an agent; it is overwritten every run and never accumulates history."
     },
     {
+      "id": "wb.sync-report.publish",
+      "feature_refs": [
+        "spec/features/sync-analysis-records/README.md"
+      ],
+      "since": "next",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb sync-report publish",
+              "flags": [
+                "--format",
+                "--json",
+                "--repo"
+              ],
+              "modes": [
+                "Strict-validates one Markdown record per repository, validates the assembled checkout with InGitDB, commits only owned collection paths, pushes through a serialized retry, and returns an immutable presentation URL."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb sync-report publish --help",
+              "contains": [
+                "--format",
+                "--repo",
+                "workbench repository"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/sync.md",
+              "marker": "## Persist an agent analysis",
+              "examples": [
+                "wb sync-report publish <records-directory> --repo <user/workbench-repository>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/sync_report_command_test.go",
+              "name": "TestSyncReportPublishReturnsImmutableViewerURL",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/remotestate/gitrepo/sync_report_test.go",
+              "name": "TestPublishSyncReportValidatesCommitsAndPushesRecords",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The target is explicit instead of inherited from remote-state configuration because sync analyses belong in the user's workbench repository. The immutable commit SHA lets later web and CLI views reproduce the same report."
+    },
+    {
+      "id": "wb.sync-report.validate",
+      "feature_refs": [
+        "spec/features/sync-analysis-records/README.md"
+      ],
+      "since": "next",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb sync-report validate",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Refuses mixed report IDs, duplicate repositories, links, special files, unknown frontmatter, and invalid field values before validating the generated collection with InGitDB."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb sync-report validate --help",
+              "contains": [
+                "--format",
+                "records-directory",
+                "InGitDB"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/sync.md",
+              "marker": "## Persist an agent analysis",
+              "examples": [
+                "wb sync-report validate <records-directory>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/sync_report_command_test.go",
+              "name": "TestSyncReportValidateLoadsAndValidatesTheWholeBatch",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/syncreport/report_test.go",
+              "name": "TestLoadDirectoryReturnsSortedDedicatedRecords",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Validation is intentionally a separate non-mutating leaf so agents can repair their complete staging batch before WB touches the durable repository."
+    },
+    {
       "id": "wb.verify",
       "feature_refs": [],
       "since": "existing",

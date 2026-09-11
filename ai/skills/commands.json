@@ -78,6 +78,9 @@
     "sync": [
       "wb-fleet"
     ],
+    "sync-report": [
+      "wb-fleet"
+    ],
     "verify": [
       "wb-fleet"
     ],
