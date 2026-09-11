@@ -1324,7 +1324,7 @@ wb worktree create improve-login owner/repository --resume \
 			return nil
 		},
 	}
-	setDiscoveryTerms(command, "start begin create new work task agent isolated worktree branch implement edit code save tokens")
+	setDiscoveryTerms(command, "start begin create new work task agent isolated worktree branch implement edit code save tokens multi repo multiple repositories cross-repository repo")
 	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
@@ -1342,6 +1342,20 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+// newCreateCmd is the root-level alias for `wb worktree create`: `wb create`.
+// Starting isolated work is the other half of the agent workflow `wb land`
+// (see newLandCmd in worktree_merge.go) closes out, and it had the identical
+// discoverability problem: nothing at the top level named it, so it sat one
+// noun below where an agent skimming `wb --help` would look first.
+//
+// It is built from the exact same constructor as `wb worktree create`, so the
+// two commands share identical flags, help text, and exit codes by
+// construction rather than by two copies staying in sync; only the command
+// path they resolve under differs ("wb create" vs "wb worktree create").
+func newCreateCmd() *cobra.Command {
+	return newWorktreeCreateCmd()
 }
 
 func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {

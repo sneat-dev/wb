@@ -17,11 +17,14 @@ func TestRootHelpPromotesTheAgentWorktreeJourney(t *testing.T) {
 	help := stdout.String()
 	for _, want := range []string{
 		"Start isolated work",
-		"wb worktree create",
+		"wb create <task>",
 		"Inspect progress",
 		"wb worktree summary",
 		"Land and clean up",
-		"wb worktree land",
+		"wb land <worktree>",
+		"Land an open PR",
+		"wb pr land",
+		"one wb land call per repository",
 		"wb commands --search",
 	} {
 		if !strings.Contains(help, want) {

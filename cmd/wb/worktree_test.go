@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -360,6 +363,41 @@ func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
 				t.Fatalf("invalid preflight created task state: %v", err)
 			}
 		})
+	}
+}
+
+// TestCreateAliasSharesWorktreeCreateContract pins that `wb create` is not a
+// second implementation: it is built from the exact same constructor as
+// `wb worktree create`, so its flags, defaults, and required-prompt/model
+// preflight can never drift from the nested command's, and it resolves under
+// the AGENT WORKFLOW root group next to `wb land`.
+func TestCreateAliasSharesWorktreeCreateContract(t *testing.T) {
+	alias := newCreateCmd()
+	nested := newWorktreeCreateCmd()
+	if alias.Name() != "create" || nested.Name() != "create" {
+		t.Fatalf("Name() = %q / %q, want create / create", alias.Name(), nested.Name())
+	}
+	aliasFlags := map[string]string{}
+	alias.Flags().VisitAll(func(flag *pflag.Flag) { aliasFlags[flag.Name] = flag.DefValue })
+	nestedFlags := map[string]string{}
+	nested.Flags().VisitAll(func(flag *pflag.Flag) { nestedFlags[flag.Name] = flag.DefValue })
+	if len(aliasFlags) == 0 {
+		t.Fatal("wb create defines no flags")
+	}
+	if !reflect.DeepEqual(aliasFlags, nestedFlags) {
+		t.Fatalf("wb create flags = %v, want identical to wb worktree create: %v", aliasFlags, nestedFlags)
+	}
+
+	root := newRootCmd()
+	found, _, err := root.Find([]string{"create"})
+	if err != nil {
+		t.Fatalf("resolve wb create: %v", err)
+	}
+	if found.CommandPath() != "wb create" {
+		t.Fatalf("CommandPath() = %q, want %q", found.CommandPath(), "wb create")
+	}
+	if found.GroupID != rootGroupAgent {
+		t.Fatalf("wb create GroupID = %q, want %q (AGENT WORKFLOW)", found.GroupID, rootGroupAgent)
 	}
 }
 

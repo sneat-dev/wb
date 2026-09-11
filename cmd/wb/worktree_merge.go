@@ -260,10 +260,26 @@ sources deliberately.`,
 			return runCombinedWorktreeMerge(command, args, &flags)
 		},
 	}
-	setDiscoveryTerms(command, "finish work land deliver ship integrate complete cleanup agent worktree branch pull request main")
+	setDiscoveryTerms(command, "finish work land deliver ship integrate complete cleanup agent worktree branch pull request merge main multi repo repository")
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, true)
 	return command
+}
+
+// newLandCmd is the root-level alias for `wb worktree land`: `wb land`.
+// Landing is the single most common way an agent session ends — prepare,
+// validate, land, prove the remote receipt, clean up — and it was getting
+// reimplemented by hand with `gh pr merge`, ancestry checks, and
+// `git push --delete` instead. A shorter, top-level spelling next to
+// `wb worktree create` in the AGENT WORKFLOW group makes the existing verb
+// harder to miss.
+//
+// It is built from the exact same constructor as `wb worktree land`, so the
+// two commands share identical flags, help text, and exit codes by
+// construction rather than by two copies staying in sync; only the command
+// path they resolve under differs ("wb land" vs "wb worktree land").
+func newLandCmd() *cobra.Command {
+	return newWorktreeLandCmd()
 }
 
 func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *worktreeMergeFlags) error {
