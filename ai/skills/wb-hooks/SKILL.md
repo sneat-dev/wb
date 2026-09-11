@@ -73,18 +73,26 @@ PreToolUse payload on stdin and carries these policies:
   the repository's own `.worktrees/` manifests and the local wb-state mirror
   (no network). A dispatch from inside the claimed worktree itself is treated
   as that lane continuing its own work, not a second claim.
-- **Land with the WB verb** — refuses `gh pr merge` (any flags, chained,
-  subshelled) everywhere, naming `wb worktree land`/`wb land` and
-  `wb pr land <owner/repo#n>` instead (rule `land-with-wb-verb`,
-  `sneat-co/backstage`). `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` is the
-  explicit, recorded escape hatch for the one call it is set on. `gh pr
-  view`/`checks`/`list` and every other read-only `gh` subcommand are never
-  refused.
+- **Land with the WB verb** — refuses `gh pr merge` under any flags, chained
+  with `&&`/`;`, subshelled with parentheses or piped, and wrapped in
+  `bash -c`/`sh -c`/`zsh -c` (recursed into the payload at a bounded depth,
+  so a payload that itself wraps another `bash -c` is still caught), naming
+  `wb worktree land`/`wb land` and `wb pr land <owner/repo#n>` instead (rule
+  `land-with-wb-verb`, `sneat-co/backstage`). Prefixing that exact call's own
+  words with `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="<reason>"` (directly, or via
+  `env`) is the explicit, recorded escape hatch for that one call; the hook
+  process's own ambient environment is never read, so a value set ahead of
+  time cannot silently cover a whole session. `gh pr view`/`checks`/`list`
+  and every other read-only `gh` subcommand are never refused.
 
-A read-only `--help`/`-h`/`help` invocation of a tool this guard otherwise
-judges by write verb (`specscore`, `go`, `npm`/`pnpm`/`yarn`/`bun`) is never
-refused — it prints help and does nothing else, regardless of what verb also
-appears on the line (wb#493).
+A read-only `--help`/`-h`/`help` invocation of `specscore`, `go`,
+`npm`/`pnpm`/`yarn`/`bun` is never refused for that reason alone — it prints
+help and does nothing else, regardless of what verb also appears on the line
+(wb#493). `gh pr merge`'s own `--help`/`-h` recognition is separate and
+value-flag aware: `gh pr merge 123 --subject --help` is a real merge, because
+`--subject` takes the next token unconditionally as its value and never sees
+`--help` as a flag; only a bare, unconsumed `--help`/`-h` is ever treated as
+help.
 
 Register it once per machine:
 
