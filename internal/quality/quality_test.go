@@ -308,19 +308,16 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 
 	// The remaining subtests cover the external SpecScore Plans store shape
 	// (sneat-co/workbench is the canonical example): SpecScore routes other
-	// projects' Plans there under spec/plans/{host}/{owner}/{repo}/..., and by
-	// design that namespace MUST NOT gain a specscore.yaml (see
+	// projects' Plans there under spec/plans/{host}/{owner}/{repo}/... (see
 	// specscore/specscore spec/features/repo-config "Plan repository routing"
-	// and spec/features/plan REQ:external-source-namespace). Without this
-	// carve-out, wb always runs specscore spec lint whenever spec/ exists, and
-	// that fails every such repository with "specscore.yaml is required but
-	// was not found" even though it behaves exactly as designed.
+	// and spec/features/plan REQ:external-source-namespace). SpecScore lint
+	// does not apply to that layout: with no specscore.yaml it cannot run, and
+	// with one it reports structural violations. TestVerifyExternalPlansStore
+	// pins the boundaries of the carve-out.
 
 	t.Run("external plans store without config is skipped", func(t *testing.T) {
 		repository := t.TempDir()
-		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "README.md"), "# datatug Plans\n")
-		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1", "README.md"), "# Phase 1\n")
-		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1", "database-setup", "README.md"), "# Database setup\n")
+		writeExternalPlansStore(t, repository)
 
 		report := Verify(context.Background(), "sneat-co/workbench", repository, []Check{CheckSpec})
 		if report.Status != StatusPassed || len(report.Results) != 1 {
@@ -330,8 +327,13 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 		if result.Status != StatusSkipped {
 			t.Fatalf("result = %+v", result)
 		}
-		if !strings.Contains(result.Detail, "external SpecScore Plans store") || !strings.Contains(result.Detail, "specscore.yaml") {
-			t.Fatalf("detail = %q, want it to name the external-store reason", result.Detail)
+		for _, want := range []string{"external SpecScore Plans store", "specscore.yaml", "does not apply", "wb does not validate"} {
+			if !strings.Contains(result.Detail, want) {
+				t.Fatalf("detail = %q, want it to contain %q", result.Detail, want)
+			}
+		}
+		if strings.Contains(result.Detail, "validated from") {
+			t.Fatalf("detail = %q claims the Plans are validated elsewhere", result.Detail)
 		}
 	})
 
@@ -340,20 +342,11 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Skip("test shell helper is POSIX-only")
 		}
 		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
 		writeQualityFile(t, filepath.Join(repository, "spec", "features", "example", "README.md"), "# Example\n")
 		log := stubSpecscoreBinary(t, repository)
 
-		report := Verify(context.Background(), "example/features-only", repository, []Check{CheckSpec})
-		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
-			t.Fatalf("report = %+v", report)
-		}
-		contents, err := os.ReadFile(log)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
-			t.Fatalf("command = %q, want %q (lint must run, not skip)", got, want)
-		}
+		assertSpecLintRan(t, Verify(context.Background(), "example/features-only", repository, []Check{CheckSpec}), log)
 	})
 
 	t.Run("external plans mixed with another spec subtree runs lint", func(t *testing.T) {
@@ -361,21 +354,11 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Skip("test shell helper is POSIX-only")
 		}
 		repository := t.TempDir()
-		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "README.md"), "# datatug Plans\n")
+		writeExternalPlansStore(t, repository)
 		writeQualityFile(t, filepath.Join(repository, "spec", "features", "example", "README.md"), "# Example\n")
 		log := stubSpecscoreBinary(t, repository)
 
-		report := Verify(context.Background(), "example/mixed-spec", repository, []Check{CheckSpec})
-		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
-			t.Fatalf("report = %+v", report)
-		}
-		contents, err := os.ReadFile(log)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
-			t.Fatalf("command = %q, want %q (a non-Plans spec subtree must force lint)", got, want)
-		}
+		assertSpecLintRan(t, Verify(context.Background(), "example/mixed-spec", repository, []Check{CheckSpec}), log)
 	})
 
 	t.Run("flat plan file without config runs lint", func(t *testing.T) {
@@ -383,21 +366,330 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Skip("test shell helper is POSIX-only")
 		}
 		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
 		writeQualityFile(t, filepath.Join(repository, "spec", "plans", "user-auth.md"), "# User auth\n")
 		log := stubSpecscoreBinary(t, repository)
 
-		report := Verify(context.Background(), "example/flat-plan", repository, []Check{CheckSpec})
-		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
-			t.Fatalf("report = %+v", report)
-		}
-		contents, err := os.ReadFile(log)
-		if err != nil {
+		assertSpecLintRan(t, Verify(context.Background(), "example/flat-plan", repository, []Check{CheckSpec}), log)
+	})
+}
+
+// TestVerifyExternalPlansStore runs the spec check against repository trees
+// on either side of the external Plans-store carve-out. Every tree that is
+// not exactly an external store must run specscore spec lint (fail closed);
+// a stub specscore records whether it ran.
+func TestVerifyExternalPlansStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper and symlinks are POSIX-only")
+	}
+	symlink := func(t *testing.T, target, link string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
-			t.Fatalf("command = %q, want %q (the legacy flat layout is not an external namespace)", got, want)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
 		}
-	})
+	}
+	mkdir := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		setup    func(t *testing.T, repository string)
+		wantLint bool
+	}{
+		{
+			name:  "external store is skipped",
+			setup: writeExternalPlansStore,
+		},
+		{
+			name: "namespace index alone is skipped",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), "node_modules/\n"+externalStoreLifecycleLockRule+"\n")
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "o", "r", "README.md"), "# r\n")
+			},
+		},
+		{
+			name: "CRLF gitignore line is accepted as git reads it",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), "# Plans store\r\n"+externalStoreLifecycleLockRule+"  \r\n")
+			},
+		},
+		{
+			name: "config present with external layout runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, "specscore.yaml"), "project:\n  slug: example\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlinked specscore.yaml runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, "real.yaml"), "project:\n  slug: example\n")
+				symlink(t, "real.yaml", filepath.Join(repository, "specscore.yaml"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "dangling specscore.yaml symlink runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				symlink(t, "missing.yaml", filepath.Join(repository, "specscore.yaml"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlinked spec runs lint",
+			setup: func(t *testing.T, repository string) {
+				source := t.TempDir()
+				writeExternalPlansStore(t, source)
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				symlink(t, filepath.Join(source, "spec"), filepath.Join(repository, "spec"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlinked spec/plans runs lint",
+			setup: func(t *testing.T, repository string) {
+				source := t.TempDir()
+				writeExternalPlansStore(t, source)
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				symlink(t, filepath.Join(source, "spec", "plans"), filepath.Join(repository, "spec", "plans"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlinked namespace index runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				writeQualityFile(t, filepath.Join(repository, "outside.md"), "# outside\n")
+				symlink(t, filepath.Join(repository, "outside.md"), filepath.Join(repository, "spec", "plans", "github.com", "o", "r", "README.md"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlink beneath a plan directory runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				symlink(t, "/etc/hosts", filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1", "escape.md"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "host-level file runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "README.md"), "# host\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "owner-level file runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "README.md"), "# owner\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "namespace-level non-README file runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "notes.md"), "# notes\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "empty spec runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				mkdir(t, filepath.Join(repository, "spec"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "directories only runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				mkdir(t, filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug", "phase-1"))
+			},
+			wantLint: true,
+		},
+		{
+			name: "aggregate index alone runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "README.md"), "# Plans\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "same-repository nested plan runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+				writeQualityFile(t, filepath.Join(repository, "spec", "plans", "phase-1", "core", "loop", "task", "README.md"), "# Task\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "missing gitignore runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				if err := os.Remove(filepath.Join(repository, ".gitignore")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantLint: true,
+		},
+		{
+			name: "gitignore without the lifecycle-lock line runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), "node_modules/\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "unanchored lifecycle-lock line runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				writeQualityFile(t, filepath.Join(repository, ".gitignore"), ".specscore-lifecycle.lock\n")
+			},
+			wantLint: true,
+		},
+		{
+			name: "symlinked gitignore runs lint",
+			setup: func(t *testing.T, repository string) {
+				writeExternalPlansStore(t, repository)
+				if err := os.Rename(filepath.Join(repository, ".gitignore"), filepath.Join(repository, "ignore-rules")); err != nil {
+					t.Fatal(err)
+				}
+				symlink(t, "ignore-rules", filepath.Join(repository, ".gitignore"))
+			},
+			wantLint: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := t.TempDir()
+			tc.setup(t, repository)
+			log := stubSpecscoreBinary(t, repository)
+
+			report := Verify(context.Background(), "example/plans-store", repository, []Check{CheckSpec})
+			if tc.wantLint {
+				assertSpecLintRan(t, report, log)
+				return
+			}
+			if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusSkipped {
+				t.Fatalf("report = %+v, want the spec check skipped", report)
+			}
+			if _, err := os.Stat(log); !os.IsNotExist(err) {
+				t.Fatalf("specscore ran for a skipped external store (log stat err = %v)", err)
+			}
+		})
+	}
+}
+
+// TestExternalPlansStorePath pins the path rule for every non-directory
+// entry under spec/ in an external Plans store.
+func TestExternalPlansStorePath(t *testing.T) {
+	for rel, want := range map[string]bool{
+		// Aggregate index, and what a symlinked spec/ or spec/plans looks like.
+		"plans/README.md":         true,
+		"plans/notes.md":          false,
+		"plans":                   false,
+		".":                       false,
+		"README.md":               false,
+		"features/auth/README.md": false,
+
+		// Depth: files at host or owner level never fit.
+		"plans/github.com/README.md":   false,
+		"plans/github.com/o/README.md": false,
+		"plans/github.com/o/r":         false,
+
+		// Namespace level: exactly README.md.
+		"plans/github.com/o/r/README.md": true,
+		"plans/github.com/o/r/notes.md":  false,
+		"plans/github.com/o/r/readme.md": false,
+		"plans/github.com/o/r/.DS_Store": false,
+
+		// Plan-id depth >= 1 below the repo segment: anything beneath it.
+		"plans/github.com/o/r/p1/README.md":       true,
+		"plans/github.com/o/r/p1/child/README.md": true,
+		"plans/github.com/o/r/p1/notes.txt":       true,
+
+		// Hostname rules.
+		"plans/gitlab.example.co.uk/o/r/p/README.md": true,
+		"plans/git-hub.com/o/r/p/README.md":          true,
+		"plans/127.0.0.1/o/r/p/README.md":            true,
+		"plans/localhost/o/r/p/README.md":            false,
+		"plans/GitHub.com/o/r/p/README.md":           false,
+		"plans/git_hub.com/o/r/p/README.md":          false,
+		"plans/github.com:443/o/r/p/README.md":       false,
+		"plans/.github.com/o/r/p/README.md":          false,
+		"plans/github.com./o/r/p/README.md":          false,
+		"plans/-github.com/o/r/p/README.md":          false,
+		"plans/github.com-/o/r/p/README.md":          false,
+		"plans/github-.com/o/r/p/README.md":          false,
+		"plans/github..com/o/r/p/README.md":          false,
+		"plans/.git/o/r/p/README.md":                 false,
+		"plans/../o/r/p/README.md":                   false,
+		"plans/.../..../r/p/README.md":               false,
+		"plans/not a host/o/r/p/notes.txt":           false,
+
+		// Owner and repo: non-empty, no leading dot.
+		"plans/github.com/.o/r/p/README.md":    false,
+		"plans/github.com/o/.git/p/README.md":  false,
+		"plans/github.com/../r/p/README.md":    false,
+		"plans/github.com/o/../p/README.md":    false,
+		"plans/github.com//r/p/README.md":      false,
+		"plans/github.com/o//p/README.md":      false,
+		"plans/github.com/o.x/r.y/p/README.md": true,
+
+		// A same-repository nested plan has no dot in its first segment.
+		"plans/phase-1/core/loop/task/README.md": false,
+		"plans/phase-1/core/loop/README.md":      false,
+		"plans/x/y/z/w/features/auth/README.md":  false,
+	} {
+		if got := externalPlansStorePath(rel); got != want {
+			t.Errorf("externalPlansStorePath(%q) = %v, want %v", rel, got, want)
+		}
+	}
+}
+
+// writeExternalPlansStore writes a minimal external SpecScore Plans store at
+// repository: the lifecycle-lock ignore rule, the aggregate index, a
+// namespace index and a nested plan.
+func writeExternalPlansStore(t *testing.T, repository string) {
+	t.Helper()
+	namespace := filepath.Join(repository, "spec", "plans", "github.com", "datatug", "datatug")
+	writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
+	writeQualityFile(t, filepath.Join(repository, "spec", "plans", "README.md"), "# Plans\n")
+	writeQualityFile(t, filepath.Join(namespace, "README.md"), "# datatug Plans\n")
+	writeQualityFile(t, filepath.Join(namespace, "phase-1", "README.md"), "# Phase 1\n")
+	writeQualityFile(t, filepath.Join(namespace, "phase-1", "database-setup", "README.md"), "# Database setup\n")
+}
+
+// assertSpecLintRan fails unless the spec check ran the stub specscore
+// exactly once as "spec lint" and passed.
+func assertSpecLintRan(t *testing.T, report VerificationReport, log string) {
+	t.Helper()
+	if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
+		t.Fatalf("report = %+v, want spec lint to run and pass", report)
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("specscore did not run: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
+		t.Fatalf("command = %q, want %q (lint must run, not skip)", got, want)
+	}
 }
 
 // stubSpecscoreBinary installs a "specscore" executable on PATH that appends
