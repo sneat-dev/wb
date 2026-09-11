@@ -1438,11 +1438,14 @@
             {
               "path": "wb daemon serve",
               "flags": [
-                "--listen"
+                "--listen",
+                "--quiet"
               ],
               "modes": [
                 "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener",
-                "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /bench/ when wb.yaml has a hub: section"
+                "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /bench/ when wb.yaml has a hub: section",
+                "Polls GitHub for default-branch pushes and repository renames when hub.github.token_file is set, narrating one console line per webhook delivery and per poll observation",
+                "--quiet silences the console lines; wb daemon start never passes it, so the detached daemon log keeps every line"
               ]
             }
           ],
@@ -1455,9 +1458,11 @@
               "command": "wb daemon serve --help",
               "contains": [
                 "--listen",
+                "--quiet",
                 "Cloudflare Tunnel",
                 "loopback",
-                "hub"
+                "hub",
+                "poller"
               ]
             }
           ],
@@ -1493,6 +1498,21 @@
               "path": "cmd/wb/daemon_hub_test.go",
               "name": "TestServeDashboardMountsTheHubAndDashboard",
               "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_poller_test.go",
+              "name": "TestServeDashboardPublishesHubHealth",
+              "kind": "integration"
+            },
+            {
+              "path": "hub/poller/poller_test.go",
+              "name": "TestPollerRecordsFirstSightThenQueuesOnlyWhatChanged",
+              "kind": "unit"
+            },
+            {
+              "path": "hub/narrate/narrate_test.go",
+              "name": "TestWriterRendersEveryOutcomeInTheSpecifiedColumns",
+              "kind": "unit"
             }
           ],
           "limitation": null
@@ -1517,10 +1537,10 @@
       "feature_refs": ["spec/features/agent-sdlc-throughput/README.md", "spec/features/self-hosted-bench/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one", "Reports whether the bench hub is mounted, with its store engine, store location, and listen address"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one", "Reports whether the bench hub is mounted, with its store engine, store location, and listen address", "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_test.go", "name": "TestDaemonStatusReportsTheMountedHub", "kind": "unit"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_test.go", "name": "TestDaemonStatusReportsTheMountedHub", "kind": "unit"}, {"path": "cmd/wb/daemon_poller_test.go", "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon", "kind": "unit"}], "limitation": null}
       },
       "notes": "Status is bootstrap-safe and does not auto-start the daemon."
     },

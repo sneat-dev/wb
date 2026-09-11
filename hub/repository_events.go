@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/hub/narrate"
 )
 
 type RepositoryEventService struct {
@@ -20,6 +21,36 @@ type RepositoryEventService struct {
 	PollInterval time.Duration
 	Sleep        func(context.Context, time.Duration) error
 	Now          func() time.Time
+	// Narrate receives one line for every delivery the service decides about:
+	// queued, ignored, dropped as a duplicate, or applied as a lifecycle
+	// change. A delivery the service returns an error for is narrated by the
+	// HTTP handler instead, so every delivery produces exactly one line.
+	// Optional; the hosted instance leaves it unset.
+	Narrate func(narrate.Line)
+}
+
+// narrateLine is the single place the service decides whether there is
+// anywhere to narrate to, so every call site stays one statement.
+func (service RepositoryEventService) narrateLine(event, subject, action string) {
+	if service.Narrate == nil {
+		return
+	}
+	at := time.Now()
+	if service.Now != nil {
+		at = service.Now()
+	}
+	service.Narrate(narrate.Line{At: at, Event: event, Subject: subject, Action: action})
+}
+
+// narrationSubject is the organisation or repository a line is about. A
+// delivery that names no repository (an installation lifecycle event, for
+// example) is narrated against github.com rather than against an empty
+// column.
+func narrationSubject(delivery WebhookDelivery) string {
+	if strings.TrimSpace(delivery.Repository) != "" {
+		return delivery.Repository
+	}
+	return "github.com"
 }
 
 type routedRepositoryEvent struct {
@@ -40,11 +71,16 @@ func (service RepositoryEventService) EnqueueWebhook(ctx context.Context, delive
 		if err := service.Lifecycle.ApplyInstallationLifecycle(ctx, lifecycleEvent); err != nil {
 			return EnqueueResult{}, ErrUnavailable
 		}
+		service.narrateLine(delivery.Event, narrationSubject(delivery), "entitlements refreshed")
 		return EnqueueResult{}, nil
 	}
-	routed, supported, err := translateWebhook(delivery)
-	if err != nil || !supported {
+	routed, supported, ignored, err := translateWebhook(delivery)
+	if err != nil {
 		return EnqueueResult{}, err
+	}
+	if !supported {
+		service.narrateLine(delivery.Event, narrationSubject(delivery), "ignored: "+ignored)
+		return EnqueueResult{}, nil
 	}
 	if service.Snapshots == nil || service.Entitlements == nil || service.Store == nil {
 		return EnqueueResult{}, ErrUnavailable
@@ -67,7 +103,20 @@ func (service RepositoryEventService) EnqueueWebhook(ctx context.Context, delive
 			eligible = append(eligible, machine)
 		}
 	}
-	return service.Store.EnqueueForMachines(ctx, routed.event, eligible)
+	if len(eligible) == 0 {
+		service.narrateLine(delivery.Event, routed.event.Repository, "ignored: no entitled machine")
+		return service.Store.EnqueueForMachines(ctx, routed.event, eligible)
+	}
+	result, err := service.Store.EnqueueForMachines(ctx, routed.event, eligible)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
+	if result.Duplicate {
+		service.narrateLine(delivery.Event, routed.event.Repository, "duplicate delivery "+routed.event.ID+"; dropped")
+		return result, nil
+	}
+	service.narrateLine(delivery.Event, routed.event.Repository, fmt.Sprintf("queued for %d machines", result.Enqueued))
+	return result, nil
 }
 
 func (service RepositoryEventService) machinesForRepository(ctx context.Context, repository string) ([]Machine, error) {
@@ -159,9 +208,13 @@ func (service RepositoryEventService) Acknowledge(ctx context.Context, machine M
 	return response, nil
 }
 
-func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, error) {
+// translateWebhook maps a delivery onto the repository event it implies. The
+// third return value is the plain-words reason the delivery was ignored, set
+// only when the second is false: an ignored delivery is still narrated, and
+// the operator needs to know why this push produced nothing.
+func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, string, error) {
 	if !validWebhookDeliveryID(delivery.ID) {
-		return routedRepositoryEvent{}, false, errors.New("invalid webhook delivery ID")
+		return routedRepositoryEvent{}, false, "", errors.New("invalid webhook delivery ID")
 	}
 	switch delivery.Event {
 	case "push":
@@ -180,13 +233,13 @@ func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, er
 			} `json:"head_commit"`
 		}
 		if err := decodeWebhook(delivery.Payload, &payload); err != nil {
-			return routedRepositoryEvent{}, false, err
+			return routedRepositoryEvent{}, false, "", err
 		}
 		if payload.Repository.ID <= 0 || payload.Installation.ID <= 0 {
-			return routedRepositoryEvent{}, false, errors.New("webhook repository ID is invalid")
+			return routedRepositoryEvent{}, false, "", errors.New("webhook repository ID is invalid")
 		}
 		if payload.Ref != "refs/heads/"+payload.Repository.DefaultBranch {
-			return routedRepositoryEvent{}, false, nil
+			return routedRepositoryEvent{}, false, "not on default branch", nil
 		}
 		var occurredAt *time.Time
 		if payload.HeadCommit != nil && !payload.HeadCommit.Timestamp.IsZero() {
@@ -195,9 +248,9 @@ func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, er
 		}
 		event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: delivery.ID + ":default", Repository: canonicalRepository(payload.Repository.FullName), Ref: payload.Ref, Reason: repositoryevent.ReasonDefaultBranchUpdated, TargetSHA: payload.After, OccurredAt: occurredAt}
 		if err := event.Validate(); err != nil {
-			return routedRepositoryEvent{}, false, err
+			return routedRepositoryEvent{}, false, "", err
 		}
-		return routedRepositoryEvent{event: event, installationID: payload.Installation.ID, repositoryID: payload.Repository.ID}, true, nil
+		return routedRepositoryEvent{event: event, installationID: payload.Installation.ID, repositoryID: payload.Repository.ID}, true, "", nil
 	case "repository":
 		var payload struct {
 			Action       string `json:"action"`
@@ -225,24 +278,24 @@ func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, er
 			} `json:"changes"`
 		}
 		if err := decodeWebhook(delivery.Payload, &payload); err != nil {
-			return routedRepositoryEvent{}, false, err
+			return routedRepositoryEvent{}, false, "", err
 		}
 		if payload.Action != "renamed" && payload.Action != "transferred" {
-			return routedRepositoryEvent{}, false, nil
+			return routedRepositoryEvent{}, false, "not a rename or transfer", nil
 		}
 		if payload.Repository.ID <= 0 || payload.Installation.ID <= 0 {
-			return routedRepositoryEvent{}, false, errors.New("webhook repository ID is invalid")
+			return routedRepositoryEvent{}, false, "", errors.New("webhook repository ID is invalid")
 		}
 		current := canonicalRepository(payload.Repository.FullName)
 		owner, currentName, found := strings.Cut(strings.TrimPrefix(current, "github.com/"), "/")
 		if !found {
-			return routedRepositoryEvent{}, false, errors.New("invalid renamed repository")
+			return routedRepositoryEvent{}, false, "", errors.New("invalid renamed repository")
 		}
 		previousOwner := owner
 		previousName := payload.Changes.Repository.Name.From
 		if payload.Action == "transferred" {
 			if payload.Changes.Owner.From.User == nil {
-				return routedRepositoryEvent{}, false, errors.New("transferred repository has no previous owner")
+				return routedRepositoryEvent{}, false, "", errors.New("transferred repository has no previous owner")
 			}
 			previousOwner = payload.Changes.Owner.From.User.Login
 			previousName = currentName
@@ -256,11 +309,11 @@ func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, er
 			Reason:             repositoryevent.ReasonRepositoryRenamed,
 		}
 		if err := event.Validate(); err != nil {
-			return routedRepositoryEvent{}, false, err
+			return routedRepositoryEvent{}, false, "", err
 		}
-		return routedRepositoryEvent{event: event, installationID: payload.Installation.ID, repositoryID: payload.Repository.ID}, true, nil
+		return routedRepositoryEvent{event: event, installationID: payload.Installation.ID, repositoryID: payload.Repository.ID}, true, "", nil
 	default:
-		return routedRepositoryEvent{}, false, nil
+		return routedRepositoryEvent{}, false, "unsupported event", nil
 	}
 }
 
