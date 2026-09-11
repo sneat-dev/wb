@@ -326,6 +326,7 @@ func TestCollectionsListsEveryCollectionTheStoresWriteTo(t *testing.T) {
 		machineCredentialCollection,
 		machineEnrollmentCollection,
 		machineSnapshotCollection,
+		pollObservationCollection,
 		installationStateCollection,
 		installationIdentityCollection,
 		installationIndexCollection,

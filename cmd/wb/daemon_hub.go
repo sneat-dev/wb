@@ -10,10 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp"
 	"github.com/sneat-dev/wb/hub"
+	"github.com/sneat-dev/wb/hub/narrate"
+	"github.com/sneat-dev/wb/hub/poller"
 	"github.com/sneat-dev/wb/hub/web"
+	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/hubstore"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -36,7 +40,16 @@ type hubMount struct {
 	Machine      string
 	DashboardURL string
 	Mounts       map[string]http.Handler
-	closer       io.Closer
+	// Poller is nil when hub.github.token_file is unset: without a token
+	// there is nothing to ask GitHub with, so the hub serves the dashboard
+	// and waits for webhooks instead.
+	Poller *poller.Poller
+	// Interval is the configured poll interval, reported by
+	// `wb daemon status` whether or not polling is active.
+	Interval time.Duration
+	closer   io.Closer
+	status   *hub.StatusService
+	viewer   hub.Viewer
 }
 
 // Close releases the store engine. Safe on a nil mount so callers can defer
@@ -55,6 +68,52 @@ func (mount *hubMount) handlers() map[string]http.Handler {
 		return nil
 	}
 	return mount.Mounts
+}
+
+// health is what /api/v1/health reports about the hub, and therefore what
+// `wb daemon status` in another process can see. A status read that fails is
+// reported as "no delivery yet" rather than failing the health endpoint: an
+// operator needs health most when something is already wrong.
+func (mount *hubMount) health(ctx context.Context) dashboard.HubHealth {
+	value := dashboard.HubHealth{Mounted: true, Polling: mount.Poller != nil, PollIntervalSeconds: mount.Interval.Seconds()}
+	if mount.Poller != nil {
+		value.RepositoriesPolled = mount.Poller.Repositories()
+	}
+	if mount.status == nil {
+		return value
+	}
+	response, err := mount.status.Read(ctx, mount.viewer)
+	if err != nil || response.Delivery == nil {
+		return value
+	}
+	value.LastEventReceived = hubDeliveryMarker(response.Delivery.LastReceived)
+	value.LastEventAcknowledged = hubDeliveryMarker(response.Delivery.LastAcknowledged)
+	return value
+}
+
+// hubHealth returns the health hook the dashboard mounts, or nil when there
+// is no hub, so the health payload keeps its exact previous shape.
+func (mount *hubMount) hubHealth() func(context.Context) dashboard.HubHealth {
+	if mount == nil {
+		return nil
+	}
+	return mount.health
+}
+
+func hubDeliveryMarker(marker *hub.StatusDeliveryMarker) *dashboard.HubDeliveryMarker {
+	if marker == nil {
+		return nil
+	}
+	return &dashboard.HubDeliveryMarker{ID: marker.DeliveryID, Event: marker.Event, OccurredAt: marker.OccurredAt}
+}
+
+// startPolling runs the poller until ctx ends. It is a no-op without a token
+// file, so callers need no branch.
+func (mount *hubMount) startPolling(ctx context.Context) {
+	if mount == nil || mount.Poller == nil {
+		return
+	}
+	go func() { _ = mount.Poller.Run(ctx) }()
 }
 
 // StartLine is the single line the daemon prints on stderr when a hub is
@@ -76,7 +135,7 @@ func (resolver fixedViewerResolver) Viewer(*http.Request) (hub.Viewer, error) {
 // mountHub builds the hub and the embedded dashboard when wb.yaml has a hub
 // section. It returns (nil, nil) when the section is absent, which is the
 // path every operator who does not self-host takes.
-func mountHub(ctx context.Context, configPath, listenAddress string) (*hubMount, error) {
+func mountHub(ctx context.Context, configPath, listenAddress string, writer narrate.Writer) (*hubMount, error) {
 	cfg, found, err := hubconfig.Load(configPath)
 	if err != nil || !found {
 		return nil, err
@@ -85,7 +144,7 @@ func mountHub(ctx context.Context, configPath, listenAddress string) (*hubMount,
 	if err != nil {
 		return nil, err
 	}
-	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress)
+	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress, writer)
 	if err != nil {
 		_ = closer.Close()
 		return nil, err
@@ -94,7 +153,7 @@ func mountHub(ctx context.Context, configPath, listenAddress string) (*hubMount,
 	return mount, nil
 }
 
-func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string) (*hubMount, error) {
+func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string, writer narrate.Writer) (*hubMount, error) {
 	machine, err := localMachineName(configPath)
 	if err != nil {
 		return nil, err
@@ -110,6 +169,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	viewer := hub.Viewer{Authenticated: true, IdentityID: localIdentityID, DisplayName: machine}
 	enrollment := &hub.MachineEnrollmentService{Store: credentials, Pepper: pepper}
 	snapshotService := &hub.MachineSnapshotService{Store: snapshots}
+	status := &hub.StatusService{Bindings: bindings, Snapshots: snapshots, Events: eventStatus, AppName: localIdentityID}
 
 	handler := hub.NewHandler(hub.HandlerOptions{
 		ViewerResolver: fixedViewerResolver{viewer: viewer},
@@ -118,13 +178,13 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Snapshots:      snapshotService,
 		RepositoryEvents: &hub.RepositoryEventService{
 			Snapshots: snapshots, Entitlements: entitlements, Lifecycle: lifecycle, Store: events,
+			Narrate: writer.Write,
 		},
-		Status: &hub.StatusService{
-			Bindings: bindings, Snapshots: snapshots, Events: eventStatus, AppName: localIdentityID,
-		},
+		Status: status,
 		// Installations, Projection and WebhookSecret stay unset: every route
 		// family they gate answers 503 until Task 3 wires the GitHub App.
 		AllowedOrigin: "http://" + listenAddress,
+		Narrate:       writer.Write,
 	})
 
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
@@ -135,11 +195,52 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Store:        cfg.Location(),
 		Machine:      machine,
 		DashboardURL: "http://" + listenAddress + web.MountPath + "dashboard/",
+		Poller:       newHubPoller(cfg, store, snapshots, events, machine, writer),
+		Interval:     cfg.GitHub.PollInterval,
+		status:       status,
+		viewer:       viewer,
 		Mounts: map[string]http.Handler{
 			hub.APIPrefix + "/": handler,
 			web.MountPath:       web.Handler(),
 		},
 	}, nil
+}
+
+// newHubPoller builds the polling ingester, or returns nil when no token file
+// is configured. Polling is the only ingestion a self-hoster gets by default,
+// and a token is the only thing it needs.
+func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer) *poller.Poller {
+	if strings.TrimSpace(cfg.GitHub.TokenFile) == "" {
+		return nil
+	}
+	return poller.New(poller.Options{
+		Client:       &http.Client{Timeout: 30 * time.Second},
+		Token:        hubGitHubToken(cfg.GitHub.TokenFile),
+		Snapshots:    snapshots,
+		Events:       events,
+		Observations: hub.NewPollObservationStore(store),
+		Machine:      hub.Machine{ID: hub.MachineID(localIdentityID, machine), Name: machine, IdentityID: localIdentityID},
+		Interval:     cfg.GitHub.PollInterval,
+		Narrate:      writer.Write,
+	})
+}
+
+// hubGitHubToken reads the operator's token from its file on every tick, so
+// rotating the file takes effect without restarting the daemon. The token
+// itself never leaves this closure: an error names the path, never the
+// contents.
+func hubGitHubToken(path string) func() (string, error) {
+	return func() (string, error) {
+		raw, err := os.ReadFile(path) //nolint:gosec // operator-owned private token path from their own configuration.
+		if err != nil {
+			return "", fmt.Errorf("read hub GitHub token file: %w", err)
+		}
+		token := strings.TrimSpace(string(raw))
+		if token == "" {
+			return "", fmt.Errorf("hub GitHub token file %s is empty", path)
+		}
+		return token, nil
+	}
 }
 
 // hubStateDirectory is where the pepper lives. It follows the inGitDB project
