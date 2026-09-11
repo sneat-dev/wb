@@ -5,6 +5,15 @@ project_name: wb
 before:
   hooks:
     - go mod tidy -diff
+    # The bench dashboard is embedded in the binary by hub/web/embed.go, and
+    # hub/web/dist is git-ignored, so a release that does not build it would
+    # ship a wb whose /bench/ serves the "not built" page. The release runner
+    # is ubuntu-latest, which already has Node and corepack; corepack pins
+    # pnpm to the version in hub/web/package.json.
+    - sh -c 'corepack enable pnpm && cd hub/web && pnpm install --frozen-lockfile && pnpm build'
+    # A build that emitted nothing must fail the release here rather than
+    # ship a binary that looks fine until someone opens the dashboard.
+    - sh -c 'test -f hub/web/dist/dashboard/index.html'
 
 builds:
   - id: wb

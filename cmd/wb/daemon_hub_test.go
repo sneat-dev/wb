@@ -193,7 +193,7 @@ func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
 	configPath := memoryHubConfig(t)
 	address := "127.0.0.1:8799"
 
-	first, err := mountHub(ctx, configPath, address, narrate.Writer{})
+	first, err := mountHub(ctx, configPath, address, narrate.Writer{}, nil)
 	if err != nil || first == nil {
 		t.Fatalf("mountHub = %v, %v", first, err)
 	}
@@ -232,7 +232,7 @@ func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
 	// credential it must not. Re-running mountHub here proves the detection
 	// itself: the token file and remote section are unchanged, and the only
 	// reason a new credential is minted is that the memory store lost it.
-	second, err := mountHub(ctx, configPath, address, narrate.Writer{})
+	second, err := mountHub(ctx, configPath, address, narrate.Writer{}, nil)
 	if err != nil || second == nil {
 		t.Fatalf("second mountHub = %v, %v", second, err)
 	}
@@ -366,7 +366,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 // TestMountHubDoesNothingWithoutAHubSection is the contract for every
 // operator who does not self-host.
 func TestMountHubDoesNothingWithoutAHubSection(t *testing.T) {
-	mount, err := mountHub(context.Background(), filepath.Join(t.TempDir(), "absent.yaml"), "127.0.0.1:8797", narrate.Writer{})
+	mount, err := mountHub(context.Background(), filepath.Join(t.TempDir(), "absent.yaml"), "127.0.0.1:8797", narrate.Writer{}, nil)
 	if err != nil || mount != nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
@@ -376,7 +376,7 @@ func TestMountHubDoesNothingWithoutAHubSection(t *testing.T) {
 }
 
 func TestMountHubSurfacesAnInvalidSection(t *testing.T) {
-	if _, err := mountHub(context.Background(), hubTestConfig(t, "hub:\n  store:\n    engine: postgres\n"), "127.0.0.1:8796", narrate.Writer{}); err == nil {
+	if _, err := mountHub(context.Background(), hubTestConfig(t, "hub:\n  store:\n    engine: postgres\n"), "127.0.0.1:8796", narrate.Writer{}, nil); err == nil {
 		t.Fatal("an invalid hub section was mounted")
 	}
 	// An engine that cannot open is a mount failure, not a silent no-op.
@@ -384,7 +384,7 @@ func TestMountHubSurfacesAnInvalidSection(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mountHub(context.Background(), hubTestConfig(t, "hub:\n  store:\n    engine: ingitdb\n    path: "+blocked+"\n"), "127.0.0.1:8796", narrate.Writer{}); err == nil {
+	if _, err := mountHub(context.Background(), hubTestConfig(t, "hub:\n  store:\n    engine: ingitdb\n    path: "+blocked+"\n"), "127.0.0.1:8796", narrate.Writer{}, nil); err == nil {
 		t.Fatal("an unopenable store was mounted")
 	}
 }

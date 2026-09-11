@@ -67,8 +67,13 @@ type daemonHubStatus struct {
 	// running daemon's health endpoint, because only the serving process has
 	// them: reading the hub store from this process would open a second
 	// writer to the operator's inGitDB project.
-	Polling               bool                  `json:"polling"`
-	PollInterval          string                `json:"poll_interval,omitempty"`
+	Polling      bool   `json:"polling"`
+	PollInterval string `json:"poll_interval,omitempty"`
+	// Webhook and WebhookPublicURL also come from the declaration: an App is
+	// configured or it is not, and the URL is where the operator's tunnel must
+	// forward GitHub's deliveries.
+	Webhook               bool                  `json:"webhook"`
+	WebhookPublicURL      string                `json:"webhook_public_url,omitempty"`
 	RepositoriesPolled    int                   `json:"repositories_polled"`
 	LastEventReceived     *daemonHubEventMarker `json:"last_event_received,omitempty"`
 	LastEventAcknowledged *daemonHubEventMarker `json:"last_event_acknowledged,omitempty"`
@@ -129,6 +134,9 @@ type daemonDependencies struct {
 	localClient   func(string, string) (*http.Client, error)
 	hubConfigPath func() string
 	hubHealth     func(context.Context, string) (daemonHubStatus, error)
+	// hubTuning is nil everywhere but the whole-journey end-to-end test; see
+	// the type's documentation.
+	hubTuning *hubTuning
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -191,7 +199,13 @@ With hub.github.token_file set, a poller reads every repository this machine
 publishes and narrates one line on stderr for each webhook delivery and each
 poll observation: the event, the repository, and what the hub did with it.
 --quiet silences those console lines. wb daemon start never passes it, so a
-detached daemon's log file keeps every line.`,
+detached daemon's log file keeps every line.
+
+With hub.github.app set as well, signed GitHub deliveries at
+/v0/workbench/github/webhook are verified and enqueued, repositories the App
+covers come off the poller, and the start line ends with webhook=on and the
+public URL. wb starts no tunnel: forward that URL to this listener yourself
+with your own cloudflared or ngrok credentials — see hub/README.md.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireLoopbackAddress(listenAddress); err != nil {
@@ -346,7 +360,10 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 		_, err = fmt.Fprintf(out, ", hub_engine=%s, hub_store=%q, hub_listen=%s", result.Hub.Engine, result.Hub.Store, result.Hub.Listen)
 	}
 	if err == nil && result.Hub.Mounted {
-		_, err = fmt.Fprintf(out, ", hub_polling=%t, hub_poll_interval=%s, hub_repositories_polled=%d", result.Hub.Polling, result.Hub.PollInterval, result.Hub.RepositoriesPolled)
+		_, err = fmt.Fprintf(out, ", hub_polling=%t, hub_poll_interval=%s, hub_repositories_polled=%d, hub_webhook=%t", result.Hub.Polling, result.Hub.PollInterval, result.Hub.RepositoriesPolled, result.Hub.Webhook)
+	}
+	if err == nil && result.Hub.WebhookPublicURL != "" {
+		_, err = fmt.Fprintf(out, ", hub_webhook_public_url=%s", result.Hub.WebhookPublicURL)
 	}
 	if err == nil && result.Hub.LastEventReceived != nil {
 		_, err = fmt.Fprintf(out, ", hub_last_event_received=%q", result.Hub.LastEventReceived.ID)
@@ -469,6 +486,10 @@ func (controller daemonController) hubStatus(ctx context.Context, listen string)
 	status := daemonHubStatus{
 		Mounted: true, Engine: cfg.Store.Engine, Store: cfg.Location(), Listen: listen,
 		Polling: strings.TrimSpace(cfg.GitHub.TokenFile) != "", PollInterval: cfg.GitHub.PollInterval.String(),
+		Webhook: cfg.GitHub.App != nil,
+	}
+	if cfg.GitHub.App != nil {
+		status.WebhookPublicURL = cfg.GitHub.App.PublicURL
 	}
 	health := controller.deps.hubHealth
 	if health == nil || listen == "" {
@@ -798,7 +819,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// Narration goes to stderr, which is where the detached daemon's log file
 	// already points, so there is no second writer to mirror into.
 	narrator := narrate.Writer{Out: command.ErrOrStderr(), Quiet: quiet}
-	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator)
+	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("mount the bench hub: %w", err)
@@ -817,7 +838,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
 	queue.StartLeaseRecovery(ctx)
-	if err := startRepositoryEventReceiver(ctx, projectsRoot, command.ErrOrStderr()); err != nil {
+	if err := startRepositoryEventReceiver(ctx, projectsRoot, hubConfigPath(), command.ErrOrStderr()); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "repository event receiver disabled:", err)
 	}
 	go func() {
@@ -849,7 +870,7 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	return err
 }
 
-func startRepositoryEventReceiver(ctx context.Context, projectsRoot string, out io.Writer) error {
+func startRepositoryEventReceiver(ctx context.Context, projectsRoot, configPath string, out io.Writer) error {
 	eventQueue, err := repositoryevents.NewQueue(projectsRoot)
 	if err != nil {
 		return err
@@ -857,7 +878,7 @@ func startRepositoryEventReceiver(ctx context.Context, projectsRoot string, out 
 	progress := func(message string) { _, _ = fmt.Fprintln(out, message) }
 	go eventQueue.Run(ctx, repositoryevents.SyncProcessor{ProjectsRoot: projectsRoot}, progress)
 
-	config, err := remotestate.LoadConfig(wbconfig.DefaultPath())
+	config, err := remotestate.LoadConfig(configPath)
 	if err != nil {
 		var unconfigured *remotestate.UnconfiguredError
 		if errors.As(err, &unconfigured) {
