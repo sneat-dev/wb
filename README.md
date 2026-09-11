@@ -2255,10 +2255,10 @@ execution.
 
 `hub/` is the server side of bench: the GitHub App, OAuth, installation,
 repository-event and status services that the CLI and dashboard talk to. A
-host mounts it on a `githubapp.FirestoreBackend` (the public wire contracts
+host mounts it on a `githubapp.DocumentStore` (the public wire contracts
 live in `api/githubapp` and its `machinesnapshot`/`repositoryevent`
-subpackages) and supplies its own Firebase, Firestore, and secret
-configuration adapters; see `hub/README.md` and `hub/docs/architecture.md`
+subpackages, and `api/githubapp/dalgostore` implements the store on DALgo)
+and supplies its own Firebase identity and secret configuration adapters; see `hub/README.md` and `hub/docs/architecture.md`
 for the trust boundaries, protocols, and wire format.
 
 ## Build from source

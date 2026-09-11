@@ -140,19 +140,19 @@ or invalid PKCS1/PKCS8 RSA keys, transport failures, oversized or malformed
 responses, unexpected status codes, and expired tokens fail closed. Errors do
 not include the PEM key, JWT, token, or response body.
 
-## Firestore adapter schema
+## Document store schema
 
-The host may bind `FirestoreProjectionStore`, `FirestoreProjectionWriter`, and
-`FirestoreProjectionDeliveryStore` through the small `FirestoreBackend` seam.
+The host may bind `DocumentProjectionStore`, `DocumentProjectionWriter`, and
+`DocumentProjectionDeliveryStore` through the small `DocumentStore` seam.
 Projection documents live in `workbench_projections/{ProjectionKey(scope,id)}`;
 series and leaderboards use `workbench_series` and `workbench_leaderboards`;
 the public merge snapshot is `workbench_latest_merges/public`. Delivery state
 uses `workbench_deliveries/{deliveryID}`, and coalesced wakeups use
 `workbench_wakeups/{sha256(wakeupKey)}` while retaining the canonical key in
 the wakeup body. Delivery claims carry a bounded lease and expire into
-retryable work. Hosts supply the actual Firestore client and
-transaction implementation; this package contains no Firebase or Firestore
-SDK dependency.
+retryable work. `dalgostore.New` implements the seam on DALgo, so the hosted
+instance runs on dalgo2firestore and a self-hoster picks any DALgo engine;
+this package contains no Firebase or Firestore SDK dependency.
 
 The public merge document is a bounded, newest-first aggregate. Each eligible
 repository refresh atomically replaces only that repository's contribution and

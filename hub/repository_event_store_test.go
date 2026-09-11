@@ -773,3 +773,22 @@ func TestAcknowledgeRetiresDeliveredEventsFromTheMachineQueue(t *testing.T) {
 		t.Fatalf("poll after acknowledge = %+v, %v", next, err)
 	}
 }
+
+// TestEnqueueForMachinesReadsEachIdentityReceiptOnce covers the transaction
+// ordering rule: every per-identity status document is read before the first
+// write (Firestore rejects reads after writes), and two machines under one
+// identity share a single read and a single receipt write.
+func TestEnqueueForMachinesReadsEachIdentityReceiptOnce(t *testing.T) {
+	backend := newFirestoreMemoryBackend()
+	store := repositoryEventStore{backend: backend, now: fixedNow(t)}
+	first := Machine{ID: "m1", Name: "laptop", IdentityID: "shared-identity"}
+	second := Machine{ID: "m2", Name: "desktop", IdentityID: "shared-identity"}
+	result, err := store.EnqueueForMachines(context.Background(), testRepositoryEvent("evt-shared"), []Machine{first, second})
+	if err != nil || result.Enqueued != 2 {
+		t.Fatalf("enqueue = %+v, %v", result, err)
+	}
+	received, pending, _, err := store.IdentityRepositoryEventStatus(context.Background(), "shared-identity")
+	if err != nil || received == nil || received.LastReceived == nil || received.LastReceived.DeliveryID != "evt-shared" || len(pending) != 2 {
+		t.Fatalf("identity status = %+v, %+v, %v", received, pending, err)
+	}
+}

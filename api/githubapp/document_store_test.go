@@ -18,7 +18,7 @@ type firestoreQuery struct {
 type firestoreFake struct {
 	documents    map[string]json.RawMessage
 	queries      []firestoreQuery
-	updateAtomic func(context.Context, func(FirestoreTransaction) error) error
+	updateAtomic func(context.Context, func(DocumentTransaction) error) error
 	getErr       error
 	setErr       error
 }
@@ -76,7 +76,7 @@ func (fake *firestoreFake) Delete(_ context.Context, collection, id string) erro
 	delete(fake.documents, fake.key(collection, id))
 	return nil
 }
-func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(FirestoreTransaction) error) error {
+func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(DocumentTransaction) error) error {
 	if fake.updateAtomic != nil {
 		return fake.updateAtomic(ctx, fn)
 	}
@@ -85,7 +85,7 @@ func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(FirestoreTr
 
 func mustJSON(value any) []byte { raw, _ := json.Marshal(value); return raw }
 
-func TestFirestoreProjectionStoreReadsDocumentContracts(t *testing.T) {
+func TestProjectionStoreReadsDocumentContracts(t *testing.T) {
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	repository := ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/app", DisplayName: "app", UpdatedAt: time.Unix(1, 0)}
@@ -105,7 +105,7 @@ func TestFirestoreProjectionStoreReadsDocumentContracts(t *testing.T) {
 	if err := fake.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: []LatestMerge{{Repository: repository.ID, PullRequest: 1}, {Repository: repository.ID, PullRequest: 2}}}); err != nil {
 		t.Fatal(err)
 	}
-	store := FirestoreProjectionStore{Backend: fake}
+	store := DocumentProjectionStore{Backend: fake}
 	if got, err := store.GetProjection(ctx, repository.Scope, repository.ID); err != nil || got.ID != repository.ID {
 		t.Fatalf("GetProjection = %#v, %v", got, err)
 	}
@@ -135,9 +135,9 @@ func TestFirestoreProjectionStoreReadsDocumentContracts(t *testing.T) {
 	}
 }
 
-func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
+func TestProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
-	writer := FirestoreProjectionWriter{Backend: fake}
+	writer := DocumentProjectionWriter{Backend: fake}
 	ctx := context.Background()
 	record := ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/app", DisplayName: "app", UpdatedAt: time.Unix(1, 0)}
 	if err := writer.WriteRepositories(ctx, "delivery-1", []ProjectionDocument{record}); err != nil {
@@ -160,7 +160,7 @@ func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 	}
 }
 
-func TestFirestoreProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t *testing.T) {
+func TestProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t *testing.T) {
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	other := LatestMerge{Repository: "github.com/acme/other", PullRequest: 2, MergedAt: time.Unix(20, 0)}
@@ -169,7 +169,7 @@ func TestFirestoreProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t
 	if err := fake.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: []LatestMerge{stale, other, sameTimeOther}}); err != nil {
 		t.Fatal(err)
 	}
-	writer := FirestoreProjectionWriter{Backend: fake}
+	writer := DocumentProjectionWriter{Backend: fake}
 	replacement := LatestMerge{Repository: "github.com/acme/app", PullRequest: 3, MergedAt: time.Unix(30, 0)}
 	batch := RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{replacement}}
 	if err := writer.WriteLatestMerges(ctx, "delivery-public", batch); err != nil {
@@ -178,7 +178,7 @@ func TestFirestoreProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t
 	if err := writer.WriteLatestMerges(ctx, "delivery-public", batch); err != nil {
 		t.Fatal(err)
 	}
-	got, err := (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
+	got, err := (DocumentProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,16 +188,16 @@ func TestFirestoreProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t
 	if err := writer.WriteLatestMerges(ctx, "delivery-private", RepositoryLatestMerges{Repository: "github.com/ACME/app"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err = (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
+	got, err = (DocumentProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
 	if err != nil || len(got.Entries) != 2 || got.Entries[0].Repository != sameTimeOther.Repository || got.Entries[1].Repository != other.Repository {
 		t.Fatalf("after opt-out = %#v, %v", got.Entries, err)
 	}
 }
 
-func TestFirestoreProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T) {
+func TestProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T) {
 	ctx := context.Background()
 	valid := RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true}
-	for name, writer := range map[string]FirestoreProjectionWriter{
+	for name, writer := range map[string]DocumentProjectionWriter{
 		"missing backend": {},
 		"read failure":    {Backend: &firestoreFake{documents: map[string]json.RawMessage{}, getErr: errors.New("read")}},
 		"write failure":   {Backend: &firestoreFake{documents: map[string]json.RawMessage{}, setErr: errors.New("write")}},
@@ -208,7 +208,7 @@ func TestFirestoreProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *t
 			}
 		})
 	}
-	writer := FirestoreProjectionWriter{Backend: &firestoreFake{documents: map[string]json.RawMessage{}}}
+	writer := DocumentProjectionWriter{Backend: &firestoreFake{documents: map[string]json.RawMessage{}}}
 	if err := writer.WriteLatestMerges(ctx, "", valid); err == nil {
 		t.Fatal("empty delivery ID accepted")
 	}
@@ -217,17 +217,17 @@ func TestFirestoreProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *t
 	}
 }
 
-func TestFirestoreProjectionWriterBoundsAndDeterministicallySortsLatestMerges(t *testing.T) {
+func TestProjectionWriterBoundsAndDeterministicallySortsLatestMerges(t *testing.T) {
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	entries := make([]LatestMerge, maxPublicLatestMerges+1)
 	for i := range entries {
 		entries[i] = LatestMerge{Repository: "github.com/acme/app", PullRequest: i + 1, MergedAt: time.Unix(1, 0)}
 	}
-	writer := FirestoreProjectionWriter{Backend: fake}
+	writer := DocumentProjectionWriter{Backend: fake}
 	if err := writer.WriteLatestMerges(context.Background(), "delivery", RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: entries}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(context.Background(), maxPublicLatestMerges)
+	got, err := (DocumentProjectionStore{Backend: fake}).ListPublicLatestMerges(context.Background(), maxPublicLatestMerges)
 	if err != nil || len(got.Entries) != maxPublicLatestMerges || got.Entries[0].PullRequest != maxPublicLatestMerges+1 {
 		t.Fatalf("bounded merges = %#v, %v", got.Entries, err)
 	}
@@ -238,13 +238,13 @@ func TestFirestoreDeliveryOutcomesFollowFinalTransactionAttempt(t *testing.T) {
 	first := &firestoreFake{documents: map[string]json.RawMessage{}}
 	second := &firestoreFake{documents: map[string]json.RawMessage{}}
 	backend := &firestoreFake{documents: map[string]json.RawMessage{}}
-	backend.updateAtomic = func(ctx context.Context, fn func(FirestoreTransaction) error) error {
+	backend.updateAtomic = func(ctx context.Context, fn func(DocumentTransaction) error) error {
 		if err := fn(first); err != nil {
 			return err
 		}
 		return fn(second)
 	}
-	store := FirestoreProjectionDeliveryStore{Backend: backend, Now: func() time.Time { return now }, Lease: time.Minute}
+	store := DocumentProjectionDeliveryStore{Backend: backend, Now: func() time.Time { return now }, Lease: time.Minute}
 	if err := second.Set(context.Background(), deliveryCollection, "claim", firestoreDeliveryRecord{Status: "claimed", LeaseUntil: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
@@ -262,13 +262,13 @@ func TestFirestoreDeliveryOutcomesFollowFinalTransactionAttempt(t *testing.T) {
 	}
 }
 
-func TestFirestoreProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T) {
-	if _, err := (FirestoreProjectionDeliveryStore{}).HasDelivery(context.Background(), "missing"); err == nil {
+func TestProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T) {
+	if _, err := (DocumentProjectionDeliveryStore{}).HasDelivery(context.Background(), "missing"); err == nil {
 		t.Fatal("nil delivery backend did not fail closed")
 	}
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	now := time.Unix(100, 0)
-	store := FirestoreProjectionDeliveryStore{Backend: fake, Now: func() time.Time { return now }, Lease: time.Minute}
+	store := DocumentProjectionDeliveryStore{Backend: fake, Now: func() time.Time { return now }, Lease: time.Minute}
 	ctx := context.Background()
 	claimed, err := store.ClaimDelivery(ctx, "delivery-1")
 	if err != nil || !claimed {
@@ -306,13 +306,13 @@ func TestFirestoreProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T
 // inside the same atomic update that transitions it, so a replay cannot read a
 // state that was already spent. The port must therefore expose Delete on the
 // transaction, and the host's transaction must honor it.
-func TestFirestoreTransactionDeleteConsumesDocumentAtomically(t *testing.T) {
+func TestDocumentTransactionDeleteConsumesDocumentAtomically(t *testing.T) {
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	if err := fake.Set(ctx, "installation-states", "digest-1", map[string]string{"kind": "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	err := fake.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+	err := fake.UpdateAtomic(ctx, func(tx DocumentTransaction) error {
 		var state map[string]string
 		found, getErr := tx.Get(ctx, "installation-states", "digest-1", &state)
 		if getErr != nil || !found {

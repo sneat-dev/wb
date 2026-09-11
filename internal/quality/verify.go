@@ -467,6 +467,23 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return runWithEnv(ctx, nil, dir, name, args...)
 }
 
+// runStdout is run for commands whose stdout is parsed line by line: stderr
+// is kept out of the result so a "go: downloading ..." notice from the Go
+// tool never masquerades as a package path, and is surfaced only through
+// the error.
+func runStdout(ctx context.Context, dir, name string, args ...string) (string, error) {
+	command := process.CommandContext(ctx, name, args...)
+	command.Dir = dir
+	command.Env = commandEnv(dir, name, nil)
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil && stderr.Len() > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return string(output), err
+}
+
 func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir

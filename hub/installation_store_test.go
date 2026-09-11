@@ -1250,7 +1250,7 @@ func TestReadInstallationRepositoryChunksErrors(t *testing.T) {
 	collection := installationRepositoryCollection(installations, installation.ID, installation.RepositoryGeneration)
 
 	t.Run("missing chunk", func(t *testing.T) {
-		if err := backend.UpdateAtomic(context.Background(), func(transaction githubapp.FirestoreTransaction) error {
+		if err := backend.UpdateAtomic(context.Background(), func(transaction githubapp.DocumentTransaction) error {
 			_, chunkErr := readInstallationRepositoryChunks(context.Background(), transaction, installations, installation)
 			return chunkErr
 		}); err == nil {
@@ -1260,7 +1260,7 @@ func TestReadInstallationRepositoryChunksErrors(t *testing.T) {
 
 	t.Run("Get error", func(t *testing.T) {
 		backend.failGet = failOnCollection(collection)
-		if err := backend.UpdateAtomic(context.Background(), func(transaction githubapp.FirestoreTransaction) error {
+		if err := backend.UpdateAtomic(context.Background(), func(transaction githubapp.DocumentTransaction) error {
 			_, chunkErr := readInstallationRepositoryChunks(context.Background(), transaction, installations, installation)
 			return chunkErr
 		}); err == nil {

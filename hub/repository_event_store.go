@@ -31,10 +31,10 @@ const (
 var errRepositoryEventStoreUnavailable = errors.New("workbench repository event store is unavailable")
 
 // NewRepositoryEventStore wires the provider-owned repository event store to
-// a host's github.com/sneat-dev/wb/api/githubapp FirestoreBackend. The
+// a host's github.com/sneat-dev/wb/api/githubapp DocumentStore. The
 // returned value implements both RepositoryEventStore and
 // RepositoryEventStatusStore.
-func NewRepositoryEventStore(backend githubapp.FirestoreBackend) (RepositoryEventStore, RepositoryEventStatusStore) {
+func NewRepositoryEventStore(backend githubapp.DocumentStore) (RepositoryEventStore, RepositoryEventStatusStore) {
 	store := repositoryEventStore{backend: backend}
 	return store, store
 }
@@ -77,7 +77,7 @@ type repositoryEventQueueState struct {
 }
 
 type repositoryEventStore struct {
-	backend githubapp.FirestoreBackend
+	backend githubapp.DocumentStore
 	now     func() time.Time
 }
 
@@ -101,7 +101,7 @@ func (store repositoryEventStore) EnqueueForMachines(ctx context.Context, event 
 	}
 	now := store.nowFunc()
 	eventDocumentID := repositoryEventDocumentID(event.ID)
-	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var marker repositoryEventMarker
 		found, getErr := transaction.Get(ctx, repositoryEventCollection, eventDocumentID, &marker)
 		if getErr != nil {
@@ -126,6 +126,20 @@ func (store repositoryEventStore) EnqueueForMachines(ctx context.Context, event 
 		if sequence.Value == int64(^uint64(0)>>1) {
 			return errors.New("repository event sequence is exhausted")
 		}
+		// Firestore transactions reject any read that follows a write, so
+		// every identity receipt is read here, before the first Set.
+		identityStates := make(map[string]repositoryEventIdentityState)
+		for _, machine := range machines {
+			if _, seen := identityStates[machine.IdentityID]; seen {
+				continue
+			}
+			var state repositoryEventIdentityState
+			if _, getErr := transaction.Get(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(machine.IdentityID), &state); getErr != nil {
+				return fmt.Errorf("read repository event receipt: %w", getErr)
+			}
+			identityStates[machine.IdentityID] = state
+		}
+
 		sequence.Value++
 		if setErr := transaction.Set(ctx, repositoryEventMetaCollection, repositoryEventSequenceDocument, sequence); setErr != nil {
 			return fmt.Errorf("advance repository event sequence: %w", setErr)
@@ -134,7 +148,6 @@ func (store repositoryEventStore) EnqueueForMachines(ctx context.Context, event 
 			return fmt.Errorf("write repository event marker: %w", setErr)
 		}
 
-		identityIDs := make(map[string]bool)
 		for _, machine := range machines {
 			queued := queuedRepositoryEvent{Sequence: sequence.Value, IdentityID: machine.IdentityID, MachineID: machine.ID, EnqueuedAt: now, Event: event}
 			if setErr := transaction.Set(ctx, repositoryEventQueueEventsCollection(machine.ID), repositoryEventQueueDocumentID(sequence.Value), queued); setErr != nil {
@@ -144,14 +157,9 @@ func (store repositoryEventStore) EnqueueForMachines(ctx context.Context, event 
 			if setErr := transaction.Set(ctx, repositoryEventPendingCollection(machine.IdentityID), repositoryEventPendingID(machine.ID, event.ID), pending); setErr != nil {
 				return fmt.Errorf("write pending repository refresh: %w", setErr)
 			}
-			identityIDs[machine.IdentityID] = true
 		}
 		lastReceived := StatusDeliveryMarker{DeliveryID: event.ID, Event: string(event.Reason), OccurredAt: now}
-		for identityID := range identityIDs {
-			var state repositoryEventIdentityState
-			if _, getErr := transaction.Get(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(identityID), &state); getErr != nil {
-				return fmt.Errorf("read repository event receipt: %w", getErr)
-			}
+		for identityID, state := range identityStates {
 			state.LastReceived = &lastReceived
 			if setErr := transaction.Set(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(identityID), state); setErr != nil {
 				return fmt.Errorf("write repository event receipt: %w", setErr)
@@ -242,7 +250,7 @@ func (store repositoryEventStore) Acknowledge(ctx context.Context, machine Machi
 		return repositoryevent.AckResponse{}, repositoryevent.ErrInvalidCursor
 	}
 	now := store.nowFunc()
-	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	err = store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var receipt repositoryEventPollReceipt
 		found, getErr := transaction.Get(ctx, repositoryEventQueuePollsCollection(machine.ID), repositoryEventPollReceiptID(request.Cursor), &receipt)
 		if getErr != nil || !found {
@@ -260,6 +268,12 @@ func (store repositoryEventStore) Acknowledge(ctx context.Context, machine Machi
 			return errors.New("repository event queue state is invalid")
 		}
 		if sequence > state.AcknowledgedSequence {
+			// Read the identity status before the first write: Firestore
+			// transactions reject reads that follow writes.
+			var identityState repositoryEventIdentityState
+			if _, getErr := transaction.Get(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(machine.IdentityID), &identityState); getErr != nil {
+				return fmt.Errorf("read repository event acknowledgement status: %w", getErr)
+			}
 			state.AcknowledgedSequence = sequence
 			state.AcknowledgedAt = now
 			if setErr := transaction.Set(ctx, repositoryEventQueueCollection, machine.ID, state); setErr != nil {
@@ -267,10 +281,6 @@ func (store repositoryEventStore) Acknowledge(ctx context.Context, machine Machi
 			}
 			lastEvent := receipt.Events[len(receipt.Events)-1]
 			lastAcknowledged := StatusDeliveryMarker{DeliveryID: lastEvent.ID, Event: string(lastEvent.Reason), OccurredAt: state.AcknowledgedAt}
-			var identityState repositoryEventIdentityState
-			if _, getErr := transaction.Get(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(machine.IdentityID), &identityState); getErr != nil {
-				return fmt.Errorf("read repository event acknowledgement status: %w", getErr)
-			}
 			identityState.LastAcknowledged = &lastAcknowledged
 			if setErr := transaction.Set(ctx, repositoryEventStatusCollection, repositoryEventIdentityDocumentID(machine.IdentityID), identityState); setErr != nil {
 				return fmt.Errorf("write repository event acknowledgement status: %w", setErr)

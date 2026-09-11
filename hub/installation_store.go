@@ -30,19 +30,19 @@ const (
 var errInstallationStoreUnavailable = errors.New("workbench GitHub installation store is unavailable")
 
 // NewInstallationStores wires the provider-owned installation stores to a
-// host's github.com/sneat-dev/wb/api/githubapp FirestoreBackend. The returned
+// host's github.com/sneat-dev/wb/api/githubapp DocumentStore. The returned
 // binding store also implements RepositoryEntitlementResolver and
 // InstallationLifecycleStore, so the same value can be assigned to every
 // matching field on InstallationConnectionService, RepositoryEventService,
 // and StatusService.
-func NewInstallationStores(backend githubapp.FirestoreBackend) (InstallationStateStore, InstallationBindingStore, RepositoryEntitlementResolver, InstallationLifecycleStore) {
+func NewInstallationStores(backend githubapp.DocumentStore) (InstallationStateStore, InstallationBindingStore, RepositoryEntitlementResolver, InstallationLifecycleStore) {
 	states := installationStateStore{backend: backend}
 	bindings := installationBindingStore{backend: backend}
 	return states, bindings, bindings, bindings
 }
 
 type installationStateStore struct {
-	backend githubapp.FirestoreBackend
+	backend githubapp.DocumentStore
 }
 
 func (store installationStateStore) IssueInstallationState(ctx context.Context, digest InstallationStateDigest, state InstallationState) error {
@@ -50,7 +50,7 @@ func (store installationStateStore) IssueInstallationState(ctx context.Context, 
 		return errInstallationStoreUnavailable
 	}
 	documentID := installationStateDocumentID(digest)
-	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var existing InstallationState
 		found, err := transaction.Get(ctx, installationStateCollection, documentID, &existing)
 		if err != nil {
@@ -87,7 +87,7 @@ func (store installationStateStore) TransitionInstallationState(ctx context.Cont
 	}
 	currentID := installationStateDocumentID(currentDigest)
 	nextID := installationStateDocumentID(nextDigest)
-	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var stored InstallationState
 		found, err := transaction.Get(ctx, installationStateCollection, currentID, &stored)
 		if err != nil {
@@ -119,7 +119,7 @@ func (store installationStateStore) ReplaceInstallationState(ctx context.Context
 		return errInstallationStoreUnavailable
 	}
 	documentID := installationStateDocumentID(digest)
-	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var stored InstallationState
 		found, err := transaction.Get(ctx, installationStateCollection, documentID, &stored)
 		if err != nil {
@@ -140,7 +140,7 @@ func installationStateDocumentID(digest InstallationStateDigest) string {
 }
 
 type installationBindingStore struct {
-	backend githubapp.FirestoreBackend
+	backend githubapp.DocumentStore
 }
 
 type installationIdentityDocument struct {
@@ -205,7 +205,7 @@ func (store installationBindingStore) CompleteIdentityInstallationBinding(ctx co
 	stateID := installationStateDocumentID(stateDigest)
 	identityID := installationIdentityDocumentID(binding.IdentityID)
 	installationID := strconv.FormatInt(binding.Installation.ID, 10)
-	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var storedState InstallationState
 		found, err := transaction.Get(ctx, installationStateCollection, stateID, &storedState)
 		if err != nil {
@@ -419,7 +419,7 @@ func (store installationBindingStore) ApplyInstallationLifecycle(ctx context.Con
 		return errInstallationStoreUnavailable
 	}
 	eventID := lifecycleDocumentID(event.DeliveryID)
-	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.FirestoreTransaction) error {
+	return store.backend.UpdateAtomic(ctx, func(transaction githubapp.DocumentTransaction) error {
 		var recorded InstallationLifecycleEvent
 		found, err := transaction.Get(ctx, installationLifecycleCollection, eventID, &recorded)
 		if err != nil {
@@ -564,7 +564,7 @@ func validInstallationLifecycleEvent(event InstallationLifecycleEvent) bool {
 	}
 }
 
-func readInstallationRepositoryChunks(ctx context.Context, transaction githubapp.FirestoreTransaction, installations string, installation installationDocument) ([]installationRepositoryChunk, error) {
+func readInstallationRepositoryChunks(ctx context.Context, transaction githubapp.DocumentTransaction, installations string, installation installationDocument) ([]installationRepositoryChunk, error) {
 	collection := installationRepositoryCollection(installations, installation.ID, installation.RepositoryGeneration)
 	chunks := make([]installationRepositoryChunk, 0, installation.RepositoryChunks)
 	for i := 0; i < installation.RepositoryChunks; i++ {

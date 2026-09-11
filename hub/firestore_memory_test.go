@@ -12,10 +12,13 @@ import (
 )
 
 // firestoreMemoryBackend is a small in-memory stand-in for
-// github.com/sneat-dev/wb/api/githubapp.FirestoreBackend, used to exercise
-// the provider-owned stores without a real Firestore. The wb module has its
-// own equivalent fake (firestoreFake in api/githubapp/firestore_test.go), but
-// it is unexported in a _test.go file and so cannot be imported here.
+// github.com/sneat-dev/wb/api/githubapp.DocumentStore, used to exercise the
+// provider-owned stores without a real storage engine. The wb module has its
+// own equivalent fake (firestoreFake in
+// api/githubapp/document_store_test.go), but it is unexported in a _test.go
+// file and so cannot be imported here. dalgostore_parity_test.go covers the
+// same journeys over the real DALgo adapter, which this map does not
+// serialize through.
 type firestoreMemoryBackend struct {
 	documents map[string]any
 
@@ -99,7 +102,7 @@ func (b *firestoreMemoryBackend) Set(_ context.Context, collection, id string, v
 	return nil
 }
 
-func (b *firestoreMemoryBackend) UpdateAtomic(ctx context.Context, update func(githubapp.FirestoreTransaction) error) error {
+func (b *firestoreMemoryBackend) UpdateAtomic(ctx context.Context, update func(githubapp.DocumentTransaction) error) error {
 	return update(firestoreMemoryTransaction{backend: b})
 }
 
@@ -121,8 +124,8 @@ func (tx firestoreMemoryTransaction) Delete(_ context.Context, collection, id st
 	return nil
 }
 
-var _ githubapp.FirestoreBackend = (*firestoreMemoryBackend)(nil)
-var _ githubapp.FirestoreTransaction = firestoreMemoryTransaction{}
+var _ githubapp.DocumentStore = (*firestoreMemoryBackend)(nil)
+var _ githubapp.DocumentTransaction = firestoreMemoryTransaction{}
 
 var errFirestoreMemoryFault = errors.New("firestore memory backend fault injected by test")
 
