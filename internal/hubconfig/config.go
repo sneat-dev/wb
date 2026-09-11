@@ -40,10 +40,14 @@ const (
 )
 
 // DefaultPollInterval and MinimumPollInterval bound the GitHub poller. The
-// floor is GitHub's rate-limit budget expressed as configuration, resolved
-// with the founder on 2026-09-11.
+// default is deliberately slow: polling costs two GitHub API calls per
+// repository per tick against a per-user hourly budget of 5000, and a fleet
+// of a few hundred repositories on a one-minute interval drains that budget
+// in minutes for every tool the operator runs (founder ruling 2026-09-11,
+// after exactly that happened). Push latency comes from webhook mode, not
+// from a short interval.
 const (
-	DefaultPollInterval = 60 * time.Second
+	DefaultPollInterval = 20 * time.Minute
 	MinimumPollInterval = 30 * time.Second
 )
 

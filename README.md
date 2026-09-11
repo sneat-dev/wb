@@ -738,7 +738,10 @@ wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
 
 # CI profile adds SpecScore lint for repositories that contain spec/. A
 # specscore.yaml file makes that canonical root required, so a missing spec/
-# fails closed instead of being treated as non-applicable.
+# fails closed instead of being treated as non-applicable. spec/ with no
+# specscore.yaml is skipped only when it is an external SpecScore Plans
+# store (e.g. sneat-co/workbench); any other unconfigured spec/ still runs
+# lint and fails loudly.
 wb check --fleet --match 'sneat-co/*' --profile ci --parallel=2 \
   --timeout 10m --retry 1 --report-dir /tmp/wb-check
 
@@ -784,7 +787,21 @@ Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
 default) runs lint/test/build, and `ci` additionally runs `specscore spec lint`
-for repositories with `spec/`. `--timeout` applies to each external command;
+for every repository with `spec/`, except an external SpecScore Plans store
+(e.g. sneat-co/workbench, per specscore/specscore's Plan repository routing),
+for which the check is reported skipped. wb treats a repository as one only
+when its root has no `specscore.yaml` entry (a symlink counts), its root
+`.gitignore` is a regular file with the line `/.specscore-lifecycle.lock`, and
+every non-directory entry under `spec/` is `spec/plans/README.md`, a namespace
+index `spec/plans/{host}/{owner}/{repo}/README.md`, or lies beneath a plan
+directory `spec/plans/{host}/{owner}/{repo}/{plan-id}/`, with at least one
+entry inside a namespace. `{host}` must look like a hostname (lowercase, at
+least one dot), and `{owner}` and `{repo}` must not start with a dot.
+SpecScore lint does not apply to that layout: without a `specscore.yaml` it
+cannot run, and with one, specscore 0.49.0 reports structural violations
+(`readme-exists`, `plan-hierarchy`). wb does not validate these Plans. Any
+other `spec/`, including an empty one or one reached through a symlink, runs
+lint, which fails without a config. `--timeout` applies to each external command;
 `--retry=N` retries only failed commands N additional times; and
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.
