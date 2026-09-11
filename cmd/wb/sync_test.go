@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
@@ -17,7 +20,7 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 		{Status: fleetsync.Pulled, PullAttempted: true, PullSucceeded: true},
 		{Status: fleetsync.Unpushed, PullAttempted: true, PullSucceeded: true, Updated: true},
 		{Status: fleetsync.Pulled, PullPlanned: true},
-	}, false)
+	}, false, false)
 	for _, want := range []string{
 		"Final outcomes",
 		"Pulled                  3",
@@ -28,13 +31,15 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 		"Updated from remote     2",
 		"Already current         1",
 		"Attention",
-		"Failures",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("summary %q does not contain %q", out.String(), want)
 		}
 	}
-	sections := []string{"Final outcomes", "Pull actions", "Attention", "Failures"}
+	if strings.Contains(out.String(), "Failures") || strings.Contains(out.String(), "Errors") {
+		t.Fatalf("zero-error summary contains a failure section: %q", out.String())
+	}
+	sections := []string{"Final outcomes", "Pull actions", "Attention"}
 	previous := -1
 	for _, section := range sections {
 		index := strings.Index(out.String(), section)
@@ -42,6 +47,68 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 			t.Fatalf("summary sections are not ordered %v: %q", sections, out.String())
 		}
 		previous = index
+	}
+}
+
+func TestPrintSyncSummaryKeepsAttentionAboveFailuresAndNamesWorktree(t *testing.T) {
+	commits := make([]string, 22)
+	for i := range commits {
+		commits[i] = fmt.Sprintf("%07d commit", i)
+	}
+	attention := fleetsync.Result{
+		Repo: discover.Repo{
+			Org:  "openvaultdb",
+			Name: "openvaultdb-go",
+			Path: "/projects/openvaultdb/openvaultdb-go",
+		},
+		Status: fleetsync.Unpushed,
+		Detail: gitops.RepoStatus{
+			Unpushed: commits,
+			UnpushedBranches: []gitops.UnpushedBranch{{
+				Branch:   "layered-acl-query",
+				Worktree: "/projects/openvaultdb/openvaultdb-go/.worktrees/layered-acl-query",
+				Commits:  commits,
+			}},
+		},
+	}
+	failure := fleetsync.Result{
+		Repo:   discover.Repo{Org: "acme", Name: "broken"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("network failed"),
+	}
+
+	var out bytes.Buffer
+	printSyncSummary(&out, []fleetsync.Result{failure, attention}, false, false)
+	got := out.String()
+	wantAttention := "    ! openvaultdb/openvaultdb-go 🌳 layered-acl-query — 22 commits not yet pushed"
+	if !strings.Contains(got, wantAttention) {
+		t.Fatalf("summary does not attribute unpushed commits to their worktree:\n%s", got)
+	}
+	attentionIndex := strings.Index(got, wantAttention)
+	failuresIndex := strings.Index(got, "\nFailures\n")
+	errorIndex := strings.Index(got, "    ✗ acme/broken — network failed")
+	if attentionIndex < 0 || failuresIndex <= attentionIndex || errorIndex <= failuresIndex {
+		t.Fatalf("attention and failures are not rendered beneath their own sections:\n%s", got)
+	}
+}
+
+func TestSyncSummaryStylesColorInteractiveWarnings(t *testing.T) {
+	styles := newSyncSummaryStyles(true)
+	var out bytes.Buffer
+	writeSyncAttention(&out, styles, fleetsync.Result{
+		Repo:   discover.Repo{Org: "acme", Name: "app"},
+		Status: fleetsync.Unpushed,
+		Detail: gitops.RepoStatus{
+			Unpushed: []string{"abc1234 work"},
+			UnpushedBranches: []gitops.UnpushedBranch{{
+				Branch:   "feature",
+				Worktree: "/projects/acme/app/.worktrees/feature",
+				Commits:  []string{"abc1234 work"},
+			}},
+		},
+	})
+	if !strings.Contains(out.String(), "\x1b[") {
+		t.Fatalf("styled attention line has no ANSI styling: %q", out.String())
 	}
 }
 
