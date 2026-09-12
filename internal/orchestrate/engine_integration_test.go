@@ -82,11 +82,11 @@ func TestRunDryRunCreatesNoOperationState(t *testing.T) {
 	}
 }
 
-// TestRunAcceptsManagedWorktreeRepositoryPath covers the ordinary interactive
-// invocation: `wb deps set ... .` from a WB-managed linked worktree. Git
-// represents that checkout's .git entry as a gitdir file, but the operation
-// must create its next isolated worktree from the owning canonical clone.
-func TestRunAcceptsManagedWorktreeRepositoryPath(t *testing.T) {
+// TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges covers the ordinary
+// `wb deps set ... <worktree>` invocation. The supplied WB-managed linked
+// checkout is the target: unrelated staged and dirty implementation changes
+// must survive while only the dependency file is updated.
+func TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges(t *testing.T) {
 	fixture := newEngineFixture(t)
 	input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
 		ProjectsRoot: fixture.githubDir,
@@ -103,27 +103,93 @@ func TestRunAcceptsManagedWorktreeRepositoryPath(t *testing.T) {
 	}
 	repository := fixture.repository
 	repository.Path = input[0].WorktreeDir
+	staged := filepath.Join(input[0].WorktreeDir, "staged-implementation.txt")
+	dirty := filepath.Join(input[0].WorktreeDir, "dirty-implementation.txt")
+	writeEngineFile(t, staged, "staged\n")
+	runEngineGit(t, input[0].WorktreeDir, "add", filepath.Base(staged))
+	writeEngineFile(t, dirty, "dirty\n")
 
-	dryRun := fixture.options()
-	dryRun.DryRun = true
-	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, dryRun)
-	if err != nil || len(results) != 1 || results[0].Status != "planned" {
-		t.Fatalf("dry run results=%+v err=%v", results, err)
-	}
-
-	results, err = Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
+	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 1 || results[0].Status != "changed" {
 		t.Fatalf("results = %+v", results)
 	}
-	wantCanonical, err := filepath.EvalSymlinks(fixture.canonical)
-	if err != nil {
+	if results[0].WorktreeDir != input[0].WorktreeDir || results[0].Branch != input[0].Branch {
+		t.Fatalf("result did not preserve supplied worktree identity: %+v, input=%+v", results[0], input[0])
+	}
+	if got := mustReadEngineFile(t, filepath.Join(input[0].WorktreeDir, "dependency.txt")); got != "new\n" {
+		t.Fatalf("updated dependency = %q", got)
+	}
+	if got := mustReadEngineFile(t, staged); got != "staged\n" {
+		t.Fatalf("staged implementation = %q", got)
+	}
+	if got := mustReadEngineFile(t, dirty); got != "dirty\n" {
+		t.Fatalf("dirty implementation = %q", got)
+	}
+	if stagedDiff := runEngineGit(t, input[0].WorktreeDir, "diff", "--cached", "--", filepath.Base(staged)); !strings.Contains(stagedDiff, "+staged") {
+		t.Fatalf("staged implementation was not preserved: %s", stagedDiff)
+	}
+}
+
+func TestRunClonesMissingRepositoryBeforeInspectingGitLayout(t *testing.T) {
+	fixture := newEngineFixture(t)
+	if err := os.RemoveAll(fixture.canonical); err != nil {
 		t.Fatal(err)
 	}
-	if results[0].CanonicalDir != wantCanonical {
-		t.Fatalf("canonical directory = %q, want %q", results[0].CanonicalDir, wantCanonical)
+	repository := fixture.repository
+	repository.Path = ""
+	options := fixture.options()
+	options.DryRun = true
+	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, options)
+	if err != nil || len(results) != 1 || results[0].Status != "planned" {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if info, err := os.Stat(filepath.Join(fixture.canonical, ".git")); err != nil || !info.IsDir() {
+		t.Fatalf("missing canonical was not cloned: info=%+v err=%v", info, err)
+	}
+}
+
+func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(*testing.T, engineFixture) string
+	}{
+		{
+			name: "unmanaged linked worktree",
+			path: func(t *testing.T, fixture engineFixture) string {
+				external := filepath.Join(t.TempDir(), "external")
+				runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "feature/external", external, "main")
+				return external
+			},
+		},
+		{
+			name: "symbolic git entry",
+			path: func(t *testing.T, fixture engineFixture) string {
+				unsafe := filepath.Join(t.TempDir(), "unsafe")
+				if err := os.Mkdir(unsafe, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(fixture.canonical, ".git"), filepath.Join(unsafe, ".git")); err != nil {
+					t.Fatal(err)
+				}
+				return unsafe
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			repository := fixture.repository
+			repository.Path = test.path(t, fixture)
+			results, err := Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
+			if err == nil || len(results) != 1 || results[0].Status != "failed" {
+				t.Fatalf("unsafe path accepted: results=%+v err=%v", results, err)
+			}
+			if got := mustReadEngineFile(t, filepath.Join(fixture.canonical, "dependency.txt")); got != "old\n" {
+				t.Fatalf("canonical was mutated before unsafe path rejection: %q", got)
+			}
+		})
 	}
 }
 

@@ -190,13 +190,15 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err != nil {
 		return failResult(result, err)
 	}
-	canonical := repository.Path
-	if canonical == "" {
-		canonical = filepath.Join(options.GitHubDir, owner, name)
-	}
-	canonical, err = canonicalRepositoryForPath(ctx, canonical, options)
+	managedInput, err := managedInputWorktree(ctx, repository.Path, repository.Slug, options)
 	if err != nil {
-		return failResult(result, fmt.Errorf("resolve canonical repository: %w", err))
+		return failResult(result, err)
+	}
+	canonical := repository.Path
+	if managedInput != nil {
+		canonical = managedInput.CanonicalDir
+	} else if canonical == "" {
+		canonical = filepath.Join(options.GitHubDir, owner, name)
 	}
 	result.CanonicalDir = canonical
 	phase("sync")
@@ -232,26 +234,40 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = assessment.Reason
 		return nil
 	}
-	home, err := wbhome.EnsureRoot(options.GitHubDir)
-	if err != nil {
-		return failResult(result, err)
-	}
-	worktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
-	if err != nil {
-		return failResult(result, err)
-	}
-	result.WorktreeDir = worktree
-	result.Branch = options.Branch
-	phase("prepare_worktree")
-	created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
-	if err != nil {
-		return failResult(result, err)
-	}
-	if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+	worktree := ""
+	if managedInput != nil {
+		if options.Commit || options.Push || options.PR || options.Merge {
+			return failResult(result, fmt.Errorf("cannot publish from supplied managed worktree %s; run deps set without --commit, --push, --pr, or --merge", managedInput.Path))
+		}
+		worktree = managedInput.Path
+		result.WorktreeDir = worktree
+		result.Branch = managedInput.Branch
+	} else {
+		home, err := wbhome.EnsureRoot(options.GitHubDir)
+		if err != nil {
+			return failResult(result, err)
+		}
+		_, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+		if err != nil {
+			return failResult(result, err)
+		}
+		worktree, err = placement.Path(options.Operation, repository.Slug)
+		if err != nil {
+			return failResult(result, err)
+		}
+		result.WorktreeDir = worktree
+		result.Branch = options.Branch
+		phase("prepare_worktree")
+		created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+			created.Close()
+			return failResult(result, err)
+		}
 		created.Close()
-		return failResult(result, err)
 	}
-	created.Close()
 	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
@@ -352,6 +368,58 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		}
 	}
 	return nil
+}
+
+// managedInputWorktree accepts only an existing WB-managed linked worktree as
+// an in-place mutation target. In particular, a Git gitdir file is not itself
+// authority for a common directory: Guard verifies its no-follow/registry
+// relationship with the expected canonical repository before this caller can
+// fetch from or mutate either checkout.
+func managedInputWorktree(ctx context.Context, path, repository string, options Options) (*worktrees.GuardResult, error) {
+	if path == "" {
+		return nil, nil
+	}
+	root, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // Preserve EnsureCanonical's clone-on-missing behavior.
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied repository path %s: %w", path, err)
+	}
+	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
+		return nil, fmt.Errorf("supplied repository path %s must be a non-symlink directory", path)
+	}
+	gitEntry, err := os.Lstat(filepath.Join(path, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied Git entry for %s: %w", path, err)
+	}
+	if gitEntry.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("supplied Git entry for %s must not be a symbolic link", path)
+	}
+	if gitEntry.IsDir() {
+		return nil, nil
+	}
+	if !gitEntry.Mode().IsRegular() {
+		return nil, fmt.Errorf("supplied Git entry for %s must be a directory or regular gitdir file", path)
+	}
+	guard, err := worktrees.Guard(ctx, path, worktrees.GuardOptions{ProjectsRoot: options.GitHubDir, Base: options.Ref})
+	if err != nil {
+		return nil, fmt.Errorf("verify supplied managed worktree %s: %w", path, err)
+	}
+	if guard.Kind != "linked" {
+		return nil, fmt.Errorf("supplied Git gitdir file %s is not a linked worktree", path)
+	}
+	expected, err := worktrees.CanonicalRepositoryPath(options.GitHubDir, repository)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(guard.CanonicalDir) != filepath.Clean(expected) {
+		return nil, fmt.Errorf("supplied managed worktree %s belongs to %s, not %s", path, guard.CanonicalDir, expected)
+	}
+	return &guard, nil
 }
 
 // ResolvedBase is the git ref EnsureCanonical verified exists in a
