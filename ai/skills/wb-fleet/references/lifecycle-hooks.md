@@ -11,7 +11,7 @@ hooks:
   executors:
     code-index:
       run: /opt/homebrew/bin/codegrapher
-      args: [sync, .]
+      args: [sync, --init, .]
       cwd: repository
       mode: coalesced
       timeout: 2m
@@ -28,7 +28,8 @@ WB invokes the absolute executable directly, with no shell, from the updated
 checkout. `mode: coalesced` collapses repeated executor-plus-checkout events in
 one operation. `failure: warn` preserves the successful Git update and records
 the failed hook in the local receipt stream. The example's resulting argv is
-`codegrapher sync .`.
+`codegrapher sync --init .`: CodeGrapher initializes a missing index on the
+first update, then uses its incremental reconciler.
 
 Run the ordinary fleet update; only changed checkouts dispatch:
 

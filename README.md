@@ -619,7 +619,7 @@ hooks:
   executors:
     code-index:
       run: /opt/homebrew/bin/codegrapher
-      args: [sync, .]
+      args: [sync, --init, .]
       cwd: repository
       mode: coalesced
       timeout: 2m
@@ -1408,8 +1408,9 @@ snapshot, or trigger indexing while generating a report.
 
 CodeGrapher is installed and updated with its own CLI distribution. WB does not
 contain CodeGrapher-specific lifecycle code; the generic trusted
-`checkout-updated` hook shown above can invoke `codegrapher sync .` after an
-exact checkout change.
+`checkout-updated` hook shown above can invoke `codegrapher sync --init .`
+after an exact checkout change. CodeGrapher initializes a missing local index
+on the first update and uses its incremental reconciler thereafter.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and
