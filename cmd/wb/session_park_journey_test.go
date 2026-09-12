@@ -468,9 +468,27 @@ func runJourneyWB(t *testing.T, binary, projectsRoot string, args ...string) []b
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes(), journeyRemoteFailureDiagnostic(stderr.String()))
 	}
 	return stdout.Bytes()
+}
+
+func journeyRemoteFailureDiagnostic(stderr string) string {
+	const marker = "remote stderr written to:\n  "
+	start := strings.Index(stderr, marker)
+	if start < 0 {
+		return ""
+	}
+	path := strings.TrimSpace(strings.SplitN(stderr[start+len(marker):], "\n", 2)[0])
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("\nread test remote stderr %s: %v", path, err)
+	}
+	const limit = 8 << 10
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	return "\ntest remote stderr:\n" + string(raw)
 }
 
 func journeyGit(t *testing.T, directory string, args ...string) {
