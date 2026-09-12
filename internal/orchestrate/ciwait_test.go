@@ -57,6 +57,175 @@ func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
 	}
 }
 
+func TestTerminalChecksFingerprintIncludesCheckRunIdentity(t *testing.T) {
+	first := terminalChecksFingerprint([]RemoteCheck{{Name: "check-run:CI", Bucket: "pass", AppID: 42, CheckRunID: 101}}, nil, "authority", "head", "fresh")
+	second := terminalChecksFingerprint([]RemoteCheck{{Name: "check-run:CI", Bucket: "pass", AppID: 42, CheckRunID: 102}}, nil, "authority", "head", "fresh")
+	if first == second {
+		t.Fatal("replacement check runs produced the same stable-reread fingerprint")
+	}
+}
+
+func TestCommitCheckRunsKeepsOnlyTheNewestRunForAProducerAndName(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":3,"check_runs":[
+    {"id":103590152676,"name":"strongo_workflow / Lint","status":"completed","conclusion":"failure","html_url":"https://github.com/acme/app/actions/runs/34707437427/job/103590152676","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":94011752996}},
+    {"id":103590281489,"name":"strongo_workflow / Lint","status":"completed","conclusion":"success","html_url":"https://github.com/acme/app/actions/runs/34707566599/job/103590281489","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":94012072395}},
+    {"id":103590281623,"name":"strongo_workflow / Build & test","status":"completed","conclusion":"success","html_url":"https://github.com/acme/app/actions/runs/34707566599/job/103590281623","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":94012072395}}
+  ]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":2,"workflow_runs":[
+    {"id":34707437427,"workflow_id":5447489,"run_attempt":2,"event":"pull_request","status":"completed","conclusion":"failure","created_at":"2026-09-12T17:10:40Z","html_url":"https://github.com/acme/app/actions/runs/34707437427","check_suite_id":94011752996},
+    {"id":34707566599,"workflow_id":5447489,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-12T17:13:11Z","html_url":"https://github.com/acme/app/actions/runs/34707566599","check_suite_id":94012072395}
+  ]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	checks, pending, reason := commitCheckRuns(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
+	})
+	if reason != "" || pending {
+		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
+	}
+	want := []RemoteCheck{
+		{Name: "check-run:strongo_workflow / Lint", Bucket: "pass", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281489", AppID: 15368, CheckRunID: 103590281489},
+		{Name: "check-run:strongo_workflow / Build & test", Bucket: "pass", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281623", AppID: 15368, CheckRunID: 103590281623},
+	}
+	if !reflect.DeepEqual(checks, want) {
+		t.Fatalf("commit check runs = %#v, want %#v", checks, want)
+	}
+}
+
+func TestCommitCheckRunsFailsClosedOnTheNewestRunForAProducerAndName(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":4,"check_runs":[
+    {"id":202,"name":"CI","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":302}},
+    {"id":201,"name":"CI","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":301}},
+    {"id":203,"name":"CI","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":303}},
+    {"id":204,"name":"Package","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":304}}
+  ]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":5,"workflow_runs":[
+    {"id":12,"workflow_id":100,"event":"pull_request","status":"completed","conclusion":"failure","created_at":"2026-09-12T17:13:13Z","check_suite_id":302},
+    {"id":11,"workflow_id":100,"event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-12T17:12:17Z","check_suite_id":301},
+    {"id":13,"workflow_id":200,"event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-12T17:13:14Z","check_suite_id":303},
+    {"id":15,"workflow_id":300,"event":"pull_request","status":"queued","conclusion":null,"created_at":"2026-09-12T17:13:16Z","html_url":"https://github.com/acme/app/actions/runs/15","check_suite_id":305},
+    {"id":14,"workflow_id":300,"event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-12T17:13:15Z","check_suite_id":304}
+  ]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	checks, pending, reason := commitCheckRuns(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
+	})
+	if reason != "" || !pending {
+		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
+	}
+	want := []RemoteCheck{
+		{Name: "check-run:CI", Bucket: "fail", AppID: 15368, CheckRunID: 202},
+		{Name: "check-run:CI", Bucket: "pass", AppID: 15368, CheckRunID: 203},
+		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
+	}
+	if !reflect.DeepEqual(checks, want) {
+		t.Fatalf("commit check runs = %#v, want %#v", checks, want)
+	}
+}
+
+func TestCommitCheckRunsRejectsMalformedActionsCheckIdentity(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":0,"name":"CI","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":301}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":11,"workflow_id":100,"event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-12T17:12:17Z","check_suite_id":301}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, _, reason := commitCheckRuns(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
+	})
+	if !strings.Contains(reason, "omitted a positive check-run or check-suite ID") {
+		t.Fatalf("malformed Actions check reason = %q", reason)
+	}
+}
+
+func TestCommitCheckRunsKeepsJoblessActionsRunPending(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":51,"name":"Third party","status":"completed","conclusion":"success","app":{"id":7,"slug":"third-party"}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":15,"workflow_id":300,"event":"pull_request","status":"queued","conclusion":null,"created_at":"2026-09-12T17:13:16Z","html_url":"https://github.com/acme/app/actions/runs/15","check_suite_id":305}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	checks, pending, reason := commitCheckRuns(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
+	})
+	want := []RemoteCheck{
+		{Name: "check-run:Third party", Bucket: "pass", AppID: 7, CheckRunID: 51},
+		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
+	}
+	if reason != "" || !pending || !reflect.DeepEqual(checks, want) {
+		t.Fatalf("jobless Actions run checks=%#v pending=%t reason=%q, want %#v", checks, pending, reason, want)
+	}
+}
+
 func TestWaitForCommitChecksRejectsSliceAboveForegroundCeiling(t *testing.T) {
 	_, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
