@@ -611,7 +611,14 @@ func (engine *Engine) publishMember(ctx context.Context, name string, checkout C
 		}
 	}
 	title := fmt.Sprintf("stream(%s): %s", name, checkout.Repository)
-	pullRequest, prErr := engine.GitHub.CreateDraftPullRequest(ctx, checkout.Worktree, base, checkout.Branch, title, streamPullRequestBody(name, role))
+	pullRequest, found, prErr := engine.GitHub.PullRequestForBranch(ctx, checkout.Worktree, checkout.Branch)
+	if prErr == nil && found && pullRequest.Base != base {
+		prErr = fmt.Errorf("open pull request %s for %s targets %s, not stream base %s", pullRequest.URL, checkout.Branch, pullRequest.Base, base)
+	}
+	if prErr == nil && !found {
+		pullRequest, prErr = engine.GitHub.CreateDraftPullRequest(
+			ctx, checkout.Worktree, base, checkout.Branch, title, streamPullRequestBody(name, role))
+	}
 	if prErr != nil {
 		detail := RedactString(prErr.Error())
 		engine.record(name, Event{

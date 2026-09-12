@@ -98,7 +98,7 @@ func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, 
 			// The ordinary push below safely publishes the local extension.
 		} else {
 			return "", fmt.Errorf(
-				"%s and origin/%s diverged; resolve the stream branch explicitly, then retry `wb stream join %s <owner/repository>`",
+				"stream branch diverged: %s and origin/%s each carry unique work; an owner must choose the resolution before retrying `wb stream join %s <owner/repository>`",
 				branch, branch, strings.TrimPrefix(branch, "stream/"))
 		}
 	}

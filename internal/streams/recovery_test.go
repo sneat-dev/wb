@@ -354,6 +354,40 @@ func TestJoinRetriesAMemberWhoseDraftPullRequestNeverOpened(t *testing.T) {
 	}
 }
 
+// The remote PR can be created successfully just before the process dies and
+// before its identity reaches stream.json. Recovery must adopt that exact open
+// PR rather than asking GitHub to create a duplicate and getting stuck again.
+func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
+	engine, _, hub, _, stream := startedStream(t, "adopt-pr", "acme/library")
+	member := stream.Members[0]
+	createdBefore := len(hub.created)
+	existing := PullRequest{
+		Number: 919, URL: "https://example.test/pull/919",
+		Title: "stream(adopt-pr): acme/library", Head: member.Branch,
+		Base: member.Base, Draft: true, State: "OPEN",
+	}
+	hub.byBranch[member.Worktree+" "+member.Branch] = existing
+	if _, err := engine.setMember("adopt-pr", member.Repository, func(stored *Member) {
+		stored.PullRequest = 0
+		stored.PullRequestURL = ""
+		stored.PullRequestError = "process interrupted before the PR receipt was stored"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "adopt-pr", Repository: member.Repository})
+	if err != nil {
+		t.Fatalf("join recovery: %v", err)
+	}
+	if len(hub.created) != createdBefore {
+		t.Fatalf("created PR count = %d, want existing remote PR adopted without another create", len(hub.created))
+	}
+	recovered, _ := result.Stream.Member(member.Repository)
+	if recovered.PullRequest != existing.Number || recovered.PullRequestURL != existing.URL || recovered.PullRequestError != "" {
+		t.Fatalf("recovered member = %#v, want adopted PR %#v", recovered, existing)
+	}
+}
+
 // SHOULD-FIX: end removes the remote stream branch, after the agent pull
 // requests targeting it are settled.
 func TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests(t *testing.T) {
@@ -466,6 +500,20 @@ func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
 	}
 	if recovery != "wb stream join no-pr acme/app" {
 		t.Fatalf("status recovery = %q, want the exact WB retry verb", recovery)
+	}
+	if _, err := engine.setMember("no-pr", "acme/app", func(member *Member) {
+		member.PullRequestError = "stream branch diverged: both sides carry unique work; an owner must choose"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = engine.Status(context.Background(), "no-pr")
+	if err != nil {
+		t.Fatalf("diverged status: %v", err)
+	}
+	for _, member := range status.Members {
+		if member.Repository == "acme/app" && (member.PullRequestRecovery != "" || !strings.Contains(member.PullRequestBlocked, "owner")) {
+			t.Fatalf("diverged member status = %#v, want an explicit owner-decision block and no retry loop", member)
+		}
 	}
 }
 

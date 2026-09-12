@@ -134,6 +134,41 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 	if output := stdout.String(); !strings.Contains(output, "wb stream join recovery acme/library") {
 		t.Fatalf("status output = %q, want the sanctioned recovery command", output)
 	}
+
+	jsonCommand := newStreamStatusCmd()
+	var jsonOut bytes.Buffer
+	jsonCommand.SetOut(&jsonOut)
+	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
+	err = streamStatusOutput(jsonCommand, "json", status)
+	exit, ok = err.(*exitError)
+	if !ok || exit.code != exitFindings {
+		t.Fatalf("JSON status error = %#v, want exit findings", err)
+	}
+	var envelope struct {
+		Outcome  string `json:"outcome"`
+		Evidence struct {
+			Members []streams.MemberStatus `json:"members"`
+		} `json:"evidence"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &envelope); err != nil {
+		t.Fatalf("parse JSON status %q: %v", jsonOut.String(), err)
+	}
+	if envelope.Outcome != outcomeFindings || len(envelope.Evidence.Members) != 1 ||
+		envelope.Evidence.Members[0].PullRequestRecovery != "wb stream join recovery acme/library" {
+		t.Fatalf("JSON status envelope = %#v, want a finding with the exact recovery verb", envelope)
+	}
+
+	blockedCommand := newStreamStatusCmd()
+	var blockedOut bytes.Buffer
+	blockedCommand.SetOut(&blockedOut)
+	status.Members[0].PullRequestRecovery = ""
+	status.Members[0].PullRequestBlocked = "stream branch diverged: owner decision required"
+	if err := streamStatusOutput(blockedCommand, "text", status); err == nil {
+		t.Fatal("blocked status returned success")
+	}
+	if output := blockedOut.String(); !strings.Contains(output, "blocked:") || strings.Contains(output, "recover: wb stream join") {
+		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
+	}
 }
 
 // A stream name that could not also be a worktree task name is rejected before

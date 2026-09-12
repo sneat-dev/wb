@@ -269,6 +269,44 @@ func TestPushBranchPublishesALocalAheadStreamCheckout(t *testing.T) {
 	}
 }
 
+func TestPushBranchAcceptsAnAlreadyPublishedStreamCheckout(t *testing.T) {
+	local, _ := newPublishedStreamFixture(t)
+	headBefore := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+
+	git := ExecGit{Timeout: time.Minute}
+	published, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err != nil {
+		t.Fatalf("accept equal stream heads: %v", err)
+	}
+	if published != headBefore {
+		t.Fatalf("published head = %s, want unchanged %s", published, headBefore)
+	}
+}
+
+func TestPushBranchRefusesToFastForwardOverDirtyWork(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(local, "dirty.txt"), []byte("do not lose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	git := ExecGit{Timeout: time.Minute}
+	_, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty recovery error = %v, want an explicit dirty-worktree refusal", err)
+	}
+	if after := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); after != localHead {
+		t.Fatalf("dirty local head changed from %s to %s", localHead, after)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(local, "dirty.txt"))
+	if readErr != nil || string(contents) != "do not lose\n" {
+		t.Fatalf("dirty work was changed: contents=%q error=%v", contents, readErr)
+	}
+}
+
 // Two independently advanced stream heads require an owner's decision. WB
 // must neither force-push nor silently choose one while recovering a missing
 // pull request.

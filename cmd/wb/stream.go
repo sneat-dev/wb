@@ -594,15 +594,24 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 			if member.PullRequest != 0 || member.Worktree == "" {
 				continue
 			}
-			recovery := member.PullRequestRecovery
-			if recovery == "" {
-				recovery = "wb stream join " + status.Stream + " " + member.Repository
-			}
 			detail := member.PullRequestMissing
 			if detail == "" {
 				detail = "no draft pull request is recorded"
 			}
-			if _, err := fmt.Fprintf(out, "  ! %s: %s\n    recover: %s\n", member.Repository, detail, recovery); err != nil {
+			if _, err := fmt.Fprintf(out, "  ! %s: %s\n", member.Repository, detail); err != nil {
+				return err
+			}
+			if member.PullRequestBlocked != "" {
+				if _, err := fmt.Fprintf(out, "    blocked: %s\n", member.PullRequestBlocked); err != nil {
+					return err
+				}
+				continue
+			}
+			recovery := member.PullRequestRecovery
+			if recovery == "" {
+				recovery = "wb stream join " + status.Stream + " " + member.Repository
+			}
+			if _, err := fmt.Fprintf(out, "    recover: %s\n", recovery); err != nil {
 				return err
 			}
 		}

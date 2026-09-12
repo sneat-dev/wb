@@ -59,6 +59,10 @@ type MemberStatus struct {
 	// PullRequestRecovery is the exact WB verb that retries the missing
 	// publication without asking an operator to hand-roll Git or GitHub calls.
 	PullRequestRecovery string `json:"pull_request_recovery,omitempty"`
+	// PullRequestBlocked explains when no safe automatic retry exists. A
+	// divergent shared branch needs an owner decision; advertising join there
+	// would only repeat the same refusal forever.
+	PullRequestBlocked string `json:"pull_request_blocked,omitempty"`
 	// Unabsorbed is the number of commits on the stream branch that the base
 	// does not carry by patch identity.
 	Unabsorbed int `json:"unabsorbed"`
@@ -180,7 +184,11 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 		LiveLinks:          len(member.Links),
 	}
 	if member.PullRequest == 0 && member.Worktree != "" {
-		row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
+		if strings.HasPrefix(member.PullRequestError, "stream branch diverged:") {
+			row.PullRequestBlocked = member.PullRequestError
+		} else {
+			row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
+		}
 	}
 	commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
 	if err != nil {
