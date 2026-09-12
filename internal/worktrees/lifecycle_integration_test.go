@@ -761,9 +761,10 @@ func testCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T, remoteMode 
 	gitTest(t, fixture.canonical, "commit", "-m", "squash stream PR")
 	landingSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
-	if remoteMode == "deleted" {
+	switch remoteMode {
+	case "deleted":
 		gitTest(t, fixture.canonical, "push", "origin", ":"+result.Branch)
-	} else if remoteMode == "advanced" {
+	case "advanced":
 		if err := os.WriteFile(filepath.Join(writer, "advanced.txt"), []byte("must remain\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}

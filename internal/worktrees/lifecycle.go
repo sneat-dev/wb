@@ -4667,7 +4667,7 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
 	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA &&
-		!(entry.mergeReceiptCandidateSHA != "" && entry.RemoteHeadSHA == entry.mergeReceiptCandidateSHA) &&
+		(entry.mergeReceiptCandidateSHA == "" || entry.RemoteHeadSHA != entry.mergeReceiptCandidateSHA) &&
 		!entry.RemoteHeadAncestorOfHead:
 		return false, "remote branch advanced after the merged pull request"
 	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
