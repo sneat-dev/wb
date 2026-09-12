@@ -27,6 +27,8 @@ type streamWorktrees struct {
 	base         string
 }
 
+var streamWorktreeCleanup = worktrees.Cleanup
+
 // PlannedWorktree is where Create will publish one repository's checkout,
 // derived from WB's own layout without touching the filesystem.
 //
@@ -77,13 +79,23 @@ func (adapter *streamWorktrees) Create(ctx context.Context, task, branch string,
 	return created, nil
 }
 
-func (adapter *streamWorktrees) Remove(ctx context.Context, task, repository, worktree string) error {
-	outcome, err := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
-		ProjectsRoot:    adapter.projectsRoot,
-		Task:            task,
-		ExactRepository: repository,
-		Apply:           true,
-		Workers:         1,
+func (adapter *streamWorktrees) Remove(ctx context.Context, task, repository, worktree string, receipt *streams.SquashAbsorptionReceipt) error {
+	var proofs []worktrees.MergeReceiptCleanupProof
+	if receipt != nil {
+		proofs = []worktrees.MergeReceiptCleanupProof{{
+			Repository: repository, Target: receipt.Target, SourceTask: task,
+			SourceWorktree: worktree, SourceBranch: receipt.SourceBranch,
+			SourceSHA: receipt.SourceSHA, CandidateSHA: receipt.CandidateSHA,
+			LandingSHA: receipt.LandingSHA,
+		}}
+	}
+	outcome, err := streamWorktreeCleanup(ctx, worktrees.CleanupOptions{
+		ProjectsRoot:       adapter.projectsRoot,
+		Task:               task,
+		ExactRepository:    repository,
+		Apply:              true,
+		Workers:            1,
+		MergeReceiptProofs: proofs,
 	})
 	if err != nil {
 		return err

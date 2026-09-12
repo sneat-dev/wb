@@ -302,12 +302,13 @@ func (hub *fakeHub) DefaultBranchStatus(_ context.Context, dir, branch string) (
 
 // fakeWorktrees stands in for the existing worktree creation and cleanup path.
 type fakeWorktrees struct {
-	root      string
-	planErr   error
-	createErr error
-	created   []CreatedWorktree
-	removed   []string
-	removeErr map[string]error
+	root            string
+	planErr         error
+	createErr       error
+	created         []CreatedWorktree
+	removed         []string
+	removalReceipts map[string]*SquashAbsorptionReceipt
+	removeErr       map[string]error
 }
 
 func (worktrees *fakeWorktrees) PlannedWorktree(task, repository string) (string, error) {
@@ -341,13 +342,20 @@ func (worktrees *fakeWorktrees) Create(_ context.Context, task, branch string, r
 	return results, nil
 }
 
-func (worktrees *fakeWorktrees) Remove(_ context.Context, _, repository, worktree string) error {
+func (worktrees *fakeWorktrees) Remove(_ context.Context, _, repository, worktree string, receipt *SquashAbsorptionReceipt) error {
 	if worktrees.removeErr != nil {
 		if err := worktrees.removeErr[repository]; err != nil {
 			return err
 		}
 	}
 	worktrees.removed = append(worktrees.removed, worktree)
+	if receipt != nil {
+		if worktrees.removalReceipts == nil {
+			worktrees.removalReceipts = map[string]*SquashAbsorptionReceipt{}
+		}
+		copy := *receipt
+		worktrees.removalReceipts[worktree] = &copy
+	}
 	return os.RemoveAll(worktree)
 }
 

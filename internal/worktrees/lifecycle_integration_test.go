@@ -705,6 +705,70 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 	}
 }
 
+// TestCleanupRetiresStreamSquashAncestorFromReceipt proves the hand-off used
+// by stream end. A surviving member can be clean at an ancestor of the stream
+// PR head after the PR was squash-merged, but ordinary commit ancestry cannot
+// see its work in main. Only the receipt binds that local source to the exact
+// PR candidate and its tree-identical landing commit.
+func TestCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T) {
+	fixture := newGitFixture(t)
+	const task = "stream-squash-ancestor"
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: task, Branch: "stream/squash-ancestor", BranchChosen: true,
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "source.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "source.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source")
+	sourceSHA := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	writer := filepath.Join(t.TempDir(), "stream-pr-writer")
+	gitTest(t, t.TempDir(), "clone", fixture.remote, writer)
+	configureGitUser(t, writer)
+	gitTest(t, writer, "checkout", result.Branch)
+	if err := os.WriteFile(filepath.Join(writer, "candidate.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, writer, "add", "candidate.txt")
+	gitTest(t, writer, "commit", "-m", "stream PR head")
+	candidateSHA := gitTestOutput(t, writer, "rev-parse", "HEAD")
+	gitTest(t, writer, "push", "origin", result.Branch)
+
+	gitTest(t, fixture.canonical, "fetch", "origin")
+	gitTest(t, fixture.canonical, "merge", "--squash", candidateSHA)
+	gitTest(t, fixture.canonical, "commit", "-m", "squash stream PR")
+	landingSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	gitTest(t, fixture.canonical, "push", "origin", ":"+result.Branch)
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, OlderThan: 0,
+		MergeReceiptProofs: []MergeReceiptCleanupProof{{
+			Repository: result.Repository, Target: "main", SourceTask: task,
+			SourceWorktree: result.WorktreeDir, SourceBranch: result.Branch,
+			SourceSHA: sourceSHA, CandidateSHA: candidateSHA, LandingSHA: landingSHA,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Results) != 1 || !applied.Results[0].Applied || !applied.Results[0].WorktreeGone ||
+		!applied.Results[0].AbsorbedAtOrigin || applied.Results[0].AbsorbedBySHA != landingSHA {
+		t.Fatalf("receipt-bound stream squash cleanup = %#v", applied)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("squash-absorbed member remains after cleanup: %v", statErr)
+	}
+}
+
 func TestCleanupRecoversMergedPRTargetWhileRecordedTargetStaysStale(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "stale-target", "main")

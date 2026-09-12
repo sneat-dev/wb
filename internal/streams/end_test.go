@@ -259,7 +259,7 @@ func TestEndRefusesRemovedMemberWhoseLocalStreamBranchStillExistsAtMergedHead(t 
 }
 
 func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testing.T) {
-	engine, git, hub, _, stream := startedStream(t, "squash-merged", "acme/library")
+	engine, git, hub, worktrees, stream := startedStream(t, "squash-merged", "acme/library")
 	member := stream.Members[0]
 	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
 	mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
@@ -283,6 +283,11 @@ func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testi
 	}
 	if len(result.Members) != 1 || !result.Members[0].WorktreeRemoved || !result.Members[0].LeaseReleased {
 		t.Fatalf("member result = %#v, want a retired clean squash-merged member", result.Members)
+	}
+	receipt := worktrees.removalReceipts[member.Worktree]
+	if receipt == nil || receipt.Target != member.Base || receipt.SourceBranch != member.Branch ||
+		receipt.SourceSHA != localHead || receipt.CandidateSHA != mergedPRHead || receipt.LandingSHA != hub.byNumber[member.PullRequest].MergeSHA {
+		t.Fatalf("cleanup receipt = %#v, want exact squash receipt", receipt)
 	}
 }
 

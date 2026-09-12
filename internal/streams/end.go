@@ -131,6 +131,7 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 	// through and the member's agent pull requests were closed and its
 	// worktree removed on the strength of a check that never answered.
 	var unabsorbed, unknown []string
+	squashReceipts := make(map[string]*SquashAbsorptionReceipt)
 	for _, member := range stream.Members {
 		if member.Worktree == "" {
 			// A member reserved but never published has nothing to absorb.
@@ -149,10 +150,11 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 			unknown = append(unknown, fmt.Sprintf("%s: could not re-read origin: %s", member.Repository, RedactString(fetchErr.Error())))
 			continue
 		}
-		if absorbed, proofErr := engine.provedSquashAbsorbedMember(ctx, member); proofErr != nil {
+		if receipt, proofErr := engine.provedSquashAbsorbedMember(ctx, member); proofErr != nil {
 			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(proofErr.Error())))
 			continue
-		} else if absorbed {
+		} else if receipt != nil {
+			squashReceipts[member.Worktree] = receipt
 			continue
 		}
 		commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
@@ -209,7 +211,7 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 
 	for _, member := range stream.Members {
 		result.AgentPullRequests = append(result.AgentPullRequests, engine.retireAgentPullRequests(ctx, options, member)...)
-		result.Members = append(result.Members, engine.retireMember(ctx, options, stream.Name, member))
+		result.Members = append(result.Members, engine.retireMember(ctx, options, stream.Name, member, squashReceipts[member.Worktree]))
 	}
 
 	if !options.Apply {
@@ -249,63 +251,66 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 // `git cherry` cannot prove that state because squash merges rewrite commit
 // identities, so this path requires the immutable GitHub receipt and proves
 // that the clean local head contains no work beyond that receipt.
-func (engine *Engine) provedSquashAbsorbedMember(ctx context.Context, member Member) (bool, error) {
+func (engine *Engine) provedSquashAbsorbedMember(ctx context.Context, member Member) (*SquashAbsorptionReceipt, error) {
 	if member.PullRequest == 0 || member.Canonical == "" {
-		return false, nil
+		return nil, nil
 	}
 	pr, found, err := engine.GitHub.PullRequest(ctx, member.Worktree, member.PullRequest)
 	if err != nil {
-		return false, fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
+		return nil, fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
 	}
 	if !found || !strings.EqualFold(pr.State, "MERGED") || pr.Head != member.Branch || pr.Base != member.Base {
-		return false, nil
+		return nil, nil
 	}
 	if pr.HeadSHA == "" || pr.MergeSHA == "" {
-		return false, fmt.Errorf("recorded stream pull request #%d lacks immutable merged identities", member.PullRequest)
+		return nil, fmt.Errorf("recorded stream pull request #%d lacks immutable merged identities", member.PullRequest)
 	}
 	dirty, err := engine.Git.DirtyPaths(ctx, member.Worktree)
 	if err != nil {
-		return false, fmt.Errorf("inspect member worktree dirtiness: %w", err)
+		return nil, fmt.Errorf("inspect member worktree dirtiness: %w", err)
 	}
 	if len(dirty) > 0 {
-		return false, fmt.Errorf("member worktree has dirty or untracked paths: %s", strings.Join(dirty, ", "))
+		return nil, fmt.Errorf("member worktree has dirty or untracked paths: %s", strings.Join(dirty, ", "))
 	}
 	branch, err := engine.Git.CurrentBranch(ctx, member.Worktree)
 	if err != nil {
-		return false, fmt.Errorf("read member worktree branch: %w", err)
+		return nil, fmt.Errorf("read member worktree branch: %w", err)
 	}
 	if branch != member.Branch {
-		return false, fmt.Errorf("member worktree checked out branch %s, want recorded stream branch %s", branch, member.Branch)
+		return nil, fmt.Errorf("member worktree checked out branch %s, want recorded stream branch %s", branch, member.Branch)
 	}
 	local, err := engine.Git.LocalHead(ctx, member.Worktree)
 	if err != nil {
-		return false, fmt.Errorf("read member worktree HEAD: %w", err)
+		return nil, fmt.Errorf("read member worktree HEAD: %w", err)
 	}
 	localStream, present, err := engine.Git.LocalBranchHead(ctx, member.Worktree, member.Branch)
 	if err != nil {
-		return false, fmt.Errorf("read local stream ref %s: %w", member.Branch, err)
+		return nil, fmt.Errorf("read local stream ref %s: %w", member.Branch, err)
 	}
 	if !present {
-		return false, fmt.Errorf("local stream ref %s is absent from an existing member worktree", member.Branch)
+		return nil, fmt.Errorf("local stream ref %s is absent from an existing member worktree", member.Branch)
 	}
 	if localStream != local {
-		return false, fmt.Errorf("local stream ref %s is %s, not checked out member HEAD %s", member.Branch, localStream, local)
+		return nil, fmt.Errorf("local stream ref %s is %s, not checked out member HEAD %s", member.Branch, localStream, local)
 	}
 	ancestor, err := engine.Git.IsAncestor(ctx, member.Worktree, local, pr.HeadSHA)
 	if err != nil {
-		return false, fmt.Errorf("compare member HEAD %s with merged pull request head %s: %w", local, pr.HeadSHA, err)
+		return nil, fmt.Errorf("compare member HEAD %s with merged pull request head %s: %w", local, pr.HeadSHA, err)
 	}
 	if !ancestor {
-		return false, fmt.Errorf("member HEAD %s is not an ancestor of merged pull request head %s", local, pr.HeadSHA)
+		return nil, fmt.Errorf("member HEAD %s is not an ancestor of merged pull request head %s", local, pr.HeadSHA)
 	}
 	remote, present, err := engine.Git.RemoteHead(ctx, member.Worktree, member.Branch)
 	if err != nil {
-		return false, fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
+		return nil, fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
 	}
 	if present && remote != pr.HeadSHA {
-		return false, fmt.Errorf("origin/%s is %s, not merged pull request head %s", member.Branch, remote, pr.HeadSHA)
+		return nil, fmt.Errorf("origin/%s is %s, not merged pull request head %s", member.Branch, remote, pr.HeadSHA)
 	}
-	return true, nil
+	return &SquashAbsorptionReceipt{
+		Target: member.Base, SourceBranch: member.Branch, SourceSHA: local,
+		CandidateSHA: pr.HeadSHA, LandingSHA: pr.MergeSHA,
+	}, nil
 }
 
 // provedAlreadyRetiredMember recognizes only the narrow recovery state left by
@@ -399,7 +404,7 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 	return outcomes
 }
 
-func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name string, member Member) EndMemberResult {
+func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name string, member Member, receipt *SquashAbsorptionReceipt) EndMemberResult {
 	result := EndMemberResult{
 		Repository: member.Repository, Worktree: member.Worktree,
 		DraftPullRequest: member.PullRequest,
@@ -467,7 +472,7 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 			result.RemoteBranchDeleted = true
 		}
 	}
-	if err := engine.Worktrees.Remove(ctx, name, member.Repository, member.Worktree); err != nil {
+	if err := engine.Worktrees.Remove(ctx, name, member.Repository, member.Worktree, receipt); err != nil {
 		result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
 		return result
 	}
