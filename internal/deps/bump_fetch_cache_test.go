@@ -212,6 +212,10 @@ if [ "$1" = api ]; then
       printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'
       exit 0
       ;;
+    repos/*'/actions/runs?head_sha='*'&per_page=100')
+      printf '%s\n' '{"total_count":0,"workflow_runs":[]}'
+      exit 0
+      ;;
     repos/*/commits/*/status*)
       printf '%s\n' '{"total_count":0,"statuses":[]}'
       exit 0
