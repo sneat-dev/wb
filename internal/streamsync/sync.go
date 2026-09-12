@@ -95,6 +95,13 @@ type RebaseResult struct {
 type Result struct {
 	Stream     string `json:"stream"`
 	Repository string `json:"repository"`
+	// RecordedRemoteHead is the fetched stream branch head that the caller
+	// must persist for a later --force-with-lease. It is deliberately the
+	// remote head, not an unpushed local rebase or dependency bump.
+	RecordedRemoteHead string `json:"recorded_remote_head,omitempty"`
+	// RemoteAdvanced reports that the clean checkout was fast-forwarded to a
+	// newer remote stream head before its ordinary rebase onto the base.
+	RemoteAdvanced bool `json:"remote_advanced,omitempty"`
 	// BaseBefore and BaseAfter show what the rebase moved onto.
 	BaseBefore string `json:"base_before,omitempty"`
 	BaseAfter  string `json:"base_after,omitempty"`
@@ -208,6 +215,15 @@ func (engine *Engine) sync(ctx context.Context, options Options) (Result, error)
 
 	if err := engine.Git.Fetch(ctx, options.Worktree); err != nil {
 		return result, fmt.Errorf("re-read origin before rebasing: %w", err)
+	}
+	remoteBranch := "origin/" + options.Branch
+	remoteHead, present, advanced, err := engine.Git.FastForwardToRemote(ctx, options.Worktree, options.Branch, remoteBranch)
+	if err != nil {
+		return result, fmt.Errorf("reconcile %s with fetched %s without rewriting local work: %w", options.Branch, remoteBranch, err)
+	}
+	if present {
+		result.RecordedRemoteHead = remoteHead
+		result.RemoteAdvanced = advanced
 	}
 	upstream := "origin/" + options.Base
 	before, err := engine.Git.Head(ctx, options.Worktree, options.Branch)
