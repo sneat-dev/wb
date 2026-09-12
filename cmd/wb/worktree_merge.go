@@ -294,7 +294,7 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 		return err
 	}
 	campaign := newWorktreeMergeProgress(command, *flags)
-	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission))
+	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission, command.ErrOrStderr()))
 	finishWorktreeMergeProgress(campaign, receipt, err)
 	releaseWorktreeMergeLane(receipt)
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -440,7 +440,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 				}
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission))
+			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission, command.ErrOrStderr()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -483,7 +483,7 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 			progress.Report(campaign.reporter(), progress.Event{Operation: "worktree_merge", Phase: "prepare_revert", State: progress.Started, Detail: args[0]})
 			receipt, err := orchestrate.PrepareWorktreeMergeRevert(command.Context(), projectsRoot, args[0], flags.timeout, flags.retry)
 			if err == nil {
-				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission))
+				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission, command.ErrOrStderr()))
 			}
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			releaseWorktreeMergeLane(receipt)
@@ -1221,13 +1221,13 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 		Lane: landingLaneGuardRequest("wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 
-func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergeLandOptions {
+func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, errOut io.Writer) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            landingLaneGuardRequest("wb worktree merge land", flags.laneReason, flags.takeOverLane),
-		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission}
+		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission, CheckoutUpdated: lifecycleCheckoutUpdated(errOut)}
 }
 
 // hostLoadCheckSkippable reports whether a land/resume step for receipt will

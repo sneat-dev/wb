@@ -101,8 +101,6 @@ wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
-wb plugin list --format=json # typed lifecycle registry for preconfigured local tools
-wb codegrapher status|install|update # inspect or manage CodeGrapher (install/update require --yes)
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
@@ -602,6 +600,44 @@ wb sync --dry-run              # preview
 wb sync -o your-org            # sync only one org
 wb sync -j 16                  # more parallelism
 ```
+
+#### Trusted checkout-update hooks
+
+When WB actually changes a canonical checkout, it can run user-owned tools from
+the standard `~/.config/wb/wb.yaml`. An already-current pull, fetch without a
+checkout change, dry run, dirty skip, and failed update do not fire. A new clone
+does fire once because it has new checked-out content.
+
+Executors are direct executable-plus-arguments declarations, never shell
+strings, and only this user-owned file may declare them. Repository
+`.wb/hooks.yaml` remains Git-hook policy; repository content cannot authorize an
+automatic lifecycle command.
+
+```yaml
+hooks:
+  version: 1
+  executors:
+    code-index:
+      run: /opt/homebrew/bin/codegrapher
+      args: [sync, .]
+      cwd: repository
+      mode: coalesced
+      timeout: 2m
+      failure: warn
+  bindings:
+    - on: [checkout-updated]
+      match:
+        repositories:
+          include: ['*/*/*']
+      execute: [code-index]
+```
+
+Repository patterns match canonical `host/owner/repository` identities;
+exclusions win. Repeated events for the same executor and checkout in one WB
+operation coalesce to the latest commit. Local receipts are appended beneath
+the user's WB state directory without command output or credentials. Hook,
+configuration, and receipt failures warn but do not rewrite a successful Git
+update as a failed update.
 
 ### `wb run` — governed commands and config-driven recipes
 
@@ -1370,17 +1406,10 @@ call, import, and impact exploration beneath WB's fleet-level topology. These
 links are deterministic and passive: WB does not query CodeGrapher, publish a
 snapshot, or trigger indexing while generating a report.
 
-Install and inspect the local CodeGrapher CLI through WB's default tool plugin:
-
-```sh
-wb codegrapher status --format=json
-wb codegrapher install --yes
-wb codegrapher update --yes
-```
-
-This local-tool lifecycle does not index or synchronize a repository. A graph
-refresh will be added only after CodeGrapher can attest the exact repository
-revision it processed.
+CodeGrapher is installed and updated with its own CLI distribution. WB does not
+contain CodeGrapher-specific lifecycle code; the generic trusted
+`checkout-updated` hook shown above can invoke `codegrapher sync .` after an
+exact checkout change.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and
@@ -1909,41 +1938,42 @@ regular, executable file outside the repository before invoking it.
 #### Hook policy, detection, and composable profiles
 
 Policy layers in this order: WB's conservative built-ins (including worktree
-admission), the user's global
-`~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
+admission), the user's global `git_hooks:` section in
+`~/.config/wb/wb.yaml`, then the repository's `.wb/hooks.yaml`. A repository
 entry overrides the same global hook. Automatic profiles are opt-in, so
 upgrading WB never adds expensive checks to an existing installation
 unexpectedly.
 
 ```yaml
-version: 1
+git_hooks:
+  version: 1
 
-profiles:
-  auto: true                    # detect all built-in and custom definitions
-  # include: [sneat-product]    # force a profile even without a match
-  # exclude: [node, worktree]   # explicit opt-out of a detected/default profile
-  definitions:
-    sneat-product:              # custom product/tool/domain profile
-      order: 200
-      detect:
-        any_files:
-          - sneat.project.yaml
-      hooks:
-        pre-push:
-          template: templates/sneat-product/pre-push.sh
+  profiles:
+    auto: true                  # detect all built-in and custom definitions
+    # include: [sneat-product]  # force a profile even without a match
+    # exclude: [node, worktree] # explicit opt-out of a detected/default profile
+    definitions:
+      sneat-product:            # custom product/tool/domain profile
+        order: 200
+        detect:
+          any_files:
+            - sneat.project.yaml
+        hooks:
+          pre-push:
+            template: templates/sneat-product/pre-push.sh
 
-# A direct hook replaces WB's conservative base block. Setting it disabled
-# suppresses the whole hook, including blocks contributed by profiles.
-# hooks:
-#   pre-push:
-#     disabled: true
+  # A direct hook replaces WB's conservative base block. Setting it disabled
+  # suppresses the whole hook, including blocks contributed by profiles.
+  # hooks:
+  #   pre-push:
+  #     disabled: true
 
-metrics:
-  enabled: true
-  # path: ~/.local/state/wb/hook-events.jsonl
-  labels:                       # optional, user-chosen pseudonyms
-    developer: dev-17
-    machine: laptop-a
+  metrics:
+    enabled: true
+    # path: ~/.local/state/wb/hook-events.jsonl
+    labels:                     # optional, user-chosen pseudonyms
+      developer: dev-17
+      machine: laptop-a
 ```
 
 With `profiles.auto: true`, the built-in detectors currently contribute:
