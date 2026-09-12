@@ -571,7 +571,7 @@ func (controller daemonController) openLifecycleLock(create bool) (*os.File, boo
 		flags |= unix.O_CREAT
 	}
 	created := false
-	fd := -1
+	var fd int
 	var err error
 	if create {
 		fd, err = unix.Open(path, flags|unix.O_EXCL, 0o600)
