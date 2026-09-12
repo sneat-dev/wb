@@ -25,6 +25,10 @@ type Git interface {
 	RemoteHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
 	// LocalHead resolves the worktree's HEAD.
 	LocalHead(ctx context.Context, dir string) (string, error)
+	// LocalBranchHead resolves a local branch without consulting origin. It is
+	// used when a stream worktree has already disappeared: a surviving local
+	// stream ref can still carry unpushed work that must block retirement.
+	LocalBranchHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
 	// CommitsNotIn lists the commits on branch whose patch base does not
 	// already carry, by patch identity rather than by SHA — a rebase landing
 	// rewrites SHAs, so an ancestry test would refuse every landed stream

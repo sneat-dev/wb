@@ -270,13 +270,24 @@ func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Mem
 	if present && remote != pr.HeadSHA {
 		return false, fmt.Errorf("origin/%s advanced to %s after merged pull request head %s", member.Branch, remote, pr.HeadSHA)
 	}
+	local, present, err := engine.Git.LocalBranchHead(ctx, member.Canonical, member.Branch)
+	if err != nil {
+		return false, fmt.Errorf("read local %s after merged receipt: %w", member.Branch, err)
+	}
+	if present && local != pr.HeadSHA {
+		return false, fmt.Errorf("local %s advanced to %s after merged pull request head %s", member.Branch, local, pr.HeadSHA)
+	}
 	return true, nil
 }
 
 // retireAgentPullRequests closes or retargets every still-open pull request
 // whose base is the stream branch, before that branch could be deleted.
 func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOptions, member Member) []AgentPullRequestOutcome {
-	pullRequests, err := engine.GitHub.OpenPullRequestsTargeting(ctx, member.Worktree, member.Branch)
+	dir := member.Worktree
+	if _, err := os.Lstat(member.Worktree); errors.Is(err, os.ErrNotExist) && member.Canonical != "" {
+		dir = member.Canonical
+	}
+	pullRequests, err := engine.GitHub.OpenPullRequestsTargeting(ctx, dir, member.Branch)
 	if err != nil {
 		return []AgentPullRequestOutcome{{
 			Repository: member.Repository, Action: "unknown",
@@ -298,7 +309,7 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 			// The action is written only after the port has re-read the pull
 			// request and confirmed the new base. An exit code is not
 			// evidence the effect landed.
-			if err := engine.GitHub.RetargetPullRequest(ctx, member.Worktree, pullRequest.Number, member.Base); err != nil {
+			if err := engine.GitHub.RetargetPullRequest(ctx, dir, pullRequest.Number, member.Base); err != nil {
 				outcome.Action, outcome.Detail = "failed", RedactString(err.Error())
 			} else {
 				outcome.Action, outcome.Detail = "retargeted", "onto "+member.Base
@@ -306,7 +317,7 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 		default:
 			comment := "Closed by `wb stream end " + member.Branch + "`: the stream branch is being retired. " +
 				"Reopen against " + member.Base + " if this work is still wanted."
-			if err := engine.GitHub.ClosePullRequest(ctx, member.Worktree, pullRequest.Number, comment); err != nil {
+			if err := engine.GitHub.ClosePullRequest(ctx, dir, pullRequest.Number, comment); err != nil {
 				outcome.Action, outcome.Detail = "failed", RedactString(err.Error())
 			} else {
 				outcome.Action = "closed"

@@ -212,6 +212,43 @@ func TestEndRefusesRemovedMemberWhoseRemoteBranchAdvancedAfterMerge(t *testing.T
 	}
 }
 
+func TestEndRefusesRemovedMemberWhoseLocalStreamBranchAdvancedAfterMerge(t *testing.T) {
+	engine, git, hub, worktrees, stream := startedStream(t, "missing-local-advanced", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	mergedHead := "0123456789012345678901234567890123456789"
+	hub.byNumber[member.PullRequest] = PullRequest{Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base, HeadSHA: mergedHead, MergeSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"}
+	git.localBranchHeads[member.Canonical+" "+member.Branch] = "fedcbafedcbafedcbafedcbafedcbafedcbafedc"
+	_, err := engine.End(context.Background(), EndOptions{Name: "missing-local-advanced", Apply: true})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalUnabsorbedWork || !strings.Contains(refusal.Message, "local") {
+		t.Fatalf("error = %v, want local-advanced refusal", err)
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want none", worktrees.removed)
+	}
+}
+
+func TestEndUsesCanonicalCheckoutForAlreadyRemovedMemberGitHubCalls(t *testing.T) {
+	engine, _, hub, _, stream := startedStream(t, "missing-canonical-cwd", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	hub.requireExistingDir = true
+	hub.byNumber[member.PullRequest] = PullRequest{Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base, HeadSHA: "0123456789012345678901234567890123456789", MergeSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"}
+	hub.targeting[member.Canonical+" "+member.Branch] = []PullRequest{{Number: 99, Head: "agent/a", Base: member.Branch}}
+	result, err := engine.End(context.Background(), EndOptions{Name: "missing-canonical-cwd", Apply: true})
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if len(result.AgentPullRequests) != 1 || result.AgentPullRequests[0].Action != "closed" {
+		t.Fatalf("agent pull requests = %#v, want canonical-cwd close", result.AgentPullRequests)
+	}
+}
+
 // Without --apply the verb reports exactly what it would do and changes
 // nothing, so an operator sees which pull requests would be closed first.
 func TestEndWithoutApplyChangesNothing(t *testing.T) {

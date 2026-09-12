@@ -183,6 +183,22 @@ func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// LocalBranchHead implements Git without falling back to a remote-tracking
+// ref. A recovered stream member has no worktree to inspect, but its canonical
+// clone can still hold an unpushed stream branch.
+func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
+	out, err := git.run(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read local %s in %s: %w", branch, dir, err)
+	}
+	sha := strings.TrimSpace(out)
+	return sha, sha != "", nil
+}
+
 // CommitsNotIn implements Git by patch identity.
 //
 // `git cherry` answers which commits base does not already carry *as patches*,
