@@ -107,6 +107,10 @@ type Result struct {
 	PullAttempted bool
 	PullSucceeded bool
 	Updated       bool
+	// BeforeHeadSHA is populated for an existing checkout when its pre-pull
+	// HEAD was readable. Together with HeadSHA it is the exact lifecycle-hook
+	// boundary; an unchanged pair never emits checkout-updated.
+	BeforeHeadSHA string
 	Detail        gitops.RepoStatus
 	// Tracking is filled in only for Diverged and NoUpstream, whose reports
 	// are meaningless without the branch names and ahead/behind counts.
@@ -418,6 +422,9 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		return res
 	}
 	beforeHead, beforeHeadErr := gitops.HeadSHA(repo.Path)
+	if beforeHeadErr == nil {
+		res.BeforeHeadSHA = beforeHead
+	}
 	res.PullAttempted = true
 	if err := gitops.Pull(repo.Path); err != nil {
 		// A remote publishing no branches at all has nothing to pull, so the

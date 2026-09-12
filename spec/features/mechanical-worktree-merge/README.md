@@ -148,6 +148,12 @@ file with that name is preserved unchanged.
 - `--cleanup` is ignored until remote receipt and required canonical
   synchronization have succeeded. Cleanup retains the landing receipt needed
   to prepare a later revert.
+- A corrected historical self-supersession remains effective after its
+  replacement worktree is terminally cleaned. WB accepts the missing checkout
+  only when an exact, structurally valid WB cleanup receipt records the same
+  repository, target, task, path, branch, and integrated head, and the freshly
+  fetched target still contains that head and every immutable correction root.
+  A missing checkout without that receipt remains a refusal.
 
 ## Acceptance Criteria
 
@@ -252,6 +258,23 @@ Given a remotely receipted landing, omission of `--cleanup` retains all assets
 and reports cleanup pending; inclusion removes only the exact absorbed source
 and candidate assets after canonical synchronization and leaves the durable
 landing/revert receipt readable.
+
+Given a corrected historical self-supersession whose replacement was safely
+landed and cleaned, a later merge accepts the append-only correction when the
+matching terminal cleanup receipt and fresh target ancestry validate. Deleting
+the replacement checkout without a matching cleanup receipt does not make the
+correction effective.
+
+Given an interrupted unpublished `preparing` receipt whose exact candidate was
+later discarded through `wb worktree abort`, the unpublished-prepare
+acknowledgement accepts only WB's private, complete lifecycle-backlog proof for
+that exact task, repository, target, path, branch, and SHA. It also rechecks that
+the checkout, local branch, remote branch, and target ancestry do not show a
+surviving or landed candidate. A missing, incomplete, mismatched, or forged
+cleanup record leaves the lane blocked while preserving every source worktree.
+A source may advance only as a clean descendant of its receipted SHA; the
+acknowledgement records that observed descendant head rather than representing
+it as the historical source.
 
 ### AC: squash-recovery-preserves-target-content-and-history-records
 

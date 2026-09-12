@@ -1812,6 +1812,67 @@ func TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe(t *tes
 	}
 }
 
+func TestCorrectedSelfSupersessionRemainsEffectiveAfterReplacementCleanup(t *testing.T) {
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correction, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "establish correction before terminal cleanup",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", correction.CorrectedReplacement.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	cleaned, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
+		ProjectsRoot: fixture.githubDir,
+		Tasks:        []string{correction.CorrectedReplacement.Task, receipt.Sources[0].Task},
+		Base:         receipt.Target,
+		Apply:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaned.Results) != 2 || !cleaned.Results[0].Applied || !cleaned.Results[1].Applied || cleaned.ReportPath == "" {
+		t.Fatalf("replacement cleanup = %+v", cleaned)
+	}
+	if _, err := os.Stat(correction.CorrectedReplacement.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("replacement worktree still exists after terminal cleanup: %v", err)
+	}
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("cleaned corrected self supersession = superseded=%t err=%v", superseded, err)
+	}
+}
+
+func TestCorrectedSelfSupersessionRefusesMissingReplacementWithoutCleanupReceipt(t *testing.T) {
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correction, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "establish correction before unreceipted removal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "worktree", "remove", correction.CorrectedReplacement.Worktree)
+	runEngineGit(t, fixture.canonical, "branch", "-D", correction.CorrectedReplacement.Branch)
+
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "no terminal cleanup receipt") {
+		t.Fatalf("unreceipted missing corrected replacement = superseded=%t err=%v", superseded, err)
+	}
+}
+
 func TestCorrectValidationFailedSelfSupersessionRefusesFailedCandidateReplacementWithoutMutation(t *testing.T) {
 	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
 	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)

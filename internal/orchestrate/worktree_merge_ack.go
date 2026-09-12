@@ -2550,6 +2550,11 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 		originalClaim.BaseSHA != supersession.OriginalClaimBaseSHA || originalClaim.BaseSHA != correction.OriginalClaimBaseSHA {
 		return errors.New("corrected self-supersession immutable claim SHA256 or base no longer matches recorded evidence")
 	}
+	if _, statErr := os.Lstat(correction.CorrectedReplacement.Worktree); errors.Is(statErr, os.ErrNotExist) {
+		return validateCleanedSelfSupersessionReplacement(ctx, projectsRoot, receipt, supersession, correction)
+	} else if statErr != nil {
+		return fmt.Errorf("inspect corrected self-supersession replacement: %w", statErr)
+	}
 	replacement, replacementClaim, err := validateValidationFailureReplacement(ctx, projectsRoot, receipt, correction.CorrectedReplacement.Worktree)
 	if err != nil {
 		return fmt.Errorf("validate corrected self-supersession replacement: %w", err)
@@ -2586,6 +2591,57 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("corrected self-supersession replacement %s does not contain recorded immutable root %s", replacement.SHA, root)
+			}
+			return ancestorErr
+		}
+	}
+	return nil
+}
+
+func validateCleanedSelfSupersessionReplacement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, correction WorktreeMergeSelfSupersessionCorrection) error {
+	proof, err := worktrees.FindTerminalCleanupProof(
+		projectsRoot,
+		receipt.Repository,
+		receipt.Target,
+		correction.CorrectedReplacement.Task,
+		correction.CorrectedReplacement.Worktree,
+		correction.CorrectedReplacement.Branch,
+	)
+	if err != nil {
+		return fmt.Errorf("validate cleaned corrected self-supersession replacement: %w", err)
+	}
+	canonical, err := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if err != nil {
+		return fmt.Errorf("resolve cleaned corrected self-supersession canonical repository: %w", err)
+	}
+	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, canonical, receipt); err != nil {
+		return fmt.Errorf("validate cleaned corrected self-supersession historical source: %w", err)
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, canonical, receipt.Target)
+	if err != nil {
+		return err
+	}
+	if currentTarget != supersession.CurrentTargetSHA || currentTarget != correction.CurrentTargetSHA {
+		containsRecordedTarget, targetAncestorErr := isMergeAncestor(ctx, canonical, correction.CurrentTargetSHA, currentTarget)
+		if targetAncestorErr != nil {
+			return fmt.Errorf("verify cleaned corrected self-supersession target ancestry: %w", targetAncestorErr)
+		}
+		if !containsRecordedTarget {
+			return fmt.Errorf("cleaned corrected self-supersession target %s is not a descendant of recorded target %s", currentTarget, correction.CurrentTargetSHA)
+		}
+	}
+	containsCleanupHead, err := isMergeAncestor(ctx, canonical, proof.Result.HeadSHA, currentTarget)
+	if err != nil || !containsCleanupHead {
+		if err == nil {
+			err = fmt.Errorf("current target %s does not contain cleaned replacement head %s", currentTarget, proof.Result.HeadSHA)
+		}
+		return fmt.Errorf("verify cleaned corrected self-supersession landing: %w", err)
+	}
+	for _, root := range append([]string{correction.CorrectedReplacement.SHA, correction.OriginalClaimBaseSHA, correction.ReplacementClaimBaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
+		contains, ancestorErr := isMergeAncestor(ctx, canonical, root, proof.Result.HeadSHA)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("cleaned corrected self-supersession replacement %s does not contain recorded immutable root %s", proof.Result.HeadSHA, root)
 			}
 			return ancestorErr
 		}

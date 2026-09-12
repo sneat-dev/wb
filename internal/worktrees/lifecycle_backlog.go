@@ -69,6 +69,98 @@ type lifecycleBacklogRecord struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
+// DiscardedLifecycleBacklogProof is WB's durable proof that one exact
+// unpublished worktree was deliberately discarded and its cleanup completed.
+// Callers must still prove that its branch was never published and its commit
+// did not reach the target before retiring any higher-level operation receipt.
+type DiscardedLifecycleBacklogProof struct {
+	Path       string
+	Task       string
+	Repository string
+	Worktree   string
+	Branch     string
+	Target     string
+	HeadSHA    string
+}
+
+// FindDiscardedLifecycleBacklogProof reads WB's private cleanup journal through
+// its no-follow directory boundary and accepts only one exact completed
+// discarded identity whose checkout is both absent and no longer registered.
+func FindDiscardedLifecycleBacklogProof(ctx context.Context, projectsRoot, repository, target, task, worktree, branch, head string) (*DiscardedLifecycleBacklogProof, error) {
+	projectsRoot = filepath.Clean(projectsRoot)
+	if _, _, err := splitRepository(repository); err != nil {
+		return nil, fmt.Errorf("invalid discarded cleanup repository: %w", err)
+	}
+	if !validSafeSegment(task) || !filepath.IsAbs(worktree) || !validBranch(ctx, branch) || !validBranch(ctx, target) || !isGitObjectID(head) {
+		return nil, errors.New("discarded cleanup lookup identity is incomplete")
+	}
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve WB home for discarded cleanup lookup: %w", err)
+	}
+	directory, err := openLifecycleBacklogDirectory(resolution.Write.Home, false)
+	if err != nil {
+		return nil, fmt.Errorf("open discarded cleanup backlog: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("read discarded cleanup backlog: %w", err)
+	}
+	var matches []struct {
+		path   string
+		record lifecycleBacklogRecord
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var record lifecycleBacklogRecord
+		if err := readJSONAt(directory, entry.Name(), &record); err != nil {
+			continue
+		}
+		if entry.Name() != record.ID+".json" || record.Task != task || record.Repository != repository ||
+			filepath.Clean(record.ProjectsRoot) != projectsRoot || filepath.Clean(record.WorktreeDir) != filepath.Clean(worktree) ||
+			record.Branch != branch || record.Base != target || record.HeadSHA != head {
+			continue
+		}
+		if err := validateLifecycleBacklog(record); err != nil {
+			return nil, fmt.Errorf("validate discarded cleanup backlog %s: %w", entry.Name(), err)
+		}
+		matches = append(matches, struct {
+			path   string
+			record lifecycleBacklogRecord
+		}{path: filepath.Join(lifecycleBacklogDirectory(resolution.Write.Home), entry.Name()), record: record})
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("expected one discarded cleanup backlog for %s, found %d", worktree, len(matches))
+	}
+	match := matches[0]
+	if match.record.Disposition != string(AbortDiscarded) || match.record.Stage != lifecycleStageComplete {
+		return nil, fmt.Errorf("discarded cleanup backlog %s is not complete", match.path)
+	}
+	if _, err := os.Lstat(worktree); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return nil, fmt.Errorf("discarded worktree %s still exists", worktree)
+		}
+		return nil, fmt.Errorf("inspect discarded worktree %s: %w", worktree, err)
+	}
+	registered, err := worktreeStillRegistered(ctx, match.record.CanonicalDir, worktree)
+	if err != nil {
+		return nil, fmt.Errorf("inspect discarded worktree registration: %w", err)
+	}
+	if registered {
+		return nil, fmt.Errorf("discarded worktree %s remains registered", worktree)
+	}
+	if gitReferenceExists(ctx, match.record.CanonicalDir, "refs/heads/"+branch) {
+		return nil, fmt.Errorf("discarded candidate branch %s still exists locally", branch)
+	}
+	return &DiscardedLifecycleBacklogProof{
+		Path: match.path, Task: task, Repository: repository, Worktree: worktree,
+		Branch: branch, Target: target, HeadSHA: head,
+	}, nil
+}
+
 func lifecycleBacklogID(result ListResult, disposition string) string {
 	digest := sha256.Sum256([]byte(strings.Join([]string{
 		"wb-lifecycle-backlog-v1", result.Task, result.Repository, result.Branch,

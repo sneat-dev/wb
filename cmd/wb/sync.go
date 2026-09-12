@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/tui"
 )
 
@@ -42,6 +43,10 @@ Without --prune-archived, an archived repository is never deleted: sync pulls
 its local clone exactly like any other repository's, and the report still
 names it as archived so it is never silently indistinguishable from an
 ordinary clone.
+
+After successful mutations, trusted checkout-updated hooks from the standard
+user wb.yaml run only for clones and repositories whose checked-out HEAD
+actually changed; already-current pulls and dry runs never fire them.
 
 When stdout is a terminal, progress uses the full terminal and the final text
 report is written to stderr after the terminal is restored. Piped, CI, and
@@ -189,7 +194,52 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 		printSyncSummary(reportOut, results, pruneArchived, interactive)
 	}
 
-	return finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, reportOut, errOut)
+	code := finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, reportOut, errOut)
+	if dryRun {
+		return code
+	}
+	hookCode := finishSyncLifecycleHooks(ctx, results, lifecyclehooks.Dispatch, errOut)
+	if code != 0 {
+		return code
+	}
+	return hookCode
+}
+
+type syncLifecycleDispatch func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error)
+
+func finishSyncLifecycleHooks(ctx context.Context, results []fleetsync.Result, dispatch syncLifecycleDispatch, errOut io.Writer) int {
+	events := syncLifecycleEvents(results)
+	if len(events) == 0 {
+		return 0
+	}
+	report, err := dispatch(ctx, events)
+	for _, warning := range report.Warnings {
+		_, _ = fmt.Fprintln(errOut, "warning:", warning)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "warning: lifecycle hooks were not dispatched:", err)
+	}
+	return 0
+}
+
+func syncLifecycleEvents(results []fleetsync.Result) []lifecyclehooks.Event {
+	var events []lifecyclehooks.Event
+	for _, result := range results {
+		cause := ""
+		switch {
+		case result.Status == fleetsync.Cloned && result.HeadSHA != "":
+			cause = "sync-clone"
+		case result.Updated && result.HeadSHA != "":
+			cause = "sync-pull"
+		default:
+			continue
+		}
+		events = append(events, lifecyclehooks.Event{
+			Name: lifecyclehooks.EventCheckoutUpdated, Repository: "github.com/" + result.Repo.Org + "/" + result.Repo.Name,
+			Checkout: result.Repo.Path, OldSHA: result.BeforeHeadSHA, NewSHA: result.HeadSHA, Cause: cause,
+		})
+	}
+	return events
 }
 
 // syncReportWriter keeps an interactive run's completion report visible after

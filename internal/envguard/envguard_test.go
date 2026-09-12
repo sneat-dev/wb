@@ -223,6 +223,40 @@ func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
 	}
 }
 
+func TestTracksOwnGoWorkResolvesSymlinkedRepositoryRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	physical, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := filepath.Join(physical, "repository")
+	if err := os.Mkdir(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "init")
+	runGit(t, repository, "config", "user.email", "test@example.com")
+	runGit(t, repository, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repository, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "add", "go.work")
+	runGit(t, repository, "commit", "-m", "add go.work")
+	alias := filepath.Join(physical, "repository-alias")
+	if err := os.Symlink(repository, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	tracked, err := TracksOwnGoWork(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("TracksOwnGoWork = false through a symlinked repository root")
+	}
+}
+
 // TestTracksOwnGoWorkFalseOutsideAnyGitRepository covers a temp module (a
 // go.work with no enclosing git repository at all): GoEnvOverrides must
 // yield GOWORK=off rather than erroring or panicking when `git rev-parse

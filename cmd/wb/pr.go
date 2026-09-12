@@ -139,6 +139,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Events:              events,
 				Stream:              streamName,
 				Lane:                landingLaneGuardRequest("wb pr land", laneReason, takeOverLane),
+				CheckoutUpdated:     lifecycleCheckoutUpdated(command.ErrOrStderr()),
 			})
 			if err != nil {
 				progress.fail(err)
