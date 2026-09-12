@@ -189,3 +189,17 @@ func TestValidBranchDoesNotMemoizeFailure(t *testing.T) {
 		t.Fatal("a failed branch validation must remain retryable, not poison the process memo")
 	}
 }
+func TestValidBranchGitLookupRecoversAfterTemporaryPATHRestriction(t *testing.T) {
+	originalPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", originalPath) })
+	if err := os.Setenv("PATH", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	_ = validBranchGit()
+	if err := os.Setenv("PATH", originalPath); err != nil {
+		t.Fatal(err)
+	}
+	if gitPath := validBranchGit(); gitPath == "" {
+		t.Fatal("a temporary PATH restriction permanently poisoned Git discovery")
+	}
+}
