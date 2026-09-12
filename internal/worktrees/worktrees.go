@@ -1863,20 +1863,28 @@ func validBranch(ctx context.Context, branch string) bool {
 	if gitPath == "" {
 		return false
 	}
-	command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
-	// This syntax-only Git command must not inherit a worktree that cleanup has
-	// just removed. A final local-branch retirement persists its durable
-	// backlog stage after removing that checkout; using a stable directory keeps
-	// validation independent of the caller's current directory.
-	command.Dir = os.TempDir()
-	command.Env = console.Env()
-	valid := command.Run() == nil
-	// A cancelled context makes Run fail for reasons unrelated to the name;
-	// never remember that as a verdict about the string.
-	if ctx.Err() == nil {
-		validBranchMemo.Store(branch, valid)
+	for attempt := 0; attempt < 3; attempt++ {
+		command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
+		// This syntax-only Git command must not inherit a worktree that cleanup has
+		// just removed. A final local-branch retirement persists its durable
+		// backlog stage after removing that checkout; using a stable directory keeps
+		// validation independent of the caller's current directory.
+		command.Dir = os.TempDir()
+		command.Env = console.Env()
+		if command.Run() == nil {
+			validBranchMemo.Store(branch, true)
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
 	}
-	return valid
+	// A failed subprocess is not durable evidence about branch grammar. Under
+	// process-sharded tests (and on saturated hosts) a transient spawn or signal
+	// used to cache `main=false` for the rest of the process, cascading one
+	// environmental failure into every later repository fixture. Valid names are
+	// still memoized; failures stay retryable.
+	return false
 }
 
 func canonicalCoordinates(projectsRoot, root string) (owner, name string, err error) {

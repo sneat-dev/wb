@@ -176,3 +176,16 @@ func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
 		t.Fatal("a verdict produced under a cancelled context must not be remembered")
 	}
 }
+
+func TestValidBranchDoesNotMemoizeFailure(t *testing.T) {
+	name := "invalid..branch"
+	validBranchMemo.Delete(name)
+	t.Cleanup(func() { validBranchMemo.Delete(name) })
+
+	if validBranch(context.Background(), name) {
+		t.Fatalf("%q should be rejected", name)
+	}
+	if _, ok := validBranchMemo.Load(name); ok {
+		t.Fatal("a failed branch validation must remain retryable, not poison the process memo")
+	}
+}
