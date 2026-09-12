@@ -236,18 +236,50 @@ func TestHeartbeatKeepsALiveWaiterFromAging(t *testing.T) {
 	ticket := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
 	defer ticket.Forget()
 
-	time.Sleep(30 * time.Millisecond)
+	staleUpdatedAt := time.Now().UTC().Add(-2 * staleAfter)
+	staleTicket := ticketRecord{
+		Participant: ticket.self,
+		CreatedAt:   ticket.createdAt,
+		UpdatedAt:   staleUpdatedAt,
+	}
+	payload, err := json.Marshal(staleTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ticket.path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if state := Peek(root, 1); state.Total != 0 {
 		t.Fatalf("Peek = %+v, want the un-refreshed ticket reaped once stale", state)
 	}
 
-	// Re-register (the previous ticket's file was reaped) and prove a
-	// refreshed record survives the same TTL.
+	// Re-register after the stale record was reaped, age the replacement
+	// deterministically, then prove Heartbeat refreshes it without relying on
+	// scheduler-sensitive sleeps around a millisecond TTL.
 	ticket2 := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
 	defer ticket2.Forget()
-	time.Sleep(15 * time.Millisecond)
+	staleTicket.Participant = ticket2.self
+	staleTicket.CreatedAt = ticket2.createdAt
+	payload, err = json.Marshal(staleTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ticket2.path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ticket2.Heartbeat()
-	time.Sleep(15 * time.Millisecond)
+	payload, err = os.ReadFile(ticket2.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshedTicket ticketRecord
+	if err := json.Unmarshal(payload, &refreshedTicket); err != nil {
+		t.Fatal(err)
+	}
+	if !refreshedTicket.UpdatedAt.After(staleUpdatedAt) {
+		t.Fatalf("Heartbeat UpdatedAt = %v, want after stale value %v", refreshedTicket.UpdatedAt, staleUpdatedAt)
+	}
+	staleAfter = time.Minute
 	if state := Peek(root, 1); state.Total != 1 {
 		t.Fatalf("Peek = %+v, want the heartbeat-refreshed ticket to survive", state)
 	}
@@ -270,9 +302,35 @@ func TestAnnouncementHeartbeatKeepsALiveHolderFromAging(t *testing.T) {
 	announcement := lease.Announce(Participant{PID: os.Getpid(), Summary: "go build"})
 	defer announcement.Cleanup()
 
-	time.Sleep(15 * time.Millisecond)
+	if len(announcement.paths) != 1 {
+		t.Fatalf("Announce wrote %d holder files, want 1", len(announcement.paths))
+	}
+	staleUpdatedAt := time.Now().UTC().Add(-2 * staleAfter)
+	staleHolder := Holder{
+		Participant: announcement.self,
+		StartedAt:   announcement.started,
+		UpdatedAt:   staleUpdatedAt,
+	}
+	payload, err := json.Marshal(staleHolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(announcement.paths[0], payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	announcement.Heartbeat()
-	time.Sleep(15 * time.Millisecond)
+	payload, err = os.ReadFile(announcement.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshedHolder Holder
+	if err := json.Unmarshal(payload, &refreshedHolder); err != nil {
+		t.Fatal(err)
+	}
+	if !refreshedHolder.UpdatedAt.After(staleUpdatedAt) {
+		t.Fatalf("Heartbeat UpdatedAt = %v, want after stale value %v", refreshedHolder.UpdatedAt, staleUpdatedAt)
+	}
+	staleAfter = time.Minute
 	if state := Peek(root, 1); len(state.Holders) != 1 {
 		t.Fatalf("Peek = %+v, want the heartbeat-refreshed holder to survive", state)
 	}
