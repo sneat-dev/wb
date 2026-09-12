@@ -291,6 +291,41 @@ func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testi
 	}
 }
 
+func TestEndLeavesSquashMemberWhenRemoteAdvancesAfterProof(t *testing.T) {
+	engine, git, hub, worktrees, stream := startedStream(t, "squash-race", "acme/library")
+	member := stream.Members[0]
+	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
+	mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
+	git.localHeads[member.Worktree] = localHead
+	git.currentBranch[member.Worktree] = member.Branch
+	git.localBranchHeads[member.Worktree+" "+member.Branch] = localHead
+	git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = true
+	git.remoteHeads[member.Worktree+" "+member.Branch] = mergedPRHead
+	hub.byNumber[member.PullRequest] = exactSquashReceipt(member, mergedPRHead)
+	advanced := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	git.beforeDelete = func(dir, branch string) {
+		if dir == member.Worktree && branch == member.Branch {
+			git.remoteHeads[dir+" "+branch] = advanced
+		}
+	}
+
+	result, err := engine.End(context.Background(), EndOptions{Name: "squash-race", Apply: true})
+	if err == nil || len(result.Members) != 1 || result.Members[0].WorktreeRemoved || result.Members[0].LeaseReleased ||
+		!strings.Contains(result.Members[0].Detail, "advanced") {
+		t.Fatalf("remote advance must preserve member and refuse end: result=%#v err=%v", result, err)
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("remote advance removed worktrees = %#v", worktrees.removed)
+	}
+	if remote := git.remoteHeads[member.Worktree+" "+member.Branch]; remote != advanced {
+		t.Fatalf("remote advance was deleted: got %s want %s", remote, advanced)
+	}
+	updated, loadErr := engine.Store.Load("squash-race")
+	if loadErr != nil || updated.Phase == PhaseEnded {
+		t.Fatalf("failed end must leave stream recoverable: stream=%#v err=%v", updated, loadErr)
+	}
+}
+
 func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
 	for _, test := range []struct {
 		name      string

@@ -268,6 +268,11 @@ type ListResult struct {
 	RebaseMergedAtOrigin     bool   `json:"rebase_merged_at_origin,omitempty"`
 	AbsorbedAtOrigin         bool   `json:"absorbed_at_origin,omitempty"`
 	AbsorbedBySHA            string `json:"absorbed_by_sha,omitempty"`
+	// mergeReceiptCandidateSHA is internal, re-verified cleanup evidence. A
+	// retained stream branch may point at this exact squash candidate even
+	// while the source checkout is at an ancestor; no other remote mismatch is
+	// eligible for cleanup.
+	mergeReceiptCandidateSHA string
 	// RecordedBase preserves the immutable manifest/claim target in a cleanup
 	// receipt when exact landing evidence authorizes another target.
 	RecordedBase string `json:"recorded_base,omitempty"`
@@ -4661,7 +4666,9 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 			entry.AbsorbedByRejection
 	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
-	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA && !entry.RemoteHeadAncestorOfHead:
+	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA &&
+		!(entry.mergeReceiptCandidateSHA != "" && entry.RemoteHeadSHA == entry.mergeReceiptCandidateSHA) &&
+		!entry.RemoteHeadAncestorOfHead:
 		return false, "remote branch advanced after the merged pull request"
 	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
 		return false, "merged pull request is newer than the cleanup safety window"
@@ -4687,6 +4694,7 @@ func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCle
 		entry.IntegratedAtOrigin = true
 		entry.AbsorbedAtOrigin = true
 		entry.AbsorbedBySHA = proof.LandingSHA
+		entry.mergeReceiptCandidateSHA = proof.CandidateSHA
 		entry.AbsorbedByRejection = ""
 		return nil
 	}

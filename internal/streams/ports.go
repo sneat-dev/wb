@@ -46,10 +46,11 @@ type Git interface {
 	// LogSubjects lists the subjects of commits in the exclusive range
 	// from..to. An empty from means "every commit reachable from to".
 	LogSubjects(ctx context.Context, dir, from, to string) ([]string, error)
-	// DeleteRemoteBranch removes a branch from origin and verifies it is
-	// gone, so "removes its own scaffolding" covers the remote as well as the
-	// local checkout.
-	DeleteRemoteBranch(ctx context.Context, dir, branch string) error
+	// DeleteRemoteBranch removes a branch from origin only if it remains at
+	// expectedSHA, then verifies it is gone. The lease closes the interval
+	// between stream proof and deletion: a later remote write must refuse, not
+	// be erased as stream scaffolding.
+	DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error
 }
 
 // PullRequest is the subset of a pull request stream verbs read.

@@ -711,6 +711,21 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 // see its work in main. Only the receipt binds that local source to the exact
 // PR candidate and its tree-identical landing commit.
 func TestCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "deleted")
+}
+
+// TestCleanupRetiresStreamSquashAncestorFromReceiptWithExactRemoteCandidate
+// covers stream end --keep-remote-branch. The receipt may preserve only its
+// exact candidate ref; an arbitrary remote advance remains a refusal.
+func TestCleanupRetiresStreamSquashAncestorFromReceiptWithExactRemoteCandidate(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "kept")
+}
+
+func TestCleanupRefusesStreamSquashReceiptAfterRemoteCandidateAdvances(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "advanced")
+}
+
+func testCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T, remoteMode string) {
 	fixture := newGitFixture(t)
 	const task = "stream-squash-ancestor"
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -746,7 +761,16 @@ func TestCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T) {
 	gitTest(t, fixture.canonical, "commit", "-m", "squash stream PR")
 	landingSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
-	gitTest(t, fixture.canonical, "push", "origin", ":"+result.Branch)
+	if remoteMode == "deleted" {
+		gitTest(t, fixture.canonical, "push", "origin", ":"+result.Branch)
+	} else if remoteMode == "advanced" {
+		if err := os.WriteFile(filepath.Join(writer, "advanced.txt"), []byte("must remain\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, writer, "add", "advanced.txt")
+		gitTest(t, writer, "commit", "-m", "remote advance")
+		gitTest(t, writer, "push", "origin", result.Branch)
+	}
 	installMergedPullRequestFixtures(t, nil, time.Time{})
 
 	applied, err := Cleanup(context.Background(), CleanupOptions{
@@ -760,12 +784,27 @@ func TestCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if remoteMode == "advanced" {
+		if len(applied.Results) != 1 || applied.Results[0].Applied || applied.Results[0].Eligible ||
+			!strings.Contains(applied.Results[0].Reason, "remote branch advanced") {
+			t.Fatalf("advanced remote must refuse receipt cleanup = %#v", applied)
+		}
+		if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+			t.Fatalf("advanced remote cleanup removed member: %v", statErr)
+		}
+		return
+	}
 	if len(applied.Results) != 1 || !applied.Results[0].Applied || !applied.Results[0].WorktreeGone ||
 		!applied.Results[0].AbsorbedAtOrigin || applied.Results[0].AbsorbedBySHA != landingSHA {
 		t.Fatalf("receipt-bound stream squash cleanup = %#v", applied)
 	}
 	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
 		t.Fatalf("squash-absorbed member remains after cleanup: %v", statErr)
+	}
+	if remoteMode == "kept" {
+		if remote := remoteBranchForTest(t, fixture.canonical, result.Branch); remote != candidateSHA {
+			t.Fatalf("kept remote stream candidate = %q, want %q", remote, candidateSHA)
+		}
 	}
 }
 

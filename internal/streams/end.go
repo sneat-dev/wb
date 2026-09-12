@@ -132,15 +132,17 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 	// worktree removed on the strength of a check that never answered.
 	var unabsorbed, unknown []string
 	squashReceipts := make(map[string]*SquashAbsorptionReceipt)
+	remoteExpectations := make(map[string]string)
 	for _, member := range stream.Members {
 		if member.Worktree == "" {
 			// A member reserved but never published has nothing to absorb.
 			continue
 		}
-		if retired, proofErr := engine.provedAlreadyRetiredMember(ctx, member); proofErr != nil {
+		if retired, expectedRemoteSHA, proofErr := engine.provedAlreadyRetiredMember(ctx, member); proofErr != nil {
 			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(proofErr.Error())))
 			continue
 		} else if retired {
+			remoteExpectations[member.Worktree] = expectedRemoteSHA
 			continue
 		}
 		// Re-read origin first: a day-old clone would report work as
@@ -155,7 +157,16 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 			continue
 		} else if receipt != nil {
 			squashReceipts[member.Worktree] = receipt
+			remoteExpectations[member.Worktree] = receipt.CandidateSHA
 			continue
+		}
+		remote, present, remoteErr := engine.Git.RemoteHead(ctx, member.Worktree, member.Branch)
+		if remoteErr != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: read origin/%s for deletion lease: %s", member.Repository, member.Branch, RedactString(remoteErr.Error())))
+			continue
+		}
+		if present {
+			remoteExpectations[member.Worktree] = remote
 		}
 		commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
 		if err != nil {
@@ -211,11 +222,16 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 
 	for _, member := range stream.Members {
 		result.AgentPullRequests = append(result.AgentPullRequests, engine.retireAgentPullRequests(ctx, options, member)...)
-		result.Members = append(result.Members, engine.retireMember(ctx, options, stream.Name, member, squashReceipts[member.Worktree]))
+		result.Members = append(result.Members, engine.retireMember(ctx, options, stream.Name, member, squashReceipts[member.Worktree], remoteExpectations[member.Worktree]))
 	}
 
 	if !options.Apply {
 		return result, nil
+	}
+	for _, member := range result.Members {
+		if !member.LeaseReleased {
+			return result, fmt.Errorf("stream %s could not retire %s: %s", stream.Name, member.Repository, member.Detail)
+		}
 	}
 	ended := engine.now()
 	// The lease is cleared only for members whose retirement actually
@@ -318,42 +334,42 @@ func (engine *Engine) provedSquashAbsorbedMember(ctx context.Context, member Mem
 // recorded stream PR is merged at the exact stream branch head, and no remote
 // branch carries a later commit.
 // A missing directory alone never grants cleanup authority.
-func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Member) (bool, error) {
+func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Member) (bool, string, error) {
 	_, statErr := os.Lstat(member.Worktree)
 	if statErr == nil {
-		return false, nil
+		return false, "", nil
 	}
 	if !errors.Is(statErr, os.ErrNotExist) {
-		return false, fmt.Errorf("inspect member worktree %s: %w", member.Worktree, statErr)
+		return false, "", fmt.Errorf("inspect member worktree %s: %w", member.Worktree, statErr)
 	}
 	if member.PullRequest == 0 || member.Canonical == "" {
-		return false, fmt.Errorf("member worktree is absent without an exact recorded stream pull request")
+		return false, "", fmt.Errorf("member worktree is absent without an exact recorded stream pull request")
 	}
 	pr, found, err := engine.GitHub.PullRequest(ctx, member.Canonical, member.PullRequest)
 	if err != nil {
-		return false, fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
+		return false, "", fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
 	}
 	if !found || !strings.EqualFold(pr.State, "MERGED") || pr.Head != member.Branch || pr.Base != member.Base || pr.HeadSHA == "" || pr.MergeSHA == "" {
-		return false, fmt.Errorf("member worktree is absent but recorded stream pull request #%d is not an exact merged receipt", member.PullRequest)
+		return false, "", fmt.Errorf("member worktree is absent but recorded stream pull request #%d is not an exact merged receipt", member.PullRequest)
 	}
 	if err := engine.Git.Fetch(ctx, member.Canonical); err != nil {
-		return false, fmt.Errorf("re-read origin before verifying retired member: %w", err)
+		return false, "", fmt.Errorf("re-read origin before verifying retired member: %w", err)
 	}
 	remote, present, err := engine.Git.RemoteHead(ctx, member.Canonical, member.Branch)
 	if err != nil {
-		return false, fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
+		return false, "", fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
 	}
 	if present && remote != pr.HeadSHA {
-		return false, fmt.Errorf("origin/%s advanced to %s after merged pull request head %s", member.Branch, remote, pr.HeadSHA)
+		return false, "", fmt.Errorf("origin/%s advanced to %s after merged pull request head %s", member.Branch, remote, pr.HeadSHA)
 	}
 	_, present, err = engine.Git.LocalBranchHead(ctx, member.Canonical, member.Branch)
 	if err != nil {
-		return false, fmt.Errorf("read local %s after merged receipt: %w", member.Branch, err)
+		return false, "", fmt.Errorf("read local %s after merged receipt: %w", member.Branch, err)
 	}
 	if present {
-		return false, fmt.Errorf("local %s remains after merged pull request; cannot prove the absent worktree was retired", member.Branch)
+		return false, "", fmt.Errorf("local %s remains after merged pull request; cannot prove the absent worktree was retired", member.Branch)
 	}
-	return true, nil
+	return true, remote, nil
 }
 
 // retireAgentPullRequests closes or retargets every still-open pull request
@@ -404,7 +420,7 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 	return outcomes
 }
 
-func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name string, member Member, receipt *SquashAbsorptionReceipt) EndMemberResult {
+func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name string, member Member, receipt *SquashAbsorptionReceipt, expectedRemoteSHA string) EndMemberResult {
 	result := EndMemberResult{
 		Repository: member.Repository, Worktree: member.Worktree,
 		DraftPullRequest: member.PullRequest,
@@ -442,14 +458,14 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 		result.LeaseReleased = true
 		return result
 	}
-	retired, proofErr := engine.provedAlreadyRetiredMember(ctx, member)
+	retired, retiredRemoteSHA, proofErr := engine.provedAlreadyRetiredMember(ctx, member)
 	if proofErr != nil {
 		result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(proofErr.Error()))
 		return result
 	}
 	if retired {
-		if !options.KeepRemoteBranch {
-			if err := engine.Git.DeleteRemoteBranch(ctx, member.Canonical, member.Branch); err != nil {
+		if !options.KeepRemoteBranch && retiredRemoteSHA != "" {
+			if err := engine.Git.DeleteRemoteBranch(ctx, member.Canonical, member.Branch, retiredRemoteSHA); err != nil {
 				result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
 				return result
 			}
@@ -465,12 +481,12 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 	// remote as well — and it is why the agent pull requests above had to be
 	// closed or retargeted first, since GitHub silently retargets any that
 	// are still open onto the base.
-	if !options.KeepRemoteBranch {
-		if err := engine.Git.DeleteRemoteBranch(ctx, member.Worktree, member.Branch); err != nil {
+	if !options.KeepRemoteBranch && expectedRemoteSHA != "" {
+		if err := engine.Git.DeleteRemoteBranch(ctx, member.Worktree, member.Branch, expectedRemoteSHA); err != nil {
 			result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
-		} else {
-			result.RemoteBranchDeleted = true
+			return result
 		}
+		result.RemoteBranchDeleted = true
 	}
 	if err := engine.Worktrees.Remove(ctx, name, member.Repository, member.Worktree, receipt); err != nil {
 		result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))

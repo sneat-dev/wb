@@ -27,6 +27,7 @@ type fakeGit struct {
 	notInErr         map[string]error
 	deleted          []string
 	deleteErr        map[string]error
+	beforeDelete     func(dir, branch string)
 	fetchErr         map[string]error
 	dirty            map[string][]string
 	tags             map[string][]string
@@ -161,7 +162,13 @@ func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([
 	return git.notIn[key], nil
 }
 
-func (git *fakeGit) DeleteRemoteBranch(_ context.Context, dir, branch string) error {
+func (git *fakeGit) DeleteRemoteBranch(_ context.Context, dir, branch, expectedSHA string) error {
+	if git.beforeDelete != nil {
+		git.beforeDelete(dir, branch)
+	}
+	if remote, present := git.remoteHeads[dir+" "+branch]; present && remote != expectedSHA {
+		return fmt.Errorf("origin/%s advanced to %s after expected %s", branch, remote, expectedSHA)
+	}
 	if err := git.deleteErr[dir+" "+branch]; err != nil {
 		return err
 	}

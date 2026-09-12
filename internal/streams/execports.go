@@ -371,8 +371,12 @@ func (git ExecGit) LogSubjects(ctx context.Context, dir, from, to string) ([]str
 
 // DeleteRemoteBranch implements Git and asserts the effect: after the push
 // that deletes the ref, origin must no longer resolve it.
-func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch string) error {
-	if _, err := git.run(ctx, dir, "push", "origin", "--delete", branch); err != nil {
+func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error {
+	if strings.TrimSpace(expectedSHA) == "" {
+		return fmt.Errorf("refusing to delete origin/%s without an expected remote SHA", branch)
+	}
+	lease := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
+	if _, err := git.run(ctx, dir, "push", lease, "origin", ":"+branch); err != nil {
 		// A branch that is already gone is the state the caller wanted; only
 		// a still-present ref is a failure, which the check below decides.
 		if _, present, headErr := git.RemoteHead(ctx, dir, branch); headErr == nil && !present {
