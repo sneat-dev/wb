@@ -1238,6 +1238,14 @@ func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
 
 func writeCIWaitExecutable(t *testing.T, path, contents string) {
 	t.Helper()
+	if !strings.Contains(contents, "/actions/runs?head_sha=") {
+		const response = `if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":0,"workflow_runs":[]}'
+  exit 0
+fi
+`
+		contents = strings.Replace(contents, "#!/bin/sh\n", "#!/bin/sh\n"+response, 1)
+	}
 	// Every fake GitHub process must observe only the responses prepared by
 	// this test. Reusing the real per-user observer cache lets another test or
 	// WB process supply a fresh cached response for the same acme/app fixture.
