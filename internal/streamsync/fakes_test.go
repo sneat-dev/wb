@@ -27,23 +27,47 @@ type fakeGit struct {
 	restoreErr      error
 	pushErr         error
 	pushes          []string
+	remoteHeads     map[string]string
+	remoteMissing   map[string]bool
+	fastForwardErr  error
 }
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		heads:       map[string]string{},
-		rebaseErr:   map[string]error{},
-		conflicts:   map[string][]string{},
-		commits:     map[string]string{},
-		nothingToDo: map[string]bool{},
-		cherryErr:   map[string]error{},
-		clean:       true,
+		heads:         map[string]string{},
+		rebaseErr:     map[string]error{},
+		conflicts:     map[string][]string{},
+		commits:       map[string]string{},
+		nothingToDo:   map[string]bool{},
+		cherryErr:     map[string]error{},
+		clean:         true,
+		remoteHeads:   map[string]string{},
+		remoteMissing: map[string]bool{},
 	}
 }
 
 func (git *fakeGit) Fetch(_ context.Context, dir string) error {
 	git.calls = append(git.calls, "fetch")
 	return nil
+}
+
+func (git *fakeGit) FastForwardToRemote(_ context.Context, _, branch, remote string) (string, bool, bool, error) {
+	git.calls = append(git.calls, "fast-forward "+branch+" to "+remote)
+	if git.fastForwardErr != nil {
+		return "", false, false, git.fastForwardErr
+	}
+	if git.remoteMissing[remote] {
+		return "", false, false, nil
+	}
+	remoteHead, ok := git.remoteHeads[remote]
+	if !ok {
+		remoteHead = "sha-" + remote
+	}
+	if git.heads[branch] == remoteHead {
+		return remoteHead, true, false, nil
+	}
+	git.heads[branch] = remoteHead
+	return remoteHead, true, true, nil
 }
 
 func (git *fakeGit) CurrentBranch(context.Context, string) (string, error) { return "stream/x", nil }
