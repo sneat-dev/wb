@@ -556,7 +556,7 @@ func printStreamFindings(out io.Writer, findings []streams.PreflightFinding) err
 func streamStatusOutput(command *cobra.Command, format string, status streams.Status) error {
 	missingPullRequests := false
 	for _, member := range status.Members {
-		if member.PullRequest == 0 && member.Worktree != "" {
+		if (member.PullRequest == 0 && member.Worktree != "") || member.PullRequestUnrecorded {
 			missingPullRequests = true
 			break
 		}
@@ -591,11 +591,13 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 			return err
 		}
 		for _, member := range status.Members {
-			if member.PullRequest != 0 || member.Worktree == "" {
+			if (member.PullRequest != 0 || member.Worktree == "") && !member.PullRequestUnrecorded {
 				continue
 			}
 			detail := member.PullRequestMissing
-			if detail == "" {
+			if member.PullRequestUnrecorded {
+				detail = fmt.Sprintf("open pull request #%d exists at %s but is not recorded in stream state", member.PullRequest, member.PullRequestURL)
+			} else if detail == "" {
 				detail = "no draft pull request is recorded"
 			}
 			if _, err := fmt.Fprintf(out, "  ! %s: %s\n", member.Repository, detail); err != nil {

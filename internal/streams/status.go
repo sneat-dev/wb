@@ -63,6 +63,9 @@ type MemberStatus struct {
 	// divergent shared branch needs an owner decision; advertising join there
 	// would only repeat the same refusal forever.
 	PullRequestBlocked string `json:"pull_request_blocked,omitempty"`
+	// PullRequestUnrecorded says GitHub has the member PR but stream.json does
+	// not. Status remains read-only and join persists the discovered receipt.
+	PullRequestUnrecorded bool `json:"pull_request_unrecorded,omitempty"`
 	// Unabsorbed is the number of commits on the stream branch that the base
 	// does not carry by patch identity.
 	Unabsorbed int `json:"unabsorbed"`
@@ -184,10 +187,31 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 		LiveLinks:          len(member.Links),
 	}
 	if member.PullRequest == 0 && member.Worktree != "" {
-		if strings.HasPrefix(member.PullRequestError, "stream branch diverged:") {
-			row.PullRequestBlocked = member.PullRequestError
-		} else {
+		pullRequest, found, err := engine.GitHub.PullRequestForBranch(ctx, member.Worktree, member.Branch)
+		switch {
+		case err != nil:
+			status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: member pull request: %v", member.Repository, RedactString(err.Error())))
+		case found && member.Base != "" && pullRequest.Base != member.Base:
+			status.Unknowns = append(status.Unknowns, fmt.Sprintf(
+				"%s: open pull request %s targets %s, not stream base %s",
+				member.Repository, pullRequest.URL, pullRequest.Base, member.Base))
+		case found && pullRequest.Head != "" && pullRequest.Head != member.Branch:
+			status.Unknowns = append(status.Unknowns, fmt.Sprintf(
+				"%s: discovered pull request %s has head %s, not %s",
+				member.Repository, pullRequest.URL, pullRequest.Head, member.Branch))
+		case found:
+			row.PullRequest = pullRequest.Number
+			row.PullRequestURL = pullRequest.URL
+			row.PullRequestMissing = ""
+			row.PullRequestUnrecorded = true
 			row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
+		}
+		if row.PullRequest == 0 {
+			if strings.HasPrefix(member.PullRequestError, "stream branch diverged:") {
+				row.PullRequestBlocked = member.PullRequestError
+			} else {
+				row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
+			}
 		}
 	}
 	commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)

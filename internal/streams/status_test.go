@@ -155,6 +155,58 @@ func TestStatusReportsWhatItCouldNotEstablish(t *testing.T) {
 	}
 }
 
+// A real stream can have two stale projections at once: one member is behind
+// its remote branch and genuinely lacks a PR, while another already has its
+// branch PR on GitHub but the local stream record missed the receipt. Status
+// must use each member worktree as repository context and stay strictly
+// read-only; join is the explicit mutating recovery verb.
+func TestStatusReadOnlyDiscoversEachMembersExistingPullRequest(t *testing.T) {
+	engine, git, hub, _ := newTestEngine(t)
+	const branch = "stream/incident-recovery"
+	corePath := "/projects/datatug/datatug-core/.worktrees/incident-recovery"
+	cliPath := "/projects/datatug/datatug-cli/.worktrees/incident-recovery"
+	if _, err := engine.Store.Create(Stream{
+		Name: "incident-recovery", Phase: PhaseOpen,
+		Members: []Member{
+			{Repository: "datatug/datatug-core", Role: RoleLibrary, Worktree: corePath, Branch: branch, Base: "main", PullRequestError: "historical non-fast-forward"},
+			{Repository: "datatug/datatug-cli", Role: RoleConsumer, Worktree: cliPath, Branch: branch, Base: "main", PullRequestError: "historical create failure"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hub.byBranch[cliPath+" "+branch] = PullRequest{
+		Number: 242, URL: "https://github.com/datatug/datatug-cli/pull/242",
+		Head: branch, Base: "main", Draft: true, State: "OPEN",
+	}
+	pushesBefore, createsBefore := len(git.pushed), len(hub.created)
+
+	status, err := engine.Status(context.Background(), "incident-recovery")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(git.pushed) != pushesBefore || len(hub.created) != createsBefore {
+		t.Fatalf("status mutated publication state: pushes %d->%d creates %d->%d", pushesBefore, len(git.pushed), createsBefore, len(hub.created))
+	}
+	var core, cli MemberStatus
+	for _, member := range status.Members {
+		switch member.Repository {
+		case "datatug/datatug-core":
+			core = member
+		case "datatug/datatug-cli":
+			cli = member
+		}
+	}
+	if core.PullRequest != 0 || core.PullRequestRecovery != "wb stream join incident-recovery datatug/datatug-core" {
+		t.Fatalf("core status = %#v, want a truthful missing-PR recovery", core)
+	}
+	if cli.PullRequest != 242 || cli.PullRequestURL != "https://github.com/datatug/datatug-cli/pull/242" || cli.PullRequestMissing != "" {
+		t.Fatalf("CLI status = %#v, want existing PR #242 discovered in the CLI repository context", cli)
+	}
+	if cli.PullRequestRecovery != "wb stream join incident-recovery datatug/datatug-cli" {
+		t.Fatalf("CLI recovery = %q, want join to persist the remotely discovered receipt", cli.PullRequestRecovery)
+	}
+}
+
 func TestVersionComparisonTreatsUnreadableVersionsAsNotBehind(t *testing.T) {
 	for _, testCase := range []struct {
 		declared, published string

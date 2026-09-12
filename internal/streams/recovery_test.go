@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // MF-1. State is written BEFORE the first side effect, so a start that dies
@@ -385,6 +386,46 @@ func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
 	recovered, _ := result.Stream.Member(member.Repository)
 	if recovered.PullRequest != existing.Number || recovered.PullRequestURL != existing.URL || recovered.PullRequestError != "" {
 		t.Fatalf("recovered member = %#v, want adopted PR %#v", recovered, existing)
+	}
+}
+
+// Exercise the complete recovery path with real Git: the member checkout is
+// strictly behind its remote stream branch, join fast-forwards it, creates the
+// missing PR in that member context, and persists both remote head and PR.
+func TestJoinRecoversARemoteAheadMemberAndPersistsPublication(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	remoteHead := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "HEAD"))
+
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if _, err := store.Create(Stream{
+		Name: "recovery", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "datatug/datatug-core", Role: RoleLibrary,
+			Worktree: local, Branch: "stream/recovery", Base: "main",
+			PullRequestError: "historical non-fast-forward",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hub := newFakeHub()
+	engine := &Engine{Store: store, Git: ExecGit{Timeout: time.Minute}, GitHub: hub}
+
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "recovery", Repository: "datatug/datatug-core"})
+	if err != nil {
+		t.Fatalf("join recovery: %v", err)
+	}
+	member, _ := result.Stream.Member("datatug/datatug-core")
+	if member.Lease.RecordedHead != remoteHead || member.PullRequest == 0 || member.PullRequestURL == "" || member.PullRequestError != "" {
+		t.Fatalf("recovered member = %#v, want remote head %s and a persisted PR", member, remoteHead)
+	}
+	if localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); localHead != remoteHead {
+		t.Fatalf("local head = %s, want fast-forwarded remote %s", localHead, remoteHead)
+	}
+	if len(hub.created) != 1 || hub.created[0].Head != "stream/recovery" || hub.created[0].Base != "main" {
+		t.Fatalf("created PRs = %#v, want one member-context stream PR", hub.created)
 	}
 }
 

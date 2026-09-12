@@ -169,6 +169,23 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 	if output := blockedOut.String(); !strings.Contains(output, "blocked:") || strings.Contains(output, "recover: wb stream join") {
 		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
 	}
+
+	unrecordedCommand := newStreamStatusCmd()
+	var unrecordedOut bytes.Buffer
+	unrecordedCommand.SetOut(&unrecordedOut)
+	status.Members[0].PullRequest = 242
+	status.Members[0].PullRequestURL = "https://example.test/pull/242"
+	status.Members[0].PullRequestMissing = ""
+	status.Members[0].PullRequestBlocked = ""
+	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
+	status.Members[0].PullRequestUnrecorded = true
+	if err := streamStatusOutput(unrecordedCommand, "text", status); err == nil {
+		t.Fatal("unrecorded remote PR status returned success")
+	}
+	if output := unrecordedOut.String(); !strings.Contains(output, "open pull request #242 exists") ||
+		!strings.Contains(output, "recover: wb stream join recovery acme/library") || strings.Contains(output, "no draft pull request") {
+		t.Fatalf("unrecorded PR output = %q, want discovered PR identity and persistence recovery", output)
+	}
 }
 
 // A stream name that could not also be a worktree task name is rejected before
