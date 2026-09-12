@@ -27,6 +27,8 @@ type fakeGit struct {
 	restoreErr      error
 	pushErr         error
 	pushes          []string
+	remoteHeads     map[string]string
+	fastForwardErr  error
 }
 
 func newFakeGit() *fakeGit {
@@ -38,12 +40,29 @@ func newFakeGit() *fakeGit {
 		nothingToDo: map[string]bool{},
 		cherryErr:   map[string]error{},
 		clean:       true,
+		remoteHeads: map[string]string{},
 	}
 }
 
 func (git *fakeGit) Fetch(_ context.Context, dir string) error {
 	git.calls = append(git.calls, "fetch")
 	return nil
+}
+
+func (git *fakeGit) FastForwardToRemote(_ context.Context, _, branch, remote string) (string, bool, error) {
+	git.calls = append(git.calls, "fast-forward "+branch+" to "+remote)
+	if git.fastForwardErr != nil {
+		return "", false, git.fastForwardErr
+	}
+	remoteHead, ok := git.remoteHeads[remote]
+	if !ok {
+		remoteHead = "sha-" + remote
+	}
+	if git.heads[branch] == remoteHead {
+		return remoteHead, false, nil
+	}
+	git.heads[branch] = remoteHead
+	return remoteHead, true, nil
 }
 
 func (git *fakeGit) CurrentBranch(context.Context, string) (string, error) { return "stream/x", nil }

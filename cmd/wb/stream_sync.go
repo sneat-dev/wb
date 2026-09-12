@@ -141,6 +141,11 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 					}
 					return syncErr
 				}
+				if result.RecordedRemoteHead != "" {
+					if err := recordStreamSyncRemoteHead(store, stream.Name, member.Repository, result.RecordedRemoteHead); err != nil {
+						return fmt.Errorf("record fetched %s head for %s: %w", result.StreamRebase.Branch, member.Repository, err)
+					}
+				}
 				results = append(results, result)
 			}
 			return printStreamSync(command, format, results)
@@ -198,6 +203,11 @@ func printStreamSync(command *cobra.Command, format string, results []streamsync
 			if _, err := fmt.Fprintf(out, "%s on %s\n", result.Repository, result.StreamRebase.Branch); err != nil {
 				return err
 			}
+			if result.RemoteAdvanced {
+				if _, err := fmt.Fprintf(out, "  fast-forwarded to fetched remote head %s\n", result.RecordedRemoteHead); err != nil {
+					return err
+				}
+			}
 			for _, rebase := range result.AgentRebases {
 				status := "rebased"
 				if len(rebase.Conflicts) > 0 {
@@ -243,6 +253,23 @@ func printStreamSync(command *cobra.Command, format string, results []streamsync
 		return &exitError{code: exitFindings, message: "stream sync reported findings; see the report above"}
 	}
 	return nil
+}
+
+// recordStreamSyncRemoteHead persists the fetched stream branch head after a
+// successful reconciliation. The stored value is the lease for a later
+// --force-with-lease and the value stream status displays, so leaving it stale
+// would make a successful sync set up the next non-fast-forward push.
+func recordStreamSyncRemoteHead(store *streams.Store, streamName, repository, head string) error {
+	_, err := store.Update(streamName, func(stream *streams.Stream) error {
+		for index := range stream.Members {
+			if strings.EqualFold(stream.Members[index].Repository, repository) {
+				stream.Members[index].Lease.RecordedHead = head
+				return nil
+			}
+		}
+		return fmt.Errorf("stream member %q not found", repository)
+	})
+	return err
 }
 
 func printBatch(out interface{ Write([]byte) (int, error) }, batch streamsync.BatchResult) error {

@@ -7,6 +7,56 @@ import (
 	"testing"
 )
 
+// A stream can advance remotely when its draft pull request is updated or
+// landed by another checkout. Sync must make an eligible clean member catch up
+// before rebasing it onto its base: otherwise it exits successfully while its
+// local branch and the lease used for the next force-with-lease push are both
+// stale.
+func TestSyncFastForwardsAnEligibleMemberToTheFetchedRemoteStreamHead(t *testing.T) {
+	engine, git, _, _, _ := newTestEngine()
+	options := baseOptions()
+	git.heads[options.Branch] = "local-before"
+	git.remoteHeads["origin/"+options.Branch] = "remote-after"
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !result.RemoteAdvanced || result.RecordedRemoteHead != "remote-after" {
+		t.Fatalf("remote reconciliation = %#v; want remote-after recorded and the member advanced", result)
+	}
+	fastForwardAt, rebaseAt := -1, -1
+	for index, call := range git.calls {
+		if strings.HasPrefix(call, "fast-forward "+options.Branch+" to origin/"+options.Branch) {
+			fastForwardAt = index
+		}
+		if strings.HasPrefix(call, "rebase "+options.Branch+" onto origin/"+options.Base) {
+			rebaseAt = index
+		}
+	}
+	if fastForwardAt < 0 || rebaseAt < 0 || fastForwardAt > rebaseAt {
+		t.Fatalf("calls = %v; want the remote fast-forward before the base rebase", git.calls)
+	}
+}
+
+// A clean worktree is necessary but not sufficient for an automatic update:
+// when the local and fetched stream heads diverge, sync must leave resolution
+// to the stream owner rather than rebasing local work onto a remote change.
+func TestSyncRefusesToResolveADivergedRemoteStreamBranch(t *testing.T) {
+	engine, git, _, _, _ := newTestEngine()
+	git.fastForwardErr = errors.New("stream/checkout and origin/stream/checkout diverged")
+
+	_, err := engine.Sync(context.Background(), baseOptions())
+	if err == nil || !strings.Contains(err.Error(), "diverged") {
+		t.Fatalf("sync error = %v; want the diverged remote branch refusal", err)
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "rebase ") {
+			t.Fatalf("calls = %v; sync must not rebase after a divergent remote branch", git.calls)
+		}
+	}
+}
+
 // AC: sync-writes-no-bump-that-renovate-already-landed — the rebase happens
 // FIRST, so a bump Renovate already merged is present in the tree and sync
 // writes nothing for it; a second library still below target does get its one

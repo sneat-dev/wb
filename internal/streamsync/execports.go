@@ -2,6 +2,7 @@ package streamsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,69 @@ func (git ExecGit) run(ctx context.Context, dir string, args ...string) (string,
 func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 	_, err := git.run(ctx, dir, "fetch", "--quiet", "--prune", "origin")
 	return err
+}
+
+// FastForwardToRemote implements Git. A remote stream branch can move after a
+// draft pull request is updated or landed elsewhere. Sync must absorb that
+// movement before rebasing onto the base; otherwise it reports a clean run
+// with a stale checkout and stale force-with-lease head.
+//
+// `merge --ff-only` is intentionally used only after proving the local branch
+// is an ancestor. It cannot create a merge commit or overwrite local commits.
+// A local-ahead branch is left untouched; a divergent branch is refused so its
+// owner chooses the resolution rather than sync inventing one.
+func (git ExecGit) FastForwardToRemote(ctx context.Context, dir, branch, remote string) (string, bool, error) {
+	remoteHead, err := git.Head(ctx, dir, remote)
+	if err != nil {
+		return "", false, fmt.Errorf("read fetched %s: %w", remote, err)
+	}
+	localHead, err := git.Head(ctx, dir, branch)
+	if err != nil {
+		return "", false, fmt.Errorf("read %s: %w", branch, err)
+	}
+	if localHead == remoteHead {
+		return remoteHead, false, nil
+	}
+	localAncestor, err := git.isAncestor(ctx, dir, branch, remote)
+	if err != nil {
+		return "", false, err
+	}
+	if localAncestor {
+		if _, err := git.run(ctx, dir, "checkout", branch); err != nil {
+			return "", false, fmt.Errorf("check out %s: %w", branch, err)
+		}
+		if _, err := git.run(ctx, dir, "merge", "--ff-only", remote); err != nil {
+			return "", false, fmt.Errorf("fast-forward %s to %s: %w", branch, remote, err)
+		}
+		after, err := git.Head(ctx, dir, branch)
+		if err != nil {
+			return "", false, err
+		}
+		if after != remoteHead {
+			return "", false, fmt.Errorf("fast-forwarded %s but it is %s, not fetched %s", branch, after, remoteHead)
+		}
+		return remoteHead, true, nil
+	}
+	remoteAncestor, err := git.isAncestor(ctx, dir, remote, branch)
+	if err != nil {
+		return "", false, err
+	}
+	if remoteAncestor {
+		return remoteHead, false, nil
+	}
+	return "", false, fmt.Errorf("%s and %s diverged; resolve the stream branch explicitly before syncing", branch, remote)
+}
+
+func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	_, err := git.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("compare %s and %s: %w", ancestor, descendant, err)
 }
 
 // CurrentBranch implements Git.
