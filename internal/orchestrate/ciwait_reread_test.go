@@ -21,7 +21,7 @@ func installRereadTestGH(t *testing.T, script string) string {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
