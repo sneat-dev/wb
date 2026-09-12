@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
 )
@@ -107,6 +108,99 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 	}
 	if !strings.Contains(textOut.String(), "listed") {
 		t.Errorf("text output = %q, want the stream named", textOut.String())
+	}
+}
+
+// A missing member pull request is an actionable stream defect, not merely a
+// buried persistence field. Status must fail with findings and print the WB
+// verb that safely retries publication.
+func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
+	command := newStreamStatusCmd()
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
+	status := streams.Status{
+		Stream: "recovery", Phase: streams.PhaseOpen, Branch: "stream/recovery",
+		Members: []streams.MemberStatus{{
+			Repository: "acme/library", Role: streams.RoleLibrary,
+			Worktree: "/tmp/acme-library", Branch: "stream/recovery", Base: "main",
+			PullRequestMissing: "no open pull request is recorded or currently discoverable",
+			LastPublicationError: &streams.PublicationFailure{
+				Detail:     "push rejected as non-fast-forward\nfull historical git transcript",
+				OccurredAt: &failureAt,
+			},
+		}},
+	}
+
+	err := streamStatusOutput(command, "text", status)
+	exit, ok := err.(*exitError)
+	if !ok || exit.code != exitFindings {
+		t.Fatalf("status error = %#v, want exit findings", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "wb stream join recovery acme/library") {
+		t.Fatalf("status output = %q, want the sanctioned recovery command", output)
+	}
+	if output := stdout.String(); !strings.Contains(output, "last publication attempt failed at 2026-09-12T11:17:40Z") ||
+		strings.Contains(output, "full historical git transcript") {
+		t.Fatalf("status output = %q, want timestamped historical summary without a live-looking transcript", output)
+	}
+
+	jsonCommand := newStreamStatusCmd()
+	var jsonOut bytes.Buffer
+	jsonCommand.SetOut(&jsonOut)
+	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
+	err = streamStatusOutput(jsonCommand, "json", status)
+	exit, ok = err.(*exitError)
+	if !ok || exit.code != exitFindings {
+		t.Fatalf("JSON status error = %#v, want exit findings", err)
+	}
+	var envelope struct {
+		Outcome  string `json:"outcome"`
+		Evidence struct {
+			Members []streams.MemberStatus `json:"members"`
+		} `json:"evidence"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &envelope); err != nil {
+		t.Fatalf("parse JSON status %q: %v", jsonOut.String(), err)
+	}
+	if envelope.Outcome != outcomeFindings || len(envelope.Evidence.Members) != 1 ||
+		envelope.Evidence.Members[0].PullRequestRecovery != "wb stream join recovery acme/library" {
+		t.Fatalf("JSON status envelope = %#v, want a finding with the exact recovery verb", envelope)
+	}
+	jsonMember := envelope.Evidence.Members[0]
+	if jsonMember.PullRequestMissing != "no open pull request is recorded or currently discoverable" ||
+		jsonMember.LastPublicationError == nil || jsonMember.LastPublicationError.OccurredAt == nil ||
+		!jsonMember.LastPublicationError.OccurredAt.Equal(failureAt) {
+		t.Fatalf("JSON member status = %#v, want separate current and timestamped historical findings", jsonMember)
+	}
+
+	blockedCommand := newStreamStatusCmd()
+	var blockedOut bytes.Buffer
+	blockedCommand.SetOut(&blockedOut)
+	status.Members[0].PullRequestRecovery = ""
+	status.Members[0].PullRequestBlocked = "stream branch diverged: owner decision required"
+	if err := streamStatusOutput(blockedCommand, "text", status); err == nil {
+		t.Fatal("blocked status returned success")
+	}
+	if output := blockedOut.String(); !strings.Contains(output, "blocked:") || strings.Contains(output, "recover: wb stream join") {
+		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
+	}
+
+	unrecordedCommand := newStreamStatusCmd()
+	var unrecordedOut bytes.Buffer
+	unrecordedCommand.SetOut(&unrecordedOut)
+	status.Members[0].PullRequest = 242
+	status.Members[0].PullRequestURL = "https://example.test/pull/242"
+	status.Members[0].PullRequestMissing = ""
+	status.Members[0].PullRequestBlocked = ""
+	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
+	status.Members[0].PullRequestUnrecorded = true
+	if err := streamStatusOutput(unrecordedCommand, "text", status); err == nil {
+		t.Fatal("unrecorded remote PR status returned success")
+	}
+	if output := unrecordedOut.String(); !strings.Contains(output, "open pull request #242 exists") ||
+		!strings.Contains(output, "recover: wb stream join recovery acme/library") || strings.Contains(output, "no draft pull request") {
+		t.Fatalf("unrecorded PR output = %q, want discovered PR identity and persistence recovery", output)
 	}
 }
 

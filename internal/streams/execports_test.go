@@ -159,8 +159,12 @@ func TestOpenResolvesTheStoreBelowWBHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Root != filepath.Join(home, "streams") {
-		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(home, "streams"))
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Root != filepath.Join(resolvedHome, "streams") {
+		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(resolvedHome, "streams"))
 	}
 }
 
@@ -222,6 +226,154 @@ func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
 	if err != nil || !present || head != local {
 		t.Fatalf("RemoteHead = %q present=%t err=%v", head, present, err)
 	}
+}
+
+// A stream member can be left without its draft pull request after another
+// checkout has already advanced and pushed the shared stream branch. Retrying
+// `wb stream join` must absorb that strictly newer remote head before it opens
+// the missing pull request; a plain push only reports non-fast-forward forever.
+func TestPushBranchFastForwardsABehindStreamCheckout(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	remoteHead := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "HEAD"))
+
+	git := ExecGit{Timeout: time.Minute}
+	pushed, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err != nil {
+		t.Fatalf("recover behind stream branch: %v", err)
+	}
+	if pushed != remoteHead {
+		t.Fatalf("published head = %s, want existing remote head %s", pushed, remoteHead)
+	}
+	if localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); localHead != remoteHead {
+		t.Fatalf("local stream head = %s, want fast-forwarded %s", localHead, remoteHead)
+	}
+}
+
+// Recovery may publish local work when it extends the fetched remote branch;
+// the remote-ahead repair must not turn that normal case into a no-op.
+func TestPushBranchPublishesALocalAheadStreamCheckout(t *testing.T) {
+	local, _ := newPublishedStreamFixture(t)
+	commitStreamFile(t, local, "local.txt", "local\n", "feat: local advance")
+	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+
+	git := ExecGit{Timeout: time.Minute}
+	pushed, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err != nil {
+		t.Fatalf("publish local-ahead stream branch: %v", err)
+	}
+	if pushed != localHead {
+		t.Fatalf("published head = %s, want local head %s", pushed, localHead)
+	}
+}
+
+func TestPushBranchAcceptsAnAlreadyPublishedStreamCheckout(t *testing.T) {
+	local, _ := newPublishedStreamFixture(t)
+	headBefore := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+
+	git := ExecGit{Timeout: time.Minute}
+	published, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err != nil {
+		t.Fatalf("accept equal stream heads: %v", err)
+	}
+	if published != headBefore {
+		t.Fatalf("published head = %s, want unchanged %s", published, headBefore)
+	}
+}
+
+func TestPushBranchRefusesToFastForwardOverDirtyWork(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(local, "dirty.txt"), []byte("do not lose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	git := ExecGit{Timeout: time.Minute}
+	_, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty recovery error = %v, want an explicit dirty-worktree refusal", err)
+	}
+	if after := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); after != localHead {
+		t.Fatalf("dirty local head changed from %s to %s", localHead, after)
+	}
+	contents, readErr := os.ReadFile(filepath.Join(local, "dirty.txt"))
+	if readErr != nil || string(contents) != "do not lose\n" {
+		t.Fatalf("dirty work was changed: contents=%q error=%v", contents, readErr)
+	}
+}
+
+// Two independently advanced stream heads require an owner's decision. WB
+// must neither force-push nor silently choose one while recovering a missing
+// pull request.
+func TestPushBranchRefusesADivergedStreamCheckout(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	commitStreamFile(t, local, "local.txt", "local\n", "feat: local advance")
+	localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD"))
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	remoteHead := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "HEAD"))
+
+	git := ExecGit{Timeout: time.Minute}
+	_, err := git.PushBranch(context.Background(), local, "stream/recovery")
+	if err == nil || !strings.Contains(err.Error(), "diverged") {
+		t.Fatalf("divergence error = %v; want an explicit divergence refusal", err)
+	}
+	if after := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); after != localHead {
+		t.Fatalf("local head changed from %s to %s", localHead, after)
+	}
+	if after := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "origin/stream/recovery")); after != remoteHead {
+		t.Fatalf("remote head changed from %s to %s", remoteHead, after)
+	}
+}
+
+func newPublishedStreamFixture(t *testing.T) (local, other string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	base := t.TempDir()
+	remote := filepath.Join(base, "origin.git")
+	runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	local = filepath.Join(base, "local")
+	runStreamGit(t, "", "clone", remote, local)
+	commitStreamFile(t, local, "base.txt", "base\n", "feat: base")
+	runStreamGit(t, local, "push", "-u", "origin", "main")
+	runStreamGit(t, local, "checkout", "-b", "stream/recovery")
+	runStreamGit(t, local, "push", "-u", "origin", "stream/recovery")
+	other = filepath.Join(base, "other")
+	runStreamGit(t, "", "clone", remote, other)
+	return local, other
+}
+
+func runStreamGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
+		"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)
+	}
+	return string(output)
+}
+
+func commitStreamFile(t *testing.T, dir, name, contents, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runStreamGit(t, dir, "add", name)
+	runStreamGit(t, dir, "commit", "-m", message)
 }
 
 // A push that cannot reach the remote is a failure, not a silently reported

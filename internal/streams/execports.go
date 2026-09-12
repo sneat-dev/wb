@@ -3,6 +3,7 @@ package streams
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -64,9 +65,42 @@ func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 // intended commit landed, so the local and remote SHAs are compared after the
 // push and a divergence is an error.
 func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, error) {
+	if err := git.Fetch(ctx, dir); err != nil {
+		return "", fmt.Errorf("re-read origin before publishing %s: %w", branch, err)
+	}
 	local, err := git.LocalHead(ctx, dir)
 	if err != nil {
 		return "", err
+	}
+	remote, present, err := git.RemoteHead(ctx, dir, branch)
+	if err != nil {
+		return "", err
+	}
+	if present {
+		if remote == local {
+			return remote, nil
+		}
+		localAncestor, err := git.isAncestor(ctx, dir, local, remote)
+		if err != nil {
+			return "", err
+		}
+		if localAncestor {
+			if err := git.fastForwardBranch(ctx, dir, branch, remote); err != nil {
+				return "", err
+			}
+			return remote, nil
+		}
+		remoteAncestor, err := git.isAncestor(ctx, dir, remote, local)
+		if err != nil {
+			return "", err
+		}
+		if remoteAncestor {
+			// The ordinary push below safely publishes the local extension.
+		} else {
+			return "", fmt.Errorf(
+				"stream branch diverged: %s and origin/%s each carry unique work; an owner must choose the resolution before retrying `wb stream join %s <owner/repository>`",
+				branch, branch, strings.TrimPrefix(branch, "stream/"))
+		}
 	}
 	if _, err := git.run(ctx, dir, "push", "--set-upstream", "origin", branch); err != nil {
 		return "", fmt.Errorf("push %s from %s: %w", branch, dir, err)
@@ -85,6 +119,46 @@ func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, 
 		return "", fmt.Errorf("pushed %s at %s but origin/%s is %s; the push did not land the intended commit", branch, local, branch, remote)
 	}
 	return remote, nil
+}
+
+func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	_, err := git.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("compare commits %s and %s: %w", ancestor, descendant, err)
+}
+
+func (git ExecGit) fastForwardBranch(ctx context.Context, dir, branch, remote string) error {
+	current, err := git.CurrentBranch(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if current != branch {
+		return fmt.Errorf("cannot fast-forward %s while %s is checked out", branch, current)
+	}
+	dirty, err := git.DirtyPaths(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if len(dirty) > 0 {
+		return fmt.Errorf("cannot fast-forward %s to origin/%s while the worktree has uncommitted changes", branch, branch)
+	}
+	if _, err := git.run(ctx, dir, "merge", "--ff-only", "origin/"+branch); err != nil {
+		return fmt.Errorf("fast-forward %s to origin/%s: %w", branch, branch, err)
+	}
+	after, err := git.LocalHead(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if after != remote {
+		return fmt.Errorf("fast-forwarded %s to %s, want fetched origin/%s at %s", branch, after, branch, remote)
+	}
+	return nil
 }
 
 // RemoteHead implements Git.

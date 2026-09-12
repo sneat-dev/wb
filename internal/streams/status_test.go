@@ -155,6 +155,163 @@ func TestStatusReportsWhatItCouldNotEstablish(t *testing.T) {
 	}
 }
 
+// A real stream can have two stale projections at once: one member is behind
+// its remote branch and genuinely lacks a PR, while another already has its
+// branch PR on GitHub but the local stream record missed the receipt. Status
+// must use each member worktree as repository context and stay strictly
+// read-only; join is the explicit mutating recovery verb.
+func TestStatusReadOnlyDiscoversEachMembersExistingPullRequest(t *testing.T) {
+	engine, git, hub, _ := newTestEngine(t)
+	const branch = "stream/incident-recovery"
+	corePath := "/projects/datatug/datatug-core/.worktrees/incident-recovery"
+	cliPath := "/projects/datatug/datatug-cli/.worktrees/incident-recovery"
+	if _, err := engine.Store.Create(Stream{
+		Name: "incident-recovery", Phase: PhaseOpen,
+		Members: []Member{
+			{Repository: "datatug/datatug-core", Role: RoleLibrary, Worktree: corePath, Branch: branch, Base: "main", PullRequestError: "historical non-fast-forward"},
+			{Repository: "datatug/datatug-cli", Role: RoleConsumer, Worktree: cliPath, Branch: branch, Base: "main", PullRequestError: "historical create failure"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hub.byBranch[cliPath+" "+branch] = PullRequest{
+		Number: 242, URL: "https://github.com/datatug/datatug-cli/pull/242",
+		Head: branch, Base: "main", Draft: true, State: "OPEN",
+	}
+	pushesBefore, createsBefore := len(git.pushed), len(hub.created)
+
+	status, err := engine.Status(context.Background(), "incident-recovery")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(git.pushed) != pushesBefore || len(hub.created) != createsBefore {
+		t.Fatalf("status mutated publication state: pushes %d->%d creates %d->%d", pushesBefore, len(git.pushed), createsBefore, len(hub.created))
+	}
+	var core, cli MemberStatus
+	for _, member := range status.Members {
+		switch member.Repository {
+		case "datatug/datatug-core":
+			core = member
+		case "datatug/datatug-cli":
+			cli = member
+		}
+	}
+	if core.PullRequest != 0 || core.PullRequestRecovery != "wb stream join incident-recovery datatug/datatug-core" {
+		t.Fatalf("core status = %#v, want a truthful missing-PR recovery", core)
+	}
+	if cli.PullRequest != 242 || cli.PullRequestURL != "https://github.com/datatug/datatug-cli/pull/242" || cli.PullRequestMissing != "" {
+		t.Fatalf("CLI status = %#v, want existing PR #242 discovered in the CLI repository context", cli)
+	}
+	if cli.PullRequestRecovery != "wb stream join incident-recovery datatug/datatug-cli" {
+		t.Fatalf("CLI recovery = %q, want join to persist the remotely discovered receipt", cli.PullRequestRecovery)
+	}
+}
+
+func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		pr   PullRequest
+		want string
+	}{
+		{name: "wrong base", pr: PullRequest{Number: 12, URL: "https://example.test/pull/12", Head: "stream/mismatch", Base: "release", State: "OPEN"}, want: "targets release"},
+		{name: "wrong head", pr: PullRequest{Number: 13, URL: "https://example.test/pull/13", Head: "stream/other", Base: "main", State: "OPEN"}, want: "head stream/other"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			engine, git, hub, _ := newTestEngine(t)
+			const worktree = "/projects/acme/app/.worktrees/mismatch"
+			if _, err := engine.Store.Create(Stream{
+				Name: "mismatch", Phase: PhaseOpen,
+				Members: []Member{{
+					Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+					Branch: "stream/mismatch", Base: "main", PullRequestError: "historical failure",
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			hub.byBranch[worktree+" stream/mismatch"] = testCase.pr
+			pushesBefore, createsBefore := len(git.pushed), len(hub.created)
+
+			status, err := engine.Status(context.Background(), "mismatch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			member := status.Members[0]
+			if member.PullRequestRecovery != "" || !strings.Contains(member.PullRequestBlocked, testCase.want) {
+				t.Fatalf("member status = %#v, want mismatch blocked with no join retry", member)
+			}
+			if len(git.pushed) != pushesBefore || len(hub.created) != createsBefore {
+				t.Fatalf("status mutated mismatch: pushes %d->%d creates %d->%d", pushesBefore, len(git.pushed), createsBefore, len(hub.created))
+			}
+		})
+	}
+}
+
+func TestStatusLabelsPersistedPublicationFailureAsHistorical(t *testing.T) {
+	engine, _, _, _ := newTestEngine(t)
+	const worktree = "/projects/acme/app/.worktrees/history"
+	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
+	failure := "push stream/history: exit status 1\nfull historical git transcript"
+	if _, err := engine.Store.Create(Stream{
+		Name: "history", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+			Branch: "stream/history", Base: "main", PullRequestError: failure,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Store.EventLog("history").Append(Event{
+		Timestamp: failureAt, Stream: "history", Verb: "stream start", Phase: "push",
+		Repository: "acme/app", Outcome: "findings", Detail: failure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := engine.Status(context.Background(), "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := status.Members[0]
+	if member.PullRequestMissing != "no open pull request is recorded or currently discoverable" {
+		t.Fatalf("current finding = %q, want a current-state statement rather than the old transcript", member.PullRequestMissing)
+	}
+	if member.LastPublicationError == nil || member.LastPublicationError.OccurredAt == nil ||
+		!member.LastPublicationError.OccurredAt.Equal(failureAt) || member.LastPublicationError.Detail != failure {
+		t.Fatalf("historical publication error = %#v, want timestamped persisted evidence", member.LastPublicationError)
+	}
+}
+
+func TestStatusDoesNotMisdatePersistedPublicationFailure(t *testing.T) {
+	engine, _, _, _ := newTestEngine(t)
+	const worktree = "/projects/acme/app/.worktrees/history"
+	const persistedFailure = "push stream/history: exit status 1"
+	if _, err := engine.Store.Create(Stream{
+		Name: "history", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+			Branch: "stream/history", Base: "main", PullRequestError: persistedFailure,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Store.EventLog("history").Append(Event{
+		Timestamp: time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC),
+		Stream:    "history", Verb: "stream join", Phase: "push",
+		Repository: "acme/app", Outcome: "findings", Detail: "a different later failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := engine.Status(context.Background(), "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := status.Members[0].LastPublicationError
+	if failure == nil || failure.Detail != persistedFailure || failure.OccurredAt != nil {
+		t.Fatalf("historical publication error = %#v, want undated persisted evidence", failure)
+	}
+}
+
 func TestVersionComparisonTreatsUnreadableVersionsAsNotBehind(t *testing.T) {
 	for _, testCase := range []struct {
 		declared, published string

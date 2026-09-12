@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // MF-1. State is written BEFORE the first side effect, so a start that dies
@@ -354,6 +355,80 @@ func TestJoinRetriesAMemberWhoseDraftPullRequestNeverOpened(t *testing.T) {
 	}
 }
 
+// The remote PR can be created successfully just before the process dies and
+// before its identity reaches stream.json. Recovery must adopt that exact open
+// PR rather than asking GitHub to create a duplicate and getting stuck again.
+func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
+	engine, _, hub, _, stream := startedStream(t, "adopt-pr", "acme/library")
+	member := stream.Members[0]
+	createdBefore := len(hub.created)
+	existing := PullRequest{
+		Number: 919, URL: "https://example.test/pull/919",
+		Title: "stream(adopt-pr): acme/library", Head: member.Branch,
+		Base: member.Base, Draft: true, State: "OPEN",
+	}
+	hub.byBranch[member.Worktree+" "+member.Branch] = existing
+	if _, err := engine.setMember("adopt-pr", member.Repository, func(stored *Member) {
+		stored.PullRequest = 0
+		stored.PullRequestURL = ""
+		stored.PullRequestError = "process interrupted before the PR receipt was stored"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "adopt-pr", Repository: member.Repository})
+	if err != nil {
+		t.Fatalf("join recovery: %v", err)
+	}
+	if len(hub.created) != createdBefore {
+		t.Fatalf("created PR count = %d, want existing remote PR adopted without another create", len(hub.created))
+	}
+	recovered, _ := result.Stream.Member(member.Repository)
+	if recovered.PullRequest != existing.Number || recovered.PullRequestURL != existing.URL || recovered.PullRequestError != "" {
+		t.Fatalf("recovered member = %#v, want adopted PR %#v", recovered, existing)
+	}
+}
+
+// Exercise the complete recovery path with real Git: the member checkout is
+// strictly behind its remote stream branch, join fast-forwards it, creates the
+// missing PR in that member context, and persists both remote head and PR.
+func TestJoinRecoversARemoteAheadMemberAndPersistsPublication(t *testing.T) {
+	local, other := newPublishedStreamFixture(t)
+	runStreamGit(t, other, "checkout", "stream/recovery")
+	commitStreamFile(t, other, "remote.txt", "remote\n", "feat: remote advance")
+	runStreamGit(t, other, "push", "origin", "stream/recovery")
+	remoteHead := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "HEAD"))
+
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if _, err := store.Create(Stream{
+		Name: "recovery", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "datatug/datatug-core", Role: RoleLibrary,
+			Worktree: local, Branch: "stream/recovery", Base: "main",
+			PullRequestError: "historical non-fast-forward",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hub := newFakeHub()
+	engine := &Engine{Store: store, Git: ExecGit{Timeout: time.Minute}, GitHub: hub}
+
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "recovery", Repository: "datatug/datatug-core"})
+	if err != nil {
+		t.Fatalf("join recovery: %v", err)
+	}
+	member, _ := result.Stream.Member("datatug/datatug-core")
+	if member.Lease.RecordedHead != remoteHead || member.PullRequest == 0 || member.PullRequestURL == "" || member.PullRequestError != "" {
+		t.Fatalf("recovered member = %#v, want remote head %s and a persisted PR", member, remoteHead)
+	}
+	if localHead := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "HEAD")); localHead != remoteHead {
+		t.Fatalf("local head = %s, want fast-forwarded remote %s", localHead, remoteHead)
+	}
+	if len(hub.created) != 1 || hub.created[0].Head != "stream/recovery" || hub.created[0].Base != "main" {
+		t.Fatalf("created PRs = %#v, want one member-context stream PR", hub.created)
+	}
+}
+
 // SHOULD-FIX: end removes the remote stream branch, after the agent pull
 // requests targeting it are settled.
 func TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests(t *testing.T) {
@@ -453,6 +528,33 @@ func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
 	// The healthy member is not reported.
 	if _, reported := findingFor(result.Reported, "acme/library", "draft-pull-request"); reported {
 		t.Error("a member with a draft pull request was reported as missing one")
+	}
+	status, err := engine.Status(context.Background(), "no-pr")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var recovery string
+	for _, member := range status.Members {
+		if member.Repository == "acme/app" {
+			recovery = member.PullRequestRecovery
+		}
+	}
+	if recovery != "wb stream join no-pr acme/app" {
+		t.Fatalf("status recovery = %q, want the exact WB retry verb", recovery)
+	}
+	if _, err := engine.setMember("no-pr", "acme/app", func(member *Member) {
+		member.PullRequestError = "stream branch diverged: both sides carry unique work; an owner must choose"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = engine.Status(context.Background(), "no-pr")
+	if err != nil {
+		t.Fatalf("diverged status: %v", err)
+	}
+	for _, member := range status.Members {
+		if member.Repository == "acme/app" && (member.PullRequestRecovery != "" || !strings.Contains(member.PullRequestBlocked, "owner")) {
+			t.Fatalf("diverged member status = %#v, want an explicit owner-decision block and no retry loop", member)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -554,10 +555,27 @@ func printStreamFindings(out io.Writer, findings []streams.PreflightFinding) err
 }
 
 func streamStatusOutput(command *cobra.Command, format string, status streams.Status) error {
+	missingPullRequests := false
+	for _, member := range status.Members {
+		if (member.PullRequest == 0 && member.Worktree != "") || member.PullRequestUnrecorded {
+			missingPullRequests = true
+			break
+		}
+	}
 	if format == "json" {
-		return writeStreamJSON(command.OutOrStdout(), streamEnvelope{
-			Version: 1, Verb: "stream status", Outcome: outcomeSuccess, Evidence: status,
-		})
+		outcome := outcomeSuccess
+		if missingPullRequests {
+			outcome = outcomeFindings
+		}
+		if err := writeStreamJSON(command.OutOrStdout(), streamEnvelope{
+			Version: 1, Verb: "stream status", Outcome: outcome, Evidence: status,
+		}); err != nil {
+			return err
+		}
+		if missingPullRequests {
+			return &exitError{code: exitFindings, message: "stream status reported findings; see the report above"}
+		}
+		return nil
 	}
 	out := command.OutOrStdout()
 	if _, err := fmt.Fprintf(out, "stream %s (%s) on %s\n", status.Stream, status.Phase, status.Branch); err != nil {
@@ -567,6 +585,47 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 		if _, err := fmt.Fprintf(out, "  %-8s %-28s unabsorbed=%d links=%d lease=%s\n",
 			member.Role, member.Repository, member.Unabsorbed, member.LiveLinks, member.LeaseHolder); err != nil {
 			return err
+		}
+	}
+	if missingPullRequests {
+		if _, err := fmt.Fprintln(out, "\nmissing member pull requests:"); err != nil {
+			return err
+		}
+		for _, member := range status.Members {
+			if (member.PullRequest != 0 || member.Worktree == "") && !member.PullRequestUnrecorded {
+				continue
+			}
+			detail := member.PullRequestMissing
+			if member.PullRequestUnrecorded {
+				detail = fmt.Sprintf("open pull request #%d exists at %s but is not recorded in stream state", member.PullRequest, member.PullRequestURL)
+			} else if detail == "" {
+				detail = "no draft pull request is recorded"
+			}
+			if _, err := fmt.Fprintf(out, "  ! %s: %s\n", member.Repository, detail); err != nil {
+				return err
+			}
+			if member.LastPublicationError != nil {
+				when := "at an unknown time"
+				if member.LastPublicationError.OccurredAt != nil {
+					when = "at " + member.LastPublicationError.OccurredAt.UTC().Format(time.RFC3339)
+				}
+				if _, err := fmt.Fprintf(out, "    last publication attempt failed %s: %s\n", when, publicationFailureSummary(member.LastPublicationError.Detail)); err != nil {
+					return err
+				}
+			}
+			if member.PullRequestBlocked != "" {
+				if _, err := fmt.Fprintf(out, "    blocked: %s\n", member.PullRequestBlocked); err != nil {
+					return err
+				}
+				continue
+			}
+			recovery := member.PullRequestRecovery
+			if recovery == "" {
+				recovery = "wb stream join " + status.Stream + " " + member.Repository
+			}
+			if _, err := fmt.Fprintf(out, "    recover: %s\n", recovery); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := fmt.Fprintln(out, "\nlinked consumers (gap 1):"); err != nil {
@@ -631,7 +690,19 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 			}
 		}
 	}
+	if missingPullRequests {
+		return &exitError{code: exitFindings, message: "stream status reported findings; see the report above"}
+	}
 	return nil
+}
+
+func publicationFailureSummary(detail string) string {
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(detail), "\n")
+	runes := []rune(firstLine)
+	if len(runes) > 240 {
+		return string(runes[:237]) + "..."
+	}
+	return firstLine
 }
 
 func streamListOutput(command *cobra.Command, format string, engine *streams.Engine) error {
