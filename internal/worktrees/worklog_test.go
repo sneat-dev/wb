@@ -13,7 +13,113 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+func TestNormalizeTaskSummaryRejectsPromptLikeOrUnsafeValues(t *testing.T) {
+	for _, value := range []string{"Fix discovery", "line one\nline two", "token=ghp_private", "Use ghp_abcdefghijklmnopqrstuvwxyz123456 for testing", "Bearer abcdefghijklmnopqrstuvwxyz123456", "password: private", strings.Repeat("x", MaxTaskSummaryRunes+1)} {
+		_, err := NormalizeTaskSummary(value)
+		if value == "Fix discovery" && err != nil {
+			t.Fatalf("safe summary rejected: %v", err)
+		}
+		if value != "Fix discovery" && err == nil {
+			t.Fatalf("unsafe summary %q accepted", value)
+		}
+	}
+	for _, value := range []string{"Risk-sensitive worktree repair", "Add risk-based checks", "Update Slovakia tax rules", "Fix task_queue scheduling", "Update npm_config_cache handling", "Add Bearer authentication support"} {
+		if _, err := NormalizeTaskSummary(value); err != nil {
+			t.Fatalf("ordinary prose %q was mistaken for a credential: %v", value, err)
+		}
+	}
+}
+
+func TestWorkLogOptionsForClaimExtensionPreservesTaskSummary(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "task", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "task", Base: "main", BaseSHA: "abc123",
+	}, WorkLogOptions{
+		EffortID: "task", RunID: "run", Model: "unknown", TaskSummary: "Repair worktree discovery",
+	}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := outcome.claim
+	options, err := workLogOptionsForClaimExtension(home, WorkLogOptions{Model: "unknown"}, claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.TaskSummary != claim.TaskSummary {
+		t.Fatalf("task summary = %q, want %q", options.TaskSummary, claim.TaskSummary)
+	}
+	if _, err := workLogOptionsForClaimExtension(home, WorkLogOptions{Model: "unknown", TaskSummary: "Different work"}, claim); err == nil {
+		t.Fatal("different immutable task summary was accepted")
+	}
+}
+
+func TestListActiveClaimSummariesIsCompactFilteredAndExcludesSealedClaims(t *testing.T) {
+	projectsRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv(wbhome.EnvOverride, home)
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "active-summary", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "active-summary", Base: "main", BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{
+		EffortID: "active-summary", RunID: "run", AgentID: "codex-1", Model: "unknown",
+		TaskSummary: "Repair worktree discovery", WBSessionID: "wbs-live",
+	}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := ListActiveClaimSummaries(projectsRoot, "acme/app")
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("active summaries = %#v err=%v", listed, err)
+	}
+	if got := listed[0]; got.Task != "active-summary" || got.TaskSummary != "Repair worktree discovery" || got.Owner != "codex-1" || got.WBSessionID != "wbs-live" {
+		t.Fatalf("active summary = %#v", got)
+	}
+	if filtered, filterErr := ListActiveClaimSummaries(projectsRoot, "other/repo"); filterErr != nil || len(filtered) != 0 {
+		t.Fatalf("filtered summaries = %#v err=%v", filtered, filterErr)
+	}
+	runDir, _, err := openWorkLogRun(home, outcome.claim.EffortID, outcome.claim.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeWorkLogTerminal(home, runDir, outcome.claim, strings.Repeat("a", 40), "landed", "", "", nil); err != nil {
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	_ = runDir.Close()
+	if sealed, sealedErr := ListActiveClaimSummaries(projectsRoot, "acme/app"); sealedErr != nil || len(sealed) != 0 {
+		t.Fatalf("sealed summaries = %#v err=%v", sealed, sealedErr)
+	}
+	claimsPath := filepath.Join(home, "worklogs", outcome.claim.EffortID, "runs", outcome.claim.RunID, "claims")
+	externalClaims := filepath.Join(t.TempDir(), "claims")
+	if err := os.Rename(claimsPath, externalClaims); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalClaims, claimsPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListActiveClaimSummaries(projectsRoot, "acme/app"); err == nil {
+		t.Fatal("symlinked claims directory was traversed")
+	}
+}
 
 func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 	homeRoot, err := filepath.EvalSymlinks(t.TempDir())
@@ -32,7 +138,7 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 		}
 		gitTest(t, worktree, "init")
 	}
-	options := WorkLogOptions{EffortID: "fair-split", RunID: "codex-run-1", AgentRuntime: "codex", Model: "unknown"}
+	options := WorkLogOptions{EffortID: "fair-split", RunID: "codex-run-1", AgentRuntime: "codex", Model: "unknown", TaskSummary: "Split package work"}
 	for _, result := range []CreateResult{
 		{Repository: "acme/a-b", WorktreeDir: worktrees[0], Branch: "feature/fair-split", Base: "main", BaseSHA: "aabbcc"},
 		{Repository: "acme-a/b", WorktreeDir: worktrees[1], Branch: "feature/fair-split", Base: "main", BaseSHA: "ddeeff"},
@@ -52,6 +158,14 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 	for _, claim := range claims {
 		if !validClaimID(strings.TrimSuffix(claim.Name(), ".json")) {
 			t.Fatalf("claim uses non-injective repository filename: %s", claim.Name())
+		}
+		contents, readErr := os.ReadFile(filepath.Join(home, "worklogs", "fair-split", "runs", "codex-run-1", "claims", claim.Name()))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var recorded workLogClaim
+		if err := json.Unmarshal(contents, &recorded); err != nil || recorded.TaskSummary != "Split package work" {
+			t.Fatalf("claim task summary = %q err=%v", recorded.TaskSummary, err)
 		}
 	}
 	outbox, err := os.ReadDir(filepath.Join(home, "worklogs", "fair-split", "outbox"))

@@ -59,6 +59,7 @@ func newWorktreeCmd() *cobra.Command {
 		{newWorktreeGCCmd(), "finish"},
 		{newWorktreeAbortCmd(), "finish"},
 		{newWorktreeSummaryCmd(), "inspect"},
+		{newWorktreeActiveCmd(), "inspect"},
 		{newWorktreeInfoCmd(), "inspect"},
 		{newWorktreeListCmd(), "inspect"},
 		{newWorktreeGuardCmd(), "recover"},
@@ -1147,7 +1148,7 @@ func newWorktreeCreateCmd() *cobra.Command {
 	var branch, branchPrefix, base, format string
 	var mode string
 	var resume, noClaim bool
-	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
+	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, taskSummary, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
 		Short: "Create isolated feature branches in the selected checkout root",
@@ -1183,6 +1184,11 @@ silently replacing the claim.
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
 text never enters the worktree projection, source Git, or normal output.
+
+Optionally pass --summary with one short, non-sensitive line that describes
+the task for cross-machine overlap checks. It is stored immutably with the
+claim and may be published in a machine snapshot; never copy prompt text,
+credentials, or customer data into it.
 
 Pass --original-prompt-file - to supply the prompt on stdin instead of a path.
 WB reads stdin once, in memory, and writes the private 0600 archive itself
@@ -1230,6 +1236,7 @@ wb worktree create improve-login owner/repository --resume \
 			workLog := worktrees.WorkLogOptions{
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
+				TaskSummary:           taskSummary,
 				RequireOriginalPrompt: true,
 			}
 			if originalPrompt == "-" {
@@ -1339,6 +1346,7 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
+	command.Flags().StringVar(&taskSummary, "summary", "", "optional short non-sensitive task summary for overlap checks; never prompt text or credentials")
 	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command

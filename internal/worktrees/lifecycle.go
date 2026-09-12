@@ -313,7 +313,10 @@ type ListResult struct {
 	// WorkLogSessionID is the immutable session link from the active private
 	// claim. It lets session park recover a claim even when the owner event was
 	// not projected, while remaining absent for legacy claims.
-	WorkLogSessionID  string       `json:"work_log_session_id,omitempty"`
+	WorkLogSessionID string `json:"work_log_session_id,omitempty"`
+	// TaskSummary is the optional bounded, non-sensitive description captured
+	// at creation. It is never reconstructed from the private prompt archive.
+	TaskSummary       string       `json:"task_summary,omitempty"`
 	OwnerState        string       `json:"owner_state"`
 	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
@@ -3541,8 +3544,10 @@ func inspectLifecycleWorktree(
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
 		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+			result.TaskSummary = claim.TaskSummary
 		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
 			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
+			result.TaskSummary = terminal.TaskSummary
 			if terminal.FinalizeReport != nil {
 				result.TerminalResult = terminal.FinalizeReport.Result
 				result.TerminalMessage = terminal.FinalizeReport.Message
