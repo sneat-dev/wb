@@ -532,12 +532,27 @@ func (fixture engineFixture) options() Options {
 
 func writeEngineFile(t *testing.T, path, contents string) {
 	t.Helper()
+	if filepath.Base(path) == "gh" {
+		contents = withEmptyActionsRuns(contents)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func withEmptyActionsRuns(contents string) string {
+	if strings.Contains(contents, "/actions/runs?head_sha=") {
+		return contents
+	}
+	const response = `if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":0,"workflow_runs":[]}'
+  exit 0
+fi
+`
+	return strings.Replace(contents, "#!/bin/sh\n", "#!/bin/sh\n"+response, 1)
 }
 
 func mustReadEngineFile(t *testing.T, path string) string {

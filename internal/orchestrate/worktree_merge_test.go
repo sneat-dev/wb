@@ -3577,7 +3577,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -3621,7 +3621,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3647,7 +3647,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3699,7 +3699,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3718,7 +3718,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
