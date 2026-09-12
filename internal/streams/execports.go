@@ -199,6 +199,13 @@ func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (str
 	return sha, sha != "", nil
 }
 
+// IsAncestor implements Git without treating patch-equivalence as commit
+// identity. A squash-merged stream PR has immutable GitHub identities, so
+// only a local head on that PR's ancestry can prove it has no later work.
+func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	return git.isAncestor(ctx, dir, ancestor, descendant)
+}
+
 // CommitsNotIn implements Git by patch identity.
 //
 // `git cherry` answers which commits base does not already carry *as patches*,

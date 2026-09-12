@@ -20,6 +20,7 @@ type fakeGit struct {
 	remoteHeads      map[string]string
 	localBranchHeads map[string]string
 	localHeads       map[string]string
+	ancestors        map[string]bool
 	notIn            map[string][]Commit
 	notInErr         map[string]error
 	deleted          []string
@@ -45,6 +46,7 @@ func newFakeGit() *fakeGit {
 		remoteHeads:      map[string]string{},
 		localBranchHeads: map[string]string{},
 		localHeads:       map[string]string{},
+		ancestors:        map[string]bool{},
 		notIn:            map[string][]Commit{},
 		notInErr:         map[string]error{},
 		deleteErr:        map[string]error{},
@@ -131,6 +133,13 @@ func (git *fakeGit) LocalHead(_ context.Context, dir string) (string, error) {
 func (git *fakeGit) LocalBranchHead(_ context.Context, dir, branch string) (string, bool, error) {
 	sha, ok := git.localBranchHeads[dir+" "+branch]
 	return sha, ok, nil
+}
+
+func (git *fakeGit) IsAncestor(_ context.Context, dir, ancestor, descendant string) (bool, error) {
+	if ancestor == descendant {
+		return true, nil
+	}
+	return git.ancestors[dir+" "+ancestor+" "+descendant], nil
 }
 
 func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([]Commit, error) {

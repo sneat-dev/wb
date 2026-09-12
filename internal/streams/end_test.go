@@ -257,6 +257,97 @@ func TestEndRefusesRemovedMemberWhoseLocalStreamBranchStillExistsAtMergedHead(t 
 	}
 }
 
+func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testing.T) {
+	engine, git, hub, _, stream := startedStream(t, "squash-merged", "acme/library")
+	member := stream.Members[0]
+	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
+	mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
+	git.localHeads[member.Worktree] = localHead
+	git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = true
+	delete(git.remoteHeads, member.Worktree+" "+member.Branch) // squash PR land deleted it
+	// This is the real recovery shape: a squash merge puts a new commit on
+	// main, so git cherry still sees the four original stream commits even
+	// though GitHub has the immutable merged-PR receipt.
+	git.notIn[member.Worktree+" "+member.Branch+" origin/"+member.Base] = []Commit{
+		{SHA: "1", Subject: "stream commit 1"}, {SHA: "2", Subject: "stream commit 2"},
+		{SHA: "3", Subject: "stream commit 3"}, {SHA: "4", Subject: "stream commit 4"},
+	}
+	hub.byNumber[member.PullRequest] = exactSquashReceipt(member, mergedPRHead)
+
+	result, err := engine.End(context.Background(), EndOptions{Name: "squash-merged", Apply: true})
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if len(result.Members) != 1 || !result.Members[0].WorktreeRemoved || !result.Members[0].LeaseReleased {
+		t.Fatalf("member result = %#v, want a retired clean squash-merged member", result.Members)
+	}
+}
+
+func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(member Member, git *fakeGit, hub *fakeHub, localHead, mergedPRHead string)
+		want      string
+	}{
+		{
+			name: "dirty", want: "dirty",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, _, _ string) {
+				git.dirty[member.Worktree] = []string{"untracked.txt"}
+			},
+		},
+		{
+			name: "divergent local head", want: "not an ancestor",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, localHead, mergedPRHead string) {
+				git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = false
+			},
+		},
+		{
+			name: "missing immutable identity", want: "immutable",
+			configure: func(member Member, _ *fakeGit, hub *fakeHub, _, _ string) {
+				pullRequest := hub.byNumber[member.PullRequest]
+				pullRequest.MergeSHA = ""
+				hub.byNumber[member.PullRequest] = pullRequest
+			},
+		},
+		{
+			name: "remote stream branch advanced", want: "origin/",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, _, _ string) {
+				git.remoteHeads[member.Worktree+" "+member.Branch] = "advancedadvancedadvancedadvancedadvanced"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine, git, hub, worktrees, stream := startedStream(t, "unsafe-squash-"+strings.ReplaceAll(test.name, " ", "-"), "acme/library")
+			member := stream.Members[0]
+			localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
+			mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
+			git.localHeads[member.Worktree] = localHead
+			git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = true
+			// Empty on purpose: each safety check must refuse rather than fall
+			// back to ordinary patch comparison and erase this checkout.
+			git.notIn[member.Worktree+" "+member.Branch+" origin/"+member.Base] = nil
+			hub.byNumber[member.PullRequest] = exactSquashReceipt(member, mergedPRHead)
+			test.configure(member, git, hub, localHead, mergedPRHead)
+
+			_, err := engine.End(context.Background(), EndOptions{Name: "unsafe-squash-" + strings.ReplaceAll(test.name, " ", "-"), Apply: true})
+			refusal, refused := Refused(err)
+			if !refused || refusal.Code != RefusalUnabsorbedWork || !strings.Contains(refusal.Message, test.want) {
+				t.Fatalf("error = %v, want refusal containing %q", err, test.want)
+			}
+			if len(worktrees.removed) != 0 {
+				t.Fatalf("removed worktrees = %v, want none", worktrees.removed)
+			}
+		})
+	}
+}
+
+func exactSquashReceipt(member Member, head string) PullRequest {
+	return PullRequest{
+		Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base,
+		HeadSHA: head, MergeSHA: "cafebabecafebabecafebabecafebabecafebabe",
+	}
+}
+
 func TestEndUsesCanonicalCheckoutForAlreadyRemovedMemberGitHubCalls(t *testing.T) {
 	engine, _, hub, _, stream := startedStream(t, "missing-canonical-cwd", "acme/library")
 	member := stream.Members[0]

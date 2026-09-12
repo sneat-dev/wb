@@ -149,6 +149,12 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 			unknown = append(unknown, fmt.Sprintf("%s: could not re-read origin: %s", member.Repository, RedactString(fetchErr.Error())))
 			continue
 		}
+		if absorbed, proofErr := engine.provedSquashAbsorbedMember(ctx, member); proofErr != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(proofErr.Error())))
+			continue
+		} else if absorbed {
+			continue
+		}
 		commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
 		if err != nil {
 			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(err.Error())))
@@ -236,6 +242,53 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 		Detail: fmt.Sprintf("%d members retired", len(result.Members)),
 	})
 	return result, nil
+}
+
+// provedSquashAbsorbedMember recognizes the narrow case in which a stream
+// member still exists locally after its own exact stream PR was squash-merged.
+// `git cherry` cannot prove that state because squash merges rewrite commit
+// identities, so this path requires the immutable GitHub receipt and proves
+// that the clean local head contains no work beyond that receipt.
+func (engine *Engine) provedSquashAbsorbedMember(ctx context.Context, member Member) (bool, error) {
+	if member.PullRequest == 0 || member.Canonical == "" {
+		return false, nil
+	}
+	pr, found, err := engine.GitHub.PullRequest(ctx, member.Worktree, member.PullRequest)
+	if err != nil {
+		return false, fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
+	}
+	if !found || !strings.EqualFold(pr.State, "MERGED") || pr.Head != member.Branch || pr.Base != member.Base {
+		return false, nil
+	}
+	if pr.HeadSHA == "" || pr.MergeSHA == "" {
+		return false, fmt.Errorf("recorded stream pull request #%d lacks immutable merged identities", member.PullRequest)
+	}
+	dirty, err := engine.Git.DirtyPaths(ctx, member.Worktree)
+	if err != nil {
+		return false, fmt.Errorf("inspect member worktree dirtiness: %w", err)
+	}
+	if len(dirty) > 0 {
+		return false, fmt.Errorf("member worktree has dirty or untracked paths: %s", strings.Join(dirty, ", "))
+	}
+	local, err := engine.Git.LocalHead(ctx, member.Worktree)
+	if err != nil {
+		return false, fmt.Errorf("read member worktree HEAD: %w", err)
+	}
+	ancestor, err := engine.Git.IsAncestor(ctx, member.Worktree, local, pr.HeadSHA)
+	if err != nil {
+		return false, fmt.Errorf("compare member HEAD %s with merged pull request head %s: %w", local, pr.HeadSHA, err)
+	}
+	if !ancestor {
+		return false, fmt.Errorf("member HEAD %s is not an ancestor of merged pull request head %s", local, pr.HeadSHA)
+	}
+	remote, present, err := engine.Git.RemoteHead(ctx, member.Worktree, member.Branch)
+	if err != nil {
+		return false, fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
+	}
+	if present && remote != pr.HeadSHA {
+		return false, fmt.Errorf("origin/%s is %s, not merged pull request head %s", member.Branch, remote, pr.HeadSHA)
+	}
+	return true, nil
 }
 
 // provedAlreadyRetiredMember recognizes only the narrow recovery state left by

@@ -29,6 +29,10 @@ type Git interface {
 	// used when a stream worktree has already disappeared: a surviving local
 	// stream ref can still carry unpushed work that must block retirement.
 	LocalBranchHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
+	// IsAncestor reports whether ancestor is reachable from descendant. Stream
+	// cleanup uses commit ancestry, not patch similarity, when a merged PR is
+	// the sole receipt that authorizes retiring a squash-merged member.
+	IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error)
 	// CommitsNotIn lists the commits on branch whose patch base does not
 	// already carry, by patch identity rather than by SHA — a rebase landing
 	// rewrites SHAs, so an ancestry test would refuse every landed stream
