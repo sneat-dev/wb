@@ -195,6 +195,14 @@ func SanitizeEnv(base []string, overrides ...string) []string {
 // relative to that top level, never against a HEAD:go.work path assumed to
 // be rooted at repoRoot itself.
 func TracksOwnGoWork(repoRoot string) (bool, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(repoRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	repoRoot = resolvedRoot
 	info, err := os.Lstat(filepath.Join(repoRoot, "go.work"))
 	if err != nil || !info.Mode().IsRegular() {
 		return false, nil

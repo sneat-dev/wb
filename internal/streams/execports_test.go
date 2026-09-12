@@ -159,8 +159,12 @@ func TestOpenResolvesTheStoreBelowWBHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Root != filepath.Join(home, "streams") {
-		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(home, "streams"))
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Root != filepath.Join(resolvedHome, "streams") {
+		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(resolvedHome, "streams"))
 	}
 }
 
