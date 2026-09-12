@@ -110,6 +110,32 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 	}
 }
 
+// A missing member pull request is an actionable stream defect, not merely a
+// buried persistence field. Status must fail with findings and print the WB
+// verb that safely retries publication.
+func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
+	command := newStreamStatusCmd()
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	status := streams.Status{
+		Stream: "recovery", Phase: streams.PhaseOpen, Branch: "stream/recovery",
+		Members: []streams.MemberStatus{{
+			Repository: "acme/library", Role: streams.RoleLibrary,
+			Worktree: "/tmp/acme-library", Branch: "stream/recovery", Base: "main",
+			PullRequestMissing: "push rejected as non-fast-forward",
+		}},
+	}
+
+	err := streamStatusOutput(command, "text", status)
+	exit, ok := err.(*exitError)
+	if !ok || exit.code != exitFindings {
+		t.Fatalf("status error = %#v, want exit findings", err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "wb stream join recovery acme/library") {
+		t.Fatalf("status output = %q, want the sanctioned recovery command", output)
+	}
+}
+
 // A stream name that could not also be a worktree task name is rejected before
 // anything durable is created.
 func TestStreamStartRejectsAnInvalidName(t *testing.T) {

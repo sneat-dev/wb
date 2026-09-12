@@ -56,6 +56,9 @@ type MemberStatus struct {
 	PullRequestURL string `json:"pull_request_url,omitempty"`
 	// PullRequestMissing carries the reason no draft pull request exists.
 	PullRequestMissing string `json:"pull_request_missing,omitempty"`
+	// PullRequestRecovery is the exact WB verb that retries the missing
+	// publication without asking an operator to hand-roll Git or GitHub calls.
+	PullRequestRecovery string `json:"pull_request_recovery,omitempty"`
 	// Unabsorbed is the number of commits on the stream branch that the base
 	// does not carry by patch identity.
 	Unabsorbed int `json:"unabsorbed"`
@@ -175,6 +178,9 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 		LeaseHolder:        member.Lease.Holder(),
 		RecordedHead:       member.Lease.RecordedHead,
 		LiveLinks:          len(member.Links),
+	}
+	if member.PullRequest == 0 && member.Worktree != "" {
+		row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
 	}
 	commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
 	if err != nil {

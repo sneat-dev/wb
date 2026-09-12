@@ -454,6 +454,19 @@ func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
 	if _, reported := findingFor(result.Reported, "acme/library", "draft-pull-request"); reported {
 		t.Error("a member with a draft pull request was reported as missing one")
 	}
+	status, err := engine.Status(context.Background(), "no-pr")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var recovery string
+	for _, member := range status.Members {
+		if member.Repository == "acme/app" {
+			recovery = member.PullRequestRecovery
+		}
+	}
+	if recovery != "wb stream join no-pr acme/app" {
+		t.Fatalf("status recovery = %q, want the exact WB retry verb", recovery)
+	}
 }
 
 // The one-open-stream guard reports records it could not read, so a "no stream

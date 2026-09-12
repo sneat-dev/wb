@@ -554,10 +554,27 @@ func printStreamFindings(out io.Writer, findings []streams.PreflightFinding) err
 }
 
 func streamStatusOutput(command *cobra.Command, format string, status streams.Status) error {
+	missingPullRequests := false
+	for _, member := range status.Members {
+		if member.PullRequest == 0 && member.Worktree != "" {
+			missingPullRequests = true
+			break
+		}
+	}
 	if format == "json" {
-		return writeStreamJSON(command.OutOrStdout(), streamEnvelope{
-			Version: 1, Verb: "stream status", Outcome: outcomeSuccess, Evidence: status,
-		})
+		outcome := outcomeSuccess
+		if missingPullRequests {
+			outcome = outcomeFindings
+		}
+		if err := writeStreamJSON(command.OutOrStdout(), streamEnvelope{
+			Version: 1, Verb: "stream status", Outcome: outcome, Evidence: status,
+		}); err != nil {
+			return err
+		}
+		if missingPullRequests {
+			return &exitError{code: exitFindings, message: "stream status reported findings; see the report above"}
+		}
+		return nil
 	}
 	out := command.OutOrStdout()
 	if _, err := fmt.Fprintf(out, "stream %s (%s) on %s\n", status.Stream, status.Phase, status.Branch); err != nil {
@@ -567,6 +584,27 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 		if _, err := fmt.Fprintf(out, "  %-8s %-28s unabsorbed=%d links=%d lease=%s\n",
 			member.Role, member.Repository, member.Unabsorbed, member.LiveLinks, member.LeaseHolder); err != nil {
 			return err
+		}
+	}
+	if missingPullRequests {
+		if _, err := fmt.Fprintln(out, "\nmissing member pull requests:"); err != nil {
+			return err
+		}
+		for _, member := range status.Members {
+			if member.PullRequest != 0 || member.Worktree == "" {
+				continue
+			}
+			recovery := member.PullRequestRecovery
+			if recovery == "" {
+				recovery = "wb stream join " + status.Stream + " " + member.Repository
+			}
+			detail := member.PullRequestMissing
+			if detail == "" {
+				detail = "no draft pull request is recorded"
+			}
+			if _, err := fmt.Fprintf(out, "  ! %s: %s\n    recover: %s\n", member.Repository, detail, recovery); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := fmt.Fprintln(out, "\nlinked consumers (gap 1):"); err != nil {
@@ -630,6 +668,9 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 				return err
 			}
 		}
+	}
+	if missingPullRequests {
+		return &exitError{code: exitFindings, message: "stream status reported findings; see the report above"}
 	}
 	return nil
 }
