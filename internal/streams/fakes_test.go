@@ -126,6 +126,10 @@ func (git *fakeGit) PushBranch(_ context.Context, dir, branch string) (string, e
 	sha := git.localHeads[dir]
 	if sha == "" {
 		sha = "sha-" + filepath.Base(dir)
+		// A real push originates at the worktree's HEAD. Keep the fake's local
+		// and published views coherent so remote-advance tests do not model a
+		// branch that never existed locally.
+		git.localHeads[dir] = sha
 	}
 	git.pushed[dir] = branch
 	git.remoteHeads[dir+" "+branch] = sha

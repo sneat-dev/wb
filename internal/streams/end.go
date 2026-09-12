@@ -166,6 +166,15 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 			continue
 		}
 		if present {
+			local, localErr := engine.Git.LocalHead(ctx, member.Worktree)
+			if localErr != nil {
+				unknown = append(unknown, fmt.Sprintf("%s: read member HEAD for origin/%s deletion lease: %s", member.Repository, member.Branch, RedactString(localErr.Error())))
+				continue
+			}
+			if remote != local {
+				unabsorbed = append(unabsorbed, fmt.Sprintf("%s origin/%s is %s, not checked-out member HEAD %s", member.Repository, member.Branch, remote, local))
+				continue
+			}
 			remoteExpectations[member.Worktree] = remote
 		}
 		commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)

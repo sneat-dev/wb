@@ -326,6 +326,30 @@ func TestEndLeavesSquashMemberWhenRemoteAdvancesAfterProof(t *testing.T) {
 	}
 }
 
+func TestEndRefusesOrdinaryMemberWhoseRemoteStreamBranchAlreadyAdvanced(t *testing.T) {
+	engine, git, _, worktrees, stream := startedStream(t, "ordinary-remote-advanced", "acme/library")
+	member := stream.Members[0]
+	local := "1111111111111111111111111111111111111111"
+	advanced := "2222222222222222222222222222222222222222"
+	git.localHeads[member.Worktree] = local
+	git.remoteHeads[member.Worktree+" "+member.Branch] = advanced
+	// The local member is already absorbed. The remote branch is not and must
+	// never be erased merely because the deletion lease can observe it.
+	git.notIn[member.Worktree+" "+member.Branch+" origin/"+member.Base] = nil
+
+	_, err := engine.End(context.Background(), EndOptions{Name: "ordinary-remote-advanced", Apply: true})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalUnabsorbedWork || !strings.Contains(refusal.Message, "not checked-out member HEAD") {
+		t.Fatalf("remote advance must refuse ordinary end: %v", err)
+	}
+	if len(worktrees.removed) != 0 || len(git.deleted) != 0 {
+		t.Fatalf("ordinary remote advance removed worktrees=%#v branches=%#v", worktrees.removed, git.deleted)
+	}
+	if remote := git.remoteHeads[member.Worktree+" "+member.Branch]; remote != advanced {
+		t.Fatalf("ordinary remote advance was deleted: got %s want %s", remote, advanced)
+	}
+}
+
 func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
 	for _, test := range []struct {
 		name      string
