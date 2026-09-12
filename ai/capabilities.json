@@ -4357,6 +4357,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -10119,6 +10120,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -11292,6 +11294,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -11313,6 +11316,8 @@
               "modes": [
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
                 "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup.",
+                "An explicit --allow-unfenced approval is persisted in the receipt through post-target verification and every later resume; it permits unavailable branch-policy authority in both PR and target phases while both still require stable exact-head checks, and fence refusals name the exact sanctioned resume command.",
+                "Resume recovers a published pull request that GitHub proves already merged after the integration worktree was retired, then continues through normal target checks, canonical synchronization, and receipt-gated cleanup; partially absent assets require exact immutable terminal Work Log and branch-removal evidence before remaining live assets are cleaned.",
                 "After a verified batch landing, reconciles an absorbed source pull request only when its exact current head, base repository, and base branch still match the landing evidence.",
                 "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
@@ -11950,8 +11955,8 @@
                 "--reason"
               ],
               "modes": [
-                "Proves, using only GitHub's own remote state, that a land conflict receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
-                "Accepts only a land-phase conflict receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
+                "Proves, using only GitHub's own remote state, that a recoverable non-terminal land receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
+                "Accepts only a land-phase conflict, published, checks-pending, or checks-failed receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
               ]
             }
           ],
@@ -12113,6 +12118,7 @@
               "path": "wb worktree merge land",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
                 "--format",
@@ -12501,6 +12507,7 @@
               "path": "wb worktree merge resume",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--prepare-timeout",
@@ -12620,6 +12627,7 @@
               "path": "wb worktree merge revert",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
                 "--format",

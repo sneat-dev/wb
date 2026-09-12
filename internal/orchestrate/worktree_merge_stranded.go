@@ -164,9 +164,9 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 }
 
 // validateStrandedLandingReceipt narrowly scopes eligibility to the exact
-// shape of a stranded publish: a land-phase receipt marked conflict (WB's
-// catch-all failure status) that never recorded a landing SHA but did
-// publish its exact candidate in a pull request. A real merge conflict
+// shape of a stranded publish: a non-terminal land-phase receipt that never
+// recorded a landing SHA but did publish its exact candidate in a pull
+// request. A real merge conflict
 // during prepare (wrong phase), a land conflict before any PR existed (no
 // PullRequest), and an already-landed post-target CI failure (LandingSHA
 // set; that is acknowledge-landed-failed's territory) are all excluded.
@@ -174,8 +174,8 @@ func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath st
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) {
 		return fmt.Errorf("receipt %s has inconsistent immutable receipt identity", receiptPath)
 	}
-	if receipt.Phase != WorktreeMergePhaseLand || receipt.Status != WorktreeMergeConflict {
-		return fmt.Errorf("receipt %s is %s/%s, want land conflict with a stranded published pull request", receiptPath, receipt.Phase, receipt.Status)
+	if receipt.Phase != WorktreeMergePhaseLand || !recoverableStrandedLandingStatus(receipt.Status) {
+		return fmt.Errorf("receipt %s is %s/%s, want recoverable land receipt with a stranded published pull request", receiptPath, receipt.Phase, receipt.Status)
 	}
 	if receipt.LandingSHA != "" {
 		return fmt.Errorf("receipt %s already recorded a landing SHA %s; use acknowledge-landed-failed for a landed_post_target_ci_failed receipt instead", receiptPath, receipt.LandingSHA)
@@ -190,6 +190,54 @@ func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath st
 		return fmt.Errorf("receipt %s published candidate %s does not match its exact preserved candidate %s", receiptPath, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
 	}
 	return nil
+}
+
+func recoverableStrandedLandingStatus(status WorktreeMergeStatus) bool {
+	switch status {
+	case WorktreeMergeConflict, WorktreeMergePublished, WorktreeMergeChecksPending, WorktreeMergeChecksFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// recoverAlreadyMergedPublishedWorktreeMerge is the automatic resume path for
+// a pull request landed after worktree merge published it. It runs only when
+// the integration worktree is gone, proves the merge from GitHub's current
+// state, and advances the mutable in-flight receipt to the normal landed phase.
+// The caller still performs post-target CI, canonical sync, and receipt-gated
+// cleanup; remote PR state alone never terminalizes the lane.
+func recoverAlreadyMergedPublishedWorktreeMerge(ctx context.Context, receipt *WorktreeMergeReceipt) (bool, error) {
+	if receipt == nil || receipt.PullRequest == "" || receipt.LandingSHA != "" || receipt.Candidate.Worktree == "" {
+		return false, nil
+	}
+	if _, err := os.Lstat(receipt.Candidate.Worktree); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect published candidate worktree: %w", err)
+	}
+	if err := validateStrandedLandingReceipt(*receipt, receipt.ReceiptPath); err != nil {
+		return false, err
+	}
+	_, currentTarget, _, _, _, err := proveStrandedPullRequestLanding(ctx, *receipt)
+	if err != nil {
+		return false, err
+	}
+	if receipt.PreviousTargetSHA == "" {
+		receipt.PreviousTargetSHA = receipt.TargetSHA
+	}
+	receipt.LandingSHA = currentTarget
+	// Any stored checks describe the published candidate, not the target after
+	// GitHub merged it. The recursive landed pass must obtain a fresh target
+	// receipt before synchronization or cleanup.
+	receipt.Checks = PullRequestWaitResult{}
+	receipt.Status = WorktreeMergeLanded
+	receipt.Failure = ""
+	receipt.UpdatedAt = time.Now().UTC()
+	if err := persistWorktreeMergeReceipt(*receipt); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 type strandedPullRequestLandingView struct {

@@ -145,4 +145,10 @@ independent of `--format` / `--json`; failure receipts retain error details.
 
 `worktree merge resume` accepts `--prepare-timeout`, `--check-timeout`, and
 `--shard-attempt-timeout` when recovering an interrupted preparing receipt.
-Unspecified validation limits retain the persisted values.
+Unspecified validation limits retain the persisted values. `worktree merge`,
+`worktree land`, `merge land`, `merge resume`, and `merge revert` accept `--allow-unfenced`;
+the approval is persisted in the merge receipt through post-merge verification
+and later resumes. It permits unavailable branch-policy authority while both
+pull-request and target phases continue to require stable exact-head check
+observations. Prepare does not accept the flag because it performs no remote
+landing or CI-fence decision.

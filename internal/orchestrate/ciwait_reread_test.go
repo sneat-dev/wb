@@ -136,6 +136,33 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
+func TestWaitForTargetChecksAllowsPlanLimitedPolicyOnlyWhenExplicitlyUnfenced(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.PolicyAuthorityUnavailable == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if strings.Contains(result.RequiredChecksAuthority, "pr-base-verified") {
+		t.Fatalf("target-only authority falsely claims PR-base verification: %q", result.RequiredChecksAuthority)
+	}
+	if !result.TargetContainsHead || result.ObservedHead != rereadTestHead || result.StableObservations != 2 {
+		t.Fatalf("exact target receipt weakened: %+v", result)
+	}
+}
+
 func TestWaitForCommitChecksKeepsFullCadenceBeforeNoApplicableChecksReread(t *testing.T) {
 	state := installRereadTestGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then

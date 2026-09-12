@@ -162,17 +162,20 @@ landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
 
-When a land `conflict` receipt is stuck because its own landing-result read
+When a non-terminal land receipt is stuck because its own landing-result read
 failed on I/O or environment error -- most commonly because the candidate
 worktree was already removed before a resume could confirm the server
-landing -- use `acknowledge-stranded-landing` instead. It never reads or
+landing -- resume first: it now proves the already-merged PR remotely and
+continues target checks and cleanup without that worktree. For an audited
+append-only recovery that must leave the historical receipt unchanged, use
+`acknowledge-stranded-landing`. It never reads or
 requires the candidate or any receipted source worktree. It proves, using
 only GitHub's own remote state, that the receipted pull request reports
 MERGED at the exact receipted candidate head or a strict descendant, that a
 descendant retains the candidate by ancestry, that the server merge commit,
 observed head, and receipted candidate are contained in the freshly fetched
 current remote target, and that the receipted candidate still contains its
-own recorded pre-merge target. It accepts only a conflict receipt that never
+own recorded pre-merge target. It accepts only a recoverable land receipt that never
 recorded a landing SHA but did publish an exact candidate in a pull request; a
 receipt that already has a landing SHA is `acknowledge-landed-failed`'s
 territory instead. It writes a separate audited acknowledgement and frees the

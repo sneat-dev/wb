@@ -2061,12 +2061,6 @@ func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *test
 			},
 		},
 		{
-			name: "partial terminal cleanup", want: "only partially terminalized",
-			breakEvidence: func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, _ map[string]string) {
-				externallyTerminalizeTask(t, fixture, &landed, landed.Candidate.Task)
-			},
-		},
-		{
 			name: "local branch remains", want: "local branch",
 			breakEvidence: func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, _ map[string]string) {
 				runEngineGit(t, fixture.canonical, "branch", landed.Candidate.Branch, landed.Candidate.SHA)
@@ -2082,12 +2076,8 @@ func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *test
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture, _, landed, claims := landedTerminalCleanupFixture(t)
-			if test.name == "partial terminal cleanup" {
-				test.breakEvidence(t, fixture, landed, claims)
-			} else {
-				externallyTerminalizeMergeCleanup(t, fixture, &landed)
-				test.breakEvidence(t, fixture, landed, claims)
-			}
+			externallyTerminalizeMergeCleanup(t, fixture, &landed)
+			test.breakEvidence(t, fixture, landed, claims)
 			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 				ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
 				Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
@@ -2346,7 +2336,7 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 
 	failed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteDirect,
-		Cleanup: true, OnFailure: "revert", Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond, ProgressRequested: true,
+		Cleanup: true, OnFailure: "revert", AllowUnfenced: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond, ProgressRequested: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "conflicts while rebasing") || failed.Status != WorktreeMergeConflict {
 		t.Fatalf("rebase conflict receipt=%+v err=%v", failed, err)
@@ -2367,11 +2357,11 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !failed.Cleanup || !persisted.Cleanup || persisted.Route.Requested != WorktreeMergeRouteDirect || persisted.OnFailure != "revert" {
+	if !failed.Cleanup || !persisted.Cleanup || persisted.Route.Requested != WorktreeMergeRouteDirect || persisted.OnFailure != "revert" || !persisted.AllowUnfenced {
 		t.Fatalf("landing intent was not durable across interruption: returned=%+v persisted=%+v", failed, persisted)
 	}
 	resume := strings.Join(persisted.ResumeArgs, " ")
-	for _, required := range []string{"--route direct", "--cleanup", "--progress", "--on-failure revert"} {
+	for _, required := range []string{"--route direct", "--cleanup", "--progress", "--on-failure revert", "--allow-unfenced"} {
 		if !strings.Contains(resume, required) {
 			t.Fatalf("resume args %q lost %q", resume, required)
 		}
@@ -2380,7 +2370,7 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	if retainWorktreeMergeLandIntent(&persisted, &bareResume) {
 		t.Fatal("bare resume unexpectedly changed already-durable landing intent")
 	}
-	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" || !bareResume.ProgressRequested {
+	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" || !bareResume.ProgressRequested || !bareResume.AllowUnfenced {
 		t.Fatalf("bare resume did not restore durable landing intent: %+v", bareResume)
 	}
 }
@@ -2485,6 +2475,7 @@ func TestLandWorktreeMergeResumesAfterSquashPRMergedBeforeReceiptPersisted(t *te
 	receipt.PullRequest = "https://example.test/acme/app/pull/17"
 	receipt.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
 	receipt.PreviousTargetSHA = receipt.TargetSHA
+	receipt.Checks = PullRequestWaitResult{Status: PullRequestWaitPassed, PullRequest: receipt.PullRequest, Head: receipt.Candidate.SHA}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -2500,6 +2491,9 @@ func TestLandWorktreeMergeResumesAfterSquashPRMergedBeforeReceiptPersisted(t *te
 	}
 	if landed.Status != WorktreeMergeLanded || landed.LandingSHA != serverLanding || landed.PreviousTargetSHA != receipt.TargetSHA {
 		t.Fatalf("resumed squash receipt = %+v", landed)
+	}
+	if landed.Checks.Status != PullRequestWaitPassed || landed.Checks.PullRequest != "" || landed.Checks.ObservedTargetHead != serverLanding {
+		t.Fatalf("resumed squash receipt did not replace candidate checks with target checks: %+v", landed.Checks)
 	}
 	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != serverLanding {
 		t.Fatalf("canonical target = %s, want resumed server landing %s", got, serverLanding)

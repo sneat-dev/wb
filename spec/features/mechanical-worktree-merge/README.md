@@ -71,14 +71,17 @@ the repair through a fresh route and pull request.
 
 ```text
 wb worktree merge <source-worktree...> [--target <branch>]
-  [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
+  [--route auto|direct|pr] [--cleanup] [--allow-unfenced]
+  [--on-failure stop|revert]
 
 wb worktree merge prepare <source-worktree...> [--target <branch>]
   [--rebatch-receipt <prepared-receipt>]
 wb worktree merge land <candidate-worktree-or-receipt>
-  [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
-wb worktree merge resume <candidate-worktree-or-receipt>
-wb worktree merge revert <landing-receipt> [--route auto|direct|pr]
+  [--route auto|direct|pr] [--cleanup] [--allow-unfenced]
+  [--on-failure stop|revert]
+wb worktree merge resume <candidate-worktree-or-receipt> [--allow-unfenced]
+wb worktree merge revert <landing-receipt>
+  [--route auto|direct|pr] [--allow-unfenced]
 wb worktree merge seal-validation-failed <validation-failed-receipt>
   [--apply --actor <identity> --reason <reason>]
 wb worktree merge supersede-validation-failed <validation-failed-receipt>
@@ -99,6 +102,19 @@ resume, and revert intent all route to the merge/worktree skills. Every new
 managed worktree also receives a locally ignored `.worktree.md` reminder with
 the one-command, two-phase, resume, and forward-revert paths; a repository-owned
 file with that name is preserved unchanged.
+
+When the target has no server-enforced strict up-to-date fence, landing refuses
+with the exact `wb worktree merge resume ... --allow-unfenced` command. Once
+approved, that widening is recorded in the receipt and survives every later
+resume and the post-target phase. It permits unavailable branch-policy
+authority in both phases, but each still requires stable exact-head check
+observations. If another landing path merged the
+published pull request and retired its integration worktree first, resume uses
+GitHub's current PR, commit, tree, ancestry, and target evidence to recover the
+landing before continuing the normal target-check, canonical-sync, and cleanup
+journey. When only some cleanup assets are already absent, each absent asset
+must have exact immutable terminal Work Log and branch-removal evidence before
+WB records it and cleans the remaining live assets normally.
 
 ### Safety and state
 

@@ -21,6 +21,7 @@ type worktreeMergeFlags struct {
 	rebatchReceipt                         string
 	model, runtime, agentID, cli, provider string
 	cleanup                                bool
+	allowUnfenced                          bool
 	progress                               bool
 	stopBeforeMerge                        bool
 	allowSaturatedHost                     bool
@@ -94,7 +95,7 @@ Use acknowledge-landed-failed only for an audited historical
 validation_failed, landed failed-validation, or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
 acknowledgement rather than rewriting the failed receipt. Use
-acknowledge-stranded-landing only for a land conflict receipt whose published
+acknowledge-stranded-landing only for a non-terminal land receipt whose published
 pull request is proved MERGED and still contained in the current remote target
 using only GitHub's own state -- for exactly the case where the candidate
 worktree that acknowledge-landed-failed would otherwise need is already gone.
@@ -457,7 +458,10 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			"is re-validated for the exact candidate SHA before anything else, using the " +
 			"receipt's stored validation timeouts unless overridden below. Publish and " +
 			"landing then refuse unless that exact candidate has left validation_failed " +
-			"and its recorded validation identity still names it."
+			"and its recorded validation identity still names it. A published PR already " +
+			"merged after its integration worktree was retired is recovered from GitHub's " +
+			"remote evidence, then continues through target checks and cleanup. An explicit " +
+			"--allow-unfenced approval is persisted across every later resume."
 		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional deadline for recovering an interrupted prepare or re-validating a validation_failed receipt; zero keeps the stored behavior")
 		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "override the logical validation-check deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
 		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "override the process-isolated Go test shard-attempt deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
@@ -1180,6 +1184,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
 		command.Flags().BoolVar(&flags.cleanup, "cleanup", cleanupDefault, "after remote receipt and canonical synchronization, retire absorbed managed assets")
+		command.Flags().BoolVar(&flags.allowUnfenced, "allow-unfenced", false, "use observed exact-head checks when the target has no server-enforced strict up-to-date fence; persisted for resume")
 		command.Flags().StringVar(&flags.onFailure, "on-failure", "stop", "post-landing failure action: stop or prepare a forward revert")
 		command.Flags().DurationVar(&flags.interval, "check-interval", orchestrate.DefaultCheckPollInterval, "foreground interval between exact GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	}
@@ -1229,7 +1234,7 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, errOut io.Writer) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
-		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
+		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, AllowUnfenced: flags.allowUnfenced, OnFailure: flags.onFailure,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            landingLaneGuardRequest("wb worktree merge land", flags.laneReason, flags.takeOverLane),
