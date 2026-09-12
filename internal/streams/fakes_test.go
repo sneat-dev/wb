@@ -14,20 +14,24 @@ import (
 // fakeGit answers the Git port from in-memory tables. Every stream verb is
 // exercised against it, so a refusal is proven rather than assumed reachable.
 type fakeGit struct {
-	defaultBranch map[string]string
-	pushed        map[string]string
-	pushErr       map[string]error
-	remoteHeads   map[string]string
-	localHeads    map[string]string
-	notIn         map[string][]Commit
-	notInErr      map[string]error
-	deleted       []string
-	deleteErr     map[string]error
-	fetchErr      map[string]error
-	dirty         map[string][]string
-	tags          map[string][]string
-	log           map[string][]string
-	fetched       []string
+	defaultBranch    map[string]string
+	currentBranch    map[string]string
+	currentBranchErr map[string]error
+	pushed           map[string]string
+	pushErr          map[string]error
+	remoteHeads      map[string]string
+	localBranchHeads map[string]string
+	localHeads       map[string]string
+	ancestors        map[string]bool
+	notIn            map[string][]Commit
+	notInErr         map[string]error
+	deleted          []string
+	deleteErr        map[string]error
+	fetchErr         map[string]error
+	dirty            map[string][]string
+	tags             map[string][]string
+	log              map[string][]string
+	fetched          []string
 	// calls records the order of origin-touching operations so a test can
 	// prove a fetch preceded a read.
 	calls []string
@@ -38,22 +42,32 @@ type fakeGit struct {
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		defaultBranch: map[string]string{},
-		pushed:        map[string]string{},
-		pushErr:       map[string]error{},
-		remoteHeads:   map[string]string{},
-		localHeads:    map[string]string{},
-		notIn:         map[string][]Commit{},
-		notInErr:      map[string]error{},
-		deleteErr:     map[string]error{},
-		fetchErr:      map[string]error{},
-		dirty:         map[string][]string{},
-		tags:          map[string][]string{},
-		log:           map[string][]string{},
+		defaultBranch:    map[string]string{},
+		currentBranch:    map[string]string{},
+		currentBranchErr: map[string]error{},
+		pushed:           map[string]string{},
+		pushErr:          map[string]error{},
+		remoteHeads:      map[string]string{},
+		localBranchHeads: map[string]string{},
+		localHeads:       map[string]string{},
+		ancestors:        map[string]bool{},
+		notIn:            map[string][]Commit{},
+		notInErr:         map[string]error{},
+		deleteErr:        map[string]error{},
+		fetchErr:         map[string]error{},
+		dirty:            map[string][]string{},
+		tags:             map[string][]string{},
+		log:              map[string][]string{},
 	}
 }
 
 func (git *fakeGit) CurrentBranch(_ context.Context, dir string) (string, error) {
+	if err := git.currentBranchErr[dir]; err != nil {
+		return "", err
+	}
+	if branch, ok := git.currentBranch[dir]; ok {
+		return branch, nil
+	}
 	return "stream/test", nil
 }
 
@@ -126,6 +140,18 @@ func (git *fakeGit) LocalHead(_ context.Context, dir string) (string, error) {
 	return git.localHeads[dir], nil
 }
 
+func (git *fakeGit) LocalBranchHead(_ context.Context, dir, branch string) (string, bool, error) {
+	sha, ok := git.localBranchHeads[dir+" "+branch]
+	return sha, ok, nil
+}
+
+func (git *fakeGit) IsAncestor(_ context.Context, dir, ancestor, descendant string) (bool, error) {
+	if ancestor == descendant {
+		return true, nil
+	}
+	return git.ancestors[dir+" "+ancestor+" "+descendant], nil
+}
+
 func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([]Commit, error) {
 	git.calls = append(git.calls, "commits "+dir)
 	key := dir + " " + branch + " " + base
@@ -160,18 +186,27 @@ func (git *fakeGit) LogSubjects(_ context.Context, dir, from, to string) ([]stri
 // fakeHub answers the GitHub port and records every mutation, so a test can
 // assert what a verb did to a pull request rather than that it did not error.
 type fakeHub struct {
-	nextNumber   int
-	created      []PullRequest
-	createErr    map[string]error
-	byBranch     map[string]PullRequest
-	targeting    map[string][]PullRequest
-	targetingErr map[string]error
-	closed       []int
-	closeErr     map[int]error
-	retargeted   map[int]string
-	byNumber     map[int]PullRequest
-	mainStatus   map[string]string
-	mainErr      map[string]error
+	nextNumber         int
+	created            []PullRequest
+	createErr          map[string]error
+	byBranch           map[string]PullRequest
+	targeting          map[string][]PullRequest
+	targetingErr       map[string]error
+	closed             []int
+	closeErr           map[int]error
+	retargeted         map[int]string
+	byNumber           map[int]PullRequest
+	mainStatus         map[string]string
+	mainErr            map[string]error
+	requireExistingDir bool
+}
+
+func (hub *fakeHub) requireDir(dir string) error {
+	if !hub.requireExistingDir {
+		return nil
+	}
+	_, err := os.Stat(dir)
+	return err
 }
 
 func newFakeHub() *fakeHub {
@@ -216,6 +251,9 @@ func (hub *fakeHub) PullRequestForBranch(_ context.Context, dir, branch string) 
 }
 
 func (hub *fakeHub) OpenPullRequestsTargeting(_ context.Context, dir, base string) ([]PullRequest, error) {
+	if err := hub.requireDir(dir); err != nil {
+		return nil, err
+	}
 	if err := hub.targetingErr[dir+" "+base]; err != nil {
 		return nil, err
 	}
@@ -228,7 +266,10 @@ func (hub *fakeHub) OpenPullRequestsTargeting(_ context.Context, dir, base strin
 	return found, nil
 }
 
-func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ string) error {
+func (hub *fakeHub) ClosePullRequest(_ context.Context, dir string, number int, _ string) error {
+	if err := hub.requireDir(dir); err != nil {
+		return err
+	}
 	if err := hub.closeErr[number]; err != nil {
 		return err
 	}
@@ -240,7 +281,10 @@ func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ 
 	return nil
 }
 
-func (hub *fakeHub) RetargetPullRequest(_ context.Context, _ string, number int, base string) error {
+func (hub *fakeHub) RetargetPullRequest(_ context.Context, dir string, number int, base string) error {
+	if err := hub.requireDir(dir); err != nil {
+		return err
+	}
 	hub.retargeted[number] = base
 	if pullRequest, ok := hub.byNumber[number]; ok {
 		pullRequest.Base = base

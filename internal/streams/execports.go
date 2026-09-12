@@ -183,6 +183,29 @@ func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// LocalBranchHead implements Git without falling back to a remote-tracking
+// ref. A recovered stream member has no worktree to inspect, but its canonical
+// clone can still hold an unpushed stream branch.
+func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
+	out, err := git.run(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read local %s in %s: %w", branch, dir, err)
+	}
+	sha := strings.TrimSpace(out)
+	return sha, sha != "", nil
+}
+
+// IsAncestor implements Git without treating patch-equivalence as commit
+// identity. A squash-merged stream PR has immutable GitHub identities, so
+// only a local head on that PR's ancestry can prove it has no later work.
+func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	return git.isAncestor(ctx, dir, ancestor, descendant)
+}
+
 // CommitsNotIn implements Git by patch identity.
 //
 // `git cherry` answers which commits base does not already carry *as patches*,
@@ -404,21 +427,27 @@ type pullRequestJSON struct {
 	State       string `json:"state"`
 	HeadRefName string `json:"headRefName"`
 	BaseRefName string `json:"baseRefName"`
+	HeadRefOID  string `json:"headRefOid"`
+	MergeCommit struct {
+		OID string `json:"oid"`
+	} `json:"mergeCommit"`
 }
 
 func (raw pullRequestJSON) toPullRequest() PullRequest {
 	return PullRequest{
-		Number: raw.Number,
-		URL:    raw.URL,
-		Title:  raw.Title,
-		Head:   raw.HeadRefName,
-		Base:   raw.BaseRefName,
-		Draft:  raw.IsDraft,
-		State:  raw.State,
+		Number:   raw.Number,
+		URL:      raw.URL,
+		Title:    raw.Title,
+		Head:     raw.HeadRefName,
+		Base:     raw.BaseRefName,
+		Draft:    raw.IsDraft,
+		State:    raw.State,
+		HeadSHA:  raw.HeadRefOID,
+		MergeSHA: raw.MergeCommit.OID,
 	}
 }
 
-const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName"
+const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName,headRefOid,mergeCommit"
 
 // PullRequestForBranch implements GitHub.
 func (hub ExecGitHub) PullRequestForBranch(ctx context.Context, dir, branch string) (PullRequest, bool, error) {
