@@ -190,8 +190,17 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err != nil {
 		return failResult(result, err)
 	}
+	managedInput, err := managedInputWorktree(ctx, repository.Path, repository.Slug, options)
+	if err != nil {
+		return failResult(result, err)
+	}
+	if managedInput != nil && (options.Commit || options.Push || options.PR || options.Merge) {
+		return failResult(result, fmt.Errorf("cannot publish from supplied managed worktree %s; run deps set without --commit, --push, --pr, or --merge", managedInput.Path))
+	}
 	canonical := repository.Path
-	if canonical == "" {
+	if managedInput != nil {
+		canonical = managedInput.CanonicalDir
+	} else if canonical == "" {
 		canonical = filepath.Join(options.GitHubDir, owner, name)
 	}
 	result.CanonicalDir = canonical
@@ -208,7 +217,16 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	result.Ref = resolvedBase.Ref
 	base := "origin/" + resolvedBase.Ref
 	phase("inspect")
-	assessment, err := handler.Inspect(ctx, canonical, base, repository)
+	assessment := Assessment[T]{}
+	if managedInput != nil {
+		if inspector, ok := handler.(InPlaceInspector[T]); ok {
+			assessment, err = inspector.InspectWorkingTree(ctx, managedInput.Path, repository)
+		} else {
+			assessment, err = handler.Inspect(ctx, managedInput.Path, "HEAD", repository)
+		}
+	} else {
+		assessment, err = handler.Inspect(ctx, canonical, base, repository)
+	}
 	result.Metadata = assessment.Metadata
 	if err != nil {
 		return failResult(result, err)
@@ -228,26 +246,44 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = assessment.Reason
 		return nil
 	}
-	home, err := wbhome.EnsureRoot(options.GitHubDir)
-	if err != nil {
-		return failResult(result, err)
-	}
-	worktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
-	if err != nil {
-		return failResult(result, err)
-	}
-	result.WorktreeDir = worktree
-	result.Branch = options.Branch
-	phase("prepare_worktree")
-	created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
-	if err != nil {
-		return failResult(result, err)
-	}
-	if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+	worktree := ""
+	if managedInput != nil {
+		worktree = managedInput.Path
+		result.WorktreeDir = worktree
+		result.Branch = managedInput.Branch
+	} else {
+		home, err := wbhome.EnsureRoot(options.GitHubDir)
+		if err != nil {
+			return failResult(result, err)
+		}
+		_, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+		if err != nil {
+			return failResult(result, err)
+		}
+		worktree, err = placement.Path(options.Operation, repository.Slug)
+		if err != nil {
+			return failResult(result, err)
+		}
+		result.WorktreeDir = worktree
+		result.Branch = options.Branch
+		phase("prepare_worktree")
+		created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+			created.Close()
+			return failResult(result, err)
+		}
 		created.Close()
-		return failResult(result, err)
 	}
-	created.Close()
+	var beforeApply map[string]string
+	if managedInput != nil {
+		beforeApply, err = worktreeStatus(ctx, worktree, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+	}
 	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
@@ -259,7 +295,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 			return failResult(result, fmt.Errorf("publishability validation failed: %w", err))
 		}
 	}
-	result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	if managedInput != nil {
+		result.ChangedFiles, err = changedFilesSince(ctx, worktree, beforeApply, handler, metadata, options)
+	} else {
+		result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	}
 	if err != nil {
 		return failResult(result, err)
 	}
@@ -348,6 +388,58 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		}
 	}
 	return nil
+}
+
+// managedInputWorktree accepts only an existing WB-managed linked worktree as
+// an in-place mutation target. In particular, a Git gitdir file is not itself
+// authority for a common directory: Guard verifies its no-follow/registry
+// relationship with the expected canonical repository before this caller can
+// fetch from or mutate either checkout.
+func managedInputWorktree(ctx context.Context, path, repository string, options Options) (*worktrees.GuardResult, error) {
+	if path == "" {
+		return nil, nil
+	}
+	root, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // Preserve EnsureCanonical's clone-on-missing behavior.
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied repository path %s: %w", path, err)
+	}
+	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
+		return nil, fmt.Errorf("supplied repository path %s must be a non-symlink directory", path)
+	}
+	gitEntry, err := os.Lstat(filepath.Join(path, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied Git entry for %s: %w", path, err)
+	}
+	if gitEntry.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("supplied Git entry for %s must not be a symbolic link", path)
+	}
+	if gitEntry.IsDir() {
+		return nil, nil
+	}
+	if !gitEntry.Mode().IsRegular() {
+		return nil, fmt.Errorf("supplied Git entry for %s must be a directory or regular gitdir file", path)
+	}
+	guard, err := worktrees.Guard(ctx, path, worktrees.GuardOptions{ProjectsRoot: options.GitHubDir, Base: options.Ref})
+	if err != nil {
+		return nil, fmt.Errorf("verify supplied managed worktree %s: %w", path, err)
+	}
+	if guard.Kind != "linked" {
+		return nil, fmt.Errorf("supplied Git gitdir file %s is not a linked worktree", path)
+	}
+	expected, err := worktrees.CanonicalRepositoryPath(options.GitHubDir, repository)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(guard.CanonicalDir) != filepath.Clean(expected) {
+		return nil, fmt.Errorf("supplied managed worktree %s belongs to %s, not %s", path, guard.CanonicalDir, expected)
+	}
+	return &guard, nil
 }
 
 // ResolvedBase is the git ref EnsureCanonical verified exists in a
@@ -657,11 +749,50 @@ func isASCIIAlphanumeric(character byte) bool {
 }
 
 func changedFiles(ctx context.Context, worktree string, options Options) ([]string, error) {
+	status, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, 0, len(status))
+	for path := range status {
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func changedFilesSince[T any](ctx context.Context, worktree string, before map[string]string, handler Handler[T], metadata T, options Options) ([]string, error) {
+	after, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]bool)
+	for path, status := range after {
+		if before[path] != status {
+			files[path] = true
+		}
+	}
+	if reporter, ok := handler.(AppliedFileReporter[T]); ok {
+		for _, path := range reporter.AppliedFiles(metadata) {
+			if path != "" {
+				files[filepath.ToSlash(path)] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(files))
+	for path := range files {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func worktreeStatus(ctx context.Context, worktree string, options Options) (map[string]string, error) {
 	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
 	if err != nil {
 		return nil, err
 	}
-	var files []string
+	files := make(map[string]string)
 	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if len(entry) < 4 {
 			continue
@@ -670,7 +801,7 @@ func changedFiles(ctx context.Context, worktree string, options Options) ([]stri
 		if arrow := strings.LastIndex(path, " -> "); arrow >= 0 {
 			path = path[arrow+4:]
 		}
-		files = append(files, filepath.ToSlash(path))
+		files[filepath.ToSlash(path)] = entry[:2]
 	}
 	return files, nil
 }

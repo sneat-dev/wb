@@ -74,6 +74,50 @@ func (npmAdapter) inspect(ctx context.Context, repositoryDir, base string, targe
 	return decisions, nil
 }
 
+func (npmAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	packageManifests, workspaceManifests, err := npmManifestFiles(worktree)
+	if err != nil {
+		return nil, err
+	}
+	var decisions []Decision
+	for _, relative := range packageManifests {
+		contents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(relative)))
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range scanNpmPackageJSONRefs(contents) {
+			if ref.Key != target.Dependency {
+				continue
+			}
+			decision, blocked := npmDecisionFor(relative, ref.Field+"."+ref.Key, ref.Value, target, options.AllowDowngrade, "planned", "existing npm reference will be set to the exact target version")
+			decisions = append(decisions, decision)
+			if blocked {
+				sortDecisions(decisions)
+				return decisions, fmt.Errorf("%s: %s", relative, decision.Reason)
+			}
+		}
+	}
+	for _, relative := range workspaceManifests {
+		contents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(relative)))
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range scanPnpmWorkspaceRefs(contents) {
+			if ref.Key != target.Dependency {
+				continue
+			}
+			decision, blocked := npmDecisionFor(relative, workspaceSelector(ref), ref.Value, target, options.AllowDowngrade, "planned", "existing pnpm workspace override will be set to the exact target version")
+			decisions = append(decisions, decision)
+			if blocked {
+				sortDecisions(decisions)
+				return decisions, fmt.Errorf("%s: %s", relative, decision.Reason)
+			}
+		}
+	}
+	sortDecisions(decisions)
+	return decisions, nil
+}
+
 func (npmAdapter) apply(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
 	packageManifests, workspaceManifests, err := npmManifestFiles(worktree)
 	if err != nil {
