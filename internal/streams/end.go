@@ -239,8 +239,9 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 }
 
 // provedAlreadyRetiredMember recognizes only the narrow recovery state left by
-// wb pr land: the member checkout is gone, its recorded stream PR is merged at
-// the exact stream branch head, and no remote branch carries a later commit.
+// wb pr land: the member checkout and local stream branch are gone, its
+// recorded stream PR is merged at the exact stream branch head, and no remote
+// branch carries a later commit.
 // A missing directory alone never grants cleanup authority.
 func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Member) (bool, error) {
 	_, statErr := os.Lstat(member.Worktree)
@@ -270,12 +271,12 @@ func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Mem
 	if present && remote != pr.HeadSHA {
 		return false, fmt.Errorf("origin/%s advanced to %s after merged pull request head %s", member.Branch, remote, pr.HeadSHA)
 	}
-	local, present, err := engine.Git.LocalBranchHead(ctx, member.Canonical, member.Branch)
+	_, present, err = engine.Git.LocalBranchHead(ctx, member.Canonical, member.Branch)
 	if err != nil {
 		return false, fmt.Errorf("read local %s after merged receipt: %w", member.Branch, err)
 	}
-	if present && local != pr.HeadSHA {
-		return false, fmt.Errorf("local %s advanced to %s after merged pull request head %s", member.Branch, local, pr.HeadSHA)
+	if present {
+		return false, fmt.Errorf("local %s remains after merged pull request; cannot prove the absent worktree was retired", member.Branch)
 	}
 	return true, nil
 }

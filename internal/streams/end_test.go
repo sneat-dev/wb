@@ -231,6 +231,32 @@ func TestEndRefusesRemovedMemberWhoseLocalStreamBranchAdvancedAfterMerge(t *test
 	}
 }
 
+// A missing recorded path does not establish that wb pr land removed the
+// checkout: git worktree move can leave the branch checked out elsewhere with
+// dirty or untracked work. The recovery receipt is valid only after pr land
+// has removed the local stream branch entirely.
+func TestEndRefusesRemovedMemberWhoseLocalStreamBranchStillExistsAtMergedHead(t *testing.T) {
+	engine, git, hub, worktrees, stream := startedStream(t, "missing-local-present", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	mergedHead := "0123456789012345678901234567890123456789"
+	hub.byNumber[member.PullRequest] = PullRequest{Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base, HeadSHA: mergedHead, MergeSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"}
+	// Models a relocated checkout still on this exact branch and commit. Its
+	// filesystem state is outside the recorded path and therefore must remain
+	// protected rather than inferred clean from the matching SHA.
+	git.localBranchHeads[member.Canonical+" "+member.Branch] = mergedHead
+	_, err := engine.End(context.Background(), EndOptions{Name: "missing-local-present", Apply: true})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalUnabsorbedWork || !strings.Contains(refusal.Message, "local") {
+		t.Fatalf("error = %v, want local-branch-present refusal", err)
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want none", worktrees.removed)
+	}
+}
+
 func TestEndUsesCanonicalCheckoutForAlreadyRemovedMemberGitHubCalls(t *testing.T) {
 	engine, _, hub, _, stream := startedStream(t, "missing-canonical-cwd", "acme/library")
 	member := stream.Members[0]
