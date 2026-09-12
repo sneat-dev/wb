@@ -192,13 +192,15 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 		case err != nil:
 			status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: member pull request: %v", member.Repository, RedactString(err.Error())))
 		case found && member.Base != "" && pullRequest.Base != member.Base:
-			status.Unknowns = append(status.Unknowns, fmt.Sprintf(
+			row.PullRequestBlocked = fmt.Sprintf(
 				"%s: open pull request %s targets %s, not stream base %s",
-				member.Repository, pullRequest.URL, pullRequest.Base, member.Base))
+				member.Repository, pullRequest.URL, pullRequest.Base, member.Base)
+			status.Unknowns = append(status.Unknowns, row.PullRequestBlocked)
 		case found && pullRequest.Head != "" && pullRequest.Head != member.Branch:
-			status.Unknowns = append(status.Unknowns, fmt.Sprintf(
+			row.PullRequestBlocked = fmt.Sprintf(
 				"%s: discovered pull request %s has head %s, not %s",
-				member.Repository, pullRequest.URL, pullRequest.Head, member.Branch))
+				member.Repository, pullRequest.URL, pullRequest.Head, member.Branch)
+			status.Unknowns = append(status.Unknowns, row.PullRequestBlocked)
 		case found:
 			row.PullRequest = pullRequest.Number
 			row.PullRequestURL = pullRequest.URL
@@ -206,7 +208,7 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 			row.PullRequestUnrecorded = true
 			row.PullRequestRecovery = "wb stream join " + status.Stream + " " + member.Repository
 		}
-		if row.PullRequest == 0 {
+		if row.PullRequest == 0 && row.PullRequestBlocked == "" {
 			if strings.HasPrefix(member.PullRequestError, "stream branch diverged:") {
 				row.PullRequestBlocked = member.PullRequestError
 			} else {

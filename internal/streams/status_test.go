@@ -207,6 +207,45 @@ func TestStatusReadOnlyDiscoversEachMembersExistingPullRequest(t *testing.T) {
 	}
 }
 
+func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		pr   PullRequest
+		want string
+	}{
+		{name: "wrong base", pr: PullRequest{Number: 12, URL: "https://example.test/pull/12", Head: "stream/mismatch", Base: "release", State: "OPEN"}, want: "targets release"},
+		{name: "wrong head", pr: PullRequest{Number: 13, URL: "https://example.test/pull/13", Head: "stream/other", Base: "main", State: "OPEN"}, want: "head stream/other"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			engine, git, hub, _ := newTestEngine(t)
+			const worktree = "/projects/acme/app/.worktrees/mismatch"
+			if _, err := engine.Store.Create(Stream{
+				Name: "mismatch", Phase: PhaseOpen,
+				Members: []Member{{
+					Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+					Branch: "stream/mismatch", Base: "main", PullRequestError: "historical failure",
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			hub.byBranch[worktree+" stream/mismatch"] = testCase.pr
+			pushesBefore, createsBefore := len(git.pushed), len(hub.created)
+
+			status, err := engine.Status(context.Background(), "mismatch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			member := status.Members[0]
+			if member.PullRequestRecovery != "" || !strings.Contains(member.PullRequestBlocked, testCase.want) {
+				t.Fatalf("member status = %#v, want mismatch blocked with no join retry", member)
+			}
+			if len(git.pushed) != pushesBefore || len(hub.created) != createsBefore {
+				t.Fatalf("status mutated mismatch: pushes %d->%d creates %d->%d", pushesBefore, len(git.pushed), createsBefore, len(hub.created))
+			}
+		})
+	}
+}
+
 func TestVersionComparisonTreatsUnreadableVersionsAsNotBehind(t *testing.T) {
 	for _, testCase := range []struct {
 		declared, published string
