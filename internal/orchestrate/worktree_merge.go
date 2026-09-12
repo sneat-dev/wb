@@ -1972,18 +1972,28 @@ func proveConflictResolvedCandidateTargetNormalization(ctx context.Context, work
 }
 
 func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
-	rootOutput, _, err := runCommand(ctx, 0, 0, source, "git", "rev-parse", "--show-toplevel")
+	return canonicalRepositoryForPath(ctx, source, Options{})
+}
+
+// canonicalRepositoryForPath resolves either a canonical checkout or a linked
+// checkout to the canonical checkout that owns its shared Git directory. Git's
+// standard linked-worktree .git entry is a gitdir file, so treating the input
+// path itself as canonical would make the no-follow canonical opener reject a
+// valid linked checkout. The returned path is still opened through WB's
+// descriptor-based canonical safeguards before any worktree mutation.
+func canonicalRepositoryForPath(ctx context.Context, source string, options Options) (string, error) {
+	rootOutput, _, err := runCommand(ctx, options.Timeout, options.Retry, source, "git", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
 	root := strings.TrimSpace(rootOutput)
-	commonOutput, _, err := runCommand(ctx, 0, 0, root, "git", "rev-parse", "--git-common-dir")
+	commonOutput, _, err := runCommand(ctx, options.Timeout, options.Retry, root, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
 	common := strings.TrimSpace(commonOutput)
 	if !filepath.IsAbs(common) {
-		common = filepath.Join(root, common)
+		return "", fmt.Errorf("Git returned a non-absolute common directory %q", common)
 	}
 	return filepath.Dir(filepath.Clean(common)), nil
 }

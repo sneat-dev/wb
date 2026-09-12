@@ -194,6 +194,10 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if canonical == "" {
 		canonical = filepath.Join(options.GitHubDir, owner, name)
 	}
+	canonical, err = canonicalRepositoryForPath(ctx, canonical, options)
+	if err != nil {
+		return failResult(result, fmt.Errorf("resolve canonical repository: %w", err))
+	}
 	result.CanonicalDir = canonical
 	phase("sync")
 	resolvedBase, err := EnsureCanonical(ctx, repository, canonical, options)

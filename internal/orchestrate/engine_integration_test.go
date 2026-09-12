@@ -82,6 +82,51 @@ func TestRunDryRunCreatesNoOperationState(t *testing.T) {
 	}
 }
 
+// TestRunAcceptsManagedWorktreeRepositoryPath covers the ordinary interactive
+// invocation: `wb deps set ... .` from a WB-managed linked worktree. Git
+// represents that checkout's .git entry as a gitdir file, but the operation
+// must create its next isolated worktree from the owning canonical clone.
+func TestRunAcceptsManagedWorktreeRepositoryPath(t *testing.T) {
+	fixture := newEngineFixture(t)
+	input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.githubDir,
+		Operation:    "dependency-input",
+		Branch:       "feature/dependency-input",
+		BranchChosen: true,
+		WorkLog:      worktrees.WorkLogOptions{Model: "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input worktrees = %+v", input)
+	}
+	repository := fixture.repository
+	repository.Path = input[0].WorktreeDir
+
+	dryRun := fixture.options()
+	dryRun.DryRun = true
+	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, dryRun)
+	if err != nil || len(results) != 1 || results[0].Status != "planned" {
+		t.Fatalf("dry run results=%+v err=%v", results, err)
+	}
+
+	results, err = Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != "changed" {
+		t.Fatalf("results = %+v", results)
+	}
+	wantCanonical, err := filepath.EvalSymlinks(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].CanonicalDir != wantCanonical {
+		t.Fatalf("canonical directory = %q, want %q", results[0].CanonicalDir, wantCanonical)
+	}
+}
+
 func TestRunCommitsWithoutPushing(t *testing.T) {
 	fixture := newEngineFixture(t)
 	options := fixture.options()
