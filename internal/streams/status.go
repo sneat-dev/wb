@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Status is the whole-stream report.
@@ -66,6 +67,10 @@ type MemberStatus struct {
 	// PullRequestUnrecorded says GitHub has the member PR but stream.json does
 	// not. Status remains read-only and join persists the discovered receipt.
 	PullRequestUnrecorded bool `json:"pull_request_unrecorded,omitempty"`
+	// LastPublicationError is persisted evidence from an earlier mutating
+	// verb. It is separate from current discovery so status output cannot make
+	// a historical push/create transcript look like work it just performed.
+	LastPublicationError *PublicationFailure `json:"last_publication_error,omitempty"`
 	// Unabsorbed is the number of commits on the stream branch that the base
 	// does not carry by patch identity.
 	Unabsorbed int `json:"unabsorbed"`
@@ -78,6 +83,12 @@ type MemberStatus struct {
 	LeaseHolder        string   `json:"lease_holder,omitempty"`
 	RecordedHead       string   `json:"recorded_head,omitempty"`
 	LiveLinks          int      `json:"live_links"`
+}
+
+// PublicationFailure is one historical failed publication attempt.
+type PublicationFailure struct {
+	Detail     string     `json:"detail"`
+	OccurredAt *time.Time `json:"occurred_at,omitempty"`
 }
 
 // LinkedConsumer is gap one.
@@ -125,6 +136,22 @@ func (engine *Engine) Status(ctx context.Context, name string) (Status, error) {
 		return Status{}, err
 	}
 	status := Status{Stream: stream.Name, Open: stream.Open(), Phase: stream.Lifecycle(), Branch: Branch(stream.Name)}
+	publicationFailures := map[string]PublicationFailure{}
+	if events, eventErr := ReadEvents(engine.Store.EventLog(name).Path); eventErr != nil {
+		status.Unknowns = append(status.Unknowns, "historical publication attempts: "+RedactString(eventErr.Error()))
+	} else {
+		for _, event := range events {
+			if event.Outcome != "findings" || (event.Phase != "push" && event.Phase != "pull-request") || event.Repository == "" {
+				continue
+			}
+			failure := PublicationFailure{Detail: event.Detail}
+			if !event.Timestamp.IsZero() {
+				occurredAt := event.Timestamp
+				failure.OccurredAt = &occurredAt
+			}
+			publicationFailures[strings.ToLower(event.Repository)] = failure
+		}
+	}
 	if library, ok := stream.Library(); ok {
 		status.Library = library.Repository
 	}
@@ -140,7 +167,8 @@ func (engine *Engine) Status(ctx context.Context, name string) (Status, error) {
 					member.Repository, RedactString(fetchErr.Error())))
 			}
 		}
-		status.Members = append(status.Members, engine.memberStatus(ctx, &status, member))
+		failure, hasFailure := publicationFailures[strings.ToLower(member.Repository)]
+		status.Members = append(status.Members, engine.memberStatus(ctx, &status, member, failure, hasFailure))
 		for _, link := range member.Links {
 			status.LinkedConsumers = append(status.LinkedConsumers, LinkedConsumer{
 				Repository:      member.Repository,
@@ -176,17 +204,27 @@ func (engine *Engine) Status(ctx context.Context, name string) (Status, error) {
 	return status, nil
 }
 
-func (engine *Engine) memberStatus(ctx context.Context, status *Status, member Member) MemberStatus {
+func (engine *Engine) memberStatus(ctx context.Context, status *Status, member Member, failure PublicationFailure, hasFailure bool) MemberStatus {
 	row := MemberStatus{
 		Repository: member.Repository, Role: member.Role, Worktree: member.Worktree,
 		Branch: member.Branch, Base: member.Base,
 		PullRequest: member.PullRequest, PullRequestURL: member.PullRequestURL,
-		PullRequestMissing: member.PullRequestError,
-		LeaseHolder:        member.Lease.Holder(),
-		RecordedHead:       member.Lease.RecordedHead,
-		LiveLinks:          len(member.Links),
+		LeaseHolder:  member.Lease.Holder(),
+		RecordedHead: member.Lease.RecordedHead,
+		LiveLinks:    len(member.Links),
 	}
 	if member.PullRequest == 0 && member.Worktree != "" {
+		row.PullRequestMissing = "no open pull request is recorded or currently discoverable"
+		if member.PullRequestError != "" {
+			if !hasFailure {
+				failure = PublicationFailure{Detail: member.PullRequestError}
+			} else if failure.Detail != member.PullRequestError {
+				// The event timestamp only proves when its own detail occurred.
+				// Do not attach it to different persisted text.
+				failure = PublicationFailure{Detail: member.PullRequestError}
+			}
+			row.LastPublicationError = &failure
+		}
 		pullRequest, found, err := engine.GitHub.PullRequestForBranch(ctx, member.Worktree, member.Branch)
 		switch {
 		case err != nil:

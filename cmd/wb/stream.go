@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -603,6 +604,15 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 			if _, err := fmt.Fprintf(out, "  ! %s: %s\n", member.Repository, detail); err != nil {
 				return err
 			}
+			if member.LastPublicationError != nil {
+				when := "at an unknown time"
+				if member.LastPublicationError.OccurredAt != nil {
+					when = "at " + member.LastPublicationError.OccurredAt.UTC().Format(time.RFC3339)
+				}
+				if _, err := fmt.Fprintf(out, "    last publication attempt failed %s: %s\n", when, publicationFailureSummary(member.LastPublicationError.Detail)); err != nil {
+					return err
+				}
+			}
 			if member.PullRequestBlocked != "" {
 				if _, err := fmt.Fprintf(out, "    blocked: %s\n", member.PullRequestBlocked); err != nil {
 					return err
@@ -684,6 +694,15 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 		return &exitError{code: exitFindings, message: "stream status reported findings; see the report above"}
 	}
 	return nil
+}
+
+func publicationFailureSummary(detail string) string {
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(detail), "\n")
+	runes := []rune(firstLine)
+	if len(runes) > 240 {
+		return string(runes[:237]) + "..."
+	}
+	return firstLine
 }
 
 func streamListOutput(command *cobra.Command, format string, engine *streams.Engine) error {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
 )
@@ -117,12 +118,17 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 	command := newStreamStatusCmd()
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
+	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
 	status := streams.Status{
 		Stream: "recovery", Phase: streams.PhaseOpen, Branch: "stream/recovery",
 		Members: []streams.MemberStatus{{
 			Repository: "acme/library", Role: streams.RoleLibrary,
 			Worktree: "/tmp/acme-library", Branch: "stream/recovery", Base: "main",
-			PullRequestMissing: "push rejected as non-fast-forward",
+			PullRequestMissing: "no open pull request is recorded or currently discoverable",
+			LastPublicationError: &streams.PublicationFailure{
+				Detail:     "push rejected as non-fast-forward\nfull historical git transcript",
+				OccurredAt: &failureAt,
+			},
 		}},
 	}
 
@@ -133,6 +139,10 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 	}
 	if output := stdout.String(); !strings.Contains(output, "wb stream join recovery acme/library") {
 		t.Fatalf("status output = %q, want the sanctioned recovery command", output)
+	}
+	if output := stdout.String(); !strings.Contains(output, "last publication attempt failed at 2026-09-12T11:17:40Z") ||
+		strings.Contains(output, "full historical git transcript") {
+		t.Fatalf("status output = %q, want timestamped historical summary without a live-looking transcript", output)
 	}
 
 	jsonCommand := newStreamStatusCmd()
@@ -156,6 +166,12 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 	if envelope.Outcome != outcomeFindings || len(envelope.Evidence.Members) != 1 ||
 		envelope.Evidence.Members[0].PullRequestRecovery != "wb stream join recovery acme/library" {
 		t.Fatalf("JSON status envelope = %#v, want a finding with the exact recovery verb", envelope)
+	}
+	jsonMember := envelope.Evidence.Members[0]
+	if jsonMember.PullRequestMissing != "no open pull request is recorded or currently discoverable" ||
+		jsonMember.LastPublicationError == nil || jsonMember.LastPublicationError.OccurredAt == nil ||
+		!jsonMember.LastPublicationError.OccurredAt.Equal(failureAt) {
+		t.Fatalf("JSON member status = %#v, want separate current and timestamped historical findings", jsonMember)
 	}
 
 	blockedCommand := newStreamStatusCmd()

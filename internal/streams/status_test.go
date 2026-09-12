@@ -246,6 +246,72 @@ func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T)
 	}
 }
 
+func TestStatusLabelsPersistedPublicationFailureAsHistorical(t *testing.T) {
+	engine, _, _, _ := newTestEngine(t)
+	const worktree = "/projects/acme/app/.worktrees/history"
+	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
+	failure := "push stream/history: exit status 1\nfull historical git transcript"
+	if _, err := engine.Store.Create(Stream{
+		Name: "history", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+			Branch: "stream/history", Base: "main", PullRequestError: failure,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Store.EventLog("history").Append(Event{
+		Timestamp: failureAt, Stream: "history", Verb: "stream start", Phase: "push",
+		Repository: "acme/app", Outcome: "findings", Detail: failure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := engine.Status(context.Background(), "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := status.Members[0]
+	if member.PullRequestMissing != "no open pull request is recorded or currently discoverable" {
+		t.Fatalf("current finding = %q, want a current-state statement rather than the old transcript", member.PullRequestMissing)
+	}
+	if member.LastPublicationError == nil || member.LastPublicationError.OccurredAt == nil ||
+		!member.LastPublicationError.OccurredAt.Equal(failureAt) || member.LastPublicationError.Detail != failure {
+		t.Fatalf("historical publication error = %#v, want timestamped persisted evidence", member.LastPublicationError)
+	}
+}
+
+func TestStatusDoesNotMisdatePersistedPublicationFailure(t *testing.T) {
+	engine, _, _, _ := newTestEngine(t)
+	const worktree = "/projects/acme/app/.worktrees/history"
+	const persistedFailure = "push stream/history: exit status 1"
+	if _, err := engine.Store.Create(Stream{
+		Name: "history", Phase: PhaseOpen,
+		Members: []Member{{
+			Repository: "acme/app", Role: RoleLibrary, Worktree: worktree,
+			Branch: "stream/history", Base: "main", PullRequestError: persistedFailure,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Store.EventLog("history").Append(Event{
+		Timestamp: time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC),
+		Stream:    "history", Verb: "stream join", Phase: "push",
+		Repository: "acme/app", Outcome: "findings", Detail: "a different later failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := engine.Status(context.Background(), "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := status.Members[0].LastPublicationError
+	if failure == nil || failure.Detail != persistedFailure || failure.OccurredAt != nil {
+		t.Fatalf("historical publication error = %#v, want undated persisted evidence", failure)
+	}
+}
+
 func TestVersionComparisonTreatsUnreadableVersionsAsNotBehind(t *testing.T) {
 	for _, testCase := range []struct {
 		declared, published string
