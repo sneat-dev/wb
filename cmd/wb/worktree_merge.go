@@ -762,7 +762,7 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd() *cobra.Command
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
 		Short: "Retire an unpublished failed or discarded prepare attempt while preserving its sources",
-		Long: `Prove that an exact unpublished prepare attempt never landed its candidate
+		Long: `Prove that an exact prepare receipt never published or landed its candidate
 and that every receipted source still exists as a clean, actively claimed
 worktree at the exact recorded SHA. A validation_failed attempt retains its
 clean candidate. An interrupted preparing attempt may instead name an absent

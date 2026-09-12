@@ -2,8 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -84,26 +82,15 @@ func memoizableGitQuery(args []string) bool {
 // command, re-validating names already validated in the same process.
 var validBranchMemo sync.Map
 
-var (
-	validBranchGitOnce sync.Once
-	validBranchGitPath string
-)
-
-// validBranchGit resolves the git executable once per process. exec.LookPath
-// walks PATH and stats each candidate; doing it on every validation was part
-// of the measured cost.
+// validBranchGit uses the platform's trusted Git resolver. Successful branch
+// verdicts are memoized separately, so this remains cheap for ordinary names.
+// A failed lookup is deliberately not process-global: tests and child commands
+// may temporarily narrow PATH, and that transient environment must not poison
+// every later branch validation in the shard.
 func validBranchGit() string {
-	validBranchGitOnce.Do(func() {
-		gitPath, err := exec.LookPath("git")
-		if err != nil {
-			return
-		}
-		if !filepath.IsAbs(gitPath) {
-			if gitPath, err = filepath.Abs(gitPath); err != nil {
-				return
-			}
-		}
-		validBranchGitPath = gitPath
-	})
-	return validBranchGitPath
+	gitPath, err := trustedGitExecutable()
+	if err != nil {
+		return ""
+	}
+	return gitPath
 }
