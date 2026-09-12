@@ -404,21 +404,27 @@ type pullRequestJSON struct {
 	State       string `json:"state"`
 	HeadRefName string `json:"headRefName"`
 	BaseRefName string `json:"baseRefName"`
+	HeadRefOID  string `json:"headRefOid"`
+	MergeCommit struct {
+		OID string `json:"oid"`
+	} `json:"mergeCommit"`
 }
 
 func (raw pullRequestJSON) toPullRequest() PullRequest {
 	return PullRequest{
-		Number: raw.Number,
-		URL:    raw.URL,
-		Title:  raw.Title,
-		Head:   raw.HeadRefName,
-		Base:   raw.BaseRefName,
-		Draft:  raw.IsDraft,
-		State:  raw.State,
+		Number:   raw.Number,
+		URL:      raw.URL,
+		Title:    raw.Title,
+		Head:     raw.HeadRefName,
+		Base:     raw.BaseRefName,
+		Draft:    raw.IsDraft,
+		State:    raw.State,
+		HeadSHA:  raw.HeadRefOID,
+		MergeSHA: raw.MergeCommit.OID,
 	}
 }
 
-const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName"
+const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName,headRefOid,mergeCommit"
 
 // PullRequestForBranch implements GitHub.
 func (hub ExecGitHub) PullRequestForBranch(ctx context.Context, dir, branch string) (PullRequest, bool, error) {

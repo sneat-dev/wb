@@ -146,6 +146,72 @@ func TestEndCanRetargetAgentPullRequestsInstead(t *testing.T) {
 	}
 }
 
+// A successful wb pr land can retire a member before its enclosing stream is
+// ended. The missing checkout is recoverable only from that member's exact
+// merged PR receipt, never from absence alone.
+func TestEndRetiresMemberAlreadyRemovedByMergedStreamPullRequest(t *testing.T) {
+	engine, git, hub, worktrees, stream := startedStream(t, "already-landed", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	git.fetchErr[member.Worktree] = os.ErrNotExist // proves the old path would refuse.
+	hub.byNumber[member.PullRequest] = PullRequest{
+		Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base,
+		HeadSHA: "0123456789012345678901234567890123456789", MergeSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+	}
+	result, err := engine.End(context.Background(), EndOptions{Name: "already-landed", Apply: true})
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if !result.Members[0].WorktreeRemoved || !result.Members[0].LeaseReleased {
+		t.Fatalf("member result = %#v, want proved prior retirement", result.Members[0])
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want no second removal", worktrees.removed)
+	}
+	ended, err := engine.Store.Load("already-landed")
+	if err != nil || ended.Open() {
+		t.Fatalf("stream = %#v, err=%v; want ended", ended, err)
+	}
+}
+
+func TestEndRefusesRemovedMemberWithoutExactMergedStreamPullRequest(t *testing.T) {
+	engine, _, hub, worktrees, stream := startedStream(t, "missing-without-receipt", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	hub.byNumber[member.PullRequest] = PullRequest{Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base}
+	_, err := engine.End(context.Background(), EndOptions{Name: "missing-without-receipt", Apply: true})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalUnabsorbedWork {
+		t.Fatalf("error = %v, want unabsorbed-work refusal", err)
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want none", worktrees.removed)
+	}
+}
+
+func TestEndRefusesRemovedMemberWhoseRemoteBranchAdvancedAfterMerge(t *testing.T) {
+	engine, git, hub, worktrees, stream := startedStream(t, "missing-advanced", "acme/library")
+	member := stream.Members[0]
+	if err := os.RemoveAll(member.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	mergedHead := "0123456789012345678901234567890123456789"
+	hub.byNumber[member.PullRequest] = PullRequest{Number: member.PullRequest, State: "MERGED", Head: member.Branch, Base: member.Base, HeadSHA: mergedHead, MergeSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"}
+	git.remoteHeads[member.Canonical+" "+member.Branch] = "fedcbafedcbafedcbafedcbafedcbafedcbafedc"
+	_, err := engine.End(context.Background(), EndOptions{Name: "missing-advanced", Apply: true})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalUnabsorbedWork || !strings.Contains(refusal.Message, "advanced") {
+		t.Fatalf("error = %v, want advanced-branch refusal", err)
+	}
+	if len(worktrees.removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want none", worktrees.removed)
+	}
+}
+
 // Without --apply the verb reports exactly what it would do and changes
 // nothing, so an operator sees which pull requests would be closed first.
 func TestEndWithoutApplyChangesNothing(t *testing.T) {

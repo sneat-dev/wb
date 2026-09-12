@@ -2,7 +2,9 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -134,6 +136,12 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 			// A member reserved but never published has nothing to absorb.
 			continue
 		}
+		if retired, proofErr := engine.provedAlreadyRetiredMember(ctx, member); proofErr != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(proofErr.Error())))
+			continue
+		} else if retired {
+			continue
+		}
 		// Re-read origin first: a day-old clone would report work as
 		// unabsorbed that the base already carries, and would refuse an end
 		// that should succeed.
@@ -230,6 +238,41 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 	return result, nil
 }
 
+// provedAlreadyRetiredMember recognizes only the narrow recovery state left by
+// wb pr land: the member checkout is gone, its recorded stream PR is merged at
+// the exact stream branch head, and no remote branch carries a later commit.
+// A missing directory alone never grants cleanup authority.
+func (engine *Engine) provedAlreadyRetiredMember(ctx context.Context, member Member) (bool, error) {
+	_, statErr := os.Lstat(member.Worktree)
+	if statErr == nil {
+		return false, nil
+	}
+	if !errors.Is(statErr, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect member worktree %s: %w", member.Worktree, statErr)
+	}
+	if member.PullRequest == 0 || member.Canonical == "" {
+		return false, fmt.Errorf("member worktree is absent without an exact recorded stream pull request")
+	}
+	pr, found, err := engine.GitHub.PullRequest(ctx, member.Canonical, member.PullRequest)
+	if err != nil {
+		return false, fmt.Errorf("read recorded stream pull request #%d: %w", member.PullRequest, err)
+	}
+	if !found || !strings.EqualFold(pr.State, "MERGED") || pr.Head != member.Branch || pr.Base != member.Base || pr.HeadSHA == "" || pr.MergeSHA == "" {
+		return false, fmt.Errorf("member worktree is absent but recorded stream pull request #%d is not an exact merged receipt", member.PullRequest)
+	}
+	if err := engine.Git.Fetch(ctx, member.Canonical); err != nil {
+		return false, fmt.Errorf("re-read origin before verifying retired member: %w", err)
+	}
+	remote, present, err := engine.Git.RemoteHead(ctx, member.Canonical, member.Branch)
+	if err != nil {
+		return false, fmt.Errorf("read origin/%s after merged receipt: %w", member.Branch, err)
+	}
+	if present && remote != pr.HeadSHA {
+		return false, fmt.Errorf("origin/%s advanced to %s after merged pull request head %s", member.Branch, remote, pr.HeadSHA)
+	}
+	return true, nil
+}
+
 // retireAgentPullRequests closes or retargets every still-open pull request
 // whose base is the stream branch, before that branch could be deleted.
 func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOptions, member Member) []AgentPullRequestOutcome {
@@ -285,11 +328,21 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 	case !options.Apply:
 		result.DraftAction = "would-close"
 	default:
-		comment := "Closed by `wb stream end " + name + "`: the stream is ending. Ending a stream publishes, bumps and merges nothing."
-		if err := engine.GitHub.ClosePullRequest(ctx, member.Worktree, member.PullRequest, comment); err != nil {
+		pullRequest, found, err := engine.GitHub.PullRequest(ctx, member.Canonical, member.PullRequest)
+		if err != nil {
 			result.DraftAction, result.Detail = "failed", RedactString(err.Error())
+		} else if found && strings.EqualFold(pullRequest.State, "MERGED") {
+			// A member may already have been landed by wb pr land. Closing its
+			// historical receipt would erase the very evidence that authorizes
+			// recovery after the worktree was retired.
+			result.DraftAction = "already-merged"
 		} else {
-			result.DraftAction = "closed"
+			comment := "Closed by `wb stream end " + name + "`: the stream is ending. Ending a stream publishes, bumps and merges nothing."
+			if err := engine.GitHub.ClosePullRequest(ctx, member.Canonical, member.PullRequest, comment); err != nil {
+				result.DraftAction, result.Detail = "failed", RedactString(err.Error())
+			} else {
+				result.DraftAction = "closed"
+			}
 		}
 	}
 	if !options.Apply {
@@ -299,6 +352,23 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 		// A member reserved but never published has no checkout to retire;
 		// its lease is still released, which is the whole point of being able
 		// to end a `creating` stream.
+		result.LeaseReleased = true
+		return result
+	}
+	retired, proofErr := engine.provedAlreadyRetiredMember(ctx, member)
+	if proofErr != nil {
+		result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(proofErr.Error()))
+		return result
+	}
+	if retired {
+		if !options.KeepRemoteBranch {
+			if err := engine.Git.DeleteRemoteBranch(ctx, member.Canonical, member.Branch); err != nil {
+				result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
+				return result
+			}
+			result.RemoteBranchDeleted = true
+		}
+		result.WorktreeRemoved = true
 		result.LeaseReleased = true
 		return result
 	}

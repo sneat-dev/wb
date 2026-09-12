@@ -54,6 +54,11 @@ type PullRequest struct {
 	Base   string `json:"base"`
 	Draft  bool   `json:"draft"`
 	State  string `json:"state"`
+	// HeadSHA and MergeSHA are immutable GitHub identities. They are required
+	// when a stream member was already retired by wb pr land: the missing
+	// checkout cannot be used as evidence of what the PR actually landed.
+	HeadSHA  string `json:"head_sha,omitempty"`
+	MergeSHA string `json:"merge_sha,omitempty"`
 }
 
 // GitHub is the remote surface stream verbs use. Every method takes the
