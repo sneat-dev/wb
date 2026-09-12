@@ -350,11 +350,24 @@ func runCoverageTargets(targets []qualityTarget, parallel int, options quality.R
 	reports := make([]quality.RepositoryCoverage, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
-		targetOptions := qualityRunOptionsForTarget(options, target.repository)
+		targetOptions, err := coverageRunOptionsForTarget(options, target)
+		if err != nil {
+			reports[index] = quality.RepositoryCoverage{
+				Repository: target.repository, Path: target.path,
+				Status: quality.StatusFailed, Error: err.Error(),
+			}
+			reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
+			return
+		}
 		reports[index] = quality.CoverWithOptions(context.Background(), target.repository, target.path, targetOptions)
 		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
+}
+
+func coverageRunOptionsForTarget(options quality.RunOptions, target qualityTarget) (quality.RunOptions, error) {
+	options = qualityRunOptionsForTarget(options, target.repository)
+	return quality.RepositoryRunOptions(target.path, options)
 }
 
 func runVerificationTargets(targets []qualityTarget, checks []quality.Check, parallel int, options quality.RunOptions) []quality.VerificationReport {
