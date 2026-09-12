@@ -87,6 +87,11 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("unsafe attention err = %v", err)
 	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Worktrees[0].TaskSummary = "line one\nline two"
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("multiline task summary err = %v", err)
+	}
 }
 
 func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {

@@ -1,7 +1,7 @@
 ---
 name: wb-worktrees
 description: >-
-  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. A round that touches several repositories is ONE task (`wb worktree create <task> owner/repo1 owner/repo2 ...`), never one task per repository, landed with one `wb worktree land`/`wb land` call per repository (a single call refuses worktrees from more than one repository). Finish work with `wb worktree land` (its root alias is `wb land`), never `gh pr merge`. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
+  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. A round that touches several repositories is ONE task, never one task per repository, and lands once per repository. Finish work with `wb worktree land` (its root alias is `wb land`), never `gh pr merge`. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
 ---
 
 # WB worktrees
@@ -54,6 +54,11 @@ Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make
 it eligible. WB creation leaves its current branch, index, and working tree
 untouched while it fetches and pins the requested remote base.
+Before creating a task, run the compact cross-machine active-work preflight for
+every repository it would edit. Inspect plausible overlaps regardless of task
+or branch name. A result is coordination evidence, not an atomic reservation:
+resume only when exact session ownership is proven; otherwise coordinate or use
+an audited handoff, and never edit another agent's checkout.
 Make feature changes only in a WB-created worktree. The default checkout is
 inside its canonical repository directory:
 
@@ -171,9 +176,11 @@ and the fix is to land, close, or decide, not to force the sweep through.
 ## Fast path
 
 ```sh
+wb worktree active --filter <owner/repository> --format json
 wb worktree guard .
 wb worktree create <task> --branch <prefix>/<task> <owner>/<repository> \
   --effort <effort> --run <run> --agent <agent> --agent-runtime <runtime> --model <exact-child-model-or-unknown> \
+  --summary "<bounded non-sensitive purpose>" \
   --cli <invoking-cli-if-known> --provider <routing-or-billing-provider-if-known> \
   --original-prompt-file <private-prompt-file>
 wb worktree summary <task>
