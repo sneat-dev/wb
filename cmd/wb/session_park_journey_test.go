@@ -553,8 +553,9 @@ target="$1"
 shift
 remote_wb="$1"
 shift
-exec env HOME=%s WB_HOME=%s "$remote_wb" --projects-root %s "$@"
-`, shellQuote(targetHome), shellQuote(targetHome), shellQuote(targetProjectsRoot))
+exec env HOME=%s WB_HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s "$remote_wb" --projects-root %s "$@"
+`, shellQuote(targetHome), shellQuote(targetHome), shellQuote(filepath.Join(targetHome, ".config")),
+		shellQuote(filepath.Join(targetHome, ".local", "state")), shellQuote(filepath.Join(targetHome, ".cache")), shellQuote(targetProjectsRoot))
 }
 
 func journeyTmuxScript(stateDir string) string {
