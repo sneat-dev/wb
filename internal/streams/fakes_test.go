@@ -15,6 +15,8 @@ import (
 // exercised against it, so a refusal is proven rather than assumed reachable.
 type fakeGit struct {
 	defaultBranch    map[string]string
+	currentBranch    map[string]string
+	currentBranchErr map[string]error
 	pushed           map[string]string
 	pushErr          map[string]error
 	remoteHeads      map[string]string
@@ -41,6 +43,8 @@ type fakeGit struct {
 func newFakeGit() *fakeGit {
 	return &fakeGit{
 		defaultBranch:    map[string]string{},
+		currentBranch:    map[string]string{},
+		currentBranchErr: map[string]error{},
 		pushed:           map[string]string{},
 		pushErr:          map[string]error{},
 		remoteHeads:      map[string]string{},
@@ -58,6 +62,12 @@ func newFakeGit() *fakeGit {
 }
 
 func (git *fakeGit) CurrentBranch(_ context.Context, dir string) (string, error) {
+	if err := git.currentBranchErr[dir]; err != nil {
+		return "", err
+	}
+	if branch, ok := git.currentBranch[dir]; ok {
+		return branch, nil
+	}
 	return "stream/test", nil
 }
 

@@ -270,9 +270,26 @@ func (engine *Engine) provedSquashAbsorbedMember(ctx context.Context, member Mem
 	if len(dirty) > 0 {
 		return false, fmt.Errorf("member worktree has dirty or untracked paths: %s", strings.Join(dirty, ", "))
 	}
+	branch, err := engine.Git.CurrentBranch(ctx, member.Worktree)
+	if err != nil {
+		return false, fmt.Errorf("read member worktree branch: %w", err)
+	}
+	if branch != member.Branch {
+		return false, fmt.Errorf("member worktree checked out branch %s, want recorded stream branch %s", branch, member.Branch)
+	}
 	local, err := engine.Git.LocalHead(ctx, member.Worktree)
 	if err != nil {
 		return false, fmt.Errorf("read member worktree HEAD: %w", err)
+	}
+	localStream, present, err := engine.Git.LocalBranchHead(ctx, member.Worktree, member.Branch)
+	if err != nil {
+		return false, fmt.Errorf("read local stream ref %s: %w", member.Branch, err)
+	}
+	if !present {
+		return false, fmt.Errorf("local stream ref %s is absent from an existing member worktree", member.Branch)
+	}
+	if localStream != local {
+		return false, fmt.Errorf("local stream ref %s is %s, not checked out member HEAD %s", member.Branch, localStream, local)
 	}
 	ancestor, err := engine.Git.IsAncestor(ctx, member.Worktree, local, pr.HeadSHA)
 	if err != nil {

@@ -2,6 +2,7 @@ package streams
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -263,6 +264,8 @@ func TestEndRetiresCleanExistingMemberWhoseExactStreamPRWasSquashMerged(t *testi
 	localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
 	mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
 	git.localHeads[member.Worktree] = localHead
+	git.currentBranch[member.Worktree] = member.Branch
+	git.localBranchHeads[member.Worktree+" "+member.Branch] = localHead
 	git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = true
 	delete(git.remoteHeads, member.Worktree+" "+member.Branch) // squash PR land deleted it
 	// This is the real recovery shape: a squash merge puts a new commit on
@@ -315,6 +318,24 @@ func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
 				git.remoteHeads[member.Worktree+" "+member.Branch] = "advancedadvancedadvancedadvancedadvanced"
 			},
 		},
+		{
+			name: "wrong checked out branch", want: "checked out branch",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, _, _ string) {
+				git.currentBranch[member.Worktree] = "feature/other"
+			},
+		},
+		{
+			name: "detached", want: "read member worktree branch",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, _, _ string) {
+				git.currentBranchErr[member.Worktree] = errors.New("HEAD is detached")
+			},
+		},
+		{
+			name: "advanced local stream ref", want: "local stream ref",
+			configure: func(member Member, git *fakeGit, _ *fakeHub, _, _ string) {
+				git.localBranchHeads[member.Worktree+" "+member.Branch] = "advancedadvancedadvancedadvancedadvanced"
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine, git, hub, worktrees, stream := startedStream(t, "unsafe-squash-"+strings.ReplaceAll(test.name, " ", "-"), "acme/library")
@@ -322,7 +343,10 @@ func TestEndRefusesUnsafeExistingSquashMergedMemberRecovery(t *testing.T) {
 			localHead := "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd"
 			mergedPRHead := "8def8def8def8def8def8def8def8def8def8def"
 			git.localHeads[member.Worktree] = localHead
+			git.currentBranch[member.Worktree] = member.Branch
+			git.localBranchHeads[member.Worktree+" "+member.Branch] = localHead
 			git.ancestors[member.Worktree+" "+localHead+" "+mergedPRHead] = true
+			delete(git.remoteHeads, member.Worktree+" "+member.Branch)
 			// Empty on purpose: each safety check must refuse rather than fall
 			// back to ordinary patch comparison and erase this checkout.
 			git.notIn[member.Worktree+" "+member.Branch+" origin/"+member.Base] = nil
