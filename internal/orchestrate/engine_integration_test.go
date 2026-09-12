@@ -45,6 +45,23 @@ func (textHandler) PullRequest(Repository) (string, string) {
 	return "Update dependency", "Automated test update."
 }
 
+type staticHandler struct {
+	assessment Assessment[string]
+	inspected  *int
+}
+
+func (handler staticHandler) Inspect(context.Context, string, string, Repository) (Assessment[string], error) {
+	*handler.inspected = *handler.inspected + 1
+	return handler.assessment, nil
+}
+
+func (staticHandler) Apply(context.Context, string, Repository) (string, error) { return "", nil }
+func (staticHandler) ValidatePublishable(context.Context, string, Repository) error {
+	return nil
+}
+func (staticHandler) CommitMessage(Repository) string         { return "test" }
+func (staticHandler) PullRequest(Repository) (string, string) { return "test", "test" }
+
 func TestRunIsolatesDirtyCanonicalClone(t *testing.T) {
 	fixture := newEngineFixture(t)
 	dirty := filepath.Join(fixture.canonical, "notes.txt")
@@ -130,6 +147,70 @@ func TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges(t *testing.T) {
 	}
 	if stagedDiff := runEngineGit(t, input[0].WorktreeDir, "diff", "--cached", "--", filepath.Base(staged)); !strings.Contains(stagedDiff, "+staged") {
 		t.Fatalf("staged implementation was not preserved: %s", stagedDiff)
+	}
+	if strings.Join(results[0].ChangedFiles, ",") != "dependency.txt" {
+		t.Fatalf("operation report included pre-existing changes: %v", results[0].ChangedFiles)
+	}
+}
+
+func TestRunRejectsPublicationFromManagedInputBeforeInspection(t *testing.T) {
+	for index, test := range []struct {
+		name       string
+		configure  func(*Options)
+		assessment Assessment[string]
+	}{
+		{
+			name:       "commit while dependency absent",
+			configure:  func(options *Options) { options.Commit = true },
+			assessment: Assessment[string]{Reason: "dependency absent"},
+		},
+		{
+			name:       "push while dependency already current",
+			configure:  func(options *Options) { options.Push = true },
+			assessment: Assessment[string]{Applicable: true, Reason: "already current"},
+		},
+		{
+			name: "pull request during dry run",
+			configure: func(options *Options) {
+				options.PR = true
+				options.DryRun = true
+			},
+			assessment: Assessment[string]{Applicable: true, NeedsChange: true, Reason: "requires update"},
+		},
+		{
+			name: "merge while dependency absent during dry run",
+			configure: func(options *Options) {
+				options.Merge = true
+				options.DryRun = true
+			},
+			assessment: Assessment[string]{Reason: "dependency absent"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
+				ProjectsRoot: fixture.githubDir, Operation: "publication-input",
+				Branch: "feature/publication-input-" + string(rune('a'+index)), BranchChosen: true,
+				WorkLog: worktrees.WorkLogOptions{Model: "test"},
+			})
+			if err != nil || len(input) != 1 {
+				t.Fatalf("input=%+v err=%v", input, err)
+			}
+			repository := fixture.repository
+			repository.Path = input[0].WorktreeDir
+			runEngineGit(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			inspected := 0
+			options := fixture.options()
+			test.configure(&options)
+			result := Result[string]{Repository: repository.Slug, Status: "selected"}
+			err = processRepository(context.Background(), repository, staticHandler{assessment: test.assessment, inspected: &inspected}, options, &result)
+			if err == nil || !strings.Contains(err.Error(), "cannot publish from supplied managed worktree") || result.Status != "failed" {
+				t.Fatalf("publication request was accepted: result=%+v err=%v", result, err)
+			}
+			if inspected != 0 {
+				t.Fatalf("publication rejection inspected the supplied worktree %d time(s)", inspected)
+			}
+		})
 	}
 }
 

@@ -117,6 +117,23 @@ type Handler[T any] interface {
 	PullRequest(Repository) (title, body string)
 }
 
+// InPlaceInspector is implemented by handlers whose plans can read a supplied
+// managed worktree directly. The normal Handler contract intentionally plans
+// from a fetched canonical base; this narrower opt-in keeps that behavior for
+// every other caller while allowing dependency updates to respect staged and
+// unstaged manifest state in an explicit in-place request.
+type InPlaceInspector[T any] interface {
+	InspectWorkingTree(context.Context, string, Repository) (Assessment[T], error)
+}
+
+// AppliedFileReporter identifies files the handler changed. The engine unions
+// these with the Git-status delta for an in-place request, so pre-existing
+// dirty or untracked implementation files do not become operation report
+// evidence merely because they were already present in the checkout.
+type AppliedFileReporter[T any] interface {
+	AppliedFiles(T) []string
+}
+
 // RemoteCheck is the normalized GitHub check state observed before merge.
 type RemoteCheck struct {
 	Name       string `json:"name" yaml:"name"`

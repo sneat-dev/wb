@@ -194,6 +194,9 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err != nil {
 		return failResult(result, err)
 	}
+	if managedInput != nil && (options.Commit || options.Push || options.PR || options.Merge) {
+		return failResult(result, fmt.Errorf("cannot publish from supplied managed worktree %s; run deps set without --commit, --push, --pr, or --merge", managedInput.Path))
+	}
 	canonical := repository.Path
 	if managedInput != nil {
 		canonical = managedInput.CanonicalDir
@@ -214,7 +217,16 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	result.Ref = resolvedBase.Ref
 	base := "origin/" + resolvedBase.Ref
 	phase("inspect")
-	assessment, err := handler.Inspect(ctx, canonical, base, repository)
+	assessment := Assessment[T]{}
+	if managedInput != nil {
+		if inspector, ok := handler.(InPlaceInspector[T]); ok {
+			assessment, err = inspector.InspectWorkingTree(ctx, managedInput.Path, repository)
+		} else {
+			assessment, err = handler.Inspect(ctx, managedInput.Path, "HEAD", repository)
+		}
+	} else {
+		assessment, err = handler.Inspect(ctx, canonical, base, repository)
+	}
 	result.Metadata = assessment.Metadata
 	if err != nil {
 		return failResult(result, err)
@@ -236,9 +248,6 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	}
 	worktree := ""
 	if managedInput != nil {
-		if options.Commit || options.Push || options.PR || options.Merge {
-			return failResult(result, fmt.Errorf("cannot publish from supplied managed worktree %s; run deps set without --commit, --push, --pr, or --merge", managedInput.Path))
-		}
 		worktree = managedInput.Path
 		result.WorktreeDir = worktree
 		result.Branch = managedInput.Branch
@@ -268,6 +277,13 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		}
 		created.Close()
 	}
+	var beforeApply map[string]string
+	if managedInput != nil {
+		beforeApply, err = worktreeStatus(ctx, worktree, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+	}
 	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
@@ -279,7 +295,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 			return failResult(result, fmt.Errorf("publishability validation failed: %w", err))
 		}
 	}
-	result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	if managedInput != nil {
+		result.ChangedFiles, err = changedFilesSince(ctx, worktree, beforeApply, handler, metadata, options)
+	} else {
+		result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	}
 	if err != nil {
 		return failResult(result, err)
 	}
@@ -729,11 +749,50 @@ func isASCIIAlphanumeric(character byte) bool {
 }
 
 func changedFiles(ctx context.Context, worktree string, options Options) ([]string, error) {
+	status, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, 0, len(status))
+	for path := range status {
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func changedFilesSince[T any](ctx context.Context, worktree string, before map[string]string, handler Handler[T], metadata T, options Options) ([]string, error) {
+	after, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]bool)
+	for path, status := range after {
+		if before[path] != status {
+			files[path] = true
+		}
+	}
+	if reporter, ok := handler.(AppliedFileReporter[T]); ok {
+		for _, path := range reporter.AppliedFiles(metadata) {
+			if path != "" {
+				files[filepath.ToSlash(path)] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(files))
+	for path := range files {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func worktreeStatus(ctx context.Context, worktree string, options Options) (map[string]string, error) {
 	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
 	if err != nil {
 		return nil, err
 	}
-	var files []string
+	files := make(map[string]string)
 	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if len(entry) < 4 {
 			continue
@@ -742,7 +801,7 @@ func changedFiles(ctx context.Context, worktree string, options Options) ([]stri
 		if arrow := strings.LastIndex(path, " -> "); arrow >= 0 {
 			path = path[arrow+4:]
 		}
-		files = append(files, filepath.ToSlash(path))
+		files[filepath.ToSlash(path)] = entry[:2]
 	}
 	return files, nil
 }
