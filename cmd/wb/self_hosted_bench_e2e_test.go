@@ -97,7 +97,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	command.SetErr(console)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", false)
+		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

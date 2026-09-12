@@ -33,7 +33,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `sync-report publish` | yes | rejected | rejected | yes |
 | `run` | yes | yes | yes | yes |
 | `worker connect` | yes | rejected | rejected | yes |
-| `daemon serve`, `start`, `status`, `stop`, `restart`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart`, `recover`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |

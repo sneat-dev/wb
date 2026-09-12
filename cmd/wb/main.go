@@ -169,7 +169,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"sync": true, "run": true, "migrate": true,
 		"sync-report publish": true,
 		"dashboard":           true,
-		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		"worker connect": true,
 		"deps graph":     true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,

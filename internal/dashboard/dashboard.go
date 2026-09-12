@@ -22,12 +22,14 @@ import (
 const APISchemaVersion = 1
 
 type Options struct {
-	ProjectsRoot       string
-	Version            string
-	Now                func() time.Time
-	CacheTTL           time.Duration
-	InventoryIndexPath string
-	InventoryIndexTTL  time.Duration
+	ProjectsRoot        string
+	Version             string
+	DaemonPID           int
+	SchedulerGeneration uint64
+	Now                 func() time.Time
+	CacheTTL            time.Duration
+	InventoryIndexPath  string
+	InventoryIndexTTL   time.Duration
 	// Mounts attaches extra subtrees to the same loopback listener, keyed by
 	// the path prefix each one owns (it must start and end with "/"). A
 	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
@@ -161,6 +163,12 @@ func (server *service) health(writer http.ResponseWriter, request *http.Request)
 		"status":         "ready",
 		"machine":        name,
 		"wb_version":     server.options.Version,
+	}
+	if server.options.DaemonPID > 0 {
+		payload["daemon_pid"] = server.options.DaemonPID
+	}
+	if server.options.SchedulerGeneration > 0 {
+		payload["scheduler_generation"] = server.options.SchedulerGeneration
 	}
 	if server.options.Hub != nil {
 		payload["hub"] = server.options.Hub(request.Context())
