@@ -3600,6 +3600,8 @@ func inspectLifecycleWorktree(
 			result.Base = integrationBase
 			result.HeadUnknownToRemote = false
 			result.MergedPullRequest = receipt
+			result.AbsorbedAtOrigin = true
+			result.AbsorbedBySHA = receipt.MergeSHA
 			recoveredByDefaultReceipt = true
 		} else {
 			var pullRequestErr error

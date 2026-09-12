@@ -686,7 +686,7 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry := entryFor(t, garbageCollected, "cleanup-deleted-recorded-target"); !entry.Eligible || entry.PullRequest == nil || entry.PullRequest.MergeSHA != mergeSHA || !strings.Contains(strings.Join(entry.Evidence, " "), "target=") {
+	if entry := entryFor(t, garbageCollected, "cleanup-deleted-recorded-target"); !entry.Eligible || entry.Class != GCClassLandedClean || entry.PullRequest == nil || entry.PullRequest.MergeSHA != mergeSHA || !strings.Contains(strings.Join(entry.Evidence, " "), "absorbed-by=") {
 		t.Fatalf("GC deleted-target recovery = %#v", entry)
 	}
 
