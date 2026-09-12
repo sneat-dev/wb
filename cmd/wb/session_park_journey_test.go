@@ -35,16 +35,27 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	targetRoot := filepath.Join(root, "target-projects")
 	sourceHome := filepath.Join(root, "source-home")
 	targetHome := filepath.Join(root, "target-home")
+	ambientXDGConfig := filepath.Join(root, "ambient-xdg-config")
+	ambientXDGState := filepath.Join(root, "ambient-xdg-state")
+	ambientXDGCache := filepath.Join(root, "ambient-xdg-cache")
 	fakeBin := filepath.Join(root, "bin")
 	tmuxState := filepath.Join(root, "tmux")
 	harnessReceipt := filepath.Join(root, "target-harness-receipt")
-	for _, directory := range []string{sourceRoot, targetRoot, fakeBin, tmuxState} {
+	for _, directory := range []string{sourceRoot, targetRoot, ambientXDGConfig, ambientXDGState, ambientXDGCache, fakeBin, tmuxState} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv(wbhome.EnvOverride, sourceHome)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	// The source process deliberately carries conflicting XDG roots. The fake
+	// remote transport must replace all of them with target-owned paths; if it
+	// inherits even one, the target cannot find its config or writes custody
+	// state into the source environment. This reproduces the GitHub runner
+	// environment that exposed the original fixture leak on every platform.
+	t.Setenv("XDG_CONFIG_HOME", ambientXDGConfig)
+	t.Setenv("XDG_STATE_HOME", ambientXDGState)
+	t.Setenv("XDG_CACHE_HOME", ambientXDGCache)
 
 	binary := buildJourneyWB(t)
 	// Park always invokes the fixed remote command name, so the target is

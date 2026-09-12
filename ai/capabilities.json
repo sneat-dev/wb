@@ -3973,10 +3973,10 @@
       "feature_refs": ["spec/features/trusted-repository-update-hooks/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb sync", "flags": [], "modes": ["Dispatches only cloned or exact old-HEAD/new-HEAD changed canonical checkouts."]}, {"path": "wb daemon serve", "flags": [], "modes": ["Repository-update events dispatch only after a clone or checked-out HEAD change."]}, {"path": "wb pr land", "flags": [], "modes": ["Dispatches after exact canonical fast-forward synchronization."]}, {"path": "wb worktree merge", "flags": [], "modes": ["Dispatches after exact canonical fast-forward synchronization."]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb sync", "flags": [], "modes": ["Durably enqueues only cloned or exact old-HEAD/new-HEAD changed canonical checkouts without waiting for executors."]}, {"path": "wb daemon serve", "flags": [], "modes": ["Repository-update events enqueue only after a clone or checked-out HEAD change."]}, {"path": "wb pr land", "flags": [], "modes": ["Enqueues after exact canonical fast-forward synchronization."]}, {"path": "wb worktree merge", "flags": [], "modes": ["Enqueues after exact canonical fast-forward synchronization."]}, {"path": "wb hooks lifecycle check", "flags": ["--config", "--format", "--json"], "modes": ["Validates trusted configuration and executable ownership, permissions, and identity."]}, {"path": "wb hooks lifecycle status", "flags": ["--limit", "--format", "--json"], "modes": ["Reports worker state, durable queue entries, private diagnostic paths, and recent receipts."]}, {"path": "wb hooks lifecycle retry", "flags": ["--format", "--json"], "modes": ["Requeues one exact failed receipt under current trusted configuration."]}, {"path": "wb hooks lifecycle backfill", "flags": ["--apply", "--format", "--json"], "modes": ["Dry-run by default; --apply enqueues current HEAD for matching existing canonical repositories without changing Git."]}], "limitation": null},
         "help": {"status": "Partial", "anchors": [{"command": "wb sync --help", "contains": ["checkout-updated hooks", "actually changed"]}], "limitation": "The full standard wb.yaml lifecycle-hook schema is documented in README rather than repeated in each mutation leaf's help."},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/lifecycle-hooks.md", "marker": "# Lifecycle hooks", "examples": ["wb sync"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestDispatchRunsOnlyChangedMatchingRepositoriesAndCoalesces", "kind": "unit"}, {"path": "cmd/wb/sync_test.go", "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts", "kind": "unit"}, {"path": "internal/repositoryevents/processor_test.go", "name": "TestSyncLifecycleEventOnlyDescribesChangedCheckout", "kind": "unit"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges", "kind": "integration"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline", "kind": "unit"}, {"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics", "kind": "unit"}, {"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestFailedReceiptCanBeRetriedAfterRepair", "kind": "unit"}, {"path": "cmd/wb/hooks_lifecycle_test.go", "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories", "kind": "integration"}, {"path": "cmd/wb/sync_test.go", "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts", "kind": "unit"}, {"path": "internal/repositoryevents/processor_test.go", "name": "TestSyncLifecycleEventOnlyDescribesChangedCheckout", "kind": "unit"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges", "kind": "integration"}], "limitation": null}
       },
       "notes": "Executors come only from the trusted user wb.yaml; repository content cannot register lifecycle commands."
     },
@@ -4074,6 +4074,282 @@
         }
       },
       "notes": "A transient go-run executable is rejected. Generated shims retain no installer executable path; at hook execution they resolve WB_EXECUTABLE or a safe absolute PATH result. Pure deletion semantics do not solve the general secure-hook cache/metrics authority gap tracked by WB #61."
+    },
+    {
+      "id": "wb.hooks.lifecycle.backfill",
+      "feature_refs": [
+        "spec/features/trusted-repository-update-hooks/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks lifecycle backfill",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Dry-run by default over existing canonical repositories.",
+                "Apply enqueues each matching current HEAD through the durable lifecycle queue without changing Git."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks lifecycle backfill --help",
+              "contains": [
+                "--apply",
+                "dry-run",
+                "current HEAD"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
+              "marker": "# Lifecycle hooks",
+              "examples": [
+                "wb hooks lifecycle backfill",
+                "wb hooks lifecycle backfill --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "name": "TestLifecycleBackfillStartsDetachedWorkerProcess",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Executor arguments remain generic, so a configured --init argument can initialize missing tool state without WB knowing that tool."
+    },
+    {
+      "id": "wb.hooks.lifecycle.check",
+      "feature_refs": [
+        "spec/features/trusted-repository-update-hooks/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks lifecycle check",
+              "flags": [
+                "--config",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Validates the standard lifecycle config and every executable's ownership, permissions, and resolved identity."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks lifecycle check --help",
+              "contains": [
+                "--config",
+                "--format",
+                "executable trust"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
+              "marker": "# Lifecycle hooks",
+              "examples": [
+                "wb hooks lifecycle check"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "name": "TestLifecycleCheckCommandReportsTrustedExecutor",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/lifecyclehooks/dispatch_test.go",
+              "name": "TestCheckRejectsGroupWritableExecutable",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Validation never executes the configured binary."
+    },
+    {
+      "id": "wb.hooks.lifecycle.retry",
+      "feature_refs": [
+        "spec/features/trusted-repository-update-hooks/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks lifecycle retry",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Requeues one exact failed receipt under the current trusted executor configuration."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks lifecycle retry --help",
+              "contains": [
+                "receipt-id",
+                "--format",
+                "failed lifecycle-hook attempt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
+              "marker": "# Lifecycle hooks",
+              "examples": [
+                "wb hooks lifecycle retry <receipt-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/lifecyclehooks/dispatch_test.go",
+              "name": "TestFailedReceiptCanBeRetriedAfterRepair",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Succeeded receipts and missing or removed executors are refused."
+    },
+    {
+      "id": "wb.hooks.lifecycle.status",
+      "feature_refs": [
+        "spec/features/trusted-repository-update-hooks/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks lifecycle status",
+              "flags": [
+                "--format",
+                "--json",
+                "--limit"
+              ],
+              "modes": [
+                "Reports worker state, durable pending/running entries, recent receipts, and private diagnostic paths."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks lifecycle status --help",
+              "contains": [
+                "--limit",
+                "--format",
+                "queued, running"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
+              "marker": "# Lifecycle hooks",
+              "examples": [
+                "wb hooks lifecycle status"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "name": "TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/lifecyclehooks/dispatch_test.go",
+              "name": "TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Text output prints retry guidance only for failed receipts; JSON retains the full bounded status envelope."
     },
     {
       "id": "wb.hooks.measure",

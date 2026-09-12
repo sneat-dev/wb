@@ -633,11 +633,33 @@ hooks:
 ```
 
 Repository patterns match canonical `host/owner/repository` identities;
-exclusions win. Repeated events for the same executor and checkout in one WB
-operation coalesce to the latest commit. Local receipts are appended beneath
-the user's WB state directory without command output or credentials. Hook,
-configuration, and receipt failures warn but do not rewrite a successful Git
-update as a failed update.
+exclusions win. Matching updates are durably queued, so the Git operation does
+not wait for the external tool. Repeated pending events for the same executor
+and checkout coalesce across WB processes to the earliest old commit and latest
+new commit. One background worker owns the queue and runs at most two executors
+at once; interrupted claims return to the queue on the next worker start.
+
+Executables must resolve outside the checkout, be owned by the current user or
+root, and not be group/world-writable. WB revalidates the resolved file identity
+immediately before execution. Each terminal attempt appends a private receipt
+beneath the user's XDG state directory. Standard output and standard error are
+stored separately in private per-attempt files capped at 64 KiB each, never
+printed or copied into the receipt.
+
+```sh
+wb hooks lifecycle check                 # validate config and executable trust
+wb hooks lifecycle status                # queue, worker, receipts, diagnostics
+wb hooks lifecycle retry <receipt-id>    # requeue one exact failed attempt
+wb hooks lifecycle backfill              # preview existing canonical repos
+wb hooks lifecycle backfill --apply      # enqueue the previewed matches
+```
+
+Backfill does not change Git and is deliberately dry-run by default. It reads
+each canonical repository's current HEAD and passes matching entries through
+the same durable queue. Executor arguments remain generic; in the example,
+`--init` lets CodeGrapher initialize an index that does not exist yet. Hook,
+configuration, queue, worker-start, and receipt failures warn but do not rewrite
+a successful Git update as a failed update.
 
 ### `wb run` — governed commands and config-driven recipes
 
