@@ -24,6 +24,25 @@ wb daemon stop
 wb daemon restart --if-running
 ```
 
+If a lifecycle command reports an interrupted transition, inspect it before
+retrying:
+
+```sh
+wb daemon recover --format json
+wb daemon recover --apply --format json
+```
+
+Recovery is a dry-run unless `--apply` is explicit. It refuses a live or
+ambiguous owner; a non-terminal startup or drain is recoverable only when WB
+can prove and fence the interruption. Apply clears stale ownership and also
+reconciles durable lifecycle state: it promotes an exactly verified healthy
+child to ready, or marks a proven interrupted start or drain stopped. The
+lifecycle lock uses one stable
+kernel-locked inode plus an atomically replaced owner record, so a killed WB
+process releases exclusion without corrupting its evidence. Never delete
+`daemon.lifecycle.lock` by hand. Windows remains fail-closed until WB can
+verify owner-only ACLs for these records.
+
 For foreground debugging, run `wb daemon serve`.
 
 Start a normal execution worker inside the caller or harness sandbox. Give it a
@@ -82,7 +101,10 @@ Cloudflare Tunnel protected by Cloudflare Access service authentication.
 installed WB executable, it drains the old generation and hands the durable
 queue owner record to the installed executable. `stop` and `restart` preserve
 that handoff record; `restart --if-running` is safe for the verified
-self-update path because it never starts a daemon that was absent.
+self-update path because it never starts a daemon that was absent. Every
+lifecycle transition keeps the same lock inode and atomically records its owner
+PID in a sidecar while holding a kernel lock; process death releases the kernel
+lock without losing or partially rewriting the recovery evidence.
 
 The dashboard stays on read-only loopback HTTP. Mutating operation RPCs prefer
 a separate mode-0600 Unix socket plus the private lifecycle owner token.

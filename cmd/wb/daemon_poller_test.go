@@ -389,7 +389,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	command.SetErr(&stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", true)
+		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

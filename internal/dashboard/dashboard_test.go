@@ -12,7 +12,7 @@ import (
 )
 
 func TestDashboardServesUIAndHealth(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3"})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
 
 	for _, test := range []struct {
 		path        string
@@ -37,6 +37,25 @@ func TestDashboardServesUIAndHealth(t *testing.T) {
 		if response.Header().Get("Content-Security-Policy") == "" {
 			t.Errorf("%s omitted security headers", test.path)
 		}
+	}
+}
+
+func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d", response.Code)
+	}
+	var payload struct {
+		PID        int    `json:"daemon_pid"`
+		Generation uint64 `json:"scheduler_generation"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.PID != 123 || payload.Generation != 45 {
+		t.Fatalf("health identity = %#v", payload)
 	}
 }
 
