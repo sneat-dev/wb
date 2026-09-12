@@ -761,15 +761,21 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd() *cobra.Command
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
-		Short: "Retire an unpublished validation failure while preserving its sources",
-		Long: `Prove that an exact prepare/validation_failed receipt never published or
-landed its candidate and that every receipted source still exists as a clean,
-actively claimed worktree at the exact recorded SHA. WB freshly checks that the
-candidate branch has no remote ref and the candidate is not reachable from the
-current remote target. It then records a separate append-only acknowledgement
-so another source set can own the repository target lane. The historical
-receipt, candidate worktree, source worktrees, and Work Logs remain unchanged.
-This is a dry-run by default; --apply requires --actor and --reason.`,
+		Short: "Retire an unpublished failed or discarded prepare attempt while preserving its sources",
+		Long: `Prove that an exact unpublished prepare attempt never landed its candidate
+and that every receipted source still exists as a clean, actively claimed
+worktree at the exact recorded SHA. A validation_failed attempt retains its
+clean candidate. An interrupted preparing attempt may instead name an absent
+candidate only when WB's private lifecycle backlog proves that exact checkout
+and local branch were deliberately discarded to completion. WB freshly checks
+that the candidate branch has no remote ref and the candidate is not reachable
+from the current remote target. It then records a separate append-only
+acknowledgement so another source set can own the repository target lane.
+Receipted sources may have advanced only as clean descendants of their
+immutable recorded SHAs; the acknowledgement records the observed descendant
+heads. The
+historical receipt and Work Logs remain unchanged. This is a dry-run by default;
+--apply requires --actor and --reason.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {

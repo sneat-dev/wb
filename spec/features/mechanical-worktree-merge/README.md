@@ -265,6 +265,17 @@ matching terminal cleanup receipt and fresh target ancestry validate. Deleting
 the replacement checkout without a matching cleanup receipt does not make the
 correction effective.
 
+Given an interrupted unpublished `preparing` receipt whose exact candidate was
+later discarded through `wb worktree abort`, the unpublished-prepare
+acknowledgement accepts only WB's private, complete lifecycle-backlog proof for
+that exact task, repository, target, path, branch, and SHA. It also rechecks that
+the checkout, local branch, remote branch, and target ancestry do not show a
+surviving or landed candidate. A missing, incomplete, mismatched, or forged
+cleanup record leaves the lane blocked while preserving every source worktree.
+A source may advance only as a clean descendant of its receipted SHA; the
+acknowledgement records that observed descendant head rather than representing
+it as the historical source.
+
 ### AC: squash-recovery-preserves-target-content-and-history-records
 
 Given an unlanded prepare `validation_failed` receipt whose historical source
