@@ -39,46 +39,68 @@ func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 // is an ancestor. It cannot create a merge commit or overwrite local commits.
 // A local-ahead branch is left untouched; a divergent branch is refused so its
 // owner chooses the resolution rather than sync inventing one.
-func (git ExecGit) FastForwardToRemote(ctx context.Context, dir, branch, remote string) (string, bool, error) {
+func (git ExecGit) FastForwardToRemote(ctx context.Context, dir, branch, remote string) (string, bool, bool, error) {
+	present, err := git.remoteRefPresent(ctx, dir, remote)
+	if err != nil {
+		return "", false, false, err
+	}
+	if !present {
+		// `stream start` records a member before it can prove the initial push.
+		// A recovery sync with --push is therefore allowed to publish the first
+		// remote branch; there is no lease head to persist yet.
+		return "", false, false, nil
+	}
 	remoteHead, err := git.Head(ctx, dir, remote)
 	if err != nil {
-		return "", false, fmt.Errorf("read fetched %s: %w", remote, err)
+		return "", false, false, fmt.Errorf("read fetched %s: %w", remote, err)
 	}
 	localHead, err := git.Head(ctx, dir, branch)
 	if err != nil {
-		return "", false, fmt.Errorf("read %s: %w", branch, err)
+		return "", false, false, fmt.Errorf("read %s: %w", branch, err)
 	}
 	if localHead == remoteHead {
-		return remoteHead, false, nil
+		return remoteHead, true, false, nil
 	}
 	localAncestor, err := git.isAncestor(ctx, dir, branch, remote)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if localAncestor {
 		if _, err := git.run(ctx, dir, "checkout", branch); err != nil {
-			return "", false, fmt.Errorf("check out %s: %w", branch, err)
+			return "", false, false, fmt.Errorf("check out %s: %w", branch, err)
 		}
 		if _, err := git.run(ctx, dir, "merge", "--ff-only", remote); err != nil {
-			return "", false, fmt.Errorf("fast-forward %s to %s: %w", branch, remote, err)
+			return "", false, false, fmt.Errorf("fast-forward %s to %s: %w", branch, remote, err)
 		}
 		after, err := git.Head(ctx, dir, branch)
 		if err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		if after != remoteHead {
-			return "", false, fmt.Errorf("fast-forwarded %s but it is %s, not fetched %s", branch, after, remoteHead)
+			return "", false, false, fmt.Errorf("fast-forwarded %s but it is %s, not fetched %s", branch, after, remoteHead)
 		}
-		return remoteHead, true, nil
+		return remoteHead, true, true, nil
 	}
 	remoteAncestor, err := git.isAncestor(ctx, dir, remote, branch)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if remoteAncestor {
-		return remoteHead, false, nil
+		return remoteHead, true, false, nil
 	}
-	return "", false, fmt.Errorf("%s and %s diverged; resolve the stream branch explicitly before syncing", branch, remote)
+	return "", false, false, fmt.Errorf("%s and %s diverged; resolve the stream branch explicitly before syncing", branch, remote)
+}
+
+func (git ExecGit) remoteRefPresent(ctx context.Context, dir, remote string) (bool, error) {
+	_, err := git.run(ctx, dir, "show-ref", "--verify", "--quiet", "refs/remotes/"+remote)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect fetched %s: %w", remote, err)
 }
 
 func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {

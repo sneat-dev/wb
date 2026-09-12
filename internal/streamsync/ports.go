@@ -43,7 +43,7 @@ type Git interface {
 	// FastForwardToRemote advances branch only when the fetched remote branch
 	// contains it. It never rewrites local commits or resolves a divergence;
 	// callers receive the fetched remote head so its lease can be refreshed.
-	FastForwardToRemote(ctx context.Context, dir, branch, remote string) (remoteHead string, advanced bool, err error)
+	FastForwardToRemote(ctx context.Context, dir, branch, remote string) (remoteHead string, present, advanced bool, err error)
 	// CurrentBranch reports the checked-out branch.
 	CurrentBranch(ctx context.Context, dir string) (string, error)
 	// Rebase replays branch onto upstream. It reports the conflicting paths

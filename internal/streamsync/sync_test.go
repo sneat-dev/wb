@@ -57,6 +57,28 @@ func TestSyncRefusesToResolveADivergedRemoteStreamBranch(t *testing.T) {
 	}
 }
 
+// Stream creation records a member even when its first push fails, so a later
+// explicit sync must be able to rebase and publish that still-local branch.
+// There is no remote lease to persist until that first push has succeeded.
+func TestSyncAllowsTheFirstPushWhenTheRemoteStreamBranchIsAbsent(t *testing.T) {
+	engine, git, _, _, _ := newTestEngine()
+	options := baseOptions()
+	options.PushTrigger = TriggerExplicit
+	options.PushReason = "retrying the initial stream publication"
+	git.remoteMissing["origin/"+options.Branch] = true
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if result.RecordedRemoteHead != "" || result.RemoteAdvanced {
+		t.Fatalf("remote state = %#v; an absent remote branch has no recorded lease head", result)
+	}
+	if result.Push == nil || !git.pushed() {
+		t.Fatalf("push = %#v calls=%v; want the initial stream publication", result.Push, git.calls)
+	}
+}
+
 // AC: sync-writes-no-bump-that-renovate-already-landed — the rebase happens
 // FIRST, so a bump Renovate already merged is present in the tree and sync
 // writes nothing for it; a second library still below target does get its one

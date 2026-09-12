@@ -217,12 +217,14 @@ func (engine *Engine) sync(ctx context.Context, options Options) (Result, error)
 		return result, fmt.Errorf("re-read origin before rebasing: %w", err)
 	}
 	remoteBranch := "origin/" + options.Branch
-	remoteHead, advanced, err := engine.Git.FastForwardToRemote(ctx, options.Worktree, options.Branch, remoteBranch)
+	remoteHead, present, advanced, err := engine.Git.FastForwardToRemote(ctx, options.Worktree, options.Branch, remoteBranch)
 	if err != nil {
 		return result, fmt.Errorf("reconcile %s with fetched %s without rewriting local work: %w", options.Branch, remoteBranch, err)
 	}
-	result.RecordedRemoteHead = remoteHead
-	result.RemoteAdvanced = advanced
+	if present {
+		result.RecordedRemoteHead = remoteHead
+		result.RemoteAdvanced = advanced
+	}
 	upstream := "origin/" + options.Base
 	before, err := engine.Git.Head(ctx, options.Worktree, options.Branch)
 	if err != nil {
