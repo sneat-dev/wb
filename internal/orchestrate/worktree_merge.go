@@ -283,6 +283,16 @@ type WorktreeMergeLandOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// CheckoutUpdated is called only after the checked-out canonical target
+	// has moved and the exact landed commit is proven reachable. Nil discards.
+	CheckoutUpdated func(context.Context, CheckoutUpdate)
+}
+
+type CheckoutUpdate struct {
+	Checkout string
+	OldSHA   string
+	NewSHA   string
+	Cause    string
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -1221,7 +1231,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out" {
 			reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, receipt.Target+"@"+shortMergeRevision(receipt.LandingSHA))
 			canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
-			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry)
+			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry, options.CheckoutUpdated)
 			if err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
 			}
@@ -1632,7 +1642,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 
 	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
 	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, canonical)
-	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry)
+	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry, options.CheckoutUpdated)
 	if err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
 	}
@@ -2771,7 +2781,7 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	return errors.New("published pull-request head verification exhausted without an observation")
 }
 
-func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int) (string, error) {
+func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int, checkoutUpdated func(context.Context, CheckoutUpdate)) (string, error) {
 	branch, _, err := runCommand(ctx, timeout, retry, canonical, "git", "branch", "--show-current")
 	if err != nil {
 		return "", err
@@ -2781,6 +2791,10 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 	}
 	if err := requireCleanMergeWorktree(ctx, canonical); err != nil {
 		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: %w", err)
+	}
+	beforeHead, err := mergeRevision(ctx, canonical, "HEAD")
+	if err != nil {
+		return "", err
 	}
 	if _, _, err := runCommand(ctx, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
 		return "blocked_fetch", err
@@ -2798,6 +2812,9 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 			err = fmt.Errorf("canonical target %s does not contain exact landed head %s", head, landing)
 		}
 		return "blocked_mismatch", err
+	}
+	if checkoutUpdated != nil && head != beforeHead {
+		checkoutUpdated(ctx, CheckoutUpdate{Checkout: canonical, OldSHA: beforeHead, NewSHA: head, Cause: "merge-land"})
 	}
 	return "fast_forwarded", nil
 }

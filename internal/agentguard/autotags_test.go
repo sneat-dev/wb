@@ -20,7 +20,7 @@ func newTagRepoFixture(t *testing.T) tagRepoFixture {
 	t.Helper()
 	root := t.TempDir()
 	// Isolate the global hooks policy lookup from whatever the real machine
-	// running this test happens to have at ~/.config/wb/hooks.yaml — reading
+	// running this test happens to have in ~/.config/wb/wb.yaml — reading
 	// that live file here would make the test's outcome depend on the
 	// operator's own config instead of the fixture.
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))

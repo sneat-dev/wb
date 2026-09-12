@@ -105,6 +105,10 @@ type autoTaggingConfig struct {
 	} `yaml:"agent"`
 }
 
+type wbAutoTaggingConfig struct {
+	GitHooks autoTaggingConfig `yaml:"git_hooks"`
+}
+
 // autoTaggingRepository reports whether repoRoot is recognisably
 // auto-tagging, and names which signal decided it for the refusal message.
 func autoTaggingRepository(repoRoot, projectsRoot string) (reason string, autoTagging bool) {
@@ -117,13 +121,28 @@ func autoTaggingRepository(repoRoot, projectsRoot string) (reason string, autoTa
 		// workflow heuristic.
 		return "", false
 	}
-	if value, ok := readAutoTagsFlag(globalHooksConfigPath()); ok && value {
+	if value, ok := readGlobalAutoTagsFlag(globalHooksConfigPath()); ok && value {
 		return "the global hooks policy declares `agent.autoTags: true`", true
 	}
 	if reason, hit := autoTaggingWorkflowHeuristic(repoRoot); hit {
 		return reason, true
 	}
 	return "", false
+}
+
+func readGlobalAutoTagsFlag(path string) (value bool, ok bool) {
+	if path == "" {
+		return false, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var config wbAutoTaggingConfig
+	if yaml.Unmarshal(raw, &config) != nil || config.GitHooks.Agent.AutoTags == nil {
+		return false, false
+	}
+	return *config.GitHooks.Agent.AutoTags, true
 }
 
 func readAutoTagsFlag(path string) (value bool, ok bool) {
@@ -143,13 +162,13 @@ func readAutoTagsFlag(path string) (value bool, ok bool) {
 
 func globalHooksConfigPath() string {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
-		return filepath.Join(configHome, "wb", "hooks.yaml")
+		return filepath.Join(configHome, "wb", "wb.yaml")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "wb", "hooks.yaml")
+	return filepath.Join(home, ".config", "wb", "wb.yaml")
 }
 
 // disableVersionBumping matches the exact key strongo/cicd's reusable Go

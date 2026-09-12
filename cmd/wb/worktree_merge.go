@@ -294,7 +294,7 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 		return err
 	}
 	campaign := newWorktreeMergeProgress(command, *flags)
-	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission))
+	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission, command.ErrOrStderr()))
 	finishWorktreeMergeProgress(campaign, receipt, err)
 	releaseWorktreeMergeLane(receipt)
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -440,7 +440,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 				}
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission))
+			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter(), admission, command.ErrOrStderr()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -483,7 +483,7 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 			progress.Report(campaign.reporter(), progress.Event{Operation: "worktree_merge", Phase: "prepare_revert", State: progress.Started, Detail: args[0]})
 			receipt, err := orchestrate.PrepareWorktreeMergeRevert(command.Context(), projectsRoot, args[0], flags.timeout, flags.retry)
 			if err == nil {
-				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission))
+				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter(), admission, command.ErrOrStderr()))
 			}
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			releaseWorktreeMergeLane(receipt)
@@ -761,15 +761,21 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd() *cobra.Command
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
-		Short: "Retire an unpublished validation failure while preserving its sources",
-		Long: `Prove that an exact prepare/validation_failed receipt never published or
-landed its candidate and that every receipted source still exists as a clean,
-actively claimed worktree at the exact recorded SHA. WB freshly checks that the
-candidate branch has no remote ref and the candidate is not reachable from the
-current remote target. It then records a separate append-only acknowledgement
-so another source set can own the repository target lane. The historical
-receipt, candidate worktree, source worktrees, and Work Logs remain unchanged.
-This is a dry-run by default; --apply requires --actor and --reason.`,
+		Short: "Retire an unpublished failed or discarded prepare attempt while preserving its sources",
+		Long: `Prove that an exact prepare receipt never published or landed its candidate
+and that every receipted source still exists as a clean, actively claimed
+worktree at the exact recorded SHA. A validation_failed attempt retains its
+clean candidate. An interrupted preparing attempt may instead name an absent
+candidate only when WB's private lifecycle backlog proves that exact checkout
+and local branch were deliberately discarded to completion. WB freshly checks
+that the candidate branch has no remote ref and the candidate is not reachable
+from the current remote target. It then records a separate append-only
+acknowledgement so another source set can own the repository target lane.
+Receipted sources may have advanced only as clean descendants of their
+immutable recorded SHAs; the acknowledgement records the observed descendant
+heads. The
+historical receipt and Work Logs remain unchanged. This is a dry-run by default;
+--apply requires --actor and --reason.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1221,13 +1227,13 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 		Lane: landingLaneGuardRequest("wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 
-func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergeLandOptions {
+func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, errOut io.Writer) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            landingLaneGuardRequest("wb worktree merge land", flags.laneReason, flags.takeOverLane),
-		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission}
+		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission, CheckoutUpdated: lifecycleCheckoutUpdated(errOut)}
 }
 
 // hostLoadCheckSkippable reports whether a land/resume step for receipt will

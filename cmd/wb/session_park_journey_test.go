@@ -51,15 +51,10 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	// reached by placing the built binary on PATH as "wb" rather than by
 	// configuring ssh.wb_path, which park ignores.
 	linkJourneyRemoteWB(t, filepath.Join(fakeBin, "wb"), binary)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "tmux"), journeyTmuxScript)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "codex"), journeyCodexScript)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "ssh"), journeySSHScript)
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "tmux"), journeyTmuxScript(tmuxState))
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "codex"), journeyCodexScript(harnessReceipt))
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "ssh"), journeySSHScript(targetHome, targetRoot))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WB_TEST_TARGET_HOME", targetHome)
-	t.Setenv("WB_TEST_TARGET_WB_HOME", targetHome)
-	t.Setenv("WB_TEST_TARGET_PROJECTS_ROOT", targetRoot)
-	t.Setenv("WB_TEST_TMUX_DIR", tmuxState)
-	t.Setenv("WB_TEST_HARNESS_RECEIPT", harnessReceipt)
 	t.Cleanup(func() { terminateJourneyTmuxProcesses(t, tmuxState) })
 
 	sourceMembers := prepareJourneySourceWorktrees(t, root, sourceRoot)
@@ -468,9 +463,27 @@ func runJourneyWB(t *testing.T, binary, projectsRoot string, args ...string) []b
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes(), journeyRemoteFailureDiagnostic(stderr.String()))
 	}
 	return stdout.Bytes()
+}
+
+func journeyRemoteFailureDiagnostic(stderr string) string {
+	const marker = "remote stderr written to:\n  "
+	start := strings.Index(stderr, marker)
+	if start < 0 {
+		return ""
+	}
+	path := strings.TrimSpace(strings.SplitN(stderr[start+len(marker):], "\n", 2)[0])
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("\nread test remote stderr %s: %v", path, err)
+	}
+	const limit = 8 << 10
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	return "\ntest remote stderr:\n" + string(raw)
 }
 
 func journeyGit(t *testing.T, directory string, args ...string) {
@@ -531,7 +544,8 @@ func readJourneyHarnessReceipt(t *testing.T, path string) []byte {
 	}
 }
 
-const journeySSHScript = `#!/bin/sh
+func journeySSHScript(targetHome, targetProjectsRoot string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
 while [ "$1" != "--" ]; do shift; done
 shift
@@ -539,11 +553,15 @@ target="$1"
 shift
 remote_wb="$1"
 shift
-exec env HOME="$WB_TEST_TARGET_HOME" WB_HOME="$WB_TEST_TARGET_WB_HOME" "$remote_wb" --projects-root "$WB_TEST_TARGET_PROJECTS_ROOT" "$@"
-`
+exec env HOME=%s WB_HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s "$remote_wb" --projects-root %s "$@"
+`, shellQuote(targetHome), shellQuote(targetHome), shellQuote(filepath.Join(targetHome, ".config")),
+		shellQuote(filepath.Join(targetHome, ".local", "state")), shellQuote(filepath.Join(targetHome, ".cache")), shellQuote(targetProjectsRoot))
+}
 
-const journeyTmuxScript = `#!/bin/sh
+func journeyTmuxScript(stateDir string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
+state_dir=%s
 case "$1" in
 new-session)
   shift
@@ -564,8 +582,8 @@ new-session)
   (
     cd "$cwd"
     exec "$executable" "$launch_flag" "$store_root" "$handoff_id" "$attempt_id" "$plan_digest"
-  ) >/dev/null 2>"$WB_TEST_TMUX_DIR/$name.stderr" &
-  echo "$!" >"$WB_TEST_TMUX_DIR/$name.pid"
+  ) >/dev/null 2>"$state_dir/$name.stderr" &
+  echo "$!" >"$state_dir/$name.pid"
   ;;
 list-panes)
   name=""
@@ -574,12 +592,12 @@ list-panes)
     case "$value" in =*) name="${value#=}" ;; esac
     case "$value" in *pane_dead*) format="$value" ;; esac
   done
-  pid_file="$WB_TEST_TMUX_DIR/$name.pid"
+  pid_file="$state_dir/$name.pid"
   if [ -n "$name" ] && [ -f "$pid_file" ]; then
     pid="$(cat "$pid_file")"
     if kill -0 "$pid" 2>/dev/null; then
       case "$format" in
-        *pane_pid*) printf '%s\t0\n' "$pid" ;;
+        *pane_pid*) printf '%%s\t0\n' "$pid" ;;
         *) printf '0\t\n' ;;
       esac
       exit 0
@@ -593,23 +611,26 @@ list-panes)
   exit 2
   ;;
 esac
-`
+`, shellQuote(stateDir))
+}
 
-const journeyCodexScript = `#!/bin/sh
+func journeyCodexScript(receiptPath string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
 {
   echo "PID=$$"
   echo "WB_SESSION_CONTINUATION_FILE=${WB_SESSION_CONTINUATION_FILE:-}"
   printf 'ARGS='
-  printf '%s ' "$@"
+  printf '%%s ' "$@"
   printf '\n'
   if [ -n "${WB_SESSION_CONTINUATION_FILE:-}" ]; then
     cat "$WB_SESSION_CONTINUATION_FILE"
   fi
-} >"$WB_TEST_HARNESS_RECEIPT"
+} >%s
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
-`
+`, shellQuote(receiptPath))
+}
 
 // linkJourneyRemoteWB publishes the built binary under the fixed remote
 // command name park uses, so the controlled ssh shim resolves it from PATH.

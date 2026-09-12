@@ -1,21 +1,23 @@
 # Hook policy
 
-Policy layers are conservative WB defaults, user
-`~/.config/wb/hooks.yaml`, then repository `.wb/hooks.yaml`.
+Policy layers are conservative WB defaults, the user-owned `git_hooks:` section
+of `~/.config/wb/wb.yaml`, then repository `.wb/hooks.yaml`.
 
 Use built-in detection when conventional checks are wanted:
 
 ```yaml
-version: 1
-profiles:
-  auto: true
+git_hooks:
+  version: 1
+  profiles:
+    auto: true
 ```
 
 Worktree protection is installed by default for every repository:
 
 ```yaml
-version: 1
-profiles: {}
+git_hooks:
+  version: 1
+  profiles: {}
 ```
 
 The worktree profile guards `post-checkout`, `pre-commit`, and `pre-push`.

@@ -2298,6 +2298,36 @@ func TestLandWorktreeMergeRebasesUnpublishedCandidateOntoAdvancedTarget(t *testi
 	}
 }
 
+func TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges(t *testing.T) {
+	fixture := newEngineFixture(t)
+	before := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	updater := filepath.Join(t.TempDir(), "updater")
+	runEngineGit(t, filepath.Dir(updater), "clone", fixture.repository.CloneURL, updater)
+	runEngineGit(t, updater, "config", "user.name", "WB Test")
+	runEngineGit(t, updater, "config", "user.email", "wb@example.test")
+	writeEngineFile(t, filepath.Join(updater, "updated.txt"), "updated\n")
+	runEngineGit(t, updater, "add", "updated.txt")
+	runEngineGit(t, updater, "commit", "-m", "update target")
+	runEngineGit(t, updater, "push", "origin", "main")
+	after := strings.TrimSpace(runEngineGit(t, updater, "rev-parse", "HEAD"))
+
+	var updates []CheckoutUpdate
+	notify := func(_ context.Context, update CheckoutUpdate) {
+		updates = append(updates, update)
+	}
+	status, err := syncCanonicalMergeTarget(context.Background(), fixture.canonical, "main", after, 5*time.Second, 0, notify)
+	if err != nil || status != "fast_forwarded" {
+		t.Fatalf("sync status=%q err=%v", status, err)
+	}
+	if len(updates) != 1 || updates[0].OldSHA != before || updates[0].NewSHA != after || updates[0].Cause != "merge-land" {
+		t.Fatalf("updates=%+v", updates)
+	}
+	status, err = syncCanonicalMergeTarget(context.Background(), fixture.canonical, "main", after, 5*time.Second, 0, notify)
+	if err != nil || status != "fast_forwarded" || len(updates) != 1 {
+		t.Fatalf("unchanged sync status=%q err=%v updates=%+v", status, err, updates)
+	}
+}
+
 func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "rebase-conflict-source", "feature/rebase-conflict", "shared.txt", "source\n")

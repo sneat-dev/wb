@@ -6,7 +6,7 @@ description: Install, inspect, repair, and price WB-managed Git hooks, including
 # WB hooks
 
 Repository policy lives in `.wb/hooks.yaml`; optional user policy lives in
-`~/.config/wb/hooks.yaml`. WB owns managed shim blocks while preserving local
+the `git_hooks:` section of `~/.config/wb/wb.yaml`. WB owns managed shim blocks while preserving local
 commands around them.
 
 ## Route
@@ -58,8 +58,8 @@ PreToolUse payload on stdin and carries these policies:
   never itself refused.
 - **Auto-tagging** — refuses a hand-pushed `git tag`/`git push --tags`/
   `git push origin <tag>` in a repository whose own CI already tags it: an
-  explicit `agent.autoTags: true` in `.wb/hooks.yaml` (or the global hooks
-  policy), or a `strongo/cicd` reusable workflow with no
+  explicit `agent.autoTags: true` in `.wb/hooks.yaml` (or the global
+  `git_hooks:` policy), or a `strongo/cicd` reusable workflow with no
   `disable-version-bumping: true` beside it.
 - **Governed heavy validation** — redirects CPU-heavy validation inside a
   WB-managed worktree to the governed command gateway (see below).
