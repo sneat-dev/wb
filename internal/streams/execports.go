@@ -377,10 +377,21 @@ func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expected
 	}
 	lease := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
 	if _, err := git.run(ctx, dir, "push", lease, "origin", ":"+branch); err != nil {
-		// A branch that is already gone is the state the caller wanted; only
-		// a still-present ref is a failure, which the check below decides.
-		if _, present, headErr := git.RemoteHead(ctx, dir, branch); headErr == nil && !present {
+		// A branch that is already gone is the state the caller wanted. Read
+		// every push destination itself rather than refs/remotes/origin/<branch>:
+		// origin may have a separate pushurl, and ordinary fetches do not prune,
+		// so neither the fetch URL nor its tracking ref proves push-side absence.
+		remoteHeads, headErr := git.remoteHeadsOnOriginPushDestinations(ctx, dir, branch)
+		if headErr != nil {
+			return fmt.Errorf("delete origin/%s from %s: %w; authoritative push-destination reread failed: %v", branch, dir, err, headErr)
+		}
+		if len(remoteHeads) == 0 {
 			return nil
+		}
+		for _, remote := range remoteHeads {
+			if remote != expectedSHA {
+				return fmt.Errorf("refusing to delete origin/%s from %s: a push destination advanced to %s after expected %s", branch, dir, remote, expectedSHA)
+			}
 		}
 		return fmt.Errorf("delete origin/%s from %s: %w", branch, dir, err)
 	}
@@ -393,6 +404,46 @@ func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expected
 		return fmt.Errorf("pushed a deletion of %s but origin/%s still resolves", branch, branch)
 	}
 	return nil
+}
+
+// remoteHeadsOnOriginPushDestinations bypasses the local remote-tracking
+// namespace and asks every URL `git push origin` targets for one exact branch.
+// Git can use remote.origin.pushurl instead of its fetch URL and can push to
+// multiple configured URLs. An idempotent retry is safe only when every
+// resolved destination authoritatively reports the ref absent; any read or
+// destination-resolution failure remains unknown and therefore fails closed.
+func (git ExecGit) remoteHeadsOnOriginPushDestinations(ctx context.Context, dir, branch string) ([]string, error) {
+	resolved, err := git.run(ctx, dir, "remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("resolve origin push destinations: %w", err)
+	}
+	var destinations []string
+	for _, line := range strings.Split(resolved, "\n") {
+		if destination := strings.TrimSpace(line); destination != "" {
+			destinations = append(destinations, destination)
+		}
+	}
+	if len(destinations) == 0 {
+		return nil, fmt.Errorf("resolve origin push destinations: git returned no URLs")
+	}
+
+	ref := "refs/heads/" + branch
+	remoteHeads := make([]string, 0, len(destinations))
+	for index, destination := range destinations {
+		out, err := git.run(ctx, dir, "ls-remote", "--heads", "--", destination, ref)
+		if err != nil {
+			return nil, fmt.Errorf("read %s from origin push destination %d: %s", ref, index+1, RedactString(err.Error()))
+		}
+		fields := strings.Fields(out)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 || fields[1] != ref {
+			return nil, fmt.Errorf("read %s from origin push destination %d: unexpected response %q", ref, index+1, RedactString(strings.TrimSpace(out)))
+		}
+		remoteHeads = append(remoteHeads, fields[0])
+	}
+	return remoteHeads, nil
 }
 
 // ExecGitHub runs the installed `gh`.
@@ -591,10 +642,11 @@ func runBoundedWithInput(ctx context.Context, timeout time.Duration, dir, input,
 	// has already leaked to whatever backs up the home directory.
 	if err != nil {
 		detail := RedactString(strings.TrimSpace(string(output)))
+		arguments := RedactString(strings.Join(args, " "))
 		if bounded.Err() != nil && ctx.Err() == nil {
-			return detail, fmt.Errorf("%s %s timed out after %s: %s", name, strings.Join(args, " "), timeout, detail)
+			return detail, fmt.Errorf("%s %s timed out after %s: %s", name, arguments, timeout, detail)
 		}
-		return detail, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, detail)
+		return detail, fmt.Errorf("%s %s: %w: %s", name, arguments, err, detail)
 	}
 	return string(output), nil
 }
