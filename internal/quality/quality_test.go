@@ -944,6 +944,15 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	}
 }
 
+func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
+	if got := strings.Join(goCommand(CheckTest, false, 20*time.Minute), " "); got != "go test -timeout 20m0s ./..." {
+		t.Fatalf("go test command=%q", got)
+	}
+	if got := strings.Join(goCommand(CheckTest, true, 0), " "); got != "go test -timeout 0 -p 1 ./..." {
+		t.Fatalf("unbounded single-worker go test command=%q", got)
+	}
+}
+
 func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")

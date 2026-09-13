@@ -35,16 +35,27 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	targetRoot := filepath.Join(root, "target-projects")
 	sourceHome := filepath.Join(root, "source-home")
 	targetHome := filepath.Join(root, "target-home")
+	ambientXDGConfig := filepath.Join(root, "ambient-xdg-config")
+	ambientXDGState := filepath.Join(root, "ambient-xdg-state")
+	ambientXDGCache := filepath.Join(root, "ambient-xdg-cache")
 	fakeBin := filepath.Join(root, "bin")
 	tmuxState := filepath.Join(root, "tmux")
 	harnessReceipt := filepath.Join(root, "target-harness-receipt")
-	for _, directory := range []string{sourceRoot, targetRoot, fakeBin, tmuxState} {
+	for _, directory := range []string{sourceRoot, targetRoot, ambientXDGConfig, ambientXDGState, ambientXDGCache, fakeBin, tmuxState} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv(wbhome.EnvOverride, sourceHome)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	// The source process deliberately carries conflicting XDG roots. The fake
+	// remote transport must replace all of them with target-owned paths; if it
+	// inherits even one, the target cannot find its config or writes custody
+	// state into the source environment. This reproduces the GitHub runner
+	// environment that exposed the original fixture leak on every platform.
+	t.Setenv("XDG_CONFIG_HOME", ambientXDGConfig)
+	t.Setenv("XDG_STATE_HOME", ambientXDGState)
+	t.Setenv("XDG_CACHE_HOME", ambientXDGCache)
 
 	binary := buildJourneyWB(t)
 	// Park always invokes the fixed remote command name, so the target is
@@ -200,7 +211,7 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 			t.Fatalf("target replay mutated member custody events for %s", member.Repository)
 		}
 	}
-	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt)
+	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt, continuation, "as session "+receipt.SuccessorWBSessionID)
 	if !bytes.Contains(harnessRaw, []byte("WB_SESSION_CONTINUATION_FILE=")) || !bytes.Contains(harnessRaw, []byte(continuation)) ||
 		!bytes.Contains(harnessRaw, []byte("as session "+receipt.SuccessorWBSessionID)) {
 		t.Fatalf("target harness receipt = %q, want the resumed identity and private continuation file", harnessRaw)
@@ -529,16 +540,20 @@ func terminateJourneyTmuxProcesses(t *testing.T, tmuxState string) {
 	}
 }
 
-func readJourneyHarnessReceipt(t *testing.T, path string) []byte {
+func readJourneyHarnessReceipt(t *testing.T, path string, completeMarkers ...string) []byte {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		raw, err := os.ReadFile(path)
-		if err == nil {
+		complete := err == nil
+		for _, marker := range completeMarkers {
+			complete = complete && bytes.Contains(raw, []byte(marker))
+		}
+		if complete {
 			return raw
 		}
-		if !os.IsNotExist(err) || time.Now().After(deadline) {
-			t.Fatalf("read target harness receipt: %v", err)
+		if (err != nil && !os.IsNotExist(err)) || time.Now().After(deadline) {
+			t.Fatalf("read complete target harness receipt: %v; content=%q", err, raw)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
