@@ -766,7 +766,7 @@ wb coverage . --test-shards 8 \
   --shard-package ./internal/worktrees \
   --coverage-profile profile.cov --minimum 58
 
-# Run Go vet/test/build and defined Node lint/test/build scripts.
+# Run Go vet/test/build and Node lint/test/build scripts or Nx targets.
 wb verify --fleet --filter sneat-co/ --parallel=2
 
 # Restrict verification to compilation-oriented checks for one repository.
@@ -823,8 +823,10 @@ separately-named task per repository — but one `wb worktree land`/`wb land`
 call only takes worktrees of a single repository, so that one task still
 lands with one call per repository.
 Verification runs `go vet ./...`, `go test ./...`,
-and `go build ./...` for each Go module; for a root Node project it runs only
+and `go build ./...` for each Go module; for a root Node project it runs
 defined `lint`, `test`, and `build` scripts with the detected package manager.
+If an Nx workspace omits those root scripts, WB runs the corresponding Nx
+targets across all applicable projects instead of silently skipping them.
 Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
