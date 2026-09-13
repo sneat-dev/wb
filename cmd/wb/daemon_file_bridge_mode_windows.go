@@ -3,10 +3,11 @@
 package main
 
 import (
-	"errors"
 	"os"
+
+	"github.com/strongo/cli-helpers/daemonlifecycle"
 )
 
-func verifyBridgePathSecurity(string, os.FileInfo, os.FileMode) error {
-	return errors.New("daemon file bridge is unavailable because this Windows build cannot verify owner-only ACLs")
+func verifyBridgePathSecurity(path string, _ os.FileInfo, _ os.FileMode) error {
+	return daemonlifecycle.ValidateOwnerOnly(path)
 }

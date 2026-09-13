@@ -113,7 +113,7 @@ rather than attempting a swap wb publishes no asset for.
 #### REQ: wb-homebrew-cask
 
 wb MUST configure Homebrew as its managing package manager, with the display
-command `brew update && brew upgrade --cask wb` and two ordered structured
+command `brew update && brew upgrade --yes --cask -- wb` and two ordered structured
 steps: `brew update`, then `brew upgrade --cask wb`. wb ships as a cask, not a
 formula, so the upgrade step MUST carry `--cask`. Refreshing Homebrew metadata
 prevents a stale custom tap from reporting the old cask as current. After
@@ -211,7 +211,7 @@ false verification claim.
 published WB release
 **When** the user runs `wb self-update --dry-run` in text and JSON modes
 **Then** the command resolves release availability once, reports the current and
-latest versions and `brew update && brew upgrade --cask wb`, and does not run Homebrew. Text
+latest versions and `brew update && brew upgrade --yes --cask -- wb`, and does not run Homebrew. Text
 uses labelled ASCII rows with terminal-aware color; redirected output has no
 ANSI escapes. JSON stdout contains one document with the version and manager
 fields, while any human-readable preview goes to stderr.

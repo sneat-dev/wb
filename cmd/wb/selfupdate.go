@@ -44,7 +44,7 @@ var selfUpdateUndeterminedVersions = []string{"unknown", "(devel)"}
 // selfUpdateHomebrewUpgradeCommand is the exact command printed for a
 // Homebrew-managed install. wb ships as a cask, not a formula, so this must
 // carry --cask (REQ: wb-homebrew-cask).
-const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --cask wb"
+const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --yes --cask -- wb"
 
 // selfUpdateHomebrewInstallCommand is named alongside elevated permissions
 // in the permission-failure remedy. It only ever fires on the manual-install
@@ -67,11 +67,7 @@ func newSelfUpdateConfig() selfupdate.Config {
 		CurrentVersion:       collectVersion().Version,
 		UndeterminedVersions: selfUpdateUndeterminedVersions,
 		Managers: []selfupdate.Manager{
-			selfupdate.Homebrew(selfUpdateHomebrewUpgradeCommand).
-				WithExecutableUpgradeSteps(
-					selfupdate.ManagedCommand{Executable: "brew", Args: []string{"update"}},
-					selfupdate.ManagedCommand{Executable: "brew", Args: []string{"upgrade", "--cask", "wb"}},
-				),
+			selfupdate.HomebrewCask("wb"),
 		},
 		// Matches .goreleaser.yml's builds.goos/goarch. A host outside this
 		// set is refused by the library's own unsupported-platform rule
