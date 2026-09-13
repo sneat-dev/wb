@@ -270,6 +270,10 @@ jobs:
         run: >-
           go test ./internal/lifecyclehooks
           -run '^TestWindowsTrust'
+      - name: Test daemon Windows ACL consumers
+        run: >-
+          go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb
+          -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 

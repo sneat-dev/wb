@@ -236,6 +236,10 @@ drift after PR publication, WB leaves every source commit and managed worktree
 recoverable, records the exact failed phase, and prints an exact resume or
 remediation command.
 
+If an operator asks to rebatch without adding a distinct source, the refusal
+MUST name `wb worktree merge resume <receipt>` as the same-source retry that
+preserves the existing candidate, receipt, and pull-request lineage.
+
 ### AC: landed-failure-has-a-forward-revert-path
 
 Given an exact landing receipt whose post-target checks fail, `merge revert`

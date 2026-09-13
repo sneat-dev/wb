@@ -249,6 +249,24 @@ func TestDaemonRecoverReturnsJSONForActiveTransitionAndApplyRefuses(t *testing.T
 	}
 }
 
+func TestDaemonRecoverReportsIdleLockAsNoStaleOwner(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+	release, err := controller.lifecycleLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	result, err := controller.RecoverLifecycleLock(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Eligible || result.Applied || result.Reason != "no_stale_owner" || !strings.Contains(result.Detail, "idle") {
+		t.Fatalf("idle recovery result = %#v", result)
+	}
+}
+
 func TestDaemonLifecycleOwnerRefusesPartialAtomicRecord(t *testing.T) {
 	root := t.TempDir()
 	deps := daemonTestDependencies(t, root)

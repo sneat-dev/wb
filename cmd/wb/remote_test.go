@@ -363,10 +363,24 @@ func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
+	for _, want := range []string{"remote provider: git (git:team/wb-state)", "stale=1", "alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status output lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestRemoteStatusDiagnosticsReportProviderMismatch(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	cfg := remotestate.Config{Provider: "hub", URL: "https://wb.example", Machine: "vm"}
+	entries := []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: now, RemoteStore: "git:team/wb-state"}}}
+	rows := machineRows(entries, now, 24*time.Hour)
+	diagnostics := buildRemoteStatusDiagnostics(cfg, entries, rows, now)
+	if diagnostics.Provider != "hub" || diagnostics.Store != "hub:https://wb.example" || len(diagnostics.Mismatches) != 1 {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if !strings.Contains(diagnostics.Mismatches[0], "alice/laptop publishes via git:team/wb-state") {
+		t.Fatalf("mismatch = %q", diagnostics.Mismatches[0])
 	}
 }
 

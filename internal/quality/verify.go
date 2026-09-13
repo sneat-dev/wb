@@ -46,6 +46,10 @@ type RunOptions struct {
 	// GoShardPackages are module-relative package patterns such as
 	// ./internal/worktrees. Packages not named here still run exactly once.
 	GoShardPackages []string
+	// GoLintCommands replaces the default `go vet ./...` lint step with the
+	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
+	// keeps exact tool pins reproducible without invoking a shell.
+	GoLintCommands [][]string
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
@@ -156,9 +160,10 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			if check == CheckSpec {
 				continue
 			}
-			command := goCommand(check, options.SingleWorker, options.Timeout)
-			entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
-			report.Results = append(report.Results, entry)
+			for _, command := range goCommands(check, options) {
+				entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
+				report.Results = append(report.Results, entry)
+			}
 		}
 	}
 	if nodes, ok, err := nodeProjects(path); err != nil {
@@ -441,6 +446,17 @@ func goCommand(check Check, singleWorker bool, timeout time.Duration) []string {
 	default:
 		return nil
 	}
+}
+
+func goCommands(check Check, options RunOptions) [][]string {
+	if check == CheckLint && len(options.GoLintCommands) > 0 {
+		commands := make([][]string, len(options.GoLintCommands))
+		for i := range options.GoLintCommands {
+			commands[i] = append([]string(nil), options.GoLintCommands[i]...)
+		}
+		return commands
+	}
+	return [][]string{goCommand(check, options.SingleWorker, options.Timeout)}
 }
 
 // nodeCheckCommand runs an explicit package script when one exists. An Nx

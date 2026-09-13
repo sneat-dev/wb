@@ -36,6 +36,7 @@ const (
 	MaxOwnerLength    = 256
 	MaxAttentionLen   = 1024
 	MaxPRURLLength    = 2048
+	MaxRemoteStoreLen = 2048
 
 	AttentionOwnerInactive      = "owner session is no longer active"
 	AttentionSupersessionReview = "supersession evidence requires review"
@@ -72,6 +73,7 @@ type Snapshot struct {
 	Machine       string     `json:"machine" firestore:"machine"`
 	PublishedAt   time.Time  `json:"published_at" firestore:"published_at"`
 	LastSeenAt    time.Time  `json:"last_seen_at,omitempty" firestore:"last_seen_at,omitempty"`
+	RemoteStore   string     `json:"remote_store,omitempty" firestore:"remote_store,omitempty"`
 	Repositories  []string   `json:"repositories" firestore:"repositories"`
 	Worktrees     []Worktree `json:"worktrees" firestore:"worktrees"`
 }
@@ -181,6 +183,9 @@ func (snapshot Snapshot) Validate() error {
 	}
 	if snapshot.PublishedAt.IsZero() {
 		return fmt.Errorf("%w: published_at is required", ErrInvalidSnapshot)
+	}
+	if len(snapshot.RemoteStore) > MaxRemoteStoreLen || !printable(snapshot.RemoteStore) || strings.ContainsAny(snapshot.RemoteStore, "\r\n\t") {
+		return fmt.Errorf("%w: remote_store is invalid", ErrInvalidSnapshot)
 	}
 	if len(snapshot.Worktrees) > MaxWorktrees {
 		return fmt.Errorf("%w: worktrees exceeds %d entries", ErrInvalidSnapshot, MaxWorktrees)
