@@ -272,8 +272,8 @@ jobs:
           -run '^TestWindowsTrust'
       - name: Test daemon Windows ACL consumers
         run: >-
-          go test ./cmd/wb
-          -run '^TestWindowsDaemon'
+          go test ./internal/unixcompat ./cmd/wb
+          -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestWindowsDaemon)'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 

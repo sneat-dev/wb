@@ -72,6 +72,11 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 		}
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
+			if err = daemonlifecycle.ProtectOwnerOnly(path); err != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return "", fmt.Errorf("protect daemon file bridge key: %w", err)
+			}
 			if _, err = file.Write([]byte(hex.EncodeToString(value))); err == nil {
 				err = file.Sync()
 			}
@@ -762,6 +767,9 @@ func writeDaemonFileEnvelope(directory, id string, envelope daemonFileEnvelope) 
 			_ = os.Remove(temporary)
 		}
 	}()
+	if err := daemonlifecycle.ProtectOwnerOnly(temporary); err != nil {
+		return fmt.Errorf("protect daemon file bridge envelope: %w", err)
+	}
 	if _, err = file.Write(contents); err == nil {
 		err = file.Sync()
 	}

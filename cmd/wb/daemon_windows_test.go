@@ -84,8 +84,18 @@ func TestWindowsDaemonFileBridgeAcceptsInheritedAncestorsAndProtectsRuntime(t *t
 	if err != nil {
 		t.Fatalf("prepare bridge below inherited project ancestors: %v", err)
 	}
-	if _, err := daemonFileBridgeKey(root, true); err != nil {
+	key, err := daemonFileBridgeKey(root, true)
+	if err != nil {
 		t.Fatalf("create bridge key below protected runtime: %v", err)
+	}
+	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "acl-probe", SchedulerGeneration: "1"}
+	envelope.PayloadSHA256 = daemonFilePayloadDigest(envelope)
+	envelope.MAC = daemonFileEnvelopeMAC(envelope, key)
+	if err := writeDaemonFileEnvelope(requests, envelope.ID, envelope); err != nil {
+		t.Fatalf("write protected bridge envelope: %v", err)
+	}
+	if _, err := readDaemonFileEnvelope(filepath.Join(requests, envelope.ID+".json")); err != nil {
+		t.Fatalf("read protected bridge envelope: %v", err)
 	}
 
 	for _, path := range []string{

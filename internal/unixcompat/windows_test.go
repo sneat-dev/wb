@@ -5,6 +5,7 @@ package unix
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -40,5 +41,32 @@ func TestOpenNoFollowCreatesMissingFile(t *testing.T) {
 	}
 	if !info.Mode().IsRegular() {
 		t.Fatalf("created mode = %v, want regular file", info.Mode())
+	}
+}
+
+func TestOpenNoFollowTransfersSingleHandleOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owned.lock")
+	fd, err := Open(path, O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = Close(fd)
+		t.Fatal("wrap transferred Windows handle")
+	}
+	var stat Stat_t
+	if err := Fstat(fd, &stat); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.Gosched()
+	if _, err := file.Stat(); err != nil {
+		_ = file.Close()
+		t.Fatalf("transferred handle was closed by another os.File owner: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
