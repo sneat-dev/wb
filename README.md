@@ -633,11 +633,49 @@ hooks:
 ```
 
 Repository patterns match canonical `host/owner/repository` identities;
-exclusions win. Repeated events for the same executor and checkout in one WB
-operation coalesce to the latest commit. Local receipts are appended beneath
-the user's WB state directory without command output or credentials. Hook,
-configuration, and receipt failures warn but do not rewrite a successful Git
-update as a failed update.
+exclusions win. Matching updates are durably queued, so the Git operation does
+not wait for the external tool. Repeated pending events for the same executor
+and checkout coalesce across WB processes to the earliest old commit and latest
+new commit. One background worker owns the queue and runs at most two executors
+at once; interrupted claims return to the queue on the next worker start.
+
+The XDG config and state roots must resolve outside every matched checkout.
+Config, state, and receipt storage reject symlinks or untrusted ownership and
+write permissions. Executors must resolve outside the checkout, be owned by the
+current user or root, and not be group/world-writable. On Windows they must be
+direct `.exe` or `.com` files with a trusted owner and no broadly writable ACL.
+Immediately before execution, WB revalidates the executable identity plus the
+checkout's physical directory, canonical repository identity, and queued HEAD.
+
+Delivery is at least once, so executors must be idempotent for a repository and
+target commit. Each terminal attempt appends a private receipt beneath the
+user's XDG state directory and a per-ID index supports exact retries. Standard
+output and standard error are stored separately in private per-attempt files
+capped at 64 KiB each, never printed or copied into the receipt. Invalid queue
+records are quarantined without blocking valid work; invalid receipt lines are
+reported without hiding later records.
+
+```sh
+wb hooks lifecycle check                 # validate config and executable trust
+wb hooks lifecycle status                # queue, worker health, receipts, diagnostics
+wb hooks lifecycle resume                # wake stranded durable work
+wb hooks lifecycle retry <receipt-id>    # requeue one exact failed attempt
+wb hooks lifecycle gc                    # preview receipt/diagnostic retention
+wb hooks lifecycle gc --apply            # remove only the previewed old data
+wb hooks lifecycle backfill              # preview existing canonical repos
+wb hooks lifecycle backfill --apply      # enqueue the previewed matches
+```
+
+Backfill does not change Git and is deliberately dry-run by default. It reads
+each canonical repository's current HEAD and passes matching entries through
+the same durable queue. Executor arguments remain generic; in the example,
+`--init` lets CodeGrapher initialize an index that does not exist yet. Hook,
+configuration, queue, worker-start, and receipt failures warn but do not rewrite
+a successful Git update as a failed update. Asynchronous failures remain in
+worker health and produce a warning on the next lifecycle dispatch. GC retains
+at least the newest 1,000 receipts, removes nothing newer than 30 days, and
+protects failed receipts whose warning has not yet been surfaced; both defaults
+are configurable by flags.
 
 ### `wb run` — governed commands and config-driven recipes
 
@@ -766,7 +804,7 @@ wb coverage . --test-shards 8 \
   --shard-package ./internal/worktrees \
   --coverage-profile profile.cov --minimum 58
 
-# Run Go vet/test/build and defined Node lint/test/build scripts.
+# Run Go vet/test/build and Node lint/test/build scripts or Nx targets.
 wb verify --fleet --filter sneat-co/ --parallel=2
 
 # Restrict verification to compilation-oriented checks for one repository.
@@ -832,9 +870,11 @@ separately-named task per repository — but one `wb worktree land`/`wb land`
 call only takes worktrees of a single repository, so that one task still
 lands with one call per repository.
 Verification runs the repository's configured Go lint commands (defaulting to
-`go vet ./...`), `go test ./...`,
+`go vet ./...`), `go test -timeout <WB timeout> ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.
+If an Nx workspace omits those root scripts, WB runs the corresponding Nx
+targets across all applicable projects instead of silently skipping them.
 Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the

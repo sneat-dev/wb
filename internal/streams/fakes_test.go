@@ -14,20 +14,25 @@ import (
 // fakeGit answers the Git port from in-memory tables. Every stream verb is
 // exercised against it, so a refusal is proven rather than assumed reachable.
 type fakeGit struct {
-	defaultBranch map[string]string
-	pushed        map[string]string
-	pushErr       map[string]error
-	remoteHeads   map[string]string
-	localHeads    map[string]string
-	notIn         map[string][]Commit
-	notInErr      map[string]error
-	deleted       []string
-	deleteErr     map[string]error
-	fetchErr      map[string]error
-	dirty         map[string][]string
-	tags          map[string][]string
-	log           map[string][]string
-	fetched       []string
+	defaultBranch    map[string]string
+	currentBranch    map[string]string
+	currentBranchErr map[string]error
+	pushed           map[string]string
+	pushErr          map[string]error
+	remoteHeads      map[string]string
+	localBranchHeads map[string]string
+	localHeads       map[string]string
+	ancestors        map[string]bool
+	notIn            map[string][]Commit
+	notInErr         map[string]error
+	deleted          []string
+	deleteErr        map[string]error
+	beforeDelete     func(dir, branch string)
+	fetchErr         map[string]error
+	dirty            map[string][]string
+	tags             map[string][]string
+	log              map[string][]string
+	fetched          []string
 	// calls records the order of origin-touching operations so a test can
 	// prove a fetch preceded a read.
 	calls []string
@@ -38,22 +43,32 @@ type fakeGit struct {
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		defaultBranch: map[string]string{},
-		pushed:        map[string]string{},
-		pushErr:       map[string]error{},
-		remoteHeads:   map[string]string{},
-		localHeads:    map[string]string{},
-		notIn:         map[string][]Commit{},
-		notInErr:      map[string]error{},
-		deleteErr:     map[string]error{},
-		fetchErr:      map[string]error{},
-		dirty:         map[string][]string{},
-		tags:          map[string][]string{},
-		log:           map[string][]string{},
+		defaultBranch:    map[string]string{},
+		currentBranch:    map[string]string{},
+		currentBranchErr: map[string]error{},
+		pushed:           map[string]string{},
+		pushErr:          map[string]error{},
+		remoteHeads:      map[string]string{},
+		localBranchHeads: map[string]string{},
+		localHeads:       map[string]string{},
+		ancestors:        map[string]bool{},
+		notIn:            map[string][]Commit{},
+		notInErr:         map[string]error{},
+		deleteErr:        map[string]error{},
+		fetchErr:         map[string]error{},
+		dirty:            map[string][]string{},
+		tags:             map[string][]string{},
+		log:              map[string][]string{},
 	}
 }
 
 func (git *fakeGit) CurrentBranch(_ context.Context, dir string) (string, error) {
+	if err := git.currentBranchErr[dir]; err != nil {
+		return "", err
+	}
+	if branch, ok := git.currentBranch[dir]; ok {
+		return branch, nil
+	}
 	return "stream/test", nil
 }
 
@@ -111,6 +126,10 @@ func (git *fakeGit) PushBranch(_ context.Context, dir, branch string) (string, e
 	sha := git.localHeads[dir]
 	if sha == "" {
 		sha = "sha-" + filepath.Base(dir)
+		// A real push originates at the worktree's HEAD. Keep the fake's local
+		// and published views coherent so remote-advance tests do not model a
+		// branch that never existed locally.
+		git.localHeads[dir] = sha
 	}
 	git.pushed[dir] = branch
 	git.remoteHeads[dir+" "+branch] = sha
@@ -126,6 +145,18 @@ func (git *fakeGit) LocalHead(_ context.Context, dir string) (string, error) {
 	return git.localHeads[dir], nil
 }
 
+func (git *fakeGit) LocalBranchHead(_ context.Context, dir, branch string) (string, bool, error) {
+	sha, ok := git.localBranchHeads[dir+" "+branch]
+	return sha, ok, nil
+}
+
+func (git *fakeGit) IsAncestor(_ context.Context, dir, ancestor, descendant string) (bool, error) {
+	if ancestor == descendant {
+		return true, nil
+	}
+	return git.ancestors[dir+" "+ancestor+" "+descendant], nil
+}
+
 func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([]Commit, error) {
 	git.calls = append(git.calls, "commits "+dir)
 	key := dir + " " + branch + " " + base
@@ -135,7 +166,13 @@ func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([
 	return git.notIn[key], nil
 }
 
-func (git *fakeGit) DeleteRemoteBranch(_ context.Context, dir, branch string) error {
+func (git *fakeGit) DeleteRemoteBranch(_ context.Context, dir, branch, expectedSHA string) error {
+	if git.beforeDelete != nil {
+		git.beforeDelete(dir, branch)
+	}
+	if remote, present := git.remoteHeads[dir+" "+branch]; present && remote != expectedSHA {
+		return fmt.Errorf("origin/%s advanced to %s after expected %s", branch, remote, expectedSHA)
+	}
 	if err := git.deleteErr[dir+" "+branch]; err != nil {
 		return err
 	}
@@ -160,18 +197,27 @@ func (git *fakeGit) LogSubjects(_ context.Context, dir, from, to string) ([]stri
 // fakeHub answers the GitHub port and records every mutation, so a test can
 // assert what a verb did to a pull request rather than that it did not error.
 type fakeHub struct {
-	nextNumber   int
-	created      []PullRequest
-	createErr    map[string]error
-	byBranch     map[string]PullRequest
-	targeting    map[string][]PullRequest
-	targetingErr map[string]error
-	closed       []int
-	closeErr     map[int]error
-	retargeted   map[int]string
-	byNumber     map[int]PullRequest
-	mainStatus   map[string]string
-	mainErr      map[string]error
+	nextNumber         int
+	created            []PullRequest
+	createErr          map[string]error
+	byBranch           map[string]PullRequest
+	targeting          map[string][]PullRequest
+	targetingErr       map[string]error
+	closed             []int
+	closeErr           map[int]error
+	retargeted         map[int]string
+	byNumber           map[int]PullRequest
+	mainStatus         map[string]string
+	mainErr            map[string]error
+	requireExistingDir bool
+}
+
+func (hub *fakeHub) requireDir(dir string) error {
+	if !hub.requireExistingDir {
+		return nil
+	}
+	_, err := os.Stat(dir)
+	return err
 }
 
 func newFakeHub() *fakeHub {
@@ -216,6 +262,9 @@ func (hub *fakeHub) PullRequestForBranch(_ context.Context, dir, branch string) 
 }
 
 func (hub *fakeHub) OpenPullRequestsTargeting(_ context.Context, dir, base string) ([]PullRequest, error) {
+	if err := hub.requireDir(dir); err != nil {
+		return nil, err
+	}
 	if err := hub.targetingErr[dir+" "+base]; err != nil {
 		return nil, err
 	}
@@ -228,7 +277,10 @@ func (hub *fakeHub) OpenPullRequestsTargeting(_ context.Context, dir, base strin
 	return found, nil
 }
 
-func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ string) error {
+func (hub *fakeHub) ClosePullRequest(_ context.Context, dir string, number int, _ string) error {
+	if err := hub.requireDir(dir); err != nil {
+		return err
+	}
 	if err := hub.closeErr[number]; err != nil {
 		return err
 	}
@@ -240,7 +292,10 @@ func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ 
 	return nil
 }
 
-func (hub *fakeHub) RetargetPullRequest(_ context.Context, _ string, number int, base string) error {
+func (hub *fakeHub) RetargetPullRequest(_ context.Context, dir string, number int, base string) error {
+	if err := hub.requireDir(dir); err != nil {
+		return err
+	}
 	hub.retargeted[number] = base
 	if pullRequest, ok := hub.byNumber[number]; ok {
 		pullRequest.Base = base
@@ -258,12 +313,13 @@ func (hub *fakeHub) DefaultBranchStatus(_ context.Context, dir, branch string) (
 
 // fakeWorktrees stands in for the existing worktree creation and cleanup path.
 type fakeWorktrees struct {
-	root      string
-	planErr   error
-	createErr error
-	created   []CreatedWorktree
-	removed   []string
-	removeErr map[string]error
+	root            string
+	planErr         error
+	createErr       error
+	created         []CreatedWorktree
+	removed         []string
+	removalReceipts map[string]*SquashAbsorptionReceipt
+	removeErr       map[string]error
 }
 
 func (worktrees *fakeWorktrees) PlannedWorktree(task, repository string) (string, error) {
@@ -297,13 +353,20 @@ func (worktrees *fakeWorktrees) Create(_ context.Context, task, branch string, r
 	return results, nil
 }
 
-func (worktrees *fakeWorktrees) Remove(_ context.Context, _, repository, worktree string) error {
+func (worktrees *fakeWorktrees) Remove(_ context.Context, _, repository, worktree string, receipt *SquashAbsorptionReceipt) error {
 	if worktrees.removeErr != nil {
 		if err := worktrees.removeErr[repository]; err != nil {
 			return err
 		}
 	}
 	worktrees.removed = append(worktrees.removed, worktree)
+	if receipt != nil {
+		if worktrees.removalReceipts == nil {
+			worktrees.removalReceipts = map[string]*SquashAbsorptionReceipt{}
+		}
+		copy := *receipt
+		worktrees.removalReceipts[worktree] = &copy
+	}
 	return os.RemoveAll(worktree)
 }
 

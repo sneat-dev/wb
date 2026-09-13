@@ -154,9 +154,10 @@ var redactionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`npm_[A-Za-z0-9]{20,}`),
 	// Anything spelled as a secret assignment.
 	regexp.MustCompile(`(?i)\b(token|secret|password|api[_-]?key)\b\s*[:=]\s*\S+`),
-	// Bearer credentials and URL-embedded credentials.
+	// Bearer credentials and HTTP(S) URL userinfo, including token-only and
+	// empty-password forms.
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{12,}`),
-	regexp.MustCompile(`(?i)https?://[^/\s:@]+:[^/\s@]+@`),
+	regexp.MustCompile(`(?i)https?://[^/\s@]+@`),
 }
 
 // RedactString removes credential-shaped substrings.

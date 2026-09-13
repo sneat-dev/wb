@@ -61,6 +61,13 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	// This whole-journey test reaches the production lifecycle dispatcher. Keep
+	// the test hermetic: inheriting a developer or CI runner's XDG config could
+	// authorize real user executors against this temporary repository, while an
+	// asynchronous worker could observe the checkout only after cleanup.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg-config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "xdg-state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "xdg-cache"))
 	previousRoot := projectsRoot
 	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousRoot })

@@ -52,7 +52,12 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 #### REQ: conventional-node-checks
 
-For a root `package.json`, `wb verify` MUST run only defined `lint`, `test`, and `build` scripts using the declared or lockfile-detected npm, pnpm, yarn, or bun package manager. A missing optional script is skipped rather than failed.
+For a root `package.json`, `wb verify` MUST run defined `lint`, `test`, and
+`build` scripts using the declared or lockfile-detected npm, pnpm, yarn, or bun
+package manager. When that lockfile scope is an Nx workspace and a root script
+is absent, WB MUST execute the corresponding Nx target across all applicable
+projects instead of reporting the check skipped. Outside an Nx workspace, a
+missing optional script is skipped rather than failed.
 
 #### REQ: complete-index
 
@@ -68,7 +73,12 @@ A repository is an external SpecScore Plans store (SpecScore's Plan repository r
 
 #### REQ: bounded-command-execution
 
-Coverage, verification, and check commands MUST apply `--timeout` independently to every external command. The default timeout MUST be finite; `0` MAY explicitly disable it. `--retry=N` MUST make at most N additional attempts for a failed command and record the number of attempts in the report.
+Coverage, verification, and check commands MUST apply `--timeout` independently
+to every external command. A Go test process MUST receive the same value through
+its native `-timeout` flag so Go's hidden ten-minute default cannot terminate a
+check whose WB budget is longer; `--timeout=0` MUST pass `-timeout 0`. The
+default timeout MUST be finite. `--retry=N` MUST make at most N additional
+attempts for a failed command and record the number of attempts in the report.
 
 #### REQ: repository-safe-test-sharding
 

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestStreamWorktreesPlansLocalAndConfiguredSharedPaths(t *testing.T) {
@@ -56,5 +60,34 @@ func TestStreamWorktreesRefusesAnInvalidConfiguredRoot(t *testing.T) {
 	}
 	if _, err := (&streamWorktrees{projectsRoot: projectsRoot}).PlannedWorktree("stream-paths", "acme/app"); err == nil {
 		t.Fatal("invalid user worktree root planned a stream checkout")
+	}
+}
+
+func TestStreamWorktreesPassesExactSquashReceiptToCleanup(t *testing.T) {
+	previous := streamWorktreeCleanup
+	t.Cleanup(func() { streamWorktreeCleanup = previous })
+	var got worktrees.CleanupOptions
+	streamWorktreeCleanup = func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
+		got = options
+		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{
+			ListResult: worktrees.ListResult{Repository: "acme/app"}, Applied: true,
+		}}}, nil
+	}
+	receipt := &streams.SquashAbsorptionReceipt{
+		Target: "main", SourceBranch: "stream/incidentius", SourceSHA: "41cd41cd41cd41cd41cd41cd41cd41cd41cd41cd",
+		CandidateSHA: "8def8def8def8def8def8def8def8def8def8def", LandingSHA: "8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e",
+	}
+	worktree := "/worktrees/incidentius/acme/app"
+	if err := (&streamWorktrees{projectsRoot: t.TempDir()}).Remove(context.Background(), "incidentius", "acme/app", worktree, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.MergeReceiptProofs) != 1 {
+		t.Fatalf("cleanup proofs = %#v, want one", got.MergeReceiptProofs)
+	}
+	proof := got.MergeReceiptProofs[0]
+	if proof.Repository != "acme/app" || proof.Target != receipt.Target || proof.SourceTask != "incidentius" ||
+		proof.SourceWorktree != worktree || proof.SourceBranch != receipt.SourceBranch || proof.SourceSHA != receipt.SourceSHA ||
+		proof.CandidateSHA != receipt.CandidateSHA || proof.LandingSHA != receipt.LandingSHA {
+		t.Fatalf("cleanup proof = %#v, want exact receipt mapping", proof)
 	}
 }

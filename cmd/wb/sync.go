@@ -45,8 +45,9 @@ names it as archived so it is never silently indistinguishable from an
 ordinary clone.
 
 After successful mutations, trusted checkout-updated hooks from the standard
-user wb.yaml run only for clones and repositories whose checked-out HEAD
-actually changed; already-current pulls and dry runs never fire them.
+user wb.yaml are durably enqueued only for clones and repositories whose
+checked-out HEAD actually changed; already-current pulls and dry runs never
+fire them. Sync does not wait for the external executors.
 
 When stdout is a terminal, progress uses the full terminal and the final text
 report is written to stderr after the terminal is restored. Piped, CI, and

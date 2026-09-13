@@ -29,6 +29,7 @@ func newHooksCmd() *cobra.Command {
 	cmd.AddCommand(newHooksMetricsCmd())
 	cmd.AddCommand(newHooksMeasureCmd())
 	cmd.AddCommand(newHooksPushTierCmd())
+	cmd.AddCommand(newHooksLifecycleCmd())
 	return cmd
 }
 

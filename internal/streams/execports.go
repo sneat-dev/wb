@@ -183,6 +183,29 @@ func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// LocalBranchHead implements Git without falling back to a remote-tracking
+// ref. A recovered stream member has no worktree to inspect, but its canonical
+// clone can still hold an unpushed stream branch.
+func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
+	out, err := git.run(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read local %s in %s: %w", branch, dir, err)
+	}
+	sha := strings.TrimSpace(out)
+	return sha, sha != "", nil
+}
+
+// IsAncestor implements Git without treating patch-equivalence as commit
+// identity. A squash-merged stream PR has immutable GitHub identities, so
+// only a local head on that PR's ancestry can prove it has no later work.
+func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	return git.isAncestor(ctx, dir, ancestor, descendant)
+}
+
 // CommitsNotIn implements Git by patch identity.
 //
 // `git cherry` answers which commits base does not already carry *as patches*,
@@ -348,12 +371,27 @@ func (git ExecGit) LogSubjects(ctx context.Context, dir, from, to string) ([]str
 
 // DeleteRemoteBranch implements Git and asserts the effect: after the push
 // that deletes the ref, origin must no longer resolve it.
-func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch string) error {
-	if _, err := git.run(ctx, dir, "push", "origin", "--delete", branch); err != nil {
-		// A branch that is already gone is the state the caller wanted; only
-		// a still-present ref is a failure, which the check below decides.
-		if _, present, headErr := git.RemoteHead(ctx, dir, branch); headErr == nil && !present {
+func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error {
+	if strings.TrimSpace(expectedSHA) == "" {
+		return fmt.Errorf("refusing to delete origin/%s without an expected remote SHA", branch)
+	}
+	lease := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
+	if _, err := git.run(ctx, dir, "push", lease, "origin", ":"+branch); err != nil {
+		// A branch that is already gone is the state the caller wanted. Read
+		// every push destination itself rather than refs/remotes/origin/<branch>:
+		// origin may have a separate pushurl, and ordinary fetches do not prune,
+		// so neither the fetch URL nor its tracking ref proves push-side absence.
+		remoteHeads, headErr := git.remoteHeadsOnOriginPushDestinations(ctx, dir, branch)
+		if headErr != nil {
+			return fmt.Errorf("delete origin/%s from %s: %w; authoritative push-destination reread failed: %v", branch, dir, err, headErr)
+		}
+		if len(remoteHeads) == 0 {
 			return nil
+		}
+		for _, remote := range remoteHeads {
+			if remote != expectedSHA {
+				return fmt.Errorf("refusing to delete origin/%s from %s: a push destination advanced to %s after expected %s", branch, dir, remote, expectedSHA)
+			}
 		}
 		return fmt.Errorf("delete origin/%s from %s: %w", branch, dir, err)
 	}
@@ -366,6 +404,46 @@ func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch string) e
 		return fmt.Errorf("pushed a deletion of %s but origin/%s still resolves", branch, branch)
 	}
 	return nil
+}
+
+// remoteHeadsOnOriginPushDestinations bypasses the local remote-tracking
+// namespace and asks every URL `git push origin` targets for one exact branch.
+// Git can use remote.origin.pushurl instead of its fetch URL and can push to
+// multiple configured URLs. An idempotent retry is safe only when every
+// resolved destination authoritatively reports the ref absent; any read or
+// destination-resolution failure remains unknown and therefore fails closed.
+func (git ExecGit) remoteHeadsOnOriginPushDestinations(ctx context.Context, dir, branch string) ([]string, error) {
+	resolved, err := git.run(ctx, dir, "remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("resolve origin push destinations: %w", err)
+	}
+	var destinations []string
+	for _, line := range strings.Split(resolved, "\n") {
+		if destination := strings.TrimSpace(line); destination != "" {
+			destinations = append(destinations, destination)
+		}
+	}
+	if len(destinations) == 0 {
+		return nil, fmt.Errorf("resolve origin push destinations: git returned no URLs")
+	}
+
+	ref := "refs/heads/" + branch
+	remoteHeads := make([]string, 0, len(destinations))
+	for index, destination := range destinations {
+		out, err := git.run(ctx, dir, "ls-remote", "--heads", "--", destination, ref)
+		if err != nil {
+			return nil, fmt.Errorf("read %s from origin push destination %d: %s", ref, index+1, RedactString(err.Error()))
+		}
+		fields := strings.Fields(out)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 || fields[1] != ref {
+			return nil, fmt.Errorf("read %s from origin push destination %d: unexpected response %q", ref, index+1, RedactString(strings.TrimSpace(out)))
+		}
+		remoteHeads = append(remoteHeads, fields[0])
+	}
+	return remoteHeads, nil
 }
 
 // ExecGitHub runs the installed `gh`.
@@ -404,21 +482,27 @@ type pullRequestJSON struct {
 	State       string `json:"state"`
 	HeadRefName string `json:"headRefName"`
 	BaseRefName string `json:"baseRefName"`
+	HeadRefOID  string `json:"headRefOid"`
+	MergeCommit struct {
+		OID string `json:"oid"`
+	} `json:"mergeCommit"`
 }
 
 func (raw pullRequestJSON) toPullRequest() PullRequest {
 	return PullRequest{
-		Number: raw.Number,
-		URL:    raw.URL,
-		Title:  raw.Title,
-		Head:   raw.HeadRefName,
-		Base:   raw.BaseRefName,
-		Draft:  raw.IsDraft,
-		State:  raw.State,
+		Number:   raw.Number,
+		URL:      raw.URL,
+		Title:    raw.Title,
+		Head:     raw.HeadRefName,
+		Base:     raw.BaseRefName,
+		Draft:    raw.IsDraft,
+		State:    raw.State,
+		HeadSHA:  raw.HeadRefOID,
+		MergeSHA: raw.MergeCommit.OID,
 	}
 }
 
-const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName"
+const pullRequestFields = "number,url,title,isDraft,state,headRefName,baseRefName,headRefOid,mergeCommit"
 
 // PullRequestForBranch implements GitHub.
 func (hub ExecGitHub) PullRequestForBranch(ctx context.Context, dir, branch string) (PullRequest, bool, error) {
@@ -558,10 +642,11 @@ func runBoundedWithInput(ctx context.Context, timeout time.Duration, dir, input,
 	// has already leaked to whatever backs up the home directory.
 	if err != nil {
 		detail := RedactString(strings.TrimSpace(string(output)))
+		arguments := RedactString(strings.Join(args, " "))
 		if bounded.Err() != nil && ctx.Err() == nil {
-			return detail, fmt.Errorf("%s %s timed out after %s: %s", name, strings.Join(args, " "), timeout, detail)
+			return detail, fmt.Errorf("%s %s timed out after %s: %s", name, arguments, timeout, detail)
 		}
-		return detail, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, detail)
+		return detail, fmt.Errorf("%s %s: %w: %s", name, arguments, err, detail)
 	}
 	return string(output), nil
 }
