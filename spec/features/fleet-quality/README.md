@@ -52,7 +52,12 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 #### REQ: conventional-node-checks
 
-For a root `package.json`, `wb verify` MUST run only defined `lint`, `test`, and `build` scripts using the declared or lockfile-detected npm, pnpm, yarn, or bun package manager. A missing optional script is skipped rather than failed.
+For a root `package.json`, `wb verify` MUST run defined `lint`, `test`, and
+`build` scripts using the declared or lockfile-detected npm, pnpm, yarn, or bun
+package manager. When that lockfile scope is an Nx workspace and a root script
+is absent, WB MUST execute the corresponding Nx target across all applicable
+projects instead of reporting the check skipped. Outside an Nx workspace, a
+missing optional script is skipped rather than failed.
 
 #### REQ: complete-index
 
