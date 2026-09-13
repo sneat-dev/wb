@@ -28,6 +28,28 @@ func TestRepositoryRunOptionsLoadsExplicitShardingPolicy(t *testing.T) {
 	}
 }
 
+func TestRepositoryRunOptionsLoadsGoLintWithoutGoTest(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, repositoryQualityConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\ngo_lint:\n  commands:\n    - [go, vet, ./...]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := RunOptions{GoTestShards: 3, GoShardPackages: []string{"./existing"}}
+	options, err := RepositoryRunOptions(root, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.GoTestShards != 3 || strings.Join(options.GoShardPackages, ",") != "./existing" {
+		t.Fatalf("standalone go_lint changed go_test options: %+v", options)
+	}
+	if got := len(options.GoLintCommands); got != 1 || strings.Join(options.GoLintCommands[0], " ") != "go vet ./..." {
+		t.Fatalf("go lint commands = %#v", options.GoLintCommands)
+	}
+}
+
 func TestRepositoryRunOptionsFailsClosed(t *testing.T) {
 	for _, contents := range []string{
 		"version: 2\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n",

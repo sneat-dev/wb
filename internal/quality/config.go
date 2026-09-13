@@ -17,7 +17,7 @@ type repositoryQualityConfig struct {
 	GoLint  struct {
 		Commands [][]string `yaml:"commands"`
 	} `yaml:"go_lint"`
-	GoTest struct {
+	GoTest *struct {
 		Shards   int      `yaml:"shards"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"go_test"`
@@ -53,24 +53,26 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 	if config.Version != 1 {
 		return base, fmt.Errorf("repository quality policy %s has version %d; want 1", path, config.Version)
 	}
-	if config.GoTest.Shards < 2 {
-		return base, fmt.Errorf("repository quality policy %s go_test.shards must be at least 2", path)
-	}
-	if len(config.GoTest.Packages) == 0 {
-		return base, fmt.Errorf("repository quality policy %s go_test.packages must name at least one package", path)
-	}
-	seen := map[string]bool{}
-	for _, packagePath := range config.GoTest.Packages {
-		if strings.TrimSpace(packagePath) == "" {
-			return base, fmt.Errorf("repository quality policy %s contains an empty go_test package", path)
+	if config.GoTest != nil {
+		if config.GoTest.Shards < 2 {
+			return base, fmt.Errorf("repository quality policy %s go_test.shards must be at least 2", path)
 		}
-		if seen[packagePath] {
-			return base, fmt.Errorf("repository quality policy %s repeats go_test package %q", path, packagePath)
+		if len(config.GoTest.Packages) == 0 {
+			return base, fmt.Errorf("repository quality policy %s go_test.packages must name at least one package", path)
 		}
-		seen[packagePath] = true
+		seen := map[string]bool{}
+		for _, packagePath := range config.GoTest.Packages {
+			if strings.TrimSpace(packagePath) == "" {
+				return base, fmt.Errorf("repository quality policy %s contains an empty go_test package", path)
+			}
+			if seen[packagePath] {
+				return base, fmt.Errorf("repository quality policy %s repeats go_test package %q", path, packagePath)
+			}
+			seen[packagePath] = true
+		}
+		base.GoTestShards = config.GoTest.Shards
+		base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
 	}
-	base.GoTestShards = config.GoTest.Shards
-	base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
 	for commandIndex, command := range config.GoLint.Commands {
 		if len(command) == 0 {
 			return base, fmt.Errorf("repository quality policy %s go_lint.commands[%d] is empty", path, commandIndex)
