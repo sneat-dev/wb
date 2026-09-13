@@ -97,6 +97,11 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("multiline remote store err = %v", err)
 	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.RemoteStore = strings.Repeat("x", MaxRemoteStoreLen+1)
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("oversized remote store err = %v", err)
+	}
 }
 
 func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {

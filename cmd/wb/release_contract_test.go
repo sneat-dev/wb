@@ -210,7 +210,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"go build ./...",
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
 		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
-		"go test ./cmd/wb -run '^TestWindowsDaemon'",
+		"go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'",
 		"go test ./api/githubapp -count=1",
 	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)

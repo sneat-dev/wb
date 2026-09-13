@@ -58,8 +58,8 @@ func TestRepositoryRunOptionsFailsClosed(t *testing.T) {
 		"version: 1\ngo_test:\n  shards: 8\n  packages: [./cmd/wb, ./cmd/wb]\n",
 		"version: 1\nunknown: true\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n",
 		"version: 1\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n---\nversion: 1\n",
-		"version: 1\ngo_lint:\n  commands: [[]]\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n",
-		"version: 1\ngo_lint:\n  commands: [[go, \"\"]]\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n",
+		"version: 1\ngo_lint:\n  commands: [[]]\n",
+		"version: 1\ngo_lint:\n  commands: [[go, \"\"]]\n",
 	} {
 		root := t.TempDir()
 		path := filepath.Join(root, repositoryQualityConfigPath)
