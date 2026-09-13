@@ -210,6 +210,7 @@ type fakeHub struct {
 	titleUpdateCalls   []int
 	updateTitleErr     map[int]error
 	byNumber           map[int]PullRequest
+	beforePullRequest  func(int)
 	mainStatus         map[string]string
 	mainErr            map[string]error
 	requireExistingDir bool
@@ -257,6 +258,9 @@ func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, t
 }
 
 func (hub *fakeHub) PullRequest(_ context.Context, _ string, number int) (PullRequest, bool, error) {
+	if hub.beforePullRequest != nil {
+		hub.beforePullRequest(number)
+	}
 	pullRequest, ok := hub.byNumber[number]
 	return pullRequest, ok, nil
 }

@@ -644,6 +644,15 @@ func (engine *Engine) publishMember(ctx context.Context, name string, checkout C
 			ctx, checkout.Worktree, base, checkout.Branch, title, streamPullRequestBody(name, role))
 	}
 	if prErr == nil && found {
+		// Discovery is a completed remote receipt even when the narrower title
+		// repair below fails. Persist it first so status never claims an open PR
+		// is missing or that its branch runs no CI.
+		if _, err := engine.setMember(name, checkout.Repository, func(member *Member) {
+			member.PullRequest = pullRequest.Number
+			member.PullRequestURL = pullRequest.URL
+		}); err != nil {
+			return err
+		}
 		var repaired bool
 		repaired, prErr = engine.repairLegacyMemberPullRequestTitle(ctx, name, checkout, pullRequest)
 		if prErr != nil {
@@ -693,7 +702,19 @@ func legacyStreamPullRequestTitle(name, repository string) string {
 // rewrite. Exact equality is deliberate: anything else may be an operator's
 // title and must survive recovery untouched.
 func (engine *Engine) repairLegacyMemberPullRequestTitle(ctx context.Context, name string, checkout CreatedWorktree, pullRequest PullRequest) (bool, error) {
-	if pullRequest.Title != legacyStreamPullRequestTitle(name, checkout.Repository) {
+	legacyTitle := legacyStreamPullRequestTitle(name, checkout.Repository)
+	if pullRequest.Title != legacyTitle {
+		return false, nil
+	}
+	// Re-read by immutable PR number immediately before the mutation. GitHub
+	// does not expose a title compare-and-swap, so this cannot eliminate the
+	// sub-request race, but it prevents overwriting an operator edit made in
+	// the much larger window since branch discovery or stream-state loading.
+	current, found, err := engine.GitHub.PullRequest(ctx, checkout.Worktree, pullRequest.Number)
+	if err != nil {
+		return false, fmt.Errorf("re-read legacy stream pull request %s title: %w", pullRequest.URL, err)
+	}
+	if !found || !strings.EqualFold(current.State, "OPEN") || current.Head != checkout.Branch || current.Title != legacyTitle {
 		return false, nil
 	}
 	title := streamPullRequestTitle(name, checkout.Repository)
@@ -710,7 +731,13 @@ func (engine *Engine) reconcileRecordedMemberPullRequestTitle(ctx context.Contex
 			fmt.Errorf("read recorded stream pull request %d: %w", member.PullRequest, err))
 	}
 	if !found || !strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.Head != checkout.Branch {
-		return nil
+		// A previous title-update failure described an open matching PR. Once
+		// that premise is false, retaining the error would advertise a repair
+		// this join can no longer perform.
+		_, clearErr := engine.setMember(name, checkout.Repository, func(stored *Member) {
+			stored.PullRequestError = ""
+		})
+		return clearErr
 	}
 	repaired, err := engine.repairLegacyMemberPullRequestTitle(ctx, name, checkout, pullRequest)
 	if err != nil {

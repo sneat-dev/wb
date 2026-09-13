@@ -395,6 +395,38 @@ func TestJoinAdoptsAnOpenMemberPullRequestMissingFromStreamState(t *testing.T) {
 	}
 }
 
+func TestJoinPersistsAnAdoptedPullRequestWhenLegacyTitleRepairFails(t *testing.T) {
+	engine, _, hub, _, stream := startedStream(t, "adopt-title-failure", "acme/library")
+	member := stream.Members[0]
+	existing := PullRequest{
+		Number: 920, URL: "https://example.test/pull/920",
+		Title: "stream(adopt-title-failure): acme/library", Head: member.Branch,
+		Base: member.Base, Draft: true, State: "OPEN",
+	}
+	hub.byBranch[member.Worktree+" "+member.Branch] = existing
+	hub.byNumber[existing.Number] = existing
+	hub.updateTitleErr[existing.Number] = errors.New("GitHub rejected the title update")
+	if _, err := engine.setMember("adopt-title-failure", member.Repository, func(stored *Member) {
+		stored.PullRequest = 0
+		stored.PullRequestURL = ""
+		stored.PullRequestError = "process interrupted before the PR receipt was stored"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "adopt-title-failure", Repository: member.Repository})
+	if err != nil {
+		t.Fatalf("join recovery: %v", err)
+	}
+	recovered, _ := result.Stream.Member(member.Repository)
+	if recovered.PullRequest != existing.Number || recovered.PullRequestURL != existing.URL {
+		t.Fatalf("recovered member = %#v, want adopted PR %#v persisted despite title failure", recovered, existing)
+	}
+	if len(result.Reported) != 1 || result.Reported[0].Check != "stream-pull-request-title" || strings.Contains(result.Reported[0].Detail, "run no CI") {
+		t.Fatalf("reported = %#v, want the title finding without a false missing-PR claim", result.Reported)
+	}
+}
+
 func TestJoinRepairsARecordedLegacyMemberPullRequestTitleIdempotently(t *testing.T) {
 	engine, _, hub, _, stream := startedStream(t, "repair-title", "acme/library")
 	member := stream.Members[0]
@@ -438,6 +470,28 @@ func TestJoinPreservesAUserAuthoredMemberPullRequestTitle(t *testing.T) {
 	}
 }
 
+func TestJoinRechecksALegacyTitleBeforeEditing(t *testing.T) {
+	engine, _, hub, _, stream := startedStream(t, "concurrent-title", "acme/library")
+	member := stream.Members[0]
+	pullRequest := hub.byNumber[member.PullRequest]
+	pullRequest.Title = "stream(concurrent-title): acme/library"
+	hub.byNumber[member.PullRequest] = pullRequest
+	hub.byBranch[member.Worktree+" "+member.Branch] = pullRequest
+	hub.beforePullRequest = func(number int) {
+		hub.beforePullRequest = nil
+		current := hub.byNumber[number]
+		current.Title = "fix(api): operator edited during recovery"
+		hub.byNumber[number] = current
+	}
+
+	if _, err := engine.Join(context.Background(), JoinOptions{Name: "concurrent-title", Repository: member.Repository}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if len(hub.titleUpdateCalls) != 0 {
+		t.Fatalf("concurrent operator title was overwritten: %#v", hub.titleUpdateCalls)
+	}
+}
+
 func TestJoinReportsAndRedactsALegacyTitleUpdateFailure(t *testing.T) {
 	engine, _, hub, _, stream := startedStream(t, "title-failure", "acme/library")
 	member := stream.Members[0]
@@ -477,6 +531,47 @@ func TestJoinReportsAndRedactsALegacyTitleUpdateFailure(t *testing.T) {
 	last := events[len(events)-1]
 	if last.Phase != "pull-request-title" || last.Outcome != "findings" || strings.Contains(last.Detail, secret) {
 		t.Fatalf("event = %#v, want a redacted title finding", last)
+	}
+}
+
+func TestJoinClearsAnObsoleteTitleFailureWhenTheRecordedPullRequestNoLongerQualifies(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*fakeHub, Member)
+	}{
+		{name: "missing", mutate: func(hub *fakeHub, member Member) {
+			delete(hub.byNumber, member.PullRequest)
+		}},
+		{name: "closed", mutate: func(hub *fakeHub, member Member) {
+			pullRequest := hub.byNumber[member.PullRequest]
+			pullRequest.State = "CLOSED"
+			hub.byNumber[member.PullRequest] = pullRequest
+		}},
+		{name: "different head", mutate: func(hub *fakeHub, member Member) {
+			pullRequest := hub.byNumber[member.PullRequest]
+			pullRequest.Head = "operator/other-branch"
+			hub.byNumber[member.PullRequest] = pullRequest
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine, _, hub, _, stream := startedStream(t, "obsolete-title-error", "acme/library")
+			member := stream.Members[0]
+			if _, err := engine.setMember("obsolete-title-error", member.Repository, func(stored *Member) {
+				stored.PullRequestError = "legacy title update failed"
+			}); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(hub, member)
+
+			result, err := engine.Join(context.Background(), JoinOptions{Name: "obsolete-title-error", Repository: member.Repository})
+			if err != nil {
+				t.Fatalf("join: %v", err)
+			}
+			recovered, _ := result.Stream.Member(member.Repository)
+			if recovered.PullRequestError != "" || len(result.Reported) != 0 || len(hub.titleUpdateCalls) != 0 {
+				t.Fatalf("recovered = %#v, reported = %#v, updates = %#v; want obsolete title failure retired", recovered, result.Reported, hub.titleUpdateCalls)
+			}
+		})
 	}
 }
 
