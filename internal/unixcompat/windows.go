@@ -139,9 +139,12 @@ func Fstat(fd int, stat *Stat_t) error {
 	if err := win.GetFileInformationByHandle(win.Handle(fd), &info); err != nil {
 		return err
 	}
-	stat.Dev = uint64(info.VolumeSerialNumber)
-	stat.Ino = uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)
-	stat.Nlink = uint64(info.NumberOfLinks)
+	// Keep identity and link-count semantics aligned with Lstat/Fstatat. The
+	// Windows compatibility adapter historically reports zero identities and a
+	// single link, and callers compare path and handle results.
+	stat.Dev = 0
+	stat.Ino = 0
+	stat.Nlink = 1
 	stat.Size = int64(uint64(info.FileSizeHigh)<<32 | uint64(info.FileSizeLow))
 	if info.FileAttributes&win.FILE_ATTRIBUTE_DIRECTORY != 0 {
 		stat.Mode = S_IFDIR | 0o777

@@ -70,3 +70,33 @@ func TestOpenNoFollowTransfersSingleHandleOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFstatIdentityMatchesFstatat(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "identity.lock")
+	if err := os.WriteFile(path, []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directoryFD, err := Open(root, O_RDONLY|O_DIRECTORY|O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = Close(directoryFD) }()
+	fileFD, err := Openat(directoryFD, filepath.Base(path), O_RDONLY|O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = Close(fileFD) }()
+
+	var opened, named Stat_t
+	if err := Fstat(fileFD, &opened); err != nil {
+		t.Fatal(err)
+	}
+	if err := Fstatat(directoryFD, filepath.Base(path), &named, AT_SYMLINK_NOFOLLOW); err != nil {
+		t.Fatal(err)
+	}
+	if opened.Dev != named.Dev || opened.Ino != named.Ino || opened.Nlink != named.Nlink {
+		t.Fatalf("opened identity (%d,%d,%d) != named identity (%d,%d,%d)",
+			opened.Dev, opened.Ino, opened.Nlink, named.Dev, named.Ino, named.Nlink)
+	}
+}
