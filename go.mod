@@ -13,6 +13,7 @@ require (
 	github.com/dal-go/dalgo v0.80.0
 	github.com/dal-go/dalgo2openvaultdb v0.3.1
 	github.com/dal-go/record v0.1.3
+	github.com/gofrs/flock v0.13.1
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/ingitdb/dalgo2ingitdb v0.4.0
 	github.com/ingitdb/ingitdb-go/ingitdb v0.5.2
@@ -43,7 +44,6 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/ingr-io/ingr-go v0.0.2 // indirect
