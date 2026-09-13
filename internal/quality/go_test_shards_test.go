@@ -75,6 +75,20 @@ func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
 	}
 }
 
+func TestShardedGoCoverageArgumentsPropagateAttemptTimeout(t *testing.T) {
+	profile := filepath.Join("tmp", "coverage.out")
+	for name, arguments := range map[string][]string{
+		"unsharded": goCoverageArgumentsWithTimeout(profile, 17*time.Minute),
+		"shard":     goCoverageArgumentsWithTimeout(profile, 17*time.Minute, "./internal/worktrees", "-run", "^(TestOne|TestTwo)$"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if joined := strings.Join(arguments, " "); !strings.Contains(joined, "-timeout 17m0s") {
+				t.Fatalf("coverage command omitted caller timeout: %s", joined)
+			}
+		})
+	}
+}
+
 func TestVerifyWithRepositoryPolicyUsesShardedGoTest(t *testing.T) {
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/verify-shards\n\ngo 1.24\n")

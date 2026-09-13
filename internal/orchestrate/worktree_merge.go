@@ -1716,8 +1716,15 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *Worktr
 	if head == receipt.Candidate.SHA {
 		return false, nil
 	}
-	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+	if receipt.PublishedCandidateSHA == "" {
 		return false, fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head)
+	}
+	publishedContainsRecorded, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
+	if err != nil {
+		return false, fmt.Errorf("verify published candidate predecessor: %w", err)
+	}
+	if !publishedContainsRecorded {
+		return false, fmt.Errorf("recorded candidate %s does not descend from published candidate %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
 	}
 	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, head)
 	if err != nil {

@@ -80,6 +80,12 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 			if _, err = file.Write([]byte(hex.EncodeToString(value))); err == nil {
 				err = file.Sync()
 			}
+			if err == nil {
+				err = daemonlifecycle.ProtectOwnerOnlyFile(file)
+			}
+			if err == nil {
+				err = daemonlifecycle.ValidateOwnerOnlyFile(file)
+			}
 			if closeErr := file.Close(); err == nil {
 				err = closeErr
 			}
