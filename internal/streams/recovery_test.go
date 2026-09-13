@@ -429,6 +429,90 @@ func TestJoinRecoversARemoteAheadMemberAndPersistsPublication(t *testing.T) {
 	}
 }
 
+// A cross-repository end can be interrupted after member cleanup and before
+// the stream record closes. Retrying must accept a receipt-proven remote ref
+// that is authoritatively gone even while the canonical clone still has its
+// stale origin/stream/* tracking ref. A present different SHA remains guarded
+// by the deletion lease in the lower-level Git-port regression.
+func TestEndResumesAfterMultiMemberWorktreesAndRemoteRefsWereAlreadyRetired(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		absentMembers map[string]bool
+	}{
+		{name: "second member ref absent", absentMembers: map[string]bool{"datatug/datatug-cli": true}},
+		{name: "both member refs absent", absentMembers: map[string]bool{"datatug/datatug-core": true, "datatug/datatug-cli": true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const streamName = "incidentius-task1-store"
+			const branch = "stream/" + streamName
+			store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+			hub := newFakeHub()
+			worktrees := &fakeWorktrees{root: t.TempDir(), removeErr: map[string]error{}}
+			members := make([]Member, 0, 2)
+
+			for index, repository := range []string{"datatug/datatug-core", "datatug/datatug-cli"} {
+				canonical, remotePeer := newPublishedStreamFixture(t)
+				runStreamGit(t, canonical, "branch", "-m", "stream/recovery", branch)
+				runStreamGit(t, canonical, "push", "origin", branch+":"+branch)
+				head := strings.TrimSpace(runStreamGit(t, canonical, "rev-parse", "HEAD"))
+				runStreamGit(t, canonical, "checkout", "main")
+				runStreamGit(t, canonical, "branch", "-D", branch)
+
+				member := Member{
+					Repository:  repository,
+					Role:        RoleConsumer,
+					Worktree:    filepath.Join(filepath.Dir(canonical), "retired-"+filepath.Base(canonical)),
+					Canonical:   canonical,
+					Branch:      branch,
+					Base:        "main",
+					PullRequest: 700 + index,
+					Lease:       Lease{Login: "octocat", Machine: "workstation", Session: "wbs-interrupted", RecordedHead: head, HeldSince: time.Now().UTC()},
+				}
+				if index == 0 {
+					member.Role = RoleLibrary
+				}
+				hub.byNumber[member.PullRequest] = exactSquashReceipt(member, head)
+				if test.absentMembers[repository] {
+					runStreamGit(t, remotePeer, "push", "origin", "--delete", branch)
+					if stale := strings.TrimSpace(runStreamGit(t, canonical, "rev-parse", "refs/remotes/origin/"+branch)); stale != head {
+						t.Fatalf("%s stale tracking head = %s, want %s", repository, stale, head)
+					}
+				}
+				members = append(members, member)
+			}
+			if _, err := store.Create(Stream{Name: streamName, Phase: PhaseOpen, Members: members}); err != nil {
+				t.Fatal(err)
+			}
+			engine := &Engine{Store: store, Git: ExecGit{Timeout: time.Minute}, GitHub: hub, Worktrees: worktrees}
+
+			result, err := engine.End(context.Background(), EndOptions{Name: streamName, Apply: true})
+			if err != nil {
+				t.Fatalf("resume interrupted end: %v", err)
+			}
+			if len(result.Members) != len(members) {
+				t.Fatalf("retired members = %d, want %d", len(result.Members), len(members))
+			}
+			for _, member := range result.Members {
+				if !member.RemoteBranchDeleted || !member.WorktreeRemoved || !member.LeaseReleased {
+					t.Errorf("member result = %#v, want fully retired idempotent state", member)
+				}
+			}
+			ended, err := store.Load(streamName)
+			if err != nil || ended.Open() {
+				t.Fatalf("stream = %#v, err=%v; want ended", ended, err)
+			}
+			for _, member := range ended.Members {
+				if member.Lease != (Lease{}) {
+					t.Errorf("%s lease = %#v, want released", member.Repository, member.Lease)
+				}
+				if remote := strings.TrimSpace(runStreamGit(t, member.Canonical, "ls-remote", "--heads", "origin", "refs/heads/"+branch)); remote != "" {
+					t.Errorf("%s remote stream ref survived: %s", member.Repository, remote)
+				}
+			}
+		})
+	}
+}
+
 // SHOULD-FIX: end removes the remote stream branch, after the agent pull
 // requests targeting it are settled.
 func TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests(t *testing.T) {

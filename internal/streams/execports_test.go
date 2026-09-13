@@ -121,6 +121,70 @@ func TestRunBoundedReportsATimeoutRatherThanHanging(t *testing.T) {
 	}
 }
 
+func TestRunBoundedRedactsCredentialsFromCommandArguments(t *testing.T) {
+	t.Setenv("WB_RUN_BOUNDED_CREDENTIAL_HELPER", "1")
+	for _, test := range []struct {
+		name        string
+		url         string
+		hidden      []string
+		timeout     time.Duration
+		wantTimeout bool
+	}{
+		{
+			name: "username and password", url: "https://wb-user:super-secret-token@example.invalid/repository.git",
+			hidden: []string{"wb-user", "super-secret-token"}, timeout: time.Second,
+		},
+		{
+			name: "token as username", url: "https://glpat-opaque-review-credential@example.invalid/repository.git",
+			hidden: []string{"glpat-opaque-review-credential"}, timeout: time.Second,
+		},
+		{
+			name: "empty password", url: "https://glpat-opaque-empty:@example.invalid/repository.git",
+			hidden: []string{"glpat-opaque-empty"}, timeout: time.Second,
+		},
+		{
+			name: "token as username on timeout", url: "https://glpat-timeout-credential@example.invalid/repository.git",
+			hidden: []string{"glpat-timeout-credential"}, timeout: 100 * time.Millisecond, wantTimeout: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mode := "fail"
+			if test.wantTimeout {
+				mode = "timeout"
+			}
+			_, err := runBounded(context.Background(), test.timeout, t.TempDir(), os.Args[0], "-test.run=^TestRunBoundedCredentialHelper$", "--", mode, test.url)
+			if err == nil {
+				t.Fatal("helper command reported success")
+			}
+			for _, secret := range test.hidden {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("command error leaked %q: %v", secret, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "[redacted]") {
+				t.Fatalf("command error contains no redaction marker: %v", err)
+			}
+			if test.wantTimeout && !strings.Contains(err.Error(), "timed out") {
+				t.Fatalf("timeout error = %v, want a timeout", err)
+			}
+		})
+	}
+}
+
+func TestRunBoundedCredentialHelper(t *testing.T) {
+	if os.Getenv("WB_RUN_BOUNDED_CREDENTIAL_HELPER") != "1" {
+		return
+	}
+	for _, arg := range os.Args {
+		if arg == "timeout" {
+			for {
+				time.Sleep(time.Hour)
+			}
+		}
+	}
+	os.Exit(1)
+}
+
 func TestPullRequestJSONMapsOntoThePort(t *testing.T) {
 	raw := pullRequestJSON{
 		Number: 7, URL: "https://example.test/pull/7", Title: "t",
@@ -228,6 +292,119 @@ func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
 	if err != nil || !present || head != local {
 		t.Fatalf("RemoteHead = %q present=%t err=%v", head, present, err)
 	}
+}
+
+func TestDeleteRemoteBranchUsesAnAuthoritativeRereadAfterLeaseFailure(t *testing.T) {
+	const branch = "stream/recovery"
+	t.Run("already absent is retired", func(t *testing.T) {
+		local, other := newPublishedStreamFixture(t)
+		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
+		runStreamGit(t, other, "push", "origin", "--delete", branch)
+		// Ordinary fetches do not prune a deleted branch. This stale tracking
+		// ref is the exact interrupted-resume state that used to make the
+		// failed leased deletion look like a live remote ref.
+		if stale := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch)); stale != expected {
+			t.Fatalf("stale tracking head = %s, want %s", stale, expected)
+		}
+
+		git := ExecGit{Timeout: time.Minute}
+		if err := git.DeleteRemoteBranch(context.Background(), local, branch, expected); err != nil {
+			t.Fatalf("retire an already-absent remote ref: %v", err)
+		}
+		if remote := strings.TrimSpace(runStreamGit(t, local, "ls-remote", "--heads", "origin", "refs/heads/"+branch)); remote != "" {
+			t.Fatalf("remote ref survived: %s", remote)
+		}
+	})
+
+	t.Run("advanced ref remains protected", func(t *testing.T) {
+		local, other := newPublishedStreamFixture(t)
+		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
+		runStreamGit(t, other, "checkout", branch)
+		commitStreamFile(t, other, "advanced.txt", "advanced\n", "feat: advance the stream")
+		runStreamGit(t, other, "push", "origin", branch)
+		advanced := strings.TrimSpace(runStreamGit(t, other, "rev-parse", "HEAD"))
+
+		git := ExecGit{Timeout: time.Minute}
+		err := git.DeleteRemoteBranch(context.Background(), local, branch, expected)
+		if err == nil {
+			t.Fatal("deleting an advanced remote ref succeeded; want the lease to fail closed")
+		}
+		if !strings.Contains(err.Error(), advanced) || !strings.Contains(err.Error(), expected) {
+			t.Fatalf("advanced-ref error = %v, want observed %s and expected %s", err, advanced, expected)
+		}
+		remote := strings.TrimSpace(runStreamGit(t, local, "ls-remote", "--heads", "origin", "refs/heads/"+branch))
+		if fields := strings.Fields(remote); len(fields) != 2 || fields[0] != advanced {
+			t.Fatalf("advanced remote ref = %q, want %s", remote, advanced)
+		}
+	})
+
+	t.Run("separate push destination remains protected", func(t *testing.T) {
+		local, fetchPeer := newPublishedStreamFixture(t)
+		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
+
+		pushRemote := filepath.Join(t.TempDir(), "push.git")
+		runStreamGit(t, "", "init", "--bare", "--initial-branch=main", pushRemote)
+		runStreamGit(t, local, "push", pushRemote, "main:main", branch+":"+branch)
+		runStreamGit(t, local, "remote", "set-url", "--push", "origin", pushRemote)
+
+		// The fetch destination no longer has the ref, while the actual push
+		// destination advanced after the deletion lease was recorded.
+		runStreamGit(t, fetchPeer, "push", "origin", "--delete", branch)
+		if fetchSide := strings.TrimSpace(runStreamGit(t, local, "ls-remote", "--heads", "origin", "refs/heads/"+branch)); fetchSide != "" {
+			t.Fatalf("fetch-side ref = %q, want absent", fetchSide)
+		}
+		pushPeer := filepath.Join(t.TempDir(), "push-peer")
+		runStreamGit(t, "", "clone", pushRemote, pushPeer)
+		runStreamGit(t, pushPeer, "checkout", branch)
+		commitStreamFile(t, pushPeer, "advanced-push.txt", "advanced\n", "feat: advance the push destination")
+		runStreamGit(t, pushPeer, "push", "origin", branch)
+		advanced := strings.TrimSpace(runStreamGit(t, pushPeer, "rev-parse", "HEAD"))
+
+		git := ExecGit{Timeout: time.Minute}
+		err := git.DeleteRemoteBranch(context.Background(), local, branch, expected)
+		if err == nil {
+			t.Fatal("absent fetch-side ref hid an advanced push destination")
+		}
+		if !strings.Contains(err.Error(), advanced) || !strings.Contains(err.Error(), expected) {
+			t.Fatalf("push-destination error = %v, want observed %s and expected %s", err, advanced, expected)
+		}
+		remote := strings.TrimSpace(runStreamGit(t, local, "ls-remote", "--heads", pushRemote, "refs/heads/"+branch))
+		if fields := strings.Fields(remote); len(fields) != 2 || fields[0] != advanced {
+			t.Fatalf("advanced push destination = %q, want %s", remote, advanced)
+		}
+	})
+
+	t.Run("every configured push destination is verified", func(t *testing.T) {
+		local, _ := newPublishedStreamFixture(t)
+		expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/"+branch))
+		pushRemotes := []string{
+			filepath.Join(t.TempDir(), "already-absent.git"),
+			filepath.Join(t.TempDir(), "advanced.git"),
+		}
+		for _, remote := range pushRemotes {
+			runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+			runStreamGit(t, local, "push", remote, "main:main", branch+":"+branch)
+			runStreamGit(t, local, "remote", "set-url", "--add", "--push", "origin", remote)
+		}
+		runStreamGit(t, local, "push", pushRemotes[0], "--delete", branch)
+
+		pushPeer := filepath.Join(t.TempDir(), "advanced-peer")
+		runStreamGit(t, "", "clone", pushRemotes[1], pushPeer)
+		runStreamGit(t, pushPeer, "checkout", branch)
+		commitStreamFile(t, pushPeer, "advanced-mirror.txt", "advanced\n", "feat: advance one push destination")
+		runStreamGit(t, pushPeer, "push", "origin", branch)
+		advanced := strings.TrimSpace(runStreamGit(t, pushPeer, "rev-parse", "HEAD"))
+
+		git := ExecGit{Timeout: time.Minute}
+		err := git.DeleteRemoteBranch(context.Background(), local, branch, expected)
+		if err == nil || !strings.Contains(err.Error(), advanced) {
+			t.Fatalf("multi-destination deletion error = %v, want advanced SHA %s", err, advanced)
+		}
+		remote := strings.TrimSpace(runStreamGit(t, local, "ls-remote", "--heads", pushRemotes[1], "refs/heads/"+branch))
+		if fields := strings.Fields(remote); len(fields) != 2 || fields[0] != advanced {
+			t.Fatalf("advanced second push destination = %q, want %s", remote, advanced)
+		}
+	})
 }
 
 // A stream member can be left without its draft pull request after another
