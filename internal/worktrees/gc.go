@@ -272,6 +272,7 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
 		}
+		retireEmptyUnscopedLocalStages(outcome.Artifacts)
 		appliedRoots := make([]string, 0, len(outcome.Entries))
 		for index := range outcome.Entries {
 			if outcome.Entries[index].Applied {

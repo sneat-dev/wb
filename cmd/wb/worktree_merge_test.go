@@ -114,6 +114,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
 	}
+	for _, status := range []string{"conflict", "published", "checks_pending", "checks_failed"} {
+		if !strings.Contains(stranded.Long, status) {
+			t.Errorf("acknowledge-stranded-landing help does not mention supported %q receipts: %q", status, stranded.Long)
+		}
+	}
 	missingCleanup, _, err := command.Find([]string{"acknowledge-missing-cleanup"})
 	if err != nil || missingCleanup == nil || missingCleanup.Flags().Lookup("apply") == nil || missingCleanup.Flags().Lookup("actor") == nil || missingCleanup.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-missing-cleanup flags = %#v err=%v", missingCleanup, err)
