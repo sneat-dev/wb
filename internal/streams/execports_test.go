@@ -125,9 +125,11 @@ func TestPullRequestJSONMapsOntoThePort(t *testing.T) {
 	raw := pullRequestJSON{
 		Number: 7, URL: "https://example.test/pull/7", Title: "t",
 		IsDraft: true, State: "OPEN", HeadRefName: "stream/x", BaseRefName: "main",
+		HeadRefOID: "0123456789012345678901234567890123456789",
 	}
+	raw.MergeCommit.OID = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
 	pullRequest := raw.toPullRequest()
-	if pullRequest.Number != 7 || !pullRequest.Draft || pullRequest.Head != "stream/x" || pullRequest.Base != "main" {
+	if pullRequest.Number != 7 || !pullRequest.Draft || pullRequest.Head != "stream/x" || pullRequest.Base != "main" || pullRequest.HeadSHA != raw.HeadRefOID || pullRequest.MergeSHA != raw.MergeCommit.OID {
 		t.Fatalf("toPullRequest = %#v", pullRequest)
 	}
 }

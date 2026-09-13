@@ -85,7 +85,18 @@ type WorktreeCreator interface {
 	Create(ctx context.Context, task, branch string, repositories []string) ([]CreatedWorktree, error)
 	// Remove retires one member's worktree through the existing cleanup
 	// path. `stream end` delegates removal rather than deleting directories.
-	Remove(ctx context.Context, task, repository, worktree string) error
+	Remove(ctx context.Context, task, repository, worktree string, receipt *SquashAbsorptionReceipt) error
+}
+
+// SquashAbsorptionReceipt is the exact immutable receipt a stream passes to
+// the worktree lifecycle after proving a clean member is an ancestor of its
+// merged stream pull request. Cleanup verifies it again before removal.
+type SquashAbsorptionReceipt struct {
+	Target       string
+	SourceBranch string
+	SourceSHA    string
+	CandidateSHA string
+	LandingSHA   string
 }
 
 // Engine runs the stream verbs against injected ports.
