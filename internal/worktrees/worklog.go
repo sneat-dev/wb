@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -77,6 +79,9 @@ var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 var errImmutableTerminalConflict = errors.New("immutable terminal conflicts with requested transition")
 
 var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
+var credentialAssignment = regexp.MustCompile(`(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*\S+`)
+var credentialTokenMarker = regexp.MustCompile(`(?i)(^|[^a-z0-9])(sk-[a-z0-9_-]{8,}|akia[a-z0-9]{12,}|aiza[a-z0-9_-]{12,}|sk_[a-z0-9_-]{16,}|rk_live_[a-z0-9_-]{16,}|gh[opusr]_[a-z0-9_-]{16,}|github_pat_[a-z0-9_-]{16,}|glpat-[a-z0-9_-]{16,}|xox[abpr]-[a-z0-9_-]{16,}|npm_[a-z0-9_-]{24,}|pypi-[a-z0-9_-]{16,})`)
+var bearerCredential = regexp.MustCompile(`(?i)(^|[^a-z0-9])bearer\s+[a-z0-9._~+/=-]{16,}`)
 
 const (
 	modelProvenanceRuntimeObserved = "runtime_observed"
@@ -95,6 +100,9 @@ type WorkLogOptions struct {
 	Model        string
 	CLI          string
 	Provider     string
+	// TaskSummary is an optional, one-line, non-sensitive description of the
+	// work. It is separate from OriginalPrompt, which remains private local data.
+	TaskSummary string
 	// WBSessionID links this claim to the live registered session that created
 	// it. Normal callers leave it empty and the current resolver supplies it.
 	WBSessionID           string
@@ -156,6 +164,7 @@ type workLogClaim struct {
 	ModelDeclaredBy string                          `json:"model_declared_by,omitempty"`
 	CLI             string                          `json:"cli,omitempty"`
 	Provider        string                          `json:"provider,omitempty"`
+	TaskSummary     string                          `json:"task_summary,omitempty"`
 	WBSessionID     string                          `json:"wb_session_id,omitempty"`
 	PromptArchive   string                          `json:"prompt_archive,omitempty"` // run-relative
 	PromptDigest    string                          `json:"prompt_sha256,omitempty"`
@@ -509,6 +518,9 @@ func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {
 			return errors.New("immutable Work Log claim execution identity metadata is invalid")
 		}
 	}
+	if _, err := NormalizeTaskSummary(claim.TaskSummary); err != nil {
+		return fmt.Errorf("immutable Work Log claim task summary is invalid: %w", err)
+	}
 	return nil
 }
 
@@ -788,7 +800,44 @@ func normalizeWorkLogOptions(task string, options WorkLogOptions, now time.Time)
 	if !validSafeSegment(run) {
 		return "", "", fmt.Errorf("work-log run id %q must be one safe path segment", run)
 	}
+	if _, err := NormalizeTaskSummary(options.TaskSummary); err != nil {
+		return "", "", err
+	}
 	return effort, run, nil
+}
+
+// MaxTaskSummaryRunes keeps this public coordination hint compact rather than
+// allowing it to become a second prompt channel.
+const MaxTaskSummaryRunes = 240
+
+// NormalizeTaskSummary validates an optional public task summary. The scanner
+// rejects obvious credential forms as defense in depth; it cannot classify
+// arbitrary prose, so callers must still keep the field non-sensitive.
+func NormalizeTaskSummary(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(value, "\r\n") || !utf8.ValidString(value) {
+		return "", errors.New("--summary must be one printable line")
+	}
+	if utf8.RuneCountInString(value) > MaxTaskSummaryRunes {
+		return "", fmt.Errorf("--summary must be at most %d characters", MaxTaskSummaryRunes)
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			return "", errors.New("--summary must be one printable line")
+		}
+	}
+	lower := strings.ToLower(value)
+	if bearerCredential.MatchString(lower) || credentialAssignment.MatchString(lower) || containsCredentialMarker(lower) {
+		return "", errors.New("--summary must not contain a credential")
+	}
+	return value, nil
+}
+
+func containsCredentialMarker(lower string) bool {
+	return credentialTokenMarker.MatchString(lower)
 }
 
 func validateNewExecutionIdentity(identity ClaimExecutionIdentity) error {
@@ -970,6 +1019,13 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 			claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
 			return WorkLogPublicationOutcome{}, fmt.Errorf("existing active Work Log claim does not match the operation checkout identity")
 		}
+		requestedSummary, summaryErr := NormalizeTaskSummary(options.TaskSummary)
+		if summaryErr != nil {
+			return WorkLogPublicationOutcome{}, summaryErr
+		}
+		if requestedSummary != "" && claim.TaskSummary != requestedSummary {
+			return WorkLogPublicationOutcome{}, errors.New("existing active Work Log claim has a different immutable task summary")
+		}
 		return WorkLogPublicationOutcome{ClaimPath: claimPath, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, ClaimWritten: true, ProjectionWritten: true, OutboxWritten: true}, nil
 	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
 		return WorkLogPublicationOutcome{}, err
@@ -981,6 +1037,10 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 	var outcome WorkLogPublicationOutcome
 	now := time.Now().UTC()
 	effort, run, err := normalizeWorkLogOptions(task, options, now)
+	if err != nil {
+		return outcome, err
+	}
+	taskSummary, err := NormalizeTaskSummary(options.TaskSummary)
 	if err != nil {
 		return outcome, err
 	}
@@ -1019,6 +1079,7 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		AgentRuntime: strings.TrimSpace(options.AgentRuntime), Model: model,
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
+		TaskSummary:   taskSummary,
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
 		AcquiredVia: strings.TrimSpace(options.AcquiredVia)}
@@ -1355,6 +1416,7 @@ func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim w
 		{name: "model", requested: requested.Model, existing: identity.Model},
 		{name: "cli", requested: requested.CLI, existing: identity.CLI},
 		{name: "provider", requested: requested.Provider, existing: identity.Provider},
+		{name: "task summary", requested: requested.TaskSummary, existing: claim.TaskSummary},
 	} {
 		value := strings.TrimSpace(identity.requested)
 		if value != "" && value != identity.existing && (!identity.allowEmptyExisting || strings.TrimSpace(identity.existing) != "") {
@@ -1396,6 +1458,9 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 	requested.EffortID, requested.RunID = claim.EffortID, claim.RunID
 	requested.Initiator, requested.AgentID = claim.Initiator, claim.AgentID
 	requested.AgentRuntime = claim.AgentRuntime
+	if strings.TrimSpace(requested.TaskSummary) == "" {
+		requested.TaskSummary = claim.TaskSummary
+	}
 	if len(requested.originalPromptContents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
 		requested.RequireOriginalPrompt = false
 		if err := snapshotOriginalPrompt(&requested); err != nil {

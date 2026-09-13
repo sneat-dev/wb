@@ -124,6 +124,12 @@ func (s *State) MarkReady(pid int, now time.Time) {
 	s.UpdatedAt = now.UTC()
 }
 
+func (s *State) MarkStartingPID(pid int, now time.Time) {
+	s.Status = StatusStarting
+	s.PID = pid
+	s.UpdatedAt = now.UTC()
+}
+
 func (s *State) MarkDraining(now time.Time) {
 	s.Status = StatusDraining
 	s.UpdatedAt = now.UTC()

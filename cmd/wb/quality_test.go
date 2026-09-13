@@ -65,6 +65,27 @@ func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
 	}
 }
 
+func TestCoverageRunOptionsUseRepositoryQualityPolicy(t *testing.T) {
+	repository := t.TempDir()
+	policyPath := filepath.Join(repository, ".wb", "quality.yaml")
+	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte("version: 1\ngo_test:\n  shards: 8\n  packages: [./cmd/wb, ./internal/orchestrate, ./internal/worktrees]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	options, err := coverageRunOptionsForTarget(quality.RunOptions{
+		GoTestShards: 8, GoShardPackages: []string{"./internal/worktrees"},
+	}, qualityTarget{repository: "sneat-dev/wb", path: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(options.GoShardPackages, ","), "./cmd/wb,./internal/orchestrate,./internal/worktrees"; got != want {
+		t.Fatalf("coverage shard packages = %q, want repository policy %q", got, want)
+	}
+}
+
 func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

@@ -2,6 +2,7 @@ package testenv
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/envguard"
@@ -80,5 +81,27 @@ func TestIsolateProcessClearsAgentVarsAndPinsGoworkOff(t *testing.T) {
 	}
 	if value := os.Getenv("GOWORK"); value != "off" {
 		t.Fatalf("GOWORK = %q after IsolateProcess, want %q", value, "off")
+	}
+}
+
+func TestIsolateProcessResolvesSymlinkedTemporaryRoot(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "physical-temp")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "temp-alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("TMPDIR", alias)
+
+	IsolateProcess()
+
+	if got := os.TempDir(); got != target {
+		t.Fatalf("temporary root = %q, want resolved physical directory %q", got, target)
 	}
 }

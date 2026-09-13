@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/wbconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -97,7 +98,8 @@ type MetricsPolicy struct {
 	Labels  map[string]string
 }
 
-// LoadPolicy loads ~/.config/wb/hooks.yaml and .wb/hooks.yaml when present.
+// LoadPolicy loads the git_hooks section from ~/.config/wb/wb.yaml and the
+// repository's .wb/hooks.yaml when present.
 // An explicit path replaces those discovery locations but still layers on top
 // of WB's conservative built-in templates.
 func LoadPolicy(repoPath, explicitPath string) (Policy, error) {
@@ -108,27 +110,42 @@ func LoadPolicy(repoPath, explicitPath string) (Policy, error) {
 	policy := defaultPolicy(repoRoot)
 	policy.ExplicitPath = explicitPath
 
-	paths := []string{}
 	if explicitPath != "" {
-		paths = append(paths, expandPath(explicitPath))
-	} else {
-		if global := defaultGlobalConfigPath(); global != "" {
-			paths = append(paths, global)
-		}
-		paths = append(paths, filepath.Join(repoRoot, ".wb", "hooks.yaml"))
-	}
-
-	for _, path := range paths {
-		cfg, found, err := loadFile(path, explicitPath != "")
+		path := expandPath(explicitPath)
+		cfg, found, err := loadFile(path, true)
 		if err != nil {
 			return Policy{}, err
 		}
-		if !found {
-			continue
+		if found {
+			policy.ConfigPaths = append(policy.ConfigPaths, path)
+			if err := applyFile(&policy, path, cfg); err != nil {
+				return Policy{}, err
+			}
 		}
-		policy.ConfigPaths = append(policy.ConfigPaths, path)
-		if err := applyFile(&policy, path, cfg); err != nil {
+	} else {
+		global := defaultGlobalConfigPath()
+		if global != "" {
+			cfg, found, err := loadWBConfigGitHooks(global)
+			if err != nil {
+				return Policy{}, err
+			}
+			if found {
+				policy.ConfigPaths = append(policy.ConfigPaths, global)
+				if err := applyFile(&policy, global, cfg); err != nil {
+					return Policy{}, err
+				}
+			}
+		}
+		repositoryPath := filepath.Join(repoRoot, ".wb", "hooks.yaml")
+		cfg, found, err := loadFile(repositoryPath, false)
+		if err != nil {
 			return Policy{}, err
+		}
+		if found {
+			policy.ConfigPaths = append(policy.ConfigPaths, repositoryPath)
+			if err := applyFile(&policy, repositoryPath, cfg); err != nil {
+				return Policy{}, err
+			}
 		}
 	}
 	if policy.Metrics.Path == "" {
@@ -163,14 +180,60 @@ func defaultPolicy(repoRoot string) Policy {
 }
 
 func defaultGlobalConfigPath() string {
-	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
-		return filepath.Join(configHome, "wb", "hooks.yaml")
+	return wbconfig.DefaultPath()
+}
+
+func loadWBConfigGitHooks(path string) (fileConfig, bool, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileConfig{}, false, nil
 	}
-	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return fileConfig{}, false, fmt.Errorf("read hooks config %s: %w", path, err)
 	}
-	return filepath.Join(home, ".config", "wb", "hooks.yaml")
+	defer func() { _ = file.Close() }()
+	decoder := yaml.NewDecoder(file)
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: %w", path, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != nil && !errors.Is(err, io.EOF) {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: %w", path, err)
+	} else if err == nil {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: multiple YAML documents are not supported", path)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: top level must be a mapping", path)
+	}
+	root := document.Content[0]
+	var section *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "git_hooks" {
+			continue
+		}
+		if section != nil {
+			return fileConfig{}, false, fmt.Errorf("parse hooks config %s: duplicate git_hooks section", path)
+		}
+		section = root.Content[i+1]
+	}
+	if section == nil || section.Tag == "!!null" {
+		return fileConfig{}, false, nil
+	}
+	raw, err := yaml.Marshal(section)
+	if err != nil {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: %w", path, err)
+	}
+	strict := yaml.NewDecoder(strings.NewReader(string(raw)))
+	strict.KnownFields(true)
+	var cfg fileConfig
+	if err := strict.Decode(&cfg); err != nil {
+		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: %w", path, err)
+	}
+	if cfg.Version != PolicyVersion {
+		return fileConfig{}, false, fmt.Errorf("hooks config %s has version %d; supported version is %d", path, cfg.Version, PolicyVersion)
+	}
+	return cfg, true, nil
 }
 
 func defaultMetricsPath() string {

@@ -793,42 +793,6 @@
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
     },
     {
-      "id": "wb.codegrapher.install",
-      "feature_refs": ["spec/features/tool-plugins/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher install", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation; --dry-run emits structured platform-specific argv.", "macOS/Linux use the CodeGrapher Homebrew cask; Windows uses the published Go module and accepts an exact version.", "Re-probes the executable after success and refuses a false verification claim."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher install --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher install --dry-run --format=json", "wb codegrapher install --yes"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherInstallRequiresExplicitApproval", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "CodeGrapher is WB's default preconfigured local-tool plugin; install does not index a repository."
-    },
-    {
-      "id": "wb.codegrapher.status",
-      "feature_refs": ["spec/features/tool-plugins/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher status", "flags": ["--format", "--json"], "modes": ["Runs the discovered executable's version command and reports resolved path, exact version, available build provenance, repository, module path, manager classification, and platform.", "A missing or non-runnable executable is a machine-readable finding."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher status --help", "contains": ["exact provenance", "--format", "--json"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher status --format=json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusReportsInstalledBinaryProvenance", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusMissingIsMachineReadableFinding", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "Status observes the executable an agent would invoke rather than trusting a package-manager database."
-    },
-    {
-      "id": "wb.codegrapher.update",
-      "feature_refs": ["spec/features/tool-plugins/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher update", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation and uses the same platform channel and post-command executable proof as install."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher update --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher update --yes"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "Update is explicit and never runs as part of WB sync or daemon activity."
-    },
-    {
       "id": "wb.commands",
       "feature_refs": [
         "spec/features/modern-cli-help-discovery/README.md"
@@ -1378,7 +1342,8 @@
                 "--original-prompt-file",
                 "--provider",
                 "--resume",
-                "--run"
+                "--run",
+                "--summary"
               ],
               "modes": [
                 "Identical root-level alias for `wb worktree create`, built from the exact same constructor: same flags, same help text, same exit codes.",
@@ -1496,6 +1461,34 @@
         "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations", "kind": "integration"}], "limitation": null}
       },
       "notes": "A lost client can resume from the opaque cursor without losing the durable receipt."
+    },
+    {
+      "id": "wb.daemon.recover",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{"path": "wb daemon recover", "flags": ["--apply", "--format", "--json"], "modes": ["Dry-runs recovery of a daemon lifecycle lock whose recorded owner is proven dead", "--apply retains the stable kernel-locked inode, clears stale ownership, promotes an exactly verified healthy child to ready, or marks a proven interrupted start or drain stopped"]}],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb daemon recover --help", "contains": ["--apply", "--format", "dry-run", "live or ambiguous"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon recover --format json", "wb daemon recover --apply --format json"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock", "kind": "unit"}, {"path": "cmd/wb/daemon_test.go", "name": "TestDaemonRecoverRefusesActiveAndNonTerminalTransitions", "kind": "unit"}, {"path": "cmd/wb/daemon_test.go", "name": "TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode", "kind": "unit"}],
+          "limitation": null
+        }
+      },
+      "notes": "The command emits structured dry-run refusals, refuses ambiguous durable lifecycle evidence, and can fence a proven interrupted start or drain. Normal lifecycle operations use one retained kernel-locked inode, an atomically replaced PID sidecar, and a state-update lock, so process death cannot strand exclusion or leave partially rewritten ownership evidence. Windows fails closed until owner-only lifecycle ACL verification is implemented."
     },
     {
       "id": "wb.daemon.restart",
@@ -4004,6 +3997,18 @@
       "notes": "Exit 1 represents drift/findings, while invalid usage exits 2."
     },
     {
+      "id": "wb.hooks.checkout-updated",
+      "feature_refs": ["spec/features/trusted-repository-update-hooks/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb sync", "flags": [], "modes": ["Dispatches only cloned or exact old-HEAD/new-HEAD changed canonical checkouts."]}, {"path": "wb daemon serve", "flags": [], "modes": ["Repository-update events dispatch only after a clone or checked-out HEAD change."]}, {"path": "wb pr land", "flags": [], "modes": ["Dispatches after exact canonical fast-forward synchronization."]}, {"path": "wb worktree merge", "flags": [], "modes": ["Dispatches after exact canonical fast-forward synchronization."]}], "limitation": null},
+        "help": {"status": "Partial", "anchors": [{"command": "wb sync --help", "contains": ["checkout-updated hooks", "actually changed"]}], "limitation": "The full standard wb.yaml lifecycle-hook schema is documented in README rather than repeated in each mutation leaf's help."},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/lifecycle-hooks.md", "marker": "# Lifecycle hooks", "examples": ["wb sync"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestDispatchRunsOnlyChangedMatchingRepositoriesAndCoalesces", "kind": "unit"}, {"path": "cmd/wb/sync_test.go", "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts", "kind": "unit"}, {"path": "internal/repositoryevents/processor_test.go", "name": "TestSyncLifecycleEventOnlyDescribesChangedCheckout", "kind": "unit"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Executors come only from the trusted user wb.yaml; repository content cannot register lifecycle commands."
+    },
+    {
       "id": "wb.hooks.install",
       "feature_refs": [],
       "since": "existing",
@@ -4352,6 +4357,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -4635,18 +4641,6 @@
         }
       },
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
-    },
-    {
-      "id": "wb.plugin.list",
-      "feature_refs": ["spec/features/tool-plugins/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb plugin list", "flags": ["--format", "--json"], "modes": ["Lists every typed built-in plugin with its stable ID, default-enabled state, command path, lifecycle verbs, and summary."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb plugin list --help", "contains": ["preconfigured", "--format", "--json"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb plugin list --format=json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherIsTheDefaultTypedPlugin", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "The initial registry contains the CodeGrapher reference plugin only; registration itself carries no background behavior."
     },
     {
       "id": "wb.pr.land",
@@ -8845,6 +8839,81 @@
       "notes": "Remote Synchestra receipt remains outbox-backed and is not required for local cleanup."
     },
     {
+      "id": "wb.worktree.active",
+      "feature_refs": [
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree active",
+              "flags": [
+                "--format",
+                "--local-only",
+                "--stale"
+              ],
+              "modes": [
+                "Reads matching local nonterminal Work Log claims with live-session or recent-claim evidence and configured remote machine snapshots without a full Git worktree scan",
+                "Returns bounded task summaries, lifecycle, owner state, PR link, activity, and snapshot freshness; rows never add prompt bodies, worktree checkout paths, or source dumps",
+                "Older unresolved local claims are counted as omitted and make local status incomplete, directing callers to the full worktree list instead of silently treating them as idle",
+                "The current machine's older published snapshot is excluded because local claims are read directly; remote unavailable and stale state are explicit findings (exit 1)",
+                "This is coordination evidence, not an atomic cross-task reservation; inspect and coordinate any plausible overlap"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree active --help",
+              "contains": [
+                "cross-machine",
+                "prompt",
+                "--local-only",
+                "not an atomic lock"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/create.md",
+              "marker": "## Before creation",
+              "examples": [
+                "wb worktree active --filter <owner/repository> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_active_test.go",
+              "name": "TestWorktreeActiveCombinesLiveLocalAndOtherMachineSnapshots",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_active_test.go",
+              "name": "TestWorktreeActiveMakesRemoteFailureExplicitAndSupportsLocalOnly",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The optional immutable --summary is purpose-built bounded metadata, not a prompt-derived synopsis; summaries must remain non-sensitive."
+    },
+    {
       "id": "wb.worktree.adopt",
       "feature_refs": [
         "spec/features/work-log/README.md",
@@ -9398,7 +9467,8 @@
                 "--original-prompt-file",
                 "--provider",
                 "--resume",
-                "--run"
+                "--run",
+                "--summary"
               ],
               "modes": [
                 "One immutable private claim per repository in one shared run",
@@ -9406,6 +9476,7 @@
                 "A reused Run ID rejects different prompt bytes before Git/worktree mutation",
                 "Agent-mode creation requires a live registered WB session before the first mutation; explicit manual mode requires --initiator",
                 "Each immutable claim records the live WB session ID that created it",
+                "Optional --summary records one bounded non-sensitive line for compact overlap preflight; it is never inferred from the private prompt",
                 "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes",
                 "Creation from a dirty or off-base canonical checkout preserves its branch, index, and working tree while creating from the fetched remote base",
                 "Resume recovers the registered branch and active claim before current naming policy and preserves that claim unless an audited handoff is requested",
@@ -9424,6 +9495,7 @@
                 "--original-prompt-file",
                 "--agent-runtime",
                 "--branch-prefix",
+                "--summary",
                 "without switching or updating",
                 "active Work Log claim",
                 "audited handoff"
@@ -10048,6 +10120,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -11221,6 +11294,7 @@
                 "--agent-id",
                 "--agent-runtime",
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--cleanup",
@@ -11242,6 +11316,8 @@
               "modes": [
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
                 "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup.",
+                "An explicit --allow-unfenced approval is persisted in the receipt through post-target verification and every later resume; it permits unavailable branch-policy authority in both PR and target phases while both still require stable exact-head checks, and fence refusals name the exact sanctioned resume command.",
+                "Resume recovers a published pull request that GitHub proves already merged after the integration worktree was retired, then continues through normal target checks, canonical synchronization, and receipt-gated cleanup; partially absent assets require exact immutable terminal Work Log and branch-removal evidence before remaining live assets are cleaned.",
                 "After a verified batch landing, reconciles an absorbed source pull request only when its exact current head, base repository, and base branch still match the landing evidence.",
                 "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at)."
               ]
@@ -11879,8 +11955,8 @@
                 "--reason"
               ],
               "modes": [
-                "Proves, using only GitHub's own remote state, that a land conflict receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
-                "Accepts only a land-phase conflict receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
+                "Proves, using only GitHub's own remote state, that a recoverable non-terminal land receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
+                "Accepts only a land-phase conflict, published, checks-pending, or checks-failed receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
               ]
             }
           ],
@@ -12042,6 +12118,7 @@
               "path": "wb worktree merge land",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
                 "--format",
@@ -12430,6 +12507,7 @@
               "path": "wb worktree merge resume",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--check-timeout",
                 "--prepare-timeout",
@@ -12549,6 +12627,7 @@
               "path": "wb worktree merge revert",
               "flags": [
                 "--allow-saturated-host",
+                "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
                 "--format",

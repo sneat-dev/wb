@@ -89,9 +89,6 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	if strings.TrimSpace(options.Repository) == "" || strings.TrimSpace(options.Target) == "" || strings.TrimSpace(options.Head) == "" {
 		return PullRequestWaitResult{}, fmt.Errorf("repository, target, and exact head are required")
 	}
-	if options.AllowUnfenced && strings.TrimSpace(options.PullRequest) == "" {
-		return PullRequestWaitResult{}, fmt.Errorf("unfenced validation is supported only for pull-request checks")
-	}
 	if options.Slice <= 0 || options.Slice > MaxForegroundCheckWaitSlice {
 		return PullRequestWaitResult{}, fmt.Errorf("check wait slice must be positive and at most %s", MaxForegroundCheckWaitSlice)
 	}
@@ -344,6 +341,8 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the pull-request base, exact candidate head, target containment, and observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication"
 			} else if options.PullRequest != "" {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, and the observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication; server-side target freshness was intentionally not required because this path does not merge"
+			} else if result.PolicyAuthorityUnavailable != "" {
+				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the exact remote target head and observed GitHub check set stayed terminal across a bounded stable reread"
 			} else if noApplicableChecks {
 				result.Reason = "GitHub's required-check policy was enumerated as empty, complete check-run and status receipts registered no checks, and that no-applicable-check receipt stayed unchanged across a bounded stable reread"
 			} else {
@@ -592,7 +591,10 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 		authority += "+pr-base-verified"
 	}
 	if policyUnavailable != "" {
-		authority = "github-branch-policy-unavailable-under-allow-unfenced+pr-base-verified"
+		authority = "github-branch-policy-unavailable-under-allow-unfenced"
+		if options.PullRequest != "" {
+			authority += "+pr-base-verified"
+		}
 	}
 	checks := make([]RequiredRemoteCheck, 0, len(required))
 	for _, expectation := range required {

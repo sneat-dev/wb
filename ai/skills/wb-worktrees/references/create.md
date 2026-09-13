@@ -3,14 +3,43 @@
 ## Before creation
 
 1. Identify every repository that will be edited.
-2. Check for an existing relevant PR and the exact remote branch before making
-   a duplicate:
+2. Run the compact cross-machine active-work preflight for each repository
+   before choosing a new task name. Then check relevant open PRs and the exact
+   remote branch:
 
    ```sh
+   wb worktree active --filter <owner/repository> --format json
    gh pr list --repo <owner/repository> --state open \
      --json number,title,headRefName,url
    git ls-remote --heads origin <branch>
    ```
+
+   Compare the requested outcome and likely files with every plausible active
+   worktree or PR; a different task slug, branch name, or agent does not prove
+   the work is unrelated. The compact report contains only a bounded summary,
+   never a prompt body. It is not atomic prevention across task names. Resume
+   only when exact session ownership is proven; otherwise coordinate with the
+   owner or use an audited handoff. For a likely local match, inspect identity:
+
+   ```sh
+   wb worktree summary <existing-task>
+   wb worktree info <existing-worktree-path>
+   ```
+
+   Create a separate worktree only when the scopes are genuinely independent;
+   never edit another agent's checkout merely because it overlaps. Pass a
+   concise non-sensitive `--summary` at creation so later preflights can judge
+   the task without exposing its prompt.
+
+   A stale or unavailable remote snapshot exits with a finding after printing
+   the local rows. Do not treat missing remote rows as proof that the VM is
+   idle: refresh publication on that machine, or use `--local-only` only when
+   the requested work is deliberately restricted to this machine.
+
+   If `local.status` is `incomplete`, older claims without live-session
+   evidence were deliberately omitted to keep the preflight short. Inspect
+   them before creation with `wb worktree list --filter <owner/repository>
+   --format json`; never interpret the omitted count as idle capacity.
 
 3. Never mutate `<projects-root>/<owner>/<repository>` to make it eligible.
    WB fetches and pins the exact remote base without switching or updating its
@@ -30,6 +59,7 @@ Agent-mode creation then makes the admission requirement explicit:
 
 ```sh
 wb worktree create <task> --mode agent --agent-runtime codex --model <exact-model> \
+  --summary "<bounded non-sensitive purpose>" \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -66,6 +96,7 @@ wb worktree create <task> --branch-prefix <prefix>/ \
   --effort <stable-effort-id> --run <agent-run-id> \
   --initiator <human-or-parent-agent> --agent <agent-id> \
   --agent-runtime codex --model <exact-child-model-or-unknown> \
+  --summary "<bounded non-sensitive purpose>" \
   --cli <invoking-cli-if-known> --provider <routing-or-billing-provider-if-known> \
   --original-prompt-file <private-prompt-file>
 ```

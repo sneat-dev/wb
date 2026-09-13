@@ -91,13 +91,14 @@ type RepositoryState struct {
 // WorktreeState is one WB task worktree on the publishing machine, whether
 // or not its owning session is still alive.
 type WorktreeState struct {
-	Task       string `yaml:"task" json:"task"`
-	Stream     string `yaml:"stream,omitempty" json:"stream,omitempty"`
-	Repository string `yaml:"repository" json:"repository"`
-	Branch     string `yaml:"branch" json:"branch"`
-	HeadSHA    string `yaml:"head_sha" json:"head_sha"`
-	Dir        string `yaml:"dir" json:"dir"`
-	Lifecycle  string `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty"`
+	Task        string `yaml:"task" json:"task"`
+	TaskSummary string `yaml:"task_summary,omitempty" json:"task_summary,omitempty"`
+	Stream      string `yaml:"stream,omitempty" json:"stream,omitempty"`
+	Repository  string `yaml:"repository" json:"repository"`
+	Branch      string `yaml:"branch" json:"branch"`
+	HeadSHA     string `yaml:"head_sha" json:"head_sha"`
+	Dir         string `yaml:"dir" json:"dir"`
+	Lifecycle   string `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 	// OwnerState is worktrees.ListResult.OwnerState: "active", "orphaned", or
 	// "unknown". Empty only if the underlying scan left it unset.
 	OwnerState     string            `yaml:"owner_state,omitempty" json:"owner_state,omitempty"`
@@ -207,7 +208,8 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 		}
 		state := WorktreeState{
 			Task: wt.Task, Stream: stream, Repository: wt.Repository,
-			Branch: wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir,
+			TaskSummary: wt.TaskSummary,
+			Branch:      wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir,
 			Lifecycle: "working", OwnerState: wt.OwnerState, Owner: wt.Owner,
 			LastActivityAt: wt.LastActivityAt,
 		}

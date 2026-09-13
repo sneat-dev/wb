@@ -311,9 +311,14 @@ than inferring ownership from a terminal or parent PID.
 
 ### Lifecycle MVP: loopback ownership and handoff
 
-The first operational lifecycle slice is `wb daemon start|status|stop|restart`.
+The first operational lifecycle slice is `wb daemon start|status|stop|restart|recover`.
 Each command accepts canonical `--format=text|json`; `--json` is the shortcut
-for JSON. `start` is idempotent when a reachable loopback daemon has the exact
+for JSON. `recover` dry-runs by default and clears an interrupted transition
+only with `--apply`, after proving the recorded owner dead and the lifecycle
+state safe to fence or already stable. The transition lock is one retained,
+owner-only inode guarded by a kernel lock; an atomically replaced sidecar keeps
+PID evidence crash-safe. Process death releases exclusion without deleting its
+ownership evidence. `start` is idempotent when a reachable loopback daemon has the exact
 installed executable provenance (path, SHA-256, WB version, and revision). If
 that provenance differs, it marks the old generation draining, waits for it to
 stop, then starts the installed executable with the next durable queue

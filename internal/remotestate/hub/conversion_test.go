@@ -21,7 +21,7 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 			Summary: "private command output", Unpushed: []string{"private commit subject"},
 		}},
 		Worktrees: []remotestate.WorktreeState{{
-			Task: "dashboard", Stream: "fleet", Repository: "acme/widgets", Branch: "feature/dashboard",
+			Task: "dashboard", TaskSummary: "Repair worktree activity", Stream: "fleet", Repository: "acme/widgets", Branch: "feature/dashboard",
 			Dir: "/Users/alice/private/.worktrees/dashboard", HeadSHA: "0123456789abcdef",
 			Lifecycle: "review", OwnerState: "active", Owner: "worker-1",
 			NeedsAttention: true, Attention: "/Users/alice/private command output",
@@ -47,6 +47,9 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	if snapshot.Worktrees[0].AttentionReason != machinesnapshot.AttentionReviewRequired {
 		t.Fatalf("attention reason = %q", snapshot.Worktrees[0].AttentionReason)
 	}
+	if snapshot.Worktrees[0].TaskSummary != "Repair worktree activity" {
+		t.Fatalf("hosted task summary = %q", snapshot.Worktrees[0].TaskSummary)
+	}
 	receivedAt := at.Add(time.Second)
 	converted := Entry(machinesnapshot.StoredSnapshot{Snapshot: snapshot, ReceivedAt: receivedAt})
 	if converted.Snapshot.ProjectsRoot != "" || converted.Snapshot.Worktrees[0].Dir != "" || converted.Snapshot.Worktrees[0].HeadSHA != "" {
@@ -57,5 +60,8 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	}
 	if !converted.Snapshot.Heartbeat().Equal(receivedAt) {
 		t.Fatalf("heartbeat = %s, want server receipt %s", converted.Snapshot.Heartbeat(), receivedAt)
+	}
+	if converted.Snapshot.Worktrees[0].TaskSummary != "Repair worktree activity" {
+		t.Fatalf("read-model task summary = %q", converted.Snapshot.Worktrees[0].TaskSummary)
 	}
 }

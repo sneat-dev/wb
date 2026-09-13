@@ -195,38 +195,42 @@ type WorktreeMergeHostLoadAdmission struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                                            `json:"schema_version"`
-	ID                    string                                         `json:"id"`
-	Lane                  string                                         `json:"lane"`
-	Phase                 WorktreeMergePhase                             `json:"phase"`
-	Status                WorktreeMergeStatus                            `json:"status"`
-	Repository            string                                         `json:"repository"`
-	Target                string                                         `json:"target"`
-	TargetSHA             string                                         `json:"target_sha"`
-	Sources               []WorktreeMergeSource                          `json:"sources"`
-	Candidate             WorktreeMergeCandidate                         `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt                    `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt                    `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision                     `json:"route,omitempty"`
-	PullRequest           string                                         `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                                         `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                                         `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                                         `json:"landing_sha,omitempty"`
-	CanonicalSync         string                                         `json:"canonical_sync,omitempty"`
-	Validation            quality.VerificationReport                     `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport                     `json:"baseline_validation,omitempty"`
-	ValidationIdentity    *WorktreeMergeValidationIdentity               `json:"validation_identity,omitempty"`
-	ValidationTimeouts    *WorktreeMergeValidationTimeouts               `json:"validation_timeouts,omitempty"`
-	Checks                PullRequestWaitResult                          `json:"checks,omitempty"`
-	PushGate              *WorktreeMergePushGateReceipt                  `json:"push_gate,omitempty"`
-	ForwardRepairs        []WorktreeMergeForwardRepairReceipt            `json:"forward_repairs,omitempty"`
-	Cleanup               bool                                           `json:"cleanup_requested"`
-	OnFailure             string                                         `json:"on_failure,omitempty"`
-	CleanupReports        []string                                       `json:"cleanup_reports,omitempty"`
-	CleanedTasks          []string                                       `json:"cleaned_tasks,omitempty"`
-	SourceRefreshes       []WorktreeMergeSourceRefresh                   `json:"source_refreshes,omitempty"`
-	TargetRefreshes       []WorktreeMergeTargetRefresh                   `json:"target_refreshes,omitempty"`
-	SourcePullRequests    []WorktreeMergeSourcePullRequestReconciliation `json:"source_pull_requests,omitempty"`
+	SchemaVersion         int                                 `json:"schema_version"`
+	ID                    string                              `json:"id"`
+	Lane                  string                              `json:"lane"`
+	Phase                 WorktreeMergePhase                  `json:"phase"`
+	Status                WorktreeMergeStatus                 `json:"status"`
+	Repository            string                              `json:"repository"`
+	Target                string                              `json:"target"`
+	TargetSHA             string                              `json:"target_sha"`
+	Sources               []WorktreeMergeSource               `json:"sources"`
+	Candidate             WorktreeMergeCandidate              `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt         `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt         `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision          `json:"route,omitempty"`
+	PullRequest           string                              `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                              `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                              `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                              `json:"landing_sha,omitempty"`
+	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
+	Validation            quality.VerificationReport          `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
+	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
+	ValidationTimeouts    *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
+	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
+	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
+	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
+	Cleanup               bool                                `json:"cleanup_requested"`
+	// AllowUnfenced is monotonic landing intent: an interrupted resume keeps
+	// the explicit approval to rely on observed exact-head checks when the
+	// target has no server-enforced strict up-to-date fence.
+	AllowUnfenced      bool                                           `json:"allow_unfenced,omitempty"`
+	OnFailure          string                                         `json:"on_failure,omitempty"`
+	CleanupReports     []string                                       `json:"cleanup_reports,omitempty"`
+	CleanedTasks       []string                                       `json:"cleaned_tasks,omitempty"`
+	SourceRefreshes    []WorktreeMergeSourceRefresh                   `json:"source_refreshes,omitempty"`
+	TargetRefreshes    []WorktreeMergeTargetRefresh                   `json:"target_refreshes,omitempty"`
+	SourcePullRequests []WorktreeMergeSourcePullRequestReconciliation `json:"source_pull_requests,omitempty"`
 	// RebatchOf binds this candidate to an immutable prepared receipt whose
 	// source set was safely expanded. The old receipt is never rewritten.
 	RebatchOf           string                   `json:"rebatch_of,omitempty"`
@@ -250,13 +254,14 @@ type WorktreeMergeReceipt struct {
 }
 
 type WorktreeMergeLandOptions struct {
-	ProjectsRoot string
-	Receipt      string
-	Route        WorktreeMergeRoute
-	Cleanup      bool
-	OnFailure    string
-	Timeout      time.Duration
-	Retry        int
+	ProjectsRoot  string
+	Receipt       string
+	Route         WorktreeMergeRoute
+	Cleanup       bool
+	AllowUnfenced bool
+	OnFailure     string
+	Timeout       time.Duration
+	Retry         int
 	// PrepareTimeout bounds recovery of an interrupted preparing receipt.
 	// It does not apply after the candidate has reached prepared state.
 	PrepareTimeout time.Duration
@@ -283,6 +288,16 @@ type WorktreeMergeLandOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// CheckoutUpdated is called only after the checked-out canonical target
+	// has moved and the exact landed commit is proven reachable. Nil discards.
+	CheckoutUpdated func(context.Context, CheckoutUpdate)
+}
+
+type CheckoutUpdate struct {
+	Checkout string
+	OldSHA   string
+	NewSHA   string
+	Cause    string
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -1010,6 +1025,29 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
 		}
 	}
+	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
+		// Persist approved landing intent before remote-only recovery. If the
+		// recovery succeeds, the recursive pass continues through the ordinary
+		// post-target CI, canonical sync, and cleanup path with the same fence
+		// approval instead of forgetting it after the PR has merged.
+		if retainWorktreeMergeLandIntent(&receipt, &options) {
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
+		recovered, recoveryErr := recoverAlreadyMergedPublishedWorktreeMerge(ctx, &receipt)
+		if recoveryErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, recoveryErr)
+		}
+		if recovered {
+			if err := lock.Release(); err != nil {
+				return receipt, err
+			}
+			locked = false
+			return LandWorktreeMerge(ctx, options)
+		}
+	}
 	if receipt.Candidate.SHA == "" {
 		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 		if recoverErr != nil {
@@ -1193,6 +1231,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
 			}
 			receipt.LandingSHA = remoteTarget
+			// Candidate PR checks prove the pre-merge head only. Force the
+			// recursive landed pass to obtain fresh target-check evidence.
+			receipt.Checks = PullRequestWaitResult{}
 			receipt.Status = WorktreeMergeLanded
 			receipt.UpdatedAt = time.Now().UTC()
 			if persistErr := persistWorktreeMergeReceipt(receipt); persistErr != nil {
@@ -1221,7 +1262,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out" {
 			reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, receipt.Target+"@"+shortMergeRevision(receipt.LandingSHA))
 			canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
-			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry)
+			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry, options.CheckoutUpdated)
 			if err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
 			}
@@ -1632,7 +1673,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 
 	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
 	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, canonical)
-	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry)
+	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry, options.CheckoutUpdated)
 	if err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
 	}
@@ -2102,6 +2143,7 @@ func retainWorktreeMergeLandIntent(receipt *WorktreeMergeReceipt, options *Workt
 		onFailure = receipt.OnFailure
 	}
 	cleanup := receipt.Cleanup || options.Cleanup
+	allowUnfenced := receipt.AllowUnfenced || options.AllowUnfenced
 	progressRequested := options.ProgressRequested || stringSliceContains(receipt.ResumeArgs, "--progress")
 	resumeArgs := []string{"worktree", "merge", "resume", receipt.ReceiptPath, "--route", string(requestedRoute)}
 	if cleanup {
@@ -2110,15 +2152,20 @@ func retainWorktreeMergeLandIntent(receipt *WorktreeMergeReceipt, options *Workt
 	if progressRequested {
 		resumeArgs = append(resumeArgs, "--progress")
 	}
+	if allowUnfenced {
+		resumeArgs = append(resumeArgs, "--allow-unfenced")
+	}
 	resumeArgs = append(resumeArgs, "--on-failure", onFailure)
-	changed := receipt.Route.Requested != requestedRoute || receipt.Cleanup != cleanup || receipt.OnFailure != onFailure ||
+	changed := receipt.Route.Requested != requestedRoute || receipt.Cleanup != cleanup || receipt.AllowUnfenced != allowUnfenced || receipt.OnFailure != onFailure ||
 		strings.Join(receipt.ResumeArgs, "\x00") != strings.Join(resumeArgs, "\x00")
 	receipt.Route.Requested = requestedRoute
 	receipt.Cleanup = cleanup
+	receipt.AllowUnfenced = allowUnfenced
 	receipt.OnFailure = onFailure
 	receipt.ResumeArgs = resumeArgs
 	options.Route = requestedRoute
 	options.Cleanup = cleanup
+	options.AllowUnfenced = allowUnfenced
 	options.OnFailure = onFailure
 	options.ProgressRequested = progressRequested
 	return changed
@@ -2465,7 +2512,11 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane.Owner.WBSessionID, 0)
 	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
-		Slice: slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
+		// --allow-unfenced is durable because a private repository can expose
+		// neither PR nor post-target branch-policy authority. Both phases still
+		// require stable exact-head check observations.
+		AllowUnfenced: options.AllowUnfenced,
+		Slice:         slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
 		OperationProgress: options.Progress,
 	})
 	stopLaneHeartbeat()
@@ -2478,6 +2529,9 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	case PullRequestWaitPending:
 		return result, fmt.Errorf("exact-head checks remain pending: %s; resume with wb worktree merge resume %s", result.Reason, receipt.ReceiptPath)
 	default:
+		if !options.AllowUnfenced && strings.Contains(result.Reason, "strict up-to-date fence") {
+			return result, fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", result.Reason, receipt.ReceiptPath)
+		}
 		return result, fmt.Errorf("exact-head checks failed: %s", result.Reason)
 	}
 }
@@ -2771,7 +2825,7 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	return errors.New("published pull-request head verification exhausted without an observation")
 }
 
-func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int) (string, error) {
+func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int, checkoutUpdated func(context.Context, CheckoutUpdate)) (string, error) {
 	branch, _, err := runCommand(ctx, timeout, retry, canonical, "git", "branch", "--show-current")
 	if err != nil {
 		return "", err
@@ -2781,6 +2835,10 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 	}
 	if err := requireCleanMergeWorktree(ctx, canonical); err != nil {
 		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: %w", err)
+	}
+	beforeHead, err := mergeRevision(ctx, canonical, "HEAD")
+	if err != nil {
+		return "", err
 	}
 	if _, _, err := runCommand(ctx, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
 		return "blocked_fetch", err
@@ -2798,6 +2856,9 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 			err = fmt.Errorf("canonical target %s does not contain exact landed head %s", head, landing)
 		}
 		return "blocked_mismatch", err
+	}
+	if checkoutUpdated != nil && head != beforeHead {
+		checkoutUpdated(ctx, CheckoutUpdate{Checkout: canonical, OldSHA: beforeHead, NewSHA: head, Cause: "merge-land"})
 	}
 	return "fast_forwarded", nil
 }
@@ -2889,9 +2950,10 @@ func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot str
 
 // recoverAlreadyTerminalizedWorktreeMergeCleanup handles the narrow crash and
 // cross-session recovery case where supported cleanup has already sealed and
-// removed every exact receipt worktree, but did not update this merge receipt.
-// It trusts neither the absent worktree nor a caller-supplied cleanup report:
-// immutable claim+terminal evidence must reproduce each receipt identity.
+// removed one or more exact receipt worktrees, but did not update this merge
+// receipt. It trusts neither an absent worktree nor a caller-supplied cleanup
+// report: immutable claim+terminal evidence must reproduce every absent
+// identity before remaining live assets may enter ordinary cleanup.
 func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
 	if receipt == nil {
 		return false, errors.New("nil merge receipt")
@@ -2900,35 +2962,52 @@ func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, project
 	if err != nil {
 		return false, err
 	}
-	absent := 0
+	absent := make([]worktrees.TerminalWorkLogExpectation, 0, len(expectations))
 	for _, expectation := range expectations {
 		if _, statErr := os.Lstat(expectation.Worktree); statErr == nil {
 			continue
 		} else if os.IsNotExist(statErr) {
-			absent++
+			absent = append(absent, expectation)
 		} else {
 			return false, fmt.Errorf("inspect receipted cleanup worktree %s: %w", expectation.Worktree, statErr)
 		}
 	}
-	if absent == 0 {
+	if len(absent) == 0 {
 		return false, nil
 	}
-	if absent != len(expectations) {
-		return false, errors.New("receipt cleanup assets are only partially terminalized; refusing to infer the missing cleanup")
-	}
-	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, expectations); err != nil {
+	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, absent); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w", err)
+		}
+		if len(absent) != len(expectations) {
+			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate partially terminalized cleanup: %w", err)
 		}
 		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
 		if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, *receipt, ackPath, timeout, retry); ackErr != nil {
 			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w; audited missing-cleanup recovery unavailable: %v", err, ackErr)
 		}
 	}
-	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, *receipt, expectations, timeout, retry); err != nil {
+	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, *receipt, absent, timeout, retry); err != nil {
 		return false, err
 	}
-	receipt.CleanedTasks = sortedUniqueMergeTasks(*receipt)
+	cleaned := make(map[string]bool, len(receipt.CleanedTasks)+len(absent))
+	for _, task := range receipt.CleanedTasks {
+		cleaned[task] = true
+	}
+	for _, expectation := range absent {
+		if !cleaned[expectation.Task] {
+			receipt.CleanedTasks = append(receipt.CleanedTasks, expectation.Task)
+			cleaned[expectation.Task] = true
+		}
+	}
+	sort.Strings(receipt.CleanedTasks)
+	if len(absent) != len(expectations) {
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(*receipt); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 	return true, nil
 }
 

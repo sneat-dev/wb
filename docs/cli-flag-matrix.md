@@ -33,7 +33,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `sync-report publish` | yes | rejected | rejected | yes |
 | `run` | yes | yes | yes | yes |
 | `worker connect` | yes | rejected | rejected | yes |
-| `daemon serve`, `start`, `status`, `stop`, `restart`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart`, `recover`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |
@@ -60,7 +60,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
-| `worktree list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
@@ -73,7 +73,6 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
-| `plugin list`, `codegrapher status`, `install`, `update` | rejected | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |
@@ -146,4 +145,10 @@ independent of `--format` / `--json`; failure receipts retain error details.
 
 `worktree merge resume` accepts `--prepare-timeout`, `--check-timeout`, and
 `--shard-attempt-timeout` when recovering an interrupted preparing receipt.
-Unspecified validation limits retain the persisted values.
+Unspecified validation limits retain the persisted values. `worktree merge`,
+`worktree land`, `merge land`, `merge resume`, and `merge revert` accept `--allow-unfenced`;
+the approval is persisted in the merge receipt through post-merge verification
+and later resumes. It permits unavailable branch-policy authority while both
+pull-request and target phases continue to require stable exact-head check
+observations. Prepare does not accept the flag because it performs no remote
+landing or CI-fence decision.

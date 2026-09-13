@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -348,8 +349,43 @@ func TestSyncProcessorRejectsMismatchedCanonicalOrigin(t *testing.T) {
 	}
 }
 
+func TestSyncLifecycleEventOnlyDescribesChangedCheckout(t *testing.T) {
+	repository := "github.com/acme/app"
+	path := "/projects/acme/app"
+	tests := []struct {
+		name   string
+		result fleetsync.Result
+		want   bool
+		oldSHA string
+		newSHA string
+	}{
+		{name: "clone", result: fleetsync.Result{Repo: discover.Repo{Path: path}, Status: fleetsync.Cloned, HeadSHA: "clone"}, want: true, newSHA: "clone"},
+		{name: "updated", result: fleetsync.Result{Repo: discover.Repo{Path: path}, Status: fleetsync.Pulled, Updated: true, BeforeHeadSHA: "old", HeadSHA: "new"}, want: true, oldSHA: "old", newSHA: "new"},
+		{name: "current", result: fleetsync.Result{Repo: discover.Repo{Path: path}, Status: fleetsync.Pulled, BeforeHeadSHA: "same", HeadSHA: "same"}},
+		{name: "dirty", result: fleetsync.Result{Repo: discover.Repo{Path: path}, Status: fleetsync.SkippedDirty, HeadSHA: "dirty"}},
+		{name: "failed", result: fleetsync.Result{Repo: discover.Repo{Path: path}, Status: fleetsync.Failed, HeadSHA: "failed"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event, ok := syncLifecycleEvent(repository, test.result)
+			if ok != test.want {
+				t.Fatalf("event=%+v ok=%t, want ok=%t", event, ok, test.want)
+			}
+			if ok && (event.Repository != repository || event.Checkout != path || event.OldSHA != test.oldSHA || event.NewSHA != test.newSHA) {
+				t.Fatalf("event=%+v", event)
+			}
+		})
+	}
+}
+
 func localSyncProcessor(projects string) SyncProcessor {
-	return SyncProcessor{ProjectsRoot: projects, verifyOrigin: func(string, string) error { return nil }}
+	return SyncProcessor{
+		ProjectsRoot: projects,
+		verifyOrigin: func(string, string) error { return nil },
+		dispatchLifecycle: func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error) {
+			return lifecyclehooks.Report{}, nil
+		},
+	}
 }
 
 func writeCommit(t *testing.T, directory, value string) {

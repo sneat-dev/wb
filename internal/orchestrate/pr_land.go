@@ -118,7 +118,8 @@ type PullRequestLandOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
-	Lane LaneGuardRequest
+	Lane            LaneGuardRequest
+	CheckoutUpdated func(context.Context, CheckoutUpdate)
 	// mergeAttempted is a test seam recording that the merge write was issued.
 	beforeMerge func()
 }
@@ -604,7 +605,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Started, view.Base.Ref+"@"+shortMergeRevision(landed.MergeCommitSHA), 0, 0)
 	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(options.Repository))
-	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0)
+	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0, options.CheckoutUpdated)
 	if err != nil {
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalCanonicalSync

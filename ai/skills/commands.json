@@ -16,9 +16,6 @@
     "commands": [
       "wb-install"
     ],
-    "codegrapher": [
-      "wb-fleet"
-    ],
     "coverage": [
       "wb-fleet"
     ],
@@ -52,9 +49,6 @@
     ],
     "migrate": [
       "wb-migrate"
-    ],
-    "plugin": [
-      "wb-fleet"
     ],
     "remote": [
       "wb-fleet"

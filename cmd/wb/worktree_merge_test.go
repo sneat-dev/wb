@@ -38,7 +38,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
@@ -49,6 +49,9 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	prepare, _, err := command.Find([]string{"prepare"})
 	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
 		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
+	}
+	if prepare.Flags().Lookup("allow-unfenced") != nil {
+		t.Fatal("merge prepare must not expose landing-only --allow-unfenced")
 	}
 	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if prepare.Flags().Lookup(flag) == nil {
@@ -80,9 +83,15 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 			t.Errorf("merge resume is missing --%s", flag)
 		}
 	}
+	if resume.Flags().Lookup("allow-unfenced") == nil {
+		t.Fatal("merge resume must expose --allow-unfenced")
+	}
 	land, _, err := command.Find([]string{"land"})
 	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
 		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
+	}
+	if land.Flags().Lookup("allow-unfenced") == nil {
+		t.Fatal("merge land must expose --allow-unfenced")
 	}
 	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if land.Flags().Lookup(flag) != nil {
@@ -129,7 +138,7 @@ func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
 	if command.Name() != "land" {
 		t.Fatalf("Name() = %q", command.Name())
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("land is missing --%s", flag)
 		}

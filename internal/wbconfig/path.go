@@ -7,8 +7,12 @@ import (
 	"path/filepath"
 )
 
-// DefaultPath returns ~/.config/wb/wb.yaml.
+// DefaultPath returns $XDG_CONFIG_HOME/wb/wb.yaml when configured, otherwise
+// ~/.config/wb/wb.yaml.
 func DefaultPath() string {
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		return filepath.Join(configHome, "wb", "wb.yaml")
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "wb", "wb.yaml")
 }

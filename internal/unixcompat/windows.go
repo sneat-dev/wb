@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	win "golang.org/x/sys/windows"
 )
 
 const (
@@ -15,7 +17,7 @@ const (
 	O_RDWR      = 2
 	O_CREAT     = 0x40
 	O_EXCL      = 0x80
-	O_DIRECTORY = 0
+	O_DIRECTORY = 0x100000
 	// These flags are interpreted by the compatibility adapters. Keep
 	// O_NOFOLLOW non-zero so Openat can enforce it with Lstat before opening.
 	O_NOFOLLOW          = 0x200000
@@ -67,6 +69,9 @@ func remember(f *os.File, path string) int {
 }
 func pathOf(fd int) string { files.Lock(); defer files.Unlock(); return files.paths[fd] }
 func Open(path string, flags, mode int) (int, error) {
+	if flags&O_NOFOLLOW != 0 {
+		return openNoFollow(path, flags)
+	}
 	f, err := os.OpenFile(path, openFlags(flags), os.FileMode(mode))
 	if err != nil {
 		return -1, err
@@ -79,16 +84,54 @@ func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
 		return -1, errors.New("unknown directory handle")
 	}
 	path := filepath.Join(dir, name)
-	if flags&O_NOFOLLOW != 0 {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return -1, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return -1, errors.New("symbolic link refused")
-		}
-	}
 	return Open(path, int(flags), int(mode))
+}
+
+func openNoFollow(path string, flags int) (int, error) {
+	name, err := win.UTF16PtrFromString(path)
+	if err != nil {
+		return -1, err
+	}
+	access := uint32(win.GENERIC_READ)
+	switch flags & (O_WRONLY | O_RDWR) {
+	case O_WRONLY:
+		access = win.GENERIC_WRITE
+	case O_RDWR:
+		access = win.GENERIC_READ | win.GENERIC_WRITE
+	}
+	if flags&O_CREAT != 0 {
+		access |= win.GENERIC_WRITE
+	}
+	creation := uint32(win.OPEN_EXISTING)
+	switch {
+	case flags&(O_CREAT|O_EXCL) == O_CREAT|O_EXCL:
+		creation = win.CREATE_NEW
+	case flags&O_CREAT != 0:
+		creation = win.OPEN_ALWAYS
+	}
+	attributes := uint32(win.FILE_ATTRIBUTE_NORMAL | win.FILE_FLAG_OPEN_REPARSE_POINT)
+	if flags&O_DIRECTORY != 0 {
+		attributes |= win.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := win.CreateFile(name, access, win.FILE_SHARE_READ|win.FILE_SHARE_WRITE, nil, creation, attributes, 0)
+	if err != nil {
+		return -1, err
+	}
+	var info win.ByHandleFileInformation
+	if err := win.GetFileInformationByHandle(handle, &info); err != nil {
+		_ = win.CloseHandle(handle)
+		return -1, err
+	}
+	if info.FileAttributes&win.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		_ = win.CloseHandle(handle)
+		return -1, errors.New("symbolic link or reparse point refused")
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		_ = win.CloseHandle(handle)
+		return -1, errors.New("wrap Windows file handle")
+	}
+	return remember(file, path), nil
 }
 func openFlags(flags int) int {
 	result := os.O_RDONLY

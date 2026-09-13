@@ -30,6 +30,7 @@ const (
 	MaxIdentityLength = 128
 	MaxRepositoryLen  = 256
 	MaxTaskLength     = 256
+	MaxTaskSummaryLen = 240
 	MaxBranchLength   = 512
 	MaxStatusLength   = 64
 	MaxOwnerLength    = 256
@@ -78,6 +79,7 @@ type Snapshot struct {
 // Worktree is the hosted dashboard projection of one WB worktree.
 type Worktree struct {
 	Task            string       `json:"task" firestore:"task"`
+	TaskSummary     string       `json:"task_summary,omitempty" firestore:"task_summary,omitempty"`
 	Stream          string       `json:"stream,omitempty" firestore:"stream,omitempty"`
 	Repository      string       `json:"repository" firestore:"repository"`
 	Branch          string       `json:"branch" firestore:"branch"`
@@ -229,6 +231,9 @@ func (worktree Worktree) validate() error {
 	}
 	if len(worktree.Task) > MaxTaskLength || len(worktree.Stream) > MaxTaskLength {
 		return errors.New("task or stream is too long")
+	}
+	if utf8.RuneCountInString(worktree.TaskSummary) > MaxTaskSummaryLen || !printable(worktree.TaskSummary) || strings.ContainsAny(worktree.TaskSummary, "\r\n") {
+		return errors.New("task summary is invalid")
 	}
 	owner, name, found := strings.Cut(worktree.Repository, "/")
 	if len(worktree.Repository) > MaxRepositoryLen || !found || strings.Contains(name, "/") ||

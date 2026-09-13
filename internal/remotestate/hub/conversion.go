@@ -19,7 +19,7 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 	}
 	for _, sourceWorktree := range source.Worktrees {
 		result.Worktrees = append(result.Worktrees, machinesnapshot.Worktree{
-			Task: sourceWorktree.Task, Stream: sourceWorktree.Stream,
+			Task: sourceWorktree.Task, TaskSummary: sourceWorktree.TaskSummary, Stream: sourceWorktree.Stream,
 			Repository: sourceWorktree.Repository, Branch: sourceWorktree.Branch,
 			Lifecycle: sourceWorktree.Lifecycle, OwnerState: sourceWorktree.OwnerState,
 			Owner: sourceWorktree.Owner, LastActivityAt: sourceWorktree.LastActivityAt,
@@ -48,7 +48,7 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 	}
 	for _, worktree := range stored.Snapshot.Worktrees {
 		snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{
-			Task: worktree.Task, Stream: worktree.Stream, Repository: worktree.Repository,
+			Task: worktree.Task, TaskSummary: worktree.TaskSummary, Stream: worktree.Stream, Repository: worktree.Repository,
 			Branch: worktree.Branch, Lifecycle: worktree.Lifecycle,
 			OwnerState: worktree.OwnerState, Owner: worktree.Owner,
 			LastActivityAt: worktree.LastActivityAt, NeedsAttention: worktree.NeedsAttention,

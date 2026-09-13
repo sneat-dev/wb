@@ -54,6 +54,7 @@ type WorkLogClaimView struct {
 	ModelProvenance string    `json:"model_provenance,omitempty"`
 	CLI             string    `json:"cli,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
+	TaskSummary     string    `json:"task_summary,omitempty"`
 	PromptDigest    string    `json:"prompt_sha256,omitempty"`
 	PromptArchive   string    `json:"prompt_archive,omitempty"`
 	ClaimPath       string    `json:"claim_path,omitempty"`
@@ -184,7 +185,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 			Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
 			Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
 			Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-			CLI: claim.CLI, Provider: claim.Provider,
+			CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
 			PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
 			ClaimPath: claimPath,
 		}
@@ -207,7 +208,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
 				Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
 				Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-				CLI: claim.CLI, Provider: claim.Provider,
+				CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
 				PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
 			}
 			view.Terminal = &WorkLogTerminalView{
