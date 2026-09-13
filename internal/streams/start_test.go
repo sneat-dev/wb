@@ -51,7 +51,7 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 	if len(worktrees.created) != 3 {
 		t.Fatalf("the existing worktree creation path published %d checkouts, want 3", len(worktrees.created))
 	}
-	for _, pullRequest := range hub.created {
+	for index, pullRequest := range hub.created {
 		if !pullRequest.Draft {
 			t.Errorf("pull request %d is not a draft; only landing marks a stream pull request ready", pullRequest.Number)
 		}
@@ -60,6 +60,10 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 		}
 		if !strings.Contains(pullRequest.Body, "WB stream: `checkout-rewrite`") {
 			t.Errorf("pull request %d body lacks WB stream identity: %q", pullRequest.Number, pullRequest.Body)
+		}
+		wantTitle := "feat(stream): checkout-rewrite in " + result.Stream.Members[index].Repository
+		if pullRequest.Title != wantTitle {
+			t.Errorf("pull request %d title = %q, want %q", pullRequest.Number, pullRequest.Title, wantTitle)
 		}
 	}
 

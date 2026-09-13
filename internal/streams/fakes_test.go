@@ -206,7 +206,11 @@ type fakeHub struct {
 	closed             []int
 	closeErr           map[int]error
 	retargeted         map[int]string
+	updatedTitles      map[int]string
+	titleUpdateCalls   []int
+	updateTitleErr     map[int]error
 	byNumber           map[int]PullRequest
+	beforePullRequest  func(int)
 	mainStatus         map[string]string
 	mainErr            map[string]error
 	requireExistingDir bool
@@ -222,16 +226,18 @@ func (hub *fakeHub) requireDir(dir string) error {
 
 func newFakeHub() *fakeHub {
 	return &fakeHub{
-		nextNumber:   100,
-		createErr:    map[string]error{},
-		byBranch:     map[string]PullRequest{},
-		targeting:    map[string][]PullRequest{},
-		targetingErr: map[string]error{},
-		closeErr:     map[int]error{},
-		retargeted:   map[int]string{},
-		byNumber:     map[int]PullRequest{},
-		mainStatus:   map[string]string{},
-		mainErr:      map[string]error{},
+		nextNumber:     100,
+		createErr:      map[string]error{},
+		byBranch:       map[string]PullRequest{},
+		targeting:      map[string][]PullRequest{},
+		targetingErr:   map[string]error{},
+		closeErr:       map[int]error{},
+		retargeted:     map[int]string{},
+		updatedTitles:  map[int]string{},
+		updateTitleErr: map[int]error{},
+		byNumber:       map[int]PullRequest{},
+		mainStatus:     map[string]string{},
+		mainErr:        map[string]error{},
 	}
 }
 
@@ -252,6 +258,9 @@ func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, t
 }
 
 func (hub *fakeHub) PullRequest(_ context.Context, _ string, number int) (PullRequest, bool, error) {
+	if hub.beforePullRequest != nil {
+		hub.beforePullRequest(number)
+	}
 	pullRequest, ok := hub.byNumber[number]
 	return pullRequest, ok, nil
 }
@@ -300,6 +309,28 @@ func (hub *fakeHub) RetargetPullRequest(_ context.Context, dir string, number in
 	if pullRequest, ok := hub.byNumber[number]; ok {
 		pullRequest.Base = base
 		hub.byNumber[number] = pullRequest
+	}
+	return nil
+}
+
+func (hub *fakeHub) UpdatePullRequestTitle(_ context.Context, dir string, number int, title string) error {
+	if err := hub.requireDir(dir); err != nil {
+		return err
+	}
+	if err := hub.updateTitleErr[number]; err != nil {
+		return err
+	}
+	hub.updatedTitles[number] = title
+	hub.titleUpdateCalls = append(hub.titleUpdateCalls, number)
+	if pullRequest, ok := hub.byNumber[number]; ok {
+		pullRequest.Title = title
+		hub.byNumber[number] = pullRequest
+	}
+	for key, pullRequest := range hub.byBranch {
+		if pullRequest.Number == number {
+			pullRequest.Title = title
+			hub.byBranch[key] = pullRequest
+		}
 	}
 	return nil
 }

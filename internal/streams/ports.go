@@ -76,6 +76,9 @@ type PullRequest struct {
 type GitHub interface {
 	// CreateDraftPullRequest opens a draft pull request from head to base.
 	CreateDraftPullRequest(ctx context.Context, dir, base, head, title, body string) (PullRequest, error)
+	// UpdatePullRequestTitle changes one pull request's title and verifies the
+	// remote effect before returning success.
+	UpdatePullRequestTitle(ctx context.Context, dir string, number int, title string) error
 	// PullRequestForBranch finds the open pull request whose head is branch.
 	PullRequestForBranch(ctx context.Context, dir, branch string) (PullRequest, bool, error)
 	// OpenPullRequestsTargeting lists every open pull request whose base is
