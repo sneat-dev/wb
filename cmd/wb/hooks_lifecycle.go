@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
@@ -22,7 +23,9 @@ func newHooksLifecycleCmd() *cobra.Command {
 	command.AddCommand(
 		newHooksLifecycleCheckCmd(),
 		newHooksLifecycleStatusCmd(),
+		newHooksLifecycleResumeCmd(),
 		newHooksLifecycleRetryCmd(),
+		newHooksLifecycleGCCmd(),
 		newHooksLifecycleBackfillCmd(),
 		newHooksLifecycleRunPendingCmd(),
 	)
@@ -87,7 +90,14 @@ func newHooksLifecycleStatusCmd() *cobra.Command {
 			if jsonOut {
 				return writeLifecycleJSON(command.OutOrStdout(), report)
 			}
-			_, _ = fmt.Fprintf(command.OutOrStdout(), "Worker   %s\nPending  %d\nRunning  %d\nReceipts %d\n", report.Worker, len(report.Pending), len(report.Running), len(report.Receipts))
+			_, _ = fmt.Fprintf(command.OutOrStdout(), "Worker      %s\nPending     %d\nRunning     %d\nUnseen      %d\nQuarantined %d\nReceipts    %d\n", report.Worker, len(report.Pending), len(report.Running), report.UnseenFailures, report.Quarantined, len(report.Receipts))
+			if report.WorkerHealth != nil {
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "Health   %s", report.WorkerHealth.Status)
+				if report.WorkerHealth.Message != "" {
+					_, _ = fmt.Fprintf(command.OutOrStdout(), "  %s", report.WorkerHealth.Message)
+				}
+				_, _ = fmt.Fprintln(command.OutOrStdout())
+			}
 			for _, queued := range report.Pending {
 				_, _ = fmt.Fprintf(command.OutOrStdout(), "  queued   %-18s %s@%s\n", queued.Executor, queued.Event.Repository, lifecycleShortSHA(queued.Event.NewSHA))
 			}
@@ -100,10 +110,38 @@ func newHooksLifecycleStatusCmd() *cobra.Command {
 					_, _ = fmt.Fprintf(command.OutOrStdout(), "  %s\n  stdout: %s\n  stderr: %s\n  retry: wb hooks lifecycle retry %s\n", receipt.Message, receipt.StdoutPath, receipt.StderrPath, receipt.ID)
 				}
 			}
+			for _, finding := range report.Findings {
+				_, _ = fmt.Fprintln(command.ErrOrStderr(), "warning:", finding)
+			}
 			return nil
 		},
 	}
 	command.Flags().IntVar(&limit, "limit", 20, "maximum recent receipts to show")
+	addJSONFormatFlags(command, &jsonOut)
+	return command
+}
+
+func newHooksLifecycleResumeCmd() *cobra.Command {
+	var jsonOut bool
+	command := &cobra.Command{
+		Use:   "resume",
+		Short: "Start a worker for stranded lifecycle-hook work",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			report, err := lifecyclehooks.DefaultDispatcher().Resume()
+			if jsonOut {
+				if writeErr := writeLifecycleJSON(command.OutOrStdout(), report); writeErr != nil {
+					return writeErr
+				}
+				return err
+			}
+			_, _ = fmt.Fprintf(command.OutOrStdout(), "Lifecycle worker started=%t pending=%d running=%d\n", report.WorkerStarted, report.Pending, report.Running)
+			for _, warning := range report.Warnings {
+				_, _ = fmt.Fprintln(command.ErrOrStderr(), "warning:", warning)
+			}
+			return err
+		},
+	}
 	addJSONFormatFlags(command, &jsonOut)
 	return command
 }
@@ -129,6 +167,46 @@ func newHooksLifecycleRetryCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addJSONFormatFlags(command, &jsonOut)
+	return command
+}
+
+func newHooksLifecycleGCCmd() *cobra.Command {
+	var apply, jsonOut bool
+	var keep int
+	var olderThan time.Duration
+	command := &cobra.Command{
+		Use:   "gc",
+		Short: "Preview or remove old lifecycle-hook receipts and diagnostics",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			report, err := lifecyclehooks.DefaultDispatcher().GC(lifecyclehooks.GCOptions{Apply: apply, Keep: keep, OlderThan: olderThan})
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				return writeLifecycleJSON(command.OutOrStdout(), report)
+			}
+			verb := "would remove"
+			if apply {
+				verb = "removed"
+			}
+			_, _ = fmt.Fprintf(command.OutOrStdout(), "Lifecycle GC %s %d of %d receipts; diagnostics removed=%d\n", verb, len(report.Candidates), report.Receipts, report.RemovedDiagnostics)
+			for _, id := range report.Candidates {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "  "+id)
+			}
+			for _, finding := range report.Findings {
+				_, _ = fmt.Fprintln(command.ErrOrStderr(), "warning:", finding)
+			}
+			if !apply && len(report.Candidates) != 0 {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "Re-run with --apply to remove this data.")
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "remove the reported receipts and diagnostics")
+	command.Flags().IntVar(&keep, "keep", 1000, "minimum newest receipts to retain")
+	command.Flags().DurationVar(&olderThan, "older-than", 30*24*time.Hour, "minimum age before removal")
 	addJSONFormatFlags(command, &jsonOut)
 	return command
 }

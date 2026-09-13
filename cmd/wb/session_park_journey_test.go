@@ -211,7 +211,7 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 			t.Fatalf("target replay mutated member custody events for %s", member.Repository)
 		}
 	}
-	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt)
+	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt, continuation, "as session "+receipt.SuccessorWBSessionID)
 	if !bytes.Contains(harnessRaw, []byte("WB_SESSION_CONTINUATION_FILE=")) || !bytes.Contains(harnessRaw, []byte(continuation)) ||
 		!bytes.Contains(harnessRaw, []byte("as session "+receipt.SuccessorWBSessionID)) {
 		t.Fatalf("target harness receipt = %q, want the resumed identity and private continuation file", harnessRaw)
@@ -540,16 +540,20 @@ func terminateJourneyTmuxProcesses(t *testing.T, tmuxState string) {
 	}
 }
 
-func readJourneyHarnessReceipt(t *testing.T, path string) []byte {
+func readJourneyHarnessReceipt(t *testing.T, path string, completeMarkers ...string) []byte {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		raw, err := os.ReadFile(path)
-		if err == nil {
+		complete := err == nil
+		for _, marker := range completeMarkers {
+			complete = complete && bytes.Contains(raw, []byte(marker))
+		}
+		if complete {
 			return raw
 		}
-		if !os.IsNotExist(err) || time.Now().After(deadline) {
-			t.Fatalf("read target harness receipt: %v", err)
+		if (err != nil && !os.IsNotExist(err)) || time.Now().After(deadline) {
+			t.Fatalf("read complete target harness receipt: %v; content=%q", err, raw)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

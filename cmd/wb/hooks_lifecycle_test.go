@@ -81,7 +81,8 @@ func TestLifecycleBackfillStartsDetachedWorkerProcess(t *testing.T) {
 	receiptPath := filepath.Join(stateHome, "wb", "lifecycle-hook-events.jsonl")
 	deadline := time.Now().Add(5 * time.Second)
 	var receipt lifecyclehooks.Receipt
-	for time.Now().Before(deadline) {
+	terminalDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(terminalDeadline) {
 		raw, err := os.ReadFile(receiptPath)
 		if err == nil {
 			line := strings.Split(strings.TrimSpace(string(raw)), "\n")[0]
@@ -97,6 +98,21 @@ func TestLifecycleBackfillStartsDetachedWorkerProcess(t *testing.T) {
 	if info, err := os.Stat(receipt.StdoutPath); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("stdout diagnostic info=%v err=%v", info, err)
 	}
+	// The receipt is written before the worker removes its running record and
+	// publishes terminal health. Wait for that durable terminal state so the
+	// test does not race TempDir cleanup with the detached process.
+	dispatcher := lifecyclehooks.DefaultDispatcher()
+	dispatcher.ConfigPath = config
+	dispatcher.StateDir = filepath.Join(stateHome, "wb", "lifecycle-hooks")
+	dispatcher.ReceiptPath = receiptPath
+	for time.Now().Before(deadline) {
+		status, err := dispatcher.Status(1)
+		if err == nil && status.Worker == "idle" && len(status.Pending) == 0 && len(status.Running) == 0 && status.WorkerHealth != nil && status.WorkerHealth.FinishedAt.After(time.Time{}) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("detached lifecycle worker did not publish terminal state")
 }
 
 func TestLifecycleCheckCommandReportsTrustedExecutor(t *testing.T) {
@@ -111,9 +127,39 @@ func TestLifecycleCheckCommandReportsTrustedExecutor(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"configured": true`, `"name": "code-index"`, `"status": "ready"`} {
+	for _, want := range []string{`"configured": true`, `"name": "code-index"`, `"delivery": "at-least-once"`, `"status": "ready"`} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("check output missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestLifecycleResumeAndGCAreSafeOnEmptyState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	resume := newHooksLifecycleResumeCmd()
+	var resumeOutput bytes.Buffer
+	resume.SetOut(&resumeOutput)
+	resume.SetArgs([]string{"--format", "json"})
+	if err := resume.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resumeOutput.String(), `"worker_started": false`) {
+		t.Fatalf("resume output=%s", resumeOutput.String())
+	}
+
+	gc := newHooksLifecycleGCCmd()
+	var gcOutput bytes.Buffer
+	gc.SetOut(&gcOutput)
+	gc.SetArgs([]string{"--format", "json"})
+	if err := gc.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"apply": false`, `"receipts": 0`} {
+		if !strings.Contains(gcOutput.String(), want) {
+			t.Fatalf("GC output missing %q: %s", want, gcOutput.String())
 		}
 	}
 }

@@ -241,6 +241,7 @@ jobs:
           go test -race -timeout 15m
           ./internal/deps/...
           ./internal/githubobserver/...
+          ./internal/lifecyclehooks/...
           ./internal/fleetsync/...
 
   windows:
@@ -265,6 +266,10 @@ jobs:
         run: >-
           go test ./internal/session
           -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
+      - name: Test lifecycle-hook Windows trust
+        run: >-
+          go test ./internal/lifecyclehooks
+          -run '^TestWindowsTrust'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 

@@ -209,6 +209,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	assert("Windows validation commands", workflowContractTestCommands(t, windows), []string{
 		"go build ./...",
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
+		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
 		"go test ./api/githubapp -count=1",
 	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
@@ -231,7 +232,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	}
 	quickRace, _ := jobs["race"].(map[string]any)
 	assert("quick race command", workflowContractTestCommands(t, quickRace), []string{
-		"go test -race -timeout 15m ./internal/deps/... ./internal/githubobserver/... ./internal/fleetsync/...",
+		"go test -race -timeout 15m ./internal/deps/... ./internal/githubobserver/... ./internal/lifecyclehooks/... ./internal/fleetsync/...",
 	})
 
 	racePath := filepath.Join(repoRoot, ".github", "workflows", "race.yml")

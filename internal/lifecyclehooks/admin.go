@@ -13,12 +13,16 @@ import (
 )
 
 type Status struct {
-	StateDir    string    `json:"state_dir"`
-	ReceiptPath string    `json:"receipt_path"`
-	Worker      string    `json:"worker"`
-	Pending     []Queued  `json:"pending"`
-	Running     []Queued  `json:"running"`
-	Receipts    []Receipt `json:"receipts"`
+	StateDir       string        `json:"state_dir"`
+	ReceiptPath    string        `json:"receipt_path"`
+	Worker         string        `json:"worker"`
+	WorkerHealth   *WorkerHealth `json:"worker_health,omitempty"`
+	UnseenFailures int           `json:"unseen_failures"`
+	Quarantined    int           `json:"quarantined"`
+	Pending        []Queued      `json:"pending"`
+	Running        []Queued      `json:"running"`
+	Receipts       []Receipt     `json:"receipts"`
+	Findings       []string      `json:"findings,omitempty"`
 }
 
 type Queued struct {
@@ -48,42 +52,81 @@ func (dispatcher Dispatcher) Status(limit int) (Status, error) {
 	} else {
 		status.Worker = "running"
 	}
-	if status.Pending, status.Running, err = dispatcher.queueSnapshot(); err != nil {
+	status.WorkerHealth, err = dispatcher.readWorkerHealth()
+	if err != nil {
+		status.Findings = append(status.Findings, "read worker health: "+err.Error())
+	}
+	status.UnseenFailures, err = dispatcher.unseenFailureCount()
+	if err != nil {
+		status.Findings = append(status.Findings, "read unseen failures: "+err.Error())
+	}
+	var queueFindings []string
+	if status.Pending, status.Running, queueFindings, err = dispatcher.queueSnapshot(); err != nil {
 		return status, err
 	}
-	if status.Receipts, err = readRecentReceipts(dispatcher.ReceiptPath, limit); err != nil {
+	status.Findings = append(status.Findings, queueFindings...)
+	status.Quarantined, queueFindings, err = dispatcher.quarantineSnapshot(20)
+	if err != nil {
 		return status, err
 	}
+	status.Findings = append(status.Findings, queueFindings...)
+	var receiptFindings []string
+	if status.Receipts, receiptFindings, err = readRecentReceipts(dispatcher.ReceiptPath, limit); err != nil {
+		return status, err
+	}
+	status.Findings = append(status.Findings, receiptFindings...)
 	return status, nil
 }
 
-func (dispatcher Dispatcher) queueSnapshot() ([]Queued, []Queued, error) {
-	lock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
-	if err := lock.Lock(); err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = lock.Unlock() }()
-	pending, err := dispatcher.listQueued(dispatcher.pendingDir())
+func (dispatcher Dispatcher) quarantineSnapshot(limit int) (int, []string, error) {
+	entries, err := os.ReadDir(dispatcher.quarantineDir())
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, err
 	}
-	running, err := dispatcher.listQueued(dispatcher.runningDir())
-	return pending, running, err
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	count := 0
+	var findings []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".bad") {
+			continue
+		}
+		count++
+		if len(findings) < limit {
+			findings = append(findings, "quarantined lifecycle hook state: "+entry.Name())
+		}
+	}
+	return count, findings, nil
 }
 
-func (dispatcher Dispatcher) listQueued(directory string) ([]Queued, error) {
+func (dispatcher Dispatcher) queueSnapshot() ([]Queued, []Queued, []string, error) {
+	lock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
+	if err := lock.Lock(); err != nil {
+		return nil, nil, nil, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	pending, pendingFindings, err := dispatcher.listQueued(dispatcher.pendingDir())
+	if err != nil {
+		return nil, nil, pendingFindings, err
+	}
+	running, runningFindings, err := dispatcher.listQueued(dispatcher.runningDir())
+	return pending, running, append(pendingFindings, runningFindings...), err
+}
+
+func (dispatcher Dispatcher) listQueued(directory string) ([]Queued, []string, error) {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var queued []Queued
+	var findings []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		job, err := readJob(filepath.Join(directory, entry.Name()))
 		if err != nil {
-			return nil, err
+			findings = append(findings, err.Error())
+			continue
 		}
 		queued = append(queued, Queued{Executor: job.Executor, Event: job.Event, CoalescedCount: job.CoalescedCount, QueuedAt: job.QueuedAt, UpdatedAt: job.UpdatedAt})
 	}
@@ -93,7 +136,7 @@ func (dispatcher Dispatcher) listQueued(directory string) ([]Queued, error) {
 		}
 		return queued[i].UpdatedAt.Before(queued[j].UpdatedAt)
 	})
-	return queued, nil
+	return queued, findings, nil
 }
 
 func (dispatcher Dispatcher) Retry(receiptID string) (Report, error) {
@@ -130,7 +173,7 @@ func (dispatcher Dispatcher) Retry(receiptID string) (Report, error) {
 	}
 	report := Report{Enqueued: 1, Coalesced: coalesced}
 	if dispatcher.LaunchWorker != nil {
-		if err := dispatcher.LaunchWorker(WorkerRequest{ConfigPath: dispatcher.ConfigPath, StateDir: dispatcher.StateDir, ReceiptPath: dispatcher.ReceiptPath}); err != nil {
+		if _, err := dispatcher.startWorkerIfIdle(); err != nil {
 			report.Warnings = append(report.Warnings, "lifecycle hook is queued but the background worker did not start: "+err.Error())
 		}
 	}
@@ -148,6 +191,7 @@ type ExecutorCheck struct {
 	Name     string `json:"name"`
 	Run      string `json:"run"`
 	Resolved string `json:"resolved,omitempty"`
+	Delivery string `json:"delivery"`
 	Status   string `json:"status"`
 	Finding  string `json:"finding,omitempty"`
 }
@@ -170,7 +214,7 @@ func (dispatcher Dispatcher) Check() (CheckReport, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		executor := cfg.Executors[name]
-		check := ExecutorCheck{Name: name, Run: executor.Run, Status: "ready"}
+		check := ExecutorCheck{Name: name, Run: executor.Run, Delivery: "at-least-once", Status: "ready"}
 		inspected, err := dispatcher.inspectExecutable(executor.Run)
 		if err != nil {
 			check.Status = "failed"

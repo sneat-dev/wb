@@ -154,7 +154,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			if check == CheckSpec {
 				continue
 			}
-			command := goCommand(check, options.SingleWorker)
+			command := goCommand(check, options.SingleWorker, options.Timeout)
 			entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
 			report.Results = append(report.Results, entry)
 		}
@@ -417,19 +417,23 @@ func plansStoreOwnerOrRepo(segment string) bool {
 	return segment != "" && segment[0] != '.'
 }
 
-func goCommand(check Check, singleWorker bool) []string {
+func goCommand(check Check, singleWorker bool, timeout time.Duration) []string {
 	switch check {
 	case CheckLint:
 		return []string{"go", "vet", "./..."}
 	case CheckTest:
+		testTimeout := timeout.String()
+		if timeout == 0 {
+			testTimeout = "0"
+		}
 		if singleWorker {
 			// -p 1 bounds how many packages compile and run at once, which is
 			// the knob that keeps a verification run inside the workstation's
 			// concurrency cap. -race is deliberately absent: it multiplies
 			// wall time and memory, and CI on the stream pull request owns it.
-			return []string{"go", "test", "-p", "1", "./..."}
+			return []string{"go", "test", "-timeout", testTimeout, "-p", "1", "./..."}
 		}
-		return []string{"go", "test", "./..."}
+		return []string{"go", "test", "-timeout", testTimeout, "./..."}
 	case CheckBuild:
 		return []string{"go", "build", "./..."}
 	default:

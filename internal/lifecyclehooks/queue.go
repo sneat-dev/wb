@@ -72,9 +72,12 @@ func (dispatcher Dispatcher) enqueue(item pending) (int, error) {
 }
 
 func (dispatcher Dispatcher) ensureState() error {
-	for _, directory := range []string{dispatcher.StateDir, dispatcher.pendingDir(), dispatcher.runningDir(), dispatcher.diagnosticsDir()} {
+	for _, directory := range []string{dispatcher.StateDir, dispatcher.pendingDir(), dispatcher.runningDir(), dispatcher.diagnosticsDir(), dispatcher.unseenDir(), dispatcher.quarantineDir()} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return fmt.Errorf("create lifecycle hook state: %w", err)
+		}
+		if err := validatePrivateDirectory(directory, "lifecycle hook state directory"); err != nil {
+			return fmt.Errorf("protect lifecycle hook state: %w", err)
 		}
 		if err := os.Chmod(directory, 0o700); err != nil {
 			return fmt.Errorf("protect lifecycle hook state: %w", err)
@@ -96,7 +99,7 @@ func (dispatcher Dispatcher) diagnosticsDir() string {
 // Drain executes durable queue entries with bounded concurrency. Only one
 // worker owns a state directory; enqueue uses a separate short-lived lock and
 // therefore never waits for an external command to finish.
-func (dispatcher Dispatcher) Drain(ctx context.Context, parallel int) (Report, error) {
+func (dispatcher Dispatcher) Drain(ctx context.Context, parallel int) (report Report, returnErr error) {
 	dispatcher = dispatcher.defaults()
 	if parallel <= 0 {
 		parallel = defaultParallelism
@@ -115,19 +118,37 @@ func (dispatcher Dispatcher) Drain(ctx context.Context, parallel int) (Report, e
 	if !owned {
 		return Report{}, nil
 	}
+	started := dispatcher.Now().UTC()
+	if err := dispatcher.writeWorkerHealth(WorkerHealth{Status: "running", StartedAt: started}); err != nil {
+		_ = worker.Unlock()
+		return Report{}, fmt.Errorf("record lifecycle hook worker start: %w", err)
+	}
 	workerHeld := true
 	defer func() {
 		if workerHeld {
 			_ = worker.Unlock()
 		}
+		health := WorkerHealth{Status: "idle", StartedAt: started, FinishedAt: dispatcher.Now().UTC()}
+		if returnErr != nil {
+			health.Status = "failed"
+			health.Message = boundedMessage(returnErr.Error(), 512)
+		} else if len(report.Warnings) != 0 {
+			health.Status = "warning"
+			health.Message = boundedMessage(strings.Join(report.Warnings, "; "), 512)
+		}
+		if err := dispatcher.writeWorkerHealth(health); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("record lifecycle hook worker completion: %w", err)
+		}
 	}()
-	if err := dispatcher.recoverRunning(); err != nil {
-		return Report{}, err
+	recoveryWarnings, err := dispatcher.recoverRunning()
+	report.Warnings = append(report.Warnings, recoveryWarnings...)
+	if err != nil {
+		return report, err
 	}
 
-	var report Report
 	for {
-		jobs, released, err := dispatcher.claimBatch(parallel, worker)
+		jobs, released, claimWarnings, err := dispatcher.claimBatch(parallel, worker)
+		report.Warnings = append(report.Warnings, claimWarnings...)
 		if err != nil {
 			return report, err
 		}
@@ -156,6 +177,11 @@ func (dispatcher Dispatcher) Drain(ctx context.Context, parallel int) (Report, e
 				report.Warnings = append(report.Warnings, "record lifecycle hook receipt: "+err.Error())
 				continue
 			}
+			if result.receipt.Status == "failed" {
+				if err := dispatcher.recordUnseenFailure(result.receipt); err != nil {
+					report.Warnings = append(report.Warnings, "record unseen lifecycle hook failure: "+err.Error())
+				}
+			}
 			if err := dispatcher.complete(result.job); err != nil {
 				report.Warnings = append(report.Warnings, "complete lifecycle hook queue item: "+err.Error())
 			}
@@ -163,16 +189,17 @@ func (dispatcher Dispatcher) Drain(ctx context.Context, parallel int) (Report, e
 	}
 }
 
-func (dispatcher Dispatcher) recoverRunning() error {
+func (dispatcher Dispatcher) recoverRunning() ([]string, error) {
 	lock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
 	if err := lock.Lock(); err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = lock.Unlock() }()
 	entries, err := os.ReadDir(dispatcher.runningDir())
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var warnings []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -180,7 +207,12 @@ func (dispatcher Dispatcher) recoverRunning() error {
 		runningPath := filepath.Join(dispatcher.runningDir(), entry.Name())
 		running, err := readJob(runningPath)
 		if err != nil {
-			return err
+			quarantined, quarantineErr := dispatcher.quarantineFile(runningPath, err.Error())
+			if quarantineErr != nil {
+				return warnings, quarantineErr
+			}
+			warnings = append(warnings, "quarantined invalid running lifecycle-hook item at "+quarantined)
+			continue
 		}
 		pendingPath := filepath.Join(dispatcher.pendingDir(), entry.Name())
 		if pending, pendingErr := readJob(pendingPath); pendingErr == nil {
@@ -188,35 +220,44 @@ func (dispatcher Dispatcher) recoverRunning() error {
 			pending.QueuedAt = running.QueuedAt
 			pending.CoalescedCount += running.CoalescedCount
 			if err := writeJSONAtomic(pendingPath, pending, 0o600); err != nil {
-				return err
+				return warnings, err
 			}
 		} else if errors.Is(pendingErr, os.ErrNotExist) {
 			if err := os.Rename(runningPath, pendingPath); err != nil {
-				return err
+				return warnings, err
 			}
 			continue
 		} else {
-			return pendingErr
+			quarantined, quarantineErr := dispatcher.quarantineFile(pendingPath, pendingErr.Error())
+			if quarantineErr != nil {
+				return warnings, quarantineErr
+			}
+			warnings = append(warnings, "quarantined invalid pending lifecycle-hook item at "+quarantined)
+			if err := os.Rename(runningPath, pendingPath); err != nil {
+				return warnings, err
+			}
+			continue
 		}
 		if err := os.Remove(runningPath); err != nil {
-			return err
+			return warnings, err
 		}
 	}
-	return syncQueueDirectories(dispatcher.pendingDir(), dispatcher.runningDir())
+	return warnings, syncQueueDirectories(dispatcher.pendingDir(), dispatcher.runningDir())
 }
 
-func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queuedJob, bool, error) {
+func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queuedJob, bool, []string, error) {
 	queueLock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
 	if err := queueLock.Lock(); err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	defer func() { _ = queueLock.Unlock() }()
 	entries, err := os.ReadDir(dispatcher.pendingDir())
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	jobs := make([]queuedJob, 0, limit)
+	var warnings []string
 	for _, entry := range entries {
 		if len(jobs) == limit {
 			break
@@ -227,26 +268,31 @@ func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queue
 		pendingPath := filepath.Join(dispatcher.pendingDir(), entry.Name())
 		job, err := readJob(pendingPath)
 		if err != nil {
-			return nil, false, err
+			quarantined, quarantineErr := dispatcher.quarantineFile(pendingPath, err.Error())
+			if quarantineErr != nil {
+				return nil, false, warnings, quarantineErr
+			}
+			warnings = append(warnings, "quarantined invalid pending lifecycle-hook item at "+quarantined)
+			continue
 		}
 		if err := os.Rename(pendingPath, filepath.Join(dispatcher.runningDir(), entry.Name())); err != nil {
-			return nil, false, err
+			return nil, false, warnings, err
 		}
 		jobs = append(jobs, job)
 	}
 	if len(jobs) != 0 {
 		if err := syncQueueDirectories(dispatcher.pendingDir(), dispatcher.runningDir()); err != nil {
-			return nil, false, err
+			return nil, false, warnings, err
 		}
-		return jobs, false, nil
+		return jobs, false, warnings, nil
 	}
 	// Release worker ownership while the queue lock still excludes enqueue.
 	// A subsequent enqueue will then start a worker that can acquire ownership,
 	// closing the otherwise tiny empty-queue shutdown race.
 	if err := worker.Unlock(); err != nil {
-		return nil, false, err
+		return nil, false, warnings, err
 	}
-	return nil, true, nil
+	return nil, true, warnings, nil
 }
 
 type jobResult struct {
@@ -436,8 +482,38 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	return syncDirectory(filepath.Dir(path))
 }
 
+func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error) {
+	if err := os.MkdirAll(dispatcher.quarantineDir(), 0o700); err != nil {
+		return "", err
+	}
+	if err := validatePrivateDirectory(dispatcher.quarantineDir(), "lifecycle hook quarantine directory"); err != nil {
+		return "", err
+	}
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + "-" + receiptID(dispatcher.Now().UTC()) + ".bad"
+	destination := filepath.Join(dispatcher.quarantineDir(), name)
+	if err := os.Rename(path, destination); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(destination, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(destination+".reason.txt", []byte(boundedMessage(reason, 1024)+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return destination, syncQueueDirectories(filepath.Dir(path), dispatcher.quarantineDir())
+}
+
 func appendReceipt(path string, receipt Receipt) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := validateReceipt(receipt); err != nil {
+		return err
+	}
+	if err := ensureTrustedParent(path, "lifecycle hook receipt parent"); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(receiptIndexDir(path), 0o700); err != nil {
+		return err
+	}
+	if err := validatePrivateDirectory(receiptIndexDir(path), "lifecycle hook receipt index"); err != nil {
 		return err
 	}
 	lock := flock.New(path + ".lock")
@@ -445,11 +521,22 @@ func appendReceipt(path string, receipt Receipt) error {
 		return err
 	}
 	defer func() { _ = lock.Unlock() }()
+	expected, existed, err := validateTrustedDataFile(path, "lifecycle hook receipt stream")
+	if err != nil {
+		return err
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if existed && !os.SameFile(expected, opened) {
+		return errors.New("lifecycle hook receipt stream changed while opening")
+	}
 	if err := file.Chmod(0o600); err != nil {
 		return err
 	}
@@ -463,6 +550,9 @@ func appendReceipt(path string, receipt Receipt) error {
 	if err := file.Sync(); err != nil {
 		return err
 	}
+	if err := writeJSONAtomic(filepath.Join(receiptIndexDir(path), receipt.ID+".json"), receipt, 0o600); err != nil {
+		return fmt.Errorf("index lifecycle hook receipt: %w", err)
+	}
 	return syncDirectory(filepath.Dir(path))
 }
 
@@ -475,9 +565,13 @@ func syncQueueDirectories(directories ...string) error {
 	return nil
 }
 
-func readRecentReceipts(path string, limit int) ([]Receipt, error) {
+func receiptIndexDir(path string) string {
+	return path + ".d"
+}
+
+func readRecentReceipts(path string, limit int) ([]Receipt, []string, error) {
 	var receipts []Receipt
-	err := scanReceipts(path, func(receipt Receipt) {
+	findings, err := scanReceipts(path, func(receipt Receipt) {
 		if len(receipts) == limit {
 			copy(receipts, receipts[1:])
 			receipts[len(receipts)-1] = receipt
@@ -485,13 +579,26 @@ func readRecentReceipts(path string, limit int) ([]Receipt, error) {
 		}
 		receipts = append(receipts, receipt)
 	})
-	return receipts, err
+	return receipts, findings, err
 }
 
 func findReceipt(path, id string) (Receipt, bool, error) {
+	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, `/\\`) {
+		return Receipt{}, false, fmt.Errorf("invalid lifecycle hook receipt ID %q", id)
+	}
+	raw, err := os.ReadFile(filepath.Join(receiptIndexDir(path), id+".json"))
+	if err == nil {
+		var indexed Receipt
+		if decodeErr := json.Unmarshal(raw, &indexed); decodeErr == nil && validateReceipt(indexed) == nil && indexed.ID == id {
+			return indexed, true, nil
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Receipt{}, false, err
+	}
 	var selected Receipt
 	found := false
-	err := scanReceipts(path, func(receipt Receipt) {
+	_, err = scanReceipts(path, func(receipt Receipt) {
 		if receipt.ID == id {
 			selected = receipt
 			found = true
@@ -500,28 +607,66 @@ func findReceipt(path, id string) (Receipt, bool, error) {
 	return selected, found, err
 }
 
-func scanReceipts(path string, visit func(Receipt)) error {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+func scanReceipts(path string, visit func(Receipt)) ([]string, error) {
+	if err := ensureTrustedParent(path, "lifecycle hook receipt parent"); err != nil {
+		return nil, err
 	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
 	lock := flock.New(path + ".lock")
 	if err := lock.Lock(); err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = lock.Unlock() }()
+	expected, exists, err := validateTrustedDataFile(path, "lifecycle hook receipt stream")
+	if err != nil || !exists {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(expected, opened) {
+		return nil, errors.New("lifecycle hook receipt stream changed while opening")
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var findings []string
+	line := 0
 	for scanner.Scan() {
-		var receipt Receipt
-		if err := json.Unmarshal(scanner.Bytes(), &receipt); err != nil {
-			return err
+		line++
+		receipt, err := decodeReceipt(scanner.Bytes())
+		if err != nil {
+			if len(findings) < 20 {
+				findings = append(findings, fmt.Sprintf("ignored invalid lifecycle hook receipt line %d: %v", line, err))
+			}
+			continue
 		}
 		visit(receipt)
 	}
-	return scanner.Err()
+	return findings, scanner.Err()
+}
+
+func decodeReceipt(raw []byte) (Receipt, error) {
+	var receipt Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		return Receipt{}, err
+	}
+	if err := validateReceipt(receipt); err != nil {
+		return Receipt{}, err
+	}
+	return receipt, nil
+}
+
+func validateReceipt(receipt Receipt) error {
+	if receipt.SchemaVersion != receiptSchemaVersion {
+		return fmt.Errorf("unsupported receipt schema version %d", receipt.SchemaVersion)
+	}
+	if receipt.ID == "" || filepath.Base(receipt.ID) != receipt.ID || strings.ContainsAny(receipt.ID, `/\\`) {
+		return fmt.Errorf("invalid receipt ID %q", receipt.ID)
+	}
+	return nil
 }

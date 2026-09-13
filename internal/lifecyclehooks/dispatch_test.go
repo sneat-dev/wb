@@ -355,6 +355,14 @@ func newTestDispatcher(t *testing.T, root, executable string) Dispatcher {
 		ConfigPath: config, StateDir: filepath.Join(root, "state"), ReceiptPath: filepath.Join(root, "receipts.jsonl"),
 		Now: time.Now, EvalSymlinks: filepath.EvalSymlinks,
 		LaunchWorker: func(WorkerRequest) error { return nil },
+		VerifyCheckout: func(event Event) (string, os.FileInfo, error) {
+			physical, err := filepath.EvalSymlinks(event.Checkout)
+			if err != nil {
+				return "", nil, err
+			}
+			info, err := os.Stat(physical)
+			return physical, info, err
+		},
 	}
 }
 

@@ -68,7 +68,12 @@ A repository is an external SpecScore Plans store (SpecScore's Plan repository r
 
 #### REQ: bounded-command-execution
 
-Coverage, verification, and check commands MUST apply `--timeout` independently to every external command. The default timeout MUST be finite; `0` MAY explicitly disable it. `--retry=N` MUST make at most N additional attempts for a failed command and record the number of attempts in the report.
+Coverage, verification, and check commands MUST apply `--timeout` independently
+to every external command. A Go test process MUST receive the same value through
+its native `-timeout` flag so Go's hidden ten-minute default cannot terminate a
+check whose WB budget is longer; `--timeout=0` MUST pass `-timeout 0`. The
+default timeout MUST be finite. `--retry=N` MUST make at most N additional
+attempts for a failed command and record the number of attempts in the report.
 
 #### REQ: report-resume
 

@@ -47,6 +47,8 @@ type Invocation struct {
 
 	configuredRun string
 	executable    os.FileInfo
+	event         Event
+	checkout      os.FileInfo
 }
 
 type Report struct {
@@ -91,13 +93,14 @@ type WorkerRequest struct {
 }
 
 type Dispatcher struct {
-	ConfigPath   string
-	StateDir     string
-	ReceiptPath  string
-	Now          func() time.Time
-	Run          func(context.Context, Invocation) error
-	EvalSymlinks func(string) (string, error)
-	LaunchWorker func(WorkerRequest) error
+	ConfigPath     string
+	StateDir       string
+	ReceiptPath    string
+	Now            func() time.Time
+	Run            func(context.Context, Invocation) error
+	EvalSymlinks   func(string) (string, error)
+	LaunchWorker   func(WorkerRequest) error
+	VerifyCheckout func(Event) (string, os.FileInfo, error)
 }
 
 type pending struct {
@@ -109,13 +112,14 @@ type pending struct {
 
 func DefaultDispatcher() Dispatcher {
 	return Dispatcher{
-		ConfigPath:   wbconfig.DefaultPath(),
-		StateDir:     defaultStateDir(),
-		ReceiptPath:  defaultReceiptPath(),
-		Now:          time.Now,
-		Run:          runInvocation,
-		EvalSymlinks: filepath.EvalSymlinks,
-		LaunchWorker: launchWorker,
+		ConfigPath:     wbconfig.DefaultPath(),
+		StateDir:       defaultStateDir(),
+		ReceiptPath:    defaultReceiptPath(),
+		Now:            time.Now,
+		Run:            runInvocation,
+		EvalSymlinks:   filepath.EvalSymlinks,
+		LaunchWorker:   launchWorker,
+		VerifyCheckout: verifyCheckout,
 	}
 }
 
@@ -128,7 +132,12 @@ func Dispatch(ctx context.Context, events []Event) (Report, error) {
 // state remains authoritative if the worker cannot start or is interrupted.
 func (dispatcher Dispatcher) Dispatch(_ context.Context, events []Event) (Report, error) {
 	dispatcher = dispatcher.defaults()
+	warnings, warningErr := dispatcher.claimUnseenWarnings(10)
+	if warningErr != nil {
+		warnings = append(warnings, "read unseen lifecycle-hook failures: "+warningErr.Error())
+	}
 	items, report, err := dispatcher.plan(events)
+	report.Warnings = append(report.Warnings, warnings...)
 	if err != nil || len(items) == 0 {
 		return report, err
 	}
@@ -141,8 +150,7 @@ func (dispatcher Dispatcher) Dispatch(_ context.Context, events []Event) (Report
 		report.Coalesced += coalesced
 	}
 	if dispatcher.LaunchWorker != nil {
-		request := WorkerRequest{ConfigPath: dispatcher.ConfigPath, StateDir: dispatcher.StateDir, ReceiptPath: dispatcher.ReceiptPath}
-		if err := dispatcher.LaunchWorker(request); err != nil {
+		if _, err := dispatcher.startWorkerIfIdle(); err != nil {
 			report.Warnings = append(report.Warnings, "lifecycle hooks are queued but the background worker did not start: "+err.Error())
 		}
 	}
@@ -202,6 +210,13 @@ func (dispatcher Dispatcher) plan(events []Event) ([]pending, Report, error) {
 			}
 		}
 	}
+	matchedEvents := make([]Event, 0, len(queue))
+	for _, item := range queue {
+		matchedEvents = append(matchedEvents, item.event)
+	}
+	if err := dispatcher.validateControlPaths(matchedEvents); err != nil {
+		return nil, report, err
+	}
 	return queue, report, nil
 }
 
@@ -221,13 +236,9 @@ func (dispatcher Dispatcher) prepare(item pending) (Invocation, error) {
 	if err != nil {
 		return Invocation{}, err
 	}
-	checkout, err := filepath.Abs(item.event.Checkout)
+	physicalCheckout, checkoutInfo, err := dispatcher.VerifyCheckout(item.event)
 	if err != nil {
 		return Invocation{}, err
-	}
-	physicalCheckout, err := dispatcher.EvalSymlinks(checkout)
-	if err != nil {
-		return Invocation{}, fmt.Errorf("resolve checkout: %w", err)
 	}
 	if pathWithin(physicalCheckout, trusted.resolved) {
 		return Invocation{}, errors.New("run must resolve outside the repository checkout")
@@ -238,8 +249,8 @@ func (dispatcher Dispatcher) prepare(item pending) (Invocation, error) {
 	}
 	return Invocation{
 		Executor: item.name, Run: trusted.resolved, Args: append([]string(nil), item.executor.Args...),
-		Dir: checkout, Env: hookEnvironment(item.event, operationID), configuredRun: item.executor.Run,
-		executable: trusted.info,
+		Dir: physicalCheckout, Env: hookEnvironment(item.event, operationID), configuredRun: item.executor.Run,
+		executable: trusted.info, event: item.event, checkout: checkoutInfo,
 	}, nil
 }
 
@@ -261,13 +272,10 @@ func (dispatcher Dispatcher) inspectExecutable(configured string) (inspectedExec
 	if err != nil {
 		return inspectedExecutable{}, fmt.Errorf("inspect executable: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return inspectedExecutable{}, errors.New("run must resolve to a regular executable file")
+	if !info.Mode().IsRegular() {
+		return inspectedExecutable{}, errors.New("run must resolve to a regular file")
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return inspectedExecutable{}, errors.New("run must not be writable by group or other users")
-	}
-	if err := trustedExecutableOwner(info); err != nil {
+	if err := validateTrustedExecutable(resolved, info); err != nil {
 		return inspectedExecutable{}, err
 	}
 	return inspectedExecutable{resolved: resolved, info: info}, nil
@@ -280,6 +288,13 @@ func (dispatcher Dispatcher) revalidate(invocation Invocation) error {
 	}
 	if current.resolved != invocation.Run || !os.SameFile(invocation.executable, current.info) {
 		return errors.New("revalidate executable immediately before execution: executable identity changed")
+	}
+	checkout, info, err := dispatcher.VerifyCheckout(invocation.event)
+	if err != nil {
+		return fmt.Errorf("revalidate checkout immediately before execution: %w", err)
+	}
+	if checkout != invocation.Dir || !os.SameFile(invocation.checkout, info) {
+		return errors.New("revalidate checkout immediately before execution: checkout identity changed")
 	}
 	return nil
 }
@@ -393,6 +408,9 @@ func (dispatcher Dispatcher) defaults() Dispatcher {
 	}
 	if dispatcher.LaunchWorker == nil {
 		dispatcher.LaunchWorker = defaults.LaunchWorker
+	}
+	if dispatcher.VerifyCheckout == nil {
+		dispatcher.VerifyCheckout = defaults.VerifyCheckout
 	}
 	return dispatcher
 }
