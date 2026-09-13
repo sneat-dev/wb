@@ -477,6 +477,12 @@ func TestJoinRechecksALegacyTitleBeforeEditing(t *testing.T) {
 	pullRequest.Title = "stream(concurrent-title): acme/library"
 	hub.byNumber[member.PullRequest] = pullRequest
 	hub.byBranch[member.Worktree+" "+member.Branch] = pullRequest
+	if _, err := engine.setMember("concurrent-title", member.Repository, func(stored *Member) {
+		stored.PullRequest = 0
+		stored.PullRequestURL = ""
+	}); err != nil {
+		t.Fatal(err)
+	}
 	hub.beforePullRequest = func(number int) {
 		hub.beforePullRequest = nil
 		current := hub.byNumber[number]
@@ -484,11 +490,16 @@ func TestJoinRechecksALegacyTitleBeforeEditing(t *testing.T) {
 		hub.byNumber[number] = current
 	}
 
-	if _, err := engine.Join(context.Background(), JoinOptions{Name: "concurrent-title", Repository: member.Repository}); err != nil {
+	result, err := engine.Join(context.Background(), JoinOptions{Name: "concurrent-title", Repository: member.Repository})
+	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	if len(hub.titleUpdateCalls) != 0 {
 		t.Fatalf("concurrent operator title was overwritten: %#v", hub.titleUpdateCalls)
+	}
+	recovered, _ := result.Stream.Member(member.Repository)
+	if recovered.PullRequest != pullRequest.Number {
+		t.Fatalf("recovered member = %#v, want the discovered PR persisted", recovered)
 	}
 }
 
