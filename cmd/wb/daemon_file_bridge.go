@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/strongo/cli-helpers/daemonlifecycle"
 	"google.golang.org/protobuf/proto"
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
@@ -142,10 +143,12 @@ func secureBridgeRuntime(root string) error {
 
 func secureBridgeParentDirectory(path string, private bool) error {
 	info, err := os.Lstat(path)
+	created := false
 	if os.IsNotExist(err) {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			return fmt.Errorf("create daemon file bridge parent: %w", err)
 		}
+		created = true
 		info, err = os.Lstat(path)
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -154,6 +157,12 @@ func secureBridgeParentDirectory(path string, private bool) error {
 	want := info.Mode().Perm()
 	if private {
 		want = 0o700
+		if created {
+			err = daemonlifecycle.ProtectOwnerOnly(path)
+		}
+		if err != nil {
+			return fmt.Errorf("protect daemon file bridge parent: %w", err)
+		}
 	}
 	return verifyBridgePathSecurity(path, info, want)
 }
@@ -172,7 +181,7 @@ func secureBridgeDirectory(path string) error {
 		return fmt.Errorf("daemon file bridge path is not a real directory: %s", path)
 	}
 	if created {
-		err = os.Chmod(path, 0o700)
+		err = daemonlifecycle.ProtectOwnerOnly(path)
 	}
 	if err != nil {
 		return fmt.Errorf("protect daemon file bridge directory: %w", err)

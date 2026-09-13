@@ -101,6 +101,37 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	}
 }
 
+func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/lint\n\ngo 1.27\n")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "commands.log")
+	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	report := VerifyWithOptions(context.Background(), "example/lint", repository, []Check{CheckLint}, RunOptions{
+		GoLintCommands: [][]string{{"go", "vet", "./..."}, {"go", "run", "example.test/linter@v1", "run", "./..."}},
+	})
+	if report.Status != StatusPassed || len(report.Results) != 2 {
+		t.Fatalf("report = %+v", report)
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "vet ./...\nrun example.test/linter@v1 run ./..."; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
 func TestVerifyRunsNxTargetsWhenRootScriptsAreAbsent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")

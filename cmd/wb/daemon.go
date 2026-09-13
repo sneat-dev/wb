@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/strongo/cli-helpers/daemonlifecycle"
 
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -380,7 +381,7 @@ interrupted start or drain becomes stopped. It never deletes an active lock path
 			if err != nil {
 				return err
 			}
-			if apply && result.LockPresent && !result.Eligible && result.Reason != "already_recovered" {
+			if apply && result.LockPresent && !result.Eligible && result.Reason != "no_stale_owner" {
 				return fmt.Errorf("daemon lifecycle recovery refused: %s: %s", result.Reason, result.Detail)
 			}
 			return nil
@@ -478,7 +479,12 @@ func (controller daemonController) stateLock() (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	flags := unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	fd, err := unix.Open(path, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+	created := err == nil
+	if errors.Is(err, unix.EEXIST) {
+		fd, err = unix.Open(path, flags, 0o600)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open daemon state lock: %w", err)
 	}
@@ -496,7 +502,14 @@ func (controller daemonController) stateLock() (func(), error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("daemon state lock must be a single-link owner-only regular file: %s", path)
 	}
-	if err := validateDaemonLifecycleFilePermissions(uint32(stat.Mode)); err != nil {
+	if created {
+		err = daemonlifecycle.ProtectOwnerOnlyFile(file)
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("protect daemon state lock: %w", err)
+	}
+	if err := daemonlifecycle.ValidateOwnerOnlyFile(file); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("validate daemon state lock permissions: %w", err)
 	}
@@ -603,7 +616,14 @@ func (controller daemonController) openLifecycleLock(create bool) (*os.File, boo
 		_ = file.Close()
 		return nil, false, false, fmt.Errorf("daemon lifecycle lock must be a single-link owner-only regular file: %s", path)
 	}
-	if err := validateDaemonLifecycleFilePermissions(uint32(stat.Mode)); err != nil {
+	if created {
+		err = daemonlifecycle.ProtectOwnerOnlyFile(file)
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, false, false, fmt.Errorf("protect daemon lifecycle lock: %w", err)
+	}
+	if err := daemonlifecycle.ValidateOwnerOnlyFile(file); err != nil {
 		_ = file.Close()
 		return nil, false, false, fmt.Errorf("validate daemon lifecycle lock permissions: %w", err)
 	}
@@ -672,7 +692,7 @@ func (controller daemonController) lifecycleOwnerPID(legacyLock *os.File) (int, 
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		return 0, fmt.Errorf("daemon lifecycle owner must be a single-link owner-only regular file: %s", path)
 	}
-	if err := validateDaemonLifecycleFilePermissions(uint32(stat.Mode)); err != nil {
+	if err := validateDaemonLifecycleFilePermissions(path, uint32(stat.Mode)); err != nil {
 		return 0, fmt.Errorf("validate daemon lifecycle owner permissions: %w", err)
 	}
 	pid, empty, err := lifecycleLockPID(owner)
@@ -700,6 +720,10 @@ func (controller daemonController) writeLifecycleOwnerPID(pid int) error {
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		return err
+	}
+	if err := daemonlifecycle.ProtectOwnerOnly(temporaryName); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("protect daemon lifecycle owner: %w", err)
 	}
 	if _, err := fmt.Fprintf(temporary, "pid=%d\n", pid); err != nil {
 		_ = temporary.Close()
@@ -772,7 +796,8 @@ func (controller daemonController) RecoverLifecycleLock(ctx context.Context, app
 	}
 	result.OwnerPID = pid
 	if pid == 0 {
-		result.Reason = "already_recovered"
+		result.Reason = "no_stale_owner"
+		result.Detail = "the lifecycle lock is idle and has no stale owner to recover"
 		return result, nil
 	}
 	result.OwnerAlive = controller.deps.alive(pid)

@@ -659,7 +659,7 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 		byBranch[source.Branch] = source
 	}
 	if len(sources) <= len(receipt.Sources) {
-		return nil, fmt.Errorf("rebatch source set must add at least one distinct source ref")
+		return nil, fmt.Errorf("rebatch source set must add at least one distinct source ref; to retry this exact candidate and preserve its receipt and pull-request lineage, run: wb worktree merge resume %s", receiptPath)
 	}
 	for _, oldSource := range receipt.Sources {
 		newSource, ok := byBranch[oldSource.Branch]
