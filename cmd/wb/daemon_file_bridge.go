@@ -93,7 +93,7 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 	if !info.Mode().IsRegular() || info.Size() != 64 {
 		return "", errors.New("daemon file bridge key is not a regular 32-byte hex key")
 	}
-	if err := verifyBridgePathSecurity(path, info, 0o600); err != nil {
+	if err := verifyBridgePathSecurity(path, info, 0o600, true); err != nil {
 		return "", err
 	}
 	contents, err := os.ReadFile(path)
@@ -131,7 +131,7 @@ func secureBridgeRuntime(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("daemon file bridge projects root is not a real directory: %s", root)
 	}
-	if err := verifyBridgePathSecurity(root, info, info.Mode().Perm()); err != nil {
+	if err := verifyBridgePathSecurity(root, info, info.Mode().Perm(), false); err != nil {
 		return err
 	}
 	wbDirectory := filepath.Join(root, ".wb")
@@ -164,7 +164,7 @@ func secureBridgeParentDirectory(path string, private bool) error {
 			return fmt.Errorf("protect daemon file bridge parent: %w", err)
 		}
 	}
-	return verifyBridgePathSecurity(path, info, want)
+	return verifyBridgePathSecurity(path, info, want, private)
 }
 
 func secureBridgeDirectory(path string) error {
@@ -193,7 +193,7 @@ func secureBridgeDirectory(path string) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("daemon file bridge path is not a real directory: %s", path)
 	}
-	return verifyBridgePathSecurity(path, info, 0o700)
+	return verifyBridgePathSecurity(path, info, 0o700, true)
 }
 
 type daemonFileBridgeServer struct {
@@ -782,7 +782,7 @@ func readDaemonFileEnvelope(path string) (daemonFileEnvelope, error) {
 	if !info.Mode().IsRegular() || info.Size() > daemonFileBridgeMaxBytes {
 		return daemonFileEnvelope{}, errors.New("daemon file bridge envelope is not a bounded regular file")
 	}
-	if err := verifyBridgePathSecurity(path, info, 0o600); err != nil {
+	if err := verifyBridgePathSecurity(path, info, 0o600, true); err != nil {
 		return daemonFileEnvelope{}, err
 	}
 	contents, err := os.ReadFile(path)
