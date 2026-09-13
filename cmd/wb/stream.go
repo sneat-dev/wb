@@ -224,7 +224,9 @@ concurrent streams on one repository are out of scope, because landing one
 rewrites the base under the other and every already-approved agent branch would
 need re-rebasing.
 
-Joining a repository that is already a member is a no-op.
+Joining a repository that is already a member reconciles a missing draft pull
+request and repairs WB's exact legacy-generated pull-request title. Any
+user-authored title is preserved; otherwise the join is a no-op.
 
 Re-running join for a member whose draft pull request never opened retries
 exactly that effect, rather than no-opping: it is the recovery path a failed

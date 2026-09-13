@@ -361,11 +361,20 @@ func (engine *Engine) refreshOrigins(ctx context.Context, inputs []PreflightInpu
 }
 
 // incompleteMemberFindings names every member left without a pushed branch or
-// an open draft pull request.
+// a usable draft pull request, including a metadata repair that did not land.
 func incompleteMemberFindings(stream Stream) []PreflightFinding {
 	var findings []PreflightFinding
 	for _, member := range stream.Members {
 		if member.PullRequest != 0 {
+			if member.PullRequestError != "" {
+				findings = append(findings, PreflightFinding{
+					Repository: member.Repository,
+					Check:      "stream-pull-request-title",
+					Status:     PreflightFail,
+					Detail: "could not reconcile the open stream pull request title: " + member.PullRequestError +
+						" — retry with `wb stream join " + stream.Name + " " + member.Repository + "`",
+				})
+			}
 			continue
 		}
 		detail := "no draft pull request was opened, so pushes to " + member.Branch + " run no CI"
@@ -467,26 +476,30 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 			},
 		}
 	}
-	// An existing member with no draft pull request is the recovery path
-	// publishMember's failure mode documents: re-running join retries exactly
-	// the effect that did not land, rather than no-opping and leaving the
-	// promise unkept.
+	// An existing member is the recovery path publishMember's failure modes
+	// document. A missing draft pull request is retried; a recorded open pull
+	// request gets one narrowly-scoped metadata repair when it still has WB's
+	// exact legacy generated title. User-authored titles are preserved.
 	if member, ok := stream.Member(options.Repository); ok {
-		if member.PullRequest != 0 || member.Worktree == "" {
+		if member.Worktree == "" {
 			return StartResult{Stream: stream}, nil
 		}
 		checkout := CreatedWorktree{
 			Repository: member.Repository, Worktree: member.Worktree,
 			Canonical: member.Canonical, Branch: member.Branch, Base: member.Base,
 		}
-		if err := engine.publishMember(ctx, options.Name, checkout); err != nil {
+		if member.PullRequest == 0 {
+			if err := engine.publishMember(ctx, options.Name, checkout); err != nil {
+				return StartResult{Stream: stream}, err
+			}
+		} else if err := engine.reconcileRecordedMemberPullRequestTitle(ctx, options.Name, checkout, member); err != nil {
 			return StartResult{Stream: stream}, err
 		}
 		retried, loadErr := engine.Store.Load(options.Name)
 		if loadErr != nil {
 			return StartResult{}, loadErr
 		}
-		return StartResult{Stream: retried}, nil
+		return StartResult{Stream: retried, Reported: incompleteMemberFindings(retried)}, nil
 	}
 
 	role := options.Role
@@ -621,7 +634,7 @@ func (engine *Engine) publishMember(ctx context.Context, name string, checkout C
 			base = member.Base
 		}
 	}
-	title := fmt.Sprintf("stream(%s): %s", name, checkout.Repository)
+	title := streamPullRequestTitle(name, checkout.Repository)
 	pullRequest, found, prErr := engine.GitHub.PullRequestForBranch(ctx, checkout.Worktree, checkout.Branch)
 	if prErr == nil && found && pullRequest.Base != base {
 		prErr = fmt.Errorf("open pull request %s for %s targets %s, not stream base %s", pullRequest.URL, checkout.Branch, pullRequest.Base, base)
@@ -629,6 +642,29 @@ func (engine *Engine) publishMember(ctx context.Context, name string, checkout C
 	if prErr == nil && !found {
 		pullRequest, prErr = engine.GitHub.CreateDraftPullRequest(
 			ctx, checkout.Worktree, base, checkout.Branch, title, streamPullRequestBody(name, role))
+	}
+	if prErr == nil && found {
+		// Discovery is a completed remote receipt even when the narrower title
+		// repair below fails. Persist it first so status never claims an open PR
+		// is missing or that its branch runs no CI.
+		if _, err := engine.setMember(name, checkout.Repository, func(member *Member) {
+			member.PullRequest = pullRequest.Number
+			member.PullRequestURL = pullRequest.URL
+		}); err != nil {
+			return err
+		}
+		var repaired bool
+		repaired, prErr = engine.repairLegacyMemberPullRequestTitle(ctx, name, checkout, pullRequest)
+		if prErr != nil {
+			return engine.recordMemberPullRequestTitleFailure(name, checkout.Repository, prErr)
+		}
+		if repaired {
+			engine.record(name, Event{
+				Stream: name, Verb: "stream start", Phase: "pull-request-title", Outcome: "success",
+				Repository: checkout.Repository,
+				Evidence:   map[string]string{"pull_request": pullRequest.URL, "title": title},
+			})
+		}
 	}
 	if prErr != nil {
 		detail := RedactString(prErr.Error())
@@ -650,6 +686,87 @@ func (engine *Engine) publishMember(ctx context.Context, name string, checkout C
 		member.PullRequest = pullRequest.Number
 		member.PullRequestURL = pullRequest.URL
 		member.PullRequestError = ""
+	})
+	return err
+}
+
+func streamPullRequestTitle(name, repository string) string {
+	return fmt.Sprintf("feat(stream): %s in %s", name, repository)
+}
+
+func legacyStreamPullRequestTitle(name, repository string) string {
+	return fmt.Sprintf("stream(%s): %s", name, repository)
+}
+
+// repairLegacyMemberPullRequestTitle owns the only automatic stream PR title
+// rewrite. Exact equality is deliberate: anything else may be an operator's
+// title and must survive recovery untouched.
+func (engine *Engine) repairLegacyMemberPullRequestTitle(ctx context.Context, name string, checkout CreatedWorktree, pullRequest PullRequest) (bool, error) {
+	legacyTitle := legacyStreamPullRequestTitle(name, checkout.Repository)
+	if pullRequest.Title != legacyTitle {
+		return false, nil
+	}
+	// Re-read by immutable PR number immediately before the mutation. GitHub
+	// does not expose a title compare-and-swap, so this cannot eliminate the
+	// sub-request race, but it prevents overwriting an operator edit made in
+	// the much larger window since branch discovery or stream-state loading.
+	current, found, err := engine.GitHub.PullRequest(ctx, checkout.Worktree, pullRequest.Number)
+	if err != nil {
+		return false, fmt.Errorf("re-read legacy stream pull request %s title: %w", pullRequest.URL, err)
+	}
+	if !found || !strings.EqualFold(current.State, "OPEN") || current.Head != checkout.Branch || current.Title != legacyTitle {
+		return false, nil
+	}
+	title := streamPullRequestTitle(name, checkout.Repository)
+	if err := engine.GitHub.UpdatePullRequestTitle(ctx, checkout.Worktree, pullRequest.Number, title); err != nil {
+		return false, fmt.Errorf("repair legacy stream pull request %s title: %w", pullRequest.URL, err)
+	}
+	return true, nil
+}
+
+func (engine *Engine) reconcileRecordedMemberPullRequestTitle(ctx context.Context, name string, checkout CreatedWorktree, member Member) error {
+	pullRequest, found, err := engine.GitHub.PullRequest(ctx, checkout.Worktree, member.PullRequest)
+	if err != nil {
+		return engine.recordMemberPullRequestTitleFailure(name, checkout.Repository,
+			fmt.Errorf("read recorded stream pull request %d: %w", member.PullRequest, err))
+	}
+	if !found || !strings.EqualFold(pullRequest.State, "OPEN") || pullRequest.Head != checkout.Branch {
+		// A previous title-update failure described an open matching PR. Once
+		// that premise is false, retaining the error would advertise a repair
+		// this join can no longer perform.
+		_, clearErr := engine.setMember(name, checkout.Repository, func(stored *Member) {
+			stored.PullRequestError = ""
+		})
+		return clearErr
+	}
+	repaired, err := engine.repairLegacyMemberPullRequestTitle(ctx, name, checkout, pullRequest)
+	if err != nil {
+		return engine.recordMemberPullRequestTitleFailure(name, checkout.Repository, err)
+	}
+	if repaired {
+		engine.record(name, Event{
+			Stream: name, Verb: "stream join", Phase: "pull-request-title", Outcome: "success",
+			Repository: checkout.Repository,
+			Evidence: map[string]string{
+				"pull_request": pullRequest.URL,
+				"title":        streamPullRequestTitle(name, checkout.Repository),
+			},
+		})
+	}
+	_, err = engine.setMember(name, checkout.Repository, func(stored *Member) {
+		stored.PullRequestError = ""
+	})
+	return err
+}
+
+func (engine *Engine) recordMemberPullRequestTitleFailure(name, repository string, cause error) error {
+	detail := RedactString(cause.Error())
+	engine.record(name, Event{
+		Stream: name, Verb: "stream join", Phase: "pull-request-title", Outcome: "findings",
+		Repository: repository, Detail: detail,
+	})
+	_, err := engine.setMember(name, repository, func(member *Member) {
+		member.PullRequestError = detail
 	})
 	return err
 }
