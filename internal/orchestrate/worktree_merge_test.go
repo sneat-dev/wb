@@ -940,6 +940,46 @@ func TestResumeWorktreeMergeAdoptsExistingExactHeadPullRequest(t *testing.T) {
 	}
 }
 
+func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "published-chain-source", "feature/published-chain", "published-chain.txt", "published\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := receipt.Candidate.SHA
+	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", published
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "recorded.txt"), "recorded\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "recorded.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: record validated descendant")
+	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "resolved.txt"), "resolved\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "resolved.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: resolve later target conflict")
+	head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt)
+	if err != nil {
+		t.Fatalf("advance exact published ancestry chain: %v", err)
+	}
+	if !advanced || receipt.Candidate.SHA != head {
+		t.Fatalf("advanced=%v candidate=%s, want %s", advanced, receipt.Candidate.SHA, head)
+	}
+
+	receipt.Candidate.SHA = head
+	receipt.PublishedCandidateSHA = strings.Repeat("f", 40)
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "untrusted.txt"), "untrusted\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "untrusted.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: untrusted ancestry probe")
+	if _, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt); err == nil || !strings.Contains(err.Error(), "published candidate predecessor") {
+		t.Fatalf("unrelated published predecessor was not refused: %v", err)
+	}
+}
+
 func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktree(t *testing.T) {
 	candidate := t.TempDir()
 	receipt := WorktreeMergeReceipt{
