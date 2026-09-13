@@ -14,6 +14,7 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 		SchemaVersion: machinesnapshot.SchemaVersion,
 		Login:         source.Login, Machine: source.Machine,
 		PublishedAt: source.PublishedAt, LastSeenAt: source.LastSeenAt,
+		RemoteStore:  source.RemoteStore,
 		Repositories: hostedRepositories(source.KnownRepositories),
 		Worktrees:    make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
 	}
@@ -43,6 +44,7 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		SchemaVersion: remotestate.SchemaVersion,
 		Login:         stored.Snapshot.Login, Machine: stored.Snapshot.Machine,
 		PublishedAt: stored.Snapshot.PublishedAt, LastSeenAt: lastSeenAt,
+		RemoteStore:       stored.Snapshot.RemoteStore,
 		KnownRepositories: remoteRepositories(stored.Snapshot.Repositories),
 		Worktrees:         make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
 	}
