@@ -476,8 +476,8 @@ func daemonStateLockPath(root string) string {
 
 func (controller daemonController) stateLock() (func(), error) {
 	path := daemonStateLockPath(controller.root)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+	if err := secureDaemonRuntime(controller.root); err != nil {
+		return nil, fmt.Errorf("secure daemon runtime: %w", err)
 	}
 	flags := unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
 	fd, err := unix.Open(path, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
@@ -575,8 +575,8 @@ func (controller daemonController) lifecycleLock() (func(), error) {
 func (controller daemonController) openLifecycleLock(create bool) (*os.File, bool, bool, error) {
 	path := daemonLifecycleLockPath(controller.root)
 	if create {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, false, false, err
+		if err := secureDaemonRuntime(controller.root); err != nil {
+			return nil, false, false, fmt.Errorf("secure daemon runtime: %w", err)
 		}
 	}
 	flags := unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW

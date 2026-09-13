@@ -124,6 +124,10 @@ func prepareDaemonFileBridge(root string) (requests, responses string, err error
 }
 
 func secureBridgeRuntime(root string) error {
+	return secureDaemonRuntime(root)
+}
+
+func secureDaemonRuntime(root string) error {
 	if !filepath.IsAbs(root) {
 		return errors.New("daemon file bridge projects root must be absolute")
 	}
