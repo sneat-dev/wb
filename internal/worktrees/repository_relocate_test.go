@@ -188,7 +188,7 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 	gitTest(t, destination, "push", "origin", "main")
 
 	mergedAt := time.Date(2026, time.September, 6, 20, 0, 0, 0, time.UTC)
-	installOpenAndMergedExactHeadPullRequestFixture(t, head, "main", "main", mergedAt)
+	installOpenAndMergedExactHeadPullRequestFixture(t, head, "newco/renamed", created[0].Branch, "main", "main", mergedAt)
 	blocked, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "legacy-transfer-cleanup", Base: "main", OlderThan: 0,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },

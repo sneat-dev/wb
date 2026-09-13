@@ -72,14 +72,17 @@ func mergedPullRequestPayload(t *testing.T, number int, headSHA, mergeSHA string
 	return string(payload)
 }
 
-func openPullRequestPayload(t *testing.T, number int, headSHA string) string {
+func openPullRequestPayload(t *testing.T, number int, branch, headSHA string) string {
 	t.Helper()
 	payload, err := json.Marshal([]map[string]any{{
 		"number":   number,
 		"html_url": "https://github.com/acme/app/pull/" + itoa(number),
 		"state":    "open",
-		"head":     map[string]any{"ref": "feature/open", "sha": headSHA},
-		"base":     map[string]any{"ref": "main", "sha": ""},
+		"head": map[string]any{
+			"ref": branch, "sha": headSHA,
+			"repo": map[string]any{"full_name": "acme/app"},
+		},
+		"base": map[string]any{"ref": "main", "sha": ""},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +236,7 @@ func TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand
 	openHead := gitTestOutput(t, open[0].WorktreeDir, "rev-parse", "HEAD")
 	gitTest(t, open[0].WorktreeDir, "push", "-u", "origin", open[0].Branch)
 	installPerCommitPullRequestFixture(t, map[string]string{
-		openHead: openPullRequestPayload(t, 91, openHead),
+		openHead: openPullRequestPayload(t, 91, open[0].Branch, openHead),
 	})
 
 	// A TTL is what tells an abandoned worktree from a paused one, so the

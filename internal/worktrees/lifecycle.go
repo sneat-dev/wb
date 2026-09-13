@@ -999,8 +999,13 @@ type githubPullRequest struct {
 }
 
 type githubRef struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	Ref  string            `json:"ref"`
+	SHA  string            `json:"sha"`
+	Repo *githubRepository `json:"repo"`
+}
+
+type githubRepository struct {
+	FullName string `json:"full_name"`
 }
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
@@ -3620,7 +3625,7 @@ func inspectLifecycleWorktree(
 				return ListResult{}, pullRequestErr
 			}
 			result.HeadUnknownToRemote = !known
-			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
+			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, branch, head)
 			integratedIntoRecordedTarget, integrationErr := isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
 			if integrationErr != nil {
 				return ListResult{}, integrationErr
@@ -3640,7 +3645,7 @@ func inspectLifecycleWorktree(
 					}
 					result.RecordedBase = base
 					integrationBase = recoveredBase
-					result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, recoveredBase, head)
+					result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, recoveredBase, branch, head)
 				}
 			}
 		}
@@ -4034,7 +4039,7 @@ func unknownGitHubCommit(body []byte) bool {
 	return failure.Status == "422" && strings.HasPrefix(failure.Message, "No commit found for SHA")
 }
 
-func matchingPullRequests(pullRequests []githubPullRequest, repository, base, head string) (open, merged *PullRequest) {
+func matchingPullRequests(pullRequests []githubPullRequest, repository, base, branch, head string) (open, merged *PullRequest) {
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
@@ -4045,11 +4050,13 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 		}
 		pullRequest.MergeSHA = candidate.MergeCommitSHA
 		if strings.EqualFold(candidate.State, "OPEN") {
-			// An open PR for the exact immutable head is a cleanup veto on
-			// every base. Target recovery may find a separate merged PR and
-			// switch the integration check to that PR's base, but it must not
-			// hide live review state for the same source commit.
-			if candidate.Head.SHA != head {
+			// A SHA can name several branches after a child lands directly or
+			// starts with zero changes over its target. Only the exact source
+			// repository and branch owns an open-PR cleanup veto. Merged PR
+			// recovery below deliberately remains bound to immutable head/base
+			// identities because its source ref may already be renamed or gone.
+			if candidate.Head.SHA != head || candidate.Head.Ref != branch || candidate.Head.Repo == nil ||
+				!strings.EqualFold(candidate.Head.Repo.FullName, repository) {
 				continue
 			}
 			if open == nil || candidate.Number > open.Number {
