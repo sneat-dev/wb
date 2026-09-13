@@ -95,6 +95,12 @@ The hosted provider MUST return its machine snapshot view with an empty claims
 projection until hosted claims are implemented, rather than failing a valid
 status read through the unsupported standalone claims operation.
 
+Status MUST also identify the configured provider and non-secret store, the
+exact refresh time, stale-machine count, legacy snapshots with unknown
+provenance, and any snapshot whose recorded store differs from the current
+configuration. JSON MUST expose these as a bounded diagnostics object; text
+MUST print the same summary before the worklist.
+
 #### REQ: remote-machines-rendering
 
 `wb remote machines` MUST report one line per machine including both its

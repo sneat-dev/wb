@@ -53,6 +53,15 @@ func (c Config) RepoOwner() string { owner, _, _ := strings.Cut(c.Repo, "/"); re
 // RepoName returns the part of Repo after the slash.
 func (c Config) RepoName() string { _, name, _ := strings.Cut(c.Repo, "/"); return name }
 
+// StoreID is the non-secret stable identity written into machine snapshots so
+// status can reveal when machines publish through different providers.
+func (c Config) StoreID() string {
+	if c.Provider == "hub" {
+		return "hub:" + strings.TrimSuffix(c.URL, "/")
+	}
+	return "git:" + c.Repo
+}
+
 // UnconfiguredError reports a missing or incomplete remote section. Commands
 // map it to the usage exit code.
 type UnconfiguredError struct {
