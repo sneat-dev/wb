@@ -14,7 +14,10 @@ const repositoryQualityConfigPath = ".wb/quality.yaml"
 
 type repositoryQualityConfig struct {
 	Version int `yaml:"version"`
-	GoTest  struct {
+	GoLint  struct {
+		Commands [][]string `yaml:"commands"`
+	} `yaml:"go_lint"`
+	GoTest struct {
 		Shards   int      `yaml:"shards"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"go_test"`
@@ -68,5 +71,16 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 	}
 	base.GoTestShards = config.GoTest.Shards
 	base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
+	for commandIndex, command := range config.GoLint.Commands {
+		if len(command) == 0 {
+			return base, fmt.Errorf("repository quality policy %s go_lint.commands[%d] is empty", path, commandIndex)
+		}
+		for argumentIndex, argument := range command {
+			if strings.TrimSpace(argument) == "" {
+				return base, fmt.Errorf("repository quality policy %s go_lint.commands[%d][%d] is empty", path, commandIndex, argumentIndex)
+			}
+		}
+		base.GoLintCommands = append(base.GoLintCommands, append([]string(nil), command...))
+	}
 	return base, nil
 }

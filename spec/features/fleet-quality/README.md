@@ -48,7 +48,7 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 #### REQ: conventional-go-checks
 
-`wb verify` MUST support the ordered check set `lint,test,build`, defaulting to all three. For every discovered Go module, those checks run `go vet ./...`, `go test ./...`, and `go build ./...` respectively.
+`wb verify` MUST support the ordered check set `lint,test,build`, defaulting to all three. For every discovered Go module, test and build run `go test ./...` and `go build ./...`. Lint defaults to `go vet ./...`; a tracked `.wb/quality.yaml` MAY replace it with ordered structured argv commands, including an exact version-pinned linter. Empty commands or arguments MUST fail closed.
 
 #### REQ: conventional-node-checks
 
@@ -69,6 +69,13 @@ A repository is an external SpecScore Plans store (SpecScore's Plan repository r
 #### REQ: bounded-command-execution
 
 Coverage, verification, and check commands MUST apply `--timeout` independently to every external command. The default timeout MUST be finite; `0` MAY explicitly disable it. `--retry=N` MUST make at most N additional attempts for a failed command and record the number of attempts in the report.
+
+#### REQ: repository-safe-test-sharding
+
+Repository quality policy MUST shard only explicitly named packages. Packages
+with process-global or real-clock journeys MUST be left in the single unsharded
+job; shard counts SHOULD be the smallest value that removes the long tail so
+validation does not multiply compilation and `TestMain` setup unnecessarily.
 
 #### REQ: report-resume
 

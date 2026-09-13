@@ -806,10 +806,19 @@ tracked `.wb/quality.yaml`:
 
 ```yaml
 version: 1
+go_lint:
+  commands:
+    - [go, vet, ./...]
+    - [go, run, "example.com/linter@v1.2.3", run, ./...]
 go_test:
-  shards: 8
+  shards: 4
   packages: [./internal/worktrees]
 ```
+
+The lint commands are structured argv, so a repository can run the exact
+CI-pinned linter without shell parsing or relying on whichever global binary is
+on PATH. Only packages whose process-global test setup is safe to repeat belong
+in the shard list; the remaining packages run once.
 
 `wb worktree land` validates the candidate first using this policy, proves the
 remote landing receipt, and cleans the source by default. The legacy
@@ -822,7 +831,8 @@ comparison is needed, avoiding a redundant full baseline on green candidates.
 separately-named task per repository — but one `wb worktree land`/`wb land`
 call only takes worktrees of a single repository, so that one task still
 lands with one call per repository.
-Verification runs `go vet ./...`, `go test ./...`,
+Verification runs the repository's configured Go lint commands (defaulting to
+`go vet ./...`), `go test ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.
 Other stacks remain explicit, reusable `wb run` recipes.
