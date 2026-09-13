@@ -53,7 +53,7 @@ func TestNewSelfUpdateConfigIdentity(t *testing.T) {
 }
 
 // TestNewSelfUpdateConfigHomebrewOnly pins REQ: wb-homebrew-cask: exactly
-// one manager, Homebrew, with the --cask upgrade command wb's cask (not a
+// one manager, Homebrew, with the non-interactive --yes --cask upgrade command wb's cask (not a
 // formula) requires. No Scoop or WinGet — wb publishes no Windows build.
 func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
 	cfg := newSelfUpdateConfig()
@@ -74,8 +74,8 @@ func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
 	if len(manager.UpgradeSteps) != 2 || manager.UpgradeSteps[0].Executable != "brew" ||
 		!slices.Equal(manager.UpgradeSteps[0].Args, []string{"update"}) ||
 		manager.UpgradeSteps[1].Executable != "brew" ||
-		!slices.Equal(manager.UpgradeSteps[1].Args, []string{"upgrade", "--cask", "wb"}) {
-		t.Errorf("Managers[0].UpgradeSteps = %+v, want brew update then brew cask upgrade", manager.UpgradeSteps)
+		!slices.Equal(manager.UpgradeSteps[1].Args, []string{"upgrade", "--yes", "--cask", "--", "wb"}) {
+		t.Errorf("Managers[0].UpgradeSteps = %+v, want brew update then non-interactive brew cask upgrade", manager.UpgradeSteps)
 	}
 	if !manager.CanExecuteUpgrade() {
 		t.Error("Managers[0] is redirect-only; want executable Homebrew upgrade")

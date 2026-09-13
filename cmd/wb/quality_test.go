@@ -86,6 +86,21 @@ func TestCoverageRunOptionsUseRepositoryQualityPolicy(t *testing.T) {
 	}
 }
 
+func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
+	repository := t.TempDir()
+	policyPath := filepath.Join(repository, ".wb", "quality.yaml")
+	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, []byte("version: 1\nunknown: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
+	if len(reports) != 1 || reports[0].Status != quality.StatusFailed || len(reports[0].Results) != 1 || !strings.Contains(reports[0].Results[0].Detail, "field unknown not found") {
+		t.Fatalf("verification policy failure = %#v", reports)
+	}
+}
+
 func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

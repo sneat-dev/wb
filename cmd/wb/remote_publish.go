@@ -54,7 +54,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	if err != nil || login == "" {
 		return &exitError{code: exitUsage, message: fmt.Sprintf("wb remote needs the GitHub login to key this machine's entry (gh auth status): %v", err)}
 	}
-	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version}
+	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID()}
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, nonInteractive))
 	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
 	if err != nil {

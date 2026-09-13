@@ -36,13 +36,24 @@ not change the exit code.`,
 }
 
 type remoteStatusReport struct {
-	Machines []remoteMachineRow  `json:"machines"`
-	Entries  []remotestate.Entry `json:"entries"`
-	Claims   []claimRow          `json:"claims"`
+	Diagnostics remoteStatusDiagnostics `json:"diagnostics"`
+	Machines    []remoteMachineRow      `json:"machines"`
+	Entries     []remotestate.Entry     `json:"entries"`
+	Claims      []claimRow              `json:"claims"`
+}
+
+type remoteStatusDiagnostics struct {
+	Provider          string    `json:"provider"`
+	Store             string    `json:"store"`
+	ConfiguredMachine string    `json:"configured_machine"`
+	RefreshedAt       time.Time `json:"refreshed_at"`
+	StaleMachines     int       `json:"stale_machines"`
+	UnknownProvenance int       `json:"unknown_provenance"`
+	Mismatches        []string  `json:"mismatches,omitempty"`
 }
 
 func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, machine string, jsonOut bool, out, errOut io.Writer) error {
-	_, provider, err := loadRemote(deps, projectsRoot)
+	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		return err
 	}
@@ -89,9 +100,40 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 		claimsForJSON = filteredClaims
 	}
 	rows := machineRows(entries, deps.now(), stale)
+	diagnostics := buildRemoteStatusDiagnostics(cfg, entries, rows, deps.now())
 	if jsonOut {
-		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries, Claims: claimsForJSON})
+		return json.NewEncoder(out).Encode(remoteStatusReport{Diagnostics: diagnostics, Machines: rows, Entries: entries, Claims: claimsForJSON})
+	}
+	if machine == "" || len(entries) > 0 {
+		writeRemoteStatusDiagnostics(out, diagnostics)
 	}
 	writeStatusWorklist(out, entries, rows, claimRowsAll)
 	return nil
+}
+
+func buildRemoteStatusDiagnostics(cfg remotestate.Config, entries []remotestate.Entry, rows []remoteMachineRow, now time.Time) remoteStatusDiagnostics {
+	diagnostics := remoteStatusDiagnostics{Provider: cfg.Provider, Store: cfg.StoreID(), ConfiguredMachine: cfg.Machine, RefreshedAt: now}
+	for i, entry := range entries {
+		if i < len(rows) && rows[i].Stale {
+			diagnostics.StaleMachines++
+		}
+		store := entry.Snapshot.RemoteStore
+		if store == "" {
+			diagnostics.UnknownProvenance++
+			continue
+		}
+		if store != diagnostics.Store {
+			diagnostics.Mismatches = append(diagnostics.Mismatches, entry.Snapshot.Key()+" publishes via "+store)
+		}
+	}
+	return diagnostics
+}
+
+func writeRemoteStatusDiagnostics(out io.Writer, diagnostics remoteStatusDiagnostics) {
+	_, _ = fmt.Fprintf(out, "remote provider: %s (%s); refreshed %s; stale=%d; provenance_unknown=%d\n",
+		diagnostics.Provider, diagnostics.Store, diagnostics.RefreshedAt.UTC().Format(time.RFC3339), diagnostics.StaleMachines, diagnostics.UnknownProvenance)
+	for _, mismatch := range diagnostics.Mismatches {
+		_, _ = fmt.Fprintf(out, "warning: remote provider mismatch: %s; configured store is %s\n", mismatch, diagnostics.Store)
+	}
+	_, _ = fmt.Fprintln(out)
 }

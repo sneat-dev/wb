@@ -13,7 +13,7 @@ import (
 func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	snapshot := FromRemoteSnapshot(remotestate.Snapshot{
-		Login: "alice", Machine: "laptop", PublishedAt: at,
+		Login: "alice", Machine: "laptop", PublishedAt: at, RemoteStore: "git:team/wb-state",
 		ProjectsRoot: "/Users/alice/private", WBVersion: "secret-build",
 		KnownRepositories: []string{"zeta/tools", "acme/widgets", "acme/widgets"},
 		Repositories: []remotestate.RepositoryState{{
@@ -44,14 +44,21 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	if !strings.Contains(text, `"repositories":["github.com/acme/widgets","github.com/zeta/tools"]`) {
 		t.Fatalf("hosted snapshot lost sorted canonical repository enrollment: %s", text)
 	}
+	if !strings.Contains(text, `"remote_store":"git:team/wb-state"`) {
+		t.Fatalf("hosted snapshot lost remote-store provenance: %s", text)
+	}
 	if snapshot.Worktrees[0].AttentionReason != machinesnapshot.AttentionReviewRequired {
 		t.Fatalf("attention reason = %q", snapshot.Worktrees[0].AttentionReason)
 	}
 	if snapshot.Worktrees[0].TaskSummary != "Repair worktree activity" {
 		t.Fatalf("hosted task summary = %q", snapshot.Worktrees[0].TaskSummary)
 	}
+	var wireSnapshot machinesnapshot.Snapshot
+	if err := json.Unmarshal(raw, &wireSnapshot); err != nil {
+		t.Fatal(err)
+	}
 	receivedAt := at.Add(time.Second)
-	converted := Entry(machinesnapshot.StoredSnapshot{Snapshot: snapshot, ReceivedAt: receivedAt})
+	converted := Entry(machinesnapshot.StoredSnapshot{Snapshot: wireSnapshot, ReceivedAt: receivedAt})
 	if converted.Snapshot.ProjectsRoot != "" || converted.Snapshot.Worktrees[0].Dir != "" || converted.Snapshot.Worktrees[0].HeadSHA != "" {
 		t.Fatalf("read-model adapter restored local data: %+v", converted.Snapshot)
 	}
@@ -63,5 +70,8 @@ func TestFromRemoteSnapshotIsStrictPrivacyAllowlist(t *testing.T) {
 	}
 	if converted.Snapshot.Worktrees[0].TaskSummary != "Repair worktree activity" {
 		t.Fatalf("read-model task summary = %q", converted.Snapshot.Worktrees[0].TaskSummary)
+	}
+	if converted.Snapshot.RemoteStore != "git:team/wb-state" {
+		t.Fatalf("read-model remote store = %q", converted.Snapshot.RemoteStore)
 	}
 }

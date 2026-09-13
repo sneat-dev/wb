@@ -325,6 +325,12 @@ stop, then starts the installed executable with the next durable queue
 generation. `restart --if-running` is used only after a verified WB install so
 an update never starts a previously absent daemon.
 
+An idle retained lock reports `no_stale_owner`, not `already_recovered`, because
+no recovery action occurred. Owner-only validation and advisory locking use the
+shared `strongo/cli-helpers/daemonlifecycle` implementation. Windows MUST verify
+a protected current-user DACL and keep the lifecycle recovery and protected
+file-bridge paths available; Unix mode bits are not accepted as Windows proof.
+
 The lifecycle record is private local state, atomically written with a schema
 version, fenced queue generation, owner provenance/token, and predecessor
 handoff. `wb run --async --worker <stable-id> -- <argv>` and `wb daemon

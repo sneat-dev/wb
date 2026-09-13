@@ -47,6 +47,7 @@ type Snapshot struct {
 	// has been recorded. See Heartbeat.
 	LastSeenAt          time.Time         `yaml:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
 	WBVersion           string            `yaml:"wb_version" json:"wb_version"`
+	RemoteStore         string            `yaml:"remote_store,omitempty" json:"remote_store,omitempty"`
 	ProjectsRoot        string            `yaml:"projects_root" json:"projects_root"`
 	RepositoriesScanned int               `yaml:"repositories_scanned" json:"repositories_scanned"`
 	KnownRepositories   []string          `yaml:"known_repositories,omitempty" json:"known_repositories,omitempty"`

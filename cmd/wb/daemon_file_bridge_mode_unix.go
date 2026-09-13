@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func verifyBridgePathSecurity(path string, info os.FileInfo, want os.FileMode) error {
+func verifyBridgePathSecurity(path string, info os.FileInfo, want os.FileMode, _ bool) error {
 	if info.Mode().Perm() != want {
 		return fmt.Errorf("daemon file bridge path %s has mode %o; require %o", path, info.Mode().Perm(), want)
 	}
