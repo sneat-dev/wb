@@ -488,7 +488,7 @@ func (controller daemonController) stateLock() (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open daemon state lock: %w", err)
 	}
-	file := os.NewFile(uintptr(fd), "wb-daemon-state-lock")
+	file := os.NewFile(uintptr(fd), path)
 	if file == nil {
 		_ = unix.Close(fd)
 		return nil, errors.New("wrap daemon state lock")
@@ -602,7 +602,7 @@ func (controller daemonController) openLifecycleLock(create bool) (*os.File, boo
 	if err != nil {
 		return nil, false, false, fmt.Errorf("open daemon lifecycle lock: %w", err)
 	}
-	file := os.NewFile(uintptr(fd), "wb-daemon-lifecycle-lock")
+	file := os.NewFile(uintptr(fd), path)
 	if file == nil {
 		_ = unix.Close(fd)
 		return nil, false, false, errors.New("wrap daemon lifecycle lock")

@@ -8,6 +8,9 @@ import (
 	"github.com/strongo/cli-helpers/daemonlifecycle"
 )
 
-func verifyBridgePathSecurity(path string, _ os.FileInfo, _ os.FileMode) error {
+func verifyBridgePathSecurity(path string, _ os.FileInfo, _ os.FileMode, private bool) error {
+	if !private {
+		return nil
+	}
 	return daemonlifecycle.ValidateOwnerOnly(path)
 }
