@@ -3417,7 +3417,7 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
 	}
 	checks := []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}
-	cacheKey, err := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), checks)
+	cacheKey, err := quality.NewValidationCacheKeyWithValidators(repository, targetSHA, snapshot, buildinfo.Revision(), checks, validationCacheValidatorSHAs(checks))
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("fingerprint target validation baseline: %w", err)
 	}
@@ -3442,6 +3442,27 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 		}
 	}
 	return report, nil
+}
+
+// validationCacheValidatorSHAs prevents a baseline report from being reused
+// after an installed external validator changes. The candidate receipt already
+// records validator identities; the baseline cache must carry the same guard.
+func validationCacheValidatorSHAs(checks []quality.Check) map[string]string {
+	for _, check := range checks {
+		if check != quality.CheckSpec {
+			continue
+		}
+		path, err := exec.LookPath("specscore")
+		if err != nil {
+			return map[string]string{"specscore": "unresolved"}
+		}
+		digest, err := fileSHA256(path)
+		if err != nil {
+			return map[string]string{"specscore": "unreadable"}
+		}
+		return map[string]string{"specscore": digest}
+	}
+	return nil
 }
 
 func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree, snapshot string, timeout time.Duration, retry int) error {

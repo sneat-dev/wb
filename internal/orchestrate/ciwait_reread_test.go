@@ -136,6 +136,35 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
+func TestWaitForCommitChecksFailsFastForPullRequestWithAuthoritativeNoChecks(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":0,"check_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":false,"protection":{}}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	started := time.Now()
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 10 * time.Second,
+		StableRereadDelay: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, "--route direct") {
+		t.Fatalf("result = %+v, want fail-fast direct-route recommendation", result)
+	}
+	if elapsed := time.Since(started); elapsed >= 5*time.Second {
+		t.Fatalf("zero-check PR wait took %s, want fail-fast", elapsed)
+	}
+}
+
 func TestWaitForTargetChecksAllowsPlanLimitedPolicyOnlyWhenExplicitlyUnfenced(t *testing.T) {
 	installRereadTestGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0; fi
