@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
@@ -65,6 +66,97 @@ func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 	if !strings.Contains(string(worktreeWorkflow), resolved+" # v1.1.0") {
 		t.Fatalf("worktree workflow was not updated:\n%s", worktreeWorkflow)
 	}
+}
+
+func TestRunPlansManagedWorktreeFromItsLiveManifest(t *testing.T) {
+	oldRef := strings.Repeat("1", 40)
+	exactRef := strings.Repeat("2", 40)
+	for _, test := range []struct {
+		name             string
+		worktreeWorkflow string
+		stage            bool
+		dryRun           bool
+		wantStatus       string
+		wantDecision     string
+	}{
+		{
+			name:             "dependency introduced only in staged worktree",
+			worktreeWorkflow: "jobs:\n  test:\n    uses: acme/cicd/.github/workflows/go.yml@" + oldRef + " # v1.0.0\n",
+			stage:            true,
+			wantStatus:       "changed",
+			wantDecision:     "updated",
+		},
+		{
+			name:             "worktree already exact while canonical is old",
+			worktreeWorkflow: "jobs:\n  test:\n    uses: acme/cicd/.github/workflows/go.yml@" + exactRef + " # v1.1.0\n",
+			dryRun:           true,
+			wantStatus:       "skipped",
+			wantDecision:     "unchanged",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newManagedGitHubActionsFixture(t, "jobs:\n")
+			workflow := filepath.Join(fixture.worktree, ".github", "workflows", "ci.yml")
+			writeTestFile(t, workflow, test.worktreeWorkflow)
+			if test.stage {
+				runTestGit(t, fixture.worktree, "add", ".github/workflows/ci.yml")
+			}
+			writeTestFile(t, filepath.Join(fixture.worktree, "unrelated-untracked.txt"), "keep out of dependency report\n")
+
+			report, err := Run(context.Background(), Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}, []Repository{{Slug: "acme/app", Path: fixture.worktree, CloneURL: fixture.remote}}, Options{
+				GitHubDir: fixture.githubDir, Ref: "main", DryRun: test.dryRun, Timeout: time.Minute,
+				ResolveGitHubRef: func(context.Context, string, string) (string, error) { return exactRef, nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Repositories) != 1 || report.Repositories[0].Status != test.wantStatus {
+				t.Fatalf("report = %+v", report)
+			}
+			decisions := report.Repositories[0].Decisions
+			if len(decisions) != 1 || decisions[0].Action != test.wantDecision || decisions[0].File != ".github/workflows/ci.yml" {
+				t.Fatalf("decisions = %+v", decisions)
+			}
+			if strings.Contains(strings.Join(report.Repositories[0].ChangedFiles, ","), "unrelated-untracked.txt") {
+				t.Fatalf("untracked input leaked into dependency report: %v", report.Repositories[0].ChangedFiles)
+			}
+		})
+	}
+}
+
+type managedGitHubActionsFixture struct {
+	githubDir string
+	remote    string
+	worktree  string
+}
+
+func newManagedGitHubActionsFixture(t *testing.T, canonicalWorkflow string) managedGitHubActionsFixture {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	seed := filepath.Join(root, "seed")
+	remote := filepath.Join(root, "remote.git")
+	githubDir := filepath.Join(root, "projects")
+	canonical := filepath.Join(githubDir, "acme", "app")
+	writeTestFile(t, filepath.Join(seed, ".github", "workflows", "ci.yml"), canonicalWorkflow)
+	runTestGit(t, seed, "init", "-b", "main")
+	runTestGit(t, seed, "config", "user.name", "WB Test")
+	runTestGit(t, seed, "config", "user.email", "wb@example.test")
+	runTestGit(t, seed, "add", "-A")
+	runTestGit(t, seed, "commit", "-m", "initial")
+	runTestGit(t, root, "clone", "--bare", seed, remote)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, root, "clone", remote, canonical)
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: githubDir, Operation: "managed-manifest-input", Branch: "feature/managed-manifest-input", BranchChosen: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "test"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create managed worktree: entries=%+v err=%v", created, err)
+	}
+	return managedGitHubActionsFixture{githubDir: githubDir, remote: remote, worktree: created[0].WorktreeDir}
 }
 
 func TestNormalizeOptionsMakesPublicationFlagsCumulative(t *testing.T) {

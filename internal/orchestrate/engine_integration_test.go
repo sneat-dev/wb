@@ -45,6 +45,23 @@ func (textHandler) PullRequest(Repository) (string, string) {
 	return "Update dependency", "Automated test update."
 }
 
+type staticHandler struct {
+	assessment Assessment[string]
+	inspected  *int
+}
+
+func (handler staticHandler) Inspect(context.Context, string, string, Repository) (Assessment[string], error) {
+	*handler.inspected = *handler.inspected + 1
+	return handler.assessment, nil
+}
+
+func (staticHandler) Apply(context.Context, string, Repository) (string, error) { return "", nil }
+func (staticHandler) ValidatePublishable(context.Context, string, Repository) error {
+	return nil
+}
+func (staticHandler) CommitMessage(Repository) string         { return "test" }
+func (staticHandler) PullRequest(Repository) (string, string) { return "test", "test" }
+
 func TestRunIsolatesDirtyCanonicalClone(t *testing.T) {
 	fixture := newEngineFixture(t)
 	dirty := filepath.Join(fixture.canonical, "notes.txt")
@@ -79,6 +96,181 @@ func TestRunDryRunCreatesNoOperationState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fixture.githubDir, ".wb")); !os.IsNotExist(err) {
 		t.Fatalf("dry run created operation state: %v", err)
+	}
+}
+
+// TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges covers the ordinary
+// `wb deps set ... <worktree>` invocation. The supplied WB-managed linked
+// checkout is the target: unrelated staged and dirty implementation changes
+// must survive while only the dependency file is updated.
+func TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges(t *testing.T) {
+	fixture := newEngineFixture(t)
+	input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.githubDir,
+		Operation:    "dependency-input",
+		Branch:       "feature/dependency-input",
+		BranchChosen: true,
+		WorkLog:      worktrees.WorkLogOptions{Model: "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input worktrees = %+v", input)
+	}
+	repository := fixture.repository
+	repository.Path = input[0].WorktreeDir
+	staged := filepath.Join(input[0].WorktreeDir, "staged-implementation.txt")
+	dirty := filepath.Join(input[0].WorktreeDir, "dirty-implementation.txt")
+	writeEngineFile(t, staged, "staged\n")
+	runEngineGit(t, input[0].WorktreeDir, "add", filepath.Base(staged))
+	writeEngineFile(t, dirty, "dirty\n")
+
+	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != "changed" {
+		t.Fatalf("results = %+v", results)
+	}
+	if results[0].WorktreeDir != input[0].WorktreeDir || results[0].Branch != input[0].Branch {
+		t.Fatalf("result did not preserve supplied worktree identity: %+v, input=%+v", results[0], input[0])
+	}
+	if got := mustReadEngineFile(t, filepath.Join(input[0].WorktreeDir, "dependency.txt")); got != "new\n" {
+		t.Fatalf("updated dependency = %q", got)
+	}
+	if got := mustReadEngineFile(t, staged); got != "staged\n" {
+		t.Fatalf("staged implementation = %q", got)
+	}
+	if got := mustReadEngineFile(t, dirty); got != "dirty\n" {
+		t.Fatalf("dirty implementation = %q", got)
+	}
+	if stagedDiff := runEngineGit(t, input[0].WorktreeDir, "diff", "--cached", "--", filepath.Base(staged)); !strings.Contains(stagedDiff, "+staged") {
+		t.Fatalf("staged implementation was not preserved: %s", stagedDiff)
+	}
+	if strings.Join(results[0].ChangedFiles, ",") != "dependency.txt" {
+		t.Fatalf("operation report included pre-existing changes: %v", results[0].ChangedFiles)
+	}
+}
+
+func TestRunRejectsPublicationFromManagedInputBeforeInspection(t *testing.T) {
+	for index, test := range []struct {
+		name       string
+		configure  func(*Options)
+		assessment Assessment[string]
+	}{
+		{
+			name:       "commit while dependency absent",
+			configure:  func(options *Options) { options.Commit = true },
+			assessment: Assessment[string]{Reason: "dependency absent"},
+		},
+		{
+			name:       "push while dependency already current",
+			configure:  func(options *Options) { options.Push = true },
+			assessment: Assessment[string]{Applicable: true, Reason: "already current"},
+		},
+		{
+			name: "pull request during dry run",
+			configure: func(options *Options) {
+				options.PR = true
+				options.DryRun = true
+			},
+			assessment: Assessment[string]{Applicable: true, NeedsChange: true, Reason: "requires update"},
+		},
+		{
+			name: "merge while dependency absent during dry run",
+			configure: func(options *Options) {
+				options.Merge = true
+				options.DryRun = true
+			},
+			assessment: Assessment[string]{Reason: "dependency absent"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
+				ProjectsRoot: fixture.githubDir, Operation: "publication-input",
+				Branch: "feature/publication-input-" + string(rune('a'+index)), BranchChosen: true,
+				WorkLog: worktrees.WorkLogOptions{Model: "test"},
+			})
+			if err != nil || len(input) != 1 {
+				t.Fatalf("input=%+v err=%v", input, err)
+			}
+			repository := fixture.repository
+			repository.Path = input[0].WorktreeDir
+			runEngineGit(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			inspected := 0
+			options := fixture.options()
+			test.configure(&options)
+			result := Result[string]{Repository: repository.Slug, Status: "selected"}
+			err = processRepository(context.Background(), repository, staticHandler{assessment: test.assessment, inspected: &inspected}, options, &result)
+			if err == nil || !strings.Contains(err.Error(), "cannot publish from supplied managed worktree") || result.Status != "failed" {
+				t.Fatalf("publication request was accepted: result=%+v err=%v", result, err)
+			}
+			if inspected != 0 {
+				t.Fatalf("publication rejection inspected the supplied worktree %d time(s)", inspected)
+			}
+		})
+	}
+}
+
+func TestRunClonesMissingRepositoryBeforeInspectingGitLayout(t *testing.T) {
+	fixture := newEngineFixture(t)
+	if err := os.RemoveAll(fixture.canonical); err != nil {
+		t.Fatal(err)
+	}
+	repository := fixture.repository
+	repository.Path = ""
+	options := fixture.options()
+	options.DryRun = true
+	results, err := Run(context.Background(), []Repository{repository}, textHandler{}, options)
+	if err != nil || len(results) != 1 || results[0].Status != "planned" {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if info, err := os.Stat(filepath.Join(fixture.canonical, ".git")); err != nil || !info.IsDir() {
+		t.Fatalf("missing canonical was not cloned: info=%+v err=%v", info, err)
+	}
+}
+
+func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(*testing.T, engineFixture) string
+	}{
+		{
+			name: "unmanaged linked worktree",
+			path: func(t *testing.T, fixture engineFixture) string {
+				external := filepath.Join(t.TempDir(), "external")
+				runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "feature/external", external, "main")
+				return external
+			},
+		},
+		{
+			name: "symbolic git entry",
+			path: func(t *testing.T, fixture engineFixture) string {
+				unsafe := filepath.Join(t.TempDir(), "unsafe")
+				if err := os.Mkdir(unsafe, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(fixture.canonical, ".git"), filepath.Join(unsafe, ".git")); err != nil {
+					t.Fatal(err)
+				}
+				return unsafe
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			repository := fixture.repository
+			repository.Path = test.path(t, fixture)
+			results, err := Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
+			if err == nil || len(results) != 1 || results[0].Status != "failed" {
+				t.Fatalf("unsafe path accepted: results=%+v err=%v", results, err)
+			}
+			if got := mustReadEngineFile(t, filepath.Join(fixture.canonical, "dependency.txt")); got != "old\n" {
+				t.Fatalf("canonical was mutated before unsafe path rejection: %q", got)
+			}
+		})
 	}
 }
 
