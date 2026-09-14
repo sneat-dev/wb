@@ -227,15 +227,19 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		result.RequiredChecksAuthority = authority
 		result.TargetFreshnessAuthority = freshnessAuthority
 		result.PolicyAuthorityUnavailable = policyUnavailable
+		missingRequired := missingRequiredChecks(checks, requiredChecks)
+		if options.PullRequest != "" && !pending && len(checks) == 0 && len(requiredChecks) == 0 {
+			return failedCommitWaitResult(result, "pull-request route observed an authoritative empty required-check policy and no GitHub checks for the exact head; rerun with --route direct because a PR route cannot authorize a no-check candidate"), nil
+		}
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
-		missingRequired := missingRequiredChecks(checks, requiredChecks)
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
-		// authoritative receipt in that case. PR mode deliberately never takes
-		// this route: it still requires a nonempty strict server freshness fence.
+		// authoritative receipt in that case. PR mode fails explicitly above
+		// instead of returning a repeatable checks_pending slice with no route
+		// that could ever make it terminal.
 		noApplicableChecks := options.PullRequest == "" && len(checks) == 0 && len(requiredChecks) == 0
 		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {

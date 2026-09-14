@@ -682,6 +682,31 @@ func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testin
 	}
 }
 
+func TestValidationCacheValidatorSHAsTrackSpecscoreExecutable(t *testing.T) {
+	bin := t.TempDir()
+	specscore := filepath.Join(bin, "specscore")
+	write := func(contents string) {
+		t.Helper()
+		if err := os.WriteFile(specscore, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("#!/bin/sh\nprintf '%s\\n' one\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	first := validationCacheValidatorSHAs([]quality.Check{quality.CheckSpec})
+	if len(first) != 1 || len(first["specscore"]) != 64 {
+		t.Fatalf("first validator SHA = %#v", first)
+	}
+	write("#!/bin/sh\nprintf '%s\\n' two\n")
+	second := validationCacheValidatorSHAs([]quality.Check{quality.CheckSpec})
+	if first["specscore"] == second["specscore"] {
+		t.Fatalf("validator SHA did not change after executable replacement: %q", first["specscore"])
+	}
+	if got := validationCacheValidatorSHAs([]quality.Check{quality.CheckLint}); got != nil {
+		t.Fatalf("non-spec checks unexpectedly fingerprinted specscore: %#v", got)
+	}
+}
+
 func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "direct-source", "feature/direct", "direct.txt", "direct\n")

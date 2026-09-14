@@ -62,3 +62,25 @@ func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
 		t.Fatalf("corrupt cache = hit=%v err=%v", ok, err)
 	}
 }
+
+func TestValidationCacheRejectsEvidenceFromDifferentValidator(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(t.TempDir(), "cache")
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/cache\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checks := []Check{CheckSpec}
+	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.ValidatorSHAs = map[string]string{"specscore": "validator-v1"}
+	if err := SaveValidationCache(cache, key, VerificationReport{Repository: key.Repository, Revision: key.TargetRevision, WorkspaceClean: true, Status: StatusPassed}); err != nil {
+		t.Fatal(err)
+	}
+
+	key.ValidatorSHAs = map[string]string{"specscore": "validator-v2"}
+	if _, ok, err := LoadValidationCache(cache, key); err != nil || ok {
+		t.Fatalf("changed validator cache = hit=%v err=%v, want miss", ok, err)
+	}
+}
