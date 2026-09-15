@@ -107,8 +107,11 @@ When the target has no server-enforced strict up-to-date fence, landing refuses
 with the exact `wb worktree merge resume ... --allow-unfenced` command. Once
 approved, that widening is recorded in the receipt and survives every later
 resume and the post-target phase. It permits unavailable branch-policy
-authority in both phases, but each still requires stable exact-head check
-observations. If another landing path merged the
+authority in both phases, and it makes an empty observed check set with no
+enumerated required checks terminal for a pull-request candidate as well as a
+direct target, so a repository with no CI at all lands instead of polling until
+the slice deadline; each phase still requires stable exact-head check
+observations whenever checks exist. If another landing path merged the
 published pull request and retired its integration worktree first, resume uses
 GitHub's current PR, commit, tree, ancestry, and target evidence to recover the
 landing before continuing the normal target-check, canonical-sync, and cleanup

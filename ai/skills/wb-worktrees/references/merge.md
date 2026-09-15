@@ -79,8 +79,11 @@ candidate onto the current target before opening a new PR.
 Landing surfaces accept `--allow-unfenced` only as an explicit approval when
 the target has no server-enforced strict up-to-date fence. WB persists that
 approval through post-target verification and later resumes. It permits
-unavailable branch-policy authority in both PR and target-check phases, while
-both still require stable exact-head check observations. If an externally
+unavailable branch-policy authority in both PR and target-check phases, and it
+makes an empty observed check set with no enumerated required checks terminal
+for a candidate as well as a direct target, so a repository with no CI at all
+lands instead of polling until the slice deadline; both phases still require
+stable exact-head check observations whenever checks exist. If an externally
 merged PR has already lost its integration worktree, `resume` proves the merge
 from GitHub's current commit, tree, ancestry, and target evidence before
 continuing checks, synchronization, and cleanup. A partially completed cleanup
