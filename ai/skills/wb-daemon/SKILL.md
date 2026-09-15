@@ -24,6 +24,16 @@ wb daemon stop
 wb daemon restart --if-running
 ```
 
+`wb daemon status` reports identity, not just reachability: read `identity`,
+`ready_verified` and `reported_state` before believing `state=ready`. A daemon
+that answers on the loopback port but belongs to another WB home, or that was
+recorded before the home was, is reported as `identity=foreign_home`,
+`identity=unrecorded` or `identity=process_recycled` with `reported_state`
+`unverified`. `legacy_runtime` names a daemon still serving this build's
+pre-resolver runtime directory, and `wb daemon start` refuses while one is live
+rather than starting a second daemon on another home. Stop a leftover daemon
+under the WB home it belongs to; never delete the directory out from under it.
+
 If a lifecycle command reports an interrupted transition, inspect it before
 retrying:
 
@@ -64,11 +74,12 @@ restart; an interrupted running lease becomes `recovery_required`.
 WB tries the protected local socket first. If the harness sandbox returns a
 permission or reachability error, the client reports that it is using the
 project-root file bridge. Do not move the worker outside the sandbox. The bridge
-uses owner-only atomic request and response envelopes under
-`<projects-root>/.wb/runtime/file-bridge`; every envelope is authenticated and
-fenced to the scheduler generation and explicit worker ID. It carries no
-environment overrides. Authentication, protocol, or generation failures never
-trigger fallback or local execution.
+uses owner-only atomic request and response envelopes under the `runtime/`
+directory of this WB home (`~/.wb/runtime/file-bridge` by default; run
+`wb daemon status` for the path this invocation resolves); every envelope is
+authenticated and fenced to the scheduler generation and explicit worker ID. It
+carries no environment overrides. Authentication, protocol, or generation
+failures never trigger fallback or local execution.
 
 Raw command submission from the daemon process is a trusted fallback and is
 disabled by default. An administrator may opt in by creating

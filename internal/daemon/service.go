@@ -74,7 +74,11 @@ func NewService(projectsRoot, build, generation string, authorizeRaw func() erro
 	if authorizeRaw == nil {
 		authorizeRaw = func() error { return errors.New("raw daemon execution authorization is not configured") }
 	}
-	directory := filepath.Join(projectsRoot, ".wb", "runtime", "daemon", "operations")
+	runtimeDirectory, err := RuntimeDir(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	directory := filepath.Join(runtimeDirectory, "daemon", "operations")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
 	}

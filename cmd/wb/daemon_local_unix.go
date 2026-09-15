@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/daemon"
 )
 
 const daemonLocalNetwork = "unix"
@@ -27,12 +29,27 @@ func (listener *removingListener) Close() error {
 	return err
 }
 
-func daemonLocalAddress(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "daemon.sock")
+func daemonLocalAddress(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	path, _ := daemonSocketPathIn(dir)
+	return path, nil
+}
+
+// daemonSocketPathIn names the local endpoint inside an explicit runtime
+// directory. Taking the directory as an argument is what lets a diagnostic ask
+// the same question about a directory this build no longer writes to.
+func daemonSocketPathIn(dir string) (string, bool) {
+	return filepath.Join(dir, daemon.SocketFileName), true
 }
 
 func listenDaemonLocal(root string) (net.Listener, error) {
-	path := daemonLocalAddress(root)
+	path, err := daemonLocalAddress(root)
+	if err != nil {
+		return nil, err
+	}
 	// Darwin's sockaddr_un path limit is 104 bytes; Linux allows slightly more.
 	// Fail before net.Listen so configuration errors name the durable endpoint.
 	if len(path) >= 104 {
@@ -69,7 +86,10 @@ func listenDaemonLocal(root string) (net.Listener, error) {
 }
 
 func daemonLocalHTTPClient(root, token string) (*http.Client, error) {
-	path := daemonLocalAddress(root)
+	path, err := daemonLocalAddress(root)
+	if err != nil {
+		return nil, err
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, daemonLocalNetwork, path)

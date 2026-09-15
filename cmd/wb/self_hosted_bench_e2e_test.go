@@ -61,6 +61,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
 	// This whole-journey test reaches the production lifecycle dispatcher. Keep
 	// the test hermetic: inheriting a developer or CI runner's XDG config could
 	// authorize real user executors against this temporary repository, while an
@@ -104,7 +105,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	command.SetErr(console)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", false, false)
+		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

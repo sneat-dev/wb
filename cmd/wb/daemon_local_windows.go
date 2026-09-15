@@ -17,6 +17,11 @@ func daemonLocalAddress(root string) string {
 	return `\\.\pipe\wb-` + filepath.Base(filepath.Clean(root))
 }
 
+// daemonSocketPathIn reports that this platform's endpoint is a named pipe
+// rather than a path inside the runtime directory, so a directory-based probe
+// has nothing to dial.
+func daemonSocketPathIn(string) (string, bool) { return "", false }
+
 func listenDaemonLocal(string) (net.Listener, error) {
 	return nil, fmt.Errorf("WB daemon named-pipe listener is unavailable in this Windows build")
 }

@@ -25,7 +25,7 @@ import (
 )
 
 func TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	client, stop := startTestDaemonFileBridge(t, root, "bridge-token", "7")
 	defer stop()
 	ctx := context.Background()
@@ -68,7 +68,7 @@ func TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease(t *testing
 }
 
 func TestDaemonFileBridgeCompletesWorkerOperationEndToEndWithoutSocket(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	client, stop := startTestDaemonFileBridge(t, root, "bridge-token", "8")
 	defer stop()
 	ctx := context.Background()
@@ -102,7 +102,7 @@ func TestDaemonFileBridgeCompletesWorkerOperationEndToEndWithoutSocket(t *testin
 }
 
 func TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	client1, stop1 := startTestDaemonFileBridge(t, root, "first-token", "10")
 	operation := submitTestWorkerOperation(t, context.Background(), client1, root, "stable-worker", "restart")
 	stop1()
@@ -129,7 +129,7 @@ func TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects(t *tes
 }
 
 func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	service1, err := daemon.NewService(root, "old-build", "30", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 }
 
 func TestDaemonFileBridgeIdenticalSubmitReusesUnresolvedEnvelope(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if _, err := daemonFileBridgeKey(root, true); err != nil {
 		t.Fatal(err)
 	}
@@ -197,21 +197,21 @@ func TestDaemonFileBridgeIdenticalSubmitReusesUnresolvedEnvelope(t *testing.T) {
 			t.Fatalf("identical unresolved submit error = %v", err)
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(daemonFileBridgeDirectory(root), "requests"))
+	entries, err := os.ReadDir(filepath.Join(mustDaemonPath(t, daemonFileBridgeDirectory, root), "requests"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("identical unresolved request count = %d, %v", len(entries), err)
 	}
 	if err := request("intentional-second"); err == nil {
 		t.Fatal("explicitly distinct submit unexpectedly received a daemon response")
 	}
-	entries, err = os.ReadDir(filepath.Join(daemonFileBridgeDirectory(root), "requests"))
+	entries, err = os.ReadDir(filepath.Join(mustDaemonPath(t, daemonFileBridgeDirectory, root), "requests"))
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("explicitly distinct request count = %d, %v", len(entries), err)
 	}
 }
 
 func TestDaemonFileBridgeRunningLeaseBecomesRecoveryRequiredAfterRestart(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	client1, stop1 := startTestDaemonFileBridge(t, root, "lease-token", "20")
 	operation := submitTestWorkerOperation(t, context.Background(), client1, root, "stable-worker", "leased-before-restart")
 	registration1 := registerTestBridgeWorker(t, context.Background(), client1, root, "stable-worker")
@@ -241,7 +241,7 @@ func TestDaemonFileBridgeRunningLeaseBecomesRecoveryRequiredAfterRestart(t *test
 }
 
 func TestDaemonFileBridgeRequestSurvivesBridgeProcessRestart(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if _, err := daemonFileBridgeKey(root, true); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestDaemonFileBridgeRequestSurvivesBridgeProcessRestart(t *testing.T) {
 }
 
 func TestDaemonFileBridgeRejectsTamperedDigestAndRawOrEnvironmentRequests(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	requests, responses, err := prepareDaemonFileBridge(root)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func TestDaemonFileBridgeRejectsTamperedDigestAndRawOrEnvironmentRequests(t *tes
 }
 
 func TestDaemonFileBridgeRefusesAmbiguousWorkerRPCReplay(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	requests, responses, err := prepareDaemonFileBridge(root)
 	if err != nil {
 		t.Fatal(err)
@@ -376,30 +376,32 @@ func TestDaemonFileBridgeRefusesAmbiguousWorkerRPCReplay(t *testing.T) {
 	}
 }
 
-func TestDaemonFileBridgeRejectsSymlinkedAuthorityParents(t *testing.T) {
-	for _, component := range []string{".wb", filepath.Join(".wb", "runtime")} {
-		t.Run(component, func(t *testing.T) {
-			root := t.TempDir()
-			escape := t.TempDir()
-			parent := filepath.Dir(filepath.Join(root, component))
-			if err := os.MkdirAll(parent, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(escape, filepath.Join(root, component)); err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err := prepareDaemonFileBridge(root); err == nil || !strings.Contains(err.Error(), "not a real directory") {
-				t.Fatalf("symlinked %s error = %v", component, err)
-			}
-			if _, err := os.Stat(filepath.Join(escape, "file-bridge")); !os.IsNotExist(err) {
-				t.Fatalf("symlink escape target was modified: %v", err)
-			}
-		})
+// A symlinked *home* is deliberately not this test's subject. WB_HOME is
+// resolved — symlinks followed — by the one home resolver every WB subsystem
+// shares, before the daemon ever sees the path, so the daemon's runtime
+// directory can no longer contain a symlinked home component. What the daemon
+// still owns is the runtime directory below that resolved home: it must be a
+// real directory, and a symlink planted there must not become a write path
+// into whatever it points at.
+func TestDaemonFileBridgeRejectsSymlinkedRuntimeParent(t *testing.T) {
+	root := daemonTestRoot(t)
+	escape := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".wb"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escape, filepath.Join(root, ".wb", "runtime")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareDaemonFileBridge(root); err == nil || !strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("symlinked runtime error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(escape, "file-bridge")); !os.IsNotExist(err) {
+		t.Fatalf("symlink escape target was modified: %v", err)
 	}
 }
 
 func TestDaemonFileBridgeQuarantineIsBounded(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	requests, _, err := prepareDaemonFileBridge(root)
 	if err != nil {
 		t.Fatal(err)
@@ -427,7 +429,7 @@ func TestDaemonFileBridgeQuarantineIsBounded(t *testing.T) {
 }
 
 func TestDaemonFileBridgeCleansStaleValidAndOrphanedEnvelopes(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	server, err := newDaemonFileBridgeServer(root, "owner-token", "50", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +481,7 @@ func TestDaemonFileBridgeCleansStaleValidAndOrphanedEnvelopes(t *testing.T) {
 }
 
 func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	called := 0
 	server, err := newDaemonFileBridgeServer(root, "owner-token", "51", http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		called++
@@ -519,7 +521,7 @@ func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
 }
 
 func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	service, err := daemon.NewService(root, "test-build", "1", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
@@ -541,9 +543,9 @@ func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := daemon.NewStarting(nil, daemonDefaultListen, provenance, "fallback-token", deps.now())
+	state := daemonTestState(t, root, daemonDefaultListen, provenance, "fallback-token", deps.now())
 	state.MarkReady(777, deps.now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	deps.alive = func(pid int) bool { return pid == 777 }
@@ -568,7 +570,7 @@ func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 }
 
 func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	_, stop := startTestDaemonFileBridge(t, root, "health-token", "61")
 	defer stop()
 	if err := daemonFileBridgeHealthy(context.Background(), root, "61"); err != nil {
@@ -642,7 +644,7 @@ func registerTestBridgeWorker(t *testing.T, ctx context.Context, client daemonv1
 
 func waitForBridgeRequest(t *testing.T, root string) {
 	t.Helper()
-	requests := filepath.Join(daemonFileBridgeDirectory(root), "requests")
+	requests := filepath.Join(mustDaemonPath(t, daemonFileBridgeDirectory, root), "requests")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		entries, _ := os.ReadDir(requests)

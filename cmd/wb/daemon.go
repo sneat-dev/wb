@@ -35,9 +35,14 @@ const (
 	daemonDefaultListen           = "127.0.0.1:8766"
 	daemonReadyTimeout            = 5 * time.Second
 	daemonStopTimeout             = 5 * time.Second
-	daemonHeartbeatInterval       = 10 * time.Second
 	daemonRestartProgressInterval = 8 * time.Second
 )
+
+// daemonHeartbeatInterval is the daemon's maintenance checkpoint: how often it
+// proves its runtime directory still exists, and writes a line saying so. It is
+// a variable only so a test can reach the checkpoint without waiting ten
+// seconds for it.
+var daemonHeartbeatInterval = 10 * time.Second
 
 type daemonResult struct {
 	Action                   string            `json:"action"`
@@ -53,6 +58,26 @@ type daemonResult struct {
 	AlreadyRunning           bool              `json:"already_running,omitempty"`
 	AutomaticVersionHandoff  bool              `json:"automatic_version_handoff,omitempty"`
 	Hub                      daemonHubStatus   `json:"hub"`
+
+	// Identity answers "whose daemon is this?" separately from "did something
+	// answer on the endpoint?". ReadyVerified is the only condition under which
+	// status may present a daemon as ready; ReportedState is what a reader
+	// should act on, and never claims ready that was not verified.
+	Identity       daemonIdentity `json:"identity,omitempty"`
+	IdentityDetail string         `json:"identity_detail,omitempty"`
+	ReadyVerified  bool           `json:"ready_verified"`
+	ReportedState  string         `json:"reported_state,omitempty"`
+
+	// The runtime location this invocation resolved. Status reports it so an
+	// operator can name the endpoint and the record without starting anything.
+	WBHome     string `json:"wb_home,omitempty"`
+	RuntimeDir string `json:"runtime_path,omitempty"`
+	SocketPath string `json:"socket_path,omitempty"`
+	StatePath  string `json:"state_path,omitempty"`
+
+	// LegacyRuntime names a daemon still serving the runtime directory WB used
+	// before it resolved its home. Its presence is why a start was refused.
+	LegacyRuntime *daemonLegacyEndpoint `json:"legacy_runtime,omitempty"`
 }
 
 // daemonHubStatus reports the self-hosted bench hub. It is read from wb.yaml
@@ -102,6 +127,13 @@ type daemonPublicState struct {
 	Queue         daemonPublicQueue `json:"queue"`
 	StartedAt     time.Time         `json:"started_at,omitempty"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	// WBHome, StatePath and StoppedReason are the record's own account of where
+	// it lives and, for a stop it did not choose, why. They are part of the
+	// public projection because identity is exactly what a reader must be able
+	// to check.
+	WBHome        string `json:"wb_home,omitempty"`
+	StatePath     string `json:"state_path,omitempty"`
+	StoppedReason string `json:"stopped_reason,omitempty"`
 }
 
 type daemonPublicQueue struct {
@@ -116,6 +148,7 @@ func publicDaemonState(state daemon.State) daemonPublicState {
 	return daemonPublicState{
 		SchemaVersion: state.SchemaVersion, Status: state.Status, PID: state.PID,
 		Listen: state.Listen, Provenance: state.Provenance, StartedAt: state.StartedAt, UpdatedAt: state.UpdatedAt,
+		WBHome: state.WBHome, StatePath: state.StatePath, StoppedReason: state.StoppedReason,
 		Queue: daemonPublicQueue{SchemaVersion: state.Queue.SchemaVersion, Generation: state.Queue.Generation,
 			Owner: state.Queue.Owner, HandoffFrom: state.Queue.HandoffFrom, HandoffAt: state.Queue.HandoffAt},
 	}
@@ -184,7 +217,7 @@ func newDaemonCmdWithDependencies(deps daemonDependencies) *cobra.Command {
 
 func newDaemonServeCmd(deps daemonDependencies) *cobra.Command {
 	var listenAddress, stateFile string
-	var quiet bool
+	var quiet, managedStartFlag bool
 	command := &cobra.Command{
 		Use: "serve", Short: "Serve the read-only dashboard and API on a loopback address",
 		Long: `Serve WB's embedded operations dashboard and versioned read-only API.
@@ -216,10 +249,22 @@ with your own cloudflared or ngrok credentials — see hub/README.md.`,
 			if err := requireLoopbackAddress(listenAddress); err != nil {
 				return usageError(err.Error())
 			}
-			managedStart := stateFile != ""
-			if !managedStart {
-				stateFile = daemonStatePath(projectsRoot)
+			// --managed-start is how `wb daemon start` claims the starting
+			// record without naming a path: the supervisor unit persists the
+			// mode, and the daemon resolves its own runtime directory at
+			// startup. --lifecycle-state stays accepted for compatibility, and
+			// its presence is reported because a pinned path outlives the home
+			// it was pinned from.
+			pinnedStatePath := stateFile
+			managedStart := managedStartFlag || stateFile != ""
+			if stateFile == "" {
+				resolved, resolveErr := daemonStatePath(projectsRoot)
+				if resolveErr != nil {
+					return resolveErr
+				}
+				stateFile = resolved
 			}
+			reportPinnedLifecycleState(command.ErrOrStderr(), pinnedStatePath, stateFile)
 			state, found, err := (daemon.Store{Path: stateFile}).Load()
 			if err != nil {
 				return err
@@ -242,8 +287,21 @@ with your own cloudflared or ngrok credentials — see hub/README.md.`,
 	command.Flags().StringVar(&listenAddress, "listen", daemonDefaultListen, "loopback listen address")
 	command.Flags().StringVar(&stateFile, "lifecycle-state", "", "private lifecycle state path (used by daemon start)")
 	_ = command.Flags().MarkHidden("lifecycle-state")
+	command.Flags().BoolVar(&managedStartFlag, "managed-start", false, "join the starting lifecycle state this build resolves for its own home (used by daemon start)")
+	_ = command.Flags().MarkHidden("managed-start")
 	command.Flags().BoolVar(&quiet, "quiet", false, "silence the hub's per-event console lines (the daemon log file still records them)")
 	return command
+}
+
+// reportPinnedLifecycleState reports an explicitly supplied lifecycle state
+// path. A pinned path is honoured for compatibility, but it is never silent:
+// the pinned shape is what let a daemon keep writing into the home a later
+// WB_HOME move had abandoned.
+func reportPinnedLifecycleState(out io.Writer, pinned, resolved string) {
+	if strings.TrimSpace(pinned) == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "daemon lifecycle state is pinned to %s by an explicit --lifecycle-state; an unpinned daemon would resolve %s\n", pinned, resolved)
 }
 
 func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
@@ -414,7 +472,28 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 	if result.Managed {
 		status = string(result.State.Status)
 	}
+	if result.ReportedState != "" {
+		status = result.ReportedState
+	}
 	_, err := fmt.Fprintf(out, "daemon %s: state=%s, process_manager_running=%t, api_reachable=%t, direct_transport_reachable=%t, installed_provenance=%t", result.Action, status, result.ProcessManagerRunning, result.Reachable, result.DirectTransportReachable, result.ProvenanceMatches)
+	if err == nil && result.Identity != "" {
+		_, err = fmt.Fprintf(out, ", identity=%s, ready_verified=%t", result.Identity, result.ReadyVerified)
+	}
+	if err == nil && result.RuntimeDir != "" {
+		_, err = fmt.Fprintf(out, ", runtime=%s", result.RuntimeDir)
+	}
+	if err == nil && result.SocketPath != "" {
+		_, err = fmt.Fprintf(out, ", socket=%s", result.SocketPath)
+	}
+	if err == nil && result.IdentityDetail != "" {
+		_, err = fmt.Fprintf(out, ", identity_detail=%q", result.IdentityDetail)
+	}
+	if err == nil && result.State.StoppedReason != "" {
+		_, err = fmt.Fprintf(out, ", stopped_reason=%q", result.State.StoppedReason)
+	}
+	if err == nil && result.LegacyRuntime != nil {
+		_, err = fmt.Fprintf(out, ", legacy_runtime=%q", result.LegacyRuntime.RuntimeDir)
+	}
 	if err == nil && result.ReachabilityTransport != "" {
 		_, err = fmt.Fprintf(out, ", api_transport=%s", result.ReachabilityTransport)
 	}
@@ -455,27 +534,51 @@ type daemonController struct {
 }
 
 func newDaemonController(deps daemonDependencies, root string) daemonController {
-	return daemonController{deps: deps, store: daemon.Store{Path: daemonStatePath(root)}, root: root}
-}
-func daemonStatePath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "daemon-state.json")
-}
-func daemonLogPath(root string) string { return filepath.Join(root, ".wb", "runtime", "daemon.log") }
-
-func daemonLifecycleLockPath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "daemon.lifecycle.lock")
+	statePath, _ := daemonStatePath(root)
+	return daemonController{deps: deps, store: daemon.Store{Path: statePath}, root: root}
 }
 
-func daemonLifecycleOwnerPath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "daemon.lifecycle.owner")
+// The daemon's runtime paths all resolve through WB's one home resolver, so a
+// WB_HOME move moves the daemon with every other subsystem. They previously
+// joined the projects root with a literal ".wb", which is how a live daemon
+// ended up serving a socket inside a directory the rest of WB had abandoned.
+func daemonStatePath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, daemon.StateFileName), nil
 }
 
-func daemonStateLockPath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "daemon.state.lock")
+func daemonLifecycleLockPath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.lifecycle.lock"), nil
+}
+
+func daemonLifecycleOwnerPath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.lifecycle.owner"), nil
+}
+
+func daemonStateLockPath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.state.lock"), nil
 }
 
 func (controller daemonController) stateLock() (func(), error) {
-	path := daemonStateLockPath(controller.root)
+	path, err := daemonStateLockPath(controller.root)
+	if err != nil {
+		return nil, err
+	}
 	if err := secureDaemonRuntime(controller.root); err != nil {
 		return nil, fmt.Errorf("secure daemon runtime: %w", err)
 	}
@@ -573,7 +676,10 @@ func (controller daemonController) lifecycleLock() (func(), error) {
 }
 
 func (controller daemonController) openLifecycleLock(create bool) (*os.File, bool, bool, error) {
-	path := daemonLifecycleLockPath(controller.root)
+	path, err := daemonLifecycleLockPath(controller.root)
+	if err != nil {
+		return nil, false, false, err
+	}
 	if create {
 		if err := secureDaemonRuntime(controller.root); err != nil {
 			return nil, false, false, fmt.Errorf("secure daemon runtime: %w", err)
@@ -585,7 +691,6 @@ func (controller daemonController) openLifecycleLock(create bool) (*os.File, boo
 	}
 	created := false
 	var fd int
-	var err error
 	if create {
 		fd, err = unix.Open(path, flags|unix.O_EXCL, 0o600)
 		if err == nil {
@@ -662,7 +767,10 @@ func lifecycleLockPID(file *os.File) (pid int, empty bool, err error) {
 }
 
 func (controller daemonController) lifecycleOwnerPID(legacyLock *os.File) (int, error) {
-	path := daemonLifecycleOwnerPath(controller.root)
+	path, err := daemonLifecycleOwnerPath(controller.root)
+	if err != nil {
+		return 0, err
+	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if errors.Is(err, unix.ENOENT) {
 		pid, empty, legacyErr := lifecycleLockPID(legacyLock)
@@ -706,7 +814,10 @@ func (controller daemonController) lifecycleOwnerPID(legacyLock *os.File) (int, 
 }
 
 func (controller daemonController) writeLifecycleOwnerPID(pid int) error {
-	path := daemonLifecycleOwnerPath(controller.root)
+	path, err := daemonLifecycleOwnerPath(controller.root)
+	if err != nil {
+		return err
+	}
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
@@ -769,7 +880,15 @@ func (controller daemonController) stableLifecycleState() (daemon.Status, error)
 }
 
 func (controller daemonController) RecoverLifecycleLock(ctx context.Context, apply bool) (daemonRecoveryResult, error) {
-	result := daemonRecoveryResult{Action: "recover", LockPath: daemonLifecycleLockPath(controller.root), OwnerPath: daemonLifecycleOwnerPath(controller.root), Reason: "no_lock"}
+	lockPath, lockErr := daemonLifecycleLockPath(controller.root)
+	if lockErr != nil {
+		return daemonRecoveryResult{}, lockErr
+	}
+	ownerPath, ownerErr := daemonLifecycleOwnerPath(controller.root)
+	if ownerErr != nil {
+		return daemonRecoveryResult{}, ownerErr
+	}
+	result := daemonRecoveryResult{Action: "recover", LockPath: lockPath, OwnerPath: ownerPath, Reason: "no_lock"}
 	file, found, _, err := controller.openLifecycleLock(false)
 	if errors.Is(err, errDaemonLifecycleBusy) {
 		result.LockPresent = true
@@ -852,7 +971,7 @@ func (controller daemonController) RecoverLifecycleLock(ctx context.Context, app
 			}
 			result.Reason = "orphaned_healthy_start"
 			if apply {
-				state.MarkReady(state.PID, controller.deps.now())
+				state.MarkReadyWithProcess(state.PID, daemonProcessStartedAt(state.PID), controller.deps.now())
 				if err := controller.store.Save(state); err != nil {
 					return result, err
 				}
@@ -955,18 +1074,64 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 		return daemonResult{}, err
 	}
 	result := daemonResult{Action: "status", Managed: found, State: publicDaemonState(state)}
+	if location, locationErr := resolveDaemonLocation(controller.root); locationErr == nil {
+		result.WBHome, result.RuntimeDir, result.SocketPath, result.StatePath =
+			location.Home, location.RuntimeDir, location.SocketPath, location.StatePath
+	}
+	// The legacy endpoint is reported even when this home has no daemon: that
+	// is precisely the case in which a leftover daemon looks healthy while
+	// nothing here records one.
+	if legacy := detectLegacyDaemon(controller.root, controller.deps.alive); legacy.present() {
+		result.LegacyRuntime = &legacy
+	}
+	identity, detail, alive := controller.assessIdentity(state, found)
+	result.Identity, result.IdentityDetail = identity, detail
+	// Liveness and ownership are separate: a process can be alive and still not
+	// be this home's daemon, and reachability must stay reportable for it.
+	result.ProcessManagerRunning = alive && identity == identityCurrent
 	result.Hub = controller.hubStatus(ctx, state.Listen)
+	current, err := controller.provenance()
+	if err != nil {
+		return daemonResult{}, err
+	}
+	result.ProvenanceMatches = state.Provenance.SameBinary(current)
 	if !found {
+		result.ReportedState = "absent"
+		// A daemon answering on the configured endpoint while this home records
+		// nothing is exactly the shape of both observed failures: something is
+		// serving, and nothing here can claim it. Reachability stays its own
+		// condition, reported next to identity=absent rather than as a daemon
+		// this home owns.
+		if healthErr := controller.deps.health(ctx, daemonDefaultListen); healthErr == nil {
+			result.Reachable = true
+			result.DirectTransportReachable = true
+			result.ReachabilityTransport = "direct"
+		} else {
+			result.DirectTransportError = healthErr.Error()
+			result.ReachabilityError = healthErr.Error()
+		}
 		return result, nil
 	}
-	alive := state.PID > 0 && controller.deps.alive(state.PID)
-	result.ProcessManagerRunning = alive
-	if !alive && (state.Status == daemon.StatusReady || state.Status == daemon.StatusDraining) {
+	result.ReportedState = string(state.Status)
+	if !alive && (state.Status == daemon.StatusReady || state.Status == daemon.StatusDraining) && identity == identityStopped {
+		// Only a record this home owns may be retired. A foreign or unrecorded
+		// record is left exactly as it was found, because overwriting it would
+		// destroy the evidence the operator needs.
 		state.MarkStopped(controller.deps.now())
 		if err := controller.store.Save(state); err != nil {
 			return daemonResult{}, err
 		}
 		result.State = publicDaemonState(state)
+	}
+	if identity == identityCurrent && alive && result.ProvenanceMatches {
+		result.ReadyVerified = true
+	} else if state.Status == daemon.StatusReady || state.Status == daemon.StatusStarting || state.Status == daemon.StatusDraining {
+		// The record claims a daemon is up, and this home cannot show that the
+		// claim is about its own process and binary. That is reported as
+		// unverified rather than repeated as ready: "something answers on my
+		// port" is not ownership, and the two failures this feature exists for
+		// both looked exactly like this.
+		result.ReportedState = "unverified"
 	}
 	if alive {
 		if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
@@ -991,11 +1156,6 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 			}
 		}
 	}
-	current, err := controller.provenance()
-	if err != nil {
-		return daemonResult{}, err
-	}
-	result.ProvenanceMatches = state.Provenance.SameBinary(current)
 	return result, nil
 }
 
@@ -1073,6 +1233,15 @@ func (controller daemonController) Start(ctx context.Context, listen string) (da
 	if err := requireLoopbackAddress(listen); err != nil {
 		return daemonResult{}, usageError(err.Error())
 	}
+	// Refuse before binding when a daemon still serves the runtime directory
+	// this build no longer writes to. Starting a second daemon there would put
+	// two daemons on two homes, each invisible to the other's supervisor, and
+	// the legacy socket is the only evidence that the first one is alive.
+	if legacy := detectLegacyDaemon(controller.root, controller.deps.alive); legacy.present() {
+		return daemonResult{Action: "start", LegacyRuntime: &legacy}, fmt.Errorf(
+			"refusing to start a daemon while a daemon still serves the legacy runtime directory: %s; stop that daemon first (wb daemon stop, with the WB_HOME it was started under) rather than letting it keep serving an abandoned home",
+			legacy.describe())
+	}
 	state, found, err := controller.store.Load()
 	if err != nil {
 		return daemonResult{}, err
@@ -1081,9 +1250,14 @@ func (controller daemonController) Start(ctx context.Context, listen string) (da
 	if err != nil {
 		return daemonResult{}, err
 	}
-	if found && state.Status == daemon.StatusReady && state.PID > 0 && controller.deps.alive(state.PID) && state.Listen == listen {
+	identity, identityDetail, alive := controller.assessIdentity(state, found)
+	if identity == identityForeignHome || identity == identityForeignStatePath {
+		return daemonResult{Action: "start", Managed: true, State: publicDaemonState(state), Identity: identity, IdentityDetail: identityDetail},
+			fmt.Errorf("refusing to replace a lifecycle record that belongs to another WB home: %s", identityDetail)
+	}
+	if found && identity == identityCurrent && alive && state.Status == daemon.StatusReady && state.Listen == listen {
 		if state.Provenance.SameBinary(current) {
-			result := daemonResult{Action: "start", Managed: true, ProcessManagerRunning: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true}
+			result := daemonResult{Action: "start", Managed: true, ProcessManagerRunning: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true, Identity: identity, IdentityDetail: identityDetail, ReadyVerified: true, ReportedState: string(state.Status)}
 			if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
 				result.Reachable = true
 				result.DirectTransportReachable = true
@@ -1230,6 +1404,20 @@ func (controller daemonController) withCurrentProvenance(result daemonResult) (d
 }
 
 func (controller daemonController) stop(_ context.Context, state daemon.State) (daemonResult, error) {
+	if state.PID > 0 && controller.deps.alive(state.PID) {
+		observed, observedKnown := daemon.ProcessStartTime(state.PID)
+		if match, known := state.ProcessGenerationMatches(observed, observedKnown); known && !match {
+			// The PID is someone else's now. Signalling it would signal an
+			// unrelated process, which is the harm the recorded start time
+			// exists to prevent; the record is retired instead.
+			reason := fmt.Sprintf("PID %d now belongs to a different process; not signalling it", state.PID)
+			state.MarkStoppedWithReason(reason, controller.deps.now())
+			if err := controller.store.Save(state); err != nil {
+				return daemonResult{}, err
+			}
+			return daemonResult{Action: "stop", Managed: true, State: publicDaemonState(state), Identity: identityProcessRecycled, IdentityDetail: reason, ReportedState: string(daemon.StatusStopped)}, nil
+		}
+	}
 	state.MarkDraining(controller.deps.now())
 	if err := controller.store.Save(state); err != nil {
 		return daemonResult{}, err
@@ -1263,12 +1451,25 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 	if err != nil {
 		return daemonResult{}, err
 	}
-	starting := daemon.NewStarting(previous, listen, provenance, token, controller.deps.now())
+	location, err := resolveDaemonLocation(controller.root)
+	if err != nil {
+		return daemonResult{}, err
+	}
+	starting := daemon.NewStartingAt(previous, listen, provenance, token, location.Home, location.StatePath, controller.deps.now())
 	if err := controller.store.Save(starting); err != nil {
 		return daemonResult{}, err
 	}
-	args := []string{"--projects-root", controller.root, "daemon", "serve", "--listen", listen, "--lifecycle-state", controller.store.Path}
-	pid, err := controller.deps.start(provenance.Executable, args, daemonLogPath(controller.root))
+	// The supervisor unit is written from these arguments, so they carry only
+	// the inputs the operator chose. The daemon resolves its own runtime
+	// directory at startup: a path resolved *here* would be baked into the unit
+	// and outlive the home it was resolved from, which is exactly how a daemon
+	// ended up serving a directory the rest of WB had already abandoned.
+	args := []string{"--projects-root", controller.root, "daemon", "serve", "--listen", listen, "--managed-start"}
+	logPath, logErr := daemonStartLogPath(controller.root)
+	if logErr != nil {
+		return daemonResult{}, logErr
+	}
+	pid, err := controller.deps.start(provenance.Executable, args, logPath)
 	if err != nil {
 		starting.MarkStopped(controller.deps.now())
 		_ = controller.store.Save(starting)
@@ -1316,24 +1517,51 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 			return daemonResult{}, loadErr
 		}
 		if found && state.OwnerToken == token && state.Status == daemon.StatusStarting && state.PID == pid {
-			state.MarkReady(pid, controller.deps.now())
+			state.MarkReadyWithProcess(pid, daemonProcessStartedAt(pid), controller.deps.now())
 			if err := controller.store.Save(state); err != nil {
 				releaseState()
 				return daemonResult{}, err
 			}
 			releaseState()
-			return daemonResult{Action: action, Managed: true, ProcessManagerRunning: true, Reachable: true, DirectTransportReachable: true, ReachabilityTransport: "direct", ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff}, nil
+			return daemonResult{Action: action, Managed: true, ProcessManagerRunning: true, Reachable: true, DirectTransportReachable: true, ReachabilityTransport: "direct", ProvenanceMatches: true, State: publicDaemonState(state), AutomaticVersionHandoff: handoff, Identity: identityCurrent, ReadyVerified: true, ReportedState: string(state.Status), WBHome: location.Home, RuntimeDir: location.RuntimeDir, SocketPath: location.SocketPath, StatePath: location.StatePath}, nil
 		}
 		releaseState()
 		controller.deps.sleep(50 * time.Millisecond)
 	}
-	return daemonResult{}, fmt.Errorf("daemon did not become ready within %s; inspect %s", daemonReadyTimeout, daemonLogPath(controller.root))
+	// A child that could not bind or that lost its runtime directory records
+	// why before exiting, so the reason is reported here instead of being
+	// reduced to "did not become ready".
+	if state, found, loadErr := controller.store.Load(); loadErr == nil && found && state.StoppedReason != "" {
+		return daemonResult{Action: action, Managed: true, State: publicDaemonState(state), ReportedState: string(state.Status)}, fmt.Errorf("daemon did not become ready within %s: %s", daemonReadyTimeout, state.StoppedReason)
+	}
+	return daemonResult{}, fmt.Errorf("daemon did not become ready within %s; inspect %s", daemonReadyTimeout, logPath)
+}
+
+// daemonProcessStartedAt observes the process generation WB is about to record.
+// A platform that cannot answer records the zero time, which status reports as
+// unknown rather than as a match.
+func daemonProcessStartedAt(pid int) time.Time {
+	started, ok := daemon.ProcessStartTime(pid)
+	if !ok {
+		return time.Time{}
+	}
+	return started
 }
 
 func serveDashboard(command *cobra.Command, deps daemonDependencies, address string, store daemon.Store, ownerToken string, quiet, managedStart bool) (serveErr error) {
+	location, err := resolveDaemonLocation(projectsRoot)
+	if err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		return fmt.Errorf("listen for WB daemon: %w", err)
+		// A held endpoint is a distinct, actionable condition, not a transient
+		// error: another daemon (or an unrelated process) already owns it, and
+		// starting a second detached daemon of our own would only race it.
+		if daemonAddressInUse(err) {
+			return fmt.Errorf("daemon endpoint %s is already held by another process: %w; stop it (or point this daemon at another --listen) instead of starting a second daemon", address, err)
+		}
+		return fmt.Errorf("listen for WB daemon on %s: %w", address, err)
 	}
 	provenance, err := newDaemonController(deps, projectsRoot).provenance()
 	if err != nil {
@@ -1358,9 +1586,10 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		return errors.New("managed daemon startup ownership was superseded")
 	}
 	if !managedStart {
-		state = daemon.NewStarting(optionalDaemonState(state, found), address, provenance, ownerToken, deps.now())
-		state.MarkReady(os.Getpid(), deps.now())
+		state = daemon.NewStartingAt(optionalDaemonState(state, found), address, provenance, ownerToken, location.Home, location.StatePath, deps.now())
+		state.MarkReadyWithProcess(os.Getpid(), daemonProcessStartedAt(os.Getpid()), deps.now())
 	} else {
+		state.WBHome, state.StatePath = location.Home, location.StatePath
 		state.MarkStartingPID(os.Getpid(), deps.now())
 	}
 	if err := store.Save(state); err != nil {
@@ -1453,7 +1682,6 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// The poller is bound to the server's context, so a shutdown stops it
 	// without a second lifecycle to get wrong.
 	mount.startPolling(ctx)
-	go daemonHeartbeat(command.ErrOrStderr(), ctx, address)
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "WB dashboard: http://%s\n", listener.Addr()); err != nil {
 		_ = listener.Close()
 		return err
@@ -1461,15 +1689,74 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	if line := mount.StartLine(); line != "" {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), line)
 	}
-	errorsCh := make(chan error, 3)
+	errorsCh := make(chan error, 4)
 	go func() { errorsCh <- server.Serve(listener) }()
 	go func() { errorsCh <- rpcServer.Serve(localListener) }()
 	go func() { errorsCh <- fileBridge.Serve(ctx) }()
+	go func() {
+		if err := daemonRuntimeGuard(command.ErrOrStderr(), ctx, address, store, state, ownerToken); err != nil {
+			errorsCh <- err
+		}
+	}()
 	err = <-errorsCh
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}
 	return err
+}
+
+// daemonRuntimeGuard keeps the heartbeat flowing while proving the runtime
+// directory it heartbeats from still exists.
+//
+// A daemon whose runtime directory was removed underneath it must stop: it
+// otherwise keeps writing into a path that no longer belongs to any WB home,
+// which is how a stranded daemon stayed invisible while looking healthy. It
+// returns an error so the process exits non-zero, and records the reason first
+// so a supervisor restart does not erase the only evidence of it.
+func daemonRuntimeGuard(out io.Writer, ctx context.Context, address string, store daemon.Store, owned daemon.State, ownerToken string) error {
+	ticker := time.NewTicker(daemonHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := daemonRuntimeIntact(store); err != nil {
+				reason := err.Error()
+				_, _ = fmt.Fprintf(out, "daemon stopping: %s\n", reason)
+				stopped := owned
+				if current, found, loadErr := store.Load(); loadErr == nil && found {
+					stopped = current
+				}
+				if stopped.PID == os.Getpid() && (ownerToken == "" || stopped.OwnerToken == ownerToken) {
+					stopped.MarkStoppedWithReason(reason, time.Now().UTC())
+					_ = store.Save(stopped)
+				}
+				return err
+			}
+			_, _ = fmt.Fprintf(out, "daemon heartbeat: ready %s\n", address)
+		}
+	}
+}
+
+// daemonRuntimeIntact proves the daemon is still writing where it says it is:
+// the directory holding its lifecycle record must still be a real directory,
+// and the record itself must still be there. The check follows the record
+// rather than the resolved home so an explicitly pinned state path is covered
+// by the same proof.
+func daemonRuntimeIntact(store daemon.Store) error {
+	directory := filepath.Dir(store.Path)
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return fmt.Errorf("daemon runtime directory %s is gone (%v); this daemon no longer belongs to a WB home", directory, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("daemon runtime directory %s is no longer a real directory", directory)
+	}
+	if _, err := os.Lstat(store.Path); err != nil {
+		return fmt.Errorf("daemon lifecycle state %s is gone (%v)", store.Path, err)
+	}
+	return nil
 }
 
 func startRepositoryEventReceiver(ctx context.Context, projectsRoot, configPath string, out io.Writer) error {
@@ -1495,24 +1782,16 @@ func startRepositoryEventReceiver(ctx context.Context, projectsRoot, configPath 
 	if err != nil {
 		return err
 	}
-	cursorPath := filepath.Join(projectsRoot, ".wb", "runtime", "daemon", "repository-events", "cursor.json")
+	runtimeDir, runtimeErr := daemon.RuntimeDir(projectsRoot)
+	if runtimeErr != nil {
+		return runtimeErr
+	}
+	cursorPath := filepath.Join(runtimeDir, "daemon", "repository-events", "cursor.json")
 	receiver := repositoryevents.Receiver{Source: provider, Queue: eventQueue, Cursor: repositoryevents.CursorStore{Path: cursorPath}, Progress: progress}
 	go receiver.Run(ctx)
 	return nil
 }
 
-func daemonHeartbeat(out io.Writer, ctx context.Context, address string) {
-	ticker := time.NewTicker(daemonHeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, _ = fmt.Fprintf(out, "daemon heartbeat: ready %s\n", address)
-		}
-	}
-}
 func daemonOwnerToken() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {

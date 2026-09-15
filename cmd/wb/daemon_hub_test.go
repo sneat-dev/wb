@@ -76,6 +76,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
 	previousRoot := projectsRoot
 	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousRoot })
@@ -95,7 +96,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", false, false)
+		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -311,7 +312,7 @@ func TestEnsureLocalEnrollmentSkipsAnAlreadyResolvableCredential(t *testing.T) {
 // TestDaemonStatusReportsTheMountedHub covers both the text and JSON shapes
 // `wb daemon status` gained.
 func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	previousRoot := projectsRoot
 	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousRoot })
