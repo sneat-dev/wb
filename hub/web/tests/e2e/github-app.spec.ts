@@ -40,7 +40,7 @@ test('shows authorized delivery status and persists installation filters in the 
     });
   });
 
-  await page.goto('/bench/dashboard/github/?state=pending');
+  await page.goto('/workbench/dashboard/github/?state=pending');
   await expect(page.locator('[data-github-indicator-label]')).toHaveText('GitHub connected');
   await expect(page.locator('[data-github-machine-count]')).toHaveText('2');
   await expect(page.locator('[data-github-last-received]')).toContainText('push');
@@ -71,7 +71,7 @@ test('fails closed when the viewer is not authorized', async ({ page }) => {
     body: JSON.stringify({ error: 'viewer_unavailable' }),
   }));
 
-  await page.goto('/bench/dashboard/github/');
+  await page.goto('/workbench/dashboard/github/');
   await expect(page.locator('[data-github-state="error"]')).toBeVisible();
   await expect(page.locator('[data-github-error-message]')).toContainText('authorized account');
   await expect(page.locator('[data-github-content]')).toBeHidden();

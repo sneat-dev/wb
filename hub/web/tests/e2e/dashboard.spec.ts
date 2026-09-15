@@ -25,7 +25,7 @@ test('shows only real snapshot states and marks retained metrics stale after ref
     await route.fulfill({ status: 503, headers, body: JSON.stringify({ error: 'control_plane_not_configured' }) });
   });
 
-  await page.goto('/bench/dashboard/?state=empty&range=7d');
+  await page.goto('/workbench/dashboard/?state=empty&range=7d');
   await expect(page.locator('[data-dashboard-state="error"]')).toBeVisible();
   await expect(page.locator('[data-dashboard-state="empty"]')).toBeHidden();
   await expect(page.locator('[data-dashboard-range="7d"]')).toHaveAttribute('aria-current', 'page');
@@ -83,7 +83,7 @@ test('filters the authorized cross-machine worktree inventory and preserves filt
     });
   });
 
-  await page.goto('/bench/dashboard/?range=30d&machine=vm&attention=1');
+  await page.goto('/workbench/dashboard/?range=30d&machine=vm&attention=1');
   await page.locator('[data-dashboard-refresh-button]').click();
 
   const visibleWorktrees = page.locator('[data-worktree-table]:visible [data-worktree-rows] tr, [data-worktree-cards]:visible .worktree-card');

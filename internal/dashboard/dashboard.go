@@ -33,7 +33,7 @@ type Options struct {
 	// Mounts attaches extra subtrees to the same loopback listener, keyed by
 	// the path prefix each one owns (it must start and end with "/"). A
 	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
-	// embedded dashboard under /bench/; without a hub section the map is
+	// embedded dashboard under /workbench/; without a hub section the map is
 	// empty and the served routes are exactly what they were.
 	Mounts map[string]http.Handler
 	// Hub reports the live state of a self-hosted bench hub for
@@ -139,7 +139,7 @@ func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler 
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		for prefix, handler := range routes {
-			// "/bench" reaches the same mount as "/bench/": the trailing
+			// "/workbench" reaches the same mount as "/workbench/": the trailing
 			// slash is what an operator omits, and the mounted handler is the
 			// one that knows where to redirect them.
 			if request.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(request.URL.Path, prefix) {
