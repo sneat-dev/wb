@@ -2427,6 +2427,8 @@
               ],
               "modes": [
                 "Reports daemon absence without starting one",
+                "Reports which WB home the daemon record belongs to, whether this invocation can verify it, and never presents a daemon as ready on the strength of a successful connection alone",
+                "Reports a daemon still serving the pre-resolver runtime directory, and why a start was refused while one is live",
                 "Reports whether the bench hub is mounted, with its store engine, store location, and listen address",
                 "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged",
                 "Reports whether webhook mode is on and the public URL GitHub delivers to"

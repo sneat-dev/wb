@@ -328,7 +328,7 @@ func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
 func newDaemonStatusCmd(deps daemonDependencies) *cobra.Command {
 	var format string
 	var jsonOut bool
-	command := &cobra.Command{Use: "status", Short: "Report local daemon reachability and exact executable provenance", Args: cobra.NoArgs,
+	command := &cobra.Command{Use: "status", Short: "Report which home owns the local daemon, its provenance, and its reachability", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
 			if err != nil {
