@@ -912,8 +912,8 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if base == "" {
 		base = "main"
 	}
-	if !validBranch(ctx, base) {
-		return GuardResult{}, fmt.Errorf("invalid base branch %q", base)
+	if err := branchValidationError(ctx, "base branch", base); err != nil {
+		return GuardResult{}, err
 	}
 	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -1610,11 +1610,13 @@ func normalizeCreateOptions(options CreateOptions) (CreateOptions, error) {
 		return CreateOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
 	}
 	ctx := context.Background()
-	if !validBranch(ctx, options.Base) {
-		return CreateOptions{}, fmt.Errorf("invalid base branch %q", options.Base)
+	if err := branchValidationError(ctx, "base branch", options.Base); err != nil {
+		return CreateOptions{}, err
 	}
-	if options.Branch != "" && !validBranch(ctx, options.Branch) {
-		return CreateOptions{}, fmt.Errorf("invalid feature branch %q", options.Branch)
+	if options.Branch != "" {
+		if err := branchValidationError(ctx, "feature branch", options.Branch); err != nil {
+			return CreateOptions{}, err
+		}
 	}
 	if options.Branch != "" && options.Branch == options.Base {
 		return CreateOptions{}, fmt.Errorf("feature branch must differ from base branch %q", options.Base)
@@ -2765,8 +2767,34 @@ func gitWorktreeAddFromStageDirectory(
 	return nil
 }
 
+// trustedGitExecutableFn is the resolution step behind trustedGitExecutable.
+// Platform resolution memoizes its outcome in a sync.Once, so without this seam
+// a test cannot reach the path where Git is unavailable at all.
+var trustedGitExecutableFn = platformTrustedGitExecutable
+
 func trustedGitExecutable() (string, error) {
-	return platformTrustedGitExecutable()
+	return trustedGitExecutableFn()
+}
+
+// branchValidationError reports why a branch name cannot be used, separating a
+// name Git rejects from Git itself being unusable.
+//
+// validBranch collapses both causes into false, so a caller that reported only
+// "invalid base branch" blamed the name even when the resolver had failed
+// outright. That is exactly backwards for the case that matters most: "main" is
+// always a valid name, so the message sends the reader hunting for a branch
+// configuration typo while the real fault is that no Git executable could be
+// resolved. Observed when an unaccepted Xcode licence made
+// `/usr/bin/xcrun --find git` fail, which surfaced to the user as
+// `invalid base branch "main"` on the pre-push path.
+func branchValidationError(ctx context.Context, kind, branch string) error {
+	if validBranch(ctx, branch) {
+		return nil
+	}
+	if _, err := trustedGitExecutable(); err != nil {
+		return fmt.Errorf("cannot validate %s %q: %w", kind, branch, err)
+	}
+	return fmt.Errorf("invalid %s %q", kind, branch)
 }
 
 func worktreeAddArguments(checkout, branch, baseRevision string, branchExists bool) []string {
