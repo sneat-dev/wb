@@ -3,8 +3,9 @@ name: move
 description: >-
   Transfer this whole WB session now: park it and start one successor here or on
   another machine. Use for /move, "move this session to the VM", "continue this
-  session on Codex". Do not use for a portion of work (that is /offload) or to
-  freeze without a successor (that is /park). Do not use for in-harness subagents.
+  session on Codex". Do not use for a bounded task delegated to a WB-dispatched
+  worker (that is /offload) or to freeze without a successor (that is /park). Do
+  not use for in-harness subagents.
 ---
 
 # Move

@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
@@ -131,6 +132,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newPRCmd(), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(), rootGroupAgent),
+		groupedRootCommand(newAgentCmd(), rootGroupAgent),
 		groupedRootCommand(newTaskCmd(), rootGroupAgent),
 		groupedRootCommand(newStreamCmd(), rootGroupChange),
 		groupedRootCommand(newStatusCmd(), rootGroupFleet),
@@ -194,6 +196,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
+		"agent dispatch": true, "agent status": true, "agent await": true, "agent list": true, "agent logs": true, "agent stop": true,
 		"session send": true, "session recall": true, "session receive-message": true,
 		"task offload": true, "task park": true, "task pickup": true,
 		"branch list": true, "branch cleanup": true,
@@ -298,6 +301,9 @@ func persistentCommandID(cmd *cobra.Command) string {
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == agents.OwnerArgument {
+		os.Exit(agents.OwnerCLI(os.Args[2:], agents.DefaultOwnerDeps()))
 	}
 	installSessionResolver()
 	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {

@@ -3,7 +3,8 @@ name: pickup
 description: >-
   Start a successor for a previously parked WB session or task, locally or on
   another machine. Use for /pickup, "pick up parked work", "resume the parked
-  session". Do not use for in-harness subagents or to freeze work (that is /park).
+  session". Do not use for in-harness subagents, to freeze work (that is /park),
+  or to delegate a bounded task to a WB-dispatched worker (that is /offload).
 ---
 
 # Pickup

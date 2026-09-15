@@ -1,6 +1,9 @@
 {
   "version": 1,
   "commands": {
+    "agent": [
+      "wb-agents"
+    ],
     "archive": [
       "wb-fleet"
     ],
@@ -23,10 +26,10 @@
       "wb",
       "wb-worktrees"
     ],
-    "dashboard": [
+    "daemon": [
       "wb-daemon"
     ],
-    "daemon": [
+    "dashboard": [
       "wb-daemon"
     ],
     "deps": [
@@ -50,6 +53,9 @@
     "migrate": [
       "wb-migrate"
     ],
+    "pr": [
+      "wb-merge"
+    ],
     "remote": [
       "wb-fleet"
     ],
@@ -57,10 +63,6 @@
       "wb-fleet"
     ],
     "run": [
-      "wb-run"
-    ],
-    "worker": [
-      "wb-daemon",
       "wb-run"
     ],
     "self-update": [
@@ -71,11 +73,6 @@
       "park",
       "pickup",
       "move"
-    ],
-    "task": [
-      "offload",
-      "park",
-      "pickup"
     ],
     "skills": [
       "wb-skills"
@@ -92,14 +89,20 @@
     "sync-report": [
       "wb-fleet"
     ],
+    "task": [
+      "offload",
+      "park",
+      "pickup"
+    ],
     "verify": [
       "wb-fleet"
     ],
     "version": [
       "wb-install"
     ],
-    "pr": [
-      "wb-merge"
+    "worker": [
+      "wb-daemon",
+      "wb-run"
     ],
     "worktree": [
       "wb-worktrees",

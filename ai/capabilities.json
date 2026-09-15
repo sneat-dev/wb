@@ -4,6 +4,422 @@
   "binary": "wb",
   "capabilities": [
     {
+      "id": "wb.agent.await",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent await",
+              "flags": [
+                "--format",
+                "--json",
+                "--wait-timeout"
+              ],
+              "modes": [
+                "Blocks until a dispatched run reaches a terminal state, then reports state, exit status, resolved configuration, worktree, branch, changed files, usage, the worker final message, and the log location.",
+                "Exits with the findings code when the wait bound elapses before the run finishes, so a caller can never read \"waited\" as \"succeeded\"; an abandoned run resolves immediately instead of blocking."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent await --help",
+              "contains": [
+                "--wait-timeout",
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent await <agent-id> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentAwaitReportsAnElapsedBoundAsAFinding",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentAwaitResolvesAnAbandonedRunInsteadOfBlocking",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Await exists so a supervisor can wait for a worker without polling status in a loop and without pulling the worker transcript into its own context. Its exit code distinguishes \"the run finished\" from \"the wait bound elapsed\"."
+    },
+    {
+      "id": "wb.agent.dispatch",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent dispatch",
+              "flags": [
+                "--base",
+                "--branch",
+                "--format",
+                "--json",
+                "--new-worktree",
+                "--profile",
+                "--repo",
+                "--task",
+                "--task-file",
+                "--timeout",
+                "--use-worktree"
+              ],
+              "modes": [
+                "Creates the checkout through the same internal/worktrees service wb worktree create uses, including its managed-hook refresh and checkout marker, or resolves an existing WB-managed worktree; never creates one for --use-worktree.",
+                "Persists the resolved harness/provider/model/reasoning snapshot and the private task before starting a detached run owner, then returns an agent run ID without waiting for the worker.",
+                "The task reaches the harness on stdin, so it never appears in a process list, and the worker environment is an allowlist carrying only the resolved provider credential."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent dispatch --help",
+              "contains": [
+                "--new-worktree",
+                "--use-worktree",
+                "--profile",
+                "--task-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent dispatch --new-worktree smoke --profile smoke --task x"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentDispatchRefusesAmbiguousOrIncompleteInvocations",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/dispatch_test.go",
+              "name": "TestDispatchNewWorktreeRecordsTheResolvedRunAndStartsTheOwner",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agents/owner_test.go",
+              "name": "TestRunOwnerRecordsASuccessfulRun",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Dispatch means start execution now: WB never queues, schedules, or defers, and the returned agent ID is the handle every later command takes. The run record is written before the owner starts, so a launch that fails is still diagnosable."
+    },
+    {
+      "id": "wb.agent.list",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent list",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Lists dispatched runs newest first from their durable records. Inventory only: WB never retires a worktree on a run behalf."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent list --help",
+              "contains": [
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentListIsEmptyThenPopulated",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Read-only inventory over the durable run records; it creates nothing and removes nothing."
+    },
+    {
+      "id": "wb.agent.logs",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent logs",
+              "flags": [
+                "--raw",
+                "--tail"
+              ],
+              "modes": [
+                "Prints the transcript location and the last few worker actions by default, so a routine result path never carries the whole transcript.",
+                "--raw prints the complete transcript for debugging; --tail widens the action summary."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent logs --help",
+              "contains": [
+                "--raw",
+                "--tail"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent logs <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentLogsLocatesTheTranscriptAndBoundsTheSummary",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The one surface that can put a worker transcript in front of a caller, and it is opt-in via --raw."
+    },
+    {
+      "id": "wb.agent.status",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent status",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reports execution facts only: state, resolved configuration, worktree, branch, base revision, process status, timestamps, exit status, changes, usage, and the log location.",
+                "The private task never appears in text or JSON output.",
+                "A run whose owner and worker are both gone with no terminal state recorded is reported as abandoned, never as completed."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent status --help",
+              "contains": [
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent status <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentStatusRendersExecutionFactsWithoutThePrivateTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/run_test.go",
+              "name": "TestRenderNeverLeaksThePrivateTask",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Status reports what WB observed, never a verdict. WB does not judge whether a diff is correct; a PASS/FAIL/ESCALATE judgement belongs to the caller."
+    },
+    {
+      "id": "wb.agent.stop",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent stop",
+              "flags": [],
+              "modes": [
+                "Terminates the worker process group and leaves the run owner alive so it records a real terminal state instead of the run drifting into abandoned.",
+                "Never touches the worktree or anything already written to it."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent stop --help",
+              "contains": [
+                "<agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent stop <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentStopRefusesTerminalAndUnknownRuns",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/owner_test.go",
+              "name": "TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Terminates the worker process group only. The worktree remains the artefact and the run owner records the real terminal state."
+    },
+    {
       "id": "wb.archive.clean",
       "feature_refs": [
         "spec/features/archived-clone-cleanup/README.md"

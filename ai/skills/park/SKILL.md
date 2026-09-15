@@ -4,7 +4,9 @@ description: >-
   Freeze a WB agent session or a named task without starting a successor. Use for
   /park, "park this session", "checkpoint this work for later", or overnight
   stop. Do not use for in-harness subagents, or to start work on another
-  machine now (that is /move or /offload). Do not use for Work Log claim transfer.
+  machine now (that is /move or /offload), or to delegate a bounded task to a
+  WB-dispatched worker (that is /offload). Do not use for Work Log claim
+  transfer.
 ---
 
 # Park

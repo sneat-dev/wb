@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Agents"
+  short_description: "Dispatch a bounded coding task to a configured agent harness in an isolated worktree"
+  default_prompt: "Use $wb-agents to dispatch a bounded coding task to a configured WB agent profile (wb agent dispatch), then inspect or await the run (wb agent status, wb agent await) instead of hand-rolling a codex exec invocation or dumping a worker transcript."
