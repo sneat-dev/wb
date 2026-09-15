@@ -105,7 +105,7 @@ const (
 // publishedEmbedFiles drops the built bench dashboard from the required set.
 // hub/web/dist is Astro build output: it is git-ignored except for the
 // placeholder, so a `go install github.com/sneat-dev/wb/cmd/wb@<revision>`
-// deliberately gets a binary whose /bench/ route serves the "not built" page
+// deliberately gets a binary whose /workbench/ route serves the "not built" page
 // rather than a stale dashboard committed months earlier. Releases build it
 // with Node before goreleaser runs. Everything else a cmd/wb dependency
 // embeds is still committed source and is still required here.

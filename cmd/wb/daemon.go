@@ -196,7 +196,7 @@ only through the separately authenticated local transport.
 
 When ~/.config/wb/wb.yaml has a hub: section, the same listener also serves the
 bench hub API under /v0/workbench/ and the embedded bench dashboard under
-/bench/, on the DALgo store engine that section names. Without a hub: section
+/workbench/, on the DALgo store engine that section names. Without a hub: section
 nothing changes, and the dashboard needs no sign-in because only this machine
 can reach the loopback address it is bound to.
 

@@ -150,7 +150,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 		})
 	}
 
-	if line := stderr.String(); !strings.Contains(line, "WB hub: engine=memory") || !strings.Contains(line, "dashboard=http://"+address+"/bench/dashboard/") {
+	if line := stderr.String(); !strings.Contains(line, "WB hub: engine=memory") || !strings.Contains(line, "dashboard=http://"+address+"/workbench/dashboard/") {
 		t.Fatalf("start line = %q", line)
 	}
 }
