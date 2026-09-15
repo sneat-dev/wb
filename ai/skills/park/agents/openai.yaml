@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Park"
+  short_description: "Freeze a session or task for later pickup"
+  default_prompt: "Use $park to freeze this WB session or a named task without starting a successor."

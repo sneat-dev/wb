@@ -121,6 +121,91 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 	}
 }
 
+func TestSessionMoveSameMachineUsesLoopbackCourier(t *testing.T) {
+	source := session.Record{
+		PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	var captured worktrees.SessionCheckpointOptions
+	store := sessionmove.NewStore(t.TempDir())
+	var delivered []byte
+	sshFactory := false
+	deps := sessionMoveDependencies{
+		defaultConfigPath: func() string { return "/unused/default.yaml" },
+		loadConfig: func(string) (sessionmove.Config, error) {
+			t.Fatal("local loopback must not load session_move targets")
+			return sessionmove.Config{}, nil
+		},
+		localMachine:  func() (string, error) { return "laptop", nil },
+		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
+		store:         func(string) (sessionmove.Store, error) { return store, nil },
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			sshFactory = true
+			return nil, errors.New("ssh factory must not run for loopback")
+		},
+		loopbackDeliverer: func(sessionmove.Store) sessioncourier.Deliverer {
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				delivered = append([]byte(nil), raw...)
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			})
+		},
+		checkpoint: func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			captured = options
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-loopback", SuccessorWBSessionID: "wbs-successor",
+				PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "laptop",
+				RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+				BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-loopback.md",
+				HandoverDigest: sessionmove.DigestBytes([]byte("handover")), SourceRuntime: "codex", SourceModel: "gpt-5",
+				RequestedHarness: "claude-code", RequestedModel: "opus", CreatedAt: time.Now().UTC(),
+			})
+			raw, err := sessionmove.EncodeRequest(request)
+			if err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{
+		"--handover-file", "-", "--harness", "claude", "--model", "opus", "--format", "json",
+	})
+	command.SetIn(strings.NewReader("continue locally\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("session move: %v", err)
+	}
+	if sshFactory {
+		t.Fatal("loopback move used a remote courier factory")
+	}
+	if captured.TargetMachine != "laptop" || captured.RequestedHarness != "claude-code" || captured.RequestedModel != "opus" {
+		t.Fatalf("checkpoint options = %#v", captured)
+	}
+	var rendered sessionMoveOutput
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode output %q: %v", output.String(), err)
+	}
+	if rendered.Courier != sessionmove.CourierLoopback || rendered.Request.TargetMachine != "laptop" {
+		t.Fatalf("output = %#v", rendered)
+	}
+	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
+		t.Fatal("loopback courier did not receive exact checkpoint bytes")
+	}
+}
+
 func TestSessionMoveCommandUsesSynchestraWithSameReceiptAndLineageContract(t *testing.T) {
 	source := session.Record{
 		PID: 321, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",

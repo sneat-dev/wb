@@ -33,6 +33,26 @@ func TestHarnessSpecUsesFixedSameAndCrossHarnessArgv(t *testing.T) {
 	if strings.Contains(strings.Join(claude.Args, "\x00"), "gpt-5") {
 		t.Fatal("cross-harness argv reused the source harness model")
 	}
+
+	request.RequestedModel = "opus"
+	claudeWithModel, err := harnessSpec(request, "/target/worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claudeWithModel.Model != "opus" || !reflect.DeepEqual(claudeWithModel.Args, []string{"--model", "opus", "--name", request.SuccessorWBSessionID, launchPrompt(request)}) {
+		t.Fatalf("cross-harness requested model spec = %#v", claudeWithModel)
+	}
+}
+
+func TestNormalizeRuntimeAcceptsSpokenHarnessNames(t *testing.T) {
+	runtime, err := NormalizeRuntime("codex", "claude")
+	if err != nil || runtime != RuntimeClaudeCode {
+		t.Fatalf("claude alias = %q %v", runtime, err)
+	}
+	runtime, err = NormalizeRuntime("claude-code", "")
+	if err != nil || runtime != RuntimeClaudeCode {
+		t.Fatalf("inherit source = %q %v", runtime, err)
+	}
 }
 
 func TestHarnessSpecRejectsUnsupportedHarness(t *testing.T) {

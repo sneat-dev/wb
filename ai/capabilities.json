@@ -4,6 +4,429 @@
   "binary": "wb",
   "capabilities": [
     {
+      "id": "wb.agent.await",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent await",
+              "flags": [
+                "--format",
+                "--json",
+                "--to",
+                "--wait-timeout"
+              ],
+              "modes": [
+                "Blocks until a dispatched run reaches a terminal state, then reports state, exit status, resolved configuration, worktree, branch, changed files, usage, the worker final message, and the log location.",
+                "Exits with the findings code when the wait bound elapses before the run finishes, so a caller can never read \"waited\" as \"succeeded\"; an abandoned run resolves immediately instead of blocking."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent await --help",
+              "contains": [
+                "--wait-timeout",
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent await <agent-id> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentAwaitReportsAnElapsedBoundAsAFinding",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentAwaitResolvesAnAbandonedRunInsteadOfBlocking",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Await exists so a supervisor can wait for a worker without polling status in a loop and without pulling the worker transcript into its own context. Its exit code distinguishes \"the run finished\" from \"the wait bound elapsed\"."
+    },
+    {
+      "id": "wb.agent.dispatch",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent dispatch",
+              "flags": [
+                "--base",
+                "--branch",
+                "--format",
+                "--json",
+                "--new-worktree",
+                "--profile",
+                "--repo",
+                "--task",
+                "--task-file",
+                "--timeout",
+                "--to",
+                "--use-worktree"
+              ],
+              "modes": [
+                "Creates the checkout through the same internal/worktrees service wb worktree create uses, including its managed-hook refresh and checkout marker, or resolves an existing WB-managed worktree; never creates one for --use-worktree.",
+                "Persists the resolved harness/provider/model/reasoning snapshot and the private task before starting a detached run owner, then returns an agent run ID without waiting for the worker.",
+                "The task reaches the harness on stdin, so it never appears in a process list, and the worker environment is an allowlist carrying only the resolved provider credential."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent dispatch --help",
+              "contains": [
+                "--new-worktree",
+                "--use-worktree",
+                "--profile",
+                "--task-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent dispatch --new-worktree smoke --profile smoke --task x"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentDispatchRefusesAmbiguousOrIncompleteInvocations",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/dispatch_test.go",
+              "name": "TestDispatchNewWorktreeRecordsTheResolvedRunAndStartsTheOwner",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agents/owner_test.go",
+              "name": "TestRunOwnerRecordsASuccessfulRun",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Dispatch means start execution now: WB never queues, schedules, or defers, and the returned agent ID is the handle every later command takes. The run record is written before the owner starts, so a launch that fails is still diagnosable."
+    },
+    {
+      "id": "wb.agent.list",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent list",
+              "flags": [
+                "--format",
+                "--json",
+                "--to"
+              ],
+              "modes": [
+                "Lists dispatched runs newest first from their durable records. Inventory only: WB never retires a worktree on a run behalf."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent list --help",
+              "contains": [
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentListIsEmptyThenPopulated",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Read-only inventory over the durable run records; it creates nothing and removes nothing."
+    },
+    {
+      "id": "wb.agent.logs",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent logs",
+              "flags": [
+                "--raw",
+                "--tail",
+                "--to"
+              ],
+              "modes": [
+                "Prints the transcript location and the last few worker actions by default, so a routine result path never carries the whole transcript.",
+                "--raw prints the complete transcript for debugging; --tail widens the action summary."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent logs --help",
+              "contains": [
+                "--raw",
+                "--tail"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent logs <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentLogsLocatesTheTranscriptAndBoundsTheSummary",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The one surface that can put a worker transcript in front of a caller, and it is opt-in via --raw."
+    },
+    {
+      "id": "wb.agent.status",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent status",
+              "flags": [
+                "--format",
+                "--json",
+                "--to"
+              ],
+              "modes": [
+                "Reports execution facts only: state, resolved configuration, worktree, branch, base revision, process status, timestamps, exit status, changes, usage, and the log location.",
+                "The private task never appears in text or JSON output.",
+                "A run whose owner and worker are both gone with no terminal state recorded is reported as abandoned, never as completed."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent status --help",
+              "contains": [
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent status <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentStatusRendersExecutionFactsWithoutThePrivateTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/run_test.go",
+              "name": "TestRenderNeverLeaksThePrivateTask",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Status reports what WB observed, never a verdict. WB does not judge whether a diff is correct; a PASS/FAIL/ESCALATE judgement belongs to the caller."
+    },
+    {
+      "id": "wb.agent.stop",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent stop",
+              "flags": [
+                "--to"
+              ],
+              "modes": [
+                "Terminates the worker process group and leaves the run owner alive so it records a real terminal state instead of the run drifting into abandoned.",
+                "Never touches the worktree or anything already written to it."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent stop --help",
+              "contains": [
+                "<agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agents/SKILL.md",
+              "marker": "# WB agents",
+              "examples": [
+                "wb agent stop <agent-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/agent_test.go",
+              "name": "TestAgentStopRefusesTerminalAndUnknownRuns",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/agents/owner_test.go",
+              "name": "TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Terminates the worker process group only. The worktree remains the artefact and the run owner records the real terminal state."
+    },
+    {
       "id": "wb.archive.clean",
       "feature_refs": [
         "spec/features/archived-clone-cleanup/README.md"
@@ -1406,27 +1829,63 @@
     },
     {
       "id": "wb.daemon.operation.cancel",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
           "status": "Full",
-          "commands": [{"path": "wb daemon operation cancel", "flags": ["--format", "--json"], "modes": ["Cancels one queued or running authenticated local operation"]}],
+          "commands": [
+            {
+              "path": "wb daemon operation cancel",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Cancels one queued or running authenticated local operation"
+              ]
+            }
+          ],
           "limitation": null
         },
         "help": {
           "status": "Full",
-          "anchors": [{"command": "wb daemon operation cancel --help", "contains": ["--format", "--json", "operation-id"]}],
+          "anchors": [
+            {
+              "command": "wb daemon operation cancel --help",
+              "contains": [
+                "--format",
+                "--json",
+                "operation-id"
+              ]
+            }
+          ],
           "limitation": null
         },
         "ai_skill": {
           "status": "Full",
-          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation cancel <operation-id>"]}],
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon operation cancel <operation-id>"
+              ]
+            }
+          ],
           "limitation": null
         },
         "tests": {
           "status": "Full",
-          "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt", "kind": "integration"}],
+          "references": [
+            {
+              "path": "internal/daemon/service_test.go",
+              "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt",
+              "kind": "integration"
+            }
+          ],
           "limitation": null
         }
       },
@@ -1434,63 +1893,277 @@
     },
     {
       "id": "wb.daemon.operation.get",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation get", "flags": ["--format", "--json"], "modes": ["Reads one bounded durable operation receipt"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation get --help", "contains": ["--format", "--json", "operation-id"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation get <operation-id> --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_local_unix_test.go", "name": "TestDaemonLocalTransportRequiresTokenAndProtectsSocket", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon operation get",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reads one bounded durable operation receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon operation get --help",
+              "contains": [
+                "--format",
+                "--json",
+                "operation-id"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon operation get <operation-id> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/daemon_local_unix_test.go",
+              "name": "TestDaemonLocalTransportRequiresTokenAndProtectsSocket",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "The receipt excludes argv and authentication material."
     },
     {
       "id": "wb.daemon.operation.submit",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation submit", "flags": ["--cpu-units", "--format", "--idempotency-key", "--json", "--wait"], "modes": ["After an external administrator opt-in, submits bounded raw argv only through the authenticated local transport and returns a payload-bound receipt"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation submit --help", "contains": ["--cpu-units", "--idempotency-key", "--wait", "command"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation submit --format json -- go test ./internal/worktrees"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon operation submit",
+              "flags": [
+                "--cpu-units",
+                "--format",
+                "--idempotency-key",
+                "--json",
+                "--wait"
+              ],
+              "modes": [
+                "After an external administrator opt-in, submits bounded raw argv only through the authenticated local transport and returns a payload-bound receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon operation submit --help",
+              "contains": [
+                "--cpu-units",
+                "--idempotency-key",
+                "--wait",
+                "command"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon operation submit --format json -- go test ./internal/worktrees"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/daemon/service_test.go",
+              "name": "TestDaemonServiceRunsDurableOperationWithBoundedReceipt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Raw execution defaults to denied and the daemon revalidates an administrator-owned external mode-0600 policy at submission and launch. POSIX uses a mode-0600 Unix socket. Windows exposes the named-pipe endpoint contract and fails closed until the native adapter is enabled. Arbitrary environment overrides and idempotency payload mismatches are rejected before persistence."
     },
     {
       "id": "wb.daemon.operation.wait",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon operation wait", "flags": ["--after-cursor", "--format", "--json", "--progress", "--progress-file", "--timeout"], "modes": ["Waits in bounded ten-second calls until terminal; --progress-file routes human heartbeats away from agent streams, and --progress=false suppresses them"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon operation wait --help", "contains": ["--after-cursor", "--timeout", "operation-id"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon operation wait <operation-id> --timeout 15m"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/daemon/service_test.go", "name": "TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon operation wait",
+              "flags": [
+                "--after-cursor",
+                "--format",
+                "--json",
+                "--progress",
+                "--progress-file",
+                "--timeout"
+              ],
+              "modes": [
+                "Waits in bounded ten-second calls until terminal; --progress-file routes human heartbeats away from agent streams, and --progress=false suppresses them"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon operation wait --help",
+              "contains": [
+                "--after-cursor",
+                "--timeout",
+                "operation-id"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon operation wait <operation-id> --timeout 15m"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/daemon/service_test.go",
+              "name": "TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "A lost client can resume from the opaque cursor without losing the durable receipt."
     },
     {
       "id": "wb.daemon.recover",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
           "status": "Full",
-          "commands": [{"path": "wb daemon recover", "flags": ["--apply", "--format", "--json"], "modes": ["Dry-runs recovery of a daemon lifecycle lock whose recorded owner is proven dead", "--apply retains the stable kernel-locked inode, clears stale ownership, promotes an exactly verified healthy child to ready, or marks a proven interrupted start or drain stopped"]}],
+          "commands": [
+            {
+              "path": "wb daemon recover",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Dry-runs recovery of a daemon lifecycle lock whose recorded owner is proven dead",
+                "--apply retains the stable kernel-locked inode, clears stale ownership, promotes an exactly verified healthy child to ready, or marks a proven interrupted start or drain stopped"
+              ]
+            }
+          ],
           "limitation": null
         },
         "help": {
           "status": "Full",
-          "anchors": [{"command": "wb daemon recover --help", "contains": ["--apply", "--format", "dry-run", "live or ambiguous"]}],
+          "anchors": [
+            {
+              "command": "wb daemon recover --help",
+              "contains": [
+                "--apply",
+                "--format",
+                "dry-run",
+                "live or ambiguous"
+              ]
+            }
+          ],
           "limitation": null
         },
         "ai_skill": {
           "status": "Full",
-          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon recover --format json", "wb daemon recover --apply --format json"]}],
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon recover --format json",
+                "wb daemon recover --apply --format json"
+              ]
+            }
+          ],
           "limitation": null
         },
         "tests": {
           "status": "Full",
-          "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock", "kind": "unit"}, {"path": "cmd/wb/daemon_test.go", "name": "TestDaemonRecoverRefusesActiveAndNonTerminalTransitions", "kind": "unit"}, {"path": "cmd/wb/daemon_test.go", "name": "TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode", "kind": "unit"}],
+          "references": [
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonRecoverRefusesActiveAndNonTerminalTransitions",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode",
+              "kind": "unit"
+            }
+          ],
           "limitation": null
         }
       },
@@ -1498,13 +2171,67 @@
     },
     {
       "id": "wb.daemon.restart",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon restart", "flags": ["--format", "--if-running", "--json"], "modes": ["Restarts with a durable queue ownership handoff", "--if-running is safe after verified self-update"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon restart --help", "contains": ["--format", "--if-running", "--json"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon restart --if-running"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon restart",
+              "flags": [
+                "--format",
+                "--if-running",
+                "--json"
+              ],
+              "modes": [
+                "Restarts with a durable queue ownership handoff",
+                "--if-running is safe after verified self-update"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon restart --help",
+              "contains": [
+                "--format",
+                "--if-running",
+                "--json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon restart --if-running"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "A verified self-update invokes restart only when a managed daemon was already running."
     },
@@ -1618,75 +2345,295 @@
     },
     {
       "id": "wb.daemon.start",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon start", "flags": ["--format", "--json", "--listen"], "modes": ["Idempotently starts the loopback daemon and hands off an older installed executable"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon start --help", "contains": ["--format", "--json", "--listen"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon start"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "The state record pins executable SHA-256, version, revision, and queue generation before a replacement starts."
-    },
-    {
-      "id": "wb.daemon.status",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md", "spec/features/self-hosted-bench/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one", "Reports whether the bench hub is mounted, with its store engine, store location, and listen address", "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged", "Reports whether webhook mode is on and the public URL GitHub delivers to"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_test.go", "name": "TestDaemonStatusReportsTheMountedHub", "kind": "unit"}, {"path": "cmd/wb/daemon_poller_test.go", "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon", "kind": "unit"}, {"path": "cmd/wb/daemon_hub_webhook_test.go", "name": "TestDaemonStatusReportsWebhookMode", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "Status is bootstrap-safe and does not auto-start the daemon."
-    },
-    {
-      "id": "wb.daemon.stop",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb daemon stop", "flags": ["--format", "--json"], "modes": ["Marks queue ownership draining before requesting process termination"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb daemon stop --help", "contains": ["--format", "--json", "Drain"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon stop"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
-      },
-      "notes": "The loopback MVP preserves the durable handoff record while draining."
-    },
-    {
-      "id": "wb.dashboard",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
           "status": "Full",
-          "commands": [{
-            "path": "wb dashboard",
-            "flags": ["--format", "--json", "--local"],
-            "modes": [
-              "Opens the hosted cross-machine dashboard in the platform browser by default.",
-              "--local starts or reuses the loopback daemon and opens its local dashboard.",
-              "JSON and non-interactive invocations return the resolved URL without launching a browser."
-            ]
-          }],
+          "commands": [
+            {
+              "path": "wb daemon start",
+              "flags": [
+                "--format",
+                "--json",
+                "--listen"
+              ],
+              "modes": [
+                "Idempotently starts the loopback daemon and hands off an older installed executable"
+              ]
+            }
+          ],
           "limitation": null
         },
         "help": {
           "status": "Full",
-          "anchors": [{"command": "wb dashboard --help", "contains": ["hosted cross-machine", "--format", "--json", "--local"]}],
+          "anchors": [
+            {
+              "command": "wb daemon start --help",
+              "contains": [
+                "--format",
+                "--json",
+                "--listen"
+              ]
+            }
+          ],
           "limitation": null
         },
         "ai_skill": {
           "status": "Full",
-          "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb dashboard", "wb dashboard --local", "wb dashboard --format=json"]}],
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon start"
+              ]
+            }
+          ],
           "limitation": null
         },
         "tests": {
           "status": "Full",
           "references": [
-            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardOpensHostedURL", "kind": "unit"},
-            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardJSONDoesNotOpenBrowser", "kind": "unit"},
-            {"path": "cmd/wb/dashboard_test.go", "name": "TestDashboardLocalStartsDaemonAndOpensItsURL", "kind": "unit"},
-            {"path": "cmd/wb/browser_test.go", "name": "TestBrowserCommandUsesPlatformMechanism", "kind": "unit"}
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The state record pins executable SHA-256, version, revision, and queue generation before a replacement starts."
+    },
+    {
+      "id": "wb.daemon.status",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/self-hosted-bench/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon status",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reports daemon absence without starting one",
+                "Reports whether the bench hub is mounted, with its store engine, store location, and listen address",
+                "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged",
+                "Reports whether webhook mode is on and the public URL GitHub delivers to"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon status --help",
+              "contains": [
+                "--format",
+                "--json",
+                "provenance"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon status --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_hub_test.go",
+              "name": "TestDaemonStatusReportsTheMountedHub",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_poller_test.go",
+              "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_hub_webhook_test.go",
+              "name": "TestDaemonStatusReportsWebhookMode",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Status is bootstrap-safe and does not auto-start the daemon."
+    },
+    {
+      "id": "wb.daemon.stop",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon stop",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Marks queue ownership draining before requesting process termination"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon stop --help",
+              "contains": [
+                "--format",
+                "--json",
+                "Drain"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon stop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The loopback MVP preserves the durable handoff record while draining."
+    },
+    {
+      "id": "wb.dashboard",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb dashboard",
+              "flags": [
+                "--format",
+                "--json",
+                "--local"
+              ],
+              "modes": [
+                "Opens the hosted cross-machine dashboard in the platform browser by default.",
+                "--local starts or reuses the loopback daemon and opens its local dashboard.",
+                "JSON and non-interactive invocations return the resolved URL without launching a browser."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb dashboard --help",
+              "contains": [
+                "hosted cross-machine",
+                "--format",
+                "--json",
+                "--local"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb dashboard",
+                "wb dashboard --local",
+                "wb dashboard --format=json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/dashboard_test.go",
+              "name": "TestDashboardOpensHostedURL",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/dashboard_test.go",
+              "name": "TestDashboardJSONDoesNotOpenBrowser",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/dashboard_test.go",
+              "name": "TestDashboardLocalStartsDaemonAndOpensItsURL",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/browser_test.go",
+              "name": "TestBrowserCommandUsesPlatformMechanism",
+              "kind": "unit"
+            }
           ],
           "limitation": null
         }
@@ -3372,13 +4319,119 @@
     },
     {
       "id": "wb.fleet.merge-policy",
-      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb fleet merge-policy", "flags": ["--apply", "--format", "--json", "--org", "--parallel", "--repo", "--report-dir", "--resume", "--user"], "modes": ["Audit is read-only and reports repository-owned required-linear-history and pull-request-method drift separately from higher-level or merge-queue conflicts.", "Apply requires explicit --org, --repo, or --user scope; an explicit organization list restricts owners and never adds unselected member organizations.", "The desired repository policy enables merge commits only with PR_TITLE and PR_BODY.", "Apply leases classic protection and removes only its dedicated required-linear-history setting; repository rulesets change pull-request methods only when they exclude merge, while preserving unrelated protections.", "Organization and enterprise rulesets are audit-only higher-level authorities whose conflicts block repository fallback; merge queues remain preserved blockers.", "Repository reads and setting mutations default to WB's CPU budget, explicit --parallel overrides the bound, shared rulesets remain serialized, every mutation checkpoints the report, and progress appears at least every nine seconds; --resume re-observes live authorities and carries partial actions forward.", "Exit 0 compliant or fully applied, 1 drift/conflict/error, 2 usage."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb fleet merge-policy --help", "contains": ["read-only", "--apply", "--parallel", "--format", "--json", "required-linear-history", "merge-queue", "never weakens"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/merge-policy.md", "marker": "# Audit and apply GitHub merge policy", "examples": ["wb fleet merge-policy --filter sneat-dev/wb", "wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift", "kind": "integration"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyRepositoryRulesetPreservesUnrelatedProtections", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestRunMergePolicyResumeCarriesPartialActions", "kind": "integration"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints", "kind": "unit"}, {"path": "cmd/wb/fleet_merge_policy_test.go", "name": "TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure", "kind": "unit"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet merge-policy",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json",
+                "--org",
+                "--parallel",
+                "--repo",
+                "--report-dir",
+                "--resume",
+                "--user"
+              ],
+              "modes": [
+                "Audit is read-only and reports repository-owned required-linear-history and pull-request-method drift separately from higher-level or merge-queue conflicts.",
+                "Apply requires explicit --org, --repo, or --user scope; an explicit organization list restricts owners and never adds unselected member organizations.",
+                "The desired repository policy enables merge commits only with PR_TITLE and PR_BODY.",
+                "Apply leases classic protection and removes only its dedicated required-linear-history setting; repository rulesets change pull-request methods only when they exclude merge, while preserving unrelated protections.",
+                "Organization and enterprise rulesets are audit-only higher-level authorities whose conflicts block repository fallback; merge queues remain preserved blockers.",
+                "Repository reads and setting mutations default to WB's CPU budget, explicit --parallel overrides the bound, shared rulesets remain serialized, every mutation checkpoints the report, and progress appears at least every nine seconds; --resume re-observes live authorities and carries partial actions forward.",
+                "Exit 0 compliant or fully applied, 1 drift/conflict/error, 2 usage."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet merge-policy --help",
+              "contains": [
+                "read-only",
+                "--apply",
+                "--parallel",
+                "--format",
+                "--json",
+                "required-linear-history",
+                "merge-queue",
+                "never weakens"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/merge-policy.md",
+              "marker": "# Audit and apply GitHub merge policy",
+              "examples": [
+                "wb fleet merge-policy --filter sneat-dev/wb",
+                "wb fleet merge-policy --org sneat-dev --report-dir reports/merge-policy --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestApplyRepositoryRulesetPreservesUnrelatedProtections",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestRunMergePolicyResumeCarriesPartialActions",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "name": "TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Repository ruleset apply is supported; classic protection is inspected separately, while organization and enterprise rulesets are audit-only and block conflicting repository fallback."
     },
@@ -3762,8 +4815,8 @@
                 "The escape hatch is WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" on that exact call, where the shell really exports it to gh: at the start of the call, or right after env, sudo, time or a shell keyword. It lets that one call through, and the guard records the reason when it allows the call. The record proves only that the guard allowed the call, not that the call ran, and the hook process's own ambient environment is never read.",
                 "A specscore/go/npm/pnpm/yarn/bun invocation bypasses its write-verb check only for a genuine help request (wb#493); which shape counts depends on the tool, because --help/-h behaves differently once a subcommand precedes it.",
                 "cobra-based specscore accepts a subcommand chain trailing in exactly one --help/-h with nothing after, or the word help first with no flag anywhere else.",
-                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser — confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
-                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead — for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
+                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser \u2014 confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
+                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead \u2014 for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
                 "gh pr merge's own --help/-h recognition is separate and reads the flags the way gh does. A --help consumed by a value-taking flag (gh pr merge 123 --subject --help, gh pr merge 123 -st --help) is a real merge, not a help request, and so is a --help placed after -- (gh pr merge -- --help).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
@@ -4004,13 +5057,183 @@
     },
     {
       "id": "wb.hooks.checkout-updated",
-      "feature_refs": ["spec/features/trusted-repository-update-hooks/README.md"],
+      "feature_refs": [
+        "spec/features/trusted-repository-update-hooks/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb sync", "flags": [], "modes": ["Durably enqueues only cloned or exact old-HEAD/new-HEAD changed canonical checkouts without waiting for executors."]}, {"path": "wb daemon serve", "flags": [], "modes": ["Repository-update events enqueue only after a clone or checked-out HEAD change."]}, {"path": "wb pr land", "flags": [], "modes": ["Enqueues after exact canonical fast-forward synchronization."]}, {"path": "wb worktree merge", "flags": [], "modes": ["Enqueues after exact canonical fast-forward synchronization."]}, {"path": "wb hooks lifecycle check", "flags": ["--config", "--format", "--json"], "modes": ["Validates trusted configuration and executable ownership, permissions, ACLs, and identity."]}, {"path": "wb hooks lifecycle status", "flags": ["--limit", "--format", "--json"], "modes": ["Reports worker health, unseen failures, durable queue entries, findings, private diagnostic paths, and recent indexed receipts."]}, {"path": "wb hooks lifecycle resume", "flags": ["--format", "--json"], "modes": ["Starts a worker only when durable pending or interrupted work exists."]}, {"path": "wb hooks lifecycle retry", "flags": ["--format", "--json"], "modes": ["Requeues one exact failed receipt through its per-ID index under current trusted configuration."]}, {"path": "wb hooks lifecycle gc", "flags": ["--apply", "--keep", "--older-than", "--format", "--json"], "modes": ["Dry-run by default; retains unseen failures, the newest configured count, and all receipts newer than the configured age."]}, {"path": "wb hooks lifecycle backfill", "flags": ["--apply", "--format", "--json"], "modes": ["Dry-run by default; --apply enqueues current HEAD for matching existing canonical repositories without changing Git."]}], "limitation": null},
-        "help": {"status": "Partial", "anchors": [{"command": "wb sync --help", "contains": ["checkout-updated hooks", "actually changed"]}], "limitation": "The full standard wb.yaml lifecycle-hook schema is documented in README rather than repeated in each mutation leaf's help."},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/lifecycle-hooks.md", "marker": "# Lifecycle hooks", "examples": ["wb sync"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/lifecyclehooks/dispatch_test.go", "name": "TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline", "kind": "unit"}, {"path": "internal/lifecyclehooks/resilience_test.go", "name": "TestVerifyCheckoutPinsRepositoryAndQueuedHead", "kind": "unit"}, {"path": "internal/lifecyclehooks/resilience_test.go", "name": "TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork", "kind": "unit"}, {"path": "internal/lifecyclehooks/resilience_test.go", "name": "TestGCDryRunThenRemovesOnlyOldSeenReceiptsAndDiagnostics", "kind": "unit"}, {"path": "cmd/wb/hooks_lifecycle_test.go", "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories", "kind": "integration"}, {"path": "cmd/wb/sync_test.go", "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts", "kind": "unit"}, {"path": "internal/repositoryevents/processor_test.go", "name": "TestSyncLifecycleEventOnlyDescribesChangedCheckout", "kind": "unit"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb sync",
+              "flags": [],
+              "modes": [
+                "Durably enqueues only cloned or exact old-HEAD/new-HEAD changed canonical checkouts without waiting for executors."
+              ]
+            },
+            {
+              "path": "wb daemon serve",
+              "flags": [],
+              "modes": [
+                "Repository-update events enqueue only after a clone or checked-out HEAD change."
+              ]
+            },
+            {
+              "path": "wb pr land",
+              "flags": [],
+              "modes": [
+                "Enqueues after exact canonical fast-forward synchronization."
+              ]
+            },
+            {
+              "path": "wb worktree merge",
+              "flags": [],
+              "modes": [
+                "Enqueues after exact canonical fast-forward synchronization."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle check",
+              "flags": [
+                "--config",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Validates trusted configuration and executable ownership, permissions, ACLs, and identity."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle status",
+              "flags": [
+                "--limit",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reports worker health, unseen failures, durable queue entries, findings, private diagnostic paths, and recent indexed receipts."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle resume",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Starts a worker only when durable pending or interrupted work exists."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle retry",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Requeues one exact failed receipt through its per-ID index under current trusted configuration."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle gc",
+              "flags": [
+                "--apply",
+                "--keep",
+                "--older-than",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Dry-run by default; retains unseen failures, the newest configured count, and all receipts newer than the configured age."
+              ]
+            },
+            {
+              "path": "wb hooks lifecycle backfill",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Dry-run by default; --apply enqueues current HEAD for matching existing canonical repositories without changing Git."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Partial",
+          "anchors": [
+            {
+              "command": "wb sync --help",
+              "contains": [
+                "checkout-updated hooks",
+                "actually changed"
+              ]
+            }
+          ],
+          "limitation": "The full standard wb.yaml lifecycle-hook schema is documented in README rather than repeated in each mutation leaf's help."
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
+              "marker": "# Lifecycle hooks",
+              "examples": [
+                "wb sync"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/lifecyclehooks/dispatch_test.go",
+              "name": "TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/lifecyclehooks/resilience_test.go",
+              "name": "TestVerifyCheckoutPinsRepositoryAndQueuedHead",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/lifecyclehooks/resilience_test.go",
+              "name": "TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/lifecyclehooks/resilience_test.go",
+              "name": "TestGCDryRunThenRemovesOnlyOldSeenReceiptsAndDiagnostics",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/sync_test.go",
+              "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/repositoryevents/processor_test.go",
+              "name": "TestSyncLifecycleEventOnlyDescribesChangedCheckout",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Executors come only from the trusted user wb.yaml; repository content cannot register lifecycle commands."
     },
@@ -4263,8 +5486,17 @@
           "commands": [
             {
               "path": "wb hooks lifecycle gc",
-              "flags": ["--apply", "--keep", "--older-than", "--format", "--json"],
-              "modes": ["Dry-run by default; apply removes only receipts older than the age gate and outside the newest-count gate, with their own diagnostics.", "Unseen failed receipts and malformed stream records are preserved."]
+              "flags": [
+                "--apply",
+                "--keep",
+                "--older-than",
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Dry-run by default; apply removes only receipts older than the age gate and outside the newest-count gate, with their own diagnostics.",
+                "Unseen failed receipts and malformed stream records are preserved."
+              ]
             }
           ],
           "limitation": null
@@ -4274,7 +5506,12 @@
           "anchors": [
             {
               "command": "wb hooks lifecycle gc --help",
-              "contains": ["old lifecycle-hook receipts", "--apply", "--keep", "--older-than"]
+              "contains": [
+                "old lifecycle-hook receipts",
+                "--apply",
+                "--keep",
+                "--older-than"
+              ]
             }
           ],
           "limitation": null
@@ -4285,7 +5522,10 @@
             {
               "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
               "marker": "# Lifecycle hooks",
-              "examples": ["wb hooks lifecycle gc", "wb hooks lifecycle gc --apply"]
+              "examples": [
+                "wb hooks lifecycle gc",
+                "wb hooks lifecycle gc --apply"
+              ]
             }
           ],
           "limitation": null
@@ -4316,8 +5556,13 @@
           "commands": [
             {
               "path": "wb hooks lifecycle resume",
-              "flags": ["--format", "--json"],
-              "modes": ["Starts a detached worker only when durable pending or interrupted work exists and no worker visibly owns the queue."]
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Starts a detached worker only when durable pending or interrupted work exists and no worker visibly owns the queue."
+              ]
             }
           ],
           "limitation": null
@@ -4327,7 +5572,10 @@
           "anchors": [
             {
               "command": "wb hooks lifecycle resume --help",
-              "contains": ["stranded lifecycle-hook work", "--format"]
+              "contains": [
+                "stranded lifecycle-hook work",
+                "--format"
+              ]
             }
           ],
           "limitation": null
@@ -4338,7 +5586,9 @@
             {
               "path": "ai/skills/wb-fleet/references/lifecycle-hooks.md",
               "marker": "# Lifecycle hooks",
-              "examples": ["wb hooks lifecycle resume"]
+              "examples": [
+                "wb hooks lifecycle resume"
+              ]
             }
           ],
           "limitation": null
@@ -6554,6 +7804,7 @@
                 "--format",
                 "--handover-file",
                 "--harness",
+                "--model",
                 "--override-secret",
                 "--remaining",
                 "--resume",
@@ -6566,6 +7817,7 @@
                 "Refuses before mutation unless the invoking live registered session owns an active managed Work Log on a clean named branch whose exact checkpoint can advance origin without force.",
                 "Scans --summary, --validation, --remaining, and the handover body against gitleaks-derived named secret patterns before any mutation; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, records an offer, and persists the selected SSH host and remote WB path as an immutable courier route.",
+                "Omitting --to, or targeting this machine's validated remote.machine, delivers in-process through the loopback courier and does not consult SSH session_move targets.",
                 "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in deterministic detached tmux at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
                 "--resume <handoff-id> sends the byte-identical admitted request through its persisted route without creating another checkpoint or following later config/default changes; an SSH failure never falls back to another courier."
               ]
@@ -6583,6 +7835,7 @@
                 "--handover-file",
                 "--via",
                 "--harness",
+                "--model",
                 "--resume",
                 "--override-secret",
                 "named tmux session"
@@ -6594,6 +7847,15 @@
         "ai_skill": {
           "status": "Full",
           "skills": [
+            {
+              "path": "ai/skills/move/SKILL.md",
+              "marker": "# Move",
+              "examples": [
+                "wb session move --handover-file handover.md",
+                "wb session move --handover-file handover.md --harness claude --model opus",
+                "wb session move --resume <handoff-id>"
+              ]
+            },
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
               "marker": "## Move a registered session over SSH",
@@ -6615,6 +7877,11 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveSameMachineUsesLoopbackCourier",
+              "kind": "unit"
+            },
             {
               "path": "cmd/wb/session_move_test.go",
               "name": "TestSessionMoveCommandCheckpointsThenDeliversThroughSSH",
@@ -6728,6 +7995,13 @@
         "ai_skill": {
           "status": "Partial",
           "skills": [
+            {
+              "path": "ai/skills/park/SKILL.md",
+              "marker": "# Park",
+              "examples": [
+                "wb session park --context-file <file>"
+              ]
+            },
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
               "marker": "## Park and resume an agent session",
@@ -6879,6 +8153,78 @@
       "notes": "Housekeeping only: a stale record reports as gone rather than misleading anyone, and a live session is never removed."
     },
     {
+      "id": "wb.session.recall",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session recall",
+              "flags": [
+                "--format",
+                "--resume"
+              ],
+              "modes": [
+                "Creates the standard empty-body request_handoff typed message with the original predecessor as sender and reply target, then resolves only the immutable address indexed by successor WB session ID.",
+                "Persists a caller-owned message ID and exact canonical bytes before using the recorded SSH or Synchestra courier; acknowledgement proves recorded and pasted, not agent-processed.",
+                "--resume <message-id> reloads the durable request_handoff bytes and cannot change their kind, lineage, reply target, courier, or successor address."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session recall --help",
+              "contains": [
+                "Ask a recorded successor",
+                "--resume",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Message a recorded successor and recall control",
+              "examples": [
+                "wb session recall <successor-wb-session-id>",
+                "wb session recall <successor-wb-session-id> --resume <message-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_message_test.go",
+              "name": "TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionmessage/receive_test.go",
+              "name": "TestReceiveUsesCanonicalTypedJSONAsTheActionableRequestHandoffPrompt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The empty body is intentional: request_handoff plus reply_to_wb_session_id is the standard actionable hand-control-return prompt."
+    },
+    {
       "id": "wb.session.receive",
       "feature_refs": [
         "spec/features/agent-session-move/README.md"
@@ -7007,7 +8353,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Message a recorded successor and request handoff back",
+              "marker": "## Message a recorded successor and recall control",
               "examples": [
                 "wb session receive-message --format json"
               ]
@@ -7209,78 +8555,6 @@
       "notes": "The PID must be the live harness process, not WB itself or an intermediate shell. $PPID from a harness tool call is correct; when shell tail-exec makes the live Codex app-server WB's direct parent, WB accepts it only with kernel evidence for the codex executable and app-server role. A shell-safe form for older builds is `wb session register --pid \"$PPID\" --runtime codex --model <exact-model>; status=$?; exit \"$status\"`. A start-up hook cannot supply the PID because its parent is an intermediate shell."
     },
     {
-      "id": "wb.session.request-handoff",
-      "feature_refs": [
-        "spec/features/agent-session-move/README.md"
-      ],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb session request-handoff",
-              "flags": [
-                "--format",
-                "--resume"
-              ],
-              "modes": [
-                "Creates the standard empty-body request_handoff typed message with the original predecessor as sender and reply target, then resolves only the immutable address indexed by successor WB session ID.",
-                "Persists a caller-owned message ID and exact canonical bytes before using the recorded SSH or Synchestra courier; acknowledgement proves recorded and pasted, not agent-processed.",
-                "--resume <message-id> reloads the durable request_handoff bytes and cannot change their kind, lineage, reply target, courier, or successor address."
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb session request-handoff --help",
-              "contains": [
-                "Ask a recorded successor",
-                "--resume",
-                "--format"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Message a recorded successor and request handoff back",
-              "examples": [
-                "wb session request-handoff <successor-wb-session-id>",
-                "wb session request-handoff <successor-wb-session-id> --resume <message-id>"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "cmd/wb/session_message_test.go",
-              "name": "TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/sessionmessage/receive_test.go",
-              "name": "TestReceiveUsesCanonicalTypedJSONAsTheActionableRequestHandoffPrompt",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
-      },
-      "notes": "The empty body is intentional: request_handoff plus reply_to_wb_session_id is the standard actionable hand-control-return prompt."
-    },
-    {
       "id": "wb.session.resume",
       "feature_refs": [
         "spec/features/park-and-resume-agent-sessions/README.md"
@@ -7318,6 +8592,7 @@
                 "<parked-session-id>",
                 "parked_session_id",
                 "wb session list --format json",
+                "pickup",
                 "--to",
                 "--via"
               ]
@@ -7328,6 +8603,14 @@
         "ai_skill": {
           "status": "Full",
           "skills": [
+            {
+              "path": "ai/skills/pickup/SKILL.md",
+              "marker": "# Pickup",
+              "examples": [
+                "wb session pickup <parked-session-id>",
+                "wb session pickup <parked-session-id> --to <machine>"
+              ]
+            },
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
               "marker": "## Park and resume an agent session",
@@ -7450,7 +8733,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Message a recorded successor and request handoff back",
+              "marker": "## Message a recorded successor and recall control",
               "examples": [
                 "wb session send <successor-wb-session-id> --message-file message.txt",
                 "wb session send <successor-wb-session-id> --resume <message-id>"
@@ -8698,6 +9981,212 @@
         }
       },
       "notes": "Validation is intentionally a separate non-mutating leaf so agents can repair their complete staging batch before WB touches the durable repository."
+    },
+    {
+      "id": "wb.task.offload",
+      "feature_refs": [
+        "spec/features/task-offload/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb task offload",
+              "flags": [
+                "--context-file",
+                "--format",
+                "--harness",
+                "--model",
+                "--to"
+              ],
+              "modes": [
+                "Creates a new WB worktree for a portion of work and starts a successor session without parking the caller.",
+                "Spoken harness claude selects claude-code; a requested model is passed even across harnesses.",
+                "Omitting --to targets this machine via session-move loopback when remote.machine is configured."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb task offload --help",
+              "contains": [
+                "--context-file",
+                "--harness",
+                "--model",
+                "--to"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/offload/SKILL.md",
+              "marker": "# Offload",
+              "examples": [
+                "wb task offload <task> [owner/repository...] --context-file <file>",
+                "wb task offload <task> --context-file <file> --harness claude --model opus"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/task_test.go",
+              "name": "TestTaskOffloadLaunchesSuccessor",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Offload is not an in-harness subagent. The successor always gets its own worktree."
+    },
+    {
+      "id": "wb.task.park",
+      "feature_refs": [
+        "spec/features/task-offload/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb task park",
+              "flags": [
+                "--context-file",
+                "--format",
+                "--harness",
+                "--model",
+                "--to"
+              ],
+              "modes": [
+                "Creates a new WB worktree and stores continuation without launching a successor."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb task park --help",
+              "contains": [
+                "--context-file",
+                "--harness",
+                "--model",
+                "--to"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/park/SKILL.md",
+              "marker": "# Park",
+              "examples": [
+                "wb task park <task> [owner/repository...] --context-file <file>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/task_test.go",
+              "name": "TestTaskParkCreatesWorktreeWithoutLaunch",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Park stores continuation and does not start a successor."
+    },
+    {
+      "id": "wb.task.pickup",
+      "feature_refs": [
+        "spec/features/task-offload/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb task pickup",
+              "flags": [
+                "--format",
+                "--harness",
+                "--model",
+                "--to"
+              ],
+              "modes": [
+                "Loads a parked task record and starts a successor with optional harness, model, and --to overrides."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb task pickup --help",
+              "contains": [
+                "--harness",
+                "--model",
+                "--to"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/pickup/SKILL.md",
+              "marker": "# Pickup",
+              "examples": [
+                "wb task pickup <parked-task-id>",
+                "wb task pickup <parked-task-id> --to <machine>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/task_test.go",
+              "name": "TestTaskPickupLaunchesParkedTask",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Pickup starts a successor for a previously parked task."
     },
     {
       "id": "wb.verify",
@@ -12406,9 +13895,82 @@
     },
     {
       "id": "wb.worktree.merge.adopt-published-candidate",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
-      "surfaces": {"runtime":{"status":"Full","commands":[{"path":"wb worktree merge adopt-published-candidate","flags":["--actor","--apply","--format","--initiator","--mode","--reason"],"modes":["Dry-run is the default; --apply requires --actor and --reason","Accepts only an open same-repository pull request at the exact receipted candidate branch and SHA, exact target, active claims, clean worktrees, and exact remote ref","Writes an append-only acknowledgement and never force-pushes or rewrites the historical receipt"]}],"limitation":null},"help":{"status":"Full","anchors":[{"command":"wb worktree merge adopt-published-candidate --help","contains":["open","exact","dry-run","--apply","--actor","--initiator","--mode","--reason"]}],"limitation":null},"ai_skill":{"status":"Full","skills":[{"path":"ai/skills/wb-merge/references/worktree-merge.md","marker":"# Mechanical worktree merge","examples":["wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>"]}],"limitation":null},"tests":{"status":"Full","references":[{"path":"internal/orchestrate/worktree_merge_adopt_published_test.go","name":"TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh","kind":"integration"},{"path":"cmd/wb/worktree_merge_test.go","name":"TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney","kind":"integration"}],"limitation":null}},
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge adopt-published-candidate",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Dry-run is the default; --apply requires --actor and --reason",
+                "Accepts only an open same-repository pull request at the exact receipted candidate branch and SHA, exact target, active claims, clean worktrees, and exact remote ref",
+                "Writes an append-only acknowledgement and never force-pushes or rewrites the historical receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge adopt-published-candidate --help",
+              "contains": [
+                "open",
+                "exact",
+                "dry-run",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_adopt_published_test.go",
+              "name": "TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
       "notes": "Adoption recovers only a lost local publication acknowledgement; ordinary prepare consumes the append-only proof and can advance a clean descendant with a non-force PR branch update."
     },
     {
@@ -12527,7 +14089,7 @@
                 "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
                 "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested",
                 "For an already-published candidate whose target advanced, merges the new target into the published head (recording a target_refreshes entry), re-validates the exact resulting candidate, and fast-forward pushes the same PR branch instead of refusing to rewrite it; a merge conflict reports the conflicting paths without pushing",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally. Also applies to merge resume."
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated \u2014 nothing left to re-validate locally. Also applies to merge resume."
               ]
             }
           ],
@@ -12919,7 +14481,7 @@
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally.",
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated \u2014 nothing left to re-validate locally.",
                 "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
                 "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed",
                 "When the target has advanced past a published candidate's recorded target SHA, WB refreshes it instead of refusing: merges the freshly fetched target (and any already-advanced candidate descendant) into the published head, records a target_refreshes entry, re-validates the exact resulting candidate, and fast-forward pushes the same PR branch; a merge conflict reports the conflicting paths and leaves the receipt prepare/conflict without pushing, and no target advance is a no-op"

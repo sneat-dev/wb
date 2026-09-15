@@ -116,6 +116,7 @@ type Request struct {
 	SourceModel           string    `json:"source_model,omitempty"`
 	SourceNativeHarnessID string    `json:"source_native_harness_id,omitempty"`
 	RequestedHarness      string    `json:"requested_harness,omitempty"`
+	RequestedModel        string    `json:"requested_model,omitempty"`
 	WorkLogReference      string    `json:"work_log_reference"`
 	SourceOfferMessage    string    `json:"source_offer_message"`
 	SourceOfferNextAction string    `json:"source_offer_next_action"`
@@ -423,6 +424,9 @@ func (r Request) validate() error {
 	}
 	if strings.TrimSpace(r.SourceRuntime) == "" {
 		return fmt.Errorf("source_runtime is required")
+	}
+	if strings.ContainsAny(r.RequestedHarness+r.RequestedModel, "\r\n") {
+		return fmt.Errorf("requested_harness and requested_model must be single-line")
 	}
 	if _, err := ParseWorkLogReference(r.WorkLogReference); err != nil {
 		return fmt.Errorf("work_log_reference: %w", err)
