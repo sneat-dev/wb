@@ -229,3 +229,75 @@ var errOops = errString("git status: boom")
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// dqCovBuildIndex indexes a built snapshot's worktrees by task so tests can
+// assert one task's projection without depending on Build's sort order.
+func dqCovBuildIndex(t *testing.T, snap Snapshot) map[string]WorktreeState {
+	t.Helper()
+	index := make(map[string]WorktreeState, len(snap.Worktrees))
+	for _, wt := range snap.Worktrees {
+		index[wt.Task] = wt
+	}
+	return index
+}
+
+// TestBuildDerivesTerminalWorktreeLifecyclesAndCarriesTheirPullRequest covers
+// the three terminal lifecycle derivations: a head integrated at origin or
+// with a merged pull request is "merged", an open pull request is "review", and
+// a superseded head is "superseded". It also proves the navigable PR evidence
+// falls back to the merged pull request when no open one exists.
+func TestBuildDerivesTerminalWorktreeLifecyclesAndCarriesTheirPullRequest(t *testing.T) {
+	merged := &worktrees.PullRequest{Number: 7, URL: "https://github.com/acme/b/pull/7", State: "closed"}
+	open := &worktrees.PullRequest{Number: 12, URL: "https://github.com/acme/c/pull/12", State: "open"}
+	wts := []worktrees.ListResult{
+		{Task: "integrated", Repository: "acme/a", Branch: "agent/integrated", HeadSHA: "aaa", WorktreeDir: "/wt/integrated", OwnerState: "active", IntegratedAtOrigin: true},
+		{Task: "merged-pr", Repository: "acme/b", Branch: "agent/merged-pr", HeadSHA: "bbb", WorktreeDir: "/wt/merged-pr", OwnerState: "active", MergedPullRequest: merged},
+		{Task: "open-pr", Repository: "acme/c", Branch: "agent/open-pr", HeadSHA: "ccc", WorktreeDir: "/wt/open-pr", OwnerState: "active", OpenPullRequest: open},
+		{Task: "superseded", Repository: "acme/d", Branch: "agent/superseded", HeadSHA: "ddd", WorktreeDir: "/wt/superseded", OwnerState: "active", SupersededAtOrigin: true},
+	}
+
+	got := dqCovBuildIndex(t, Build(identity(), nil, wts, RedactNone))
+
+	if state := got["integrated"]; state.Lifecycle != "merged" || state.PullRequest != nil {
+		t.Fatalf("integrated = %+v, want merged lifecycle and no pull request", state)
+	}
+	if state := got["merged-pr"]; state.Lifecycle != "merged" ||
+		state.PullRequest == nil || *state.PullRequest != (PullRequestState{Number: 7, URL: merged.URL, State: "closed"}) {
+		t.Fatalf("merged-pr = %+v, want merged lifecycle carrying the merged pull request", state)
+	}
+	if state := got["open-pr"]; state.Lifecycle != "review" ||
+		state.PullRequest == nil || *state.PullRequest != (PullRequestState{Number: 12, URL: open.URL, State: "open"}) {
+		t.Fatalf("open-pr = %+v, want review lifecycle carrying the open pull request", state)
+	}
+	if state := got["superseded"]; state.Lifecycle != "superseded" || state.NeedsAttention {
+		t.Fatalf("superseded = %+v, want superseded lifecycle and no attention flag", state)
+	}
+}
+
+// TestBuildFlagsSupersessionAndAbsorptionRejectionsForReview proves a refused
+// supersession or absorption receipt is surfaced as worktree attention with the
+// specific reason, that supersession wins when both are present, and that a
+// worktree with neither keeps a clean attention state.
+func TestBuildFlagsSupersessionAndAbsorptionRejectionsForReview(t *testing.T) {
+	wts := []worktrees.ListResult{
+		{Task: "supersession", Repository: "acme/a", Branch: "agent/a", HeadSHA: "aaa", WorktreeDir: "/wt/a", OwnerState: "active", SupersessionRejection: "receipt does not verify"},
+		{Task: "absorption", Repository: "acme/b", Branch: "agent/b", HeadSHA: "bbb", WorktreeDir: "/wt/b", OwnerState: "active", AbsorbedByRejection: "content is not contained"},
+		{Task: "both", Repository: "acme/c", Branch: "agent/c", HeadSHA: "ccc", WorktreeDir: "/wt/c", OwnerState: "active", SupersessionRejection: "supersession first", AbsorbedByRejection: "absorption second"},
+		{Task: "clean", Repository: "acme/d", Branch: "agent/d", HeadSHA: "ddd", WorktreeDir: "/wt/d", OwnerState: "active"},
+	}
+
+	got := dqCovBuildIndex(t, Build(identity(), nil, wts, RedactNone))
+
+	if state := got["supersession"]; !state.NeedsAttention || state.Attention != "supersession evidence requires review" {
+		t.Fatalf("supersession = %+v, want supersession review attention", state)
+	}
+	if state := got["absorption"]; !state.NeedsAttention || state.Attention != "absorption evidence requires review" {
+		t.Fatalf("absorption = %+v, want absorption review attention", state)
+	}
+	if state := got["both"]; !state.NeedsAttention || state.Attention != "supersession evidence requires review" {
+		t.Fatalf("both = %+v, want the supersession reason to win", state)
+	}
+	if state := got["clean"]; state.NeedsAttention || state.Attention != "" {
+		t.Fatalf("clean = %+v, want no attention flag", state)
+	}
+}

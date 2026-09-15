@@ -383,10 +383,10 @@ func newHooksRunCmd() *cobra.Command {
 // The exit code IS the answer, and it deliberately falls outside wb's normal
 // 0=ok/1=findings/2=usage-rejected convention (see exitOK/exitFindings/
 // exitUsage in main.go) -- so this bypasses cobra's usual error-to-exit-code
-// path with a direct os.Exit, the same established pattern main.go already
-// uses for the other hidden git-hook-adjacent helpers. That makes it
-// untestable in-process through run(); cmd/wb's own integration test builds
-// the real binary once and drives it as a subprocess instead.
+// path with a direct os.Exit, the same established pattern main.go uses for
+// the other hidden git-hook-adjacent helpers. The decision itself lives in
+// pushTierDecision, which stays a plain function so both branches are covered
+// in-process rather than only by a subprocess.
 func newHooksPushTierCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "push-tier",
@@ -394,18 +394,27 @@ func newHooksPushTierCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			classification, err := hooks.ClassifyPendingPush(cmd.InOrStdin(), ".")
-			if err != nil {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"WB hook: tier 1 — classification failed (%v); defaulting to the fast lane, CI is the real gate\n", err)
-				os.Exit(1)
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "WB hook: tier %d — %s\n", classification.ExitCode(), classification.Reason)
-			os.Exit(classification.ExitCode())
+			code, message := pushTierDecision(cmd.InOrStdin())
+			_, _ = io.WriteString(cmd.OutOrStdout(), message)
+			os.Exit(code)
 			return nil
 		},
 	}
 	return cmd
+}
+
+// pushTierDecision classifies one pending push into the tier code the hook must
+// exit with and the single line it narrates. Keeping the decision separate from
+// the os.Exit that publishes it is what makes the failure branch -- the one
+// that must never turn a classification problem into a blocked push -- testable
+// without terminating the test binary.
+func pushTierDecision(stdin io.Reader) (code int, message string) {
+	classification, err := hooks.ClassifyPendingPush(stdin, ".")
+	if err != nil {
+		return 1, fmt.Sprintf(
+			"WB hook: tier 1 — classification failed (%v); defaulting to the fast lane, CI is the real gate\n", err)
+	}
+	return classification.ExitCode(), fmt.Sprintf("WB hook: tier %d — %s\n", classification.ExitCode(), classification.Reason)
 }
 
 func newHooksMetricsCmd() *cobra.Command {
