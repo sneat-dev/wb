@@ -111,7 +111,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 		Version:      "test",
 		Mounts: map[string]http.Handler{
 			"/v0/workbench/": mounted,
-			"/bench/":        mounted,
+			"/workbench/":    mounted,
 			// Refused shapes: a prefix must start and end with "/", and a nil
 			// handler is ignored rather than panicking the mux.
 			"no-slash/": mounted,
@@ -120,7 +120,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 		},
 	})
 
-	for _, target := range []string{"/v0/workbench/github/status", "/bench/dashboard/", "/bench"} {
+	for _, target := range []string{"/v0/workbench/github/status", "/workbench/dashboard/", "/workbench"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
 		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Body.String(), "mounted ") {
@@ -146,8 +146,8 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/bench/dashboard/", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workbench/dashboard/", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<") {
-		t.Fatalf("/bench/dashboard/ = %d; want the catch-all index page", recorder.Code)
+		t.Fatalf("/workbench/dashboard/ = %d; want the catch-all index page", recorder.Code)
 	}
 }

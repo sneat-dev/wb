@@ -37,7 +37,7 @@ I run `wb daemon start` on my laptop as I do today. I add one line to
 `~/.config/wb/wb.yaml` giving the daemon a GitHub token that can read my
 repositories, and restart it. Nothing else is registered anywhere.
 
-I open http://127.0.0.1:<port>/bench/dashboard/ in a browser and see my
+I open http://127.0.0.1:<port>/workbench/dashboard/ in a browser and see my
 machine, my repositories and my worktrees, the same dashboard the hosted
 instance shows, with no sign-in step because only this machine can reach it.
 
@@ -62,7 +62,7 @@ per-user API budget every tool shares (founder, 2026-09-11).
 
 - `wb daemon serve` gains the hub. When `hub:` is present in `wb.yaml` the
   loopback server mounts the hub API under `/v0/workbench/` (the existing
-  `hub.HandlerOptions` routes) and the dashboard under `/bench/`, next to
+  `hub.HandlerOptions` routes) and the dashboard under `/workbench/`, next to
   the existing `/api/v1/` read-only API. Without `hub:` the command behaves
   exactly as today.
 - `wb daemon status` reports the hub: store engine, listen address, polling
@@ -161,10 +161,13 @@ without touching the log file.
 ### Dashboard
 
 `hub/web` is built by `pnpm build` and its `dist/` is embedded in the wb
-binary at release time. The pages already fetch the API by path, so the
-embedded dashboard talks to the loopback hub with no configuration. A wb
-built from source without a `dist/` serves a one-line page saying the
-dashboard was not built and how to build it.
+binary at release time and mounted at `/workbench/`. The Astro build bakes the
+hosted control-plane origin into its pages and scripts; the embedded handler
+strips that origin as it serves them, so the pages call the same listener at
+`/v0/workbench/` — the API the loopback hub already authorizes for this
+machine — and the embedded dashboard talks to the loopback hub with no
+configuration. A wb built from source without a `dist/` serves a one-line page
+saying the dashboard was not built and how to build it.
 
 ## Dependencies
 
