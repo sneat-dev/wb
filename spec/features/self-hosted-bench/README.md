@@ -38,8 +38,11 @@ I run `wb daemon start` on my laptop as I do today. I add one line to
 repositories, and restart it. Nothing else is registered anywhere.
 
 I open http://127.0.0.1:<port>/workbench/dashboard/ in a browser and see my
-machine, my repositories and my worktrees, the same dashboard the hosted
-instance shows, with no sign-in step because only this machine can reach it.
+machine, my repositories and my worktrees, rendered by the same dashboard the
+hosted instance serves, with no sign-in step because only this machine can
+reach it. Control-plane metrics that need a GitHub projection wb does not
+compute locally — pull requests, issues, releases, token and cost trends,
+merges and leaderboards — read as empty rather than as invented numbers.
 
 I push to main on one of my repositories from another computer. Within the
 polling interval the daemon notices the default branch moved, and the
@@ -168,6 +171,19 @@ strips that origin as it serves them, so the pages call the same listener at
 machine — and the embedded dashboard talks to the loopback hub with no
 configuration. A wb built from source without a `dist/` serves a one-line page
 saying the dashboard was not built and how to build it.
+
+The loopback listener answers the dashboard's data routes — `dashboard`,
+`stats`, `series`, `leaderboards`, `latest-merges` and `worktrees` — from the
+machine snapshots the hub already stores, through `RemoteStateReadModel` and
+`RemoteStateWorktreeReadModel`. `dashboard` and `stats` carry a genuine
+repository count and a `fleet` projection of every machine and worktree the
+operator published; `series`, `leaderboards`, `latest-merges` and the
+pull-request, issue and release counters answer with empty, well-formed shapes,
+because a self-hosted hub computes no such projection. The routes the hub
+already owned — enrolment, machine snapshots, repository events, the GitHub App
+webhook and status — keep their single owner, so the read API and the hub share
+the one `/v0/workbench/` prefix without ambiguity. `/v0/workbench/events` is not
+served: the dashboard opens no event stream.
 
 ## Dependencies
 
