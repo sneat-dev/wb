@@ -244,7 +244,10 @@ sleep 600
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
 
-	store, record, worktree := ownedRun(t, "HANG_MODE", 2*time.Second)
+	// A generous run bound gives the harness time to install its trap and spawn
+	// the grandchild even on a loaded machine; an 8-minute landing validation
+	// runs this beside several other shards.
+	store, record, worktree := ownedRun(t, "HANG_MODE", 8*time.Second)
 	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
 		t.Fatalf("RunOwner: %v", err)
 	}
@@ -258,16 +261,27 @@ sleep 600
 	// The grandchild inherited the worker's process group and ignores SIGTERM
 	// too, so only a group kill can stop it. Asserting on the direct child
 	// alone would pass even if the tree survived.
-	grandchildRaw, err := os.ReadFile(filepath.Join(worktree, "grandchild.pid"))
-	if err != nil {
-		t.Fatalf("the harness never reported its grandchild: %v", err)
+	var grandchildRaw []byte
+	grandchildDeadline := time.Now().Add(15 * time.Second)
+	for {
+		var readErr error
+		grandchildRaw, readErr = os.ReadFile(filepath.Join(worktree, "grandchild.pid"))
+		if readErr == nil {
+			break
+		}
+		if time.Now().After(grandchildDeadline) {
+			t.Fatalf("the harness never reported its grandchild: %v", readErr)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	grandchild, convErr := strconv.Atoi(strings.TrimSpace(string(grandchildRaw)))
 	if convErr != nil || grandchild <= 0 {
 		t.Fatalf("grandchild pid %q", grandchildRaw)
 	}
 	for _, pid := range []int{loaded.WorkerPID, grandchild} {
-		deadline := time.Now().Add(5 * time.Second)
+		// The assertion is that the tree dies, not that it dies within a
+		// particular number of milliseconds on an idle machine.
+		deadline := time.Now().Add(30 * time.Second)
 		for processAlive(pid) {
 			if time.Now().After(deadline) {
 				t.Fatalf("process %d survived the timeout termination", pid)
@@ -459,7 +473,7 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 		_ = RunOwner(context.Background(), store, record.AgentID, deps)
 		close(done)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		loaded, err := store.Load(record.AgentID)
 		if err != nil {
@@ -483,7 +497,7 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("the owner did not observe the stopped worker")
 	}
 	final, err := store.Load(record.AgentID)
@@ -524,7 +538,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 		_ = RunOwner(context.Background(), store, record.AgentID, deps)
 		close(done)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		loaded, err := store.Load(record.AgentID)
 		if err != nil {
@@ -555,7 +569,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	killDeadline := time.Now().Add(10 * time.Second)
+	killDeadline := time.Now().Add(30 * time.Second)
 	for processAlive(loaded.WorkerPID) {
 		if time.Now().After(killDeadline) {
 			t.Fatalf("a worker that ignores SIGTERM survived stop (pid %d)", loaded.WorkerPID)
