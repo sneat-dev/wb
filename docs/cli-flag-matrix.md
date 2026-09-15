@@ -152,7 +152,9 @@ independent of `--format` / `--json`; failure receipts retain error details.
 Unspecified validation limits retain the persisted values. `worktree merge`,
 `worktree land`, `merge land`, `merge resume`, and `merge revert` accept `--allow-unfenced`;
 the approval is persisted in the merge receipt through post-merge verification
-and later resumes. It permits unavailable branch-policy authority while both
-pull-request and target phases continue to require stable exact-head check
-observations. Prepare does not accept the flag because it performs no remote
-landing or CI-fence decision.
+and later resumes. It permits unavailable branch-policy authority, and it makes
+an empty observed check set with no enumerated required checks terminal for a
+pull-request candidate as well as a direct target, so a repository with no CI at
+all lands instead of polling until the slice deadline; both phases still require
+stable exact-head check observations whenever checks exist. Prepare does not
+accept the flag because it performs no remote landing or CI-fence decision.
