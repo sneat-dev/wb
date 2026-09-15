@@ -360,6 +360,59 @@ Five sub-decisions. They interact; a full answer must pick one option from each.
 - If the workspace root is simply widened to `$HOME`, the sandbox then grants write access to the entire home directory — a materially weaker containment story `[ASSUMED]`.
 - Two-level indirection (`workspace → projects`, `workspace → store`) is harder to explain than either pure option.
 
+#### Option F2 — Host-separated, workspace-resident store
+
+*Proposal: canonical clones at `<projects-home>/<host>/<org>/<repo>` (e.g. `~/projects/gh/sneat-dev/wb`, where `gh` is a configured alias for `github.com`); every checkout at `<projects-home>/.worktrees/<task>/<host>/<org>/<repo>`; session workspace root = `<projects-home>`.*
+
+```
+~/projects/                        <- workspace root AND projects home
+  gh/                              <- host alias  (gh = github.com)
+    sneat-dev/wb/                  <- canonical clone
+    sneat-co/sneat-go/
+  .worktrees/                      <- every checkout: dot-named, inside the workspace,
+    <task>/gh/sneat-dev/wb/           outside every repository
+  .wb/                             <- optional: coordination state (WB_HOME)
+```
+
+**Why this is the strongest candidate in this brief**
+
+- **P2 is solved without touching the sandbox boundary.** The store sits under the *existing* workspace root, so `writableRoots()` already grants it. This is the decisive difference from Option F, which required widening the workspace to a common parent and therefore granting write access to more than `~/projects`.
+- **The `.git/info/exclude` dependency disappears.** The store is outside every repository, so git never sees it. Today 372 repositories carry `/.worktrees/` in `.git/info/exclude` `[MEASURED]` purely to hide it — and a fresh clone missing that line is unprotected, while `git clean -xfd` there destroys in-flight work. Both failure modes vanish by construction rather than by discipline (invariant 4).
+- **`git clean`, `git status` and repo-scoped builds can never touch a checkout.**
+- **One root** for GC, locks, audit, and backup/indexer policy.
+- **`<host>` fixes a latent collision.** `<org>/<repo>` is unique only within one forge. Today the projects root is flat, so `github.com/acme/api` and `gitlab.com/acme/api` cannot coexist. A host level also makes the tree self-describing.
+
+**What it does not fix**
+
+| Problem | Effect |
+|---|---|
+| P1 — recursive tools | **Unchanged for tools that are neither dot-aware nor git-aware.** A walk of `<projects-home>` still sees every checkout. Because the store leaves the repository it also *loses* the git-exclude fence: protection drops from two fences (dot + git exclude) to one (dot). `rg`/`fd`/VS Code are still safe; `find`/`grep -r`/`os.walk`/`tar`/`rsync`/backup are still not. |
+| P3 — registration repair | Unchanged. The migration itself must repair every existing checkout (~407 measured). Relative paths (§4.2 R-rel) would make *subsequent* moves cheap but not this one. |
+| P4 — path pinning | **Worse during migration.** A host level changes every canonical path, so every generated artifact that hardcodes `~/projects/<org>/<repo>` must be regenerated. Measured instances exist in `~/.claude/launch.json` and `settings.local.json`. |
+| P9 — cost | Unchanged; working trees still dominate. |
+
+**WB_HOME is a separate knob and must be moved too.** Making checkouts workspace-resident does *not* make coordination state workspace-resident. Hook shims pin `WB_HOME` `[MEASURED]`, and hook-runtime writes go to `$WB_HOME/hook-runtime`; if that stays at `~/.wb`, hooks still fail under `workspace-write`. Placing `WB_HOME` at `<projects-home>/.wb` completes the picture — and does so with a bonus:
+
+- It **decouples** the small irreplaceable state (Work Logs measured at ~0.2% of the disk footprint) from the large disposable checkouts (§4.3).
+- It **disarms P5.** Legacy auto-discovery triggers on `<projects-root>/.wb/worktrees` *existing* (`wbhome.go:73`). With checkouts at `<projects-home>/.worktrees`, that directory never exists, so the implicit configuration bit can never fire.
+
+Complete form: clones at `<projects-home>/<host>/<org>/<repo>`, checkouts at `<projects-home>/.worktrees/…`, state at `<projects-home>/.wb`, workspace root = `<projects-home>`.
+
+**Cost of the `<host>` level** `[MEASURED]`, `[SOURCE]`
+
+- `canonicalRepositoryPath(projectsRoot, repository)` derives exactly two levels (`internal/worktrees/worktrees.go:1671`); `splitRepository` (`:1645`) mirrors it. **35 call sites** depend on that shape.
+- `--projects-root` is documented as "root dir containing `{org}/{repo}`" (`cmd/wb/main.go:118`).
+- `wb layout audit|clean` exists specifically to "report non-canonical clone placement", documented as "canonical fleet members are owner/repository directories" (`cmd/wb/layout.go:19-25`). A third level makes **every existing clone read as misowned** to that command until it is taught the host level.
+- 388 clones move; every absolute worktree registration breaks (P3); harness, script and IDE configs holding `~/projects/<org>/<repo>` must be regenerated.
+- **Mitigation:** perform it **once, together with the store move**, not as two migrations. If `<host>` is deferred, the store move alone is strictly additive and much lower risk.
+
+**Two sub-decisions to pin while designing this**
+
+1. **Task-first inside the store**: `<projects-home>/.worktrees/<task>/<host>/<org>/<repo>`, not host-first. A multi-repo task must keep its checkouts together (P8), and this matches wb's existing shared convention `<root>/<task>/<owner>/<repository>`.
+2. **One hidden namespace, not N.** The projects home already hosts `.claude/worktrees` (117 dirs `[MEASURED]`), `.codex-wb`, `.codegraph` and `.wb`. Consolidating every agent store under a single dot-named namespace — `.worktrees` for checkouts, one `.wb` for state — removes the need for per-tool exclusion rules, which is precisely the failure mode the recorded incident's commit was reacting to.
+
+**Residual risk to state explicitly:** the store becomes a *single* directory holding every agent's checkout. Whatever backup, indexer or cleanup policy applies to `<projects-home>` now applies to all of it at once, and one bad recursive `rm` or `git clean` invoked at the wrong level takes out every task. Option D and today's default at least partition the blast radius by repository.
+
 #### Option G — Ephemeral: `/tmp`, `$TMPDIR`, `os.tmpdir()`
 **Pros** harness sandboxes nearly always allow temp; OS cleans up; zero disk growth.
 **Cons** **lost work on reboot/tmpwatch**; frequently a different filesystem (macOS `/tmp` → `/private/var`), turning renames into copies; concurrent cleanup can delete an active checkout. Usable only for genuinely disposable builds. **Include to be rejected for agent work.**
@@ -374,12 +427,12 @@ Five sub-decisions. They interact; a full answer must pick one option from each.
 
 ### 4.2 How registration paths are stored
 
-#### Option I-ab — Absolute (git default, today)
+#### Option R-ab — Absolute (git default, today)
 `[MEASURED]` `<canonical>/.git/worktrees/<id>/gitdir` holds an absolute path.
 **Pros** unambiguous under symlinks and bind mounts; no surprises if a tree is moved partially.
 **Cons** any move requires `worktree repair`; repair silently degrades when the canonical repo is gone (P3).
 
-#### Option I-rel — Relative: `worktree.useRelativePaths=true` / `git worktree add --relative-paths`
+#### Option R-rel — Relative: `worktree.useRelativePaths=true` / `git worktree add --relative-paths`
 `[SOURCE]` available in git 2.54 `[MEASURED]`; currently unset.
 **Pros** a worktree tree moved *together with* its canonical repo needs no repair; makes whole-store relocation a pure rename; dramatically reduces the cost of §3.4 step 1.
 **Cons** does not help when the store and the canonical repo move *independently* (exactly the cross-boundary case in P2); relative paths interact with symlinked ancestors; `extensions.relativeWorktrees` is a repo extension, so enabling it writes to the canonical repo's config and older git versions will refuse to operate.
@@ -455,14 +508,17 @@ Score each candidate architecture 1–5 on each axis, and state the evidence use
 
 ## 7. Open questions (please treat as unknowns)
 
-1. Can the sandbox's `workspaceRoot` be set to a parent of the projects root in this deployment, and what is the containment cost? If yes, Option F dominates. `[UNKNOWN]`
-2. Is `/Users/alex/projects` fixed, or is the projects root itself configurable in practice? `[UNKNOWN]` — WB has `--projects-root`, but every harness, script and tool would need to agree.
+1. Can the sandbox's `workspaceRoot` be set to a parent of the projects root in this deployment, and what is the containment cost? `[UNKNOWN]` — **partially obviated by Option F2**, which needs no widening, so this is no longer on the critical path.
+2. Is `/Users/alex/projects` fixed, or is the projects root itself configurable in practice? `[UNKNOWN]` — WB has `--projects-root`, but every harness, script and tool would need to agree. Option F2 depends only on it being choosable *once* (the workspace root must equal the projects home).
 3. How many tools in the wider environment (IDEs, backup, Spotlight, CI) actually walk these trees? Only `rg`/`find`/`grep`/`os.walk`/`tar`/`rsync`/`cp`/`du` were tested. `[UNKNOWN]`
 4. Is Git's relative-worktree mode viable when the store and canonical repo must be moved independently, as P2 forces? `[ASSUMED: no]`
 5. What is the real orphan/GC rate, and what is the cost of a wrong GC? `[UNKNOWN]`
-6. Does the fleet need multi-user or multi-machine worktree sharing? `[UNKNOWN]` — a central per-user home cannot provide it.
+6. Does the fleet need multi-user or multi-machine worktree sharing? `[UNKNOWN]` — a central per-user home cannot provide it; Option F2 is better here, since the store travels with the projects home rather than with `$HOME`.
 7. Is there appetite for a one-way migration plus a deprecation window, given §3.4 showed the operation is effectively one-way once provenance is lost? `[UNKNOWN]`
-8. Should coordination state and checkout store be decoupled (§4.3)? The state is small and irreplaceable; the store is large and disposable. Decoupling looks strictly beneficial but doubles the roots. `[UNKNOWN]`
+8. Should coordination state and checkout store be decoupled (§4.3)? The state is small and irreplaceable; the store is large and disposable. Decoupling looks strictly beneficial; **Option F2 makes the decoupling free**, because the two roots are already distinct.
+9. **Should `<host>` be adopted, and in the same migration or a later one?** `[UNKNOWN]` — it fixes a real latent collision (`<org>/<repo>` is forge-scoped, not global) but changes every canonical path, invalidating 407 worktree registrations and every hardcoded path in harness configs. Deferring it keeps the store move strictly additive.
+10. **Is `WB_HOME` free to move to `<projects-home>/.wb`, or do installed shims and daemons pin it?** `[UNKNOWN]` — measured: 361 repositories carry a pinned `WB_HOME` inside managed hook shims, so this is a fleet-wide regeneration, not a config edit (P4).
+11. **Does a single shared store concentrate risk unacceptably?** Option F2 puts every agent's checkout under one directory, so one careless recursive delete at the wrong level loses every task at once. Option D and the current default partition the blast radius by repository. `[UNKNOWN]` — depends on backup policy and how destructive commands are guarded.
 
 ---
 
