@@ -147,8 +147,22 @@ execution-identifier validation.
 #### REQ: no-credentials-in-profile-configuration
 
 Profile configuration MUST NOT carry credentials. A profile references a
-provider by name; the credential is read from the environment at launch time
-only.
+provider by name, and the provider names a credential *source*: either the
+environment variable holding it (`credential_env`) or an absolute path to a
+private file holding it (`credential_file`). Naming both MUST be refused rather
+than silently resolved, and naming neither MUST be refused. The credential value
+is read at launch time only and is never persisted.
+
+#### REQ: credential-file-is-private-or-refused
+
+A file-sourced credential MUST follow WB's existing credential-file convention:
+a path in configuration, the secret in a private file under the WB configuration
+directory. WB MUST refuse a credential file that does not exist, is not a
+regular file, is a symlink, is empty, or is readable by group or others, and it
+MUST name the file and the remedy in that refusal. A file-sourced credential
+MUST be injected into the harness under one name WB controls, so it does not
+depend on anything the machine happens to export — which is what makes remote
+dispatch work on a machine reachable only over non-interactive SSH.
 
 ### Harness, provider, and model
 
@@ -734,6 +748,23 @@ Scenario: Reasoning is passed per process
 Given a profile with `reasoning: high`
 When dispatch launches the worker
 Then the reasoning level is passed as per-process harness configuration and no file the harness reads globally is written
+
+### AC: credential-source-is-declared-and-private (verifies REQ:credential-file-is-private-or-refused)
+
+Scenario: A private credential file
+Given a provider naming `credential_file` at an absolute path holding a 0600 regular file
+When dispatch resolves the provider
+Then the credential is read from that file, injected into the harness under WB's own variable name, and appears in no argument list, log, or run record
+
+Scenario: A credential file WB would not have written
+Given a credential file that is missing, empty, a symlink, a directory, or readable by group or others
+When dispatch resolves the provider
+Then WB refuses before creating anything and names the file and the remedy
+
+Scenario: Two or no credential sources
+Given a provider naming both `credential_env` and `credential_file`, or a new provider naming neither
+When the configuration is loaded
+Then it is refused rather than silently resolved
 
 ### AC: provider-registry-is-not-hardcoded (verifies REQ:provider-registry-is-small-and-closed, REQ:harness-provider-model-separation, REQ:model-is-provider-scoped-and-passes-through-verbatim)
 

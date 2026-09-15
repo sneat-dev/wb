@@ -20,7 +20,7 @@ const defaultPath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 // acceptable here: the first hands a model-driven process every credential on
 // the machine, and the second would make a dispatched worker look like the
 // parent session it must not disturb.
-func WorkerEnvironment(credentialEnv string) []string {
+func WorkerEnvironment(credential Credential) []string {
 	allow := []string{
 		"PATH", "HOME", "TMPDIR", "TMP", "TEMP",
 		"LANG", "LC_ALL", "LC_CTYPE", "TZ",
@@ -48,13 +48,12 @@ func WorkerEnvironment(credentialEnv string) []string {
 		// than left to fail obscurely at exec time.
 		environment = append(environment, "PATH="+defaultPath)
 	}
-	// The one credential the resolved provider actually needs is re-added
-	// explicitly. Its *value* travels only in the child's environment: it never
-	// reaches an argument list, a log, or a run record.
-	if name := strings.TrimSpace(credentialEnv); name != "" {
-		if value, ok := os.LookupEnv(name); ok && value != "" {
-			environment = append(environment, name+"="+value)
-		}
+	// The one credential the resolved provider actually needs is added
+	// explicitly, under the name the harness was told to read. Its *value*
+	// travels only in the child's environment: it never reaches an argument
+	// list, a log, or a run record.
+	if name := strings.TrimSpace(credential.EnvName); name != "" && credential.Value != "" {
+		environment = append(environment, name+"="+credential.Value)
 	}
 	return environment
 }
@@ -68,20 +67,6 @@ func hasValue(environment []string, name string) bool {
 		}
 	}
 	return false
-}
-
-// MissingCredential reports the credential variable a launch needs but the
-// process environment does not carry, so the failure names the exact variable
-// instead of surfacing as an opaque provider rejection later.
-func MissingCredential(credentialEnv string) (string, bool) {
-	name := strings.TrimSpace(credentialEnv)
-	if name == "" {
-		return "", true
-	}
-	if value, ok := os.LookupEnv(name); !ok || strings.TrimSpace(value) == "" {
-		return name, true
-	}
-	return name, false
 }
 
 // pathValue is the PATH a Git helper child should inherit.

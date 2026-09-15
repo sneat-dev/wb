@@ -30,7 +30,7 @@ func TestWorkerEnvironmentIsAnAllowlistNotACopy(t *testing.T) {
 	t.Setenv("WB_AGENT_RUNTIME", "codex")
 	t.Setenv("SOMETHING_RANDOM", "value")
 
-	environment := environmentMap(WorkerEnvironment(""))
+	environment := environmentMap(WorkerEnvironment(Credential{}))
 	for _, required := range []string{"PATH", "HOME", "LANG", "SSL_CERT_FILE"} {
 		if _, present := environment[required]; !present {
 			t.Errorf("allowlisted %s was dropped", required)
@@ -50,37 +50,48 @@ func TestWorkerEnvironmentAddsOnlyTheResolvedCredential(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "provider-credential")
 	t.Setenv("OPENROUTER_API_KEY", "a-different-credential")
 
-	environment := environmentMap(WorkerEnvironment("DEEPSEEK_API_KEY"))
+	environment := environmentMap(WorkerEnvironment(Credential{EnvName: "DEEPSEEK_API_KEY", Value: "provider-credential"}))
 	if environment["DEEPSEEK_API_KEY"] != "provider-credential" {
-		t.Fatalf("the resolved provider credential must be re-added: %#v", environment["DEEPSEEK_API_KEY"])
+		t.Fatalf("the resolved provider credential must be added: %#v", environment["DEEPSEEK_API_KEY"])
 	}
 	if _, present := environment["OPENROUTER_API_KEY"]; present {
 		t.Fatal("only the credential the resolved provider names may be added")
+	}
+	// A file-sourced credential reaches the child under the synthesised name,
+	// without depending on anything the machine happens to export.
+	environment = environmentMap(WorkerEnvironment(Credential{EnvName: ProviderCredentialEnv, Value: "from-a-file"}))
+	if environment[ProviderCredentialEnv] != "from-a-file" {
+		t.Fatalf("a file-sourced credential must be injected: %#v", environment)
 	}
 }
 
 func TestWorkerEnvironmentFillsInAMissingPath(t *testing.T) {
 	t.Setenv("PATH", "")
-	environment := environmentMap(WorkerEnvironment(""))
+	environment := environmentMap(WorkerEnvironment(Credential{}))
 	if environment["PATH"] != defaultPath {
 		t.Fatalf("PATH = %q, want the platform default so the harness can still be found", environment["PATH"])
 	}
 }
 
-func TestMissingCredentialNamesTheExactVariable(t *testing.T) {
+func TestResolveCredentialNamesTheExactSource(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "present")
-	if name, missing := MissingCredential("DEEPSEEK_API_KEY"); missing || name != "DEEPSEEK_API_KEY" {
-		t.Fatalf("a present credential must not be reported missing: %q %v", name, missing)
+	credential, err := ResolveCredential(Provider{CredentialEnv: "DEEPSEEK_API_KEY"})
+	if err != nil {
+		t.Fatalf("a present credential must resolve: %v", err)
 	}
+	if credential.EnvName != "DEEPSEEK_API_KEY" || credential.Value != "present" {
+		t.Fatalf("credential = %#v", credential)
+	}
+
 	t.Setenv("DEEPSEEK_API_KEY", "")
-	if name, missing := MissingCredential("DEEPSEEK_API_KEY"); !missing || name != "DEEPSEEK_API_KEY" {
-		t.Fatalf("a blank credential is missing, and the variable must be named: %q %v", name, missing)
+	if _, err := ResolveCredential(Provider{CredentialEnv: "DEEPSEEK_API_KEY"}); err == nil || !strings.Contains(err.Error(), "DEEPSEEK_API_KEY") {
+		t.Fatalf("a blank credential must be reported by name: %v", err)
 	}
-	if name, missing := MissingCredential("NEVER_SET_KEY"); !missing || name != "NEVER_SET_KEY" {
-		t.Fatalf("an unset credential must be reported: %q %v", name, missing)
+	if _, err := ResolveCredential(Provider{CredentialEnv: "NEVER_SET_KEY"}); err == nil || !strings.Contains(err.Error(), "NEVER_SET_KEY") {
+		t.Fatalf("an unset credential must be reported: %v", err)
 	}
-	if _, missing := MissingCredential("   "); !missing {
-		t.Fatal("a provider with no credential variable must fail closed")
+	if _, err := ResolveCredential(Provider{}); err == nil {
+		t.Fatal("a provider with no credential source must fail closed")
 	}
 }
 

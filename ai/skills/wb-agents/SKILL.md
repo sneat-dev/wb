@@ -50,8 +50,24 @@ agents:
       wire_api: responses
 ```
 
-Credentials are read from the environment and are never stored in
-configuration, passed on a command line, or written to a run record.
+A provider names exactly one credential source, and the secret is never stored
+in configuration, passed on a command line, or written to a run record. Either
+name the environment variable:
+
+```yaml
+      credential_env: DEEPSEEK_API_KEY
+```
+
+or point at a private file, following WB's existing credential convention
+(0600, under `~/.config/wb/credentials`) — which is what a machine reachable
+only over non-interactive SSH needs, since it has nowhere to export a variable:
+
+```yaml
+      credential_file: /home/ai/.config/wb/credentials/deepseek.key
+```
+
+WB refuses a credential file that is missing, empty, a symlink, or readable by
+group or others, and says which.
 
 ## Start work
 

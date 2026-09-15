@@ -13,6 +13,7 @@ package agents
 import (
 	"fmt"
 	"os"
+	"path"
 	"sort"
 	"strings"
 
@@ -39,11 +40,23 @@ const (
 type Provider struct {
 	BaseURL string `yaml:"base_url" json:"base_url"`
 	// CredentialEnv is the *name* of the environment variable holding the
-	// credential. The value is read from the process environment at launch
-	// and never persisted.
-	CredentialEnv string `yaml:"credential_env" json:"credential_env"`
-	WireAPI       string `yaml:"wire_api" json:"wire_api"`
+	// credential. The value is read from the process environment at launch and
+	// never persisted.
+	CredentialEnv string `yaml:"credential_env,omitempty" json:"credential_env,omitempty"`
+	// CredentialFile is an absolute path to a private file holding the
+	// credential, following WB's existing credential-file convention (a path in
+	// configuration, the secret in a 0600 file under
+	// ~/.config/wb/credentials). It exists because a dispatched worker needs its
+	// credential in the harness's environment, and a remote machine reachable
+	// only over non-interactive SSH has no reliable place to export one.
+	CredentialFile string `yaml:"credential_file,omitempty" json:"credential_file,omitempty"`
+	WireAPI        string `yaml:"wire_api" json:"wire_api"`
 }
+
+// ProviderCredentialEnv is the environment variable WB synthesises when a
+// provider supplies its credential as a file. The harness is told this name —
+// never a value — so the same per-process mechanism serves both sources.
+const ProviderCredentialEnv = "WB_AGENT_PROVIDER_CREDENTIAL"
 
 // Profile is a named agent execution configuration. It is intentionally this
 // small: harness + provider + model + optional reasoning, and nothing else.
@@ -107,6 +120,12 @@ func LoadConfigFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse agent configuration %s: %w", path, err)
 	}
 	for name, provider := range document.Agents.Providers {
+		// Naming two credential sources is ambiguous, and silently picking one
+		// would make a mistake in configuration indistinguishable from a
+		// deliberate override. Refuse it before the merge can hide it.
+		if strings.TrimSpace(provider.CredentialEnv) != "" && strings.TrimSpace(provider.CredentialFile) != "" {
+			return Config{}, fmt.Errorf("agent configuration %s: provider %q must name exactly one credential source: credential_env or credential_file, not both", path, name)
+		}
 		// A user entry overrides a built-in one field by field, so a provider
 		// only needs to name what differs. This is the whole extension point:
 		// no plugin loading, no catalogue, no capability negotiation.
@@ -116,6 +135,13 @@ func LoadConfigFile(path string) (Config, error) {
 		}
 		if strings.TrimSpace(provider.CredentialEnv) != "" {
 			merged.CredentialEnv = strings.TrimSpace(provider.CredentialEnv)
+			// An explicit source replaces the built-in one rather than being
+			// combined with it, so a provider never has two credentials.
+			merged.CredentialFile = ""
+		}
+		if strings.TrimSpace(provider.CredentialFile) != "" {
+			merged.CredentialFile = strings.TrimSpace(provider.CredentialFile)
+			merged.CredentialEnv = ""
 		}
 		if strings.TrimSpace(provider.WireAPI) != "" {
 			merged.WireAPI = strings.TrimSpace(provider.WireAPI)
@@ -220,8 +246,18 @@ func validateProvider(name string, provider Provider) error {
 	if !strings.HasPrefix(provider.BaseURL, "https://") {
 		return fmt.Errorf("provider %q base_url must be an https URL", name)
 	}
-	if strings.TrimSpace(provider.CredentialEnv) == "" {
-		return fmt.Errorf("provider %q requires credential_env naming the environment variable that holds its credential", name)
+	envNamed := strings.TrimSpace(provider.CredentialEnv) != ""
+	fileNamed := strings.TrimSpace(provider.CredentialFile) != ""
+	switch {
+	case envNamed && fileNamed:
+		return fmt.Errorf("provider %q must name exactly one credential source: credential_env or credential_file, not both", name)
+	case !envNamed && !fileNamed:
+		return fmt.Errorf("provider %q requires credential_env (the environment variable holding its credential) or credential_file (a private file holding it)", name)
+	case fileNamed:
+		credentialFile := strings.TrimSpace(provider.CredentialFile)
+		if !path.IsAbs(credentialFile) || path.Clean(credentialFile) != credentialFile {
+			return fmt.Errorf("provider %q credential_file %q must be a clean absolute path", name, credentialFile)
+		}
 	}
 	switch provider.WireAPI {
 	case WireAPIResponses, WireAPIChat:

@@ -100,8 +100,12 @@ func Dispatch(ctx context.Context, request DispatchRequest, deps DispatchDeps) (
 	if err != nil {
 		return Record{}, err
 	}
-	if name, missing := MissingCredential(resolved.Routing.CredentialEnv); missing {
-		return Record{}, fmt.Errorf("provider %q needs %s in the environment; WB never stores provider credentials in configuration", resolved.Provider, name)
+	// Resolve the credential before creating a worktree: a dispatch that cannot
+	// authenticate must fail without leaving an unused checkout behind, and the
+	// message must name the exact source rather than surfacing later as an
+	// opaque provider rejection.
+	if _, err := ResolveCredential(resolved.Routing); err != nil {
+		return Record{}, fmt.Errorf("provider %q: %w", resolved.Provider, err)
 	}
 
 	store := NewStore(deps.Home)

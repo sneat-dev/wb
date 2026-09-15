@@ -83,8 +83,9 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		return store.Save(record)
 	}
 
-	if name, missing := MissingCredential(record.Resolved.Routing.CredentialEnv); missing {
-		return finish(StateFailed, fmt.Sprintf("provider credential %s is not set in the dispatching environment", name))
+	credential, err := ResolveCredential(record.Resolved.Routing)
+	if err != nil {
+		return finish(StateFailed, err.Error())
 	}
 	executable, err := deps.LookPath(record.Resolved.Harness)
 	if err != nil {
@@ -94,12 +95,18 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 	if err := os.MkdirAll(harnessHome, 0o700); err != nil {
 		return finish(StateFailed, fmt.Sprintf("create private harness home: %v", err))
 	}
+	// The harness is told the resolved variable *name*, whichever source the
+	// credential came from, so file-sourced credentials use the same
+	// per-process mechanism as environment-sourced ones.
+	routing := record.Resolved.Routing
+	routing.CredentialEnv = credential.EnvName
+	routing.CredentialFile = ""
 	argv, err := CodexArgv(HarnessOptions{
 		WorktreeDir:     record.WorktreeDir,
 		Model:           record.Resolved.Model,
 		Reasoning:       record.Resolved.Reasoning,
 		ProviderName:    record.Resolved.Provider,
-		Provider:        record.Resolved.Routing,
+		Provider:        routing,
 		LastMessagePath: store.LastMessagePath(agentID),
 	})
 	if err != nil {
@@ -117,7 +124,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 	// process table, and the command line stays free of it in every log.
 	command := process.CommandContext(ctx, executable, argv...)
 	command.Dir = record.WorktreeDir
-	command.Env = append(WorkerEnvironment(record.Resolved.Routing.CredentialEnv), "CODEX_HOME="+harnessHome)
+	command.Env = append(WorkerEnvironment(credential), "CODEX_HOME="+harnessHome)
 	command.Stdin = strings.NewReader(record.Task)
 	command.Stdout = log
 	command.Stderr = log
