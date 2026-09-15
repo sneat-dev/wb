@@ -95,7 +95,7 @@ resume`, and `merge revert` all acquire a durable landing-lane record for the
 be re-prepared or stranded. A different **live** WB session already driving
 that lane is **refused**, naming that session's WB session ID, pid,
 runtime/model, how long it has held the lane, and the receipt it is driving.
-Ask it to hand off with `wb session request-handoff <id>`, or override with
+Ask it to return control with `wb session recall <id>`, or override with
 `--take-over-lane --lane-reason <text>` (the same flag name on every landing
 command now — the reason is recorded on the lane and, for `worktree merge`,
 on the receipt's `lane_owner` field, so `--format json` shows it). A session

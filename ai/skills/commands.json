@@ -67,7 +67,15 @@
       "wb-install"
     ],
     "session": [
-      "wb-worktrees"
+      "wb-worktrees",
+      "park",
+      "pickup",
+      "move"
+    ],
+    "task": [
+      "offload",
+      "park",
+      "pickup"
     ],
     "skills": [
       "wb-skills"

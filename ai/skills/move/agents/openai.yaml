@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Move"
+  short_description: "Move this whole session to a successor now"
+  default_prompt: "Use $move to transfer this whole WB session to a successor now."

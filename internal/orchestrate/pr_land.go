@@ -344,7 +344,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			return mergeRefusal(result, landRefusal{
 				code:    LandRefusalLandingLaneHeld,
 				reason:  laneErr.Error(),
-				command: "wb session request-handoff " + conflict.Record.Owner.WBSessionID,
+				command: "wb session recall " + conflict.Record.Owner.WBSessionID,
 			}), nil
 		}
 		return result, laneErr

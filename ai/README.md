@@ -6,7 +6,11 @@
 |---|---|
 | `wb-install` | Install and verify an exact WB build |
 | `wb-branches` | Inspect and safely retire local and remote branches |
-| `wb-worktrees` | Guard, create, inspect, and clean worktrees; move registered sessions |
+| `wb-worktrees` | Guard, create, inspect, and clean worktrees |
+| `park` | Freeze a session or named task without starting a successor |
+| `pickup` | Start a successor for a parked session or task |
+| `move` | Transfer this whole session to a successor now |
+| `offload` | Start a successor session for a portion of work |
 | `wb-hooks` | Install, inspect, repair, and measure Git hooks |
 | `wb-deps` | Graph, set, and bump dependencies |
 | `wb-ci` | Audit CI/CD policy |

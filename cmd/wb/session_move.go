@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
@@ -30,10 +31,12 @@ const maxSessionHandoverBytes = 1 << 20
 type sessionMoveDependencies struct {
 	defaultConfigPath func() string
 	loadConfig        func(string) (sessionmove.Config, error)
+	localMachine      func() (string, error)
 	resolveSource     func() (session.Record, bool, error)
 	checkpoint        func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error)
 	store             func(string) (sessionmove.Store, error)
 	newDeliverer      func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error)
+	loopbackDeliverer func(sessionmove.Store) sessioncourier.Deliverer
 	acknowledge       func(context.Context, sessioncustody.Options) (sessioncustody.Result, error)
 }
 
@@ -41,6 +44,13 @@ func defaultSessionMoveDependencies() sessionMoveDependencies {
 	return sessionMoveDependencies{
 		defaultConfigPath: wbconfig.DefaultPath,
 		loadConfig:        sessionmove.LoadConfig,
+		localMachine: func() (string, error) {
+			config, err := remotestate.LoadConfig(wbconfig.DefaultPath())
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(config.Machine), nil
+		},
 		resolveSource: func() (session.Record, bool, error) {
 			directory, err := sessionDirForRead()
 			if err != nil {
@@ -93,7 +103,7 @@ func newSessionMoveCmd() *cobra.Command {
 }
 
 func newSessionMoveCmdWithDeps(deps sessionMoveDependencies) *cobra.Command {
-	var targetMachine, via, configPath, handoverFile, harness, resume string
+	var targetMachine, via, configPath, handoverFile, harness, model, resume string
 	var summary, validation, remaining, format string
 	var overrideSecrets []string
 	command := &cobra.Command{
@@ -109,10 +119,13 @@ successor. WB performs a normal non-force push of the exact source commit,
 verifies that exact commit as the remote branch tip, and records an offer
 without transferring source custody. It then delivers the exact request
 through the selected immutable courier route and starts the successor in a
-named tmux session. Only a durable target receipt lets WB publish the stable
-successor address and seal predecessor custody. If delivery or acknowledgement
-is ambiguous, retry the same handoff with --resume; WB repairs the exact
-aggregate and never creates a second checkpoint or successor for that retry.`,
+named tmux session. Omit --to, or pass this machine's validated
+remote.machine, to deliver in-process via the loopback courier rather than
+SSH. Only a durable target receipt lets WB publish the stable successor
+address and seal predecessor custody. If delivery or acknowledgement is
+ambiguous, retry the same handoff with --resume; WB repairs the exact
+aggregate and never creates a second checkpoint or successor for that retry. For
+a whole-session transfer that may be dirty, park then pickup instead.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -123,23 +136,47 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 				return runSessionMoveResume(command, deps, resume, via, configPath, format, args)
 			}
 			targetMachine = strings.TrimSpace(targetMachine)
-			if targetMachine == "" {
-				return fmt.Errorf("--to is required")
+			localMachine := ""
+			if deps.localMachine != nil {
+				machine, machineErr := deps.localMachine()
+				if machineErr != nil && targetMachine == "" {
+					return fmt.Errorf("resolve this machine for a local move: %w", machineErr)
+				}
+				if machineErr == nil {
+					localMachine = strings.TrimSpace(machine)
+				}
 			}
+			if targetMachine == "" {
+				if localMachine == "" {
+					return fmt.Errorf("--to is required when this machine has no validated remote.machine")
+				}
+				targetMachine = localMachine
+			}
+			useLoopback := localMachine != "" && targetMachine == localMachine
 			if strings.TrimSpace(configPath) == "" {
 				configPath = deps.defaultConfigPath()
 			}
-			config, err := deps.loadConfig(configPath)
-			if err != nil {
-				return err
-			}
-			target, ok := config.Target(targetMachine)
-			if !ok {
-				return fmt.Errorf("session move target %q is not configured in %s", targetMachine, configPath)
-			}
-			courier, err := selectSessionMoveCourier(target, via)
-			if err != nil {
-				return err
+			var target sessionmove.TargetConfig
+			var courier sessionmove.Courier
+			if useLoopback {
+				if via != "" && sessionmove.Courier(strings.TrimSpace(via)) != sessionmove.CourierLoopback {
+					return fmt.Errorf("local move on this machine uses the loopback courier; omit --via or pass --via loopback")
+				}
+				courier = sessionmove.CourierLoopback
+			} else {
+				config, err := deps.loadConfig(configPath)
+				if err != nil {
+					return err
+				}
+				var ok bool
+				target, ok = config.Target(targetMachine)
+				if !ok {
+					return fmt.Errorf("session move target %q is not configured in %s", targetMachine, configPath)
+				}
+				courier, err = selectSessionMoveCourier(target, via)
+				if err != nil {
+					return err
+				}
 			}
 			var deliveryStore sessionmove.Store
 			storeReady := false
@@ -153,9 +190,13 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 					return saveErr
 				}
 			}
-			deliverer, err := deps.newDeliverer(target, courier, freshOptions)
-			if err != nil {
-				return err
+			var deliverer sessioncourier.Deliverer
+			var err error
+			if courier != sessionmove.CourierLoopback {
+				deliverer, err = deps.newDeliverer(target, courier, freshOptions)
+				if err != nil {
+					return err
+				}
 			}
 			source, ok, err := deps.resolveSource()
 			if err != nil {
@@ -164,9 +205,14 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 			if !ok {
 				return fmt.Errorf("session move requires a live registered source session that owns this process; run wb session register at session start")
 			}
-			if err := sessionlaunch.ValidateHarnessSelection(source.Runtime, harness); err != nil {
+			normalizedHarness, err := sessionlaunch.NormalizeRuntime(source.Runtime, harness)
+			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(harness) == "" {
+				normalizedHarness = ""
+			}
+			model = sessionlaunch.NormalizeModel(model)
 			body, err := readSessionHandover(command, handoverFile)
 			if err != nil {
 				return err
@@ -190,7 +236,8 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 				Worktree:         argumentOrCurrent(args),
 				SourceSession:    source,
 				TargetMachine:    targetMachine,
-				RequestedHarness: harness,
+				RequestedHarness: normalizedHarness,
+				RequestedModel:   model,
 				Handover: worktrees.SessionHandover{
 					Summary: summary, ValidationEvidence: validation, RemainingWork: remaining, Body: body,
 				},
@@ -206,6 +253,16 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 				return resumablePostCheckpointError(result.Request.HandoffID, "open durable move state", err)
 			}
 			storeReady = true
+			if courier == sessionmove.CourierLoopback {
+				if deps.loopbackDeliverer != nil {
+					deliverer = deps.loopbackDeliverer(deliveryStore)
+				} else {
+					deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: projectsRoot, Store: deliveryStore}
+				}
+			}
+			if deliverer == nil {
+				return fmt.Errorf("session move courier %q is not configured", courier)
+			}
 			route := sessionMoveRoute(result.Request, result.Digest, courier, target)
 			if _, _, err := deliveryStore.SaveRoute(route); err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "persist immutable courier route", err)
@@ -233,14 +290,15 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 			return err
 		},
 	}
-	command.Flags().StringVar(&targetMachine, "to", "", "configured target WB machine (required)")
-	command.Flags().StringVar(&via, "via", "", "configured courier: ssh or synchestra (default: target default_courier)")
+	command.Flags().StringVar(&targetMachine, "to", "", "target WB machine (default: this machine's remote.machine)")
+	command.Flags().StringVar(&via, "via", "", "configured courier: ssh, synchestra, or loopback for this machine")
 	command.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	command.Flags().StringVar(&handoverFile, "handover-file", "", "agent-authored handover file, or - for stdin (required)")
 	command.Flags().StringVar(&summary, "summary", "", "handover summary recorded in the tracked document and Work Log")
 	command.Flags().StringVar(&validation, "validation", "", "validation evidence recorded in the tracked document")
 	command.Flags().StringVar(&remaining, "remaining", "", "remaining work and next action recorded in the tracked document")
-	command.Flags().StringVar(&harness, "harness", "", "requested successor harness (default: source runtime)")
+	command.Flags().StringVar(&harness, "harness", "", "requested successor harness (claude or codex; default: source runtime)")
+	command.Flags().StringVar(&model, "model", "", "requested successor model (always passed when set)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&resume, "resume", "", "retry the exact immutable courier route for an existing handoff ID")
 	command.Flags().StringArrayVar(&overrideSecrets, secretOverrideFlagName, nil, secretOverrideFlagHelp)
@@ -248,7 +306,7 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 }
 
 func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, handoffID, via, configPath, format string, args []string) error {
-	if len(args) != 0 || command.Flags().Changed("handover-file") || command.Flags().Changed("harness") || command.Flags().Changed("summary") ||
+	if len(args) != 0 || command.Flags().Changed("handover-file") || command.Flags().Changed("harness") || command.Flags().Changed("model") || command.Flags().Changed("summary") ||
 		command.Flags().Changed("validation") || command.Flags().Changed("remaining") || command.Flags().Changed("to") ||
 		command.Flags().Changed(secretOverrideFlagName) {
 		return fmt.Errorf("--resume accepts only an existing handoff ID plus optional --via, --config, and --format")
@@ -314,7 +372,23 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 		if optionsErr != nil {
 			return optionsErr
 		}
-		deliverer, delivererErr := deps.newDeliverer(target, route.Courier, options)
+		var deliverer sessioncourier.Deliverer
+		var delivererErr error
+		if route.Courier == sessionmove.CourierLoopback {
+			if deps.loopbackDeliverer != nil {
+				deliverer = deps.loopbackDeliverer(store)
+			} else {
+				localMachine := route.TargetMachine
+				if deps.localMachine != nil {
+					if machine, machineErr := deps.localMachine(); machineErr == nil {
+						localMachine = strings.TrimSpace(machine)
+					}
+				}
+				deliverer = sessioncourier.LoopbackDeliverer{LocalMachine: localMachine, ProjectsRoot: projectsRoot, Store: store}
+			}
+		} else {
+			deliverer, delivererErr = deps.newDeliverer(target, route.Courier, options)
+		}
 		if delivererErr != nil {
 			return delivererErr
 		}

@@ -328,6 +328,11 @@ func validateCourierRoute(route Route) error {
 			return errors.New("synchestra courier route must contain only one configured runner address")
 		}
 		return route.Synchestra.Validate()
+	case CourierLoopback:
+		if route.SSH != nil || route.Synchestra != nil {
+			return errors.New("loopback courier route must not carry a remote address")
+		}
+		return nil
 	default:
 		return errors.New("durable courier route is unsupported by this WB build")
 	}

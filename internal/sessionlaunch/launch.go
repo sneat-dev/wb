@@ -177,7 +177,8 @@ func resolveAuthority(options Options) (resolvedAuthority, error) {
 			SuccessorWBSessionID: options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
 			TargetMachine: options.Request.TargetMachine, SourceRuntime: options.Request.SourceRuntime,
 			SourceModel: options.Request.SourceModel, RequestedHarness: options.Request.RequestedHarness,
-			PinnedCommit: options.Request.BundleCommit, PinnedBranch: "wb-session/" + options.Request.HandoffID,
+			RequestedModel: options.Request.RequestedModel,
+			PinnedCommit:   options.Request.BundleCommit, PinnedBranch: "wb-session/" + options.Request.HandoffID,
 			ContinuationKind: continuationKind, ContinuationPath: continuationPath,
 			ContinuationDigest: string(options.Request.HandoverDigest),
 		}

@@ -49,6 +49,7 @@ type Launch struct {
 	SourceRuntime          string
 	SourceModel            string
 	RequestedHarness       string
+	RequestedModel         string
 	PinnedCommit           string
 	PinnedBranch           string
 	ContinuationKind       ContinuationKind
@@ -97,7 +98,8 @@ func (launch Launch) Validate() error {
 	if strings.TrimSpace(launch.SourceRuntime) == "" || strings.ContainsAny(launch.SourceRuntime, "\r\n") {
 		return fmt.Errorf("source runtime is required and must be single-line")
 	}
-	if strings.ContainsAny(launch.SourceModel, "\r\n") || strings.ContainsAny(launch.RequestedHarness, "\r\n") {
+	if strings.ContainsAny(launch.SourceModel, "\r\n") || strings.ContainsAny(launch.RequestedHarness, "\r\n") ||
+		strings.ContainsAny(launch.RequestedModel, "\r\n") {
 		return fmt.Errorf("model and requested harness must be single-line")
 	}
 	mode := launch.RootMode
