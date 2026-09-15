@@ -1,6 +1,6 @@
 //go:build windows
 
-package lifecyclehooks
+package process
 
 import (
 	"os/exec"
@@ -9,7 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func configureDetached(command *exec.Cmd) {
+// ConfigureDetached starts a child in its own process group with no console and
+// no window, so it survives the process that started it.
+func ConfigureDetached(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
 		HideWindow:    true,

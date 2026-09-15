@@ -24,14 +24,31 @@ type HarnessSpec struct {
 }
 
 func ValidateHarnessSelection(sourceRuntime, requested string) error {
-	runtime := strings.TrimSpace(requested)
-	if runtime == "" {
+	_, err := NormalizeRuntime(sourceRuntime, requested)
+	return err
+}
+
+// NormalizeRuntime maps spoken harness names to the closed launch runtimes.
+// Empty requested keeps the source runtime. "claude" and "claude-code" both
+// select Claude Code; "codex" selects Codex.
+func NormalizeRuntime(sourceRuntime, requested string) (string, error) {
+	runtime := strings.ToLower(strings.TrimSpace(requested))
+	switch runtime {
+	case "":
 		runtime = strings.TrimSpace(sourceRuntime)
+	case "claude", "claude-code", "claude code":
+		runtime = RuntimeClaudeCode
+	case "codex":
+		runtime = RuntimeCodex
 	}
 	if runtime != RuntimeCodex && runtime != RuntimeClaudeCode {
-		return fmt.Errorf("requested harness %q is unsupported; supported harnesses are %q and %q", runtime, RuntimeCodex, RuntimeClaudeCode)
+		return "", fmt.Errorf("requested harness %q is unsupported; supported harnesses are %q and %q", strings.TrimSpace(requested), RuntimeCodex, RuntimeClaudeCode)
 	}
-	return nil
+	return runtime, nil
+}
+
+func NormalizeModel(model string) string {
+	return strings.TrimSpace(model)
 }
 
 // requestContinuationKind reports how request's handover is delivered: the
@@ -50,6 +67,7 @@ func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, err
 		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		PredecessorWBSessionID: request.PredecessorWBSessionID, SourceRuntime: request.SourceRuntime,
 		SourceModel: request.SourceModel, RequestedHarness: request.RequestedHarness,
+		RequestedModel: request.RequestedModel,
 		// ContinuationPath is only ever interpolated into the prompt for the
 		// Tracked branch (see launchPromptForAuthority); leaving it at the
 		// legacy HandoverPath (empty for a new-style request) is therefore
@@ -62,15 +80,12 @@ func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, err
 }
 
 func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string) (HarnessSpec, error) {
-	runtime := strings.TrimSpace(authority.RequestedHarness)
-	if runtime == "" {
-		runtime = strings.TrimSpace(authority.SourceRuntime)
-	}
-	if err := ValidateHarnessSelection(authority.SourceRuntime, authority.RequestedHarness); err != nil {
+	runtime, err := NormalizeRuntime(authority.SourceRuntime, authority.RequestedHarness)
+	if err != nil {
 		return HarnessSpec{}, err
 	}
-	model := ""
-	if runtime == strings.TrimSpace(authority.SourceRuntime) {
+	model := strings.TrimSpace(authority.RequestedModel)
+	if model == "" && runtime == strings.TrimSpace(authority.SourceRuntime) {
 		model = strings.TrimSpace(authority.SourceModel)
 	}
 	prompt := launchPromptForAuthority(authority)

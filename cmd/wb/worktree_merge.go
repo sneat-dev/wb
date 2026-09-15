@@ -118,7 +118,7 @@ LANDING LANE. Only one live WB session may drive this (repository, target)
 lane at a time, across merge, prepare, land, resume, and revert. A different
 live session already landing here is refused, naming that session, its pid,
 and the receipt it is driving; ask it to hand off with
-'wb session request-handoff <id>', or force the issue with
+'wb session recall <id>', or force the issue with
 --take-over-lane --lane-reason "<text>" (recorded on the lane and the
 receipt). A session whose registry entry is gone, or whose heartbeat has gone
 stale, is taken over automatically with a printed note.`,

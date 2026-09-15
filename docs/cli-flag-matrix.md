@@ -56,7 +56,9 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `fleet prs` | rejected | rejected | yes | yes |
 | `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
-| `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
+| `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` (`pickup` alias), `recall` (`request-handoff` alias), `send`, `receive-message` | yes | rejected | rejected | yes |
+| `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
+| `agent dispatch`, `status`, `await`, `list`, `logs`, `stop` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |

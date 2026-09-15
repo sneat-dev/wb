@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Pickup"
+  short_description: "Resume a parked session or task"
+  default_prompt: "Use $pickup to start a successor for a parked WB session or task."

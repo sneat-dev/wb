@@ -48,6 +48,8 @@ record the confirmation. Never challenge the same instruction twice.
 - Cross-repo dependency-release campaigns → `wb-dependency-campaign`
 - Installing WB's own Agent Skills into a harness's skills directory →
   `wb-skills`
+- Park / pickup / move this session, or offload a portion of work → `$park`,
+  `$pickup`, `$move`, `$offload`
 
 Not sure which command matches an intent? Search the structured catalog:
 

@@ -194,7 +194,7 @@ jobs:
           go run ./cmd/wb coverage .
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=58
+          --minimum=72
           --format json
           --non-interactive
           --timeout 20m

@@ -106,9 +106,9 @@ diagnose it; do not repeat the whole gate.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
   (checkpoint, steer, refresh, handoff, recover, finalize, sync).
 - Read [ownership.md](references/ownership.md) to register a session
-  (`wb session register`), move or resume it through `wb session move`, attach
-  an agent to a worktree, inspect owner metadata and PID liveness, or triage
-  active/orphaned worktrees.
+  (`wb session register`), attach an agent to a worktree, inspect owner
+  metadata and PID liveness, or triage active/orphaned worktrees. Park, pickup,
+  move, or offload use `$park`, `$pickup`, `$move`, and `$offload`.
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.

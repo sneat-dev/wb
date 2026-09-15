@@ -1116,3 +1116,14 @@ func TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) 
 		t.Fatalf("overridden continuation was not durably preserved: %#v", state.Bundle)
 	}
 }
+
+func TestSessionPickupIsResumeAlias(t *testing.T) {
+	root := newRootCmd()
+	command, _, err := root.Find([]string{"session", "pickup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Name() != "resume" {
+		t.Fatalf("session pickup resolved to %q, want resume", command.Name())
+	}
+}

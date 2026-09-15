@@ -61,7 +61,7 @@ func TestAcquireRefusesDifferentLiveSession(t *testing.T) {
 		t.Fatalf("conflict names %q, want wbs-a", conflict.Record.Owner.WBSessionID)
 	}
 	message := conflict.Error()
-	if !contains(message, "wbs-a") || !contains(message, "wb pr land") || !contains(message, "request-handoff") || !contains(message, "--take-over-lane") {
+	if !contains(message, "wbs-a") || !contains(message, "wb pr land") || !contains(message, "recall") || !contains(message, "--take-over-lane") {
 		t.Fatalf("conflict message missing required detail: %s", message)
 	}
 }
