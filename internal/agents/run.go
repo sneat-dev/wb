@@ -152,12 +152,16 @@ type Record struct {
 // than derived by embedding, so the private task can never reach a caller by
 // accident: adding a field to Record does not add it here.
 type Result struct {
-	AgentID            string         `json:"agent_id"`
+	AgentID string `json:"agent_id"`
+	// Machine names the machine that holds this run's record and worktree. It
+	// is empty for a run dispatched by this machine and is stamped by the caller
+	// that asked another machine, so a result always says where its artefact
+	// lives.
+	Machine            string         `json:"machine,omitempty"`
 	State              State          `json:"state"`
 	Terminal           bool           `json:"terminal"`
 	RequestedProfile   string         `json:"profile"`
 	Resolved           Resolved       `json:"resolved"`
-	TaskSummary        string         `json:"task_summary,omitempty"`
 	Repository         string         `json:"repository"`
 	WorktreeMode       string         `json:"worktree_mode"`
 	Worktree           string         `json:"worktree"`
@@ -180,6 +184,17 @@ type Result struct {
 	Changes            *ChangeSummary `json:"changes,omitempty"`
 	HarnessDiagnostics []string       `json:"harness_diagnostics,omitempty"`
 	LogPath            string         `json:"log_path,omitempty"`
+}
+
+// NormalizeState makes this process's closed state vocabulary authoritative for
+// a result that arrived from somewhere else. A remote answer carries a state;
+// whether that state is terminal is WB's rule, so it is derived here rather
+// than trusted from the wire, where a version skew could disagree.
+func NormalizeState(result *Result) {
+	if result == nil {
+		return
+	}
+	result.Terminal = result.State.Terminal()
 }
 
 // Render projects a record for output, resolving a run whose owner vanished

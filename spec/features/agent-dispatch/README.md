@@ -31,6 +31,12 @@ cheaper worker model and receive a compact, trustworthy result. DeepSeek-backed
 Codex is the first provider proven this way; nothing DeepSeek-specific may
 leak into the run, status, or dispatch code paths.
 
+Any command in the family may also address **another configured machine** over
+SSH (`--to <machine>`, or a `machine:agent-id` reference). The remote machine
+performs the same dispatch locally, so its record and the worktree it produces
+stay on the machine that owns them, and this machine keeps no mirror that could
+go stale.
+
 ## Problem
 
 WB already isolates workspaces (worktrees) and records agent sessions, and it
@@ -465,6 +471,82 @@ The complete worker transcript MUST be preserved for debugging and MUST be
 reachable through an explicit logs surface that identifies its location and
 supports bounded inspection. Routine result paths MUST NOT embed it.
 
+### Remote dispatch over SSH
+
+A machine is a first-class dimension of the same command family, not a second
+feature. Everything above still holds on the machine that runs the work; this
+section governs only how a caller reaches it.
+
+#### REQ: remote-machine-resolution-reuses-wb-machine-map
+
+A remote machine MUST be resolved from WB's existing configured machine map
+(`session_move.targets`, keyed by machine name, with its `ssh.host`, `ssh.user`,
+and `ssh.wb_path`). The feature MUST NOT introduce a second host list: a machine
+and its courier address are one fact about the fleet, and two lists are two
+places to be wrong. An unconfigured machine name MUST be refused as a
+usage-class error naming the machines that are configured.
+
+#### REQ: remote-request-travels-on-stdin
+
+The request MUST travel to the other machine as exact bytes on standard input.
+It MUST NOT be interpolated into the remote command line, because OpenSSH joins
+the remote arguments into one string that the remote login shell then parses;
+the remote command line MUST consist only of fixed constants and validated
+configuration. Every part of the request that originates with the caller — the
+task above all — therefore never appears in a process table on either machine.
+
+#### REQ: remote-request-is-validated-identically
+
+The receiving machine MUST validate the request with the same constraints it
+applies to its own command line, so a hand-written or hostile request cannot
+reach a state a local invocation could not. The request MUST carry an explicit
+schema version and MUST be refused when the version is unsupported, so a
+version skew fails as a clear refusal rather than as a misread document.
+
+#### REQ: remote-records-stay-on-the-owning-machine
+
+A remote run's record, log, harness home, and worktree MUST live on the machine
+that ran it. This machine MUST NOT keep a local copy of a remote run, because a
+local mirror can only go stale; a remote result MUST instead be labelled with
+the machine that owns it, and a caller MUST be able to name that machine again
+with either an explicit option or a machine-qualified reference.
+
+#### REQ: remote-refusal-is-not-a-transport-failure
+
+A refusal decided on the other machine MUST reach the caller as a structured
+refusal carrying that machine's own message, distinguishable from a transport
+failure. An unreachable machine, a dropped connection, a target too old to
+understand the request, and an oversized answer MUST each be reported as such,
+quoting a bounded, sanitised remote diagnostic rather than raw remote bytes.
+
+#### REQ: remote-await-holds-one-connection
+
+Waiting on another machine MUST occupy one connection for the whole wait rather
+than one call per polling interval: the remote WB performs the waiting. The
+transport bound MUST outlast the caller's wait bound, so a slow but healthy
+worker cannot be mistaken for a dropped connection, and an elapsed wait bound
+MUST still be reported as a non-terminal outcome rather than as success.
+
+#### REQ: local-vocabulary-is-authoritative-over-the-wire
+
+The receiving machine's answer supplies a state; whether that state is terminal
+MUST be re-derived locally from this WB's closed vocabulary rather than trusted
+from the wire, so a version skew can never make a finished run read as pending
+or a pending run read as finished.
+
+#### REQ: remote-credentials-are-not-forwarded
+
+Dispatching to another machine MUST NOT copy this machine's provider
+credentials to it. Each machine authenticates with its own credential, and a
+machine that lacks one MUST fail with its own actionable message naming the
+variable.
+
+#### REQ: remote-transcript-is-bounded-and-refused-not-truncated
+
+Fetching another machine's transcript MUST be bounded. A transcript larger than
+the bound MUST be refused with an instruction to read it on that machine, rather
+than silently truncated: a truncated transcript is a misleading transcript.
+
 ### Security boundaries
 
 #### REQ: no-secret-in-argv-logs-or-records
@@ -776,6 +858,61 @@ Given the `/offload` skill and a bounded task with acceptance criteria
 When a parent agent runs the skill
 Then it delegates to the harness's cheap supervisor subagent, which dispatches through `wb agent dispatch`, awaits with `wb agent await`, verifies against the original request, and returns exactly one of `PASS`, `FAIL`, or `ESCALATE` with supporting evidence, without the parent consuming the worker transcript, and without WB itself emitting any verdict
 
+### AC: remote-dispatch-runs-on-the-named-machine (verifies REQ:remote-machine-resolution-reuses-wb-machine-map, REQ:remote-request-travels-on-stdin, REQ:remote-records-stay-on-the-owning-machine, REQ:remote-request-is-validated-identically)
+
+Scenario: Dispatch to a configured machine
+Given a configured machine with an SSH address and a wb that supports this feature
+When `wb agent dispatch --to <machine> --new-worktree <name> --profile <profile> --task-file <brief>` runs
+Then the request is delivered on standard input, the remote command line contains only constants, that machine creates the worktree and the run record, and this machine reports the run under a machine-qualified reference
+
+Scenario: The request never reaches a remote command line
+Given a task containing shell metacharacters
+When it is dispatched to another machine
+Then the task appears in neither the local nor the remote process argument list
+
+Scenario: A machine that is not configured
+When dispatch names an unconfigured machine
+Then WB refuses with a usage-class error listing the configured machines
+
+Scenario: A target that predates the feature
+Given a machine whose wb does not understand the request
+When it is dispatched to
+Then the failure names that machine and quotes its diagnostic, rather than reporting a run that never started
+
+### AC: remote-inspection-asks-the-owning-machine (verifies REQ:remote-records-stay-on-the-owning-machine, REQ:remote-refusal-is-not-a-transport-failure, REQ:local-vocabulary-is-authoritative-over-the-wire, REQ:remote-transcript-is-bounded-and-refused-not-truncated)
+
+Scenario: Inspecting a remote run
+Given a run dispatched to another machine
+When status, await, list, logs, or stop names that run — by `--to`, or by a `machine:agent-id` reference — with an unreachable machine
+Then the failure is reported as a transport failure naming the machine
+
+Scenario: A refusal arrives as a refusal
+Given a remote machine that answers a well-formed refusal
+When the caller inspects a run
+Then the caller reports that machine's own message and never presents it as a transport failure
+
+Scenario: A remote answer cannot redefine a terminal state
+Given a remote answer whose terminal flag disagrees with the state it reports
+When the local side renders it
+Then the local closed vocabulary decides, so a finished run is never reported as pending and a pending run is never reported as finished
+
+Scenario: A transcript too large to ship
+Given a remote transcript larger than the bound
+When logs are requested
+Then WB refuses and points at the machine that holds it instead of truncating
+
+### AC: remote-await-waits-on-the-other-machine (verifies REQ:remote-await-holds-one-connection, REQ:remote-credentials-are-not-forwarded)
+
+Scenario: One connection for a long wait
+Given a run on another machine that has not finished
+When `wb agent await <machine>:<agent-id> --wait-timeout <bound>` runs
+Then exactly one remote call is made, the transport bound exceeds the wait bound, and an elapsed bound is reported as a non-terminal outcome with the findings exit code
+
+Scenario: Credentials are not carried across
+Given a machine whose provider credential is absent from its environment
+When work is dispatched to it
+Then that machine fails with its own message naming the missing variable, and no credential from this machine is sent
+
 ### AC: live-deepseek-worker-round-trip (verifies REQ:harness-launch-is-per-process-and-ephemeral, REQ:no-global-harness-configuration-mutation)
 
 Scenario: DeepSeek-backed Codex smoke test
@@ -791,9 +928,10 @@ Deliberately excluded. Each is a plausible later feature; none may inflate this
 one.
 
 - `wb agent submit`, a queued state, a scheduler, or a priority queue.
-- CPU-aware, memory-aware, or any capacity-aware scheduling; worker pools; host
-  selection; distributed execution; remote host selection. A worker runs on the
-  machine that dispatched it.
+- CPU-aware, memory-aware, or any capacity-aware scheduling; worker pools;
+  distributed execution; choosing a machine by load, cost, or capability; or
+  fanning one task across several machines. A caller names one machine
+  explicitly; WB never picks, ranks, or balances machines.
 - Profile `skills`, capability matching, resource declarations, inheritance,
   templates, or per-repository profiles.
 - Automatic model selection, fleet-wide propagation, or cost optimisation.

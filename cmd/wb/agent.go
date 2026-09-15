@@ -14,7 +14,6 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func newAgentCmd() *cobra.Command {
@@ -45,7 +44,13 @@ Provider routing (base URL, credential environment variable, wire protocol)
 comes from a small built-in registry a project may override under
 ` + "`agents.providers`" + `. Credentials are read from the environment and are never
 stored in configuration, passed in an argument list, or written to a run
-record.`,
+record.
+
+Any command here also accepts ` + "`--to <machine>`" + `, which performs that operation on
+another configured WB machine over SSH. The machine is resolved from WB's
+existing session_move.targets map; the request travels on standard input rather
+than in the remote command line; and a remote run's record and worktree stay on
+the machine that owns them.`,
 	}
 	command.AddCommand(newAgentDispatchCmd())
 	command.AddCommand(newAgentStatusCmd())
@@ -56,8 +61,8 @@ record.`,
 	return command
 }
 
-// agentConfigPath is WB's existing user configuration file. Profiles live
-// there rather than in a second configuration hierarchy.
+// agentConfigPath is WB's existing user configuration file. Profiles live there
+// rather than in a second configuration hierarchy.
 func agentConfigPath() string { return wbconfig.DefaultPath() }
 
 func loadAgentConfig() (agents.Config, error) {
@@ -101,10 +106,85 @@ func writeAgentJSON(writer io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+func newRemoteRequest(operation string) agents.RemoteRequest {
+	return agents.RemoteRequest{SchemaVersion: 1, Operation: operation}
+}
+
+// ---------------------------------------------------------------- remote side
+
+// agentRemoteTarget decides whether an invocation addresses another machine.
+// An explicit --to and a machine-qualified reference must agree; either alone
+// is enough. An empty target means "run locally".
+func agentRemoteTarget(explicitTo, reference string) (agents.RemoteTarget, string, error) {
+	refMachine, agentID, err := agents.SplitAgentRef(reference)
+	if err != nil {
+		return agents.RemoteTarget{}, "", err
+	}
+	machine := strings.TrimSpace(explicitTo)
+	if machine != "" && refMachine != "" && machine != refMachine {
+		return agents.RemoteTarget{}, "", usageError(fmt.Sprintf(
+			"--to %s conflicts with the machine named in %q", machine, reference))
+	}
+	if machine == "" {
+		machine = refMachine
+	}
+	if machine == "" {
+		return agents.RemoteTarget{}, agentID, nil
+	}
+	target, err := agents.ResolveRemoteTarget(agentConfigPath(), machine)
+	if err != nil {
+		if agents.IsRequestError(err) {
+			return agents.RemoteTarget{}, "", usageError(err.Error())
+		}
+		return agents.RemoteTarget{}, "", err
+	}
+	return target, agentID, nil
+}
+
+func callAgentRemote(command *cobra.Command, target agents.RemoteTarget, request agents.RemoteRequest) (agents.RemoteResponse, error) {
+	response, err := agents.CallRemote(command.Context(), target, request, agents.DefaultRemoteDeps())
+	if err != nil {
+		if agents.IsRequestError(err) {
+			return response, usageError(err.Error())
+		}
+		// An unreachable machine, a dropped connection, and a remote refusal are
+		// all findings: the invocation was valid and produced no result.
+		return response, &exitError{code: exitFindings, message: err.Error()}
+	}
+	return response, nil
+}
+
+// agentReference is what a caller passes back to status, await, logs, or stop.
+// A remote run is qualified by its machine, so one token carries both where the
+// run lives and which run it is.
+func agentReference(result agents.Result) string {
+	if result.Machine == "" {
+		return result.AgentID
+	}
+	return result.Machine + ":" + result.AgentID
+}
+
+// remoteResult turns a decoded remote answer into a local result: it names the
+// machine that owns the run and re-derives terminality from the state, so the
+// decision about what "finished" means never comes from the wire.
+func remoteResult(target agents.RemoteTarget, response agents.RemoteResponse) agents.Result {
+	result := *response.Result
+	result.Machine = target.Machine
+	agents.NormalizeState(&result)
+	return result
+}
+
+func agentLookupError(err error) error {
+	if agents.IsUnknownAgent(err) {
+		return &exitError{code: exitFindings, message: err.Error()}
+	}
+	return err
+}
+
 // ------------------------------------------------------------------ dispatch
 
 func newAgentDispatchCmd() *cobra.Command {
-	var newWorktree, useWorktree, profile, task, taskFile, repository, branch, base string
+	var newWorktree, useWorktree, profile, task, taskFile, repository, branch, base, to string
 	var jsonOut bool
 	var timeout time.Duration
 	command := &cobra.Command{
@@ -121,18 +201,23 @@ explicit options:
 
 Exactly one task source is required: --task, or --task-file (with ` + "`-`" + ` for
 stdin). Task bytes are delivered to the harness on standard input, so they never
-appear in the process table.`,
+appear in the process table.
+
+With --to, the same dispatch runs on another configured machine: that machine
+creates the worktree, launches the worker, and keeps both the run record and the
+worktree it produces. The task travels on standard input, never in the remote
+command line. The target must be able to reach its own provider credential: WB
+does not copy this machine's credentials to another machine.`,
 		Example: `# Start a bounded task in a fresh isolated worktree
 wb agent dispatch \
   --new-worktree cg-symbol-api \
   --profile cheap-coder \
   --task "Implement the requested symbol API and run the relevant tests"
 
-# Continue in the worktree the first worker produced
-wb agent dispatch \
-  --use-worktree cg-symbol-api \
-  --profile reviewer \
-  --task-file /tmp/review-task.md`,
+# Run that work on another configured machine instead
+wb agent dispatch --to hetzner-vm1 \
+  --new-worktree cg-symbol-api --repo sneat-dev/wb \
+  --profile cheap-coder --task-file /tmp/brief.md`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			mode, name, err := selectWorktreeMode(command, newWorktree, useWorktree)
@@ -143,24 +228,29 @@ wb agent dispatch \
 			if err != nil {
 				return err
 			}
-			home, err := agentHomeForWrite()
+			target, _, err := agentRemoteTarget(to, "")
 			if err != nil {
 				return err
 			}
-			store := agents.NewStore(home)
-			deps := agents.DispatchDeps{
-				ConfigPath:   agentConfigPath(),
-				LoadConfig:   loadAgentConfig,
-				ProjectsRoot: projectsRoot,
-				Home:         home,
-				BeforeCreate: refreshManagedHooksBeforeWorktreeCreate,
-				AfterCreate: func(repositories []string, results []worktrees.CreateResult) {
-					markCreatedCheckouts(command, base, results)
-				},
-				SpawnOwner: func(agentID string) (int, error) {
-					return agents.SpawnOwner(store.Dir(agentID), os.Executable)
-				},
-				Now: time.Now,
+			if target.Machine != "" {
+				request := newRemoteRequest(agents.RemoteDispatch)
+				request.Mode, request.Worktree, request.Profile, request.Task = mode, name, profile, text
+				request.Repository, request.Branch, request.Base = repository, branch, base
+				request.TimeoutMS = timeout.Milliseconds()
+				response, err := callAgentRemote(command, target, request)
+				if err != nil {
+					return err
+				}
+				if response.Result == nil {
+					return &exitError{code: exitFindings, message: fmt.Sprintf("%s returned no dispatch result", target.Machine)}
+				}
+				result := remoteResult(target, response)
+				return renderAgentResult(command, jsonOut, result)
+			}
+
+			store, deps, err := agentDispatchDeps(command.ErrOrStderr(), base)
+			if err != nil {
+				return err
 			}
 			record, err := agents.Dispatch(command.Context(), agents.DispatchRequest{
 				Mode: mode, Worktree: name, Profile: profile, Task: text,
@@ -172,10 +262,10 @@ wb agent dispatch \
 				}
 				return err
 			}
-			return renderAgentResult(command, jsonOut, store, record)
+			return renderAgentResult(command, jsonOut, store.Render(record))
 		},
 	}
-	setDiscoveryTerms(command, "offload delegate dispatch start worker agent profile worktree isolated subagent codex deepseek parallel background task")
+	setDiscoveryTerms(command, "offload delegate dispatch start worker agent profile worktree isolated subagent codex deepseek parallel background task remote ssh machine host")
 	command.Flags().StringVar(&newWorktree, "new-worktree", "", "create a new WB-managed worktree with this name and run the worker inside it")
 	command.Flags().StringVar(&useWorktree, "use-worktree", "", "run the worker inside this existing WB-managed worktree")
 	command.Flags().StringVar(&profile, "profile", "", "required agent profile name from the agents.profiles section of wb.yaml")
@@ -184,6 +274,7 @@ wb agent dispatch \
 	command.Flags().StringVar(&repository, "repo", "", "owner/repository to operate on (default: derived from the current checkout's origin)")
 	command.Flags().StringVar(&branch, "branch", "", "optional exact feature branch, passed through to worktree creation policy")
 	command.Flags().StringVar(&base, "base", "", "optional base branch, passed through to worktree creation policy")
+	command.Flags().StringVar(&to, "to", "", "run the dispatch on this configured machine over SSH instead of locally")
 	command.Flags().DurationVar(&timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB terminates its process group")
 	addJSONFormatFlags(command, &jsonOut)
 	return command
@@ -237,13 +328,16 @@ func readAgentTask(command *cobra.Command, task, taskFile string) (string, error
 	}
 }
 
-func renderAgentResult(command *cobra.Command, jsonOut bool, store agents.Store, record agents.Record) error {
-	result := store.Render(record)
+func renderAgentResult(command *cobra.Command, jsonOut bool, result agents.Result) error {
 	if jsonOut {
 		return writeAgentJSON(command.OutOrStdout(), result)
 	}
+	location := result.Worktree
+	if result.Machine != "" {
+		location = result.Machine + ":" + result.Worktree
+	}
 	_, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s (%s/%s)\n",
-		result.AgentID, result.State, result.Worktree, result.Resolved.Provider, result.Resolved.Model)
+		agentReference(result), result.State, location, result.Resolved.Provider, result.Resolved.Model)
 	return err
 }
 
@@ -251,6 +345,7 @@ func renderAgentResult(command *cobra.Command, jsonOut bool, store agents.Store,
 
 func newAgentStatusCmd() *cobra.Command {
 	var jsonOut bool
+	var to string
 	command := &cobra.Command{
 		Use:   "status <agent-id>",
 		Short: "Report the execution facts of one dispatched agent run",
@@ -258,48 +353,65 @@ func newAgentStatusCmd() *cobra.Command {
 status, timestamps, exit status, and the log location.
 
 A run whose owner vanished without recording a terminal state is reported as
-` + "`abandoned`" + ` rather than as ` + "`running`" + ` or ` + "`completed`" + `.`,
+` + "`abandoned`" + ` rather than as ` + "`running`" + ` or ` + "`completed`" + `.
+
+A run ID may be qualified with the machine that owns it, exactly as dispatch
+prints it (` + "`hetzner-vm1:agt-…`" + `); ` + "`--to`" + ` names the machine separately. Either way
+WB asks that machine, because its record is the only copy of the truth.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			_, _, result, err := loadAgentResult(args[0])
+			target, agentID, err := agentRemoteTarget(to, args[0])
 			if err != nil {
-				if agents.IsUnknownAgent(err) {
-					return &exitError{code: exitFindings, message: err.Error()}
-				}
 				return err
 			}
-			if jsonOut {
-				return writeAgentJSON(command.OutOrStdout(), result)
+			if target.Machine != "" {
+				request := newRemoteRequest(agents.RemoteStatus)
+				request.AgentID = agentID
+				response, err := callAgentRemote(command, target, request)
+				if err != nil {
+					return err
+				}
+				if response.Result == nil {
+					return &exitError{code: exitFindings, message: fmt.Sprintf("%s returned no status result", target.Machine)}
+				}
+				return renderResult(command, jsonOut, remoteResult(target, response))
 			}
-			return printAgentStatusText(command.OutOrStdout(), result)
+			_, _, result, err := loadAgentResult(agentID)
+			if err != nil {
+				return agentLookupError(err)
+			}
+			return renderResult(command, jsonOut, result)
 		},
 	}
-	setDiscoveryTerms(command, "check inspect state agent run progress exit code logs status")
+	setDiscoveryTerms(command, "check inspect state agent run progress exit code logs status remote ssh machine")
+	command.Flags().StringVar(&to, "to", "", "ask this configured machine for the run instead of this one")
 	addJSONFormatFlags(command, &jsonOut)
 	return command
 }
 
-func aliveWord(alive bool) string {
-	if alive {
-		return "alive"
+func renderResult(command *cobra.Command, jsonOut bool, result agents.Result) error {
+	if jsonOut {
+		return writeAgentJSON(command.OutOrStdout(), result)
 	}
-	return "gone"
+	return printAgentStatusText(command.OutOrStdout(), result)
 }
 
 func printAgentStatusText(writer io.Writer, result agents.Result) error {
 	lines := []string{
-		"agent:    " + result.AgentID,
+		"agent:    " + agentReference(result),
 		"state:    " + string(result.State),
 		"profile:  " + result.RequestedProfile,
 		fmt.Sprintf("resolved: harness=%s provider=%s model=%s", result.Resolved.Harness, result.Resolved.Provider, result.Resolved.Model),
-		"worktree: " + result.Worktree + " (" + result.WorktreeMode + ") " + result.WorktreeDir,
-		"branch:   " + result.Branch,
-		"base:     " + strings.TrimSpace(result.Base+" "+result.BaseSHA),
-		"started:  " + result.StartedAt.Local().Format(time.RFC3339),
 	}
 	if result.Resolved.Reasoning != "" {
 		lines[3] += " reasoning=" + result.Resolved.Reasoning
 	}
+	lines = append(lines,
+		"worktree: "+result.Worktree+" ("+result.WorktreeMode+") "+result.WorktreeDir,
+		"branch:   "+result.Branch,
+		"base:     "+strings.TrimSpace(result.Base+" "+result.BaseSHA),
+		"started:  "+result.StartedAt.Local().Format(time.RFC3339),
+	)
 	if result.FinishedAt != nil {
 		lines = append(lines, "finished: "+result.FinishedAt.Local().Format(time.RFC3339),
 			fmt.Sprintf("duration: %s", (time.Duration(result.DurationMS)*time.Millisecond).Round(time.Millisecond)))
@@ -331,11 +443,19 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 	return nil
 }
 
+func aliveWord(alive bool) string {
+	if alive {
+		return "alive"
+	}
+	return "gone"
+}
+
 // --------------------------------------------------------------------- await
 
 func newAgentAwaitCmd() *cobra.Command {
 	var jsonOut bool
 	var waitTimeout time.Duration
+	var to string
 	command := &cobra.Command{
 		Use:   "await <agent-id>",
 		Short: "Block efficiently until a dispatched agent run reaches a terminal state",
@@ -346,9 +466,31 @@ This exists so a supervisor can wait for a worker without polling
 own context. Zero means wait without a bound.
 
 When the wait bound elapses first, the command reports the still-non-terminal
-state truthfully and never claims success.`,
+state truthfully and never claims success.
+
+Against another machine, await holds one SSH connection open for the whole wait
+instead of polling: the remote WB does the waiting, so a long run costs one
+connection rather than one call per interval.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			target, agentID, err := agentRemoteTarget(to, args[0])
+			if err != nil {
+				return err
+			}
+			if target.Machine != "" {
+				request := newRemoteRequest(agents.RemoteAwait)
+				request.AgentID = agentID
+				request.WaitTimeoutMS = waitTimeout.Milliseconds()
+				response, err := callAgentRemote(command, target, request)
+				if err != nil {
+					return err
+				}
+				if response.Result == nil {
+					return &exitError{code: exitFindings, message: fmt.Sprintf("%s returned no await result", target.Machine)}
+				}
+				return finishAgentAwait(command, jsonOut, remoteResult(target, response))
+			}
+
 			store, err := agentStoreForRead()
 			if err != nil {
 				return err
@@ -357,34 +499,36 @@ state truthfully and never claims success.`,
 			if waitTimeout > 0 {
 				deadline = time.Now().Add(waitTimeout)
 			}
-			result, err := awaitAgentRun(command.Context(), store, args[0], deadline)
+			result, err := awaitAgentRun(command.Context(), store, agentID, deadline)
 			if err != nil {
-				if agents.IsUnknownAgent(err) {
-					return &exitError{code: exitFindings, message: err.Error()}
-				}
-				return err
+				return agentLookupError(err)
 			}
-			if jsonOut {
-				if err := writeAgentJSON(command.OutOrStdout(), result); err != nil {
-					return err
-				}
-			} else if err := printAgentAwaitText(command.OutOrStdout(), result); err != nil {
-				return err
-			}
-			if !result.Terminal {
-				// The run was still going when the wait bound elapsed. Exiting
-				// zero here would let a script read "awaited successfully" as
-				// "the work succeeded", which is exactly the confusion await
-				// exists to remove.
-				return &exitError{code: exitFindings, message: fmt.Sprintf("agent run %s is still %s after the wait bound; it has not finished", result.AgentID, result.State)}
-			}
-			return nil
+			return finishAgentAwait(command, jsonOut, result)
 		},
 	}
-	setDiscoveryTerms(command, "wait block wait-for finish poll sleep agent run offload supervisor")
+	setDiscoveryTerms(command, "wait block wait-for finish poll sleep agent run offload supervisor remote ssh machine")
 	command.Flags().DurationVar(&waitTimeout, "wait-timeout", time.Hour, "give up waiting after this long; zero waits without a bound")
+	command.Flags().StringVar(&to, "to", "", "await the run on this configured machine over SSH instead of this one")
 	addJSONFormatFlags(command, &jsonOut)
 	return command
+}
+
+// finishAgentAwait renders an awaited run and maps "the bound elapsed" onto the
+// findings exit code. Exiting zero there would let a script read "awaited
+// successfully" as "the work succeeded", which is exactly the confusion await
+// exists to remove.
+func finishAgentAwait(command *cobra.Command, jsonOut bool, result agents.Result) error {
+	if jsonOut {
+		if err := writeAgentJSON(command.OutOrStdout(), result); err != nil {
+			return err
+		}
+	} else if err := printAgentAwaitText(command.OutOrStdout(), result); err != nil {
+		return err
+	}
+	if !result.Terminal {
+		return &exitError{code: exitFindings, message: fmt.Sprintf("agent run %s is still %s after the wait bound; it has not finished", agentReference(result), result.State)}
+	}
+	return nil
 }
 
 // awaitAgentRun waits for a terminal state without busy-spinning. It polls the
@@ -443,14 +587,38 @@ func indentContinuation(value string) string {
 
 func newAgentListCmd() *cobra.Command {
 	var jsonOut bool
+	var to string
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List dispatched agent runs, newest first",
 		Long: `List every dispatched run WB still has a record for. This is inventory,
 not garbage collection: a run's worktree is the artefact and WB never removes
-it on the run's behalf.`,
+it on the run's behalf.
+
+With --to, the list comes from that machine. WB keeps no local mirror of a
+remote run, because the remote record is the only copy that cannot go stale.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if strings.TrimSpace(to) != "" {
+				target, err := agents.ResolveRemoteTarget(agentConfigPath(), to)
+				if err != nil {
+					return err
+				}
+				response, err := callAgentRemote(command, target, newRemoteRequest(agents.RemoteList))
+				if err != nil {
+					return err
+				}
+				results := response.Results
+				for index := range results {
+					results[index].Machine = target.Machine
+					agents.NormalizeState(&results[index])
+				}
+				if jsonOut {
+					return writeAgentJSON(command.OutOrStdout(), results)
+				}
+				return printAgentList(command.OutOrStdout(), results)
+			}
+
 			store, err := agentStoreForRead()
 			if err != nil {
 				return err
@@ -466,24 +634,29 @@ it on the run's behalf.`,
 			if jsonOut {
 				return writeAgentJSON(command.OutOrStdout(), results)
 			}
-			if len(results) == 0 {
-				_, err := fmt.Fprintln(command.OutOrStdout(), "no dispatched agent runs")
-				return err
-			}
-			for _, result := range results {
-				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n",
-					result.AgentID, result.State, result.RequestedProfile,
-					result.Resolved.Model, result.Worktree,
-					result.StartedAt.Local().Format("2006-01-02 15:04")); err != nil {
-					return err
-				}
-			}
-			return nil
+			return printAgentList(command.OutOrStdout(), results)
 		},
 	}
-	setDiscoveryTerms(command, "inventory runs history dispatched agents parallel background")
+	setDiscoveryTerms(command, "inventory runs history dispatched agents parallel background remote ssh machine")
+	command.Flags().StringVar(&to, "to", "", "list the runs on this configured machine over SSH instead of this one")
 	addJSONFormatFlags(command, &jsonOut)
 	return command
+}
+
+func printAgentList(writer io.Writer, results []agents.Result) error {
+	if len(results) == 0 {
+		_, err := fmt.Fprintln(writer, "no dispatched agent runs")
+		return err
+	}
+	for _, result := range results {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			agentReference(result), result.State, result.RequestedProfile,
+			result.Resolved.Model, result.Worktree,
+			result.StartedAt.Local().Format("2006-01-02 15:04")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------- logs
@@ -491,54 +664,81 @@ it on the run's behalf.`,
 func newAgentLogsCmd() *cobra.Command {
 	var tail int
 	var raw bool
+	var to string
 	command := &cobra.Command{
 		Use:   "logs <agent-id>",
 		Short: "Locate a run's full worker transcript, or inspect a bounded slice of it",
 		Long: `The complete worker transcript is preserved for debugging but never travels
 back through status or await. By default this prints the log location and the
 last few actions the worker took. Pass --raw to print the transcript itself, or
---tail to widen the action summary.`,
+--tail to widen the action summary.
+
+Against another machine, a transcript too large to ship over the link is refused
+rather than truncated: read it on that machine with ssh and ` + "`--raw`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			_, record, _, err := loadAgentResult(args[0])
+			target, agentID, err := agentRemoteTarget(to, args[0])
 			if err != nil {
-				if agents.IsUnknownAgent(err) {
-					return &exitError{code: exitFindings, message: err.Error()}
-				}
 				return err
 			}
-			writer := command.OutOrStdout()
-			if _, err := fmt.Fprintln(writer, record.LogPath); err != nil {
-				return err
-			}
-			if !recordFileExists(record.LogPath) {
-				_, err := fmt.Fprintln(writer, "(no worker transcript was captured)")
-				return err
-			}
-			file, err := os.Open(record.LogPath)
-			if err != nil {
-				return fmt.Errorf("open run log: %w", err)
-			}
-			defer func() { _ = file.Close() }()
-			if raw {
-				_, err := io.Copy(writer, file)
-				return err
-			}
-			if tail <= 0 {
-				tail = 8
-			}
-			for _, action := range agents.RecentActions(file, tail) {
-				if _, err := fmt.Fprintln(writer, "  "+action); err != nil {
+			if target.Machine != "" {
+				request := newRemoteRequest(agents.RemoteLogs)
+				request.AgentID = agentID
+				request.Tail, request.Raw = tail, raw
+				response, err := callAgentRemote(command, target, request)
+				if err != nil {
 					return err
 				}
+				_, err = fmt.Fprintln(command.OutOrStdout(), response.Logs)
+				return err
 			}
-			return nil
+			_, record, _, err := loadAgentResult(agentID)
+			if err != nil {
+				return agentLookupError(err)
+			}
+			text, err := renderAgentLogs(record, tail, raw)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(command.OutOrStdout(), text)
+			return err
 		},
 	}
-	setDiscoveryTerms(command, "transcript output stdout jsonl debug diagnose worker actions log")
+	setDiscoveryTerms(command, "transcript output stdout jsonl debug diagnose worker actions log remote ssh machine")
 	command.Flags().IntVar(&tail, "tail", 8, "how many recent worker actions to summarise")
 	command.Flags().BoolVar(&raw, "raw", false, "print the complete worker transcript instead of a summary")
+	command.Flags().StringVar(&to, "to", "", "read the transcript on this configured machine over SSH instead of this one")
 	return command
+}
+
+// renderAgentLogs produces the transcript view both the local command and the
+// private remote entry point return, so a remote call cannot show something a
+// local one would not.
+func renderAgentLogs(record agents.Record, tail int, raw bool) (string, error) {
+	var builder strings.Builder
+	builder.WriteString(record.LogPath + "\n")
+	if !recordFileExists(record.LogPath) {
+		builder.WriteString("(no worker transcript was captured)\n")
+		return strings.TrimRight(builder.String(), "\n"), nil
+	}
+	file, err := os.Open(record.LogPath)
+	if err != nil {
+		return "", fmt.Errorf("open run log: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	if raw {
+		if _, err := io.Copy(&builder, file); err != nil {
+			return "", err
+		}
+		return strings.TrimRight(builder.String(), "\n"), nil
+	}
+	if tail <= 0 {
+		tail = 8
+	}
+	for _, action := range agents.RecentActions(file, tail) {
+		builder.WriteString("  " + action + "\n")
+	}
+	return strings.TrimRight(builder.String(), "\n"), nil
 }
 
 func recordFileExists(path string) bool {
@@ -552,6 +752,7 @@ func recordFileExists(path string) bool {
 // ---------------------------------------------------------------------- stop
 
 func newAgentStopCmd() *cobra.Command {
+	var to string
 	command := &cobra.Command{
 		Use:   "stop <agent-id>",
 		Short: "Terminate a running worker's process group",
@@ -560,24 +761,43 @@ func newAgentStopCmd() *cobra.Command {
 The run owner is deliberately left alive so it observes the exit and records a
 real terminal state; a stopped run therefore reports what happened instead of
 drifting into "abandoned". The worktree and everything already written to it are
-left untouched.`,
+left untouched.
+
+Against another machine this runs there, because only the machine holding the
+worker can signal it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			target, agentID, err := agentRemoteTarget(to, args[0])
+			if err != nil {
+				return err
+			}
+			if target.Machine != "" {
+				request := newRemoteRequest(agents.RemoteStop)
+				request.AgentID = agentID
+				response, err := callAgentRemote(command, target, request)
+				if err != nil {
+					return err
+				}
+				if response.Result == nil {
+					return &exitError{code: exitFindings, message: fmt.Sprintf("%s returned no stop result", target.Machine)}
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "stopping %s:%s worker process %d\n",
+					target.Machine, response.Result.AgentID, response.Result.WorkerPID)
+				return err
+			}
 			store, err := agentStoreForRead()
 			if err != nil {
 				return err
 			}
-			record, err := agents.StopRun(store, args[0])
+			record, err := agents.StopRun(store, agentID)
 			if err != nil {
-				if agents.IsUnknownAgent(err) {
-					return &exitError{code: exitFindings, message: err.Error()}
-				}
-				return err
+				return agentLookupError(err)
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(), "stopping %s worker process %d\n", record.AgentID, record.WorkerPID)
 			return err
 		},
 	}
-	setDiscoveryTerms(command, "kill cancel terminate abort worker process group runaway")
+	setDiscoveryTerms(command, "kill cancel terminate abort worker process group runaway remote ssh machine")
+	command.Flags().StringVar(&to, "to", "", "stop the run on this configured machine over SSH instead of this one")
 	return command
 }

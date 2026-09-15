@@ -305,6 +305,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == agents.OwnerArgument {
 		os.Exit(agents.OwnerCLI(os.Args[2:], agents.DefaultOwnerDeps()))
 	}
+	// The private remote entry point is a validated protocol value on stdin, not
+	// a command line: it is handled here so a remote caller can never reach a
+	// flag parser, and so its request cannot be reinterpreted as shell text.
+	if len(os.Args) > 1 && os.Args[1] == agents.RemoteArgument {
+		os.Exit(RunAgentRemote(os.Stdin, os.Stdout, os.Stderr))
+	}
 	installSessionResolver()
 	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)

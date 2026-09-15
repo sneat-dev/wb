@@ -108,11 +108,56 @@ state recorded; it is never reported as `completed`.
 when you actually need the transcript — it is the one way a worker's whole run
 can enter your context.
 
+## Run on another machine
+
+Every command here also takes `--to <machine>`, which performs the operation on
+another configured WB machine over SSH:
+
+```sh
+wb agent dispatch --to hetzner-vm1 --new-worktree cg-symbol-api \
+  --repo sneat-dev/wb --profile cheap-coder --task-file /tmp/brief.md
+```
+
+The machine is resolved from WB's existing `session_move.targets` map, so a
+machine and its address are configured once:
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: 178.104.41.143
+        user: ai
+        wb_path: /home/ai/go/bin/wb
+```
+
+That machine creates the worktree, launches the worker, and keeps the run record
+and the worktree it produces. Nothing about the run is mirrored here, so tracing
+a run always means asking the machine that owns it — dispatch prints a
+machine-qualified reference for exactly that:
+
+```sh
+wb agent await hetzner-vm1:agt-… --format json
+wb agent status --to hetzner-vm1 agt-…
+wb agent list --to hetzner-vm1
+```
+
+Three things to know:
+
+- **The task travels on standard input**, never in the remote command line, so it
+  does not appear in a process table on either machine.
+- **Credentials are not forwarded.** The target machine must hold its own
+  provider credential; it fails with its own message naming the variable if it
+  does not.
+- **Verification happens there.** The worktree and any tests you want to run are
+  on the target, so verify with `ssh <host>` rather than locally.
+
 ## Boundaries
 
 - The worktree is the artefact. WB never deletes, resets, commits, pushes, or
   merges on the worker's behalf; retire worktrees with the normal WB lifecycle
-  commands.
+  commands — on the machine that holds them when the run was remote.
 - The worker's harness is isolated: per-process provider/model configuration,
   an ephemeral session, a private per-run harness home, and an allowlisted
   environment. Your own harness configuration and session are untouched.

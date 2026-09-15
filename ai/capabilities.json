@@ -18,6 +18,7 @@
               "flags": [
                 "--format",
                 "--json",
+                "--to",
                 "--wait-timeout"
               ],
               "modes": [
@@ -96,6 +97,7 @@
                 "--task",
                 "--task-file",
                 "--timeout",
+                "--to",
                 "--use-worktree"
               ],
               "modes": [
@@ -173,7 +175,8 @@
               "path": "wb agent list",
               "flags": [
                 "--format",
-                "--json"
+                "--json",
+                "--to"
               ],
               "modes": [
                 "Lists dispatched runs newest first from their durable records. Inventory only: WB never retires a worktree on a run behalf."
@@ -235,7 +238,8 @@
               "path": "wb agent logs",
               "flags": [
                 "--raw",
-                "--tail"
+                "--tail",
+                "--to"
               ],
               "modes": [
                 "Prints the transcript location and the last few worker actions by default, so a routine result path never carries the whole transcript.",
@@ -299,7 +303,8 @@
               "path": "wb agent status",
               "flags": [
                 "--format",
-                "--json"
+                "--json",
+                "--to"
               ],
               "modes": [
                 "Reports execution facts only: state, resolved configuration, worktree, branch, base revision, process status, timestamps, exit status, changes, usage, and the log location.",
@@ -366,7 +371,9 @@
           "commands": [
             {
               "path": "wb agent stop",
-              "flags": [],
+              "flags": [
+                "--to"
+              ],
               "modes": [
                 "Terminates the worker process group and leaves the run owner alive so it records a real terminal state instead of the run drifting into abandoned.",
                 "Never touches the worktree or anything already written to it."

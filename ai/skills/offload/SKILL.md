@@ -62,7 +62,8 @@ Give the supervisor, verbatim:
 - the WB profile to dispatch with;
 - the worktree name and which mode to use (`--new-worktree` for fresh work,
   `--use-worktree` to continue in a worktree a previous worker produced);
-- the repository (`owner/repo`), unless the current checkout's origin is right.
+- the repository (`owner/repo`), unless the current checkout's origin is right;
+- the machine, when the work belongs on another one (`--to <machine>`).
 
 Tell it explicitly: **do not ask the worker to continue, do not fix anything
 itself, and do not read the whole worker transcript.** It dispatches, awaits,
@@ -109,6 +110,18 @@ untracked files as well as `git diff` for tracked edits.
 
 Run the acceptance tests the brief names. Do not accept the worker's own claim
 that tests pass.
+
+**On another machine**, everything after the dispatch happens there: the worktree
+and the run record live on that machine, and so do the tests. Verify over SSH
+rather than locally, and use the machine-qualified reference dispatch printed:
+
+```sh
+wb agent await hetzner-vm1:agt-… --format json
+ssh 178.104.41.143 'cd <worktree_dir> && <the acceptance command>'
+```
+
+Credentials are not forwarded, so the target machine needs its own provider
+credential; if it lacks one, dispatch says exactly which variable is missing.
 
 If the worker looks stuck, stop it with `wb agent stop <agent-id>`. Full
 transcripts are at `wb agent logs <agent-id>` and are only for debugging.
