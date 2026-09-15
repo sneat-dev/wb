@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Harness names a coding-agent environment and tool loop. The MVP supports
@@ -229,9 +231,11 @@ func validateProvider(name string, provider Provider) error {
 	return nil
 }
 
-// validateExecutionValue rejects values that cannot safely become one
-// harness configuration token, and rejects anything shaped like a credential
-// so a secret cannot be smuggled in through the profile file.
+// validateExecutionValue rejects values that cannot safely become one harness
+// configuration token, or that are shaped like a credential. The rule itself is
+// WB's existing one, reused rather than restated: a value accepted here is also
+// accepted by the Work Log claim a created worktree publishes, so an agent
+// profile cannot record an execution identity the claim would refuse.
 func validateExecutionValue(field, value string, required bool) error {
 	if value == "" {
 		if required {
@@ -239,22 +243,8 @@ func validateExecutionValue(field, value string, required bool) error {
 		}
 		return nil
 	}
-	if len(value) > 128 {
-		return fmt.Errorf("%s is too long to be an execution identifier", field)
-	}
-	for _, char := range value {
-		switch {
-		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
-		case char == '-', char == '_', char == '.', char == '/', char == ':', char == '@', char == '+':
-		default:
-			return fmt.Errorf("%s %q must be a non-secret execution identifier", field, value)
-		}
-	}
-	lower := strings.ToLower(value)
-	for _, marker := range []string{"sk-", "api_key", "apikey", "secret", "token", "password", "bearer"} {
-		if strings.Contains(lower, marker) {
-			return fmt.Errorf("%s %q looks like a credential; credentials belong in the environment, never in agent configuration", field, value)
-		}
+	if !worktrees.ValidExecutionIdentifier(value, false) {
+		return fmt.Errorf("%s %q must be a non-secret execution identifier: letters, digits, and . _ : / + - only, starting with a letter or digit", field, value)
 	}
 	return nil
 }

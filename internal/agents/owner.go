@@ -26,6 +26,10 @@ const OwnerArgument = "--wb-internal-agent-run"
 // records that it was, rather than the writes failing under the harness.
 const maxLogBytes = 128 << 20
 
+// stopGrace is how long a stopped worker has to honour a graceful signal before
+// the stop escalates to a kill.
+const stopGrace = 3 * time.Second
+
 // OwnerDeps are the seams the run owner needs. They are injected so the whole
 // owner can be exercised deterministically against a fake harness.
 type OwnerDeps struct {
@@ -96,7 +100,6 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		Reasoning:       record.Resolved.Reasoning,
 		ProviderName:    record.Resolved.Provider,
 		Provider:        record.Resolved.Routing,
-		HarnessHome:     harnessHome,
 		LastMessagePath: store.LastMessagePath(agentID),
 	})
 	if err != nil {
@@ -137,6 +140,9 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 	}
 	if message, readErr := os.ReadFile(store.LastMessagePath(agentID)); readErr == nil {
 		record.Result = BoundResult(string(message))
+		// The harness writes this file itself, so WB tightens its mode after
+		// reading it rather than assuming the harness's umask.
+		_ = os.Chmod(store.LastMessagePath(agentID), 0o600)
 	}
 	record.Changes = SummarizeChanges(context.WithoutCancel(ctx), record.WorktreeDir, record.BaseSHA)
 
@@ -158,6 +164,10 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		code := 0
 		record.ExitCode = &code
 		return finish(StateFailed, "harness exited zero but reported a failed turn")
+	case summary.MalformedLines > 0:
+		code := exitCodeOf(command)
+		record.ExitCode = code
+		return finish(StateFailed, fmt.Sprintf("harness produced no terminal turn event and %d unparsable event line(s); the run is not a success", summary.MalformedLines))
 	case !summary.TurnCompleted:
 		code := exitCodeOf(command)
 		record.ExitCode = code
@@ -262,7 +272,7 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 	}
 	command := exec.Command(path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
 	command.Env = os.Environ()
-	configureDetached(command)
+	process.ConfigureDetached(command)
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return 0, err
@@ -297,5 +307,18 @@ func StopRun(store Store, agentID string) (Record, error) {
 	if !processAlive(record.WorkerPID) {
 		return record, fmt.Errorf("agent run %s worker process %d is already gone", agentID, record.WorkerPID)
 	}
-	return record, terminateOwner(record.WorkerPID, terminationSignal())
+	// Graceful first, then hard: a worker that ignores SIGTERM must still be
+	// stopped, because stop's contract is "terminate the worker and everything
+	// it started", not "ask it politely".
+	if err := terminateOwner(record.WorkerPID, terminationSignal()); err != nil {
+		return record, err
+	}
+	deadline := time.Now().Add(stopGrace)
+	for processAlive(record.WorkerPID) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if processAlive(record.WorkerPID) {
+		return record, terminateOwner(record.WorkerPID, killSignal())
+	}
+	return record, nil
 }

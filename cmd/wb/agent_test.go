@@ -279,6 +279,9 @@ func TestAgentAwaitResolvesAnAbandonedRunInsteadOfBlocking(t *testing.T) {
 	record := seedAgentRun(t, home, func(record *agents.Record) {
 		record.OwnerPID = 0
 		record.WorkerPID = 0
+		// Past the admission window: no owner was ever recorded, so no outcome
+		// will ever be written and the run is conclusively abandoned.
+		record.StartedAt = time.Now().UTC().Add(-10 * time.Minute)
 	})
 	started := time.Now()
 	code, stdout, stderr := runAgentCLI(t, "agent", "await", record.AgentID, "--json", "--wait-timeout", "30s")

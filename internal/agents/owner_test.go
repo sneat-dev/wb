@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,7 @@ func TestRunOwnerTerminatesTheWholeWorkerProcessGroupOnTimeout(t *testing.T) {
 	script := `#!/bin/sh
 trap '' TERM
 sh -c 'trap "" TERM; sleep 600' &
+echo $! > grandchild.pid
 sleep 600
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -242,7 +244,7 @@ sleep 600
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
 
-	store, record, _ := ownedRun(t, "HANG_MODE", 2*time.Second)
+	store, record, worktree := ownedRun(t, "HANG_MODE", 2*time.Second)
 	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
 		t.Fatalf("RunOwner: %v", err)
 	}
@@ -253,12 +255,25 @@ sleep 600
 	if loaded.State != StateTimeout {
 		t.Fatalf("state = %s", loaded.State)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for processAlive(loaded.WorkerPID) {
-		if time.Now().After(deadline) {
-			t.Fatalf("worker process %d survived the timeout termination", loaded.WorkerPID)
+	// The grandchild inherited the worker's process group and ignores SIGTERM
+	// too, so only a group kill can stop it. Asserting on the direct child
+	// alone would pass even if the tree survived.
+	grandchildRaw, err := os.ReadFile(filepath.Join(worktree, "grandchild.pid"))
+	if err != nil {
+		t.Fatalf("the harness never reported its grandchild: %v", err)
+	}
+	grandchild, convErr := strconv.Atoi(strings.TrimSpace(string(grandchildRaw)))
+	if convErr != nil || grandchild <= 0 {
+		t.Fatalf("grandchild pid %q", grandchildRaw)
+	}
+	for _, pid := range []int{loaded.WorkerPID, grandchild} {
+		deadline := time.Now().Add(5 * time.Second)
+		for processAlive(pid) {
+			if time.Now().After(deadline) {
+				t.Fatalf("process %d survived the timeout termination", pid)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -322,7 +337,7 @@ func TestRunOwnerReportsAnUnwritableRunDirectory(t *testing.T) {
 	}
 }
 
-func TestRunOwnerAcceptsAnUnboundedRun(t *testing.T) {
+func TestRunOwnerRunsToCompletionWithoutABound(t *testing.T) {
 	_, deps := writeFakeHarness(t)
 	store, record, _ := ownedRun(t, "no timeout configured", 0)
 	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
@@ -483,6 +498,74 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 	}
 	if _, err := StopRun(store, "agt-00000000000000000000000000000000"); err == nil {
 		t.Fatal("stopping an unknown run must be refused")
+	}
+}
+
+func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group termination is POSIX-only")
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, HarnessCodex)
+	// The loop keeps the shell itself alive: a bare `sleep` would be killed by
+	// the group signal, letting the shell exit before escalation is needed. It
+	// reports readiness by touching a file, because signalling before the shell
+	// has installed its trap would kill it outright and never exercise
+	// escalation.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ntrap '' TERM\n: > ignored-termination.ready\nwhile true; do sleep 1; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deps := DefaultOwnerDeps()
+	deps.LookPath = func(string) (string, error) { return path, nil }
+
+	store, record, worktree := ownedRun(t, "ignore termination", time.Minute)
+	done := make(chan struct{})
+	go func() {
+		_ = RunOwner(context.Background(), store, record.AgentID, deps)
+		close(done)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		loaded, err := store.Load(record.AgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.WorkerPID > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the owner never recorded a worker PID")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(worktree, "ignored-termination.ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the harness never installed its termination trap")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if _, err := StopRun(store, record.AgentID); err != nil {
+		t.Fatalf("StopRun: %v", err)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	killDeadline := time.Now().Add(10 * time.Second)
+	for processAlive(loaded.WorkerPID) {
+		if time.Now().After(killDeadline) {
+			t.Fatalf("a worker that ignores SIGTERM survived stop (pid %d)", loaded.WorkerPID)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the owner did not observe the killed worker")
 	}
 }
 

@@ -25,9 +25,16 @@ func WorkerEnvironment(credentialEnv string) []string {
 		"PATH", "HOME", "TMPDIR", "TMP", "TEMP",
 		"LANG", "LC_ALL", "LC_CTYPE", "TZ",
 		"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME",
-		// Certificate authorities, without which an https provider is
-		// unreachable on machines that configure them by variable.
-		"SSL_CERT_FILE", "SSL_CERT_DIR",
+		// Transport configuration the harness's own process needs to reach its
+		// provider. These carry no credentials: they name a proxy or a
+		// certificate authority. Withholding them makes a dispatched worker
+		// unreachable on a proxied or private-CA machine, which is a
+		// functionality loss with no security gain — the harness's tool
+		// subprocesses are already stopped from inheriting secrets by the
+		// harness's own shell-environment policy.
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+		"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+		"NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy",
 	}
 	environment := make([]string, 0, len(allow)+1)
 	for _, name := range allow {

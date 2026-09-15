@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/session"
 )
 
 // DirName is the directory under WB's home that holds dispatched agent runs.
@@ -33,7 +35,17 @@ const (
 	// maxChangedFiles bounds the changed-file list so a sweeping diff cannot
 	// turn a result document into a transcript.
 	maxChangedFiles = 50
+	// admissionGrace is how long a running record may show no process at all
+	// before WB calls it abandoned. It covers only the interval between the
+	// dispatcher persisting the run and the owner recording itself, which is
+	// milliseconds; it can never mislabel a slow worker, because a slow worker
+	// still has a live owner.
+	admissionGrace = time.Minute
 )
+
+// processAlive answers the one liveness question this package asks, through the
+// single WB-wide implementation so every platform agrees.
+func processAlive(pid int) bool { return session.ProcessAlive(pid) }
 
 // State is the closed lifecycle vocabulary of one dispatched run.
 type State string
@@ -159,6 +171,7 @@ type Result struct {
 	OwnerPID           int            `json:"owner_pid,omitempty"`
 	WorkerPID          int            `json:"worker_pid,omitempty"`
 	OwnerAlive         bool           `json:"owner_alive"`
+	WorkerAlive        bool           `json:"worker_alive"`
 	ExitCode           *int           `json:"exit_code,omitempty"`
 	Failure            string         `json:"failure,omitempty"`
 	Result             string         `json:"result,omitempty"`
@@ -172,14 +185,24 @@ type Result struct {
 // Render projects a record for output, resolving a run whose owner vanished
 // without recording a terminal state to the honest answer: abandoned. A run is
 // never reported as completed merely because nothing contradicted it.
+//
+// Abandoned is derived from the owner, not the worker: the owner is the only
+// process that will ever record a terminal state, so once it is gone the run
+// has no outcome and reporting it "running" indefinitely would be a lie. A
+// worker that outlived its owner is still surfaced, through WorkerAlive, so a
+// caller knows a stray process exists and can stop it.
 func (store Store) Render(record Record) Result {
 	state := record.State
-	alive := false
+	ownerAlive := processAlive(record.OwnerPID)
+	workerAlive := processAlive(record.WorkerPID)
 	if state == StateRunning {
-		// The worker is checked as well as the owner so a run whose owner was
-		// killed while its harness kept working is not called abandoned.
-		alive = processAlive(record.OwnerPID) || processAlive(record.WorkerPID)
-		if !alive {
+		switch {
+		case ownerAlive:
+			// The run is genuinely in progress.
+		case record.OwnerPID == 0 && record.WorkerPID == 0 && time.Since(record.StartedAt) < admissionGrace:
+			// Admission is still in flight: the run is persisted and the owner
+			// has not yet recorded itself. This window is milliseconds wide.
+		default:
 			state = StateAbandoned
 		}
 	}
@@ -191,7 +214,8 @@ func (store Store) Render(record Record) Result {
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch,
 		Base: record.Base, BaseSHA: record.BaseSHA,
 		StartedAt: record.StartedAt, DurationMS: record.DurationMS,
-		OwnerPID: record.OwnerPID, WorkerPID: record.WorkerPID, OwnerAlive: alive,
+		OwnerPID: record.OwnerPID, WorkerPID: record.WorkerPID,
+		OwnerAlive: ownerAlive, WorkerAlive: workerAlive,
 		ExitCode: record.ExitCode, Failure: record.Failure, Result: record.Result,
 		ToolCalls: record.ToolCalls, Usage: record.Usage, Changes: record.Changes,
 		HarnessDiagnostics: record.HarnessEvents, LogPath: record.LogPath,

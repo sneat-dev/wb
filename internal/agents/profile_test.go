@@ -167,12 +167,12 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 			expect: "model is required",
 		},
 		"credential-shaped model": {
-			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: sk-abcdef\n",
-			expect: "looks like a credential",
+			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: my-secret-token\n",
+			expect: "non-secret execution identifier",
 		},
 		"credential-shaped reasoning": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: m\n      reasoning: my-token\n",
-			expect: "looks like a credential",
+			expect: "non-secret execution identifier",
 		},
 		"whitespace in model": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: \"two words\"\n",
@@ -180,7 +180,7 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 		},
 		"overlong model": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: " + strings.Repeat("a", 200) + "\n",
-			expect: "too long",
+			expect: "non-secret execution identifier",
 		},
 	}
 	for name, testCase := range cases {
@@ -247,7 +247,6 @@ func TestValidateExecutionValueAcceptsRealModelIdentifiers(t *testing.T) {
 		"deepseek/deepseek-v4.1-flash",
 		"gpt-6-astra",
 		"claude-opus-5",
-		"model@2026-09-10",
 		"a.b_c-d/e:f+g",
 	} {
 		if err := validateExecutionValue("model", value, true); err != nil {

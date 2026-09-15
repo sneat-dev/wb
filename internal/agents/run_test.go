@@ -279,25 +279,33 @@ func TestRenderResolvesDeadRunsToAbandoned(t *testing.T) {
 		t.Fatal("a running run must not be terminal")
 	}
 
-	// A record with no recorded owner can only exist if the dispatcher died
-	// between persisting the run and starting its owner, so it is conclusive.
-	orphan := sampleRecord(t)
-	orphan.OwnerPID = 0
-	if result := store.Render(orphan); result.State != StateAbandoned || !result.Terminal {
-		t.Fatalf("an unowned running record must render as abandoned: %#v", result)
+	// A run persisted moments ago, with no process recorded yet, is still being
+	// admitted: the dispatcher has written the record and the owner has not yet
+	// recorded itself.
+	fresh := sampleRecord(t)
+	fresh.StartedAt = time.Now().UTC()
+	if result := store.Render(fresh); result.State != StateRunning || result.Terminal {
+		t.Fatalf("a freshly admitted run must not be called abandoned: %#v", result)
 	}
 
-	// A worker that outlived its owner still counts as alive.
+	// Once that window has passed with no process ever recorded, the dispatcher
+	// died before it could start an owner and no outcome will ever be written.
+	orphan := sampleRecord(t)
+	orphan.StartedAt = time.Now().UTC().Add(-2 * admissionGrace)
+	if result := store.Render(orphan); result.State != StateAbandoned || !result.Terminal {
+		t.Fatalf("an ownerless running record must render as abandoned: %#v", result)
+	}
+
+	// A worker that outlived its owner cannot produce an outcome either, so the
+	// run is abandoned — but the stray process is reported so it can be stopped.
 	survivor := sampleRecord(t)
-	survivor.OwnerPID = 0
 	survivor.WorkerPID = os.Getpid()
-	if result := store.Render(survivor); result.State != StateRunning || !result.OwnerAlive {
-		t.Fatalf("a live worker must keep the run running: %#v", result)
+	if result := store.Render(survivor); result.State != StateAbandoned || result.OwnerAlive || !result.WorkerAlive {
+		t.Fatalf("a worker that outlived its owner must be abandoned with the worker surfaced: %#v", result)
 	}
 
 	terminal := sampleRecord(t)
 	terminal.State = StateCompleted
-	terminal.OwnerPID = 0
 	terminal.FinishedAt = time.Now().UTC()
 	if result := store.Render(terminal); result.State != StateCompleted || result.OwnerAlive {
 		t.Fatalf("a terminal run must not be re-interpreted: %#v", result)

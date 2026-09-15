@@ -156,10 +156,12 @@ func Dispatch(ctx context.Context, request DispatchRequest, deps DispatchDeps) (
 		_ = store.Save(record)
 		return record, fmt.Errorf("start detached run owner for %s: %w", agentID, err)
 	}
+	// The owner records its own PID as its first durable act, so the dispatcher
+	// deliberately does not write the record again: a second writer racing the
+	// owner could clobber the worker PID the owner records moments later. The
+	// returned record carries the PID in memory, so this command's own output is
+	// still accurate.
 	record.OwnerPID = ownerPID
-	if err := store.Save(record); err != nil {
-		return record, err
-	}
 	return record, nil
 }
 
@@ -171,8 +173,11 @@ func validateDispatchRequest(request DispatchRequest) error {
 	if strings.TrimSpace(request.Task) == "" {
 		return requestErrorf("--task or --task-file is required")
 	}
-	if request.Timeout < 0 {
-		return requestErrorf("--timeout must not be negative")
+	if request.Timeout <= 0 {
+		// A run must carry a bound: leaving enforcement to the harness would
+		// make it advisory, and "no bound" is how a stuck worker becomes a
+		// stray process nobody is waiting for.
+		return requestErrorf("--timeout must be positive; every dispatched run carries a bound")
 	}
 	return nil
 }

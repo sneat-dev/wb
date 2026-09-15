@@ -113,6 +113,12 @@ func NewID() (string, error) {
 // Register writes a session record, replacing any record for the same PID.
 // Re-registering is deliberately allowed: a session that restarts its harness
 // or corrects its model should not have to find and delete the old file.
+// ProcessAlive reports whether a recorded process identity still exists. A PID
+// is only ever a liveness coordinate, never an identity, and a permission error
+// still proves the process exists. It is exported so that every WB subsystem
+// answers this question the same way on every platform.
+func ProcessAlive(pid int) bool { return processAlive(pid) }
+
 func Register(dir string, record Record) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")

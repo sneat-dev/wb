@@ -279,6 +279,13 @@ A run whose owner vanished without recording a terminal state is reported as
 	return command
 }
 
+func aliveWord(alive bool) string {
+	if alive {
+		return "alive"
+	}
+	return "gone"
+}
+
 func printAgentStatusText(writer io.Writer, result agents.Result) error {
 	lines := []string{
 		"agent:    " + result.AgentID,
@@ -297,6 +304,7 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 		lines = append(lines, "finished: "+result.FinishedAt.Local().Format(time.RFC3339),
 			fmt.Sprintf("duration: %s", (time.Duration(result.DurationMS)*time.Millisecond).Round(time.Millisecond)))
 	}
+	lines = append(lines, fmt.Sprintf("process:  owner %s, worker %s", aliveWord(result.OwnerAlive), aliveWord(result.WorkerAlive)))
 	if result.ExitCode != nil {
 		lines = append(lines, fmt.Sprintf("exit:     %d", *result.ExitCode))
 	}

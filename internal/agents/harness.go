@@ -21,9 +21,6 @@ type HarnessOptions struct {
 	// variable name the harness must read it from.
 	ProviderName string
 	Provider     Provider
-	// HarnessHome is a private per-run home so the child cannot read or write
-	// the user's harness state.
-	HarnessHome string
 	// LastMessagePath asks the harness to write its final message there, which
 	// is the one bounded, non-transcript result channel.
 	LastMessagePath string
@@ -99,14 +96,6 @@ func CodexArgv(options HarnessOptions) ([]string, error) {
 	return append(argv, "-"), nil
 }
 
-func encodeConfigValue(value any) (string, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", fmt.Errorf("encode harness configuration value: %w", err)
-	}
-	return string(encoded), nil
-}
-
 // HarnessSummary is what the run owner extracts from the harness event stream.
 // It is execution metadata only; it deliberately carries nothing that judges
 // whether the work is correct.
@@ -116,39 +105,63 @@ type HarnessSummary struct {
 	Usage         *Usage
 	ToolCalls     int
 	Diagnostics   []string
+	// MalformedLines counts lines that look like harness events but could not
+	// be decoded. Ordinary non-JSON lines are the harness's own stderr sharing
+	// the file and are expected; a malformed *event* is not, and must be
+	// retained as a diagnosis rather than silently dropped.
+	MalformedLines int
 }
 
-// SummarizeEvents parses the harness's JSONL event stream. Lines that are not
-// JSON are the harness's own diagnostics on the merged stderr and are ignored
-// rather than treated as malformed output, because the stream is documented to
-// share a file with them.
-func SummarizeEvents(reader io.Reader) HarnessSummary {
-	var summary HarnessSummary
+// harnessEvent is the subset of the harness's JSONL vocabulary WB consumes.
+// One decoder serves every consumer, so a harness field rename is a
+// single-place change.
+type harnessEvent struct {
+	Type string `json:"type"`
+	Item *struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	} `json:"item"`
+	Usage *struct {
+		InputTokens           int `json:"input_tokens"`
+		CachedInputTokens     int `json:"cached_input_tokens"`
+		CacheWriteInputTokens int `json:"cache_write_input_tokens"`
+		OutputTokens          int `json:"output_tokens"`
+		ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+	} `json:"usage"`
+}
+
+// harnessLogLimit bounds how much of a transcript is ever held in memory.
+const harnessLogLimit = 8 * 1024 * 1024
+
+// scanHarnessEvents reads the harness's merged stdout/stderr stream line by
+// line. A line that is not a JSON object at all is the harness's own diagnostic
+// text on stderr and is skipped; a line that begins like an event but does not
+// decode is counted as malformed.
+func scanHarnessEvents(reader io.Reader, handle func(harnessEvent)) int {
+	malformed := 0
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), harnessLogLimit)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "{") {
 			continue
 		}
-		var event struct {
-			Type string `json:"type"`
-			Item *struct {
-				Type    string `json:"type"`
-				Status  string `json:"status"`
-				Message string `json:"message"`
-			} `json:"item"`
-			Usage *struct {
-				InputTokens           int `json:"input_tokens"`
-				CachedInputTokens     int `json:"cached_input_tokens"`
-				CacheWriteInputTokens int `json:"cache_write_input_tokens"`
-				OutputTokens          int `json:"output_tokens"`
-				ReasoningOutputTokens int `json:"reasoning_output_tokens"`
-			} `json:"usage"`
-		}
+		var event harnessEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			malformed++
 			continue
 		}
+		handle(event)
+	}
+	return malformed
+}
+
+// SummarizeEvents parses the harness's JSONL event stream.
+func SummarizeEvents(reader io.Reader) HarnessSummary {
+	var summary HarnessSummary
+	summary.MalformedLines = scanHarnessEvents(reader, func(event harnessEvent) {
 		switch event.Type {
 		case "turn.completed":
 			summary.TurnCompleted = true
@@ -165,7 +178,7 @@ func SummarizeEvents(reader io.Reader) HarnessSummary {
 			summary.TurnFailed = true
 		case "item.completed":
 			if event.Item == nil {
-				continue
+				return
 			}
 			switch event.Item.Type {
 			case "command_execution", "file_change", "mcp_tool_call":
@@ -179,6 +192,14 @@ func SummarizeEvents(reader io.Reader) HarnessSummary {
 				}
 			}
 		}
-	}
+	})
 	return summary
+}
+
+func encodeConfigValue(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("encode harness configuration value: %w", err)
+	}
+	return string(encoded), nil
 }

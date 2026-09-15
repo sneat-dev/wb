@@ -90,15 +90,22 @@ had **not** finished. Never treat a non-zero `await` as success.
 
 The JSON carries everything the supervisor needs to verify: `state`,
 `exit_code`, `resolved` (harness/provider/model/reasoning), `worktree`,
-`branch`, `base_sha`, `changes.files`, `usage`, `result` (the worker's own final
-message), and `log_path`.
+`branch`, `base_sha`, `changes` (files changed plus insertion and deletion
+counts), `usage`, `result` (the worker's own final message), and `log_path`.
 
-To check the actual change, inspect the retained worktree directly:
+`base_sha` is recorded for `--new-worktree`, where WB created the checkout from
+a verified base. For `--use-worktree` it is empty, because an existing checkout
+has no dispatch-time base — derive one before diffing:
 
 ```sh
 git -C <worktree_dir> status --short
-git -C <worktree_dir> diff <base_sha>
+BASE=$(git -C <worktree_dir> merge-base HEAD origin/main)   # or the checkout's own base
+git -C <worktree_dir> diff "$BASE"
+git -C <worktree_dir> diff "$BASE" --stat
 ```
+
+A worker may leave its change uncommitted, so check `status --short` for
+untracked files as well as `git diff` for tracked edits.
 
 Run the acceptance tests the brief names. Do not accept the worker's own claim
 that tests pass.
@@ -153,4 +160,14 @@ to do next.
 - **Different intent, different skill.** To freeze work without starting a
   worker, use `/park`. To start an addressable successor session you can message
   and recall — locally or on another machine — use `wb task offload` then
-  `/pickup`, or `/move` for the whole session.
+  `/pickup`, or `/move` for the whole session:
+
+  ```sh
+  wb task offload <task> [owner/repository...] --context-file <file>
+  wb task offload <task> --context-file <file> --harness claude --model opus
+  ```
+
+  That path produces a successor WB session ID, not an agent run ID. It is the
+  right choice when a human or agent will keep working interactively in the
+  result; `wb agent dispatch` is the right choice when you want a bounded
+  worker and a verdict. Neither is a substitute for the other.

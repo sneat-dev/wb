@@ -322,17 +322,30 @@ change the recorded resolved configuration of an existing run.
 
 The persisted run state MUST be exactly one of: `running`, `completed`,
 `failed`, `timeout`, `abandoned`. `completed`, `failed`, `timeout`, and
-`abandoned` are terminal. `running` is the only non-terminal state. State
-transitions MUST be written by the run owner; a caller MUST NOT be able to
-observe a state the owner never wrote.
+`abandoned` are terminal; `running` is the only non-terminal state. `completed`,
+`failed`, and `timeout` MUST be written by the run owner — no other process may
+claim a run finished. `abandoned` is a *derived* projection rather than a
+persisted transition: it is the honest rendering of a run that is persisted as
+`running` and whose owner is gone, and it MUST be documented as such so a reader
+of the raw record is not misled.
 
 #### REQ: abandoned-runs-are-never-reported-completed
 
-A run whose recorded owner and worker are both gone, and for which no terminal
-state was written, MUST be reported as `abandoned` — never as `completed`, and
-never as `running` indefinitely. Detecting this MUST rely on liveness evidence
-WB already has (recorded process identity), not on a timeout heuristic that
-would misreport a slow worker.
+A run for which no terminal state was written and whose recorded owner is gone
+MUST be reported as `abandoned` — never as `completed`, and never as `running`
+indefinitely. The owner is the deciding process, because it is the only one that
+will ever write a terminal state; a worker that outlived its owner MUST still be
+surfaced separately so a caller knows a stray process exists and can stop it.
+
+Detecting this MUST rely on liveness evidence WB already has (recorded process
+identity), not on a timeout heuristic that would misreport a slow worker. Exactly
+one bounded exception is permitted: a run persisted milliseconds ago whose owner
+has not yet recorded itself is *being admitted*, and MUST be reported as
+`running` for a short, documented admission window. That window can never
+mislabel a slow worker, because a slow worker still has a live owner.
+
+Owner liveness MUST be evaluated through WB's single process-liveness
+implementation, so every platform answers the same question the same way.
 
 ### The detached run owner
 
@@ -350,11 +363,19 @@ waited on. The feature MUST NOT add a daemon and MUST NOT depend on
 
 #### REQ: dispatch-timeout-is-bounded
 
-A run MUST carry a bounded timeout. On expiry the owner MUST terminate the
-worker's whole process group using WB's existing process-tree cancellation
-helper, mark the run terminal with the `timeout` state, record the finish time,
-and retain the log for diagnosis. The timeout MUST be selectable and MUST have
-a non-zero default. Timeout enforcement MUST NOT be left to the harness.
+A run MUST carry a bounded timeout: a non-positive timeout MUST be refused
+rather than interpreted as "unbounded", because a run nobody is waiting for is
+how a stuck worker becomes a stray process. On expiry the owner MUST terminate
+the worker's whole process group — including descendants that ignore a graceful
+signal — using WB's existing process-tree cancellation helper, mark the run
+terminal with the `timeout` state, record the finish time, and retain the log
+for diagnosis. The bound MUST be selectable and MUST have a positive default.
+Timeout enforcement MUST NOT be left to the harness.
+
+Because the owner is what enforces the bound, an owner that is killed while its
+worker keeps running voids it. WB MUST therefore report such a run as
+`abandoned` with the stray worker surfaced, so the bound can be re-established
+by stopping it explicitly, rather than pretending the run is still bounded.
 
 ### Harness launch contract
 
@@ -397,9 +418,9 @@ Token usage, tool-call activity, and the worker's final message MUST be derived
 from the harness's own structured output and its last-message channel when it
 supplies them. A field the harness does not report MUST be absent from the run
 record and from output, and MUST NOT be estimated, defaulted to zero, or
-invented. Reported usage MUST be recorded as the harness reported it — token
-fields the harness emits but WB does not model MUST NOT be dropped silently if
-they are cheap to retain.
+invented. Reported usage MUST be recorded as the harness reported it for the
+token fields WB models; a harness field WB does not model is not part of this
+contract and MAY be dropped.
 
 ### Status, await, and logs
 
@@ -462,11 +483,27 @@ agent-identity variables MUST NOT be inherited. A new whole-environment
 sensitive-name deny-list MUST NOT be invented when an allowlist already
 achieves the same guarantee.
 
+The allowlist MUST include the non-secret transport configuration the harness's
+own process needs to reach its provider (proxy variables and extra certificate
+authorities). Withholding those buys no confidentiality — they carry no
+credentials — and makes a dispatched worker unreachable on a proxied or
+private-CA machine.
+
 #### REQ: harness-shell-environment-excludes-secrets
 
 The harness's own tool subprocesses MUST be configured not to receive the
 provider credential or other secret-shaped variables, so a worker shell command
 cannot read the credential that the harness itself authenticates with.
+
+#### REQ: delegated-worker-trust-boundary-is-explicit
+
+The specification and the user-facing documentation MUST state the trust
+boundary plainly: a delegated worker runs with the invoking operator's
+privileges and can read what that operator can read, including files outside its
+worktree, and the provider it calls sees whatever the worker reads. Secret
+handling in this feature is about not *handing* a worker credentials, not about
+confining a worker that goes looking for them. Full read confinement is out of
+scope and MUST be recorded as such rather than implied.
 
 ### Worktree custody and concurrency
 
@@ -649,7 +686,7 @@ Then the reported state is `failed` with the non-zero exit status and the log lo
 
 Scenario: Await bound elapses
 Given a fake worker that never exits
-When `wb agent await <agent-id> --timeout 1s` runs
+When `wb agent await <agent-id> --wait-timeout 1s` runs
 Then the command returns reporting the still-non-terminal state, does not claim success, and does not busy-spin
 
 Scenario: Invalid harness output
@@ -667,9 +704,24 @@ Then they pass, and the live provider check is skipped rather than failed
 ### AC: dead-owner-runs-are-reported-honestly (verifies REQ:closed-run-state-vocabulary, REQ:abandoned-runs-are-never-reported-completed, REQ:detached-execution-owner-reuses-wb-self-exec)
 
 Scenario: Owner killed before recording a terminal state
-Given a dispatched run whose recorded owner and worker process are both gone and whose record has no terminal state
+Given a dispatched run whose recorded owner is gone and whose record has no terminal state, and whose admission window has passed
 When `wb agent status` and `wb agent await` run
 Then both report `abandoned` rather than `running` or `completed`, and neither blocks indefinitely
+
+Scenario: A worker outlived its owner
+Given a run whose persisted owner is gone but whose recorded worker process is still alive
+When the run is inspected
+Then it is reported `abandoned` with the live worker surfaced, so a caller can stop the stray process instead of waiting for an outcome that will never be written
+
+Scenario: Admission in flight
+Given a run persisted moments ago that has not yet recorded any process
+When it is inspected
+Then it is reported `running`, not `abandoned`
+
+Scenario: A dispatcher that died before starting any owner
+Given a persisted run past the admission window that has never recorded a process
+When it is inspected
+Then it is reported `abandoned`, never `running` indefinitely
 
 ### AC: timeout-terminates-the-worker-tree (verifies REQ:dispatch-timeout-is-bounded)
 
@@ -678,12 +730,17 @@ Given a worker that ignores graceful termination and spawns a child
 When the run's timeout elapses
 Then WB terminates the worker's whole process group, records state `timeout` with a finish time, retains the log, and starts no further work
 
-### AC: worker-cannot-disturb-its-parent (verifies REQ:no-global-harness-configuration-mutation, REQ:no-secret-in-argv-logs-or-records, REQ:filtered-child-environment, REQ:harness-shell-environment-excludes-secrets, REQ:task-reaches-the-harness-on-stdin, REQ:harness-launch-is-per-process-and-ephemeral)
+### AC: worker-cannot-disturb-its-parent (verifies REQ:no-global-harness-configuration-mutation, REQ:no-secret-in-argv-logs-or-records, REQ:filtered-child-environment, REQ:harness-shell-environment-excludes-secrets, REQ:task-reaches-the-harness-on-stdin, REQ:harness-launch-is-per-process-and-ephemeral, REQ:delegated-worker-trust-boundary-is-explicit)
 
 Scenario: Isolated child harness launch
 Given a machine with a global harness configuration file and a provider credential in the ambient environment
 When dispatch launches a worker
 Then the global configuration file is byte-identical afterwards, the credential value appears in neither the worker's argv, WB's argv, any WB log, nor the run record, the child environment contains only allowlisted variables plus that credential, the harness's own shell tooling is configured to exclude secret-shaped variables, the task text does not appear in the process arguments, and the worker runs in its own session and process group
+
+Scenario: The trust boundary is documented, not implied
+Given the feature's specification and its user-facing skill
+When a reader looks for what a delegated worker can reach
+Then both state plainly that the worker runs with the invoking operator's privileges and can read what that operator can read, and that read confinement is out of scope
 
 Scenario: Missing credential and missing harness
 Given the provider credential variable is unset
@@ -759,13 +816,21 @@ one.
 
 - Whether a follow-up run into an existing worktree should reuse the original
   run's recorded base revision for its diff summary, or recompute the base from
-  the canonical repository at dispatch time.
+  the canonical repository at dispatch time. Observed in the first end-to-end
+  offload: `base_sha` is empty for `--use-worktree`, so a supervisor must derive
+  a base itself before diffing. The supervisor coped by using the merge base
+  with `origin/main`, but the gap is real and recurring enough to deserve a
+  decision rather than a workaround.
 - Whether `wb agent` should eventually absorb the peer-session offload path
   (`wb task offload`) so a portion of work has exactly one launch mechanism.
   The peer-session path additionally supports cross-machine continuation and an
   addressable successor session, which `dispatch` deliberately does not.
 - Whether the timeout belongs in the profile as well as per invocation. Left
   out until a concrete need appears.
+- Process liveness is a PID check, so a recycled PID could in principle make an
+  abandoned run look alive. Closing that properly needs a recorded process start
+  time (platform-specific) rather than a process registry; deferred until it is
+  observed in practice.
 - Whether a per-run `CODEX_HOME` would isolate the child harness further than
   the ephemeral, no-user-config launch already does. Deliberately not adopted
   before it has been verified against a real Codex version; the ephemeral

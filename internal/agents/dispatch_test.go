@@ -179,7 +179,7 @@ func TestDispatchNewWorktreeRecordsTheResolvedRunAndStartsTheOwner(t *testing.T)
 		t.Fatal("the run must reference the Work Log claim the creation service published")
 	}
 	if record.OwnerPID != os.Getpid() {
-		t.Fatalf("the owner PID must be recorded before Dispatch returns: %d", record.OwnerPID)
+		t.Fatalf("the returned record must carry the owner PID: %d", record.OwnerPID)
 	}
 	if record.TimeoutMS != (5 * time.Minute).Milliseconds() {
 		t.Fatalf("timeout = %d", record.TimeoutMS)
@@ -188,17 +188,64 @@ func TestDispatchNewWorktreeRecordsTheResolvedRunAndStartsTheOwner(t *testing.T)
 		t.Fatalf("start time = %v", record.StartedAt)
 	}
 
-	// The persisted record is the contract, not the returned value.
+	// The persisted record is the durable contract, and it has exactly one
+	// writer per phase: the dispatcher admits the run, and the owner records
+	// process identity from then on. The dispatcher must not write again after
+	// spawning, or it could clobber the worker PID the owner records moments
+	// later.
 	store := NewStore(fixture.home)
 	persisted, err := store.Load(record.AgentID)
 	if err != nil {
 		t.Fatalf("the run must be durable before Dispatch returns: %v", err)
 	}
-	if persisted.OwnerPID != os.Getpid() || persisted.Task != record.Task {
-		t.Fatalf("persisted record = %#v", persisted)
+	if persisted.Task != record.Task || persisted.RequestedProfile != "cheap" {
+		t.Fatalf("the admitted record lost its immutable facts: %#v", persisted)
+	}
+	if persisted.OwnerPID != 0 || persisted.WorkerPID != 0 {
+		t.Fatalf("process identity belongs to the owner, not the dispatcher: %#v", persisted)
 	}
 	if fixture.spawnedAgentID != record.AgentID {
 		t.Fatalf("owner spawned for %q, want %q", fixture.spawnedAgentID, record.AgentID)
+	}
+}
+
+// TestDispatchDoesNotClobberWhatTheOwnerRecordsWhileSpawning is the regression
+// guard for the two-writer race: the owner starts as soon as SpawnOwner
+// returns and records its own PID and then the worker PID, so a dispatcher
+// write afterwards would erase them.
+func TestDispatchDoesNotClobberWhatTheOwnerRecordsWhileSpawning(t *testing.T) {
+	fixture := newDispatchFixture(t)
+	store := NewStore(fixture.home)
+	ownerpid := os.Getpid()
+	fixture.deps.SpawnOwner = func(agentID string) (int, error) {
+		fixture.spawnedAgentID = agentID
+		// Simulate an owner that has already raced ahead to record process
+		// identity before Dispatch returns.
+		raced, err := store.Load(agentID)
+		if err != nil {
+			return 0, err
+		}
+		raced.OwnerPID = ownerpid
+		raced.WorkerPID = ownerpid
+		if err := store.Save(raced); err != nil {
+			return 0, err
+		}
+		return ownerpid, nil
+	}
+
+	record, err := fixture.dispatch(t, newRequest())
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	persisted, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkerPID != ownerpid {
+		t.Fatalf("the dispatcher erased the worker PID the owner recorded: %#v", persisted)
+	}
+	if persisted.OwnerPID != ownerpid {
+		t.Fatalf("the dispatcher erased the owner PID: %#v", persisted)
 	}
 }
 

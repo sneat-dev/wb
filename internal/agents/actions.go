@@ -1,8 +1,6 @@
 package agents
 
 import (
-	"bufio"
-	"encoding/json"
 	"io"
 	"strings"
 )
@@ -19,27 +17,9 @@ func RecentActions(reader io.Reader, limit int) []string {
 		return nil
 	}
 	actions := make([]string, 0, limit)
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var event struct {
-			Type string `json:"type"`
-			Item *struct {
-				Type    string `json:"type"`
-				Command string `json:"command"`
-				Status  string `json:"status"`
-				Message string `json:"message"`
-			} `json:"item"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
+	scanHarnessEvents(reader, func(event harnessEvent) {
 		if event.Type != "item.completed" || event.Item == nil {
-			continue
+			return
 		}
 		var action string
 		switch event.Item.Type {
@@ -52,13 +32,13 @@ func RecentActions(reader io.Reader, limit int) []string {
 		case "error":
 			action = "diagnostic: " + event.Item.Message
 		default:
-			continue
+			return
 		}
 		actions = append(actions, condense(action))
 		if len(actions) > limit {
 			actions = actions[1:]
 		}
-	}
+	})
 	return actions
 }
 
