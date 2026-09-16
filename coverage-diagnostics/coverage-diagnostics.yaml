@@ -1,0 +1,5 @@
+schema_version: 1
+repositories:
+    - repository: daemon-hardening
+      manifest: coverage-diagnostics/coverage-diagnostics-771a20c1caebdf81.yaml
+      sha256: 2dfb9deeb04f9517a547741a97cdd27eb55dbb41968ffc890f81ed52cc4dac69

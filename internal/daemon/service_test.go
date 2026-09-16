@@ -18,7 +18,7 @@ import (
 func TestDaemonServiceRunsDurableOperationWithBoundedReceipt(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
-	service, err := NewService(root, "test-build", "17", allowRawForTest)
+	service, err := newTestService(t, root, "test-build", "17", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestDaemonServiceRunsDurableOperationWithBoundedReceipt(t *testing.T) {
 
 func TestDaemonServiceRejectsIdempotencyPayloadMismatch(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "test-build", "1", allowRawForTest)
+	service, err := newTestService(t, root, "test-build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestDaemonServiceRejectsIdempotencyPayloadMismatch(t *testing.T) {
 }
 
 func TestDaemonServiceRejectsOversizedRequestFields(t *testing.T) {
-	service, err := NewService(t.TempDir(), "test-build", "1", allowRawForTest)
+	service, err := newTestService(t, t.TempDir(), "test-build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestDaemonServiceRejectsOversizedRequestFields(t *testing.T) {
 func TestDaemonServiceRejectsRawExecutionWithoutPolicy(t *testing.T) {
 	projectsRoot := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "missing-policy.json")
-	service, err := NewService(projectsRoot, "test-build", "1", func() error {
+	service, err := newTestService(t, projectsRoot, "test-build", "1", func() error {
 		return RequireRawExecutionPolicy(policyPath, projectsRoot)
 	})
 	if err != nil {
@@ -138,7 +138,7 @@ func TestDaemonServiceDoesNotRunAfterRunningTransitionPersistenceFailure(t *test
 	marker := filepath.Join(root, "executed")
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
 	t.Setenv("WB_DAEMON_TEST_MARKER", marker)
-	service, err := NewService(root, "test-build", "1", allowRawForTest)
+	service, err := newTestService(t, root, "test-build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestDaemonServiceDoesNotRunAfterRunningTransitionPersistenceFailure(t *test
 }
 
 func TestDaemonServiceRejectsUntrustedEnvironmentPersistence(t *testing.T) {
-	service, err := NewService(t.TempDir(), "test-build", "1", allowRawForTest)
+	service, err := newTestService(t, t.TempDir(), "test-build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestDaemonServiceRejectsUntrustedEnvironmentPersistence(t *testing.T) {
 func TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
-	before, err := NewService(root, "old-build", "3", allowRawForTest)
+	before, err := newTestService(t, root, "old-build", "3", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestDaemonServiceRestartResumesQueuedAndFencesRunningOperations(t *testing.
 		t.Fatal(err)
 	}
 
-	after, err := NewService(root, "new-build", "4", allowRawForTest)
+	after, err := newTestService(t, root, "new-build", "4", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestDaemonServiceRestartDoesNotResumeQueuedOperationAfterPolicyRemoval(t *t
 	marker := filepath.Join(root, "executed")
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
 	t.Setenv("WB_DAEMON_TEST_MARKER", marker)
-	before, err := NewService(root, "old-build", "3", allowRawForTest)
+	before, err := newTestService(t, root, "old-build", "3", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestDaemonServiceRestartDoesNotResumeQueuedOperationAfterPolicyRemoval(t *t
 	}
 
 	missingPolicy := filepath.Join(t.TempDir(), "missing-policy.json")
-	after, err := NewService(root, "new-build", "4", func() error {
+	after, err := newTestService(t, root, "new-build", "4", func() error {
 		return RequireRawExecutionPolicy(missingPolicy, root)
 	})
 	if err != nil {
@@ -266,7 +266,7 @@ func TestDaemonServiceRevalidatesPolicyImmediatelyBeforeQueuedLaunch(t *testing.
 	marker := filepath.Join(root, "executed")
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
 	t.Setenv("WB_DAEMON_TEST_MARKER", marker)
-	before, err := NewService(root, "old-build", "3", allowRawForTest)
+	before, err := newTestService(t, root, "old-build", "3", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestDaemonServiceRevalidatesPolicyImmediatelyBeforeQueuedLaunch(t *testing.
 	policyPath := filepath.Join(t.TempDir(), "policy.json")
 	writeRawExecutionPolicy(t, policyPath, []byte(enabledRawExecutionPolicy), 0o600)
 	checks := 0
-	after, err := NewService(root, "new-build", "4", func() error {
+	after, err := newTestService(t, root, "new-build", "4", func() error {
 		checks++
 		if err := RequireRawExecutionPolicy(policyPath, root); err != nil {
 			return err

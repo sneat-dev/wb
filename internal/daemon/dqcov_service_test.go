@@ -121,7 +121,7 @@ func TestDqCovDaemonHelperProcess(t *testing.T) {
 
 func TestDqCovNewServiceDefaultsAuthorizeAndGeneration(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "test-build", "", nil)
+	service, err := NewService(root, dqCovOperationsDir(root), "test-build", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewService(file, "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "create daemon operation store") {
+		if _, err := NewService(file, filepath.Join(file, "operations"), "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "create daemon operation store") {
 			t.Fatalf("NewService(file) = %v", err)
 		}
 	})
@@ -164,7 +164,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
-		if _, err := NewService(root, "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "read daemon operation store") {
+		if _, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "read daemon operation store") {
 			t.Fatalf("NewService with an unreadable store = %v", err)
 		}
 	})
@@ -182,7 +182,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
-		if _, err := NewService(root, "build", "2", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
+		if _, err := NewService(root, dqCovOperationsDir(root), "build", "2", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
 			t.Fatalf("NewService with a read-only store = %v", err)
 		}
 	})
@@ -197,7 +197,7 @@ func TestDqCovNewServiceIgnoresForeignStoreEntries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "notes.txt"), []byte("not json at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatalf("NewService rejected non-operation entries: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestDqCovNewServiceReportsCorruptDurableRecords(t *testing.T) {
 		if stage != nil {
 			stage(t, root)
 		}
-		_, err := NewService(root, "build", "1", allowRawForTest)
+		_, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 		if err == nil {
 			t.Fatalf("NewService accepted %s", name)
 		}
@@ -247,7 +247,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "worker-op", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
 			Cursor: "1", TargetWorkerId: "recovered-worker",
 		}})
-		service, err := NewService(root, "build", "1", allowRawForTest)
+		service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +264,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "conflicted", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
 			Cursor: "1", TargetWorkerId: "inner-worker",
 		}})
-		_, err := NewService(root, "build", "1", allowRawForTest)
+		_, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 		if err == nil || !strings.Contains(err.Error(), "conflicting target worker identities") {
 			t.Fatalf("conflicting target identities = %v", err)
 		}
@@ -276,7 +276,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "nameless", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
 			Cursor: "1",
 		}})
-		service, err := NewService(root, "build", "1", allowRawForTest)
+		service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -296,7 +296,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 			Cursor: "1",
 		}})
 		dqCovBlockPersist(t, root, "unwritable")
-		if _, err := NewService(root, "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
+		if _, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
 			t.Fatalf("NewService with an unwritable quarantine = %v", err)
 		}
 	})
@@ -307,7 +307,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "legacy-key", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
 			Cursor: "1", IdempotencyKey: "legacy-key", TargetWorkerId: "legacy-worker",
 		}})
-		service, err := NewService(root, "build", "1", allowRawForTest)
+		service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -330,7 +330,7 @@ func TestDqCovNewServiceFencesQueuedOperationWhenPersistFails(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "running-unfenceable", State: daemonv1.OperationState_OPERATION_STATE_RUNNING, Cursor: "2",
 		}})
 		dqCovBlockPersist(t, root, "running-unfenceable")
-		if _, err := NewService(root, "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
+		if _, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
 			t.Fatalf("NewService with an unfenceable running record = %v", err)
 		}
 	})
@@ -341,14 +341,15 @@ func TestDqCovNewServiceFencesQueuedOperationWhenPersistFails(t *testing.T) {
 			SchemaVersion: QueueSchema, OperationId: "queued-denied", State: daemonv1.OperationState_OPERATION_STATE_QUEUED, Cursor: "1",
 		}})
 		dqCovBlockPersist(t, root, "queued-denied")
-		if _, err := NewService(root, "build", "1", func() error { return errors.New("raw disabled") }); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
+		if _, err := NewService(root, dqCovOperationsDir(root), "build", "1", func() error { return errors.New("raw disabled") }); err == nil || !strings.Contains(err.Error(), "write daemon operation") {
 			t.Fatalf("NewService with an unwritable revocation = %v", err)
 		}
 	})
 }
 
 func TestDqCovSubmitOperationValidation(t *testing.T) {
-	service, err := NewService(t.TempDir(), "build", "1", allowRawForTest)
+	storeRoot := t.TempDir()
+	service, err := NewService(storeRoot, dqCovOperationsDir(storeRoot), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +378,7 @@ func TestDqCovSubmitOperationValidation(t *testing.T) {
 
 func TestDqCovSubmitOperationRollsBackFailedDurableWrite(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +426,7 @@ func TestDqCovSubmitOperationRollsBackFailedDurableWrite(t *testing.T) {
 
 func TestDqCovGetAndWaitOperationErrorsAndDeadlines(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +479,7 @@ func TestDqCovGetAndWaitOperationErrorsAndDeadlines(t *testing.T) {
 
 func TestDqCovCancelOperationCoversTerminalAndRunningCases(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +532,7 @@ func TestDqCovCancelOperationCoversTerminalAndRunningCases(t *testing.T) {
 
 func TestDqCovExecuteIgnoresWorkThatIsNotQueuedRawExecution(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +554,7 @@ func TestDqCovExecuteIgnoresWorkThatIsNotQueuedRawExecution(t *testing.T) {
 func TestDqCovExecuteFailsWhenTheCPUBudgetDirectoryIsUnusable(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +582,7 @@ func TestDqCovExecuteSkipsWorkCancelledWhileWaitingForTheCPUBudget(t *testing.T)
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
 	t.Setenv("WB_DAEMON_TEST_MARKER", filepath.Join(root, "executed"))
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +630,7 @@ func TestDqCovExecuteSkipsWorkCancelledWhileWaitingForTheCPUBudget(t *testing.T)
 func TestDqCovExecuteRecordsChildFailureAndBoundedOutput(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +675,7 @@ func TestDqCovExecuteRevokesAuthorizationImmediatelyBeforeLaunch(t *testing.T) {
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
 	t.Setenv("WB_DAEMON_TEST_MARKER", filepath.Join(root, "executed"))
 	var revoked atomic.Bool
-	service, err := NewService(root, "build", "1", func() error {
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", func() error {
 		if revoked.Load() {
 			return errors.New("administrator revoked raw execution")
 		}
@@ -713,7 +714,7 @@ func TestDqCovExecuteRevokesAuthorizationImmediatelyBeforeLaunch(t *testing.T) {
 
 func TestDqCovFinishIsIdempotentAndSkipsCancelledWork(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,7 +740,7 @@ func TestDqCovFinishIsIdempotentAndSkipsCancelledWork(t *testing.T) {
 func TestDqCovFinishReportsFailedTerminalWrite(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_DAEMON_TEST_HELPER", "1")
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +766,7 @@ func TestDqCovFinishReportsFailedTerminalWrite(t *testing.T) {
 
 func TestDqCovFailAuthorizationIgnoresWorkThatIsGoneOrNotQueued(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +784,8 @@ func TestDqCovFailAuthorizationIgnoresWorkThatIsGoneOrNotQueued(t *testing.T) {
 }
 
 func TestDqCovPersistRecordReportsUnusableTargets(t *testing.T) {
-	service, err := NewService(t.TempDir(), "build", "1", allowRawForTest)
+	root := t.TempDir()
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}

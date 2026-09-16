@@ -257,7 +257,7 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	service, err := daemon.NewService(root, "test-build", "cw-worker-run", func() error { return errors.New("raw disabled") })
+	service, err := daemonTestService(t, root, "test-build", "cw-worker-run", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}

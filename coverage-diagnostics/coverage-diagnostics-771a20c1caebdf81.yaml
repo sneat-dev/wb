@@ -1,0 +1,8 @@
+schema_version: 1
+repository: daemon-hardening
+module: /Users/alex/projects/sneat-dev/wb/.worktrees/daemon-hardening
+files:
+    - label: unsharded packages
+      path: coverage-diagnostics/coverage-raw-771a20c1caebdf81-1.log
+      bytes: 9973
+      sha256: b72eedf09a4be3d05f500b7ad1485f3d57b8cfccde89427b40effb511b226a50

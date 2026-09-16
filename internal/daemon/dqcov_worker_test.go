@@ -42,7 +42,7 @@ func TestDqCovRegisterWorkerValidationFailsClosed(t *testing.T) {
 	for index := range tooManyRoots {
 		tooManyRoots[index] = root
 	}
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestDqCovRegisterWorkerValidationFailsClosed(t *testing.T) {
 
 func TestDqCovRegisterWorkerReconnectRecoveryFailureKeepsOldGeneration(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDqCovRegisterWorkerReconnectRecoveryFailureKeepsOldGeneration(t *testin
 
 func TestDqCovLeaseOperationRejectsUnknownCancelledAndIdleWorkers(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestDqCovLeaseOperationRejectsUnknownCancelledAndIdleWorkers(t *testing.T) 
 
 func TestDqCovLeaseOperationWakesWhenMatchingWorkArrives(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestDqCovLeaseOperationWakesWhenMatchingWorkArrives(t *testing.T) {
 
 func TestDqCovLeaseOperationReportsAssignmentPersistenceFailure(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestDqCovLeaseOperationReportsAssignmentPersistenceFailure(t *testing.T) {
 
 func TestDqCovLeaseOperationOrdersEqualTimestampsByOperationID(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestDqCovLeaseOperationOrdersEqualTimestampsByOperationID(t *testing.T) {
 // when they collide.
 func TestDqCovLeaseOperationOrdersDistinctTimestampsChronologically(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestDqCovLeaseOperationOrdersDistinctTimestampsChronologically(t *testing.T
 
 func TestDqCovHeartbeatOperationValidation(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestDqCovHeartbeatOperationValidation(t *testing.T) {
 
 func TestDqCovCompleteOperationValidationAndFailure(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestDqCovCompleteOperationValidationAndFailure(t *testing.T) {
 
 func TestDqCovCompleteOperationMarksNonZeroExitAsFailure(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestDqCovCompleteOperationMarksNonZeroExitAsFailure(t *testing.T) {
 
 func TestDqCovDisconnectWorkerValidationAndPersistence(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestDqCovDisconnectWorkerValidationAndPersistence(t *testing.T) {
 
 func TestDqCovReapExpiredLeaseReportsPersistenceFailure(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestDqCovPathWithinAnyResolvesPermittedRoots(t *testing.T) {
 // though no client ever polls the operation.
 func TestDqCovStartLeaseRecoveryReapsExpiredLeasesWithoutAClient(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "build", "1", allowRawForTest)
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
