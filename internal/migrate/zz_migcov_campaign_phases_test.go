@@ -513,7 +513,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 		cloneURL:  filepath.Join(t.TempDir(), "absent.git"),
 		report:    &CampaignRepositoryReport{},
 	}
-	if err := prepareCampaignRepository(repo); err == nil {
+	if err := prepareCampaignRepository(repo, githubDir); err == nil {
 		t.Fatal("prepareCampaignRepository(absent remote) succeeded")
 	}
 
@@ -528,7 +528,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 		ref:       "main",
 		report:    &CampaignRepositoryReport{},
 	}
-	if err := prepareCampaignRepository(localRepo); err == nil {
+	if err := prepareCampaignRepository(localRepo, githubDir); err == nil {
 		t.Fatal("prepareCampaignRepository(no origin) succeeded")
 	}
 
@@ -539,7 +539,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 		canonical: pinned, worktree: filepath.Join(t.TempDir(), "worktree"),
 		branch: "wb/migrate/prepare", ref: "release", report: &CampaignRepositoryReport{},
 	}
-	if err := prepareCampaignRepository(pinnedRepo); err == nil || !strings.Contains(err.Error(), "does not contain") {
+	if err := prepareCampaignRepository(pinnedRepo, githubDir); err == nil || !strings.Contains(err.Error(), "does not contain") {
 		t.Fatalf("prepareCampaignRepository(missing ref) = %v", err)
 	}
 
@@ -554,7 +554,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 		canonical: reusable, worktree: existing, branch: "wb/migrate/prepare", ref: "main",
 		report: &CampaignRepositoryReport{},
 	}
-	if err := prepareCampaignRepository(existingRepo); err == nil || !strings.Contains(err.Error(), "worktree already exists") {
+	if err := prepareCampaignRepository(existingRepo, githubDir); err == nil || !strings.Contains(err.Error(), "worktree already exists") {
 		t.Fatalf("prepareCampaignRepository(existing worktree) = %v", err)
 	}
 
@@ -566,7 +566,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 		canonical: branchExists, worktree: filepath.Join(t.TempDir(), "worktree"),
 		branch: "wb/migrate/prepare", ref: "main", report: &CampaignRepositoryReport{},
 	}
-	if err := prepareCampaignRepository(branchRepo); err == nil || !strings.Contains(err.Error(), "campaign branch already exists") {
+	if err := prepareCampaignRepository(branchRepo, githubDir); err == nil || !strings.Contains(err.Error(), "campaign branch already exists") {
 		t.Fatalf("prepareCampaignRepository(existing branch) = %v", err)
 	}
 }
@@ -692,20 +692,23 @@ func TestMigCovAcquireCampaignLockReportsUnusableRoots(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(file, "wb"))
-	if _, err := acquireCampaignLock(t.TempDir(), "unusable-home"); err == nil {
-		t.Fatal("acquireCampaignLock(unusable WB_HOME) succeeded")
+	// The state home derives from the projects root now, so an unusable root
+	// is passed as githubDir instead of through WB_HOME.
+	if _, err := acquireCampaignLock(filepath.Join(file, "projects"), "unusable-root"); err == nil {
+		t.Fatal("acquireCampaignLock(unusable projects root) succeeded")
 	}
 
 	// A symlinked worktrees directory is refused by the operation lock
 	// directory rather than followed.
-	home := t.TempDir()
+	githubDir := t.TempDir()
 	realWorktrees := t.TempDir()
-	if err := os.Symlink(realWorktrees, filepath.Join(home, "worktrees")); err != nil {
+	if err := os.MkdirAll(filepath.Join(githubDir, ".wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realWorktrees, filepath.Join(githubDir, ".wb", "worktrees")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	t.Setenv("WB_HOME", home)
-	if _, err := acquireCampaignLock(t.TempDir(), "symlinked-worktrees"); err == nil {
+	if _, err := acquireCampaignLock(githubDir, "symlinked-worktrees"); err == nil {
 		t.Fatal("acquireCampaignLock(symlinked worktrees root) succeeded")
 	}
 }

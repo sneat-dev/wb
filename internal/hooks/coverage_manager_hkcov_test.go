@@ -67,10 +67,14 @@ func TestHkCovManagedPathRejectsNonRepository(t *testing.T) {
 	}
 }
 
-func TestHkCovShimManagedSectionEmbedsConfigAndLegacyMarker(t *testing.T) {
+func TestHkCovShimManagedSectionEmbedsConfigWithoutLegacyMarker(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	section := shimManagedSection("", "pre-commit", "~/hooks.yaml", "/projects root", filepath.Join(home, ".wb"), true)
+	// wbHomeAllowsLegacy is false in production now: resolvedWBHome no longer
+	// reports a legacy <projects-root>/.wb read layout to be compatible with,
+	// so a managed shim must not pin WB_HOME_MIGRATION_COMPAT. WB_HOME itself
+	// stays pinned until the separate WB_HOME-retirement task lands.
+	section := shimManagedSection("", "pre-commit", "~/hooks.yaml", "/projects root", filepath.Join(home, ".wb"), false)
 	if !strings.Contains(section, "--projects-root '/projects root'") {
 		t.Fatalf("section = %q, want the projects root embedded", section)
 	}
@@ -80,8 +84,8 @@ func TestHkCovShimManagedSectionEmbedsConfigAndLegacyMarker(t *testing.T) {
 	if !strings.Contains(section, "export WB_HOME='"+filepath.Join(home, ".wb")+"'") {
 		t.Fatalf("section = %q, want WB_HOME pinned", section)
 	}
-	if !strings.Contains(section, "export "+wbhome.EnvMigrationCompat+"='"+filepath.Join(home, ".wb")+"'") {
-		t.Fatalf("section = %q, want the legacy migration marker pinned", section)
+	if strings.Contains(section, "export "+wbhome.EnvMigrationCompat+"=") {
+		t.Fatalf("section = %q, want no legacy migration marker pinned", section)
 	}
 	plain := shimManagedSection("", "pre-commit", "", "", "", false)
 	if strings.Contains(plain, "WB_HOME") || strings.Contains(plain, "--config") || strings.Contains(plain, "--projects-root") {
@@ -116,9 +120,10 @@ func TestHkCovCheckErrorPaths(t *testing.T) {
 	isolateConfig(t)
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := Check(repo, "", executable, "/tmp/projects"); err == nil {
-		t.Fatal("Check with an unusable WB home should fail")
+	// The projects root selects the state home now, so the unusable root is
+	// passed where the API accepts one instead of through WB_HOME.
+	if _, err := Check(repo, "", executable, filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("Check with an unusable projects root should fail")
 	}
 
 	isolateConfig(t)
@@ -224,9 +229,10 @@ func TestHkCovApplyRejectsMissingExecutableAndBadInputs(t *testing.T) {
 
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: testWBExecutable(t, "wb"), ProjectsRoot: "/tmp/projects"}); err == nil {
-		t.Fatal("Apply with an unusable WB home should fail")
+	// The projects root selects the state home now, so the unusable root is
+	// passed where the API accepts one instead of through WB_HOME.
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: testWBExecutable(t, "wb"), ProjectsRoot: filepath.Join(blocker, "projects")}); err == nil {
+		t.Fatal("Apply with an unusable projects root should fail")
 	}
 
 	isolateConfig(t)
@@ -1270,9 +1276,10 @@ func TestHkCovRefreshManagedShimsReportsHomeFailure(t *testing.T) {
 	hkCovInstall(t, repo, executable)
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := RefreshManagedShims(repo, "", executable, "/tmp/projects"); err == nil {
-		t.Fatal("RefreshManagedShims with an unusable WB home should fail")
+	// The projects root selects the state home now, so the unusable root is
+	// passed where the API accepts one instead of through WB_HOME.
+	if _, err := RefreshManagedShims(repo, "", executable, filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("RefreshManagedShims with an unusable projects root should fail")
 	}
 }
 
