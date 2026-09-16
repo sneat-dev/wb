@@ -74,6 +74,12 @@ state is. It MUST NOT be constructed from the projects root and a literal
 supply an absolute runtime path. Moving, symlinking, or unsetting `WB_HOME`
 MUST move the daemon's runtime directory with it.
 
+Because the daemon asks the resolver rather than naming a home itself, a later
+change to what that resolver returns — for example the single
+`WB_PROJECTS_ROOT` layout proposed by [Projects Root Layout and Worktree
+Placement](../projects-root-layout/README.md) — moves the daemon with it and
+needs no daemon-side change.
+
 #### REQ: runtime-path-is-reported-and-stable
 
 The resolved runtime directory and the socket path within it MUST be derivable
