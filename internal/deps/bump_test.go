@@ -755,6 +755,10 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 		t.Fatal(err)
 	}
 	runTestGit(t, root, "clone", remote, canonical)
+	// The clone is committed to directly by tests (and by bump runs), so it
+	// needs its own identity: a CI runner has none to auto-derive.
+	runTestGit(t, canonical, "config", "user.name", "WB Test")
+	runTestGit(t, canonical, "config", "user.email", "wb@example.test")
 	return Repository{Slug: "acme/" + name, Path: canonical, CloneURL: remote}
 }
 

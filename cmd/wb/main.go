@@ -298,43 +298,107 @@ func persistentCommandID(cmd *cobra.Command) string {
 	return strings.Join(parts, " ")
 }
 
+// main is deliberately only the process exit edge: every decision it used to
+// make lives in dispatch, so the hidden protocol entry points and the runtime
+// executable handoff are reachable from an in-process test instead of only
+// from a subprocess that no coverage profile can observe.
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
-		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
+	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+// processHandlers are the pre-cobra entry points dispatch routes to. They are
+// function values rather than direct calls because the six secure Git helpers
+// deliberately operate on inherited file descriptors 3..9: invoking one
+// in-process against the test binary's own descriptors corrupts the Go
+// runtime, so the routing can only be asserted by substituting the handler.
+type processHandlers struct {
+	privateLauncher func(args []string) int
+	ownerCLI        func(args []string, deps agents.OwnerDeps) int
+	agentRemote     func(stdin io.Reader, stdout, stderr io.Writer) int
+	// secureGitHelper resolves one hidden argv value to its helper. The second
+	// result reports whether the argument named a helper at all; an unknown
+	// value falls through to cobra, exactly as the previous if-chain did.
+	secureGitHelper func(argument string, args []string) (code int, known bool)
+	lookupEnv       func(string) (string, bool)
+	executable      func() (string, error)
+	setEnv          func(string, string) error
+}
+
+// secureGitHelpers maps every hidden argv value that must be resolved before
+// cobra to its handler. It is a function rather than a package-level map so the
+// table is rebuilt per process, and so a test can assert its membership without
+// invoking a helper that expects inherited descriptors 3..9.
+func secureGitHelpers() map[string]func([]string) int {
+	return map[string]func([]string) int{
+		worktrees.SecureCleanupGitHelperArgument:        worktrees.RunSecureCleanupGitHelper,
+		hooks.SecureHooksGitHelperArgument:              hooks.RunSecureHooksGitHelper,
+		worktrees.SecureStageGitHelperArgument:          worktrees.RunSecureStageGitHelper,
+		worktrees.SecureCanonicalGitHelperArgument:      worktrees.RunSecureCanonicalGitHelper,
+		worktrees.SecureStageCanonicalGitHelperArgument: worktrees.RunSecureStageCanonicalGitHelper,
+		worktrees.SecureRenameGitHelperArgument:         worktrees.RunSecureRenameGitHelper,
 	}
-	if len(os.Args) > 1 && os.Args[1] == agents.OwnerArgument {
-		os.Exit(agents.OwnerCLI(os.Args[2:], agents.DefaultOwnerDeps()))
+}
+
+func defaultProcessHandlers() processHandlers {
+	helpers := secureGitHelpers()
+	return processHandlers{
+		privateLauncher: sessionlaunch.RunPrivateLauncher,
+		ownerCLI:        agents.OwnerCLI,
+		agentRemote:     RunAgentRemote,
+		secureGitHelper: func(argument string, args []string) (int, bool) {
+			helper, known := helpers[argument]
+			if !known {
+				return 0, false
+			}
+			return helper(args), true
+		},
+		lookupEnv:  os.LookupEnv,
+		executable: os.Executable,
+		setEnv:     os.Setenv,
 	}
-	// The private remote entry point is a validated protocol value on stdin, not
-	// a command line: it is handled here so a remote caller can never reach a
-	// flag parser, and so its request cannot be reinterpreted as shell text.
-	if len(os.Args) > 1 && os.Args[1] == agents.RemoteArgument {
-		os.Exit(RunAgentRemote(os.Stdin, os.Stdout, os.Stderr))
+}
+
+func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return dispatchWithHandlers(defaultProcessHandlers(), args, stdin, stdout, stderr)
+}
+
+// dispatchWithHandlers resolves everything that must be decided before cobra
+// parses anything. The hidden protocol arguments are matched as an exact argv
+// value, so a remote caller can never reach a flag parser and have its request
+// reinterpreted as shell text, and the runtime-executable handoff must happen
+// before any child Git hook is spawned. It returns the documented exit code
+// rather than exiting, which is what keeps this routing testable in-process.
+func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// Both the first token and the argument tail are derived once, from a
+	// length-checked slice: `wb` with no arguments at all is a valid invocation
+	// that must reach cobra, not a slice-bounds panic.
+	var first string
+	var rest []string
+	if len(args) > 0 {
+		first = args[0]
+		rest = args[1:]
+	}
+	switch first {
+	case sessionlaunch.PrivateLauncherArgument:
+		return handlers.privateLauncher(rest)
+	case agents.OwnerArgument:
+		return handlers.ownerCLI(rest, agents.DefaultOwnerDeps())
+	case agents.RemoteArgument:
+		// The private remote entry point is a validated protocol value on stdin,
+		// not a command line: it is handled here so a remote caller can never
+		// reach a flag parser, and so its request cannot be reinterpreted as
+		// shell text.
+		return handlers.agentRemote(stdin, stdout, stderr)
 	}
 	installSessionResolver()
-	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)
-		os.Exit(exitFindings)
+	if err := propagateRuntimeWBExecutable(handlers.lookupEnv, handlers.executable, handlers.setEnv); err != nil {
+		_, _ = fmt.Fprintln(stderr, "wb: establish runtime executable for child Git hooks:", err)
+		return exitFindings
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
+	if code, known := handlers.secureGitHelper(first, rest); known {
+		return code
 	}
-	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
-		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
-	}
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	return run(args, stdout, stderr)
 }
 
 // propagateRuntimeWBExecutable gives Git hooks started by this WB process a
