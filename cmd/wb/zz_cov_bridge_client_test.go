@@ -32,7 +32,7 @@ func (cwWtBridgeErrorReader) Read([]byte) (int, error) {
 // requires.
 func cwWtBridgeClientRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(root); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestCwWtDaemonFileBridgeHTTPClientRejectsBadConfiguration(t *testing.T) {
 		t.Fatal("client accepted a regular-file projects root")
 	}
 
-	prepared := t.TempDir()
+	prepared := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(prepared); err != nil {
 		t.Fatal(err)
 	}

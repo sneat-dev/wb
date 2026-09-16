@@ -31,6 +31,10 @@ func cwWtDaemonRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	// The daemon now resolves its runtime directory through WB's home resolver,
+	// whose default is the developer's real WB home. Pin it inside the fixture
+	// or these tests would create sockets and lifecycle records outside it.
+	pinDaemonHome(t, root)
 	return root
 }
 
@@ -176,7 +180,7 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 	}
 
 	// A managed start that no longer owns the starting state is refused.
-	statePath := daemonStatePath(root)
+	statePath := mustDaemonPath(t, daemonStatePath, root)
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +225,7 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 	projectsRoot = previousRoot
 
 	// The serve wrote a ready lifecycle state and then reconciled it stopped.
-	state, found, err := (daemon.Store{Path: daemonStatePath(serveRoot)}).Load()
+	state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, serveRoot)}).Load()
 	if err != nil || !found {
 		t.Fatalf("lifecycle state after serve: found=%t err=%v", found, err)
 	}
@@ -327,14 +331,27 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 		t.Fatal("start with a failing spawn must fail")
 	}
 
-	// A status probe that cannot read the lifecycle state is reported.
+	// A status probe that cannot read the lifecycle state is reported. The
+	// daemon now derives its runtime directory from WB's home resolver rather
+	// than from the projects root, so the unusable thing has to be the home:
+	// pinning it beneath a regular file is what makes the runtime unreachable.
 	blocker := filepath.Join(root, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cwWtDaemonExec(t, blocker, func() *cobra.Command { return newDaemonStatusCmd(deps) }); err == nil {
-		t.Fatal("status against an unusable root must fail")
+	// A status probe against an unusable home reports rather than fails. The
+	// daemon derives its runtime directory from WB's home resolver, not from
+	// the projects root, and Status deliberately treats a location it cannot
+	// resolve as one more thing to report instead of a hard error.
+	pinDaemonHome(t, blocker)
+	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, blocker, func() *cobra.Command { return newDaemonStatusCmd(deps) })
+	if blockedStatusErr != nil {
+		t.Fatalf("status against an unusable home = %v", blockedStatusErr)
 	}
+	if !strings.Contains(blockedStatus, "state=absent") || !strings.Contains(blockedStatus, "records no daemon") {
+		t.Fatalf("status against an unusable home = %q, want an absent-daemon report", blockedStatus)
+	}
+	pinDaemonHome(t, root)
 
 	// recover --apply on a proven-stale-but-ineligible lock refuses; a plain
 	// dry run over a missing lock reports no_stale_owner and succeeds.
@@ -344,22 +361,33 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestCwWtDaemonHeartbeatStopsOnCancellation(t *testing.T) {
+// daemonHeartbeat became daemonRuntimeGuard: the heartbeat now also proves the
+// runtime directory it beats from still exists, so it needs a store and the
+// owned record. An already-cancelled context must still return nothing at all.
+func TestCwWtDaemonRuntimeGuardStopsOnCancellation(t *testing.T) {
+	root := cwWtDaemonRoot(t)
+	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	owned := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "cwWt", Version: "cwWt"}, "cw-wt-token", time.Now().UTC())
+
 	var out bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan struct{})
+	var guardErr error
 	go func() {
 		defer close(done)
-		daemonHeartbeat(&out, ctx, "127.0.0.1:0")
+		guardErr = daemonRuntimeGuard(&out, ctx, "127.0.0.1:0", store, owned, "cw-wt-token")
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemonHeartbeat did not return after cancellation")
+		t.Fatal("daemonRuntimeGuard did not return after cancellation")
+	}
+	if guardErr != nil {
+		t.Fatalf("daemonRuntimeGuard after cancellation = %v", guardErr)
 	}
 	if out.Len() != 0 {
-		t.Fatalf("daemonHeartbeat wrote %q after immediate cancellation", out.String())
+		t.Fatalf("daemonRuntimeGuard wrote %q after immediate cancellation", out.String())
 	}
 }
 

@@ -65,7 +65,7 @@ func TestCwWtDaemonStateLockHappyPathAndFailures(t *testing.T) {
 
 	// A directory in place of the lock file cannot be opened.
 	directoryRoot, directoryController, _ := cwWtLockFixture(t)
-	if err := os.Mkdir(daemonStateLockPath(directoryRoot), 0o700); err != nil {
+	if err := os.Mkdir(mustDaemonPath(t, daemonStateLockPath, directoryRoot), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := directoryController.stateLock(); err == nil || !strings.Contains(err.Error(), "open daemon state lock") {
@@ -74,7 +74,7 @@ func TestCwWtDaemonStateLockHappyPathAndFailures(t *testing.T) {
 
 	// A lock file that is not owner-only is refused, not chmod'ed.
 	permRoot, permController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonStateLockPath(permRoot), "", 0o644)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonStateLockPath, permRoot), "", 0o644)
 	if _, err := permController.stateLock(); err == nil || !strings.Contains(err.Error(), "validate daemon state lock permissions") {
 		t.Fatalf("stateLock over a 0644 lock = %v", err)
 	}
@@ -82,8 +82,8 @@ func TestCwWtDaemonStateLockHappyPathAndFailures(t *testing.T) {
 	// A hard-linked lock file is refused: flock on a shared inode would let a
 	// second path bypass the lock.
 	linkRoot, linkController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonStateLockPath(linkRoot), "", 0o600)
-	if err := os.Link(daemonStateLockPath(linkRoot), daemonStateLockPath(linkRoot)+".link"); err != nil {
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonStateLockPath, linkRoot), "", 0o600)
+	if err := os.Link(mustDaemonPath(t, daemonStateLockPath, linkRoot), mustDaemonPath(t, daemonStateLockPath, linkRoot)+".link"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := linkController.stateLock(); err == nil || !strings.Contains(err.Error(), "single-link owner-only regular file") {
@@ -112,7 +112,7 @@ func TestCwWtDaemonLifecycleLockHappyPathAndOwners(t *testing.T) {
 	}
 	release()
 	// The sidecar must now record pid=0 after release.
-	owner, err := os.ReadFile(daemonLifecycleOwnerPath(controller.root))
+	owner, err := os.ReadFile(mustDaemonPath(t, daemonLifecycleOwnerPath, controller.root))
 	if err != nil {
 		t.Fatalf("read lifecycle owner: %v", err)
 	}
@@ -123,8 +123,8 @@ func TestCwWtDaemonLifecycleLockHappyPathAndOwners(t *testing.T) {
 	// A live owner process blocks the transition.
 	liveRoot, liveController, liveDeps := cwWtLockFixture(t)
 	_ = liveRoot
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(liveController.root), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(liveController.root), "pid="+itoa(os.Getpid())+"\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, liveController.root), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, liveController.root), "pid="+itoa(os.Getpid())+"\n", 0o600)
 	liveDeps.alive = func(pid int) bool { return pid == os.Getpid() }
 	liveController.deps = liveDeps
 	if _, err := liveController.lifecycleLock(); err == nil || !strings.Contains(err.Error(), "names live process") {
@@ -133,11 +133,11 @@ func TestCwWtDaemonLifecycleLockHappyPathAndOwners(t *testing.T) {
 
 	// A dead owner with an unsafe durable state is refused.
 	unsafeRoot, unsafeController, unsafeDeps := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(unsafeController.root), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(unsafeController.root), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, unsafeController.root), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, unsafeController.root), "pid=999999\n", 0o600)
 	unsafeDeps.alive = func(int) bool { return false }
 	unsafeController.deps = unsafeDeps
-	if err := (daemon.Store{Path: daemonStatePath(unsafeController.root)}).Save(
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unsafeController.root)}).Save(
 		daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", deps.now())); err != nil {
 		t.Fatal(err)
 	}
@@ -148,8 +148,8 @@ func TestCwWtDaemonLifecycleLockHappyPathAndOwners(t *testing.T) {
 
 	// A dead owner with no durable state is reclaimed safely.
 	reclaimRoot, reclaimController, reclaimDeps := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(reclaimController.root), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(reclaimController.root), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, reclaimController.root), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, reclaimController.root), "pid=999999\n", 0o600)
 	reclaimDeps.alive = func(int) bool { return false }
 	reclaimController.deps = reclaimDeps
 	release, err = reclaimController.lifecycleLock()
@@ -196,9 +196,17 @@ func TestCwWtDaemonOpenLifecycleLockBranches(t *testing.T) {
 	if _, _, _, err := newDaemonController(daemonTestDependencies(t, blocked), blocked).openLifecycleLock(true); err == nil || !strings.Contains(err.Error(), "secure daemon runtime") {
 		t.Fatalf("openLifecycleLock on a blocked runtime = %v", err)
 	}
+	// cwWtDaemonRoot pinned the home at the blocked fixture; put it back so the
+	// lock paths below resolve against the fixture this test owns.
+	pinDaemonHome(t, root)
 
-	// A directory where the lock belongs cannot be opened.
-	if err := os.Mkdir(daemonLifecycleLockPath(root), 0o700); err != nil {
+	// A directory where the lock belongs cannot be opened. The daemon creates
+	// its runtime directory when it starts, so the fixture has to place it
+	// before it can put a directory where the lock file belongs.
+	if err := os.MkdirAll(mustDaemonPath(t, daemon.RuntimeDir, root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(mustDaemonPath(t, daemonLifecycleLockPath, root), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := controller.openLifecycleLock(true); err == nil || !strings.Contains(err.Error(), "open daemon lifecycle lock") {
@@ -207,15 +215,15 @@ func TestCwWtDaemonOpenLifecycleLockBranches(t *testing.T) {
 
 	// A pre-existing non-owner-only lock is refused.
 	permRoot, permController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(permRoot), "", 0o644)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, permRoot), "", 0o644)
 	if _, _, _, err := permController.openLifecycleLock(true); err == nil || !strings.Contains(err.Error(), "validate daemon lifecycle lock permissions") {
 		t.Fatalf("openLifecycleLock over a 0644 lock = %v", err)
 	}
 
 	// A hard-linked lock is refused.
 	linkRoot, linkController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(linkRoot), "", 0o600)
-	if err := os.Link(daemonLifecycleLockPath(linkRoot), daemonLifecycleLockPath(linkRoot)+".link"); err != nil {
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, linkRoot), "", 0o600)
+	if err := os.Link(mustDaemonPath(t, daemonLifecycleLockPath, linkRoot), mustDaemonPath(t, daemonLifecycleLockPath, linkRoot)+".link"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := linkController.openLifecycleLock(true); err == nil || !strings.Contains(err.Error(), "single-link owner-only regular file") {
@@ -227,7 +235,7 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 	root, controller, _ := cwWtLockFixture(t)
 
 	// Legacy metadata lives in the lock file itself when no sidecar exists.
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(root), "pid=12345\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, root), "pid=12345\n", 0o600)
 	file, _, _, err := controller.openLifecycleLock(true)
 	if err != nil {
 		t.Fatalf("openLifecycleLock: %v", err)
@@ -240,7 +248,7 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// An empty legacy lock means no owner.
 	emptyRoot, emptyController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(emptyRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, emptyRoot), "", 0o600)
 	emptyFile, _, _, err := emptyController.openLifecycleLock(true)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +261,7 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// Ambiguous legacy metadata is an error.
 	badRoot, badController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(badRoot), "not-a-pid\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, badRoot), "not-a-pid\n", 0o600)
 	badFile, _, _, err := badController.openLifecycleLock(true)
 	if err != nil {
 		t.Fatal(err)
@@ -265,8 +273,8 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// A sidecar with no metadata is an error.
 	noMetaRoot, noMetaController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(noMetaRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(noMetaRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, noMetaRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, noMetaRoot), "", 0o600)
 	noMetaFile, _, _, err := noMetaController.openLifecycleLock(true)
 	if err != nil {
 		t.Fatal(err)
@@ -278,8 +286,8 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// Ambiguous sidecar metadata is an error.
 	ambigRoot, ambigController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(ambigRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(ambigRoot), "pid=abc\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, ambigRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, ambigRoot), "pid=abc\n", 0o600)
 	ambigFile, _, _, err := ambigController.openLifecycleLock(true)
 	if err != nil {
 		t.Fatal(err)
@@ -291,8 +299,8 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// A sidecar with the wrong permissions is refused.
 	permRoot, permController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(permRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(permRoot), "pid=1\n", 0o644)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, permRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, permRoot), "pid=1\n", 0o644)
 	permFile, _, _, err := permController.openLifecycleLock(true)
 	if err != nil {
 		t.Fatal(err)
@@ -304,8 +312,8 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 
 	// A sidecar that is a directory is refused as not a regular file.
 	dirRoot, dirController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(dirRoot), "", 0o600)
-	if err := os.Mkdir(daemonLifecycleOwnerPath(dirRoot), 0o600); err != nil {
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, dirRoot), "", 0o600)
+	if err := os.Mkdir(mustDaemonPath(t, daemonLifecycleOwnerPath, dirRoot), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	dirFile, _, _, err := dirController.openLifecycleLock(true)
@@ -321,7 +329,7 @@ func TestCwWtDaemonLifecycleOwnerPIDBranches(t *testing.T) {
 func TestCwWtDaemonWriteLifecycleOwnerPIDFailure(t *testing.T) {
 	root, controller, _ := cwWtLockFixture(t)
 	// A directory where the sidecar belongs makes the atomic rename fail.
-	if err := os.Mkdir(daemonLifecycleOwnerPath(root), 0o700); err != nil {
+	if err := os.Mkdir(mustDaemonPath(t, daemonLifecycleOwnerPath, root), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := controller.writeLifecycleOwnerPID(7); err == nil || !strings.Contains(err.Error(), "replace daemon lifecycle owner") {
@@ -337,7 +345,7 @@ func TestCwWtDaemonStableLifecycleState(t *testing.T) {
 		t.Fatalf("no state = (%q, %v)", status, err)
 	}
 
-	store := daemon.Store{Path: daemonStatePath(root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
 	ready := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", deps.now())
 	ready.MarkReady(4242, deps.now())
 	if err := store.Save(ready); err != nil {
@@ -382,7 +390,7 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 
 	// A lock with no owner at all.
 	noOwnerRoot, noOwnerController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(noOwnerRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, noOwnerRoot), "", 0o600)
 	result, err = noOwnerController.RecoverLifecycleLock(context.Background(), false)
 	if err != nil || result.Reason != "no_stale_owner" || result.OwnerPID != 0 {
 		t.Fatalf("recover with an idle lock = (%+v, %v)", result, err)
@@ -390,8 +398,8 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 
 	// A lock whose owner sidecar is ambiguous.
 	ambigRoot, ambigController, _ := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(ambigRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(ambigRoot), "pid=nope\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, ambigRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, ambigRoot), "pid=nope\n", 0o600)
 	result, err = ambigController.RecoverLifecycleLock(context.Background(), false)
 	if err != nil || result.Reason != "ambiguous_owner" {
 		t.Fatalf("recover with an ambiguous owner = (%+v, %v)", result, err)
@@ -399,8 +407,8 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 
 	// A lock naming a live owner.
 	liveRoot, liveController, liveDeps := cwWtLockFixture(t)
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(liveRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(liveRoot), "pid=12345\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, liveRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, liveRoot), "pid=12345\n", 0o600)
 	liveDeps.alive = func(pid int) bool { return pid == 12345 }
 	liveController.deps = liveDeps
 	result, err = liveController.RecoverLifecycleLock(context.Background(), false)
@@ -412,8 +420,8 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 	deadRoot, deadController, deadDeps := cwWtLockFixture(t)
 	deadDeps.alive = func(int) bool { return false }
 	deadController.deps = deadDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(deadRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(deadRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, deadRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, deadRoot), "pid=999999\n", 0o600)
 	result, err = deadController.RecoverLifecycleLock(context.Background(), false)
 	if err != nil || result.Reason != "interrupted_before_state" || !result.Eligible || result.Applied {
 		t.Fatalf("recover before state, dry run = (%+v, %v)", result, err)
@@ -427,11 +435,11 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 	unsafeRoot, unsafeController, unsafeDeps := cwWtLockFixture(t)
 	unsafeDeps.alive = func(int) bool { return false }
 	unsafeController.deps = unsafeDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(unsafeRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(unsafeRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, unsafeRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, unsafeRoot), "pid=999999\n", 0o600)
 	unsafeReady := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", unsafeDeps.now())
 	unsafeReady.MarkReady(4242, unsafeDeps.now())
-	if err := (daemon.Store{Path: daemonStatePath(unsafeRoot)}).Save(unsafeReady); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unsafeRoot)}).Save(unsafeReady); err != nil {
 		t.Fatal(err)
 	}
 	result, err = unsafeController.RecoverLifecycleLock(context.Background(), false)
@@ -445,10 +453,10 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	graceRoot, graceController, graceDeps := cwWtLockFixture(t)
 	graceDeps.alive = func(int) bool { return false }
 	graceController.deps = graceDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(graceRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(graceRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, graceRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, graceRoot), "pid=999999\n", 0o600)
 	starting := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", graceDeps.now())
-	if err := (daemon.Store{Path: daemonStatePath(graceRoot)}).Save(starting); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, graceRoot)}).Save(starting); err != nil {
 		t.Fatal(err)
 	}
 	result, err := graceController.RecoverLifecycleLock(context.Background(), false)
@@ -460,14 +468,14 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	apiRoot, apiController, apiDeps := cwWtLockFixture(t)
 	apiDeps.alive = func(int) bool { return false }
 	apiController.deps = apiDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(apiRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(apiRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, apiRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, apiRoot), "pid=999999\n", 0o600)
 	provenance, err := apiController.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", apiDeps.now().Add(-time.Hour))
-	if err := (daemon.Store{Path: daemonStatePath(apiRoot)}).Save(old); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, apiRoot)}).Save(old); err != nil {
 		t.Fatal(err)
 	}
 	result, err = apiController.RecoverLifecycleLock(context.Background(), false)
@@ -480,14 +488,14 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	interruptedDeps.alive = func(int) bool { return false }
 	interruptedDeps.health = func(context.Context, string) error { return errors.New("cwWt: unreachable") }
 	interruptedController.deps = interruptedDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(interruptedRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(interruptedRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, interruptedRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, interruptedRoot), "pid=999999\n", 0o600)
 	provenance, err = interruptedController.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
 	interrupted := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", interruptedDeps.now().Add(-time.Hour))
-	if err := (daemon.Store{Path: daemonStatePath(interruptedRoot)}).Save(interrupted); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, interruptedRoot)}).Save(interrupted); err != nil {
 		t.Fatal(err)
 	}
 	result, err = interruptedController.RecoverLifecycleLock(context.Background(), false)
@@ -503,11 +511,11 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	foreignRoot, foreignController, foreignDeps := cwWtLockFixture(t)
 	foreignDeps.alive = func(pid int) bool { return pid == 4242 }
 	foreignController.deps = foreignDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(foreignRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(foreignRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, foreignRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, foreignRoot), "pid=999999\n", 0o600)
 	foreign := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{Executable: "/somewhere/else"}, "t", foreignDeps.now().Add(-time.Hour))
 	foreign.PID = 4242
-	if err := (daemon.Store{Path: daemonStatePath(foreignRoot)}).Save(foreign); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, foreignRoot)}).Save(foreign); err != nil {
 		t.Fatal(err)
 	}
 	result, err = foreignController.RecoverLifecycleLock(context.Background(), false)
@@ -520,15 +528,15 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	unhealthyDeps.alive = func(pid int) bool { return pid == 4242 }
 	unhealthyDeps.ownedHealth = func(context.Context, string, int, uint64) error { return errors.New("cwWt: unhealthy") }
 	unhealthyController.deps = unhealthyDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(unhealthyRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(unhealthyRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, unhealthyRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, unhealthyRoot), "pid=999999\n", 0o600)
 	provenance, err = unhealthyController.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
 	unhealthy := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", unhealthyDeps.now().Add(-time.Hour))
 	unhealthy.PID = 4242
-	if err := (daemon.Store{Path: daemonStatePath(unhealthyRoot)}).Save(unhealthy); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unhealthyRoot)}).Save(unhealthy); err != nil {
 		t.Fatal(err)
 	}
 	result, err = unhealthyController.RecoverLifecycleLock(context.Background(), false)
@@ -541,22 +549,22 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	healthyDeps.alive = func(pid int) bool { return pid == 4242 }
 	healthyDeps.ownedHealth = func(context.Context, string, int, uint64) error { return nil }
 	healthyController.deps = healthyDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(healthyRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(healthyRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, healthyRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, healthyRoot), "pid=999999\n", 0o600)
 	provenance, err = healthyController.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
 	healthy := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", healthyDeps.now().Add(-time.Hour))
 	healthy.PID = 4242
-	if err := (daemon.Store{Path: daemonStatePath(healthyRoot)}).Save(healthy); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, healthyRoot)}).Save(healthy); err != nil {
 		t.Fatal(err)
 	}
 	result, err = healthyController.RecoverLifecycleLock(context.Background(), true)
 	if err != nil || result.Reason != "orphaned_healthy_start" || !result.Applied {
 		t.Fatalf("healthy live startup = (%+v, %v)", result, err)
 	}
-	if state, found, err := (daemon.Store{Path: daemonStatePath(healthyRoot)}).Load(); err != nil || !found || state.Status != daemon.StatusReady {
+	if state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, healthyRoot)}).Load(); err != nil || !found || state.Status != daemon.StatusReady {
 		t.Fatalf("healthy startup state after apply = (%+v, %t, %v)", state, found, err)
 	}
 
@@ -564,12 +572,12 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	drainRoot, drainController, drainDeps := cwWtLockFixture(t)
 	drainDeps.alive = func(pid int) bool { return pid == 4242 }
 	drainController.deps = drainDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(drainRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(drainRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, drainRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, drainRoot), "pid=999999\n", 0o600)
 	draining := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", drainDeps.now())
 	draining.Status = daemon.StatusDraining
 	draining.PID = 4242
-	if err := (daemon.Store{Path: daemonStatePath(drainRoot)}).Save(draining); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, drainRoot)}).Save(draining); err != nil {
 		t.Fatal(err)
 	}
 	result, err = drainController.RecoverLifecycleLock(context.Background(), false)
@@ -586,11 +594,11 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	oddRoot, oddController, oddDeps := cwWtLockFixture(t)
 	oddDeps.alive = func(int) bool { return false }
 	oddController.deps = oddDeps
-	cwWtWriteDaemonFile(t, daemonLifecycleLockPath(oddRoot), "", 0o600)
-	cwWtWriteDaemonFile(t, daemonLifecycleOwnerPath(oddRoot), "pid=999999\n", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, oddRoot), "", 0o600)
+	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, oddRoot), "pid=999999\n", 0o600)
 	odd := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", oddDeps.now())
 	odd.Status = "sideways"
-	if err := (daemon.Store{Path: daemonStatePath(oddRoot)}).Save(odd); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, oddRoot)}).Save(odd); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := oddController.RecoverLifecycleLock(context.Background(), false); err == nil || !strings.Contains(err.Error(), "unsupported daemon lifecycle state") {

@@ -41,7 +41,7 @@ func cwWtDaemonOpFixture(t *testing.T) (root string, deps daemonDependencies) {
 		if err != nil {
 			return 0, err
 		}
-		state, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+		state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 		if err != nil || !found {
 			return 0, fmt.Errorf("load starting lifecycle state: found=%t: %w", found, err)
 		}
@@ -49,7 +49,12 @@ func cwWtDaemonOpFixture(t *testing.T) (root string, deps daemonDependencies) {
 		if err != nil {
 			return 0, err
 		}
-		service, err := daemon.NewService(root, "cwWt-build", fmt.Sprint(state.Queue.Generation), func() error { return nil })
+		operationsDirectory, err := daemon.OperationsDir(root)
+		if err != nil {
+			_ = listener.Close()
+			return 0, err
+		}
+		service, err := daemon.NewService(root, operationsDirectory, "cwWt-build", fmt.Sprint(state.Queue.Generation), func() error { return nil })
 		if err != nil {
 			_ = listener.Close()
 			return 0, err

@@ -32,12 +32,14 @@ const (
 var cwWtBridgeNoop http.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 
 // cwWtBridgeServer creates a prepared bridge server rooted at a fresh temp dir.
+// The root is pinned as the daemon home so the bridge's runtime path resolves
+// inside the fixture rather than in the developer's real WB home.
 func cwWtBridgeServer(t *testing.T, handler http.Handler) (*daemonFileBridgeServer, string) {
 	t.Helper()
 	if handler == nil {
 		handler = cwWtBridgeNoop
 	}
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	server, err := newDaemonFileBridgeServer(root, cwWtBridgeToken, cwWtBridgeGeneration, handler)
 	if err != nil {
 		t.Fatalf("cwWt: newDaemonFileBridgeServer: %v", err)
@@ -99,11 +101,11 @@ func cwWtBridgeStat(path string) error {
 }
 
 func TestCwWtDaemonFileBridgeKeyRejectsUnsafeFiles(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(root); err != nil {
 		t.Fatal(err)
 	}
-	keyPath := daemonFileBridgeKeyPath(root)
+	keyPath := mustDaemonPath(t, daemonFileBridgeKeyPath, root)
 
 	if _, err := daemonFileBridgeKey(root, false); err == nil || !strings.Contains(err.Error(), "inspect daemon file bridge key") {
 		t.Fatalf("missing key error = %v", err)
@@ -163,7 +165,7 @@ func TestCwWtDaemonFileBridgeKeyRejectsUnsafeFiles(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeKeyRejectsSymlinkedRuntime(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, ".wb"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,7 @@ func TestCwWtDaemonFileBridgeSecureRuntimeRejectsBadRoots(t *testing.T) {
 		t.Fatalf("symlinked root error = %v", err)
 	}
 
-	blocked := t.TempDir()
+	blocked := daemonTestRoot(t)
 	if err := os.WriteFile(filepath.Join(blocked, ".wb"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -266,11 +268,11 @@ func TestCwWtDaemonFileBridgeSecureDirectoryRejectsBadPaths(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgePrepareAndServerRejectBadFixtures(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(root); err != nil {
 		t.Fatal(err)
 	}
-	base := daemonFileBridgeDirectory(root)
+	base := mustDaemonPath(t, daemonFileBridgeDirectory, root)
 	if err := os.RemoveAll(base); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +291,7 @@ func TestCwWtDaemonFileBridgePrepareAndServerRejectBadFixtures(t *testing.T) {
 		t.Fatal("server accepted a regular-file projects root")
 	}
 
-	incomplete := t.TempDir()
+	incomplete := daemonTestRoot(t)
 	for name, call := range map[string]func() (*daemonFileBridgeServer, error){
 		"blank token": func() (*daemonFileBridgeServer, error) {
 			return newDaemonFileBridgeServer(incomplete, "  ", cwWtBridgeGeneration, cwWtBridgeNoop)
@@ -306,22 +308,22 @@ func TestCwWtDaemonFileBridgePrepareAndServerRejectBadFixtures(t *testing.T) {
 		}
 	}
 
-	blockedInflight := t.TempDir()
+	blockedInflight := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(blockedInflight); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(daemonFileBridgeDirectory(blockedInflight), "inflight"), []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mustDaemonPath(t, daemonFileBridgeDirectory, blockedInflight), "inflight"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newDaemonFileBridgeServer(blockedInflight, cwWtBridgeToken, cwWtBridgeGeneration, cwWtBridgeNoop); err == nil || !strings.Contains(err.Error(), "is not a real directory") {
 		t.Fatalf("blocked inflight error = %v", err)
 	}
 
-	blockedKey := t.TempDir()
+	blockedKey := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(blockedKey); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(daemonFileBridgeKeyPath(blockedKey), 0o700); err != nil {
+	if err := os.Mkdir(mustDaemonPath(t, daemonFileBridgeKeyPath, blockedKey), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newDaemonFileBridgeServer(blockedKey, cwWtBridgeToken, cwWtBridgeGeneration, cwWtBridgeNoop); err == nil || !strings.Contains(err.Error(), "not a regular 32-byte hex key") {

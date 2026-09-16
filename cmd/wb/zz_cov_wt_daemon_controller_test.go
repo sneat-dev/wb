@@ -51,6 +51,9 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	if _, err := newDaemonController(blockedDeps, blocked).Start(ctx, daemonDefaultListen); err == nil || !strings.Contains(err.Error(), "secure daemon runtime") {
 		t.Fatalf("Start with a blocked runtime = %v", err)
 	}
+	// cwWtDaemonRoot pinned the home at the blocked fixture; put it back so the
+	// remaining assertions resolve against the fixture this test owns.
+	pinDaemonHome(t, root)
 
 	// A non-loopback listener is a usage error.
 	if _, err := controller.Start(ctx, "0.0.0.0:1234"); err == nil {
@@ -77,7 +80,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	deadDeps.alive = func(int) bool { return false }
 	dead := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{}, "t", deps.now())
 	dead.MarkReady(4242, deps.now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(dead); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(dead); err != nil {
 		t.Fatal(err)
 	}
 	deadController := newDaemonController(deadDeps, root)
@@ -92,7 +95,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	// Stop over an already-stopped state returns the stored state.
 	stopped := dead
 	stopped.MarkStopped(deps.now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(stopped); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(stopped); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := deadController.Stop(ctx); err != nil {
@@ -105,7 +108,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	refuseDeps.stop = func(int) error { return errors.New("cwTt: cannot signal") }
 	refused := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{}, "t", deps.now())
 	refused.MarkReady(4242, deps.now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(refused); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(refused); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newDaemonController(refuseDeps, root).Stop(ctx); err == nil || !strings.Contains(err.Error(), "request daemon drain") {
@@ -118,7 +121,7 @@ func TestCwWtDaemonControllerStartHandsOffDifferentBinary(t *testing.T) {
 	// A ready daemon from a different binary is drained and replaced.
 	foreign := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "/somewhere/else/wb", Version: "old"}, "t", deps.now())
 	foreign.MarkReady(4242, deps.now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(foreign); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(foreign); err != nil {
 		t.Fatal(err)
 	}
 	// The fixture's own liveness map is authoritative for every pid it starts;
@@ -141,7 +144,7 @@ func TestCwWtDaemonControllerStartHandsOffDifferentBinary(t *testing.T) {
 	if result.Action != "start" {
 		t.Fatalf("handoff start result = %+v", result)
 	}
-	state, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 	if err != nil || !found {
 		t.Fatalf("state after handoff: found=%t err=%v", found, err)
 	}
@@ -207,7 +210,7 @@ func TestCwWtDaemonManagedServeLifecycle(t *testing.T) {
 	if err := secureDaemonRuntime(root); err != nil {
 		t.Fatal(err)
 	}
-	statePath := daemonStatePath(root)
+	statePath := mustDaemonPath(t, daemonStatePath, root)
 	starting := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", deps.now())
 	if err := (daemon.Store{Path: statePath}).Save(starting); err != nil {
 		t.Fatal(err)
@@ -274,7 +277,7 @@ func TestCwWtDaemonManagedServeRefusesSupersededOwnership(t *testing.T) {
 	if err := secureDaemonRuntime(root); err != nil {
 		t.Fatal(err)
 	}
-	statePath := daemonStatePath(root)
+	statePath := mustDaemonPath(t, daemonStatePath, root)
 	// A ready state is not a starting state, so the managed start is refused
 	// before the listener is even considered.
 	ready := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", deps.now())
