@@ -236,8 +236,10 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if !ok {
 		t.Fatalf("processEvidence(%d) for the harness-named process reported no evidence", namedPID)
 	}
-	if namedEvidence.Executable != "cursor-agent" {
-		t.Fatalf("named executable = %q, want %q", namedEvidence.Executable, "cursor-agent")
+	// Linux reports the full resolved path for a named process while darwin can
+	// report just the name, so compare basenames.
+	if got := filepath.Base(namedEvidence.Executable); got != "cursor-agent" {
+		t.Fatalf("named executable = %q, want a path ending in %q", namedEvidence.Executable, "cursor-agent")
 	}
 
 	childEvidence, ok := processEvidence(childPID)
@@ -247,7 +249,7 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	// The kernel command name is a fixed-width field that an exec rewrites but
 	// does not clear, so only the NUL-terminated prefix identifies the child on
 	// platforms that leave the rest of the field alone.
-	if got, _, _ := strings.Cut(childEvidence.Executable, "\x00"); got != "sleep" {
+	if got, _, _ := strings.Cut(childEvidence.Executable, "\x00"); filepath.Base(got) != "sleep" {
 		t.Fatalf("child executable = %q, want the process named sleep", childEvidence.Executable)
 	}
 }
@@ -324,6 +326,33 @@ func TestGpCovFindHarnessAncestorWalksPastANonHarnessParent(t *testing.T) {
 	}
 }
 
+// gpCovFileSizeLimitChildEnv marks the re-executed child that runs one probe
+// with a lowered RLIMIT_FSIZE.
+//
+// The limit is per-process, and Go's testing framework records every file
+// operation in its own testlog whenever the test-result cache is enabled --
+// which is how CI invokes `go test`. Lowering the limit in the test binary also
+// caps those framework writes, so the package fails with "can't write
+// testlog.txt: file too large" even when every test passed. The child is
+// started without -test.testlogfile, so the fault stays honest.
+const gpCovFileSizeLimitChildEnv = "WB_SESSION_FSIZE_LIMIT_CHILD"
+
+// gpCovSpawnFileSizeLimitedChild re-executes the calling test in a child and
+// reports whether this process is the parent, which must then return without
+// running the probe body.
+func gpCovSpawnFileSizeLimitedChild(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(gpCovFileSizeLimitChildEnv) == "1" {
+		return false
+	}
+	command := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	command.Env = append(os.Environ(), gpCovFileSizeLimitChildEnv+"=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("probe under a lowered RLIMIT_FSIZE failed: %v\n%s", err, output)
+	}
+	return true
+}
+
 // gpCovWithoutFileWrites runs fn with the process file-size limit pinned to
 // zero, so the next write to a regular file fails with EFBIG. The limit is
 // restored before the caller continues, whatever fn does.
@@ -346,6 +375,9 @@ func gpCovWithoutFileWrites(t *testing.T, fn func()) {
 }
 
 func TestGpCovLifecycleMarkersReportWriteFailures(t *testing.T) {
+	if gpCovSpawnFileSizeLimitedChild(t) {
+		return
+	}
 	dir := filepath.Join(t.TempDir(), "sessions")
 	parked, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-write-parked", Runtime: "codex"})
 	if err != nil {
