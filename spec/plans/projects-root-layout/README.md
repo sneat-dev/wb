@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: In Review
+status: Approved
 ---
 # Plan: Projects Root Layout: implementation and migration
 
-**Status:** In Review
+**Status:** Approved
 **Source Feature:** projects-root-layout
 **Date:** 2026-09-16
 **Owner:** trakhimenok
