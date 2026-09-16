@@ -35,6 +35,18 @@ func daemonTestRoot(t *testing.T) string {
 	return root
 }
 
+// daemonTestService builds the daemon queue the way `wb daemon serve` does:
+// the store location is resolved from the home this test pinned rather than by
+// the constructor, which no longer reads the environment at all.
+func daemonTestService(t *testing.T, root, build, generation string, authorizeRaw func() error) (*daemon.Service, error) {
+	t.Helper()
+	operationsDirectory, err := daemon.OperationsDir(root)
+	if err != nil {
+		return nil, err
+	}
+	return daemon.NewService(root, operationsDirectory, build, generation, authorizeRaw)
+}
+
 // mustDaemonPath resolves a daemon runtime path in tests, where an unexpected
 // resolver failure is a test failure rather than a condition to report.
 func mustDaemonPath(t *testing.T, resolve func(string) (string, error), root string) string {

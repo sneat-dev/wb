@@ -26,7 +26,7 @@ func daemonLogPath(root string) (string, error) {
 	return filepath.Join(dir, "daemon.log"), nil
 }
 
-// daemonStartLogIsResolvedRuntimePath reports whether the supervisor's log
-// location is derived from the home. Everywhere but darwin there is no unit
-// file to pin it in: the launcher opens the file itself.
-func daemonStartLogIsResolvedRuntimePath() bool { return true }
+// daemonSupervisorRecordsStartLog reports whether the supervisor unit records
+// the daemon's log path. Everywhere but darwin there is no unit file: the
+// launcher opens the runtime log itself.
+func daemonSupervisorRecordsStartLog() bool { return false }

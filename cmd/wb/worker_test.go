@@ -55,7 +55,7 @@ func TestWorkerChildKeepsInheritedSecretsLocal(t *testing.T) {
 
 func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) {
 	root := daemonTestRoot(t)
-	service, err := daemon.NewService(root, "test-build", "worker-refusal", func() error { return errors.New("raw disabled") })
+	service, err := daemonTestService(t, root, "test-build", "worker-refusal", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}

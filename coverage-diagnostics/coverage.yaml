@@ -1,0 +1,34 @@
+schema_version: 1
+repositories:
+    - repository: daemon-hardening
+      path: /Users/alex/projects/sneat-dev/wb/.worktrees/daemon-hardening
+      status: failed
+      statements: 0
+      covered: 0
+      percentage: 0
+      error: |
+        WB coverage failure index:
+        - [unsharded packages] TestDqCovNewServiceRejectsUnusableOperationStore
+        - [unsharded packages] TestDqCovNewServiceRejectsUnusableOperationStore/projects_root_is_a_file
+        - [unsharded packages] TestDqCovNewServiceRejectsUnusableOperationStore/unreadable_store
+        - [unsharded packages] TestDqCovNewServiceRejectsUnusableOperationStore/running_operation_cannot_be_fenced
+        - [unsharded packages] TestDqCovNewServiceReportsCorruptDurableRecords
+        - [unsharded packages] TestDqCovNewServiceReportsCorruptDurableRecords/unreadable_operation
+        - [unsharded packages] TestDqCovNewServiceReportsCorruptDurableRecords/corrupt_json
+        - [unsharded packages] TestDqCovNewServiceReportsCorruptDurableRecords/incomplete_schema
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity/target_recovered_from_the_operation
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity/conflicting_identities
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity/invalid_target_is_quarantined
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity/quarantine_is_not_durable
+        - [unsharded packages] TestDqCovNewServiceRebuildsWorkerTargetIdentity/idempotency_digest_is_rebuilt
+        - [unsharded packages] TestDqCovNewServiceFencesQueuedOperationWhenPersistFails
+        - [unsharded packages] TestDqCovNewServiceFencesQueuedOperationWhenPersistFails/running_transition
+        - [unsharded packages] TestDqCovNewServiceFencesQueuedOperationWhenPersistFails/revoked_raw_authorization
+        - [unsharded packages] TestDqCovExecuteFailsWhenTheCPUBudgetDirectoryIsUnusable
+      diagnostic:
+        manifest: coverage-diagnostics/coverage-diagnostics-771a20c1caebdf81.yaml
+        sha256: 2dfb9deeb04f9517a547741a97cdd27eb55dbb41968ffc890f81ed52cc4dac69
+statements: 0
+covered: 0
+percentage: 0

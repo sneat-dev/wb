@@ -56,6 +56,20 @@ func StatePath(projectsRoot string) (string, error) {
 	return filepath.Join(runtime, StateFileName), nil
 }
 
+// OperationsDir is the daemon's durable operation store.
+//
+// It is derived from the same home as every other runtime artefact, and it is
+// passed to NewService explicitly rather than resolved inside it: a
+// constructor that reads the environment makes every caller share one store,
+// which is both untestable in isolation and wrong for a library.
+func OperationsDir(projectsRoot string) (string, error) {
+	runtime, err := RuntimeDir(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(runtime, "daemon", "operations"), nil
+}
+
 // SocketFileName is the local endpoint's name inside the runtime directory.
 const SocketFileName = "daemon.sock"
 

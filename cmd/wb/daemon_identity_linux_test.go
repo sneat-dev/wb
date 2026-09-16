@@ -19,20 +19,20 @@ import (
 func TestDaemonStatusTreatsARecycledPIDAsAnotherProcess(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	// The PID is this test's own, so it is definitely alive; the recorded start
+	// time is an hour earlier, so it definitely belongs to a different process.
+	deps.alive = func(pid int) bool { return pid == os.Getpid() }
+	deps.health = func(context.Context, string) error { return nil }
 	controller := newDaemonController(deps, root)
 	current, err := controller.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
 	state := daemonTestState(t, root, daemonDefaultListen, current, "owner", time.Now())
-	// The PID is this test's own, so it is definitely alive; the recorded start
-	// time is an hour earlier, so it definitely belongs to a different process.
 	state.MarkReadyWithProcess(os.Getpid(), time.Now().Add(-time.Hour), time.Now())
 	if err := controller.store.Save(state); err != nil {
 		t.Fatal(err)
 	}
-	deps.alive = func(pid int) bool { return pid == os.Getpid() }
-	deps.health = func(context.Context, string) error { return nil }
 
 	result, err := controller.Status(context.Background())
 	if err != nil {

@@ -20,5 +20,9 @@ func newTestService(t *testing.T, projectsRoot, build, generation string, author
 	t.Helper()
 	t.Setenv(wbhome.EnvOverride, filepath.Join(projectsRoot, ".wb"))
 	t.Setenv(wbhome.EnvMigrationCompat, "")
-	return NewService(projectsRoot, build, generation, authorizeRaw)
+	operationsDirectory, err := OperationsDir(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	return NewService(projectsRoot, operationsDirectory, build, generation, authorizeRaw)
 }

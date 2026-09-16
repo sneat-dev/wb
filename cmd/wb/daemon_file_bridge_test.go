@@ -130,7 +130,7 @@ func TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects(t *tes
 
 func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *testing.T) {
 	root := daemonTestRoot(t)
-	service1, err := daemon.NewService(root, "old-build", "30", func() error { return errors.New("raw disabled") })
+	service1, err := daemonTestService(t, root, "old-build", "30", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 	wantOperationID := strings.TrimSuffix(operationEntries[0].Name(), ".json")
 	stop1()
 
-	service2, err := daemon.NewService(root, "new-build", "31", func() error { return errors.New("raw disabled") })
+	service2, err := daemonTestService(t, root, "new-build", "31", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
 
 func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 	root := daemonTestRoot(t)
-	service, err := daemon.NewService(root, "test-build", "1", func() error { return errors.New("raw disabled") })
+	service, err := daemonTestService(t, root, "test-build", "1", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 
 func startTestDaemonFileBridge(t *testing.T, root, token, generation string) (daemonv1connect.DaemonServiceClient, func()) {
 	t.Helper()
-	service, err := daemon.NewService(root, "test-build", generation, func() error { return errors.New("raw disabled") })
+	service, err := daemonTestService(t, root, "test-build", generation, func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}

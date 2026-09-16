@@ -24,7 +24,7 @@ func daemonStartLogPath(string) (string, error) {
 	return filepath.Join(home, "Library", "Logs", "wb", "daemon.log"), nil
 }
 
-// daemonStartLogIsResolvedRuntimePath reports whether the supervisor's log
-// location is derived from the home, and therefore whether a unit that records
-// it would pin a path a WB_HOME move can abandon.
-func daemonStartLogIsResolvedRuntimePath() bool { return false }
+// daemonSupervisorRecordsStartLog reports whether the supervisor unit records
+// the daemon's log path. On darwin it does, so that path must not be derived
+// from a home a later move can abandon.
+func daemonSupervisorRecordsStartLog() bool { return true }

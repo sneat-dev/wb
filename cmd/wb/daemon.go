@@ -1609,7 +1609,12 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_ = listener.Close()
 		return fmt.Errorf("resolve daemon raw-execution policy: %w", err)
 	}
-	queue, err := daemon.NewService(projectsRoot, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
+	operationsDirectory, err := daemon.OperationsDir(projectsRoot)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("resolve daemon operation store: %w", err)
+	}
+	queue, err := daemon.NewService(projectsRoot, operationsDirectory, collectVersion().Version, fmt.Sprint(state.Queue.Generation), func() error {
 		return daemon.RequireRawExecutionPolicy(rawExecutionPolicyPath, projectsRoot)
 	})
 	if err != nil {

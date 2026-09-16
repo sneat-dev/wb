@@ -11,10 +11,13 @@ import (
 
 const daemonLocalNetwork = "npipe"
 
-func daemonLocalAddress(root string) string {
+// daemonLocalAddress returns the same (string, error) shape as the unix
+// implementation. One arity across platforms is what keeps a shared test from
+// compiling on one GOOS and failing on another.
+func daemonLocalAddress(root string) (string, error) {
 	// Keep the command/client contract compatible with a current-user Windows
 	// named-pipe adapter without falling back to an unauthenticated TCP port.
-	return `\\.\pipe\wb-` + filepath.Base(filepath.Clean(root))
+	return `\\.\pipe\wb-` + filepath.Base(filepath.Clean(root)), nil
 }
 
 // daemonSocketPathIn reports that this platform's endpoint is a named pipe

@@ -70,15 +70,19 @@ type Service struct {
 	now        func() time.Time
 }
 
-func NewService(projectsRoot, build, generation string, authorizeRaw func() error) (*Service, error) {
+// NewService opens the durable operation store at operationsDirectory for the
+// projects root the daemon serves.
+//
+// The store's location is an argument rather than something NewService
+// resolves from the environment: the daemon's runtime directory follows WB's
+// home (see RuntimeDir and OperationsDir), and a constructor that looked that
+// up itself would silently put every caller — including every test in this
+// package — on one shared store.
+func NewService(projectsRoot, operationsDirectory, build, generation string, authorizeRaw func() error) (*Service, error) {
 	if authorizeRaw == nil {
 		authorizeRaw = func() error { return errors.New("raw daemon execution authorization is not configured") }
 	}
-	runtimeDirectory, err := RuntimeDir(projectsRoot)
-	if err != nil {
-		return nil, err
-	}
-	directory := filepath.Join(runtimeDirectory, "daemon", "operations")
+	directory := operationsDirectory
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
 	}

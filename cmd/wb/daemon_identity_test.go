@@ -372,11 +372,16 @@ func TestDaemonStartPersistsNoResolvedRuntimePath(t *testing.T) {
 			t.Fatalf("daemon start pinned a resolved runtime path: %v", args)
 		}
 	}
-	// The supervisor's log is the daemon's own log only where no unit records
-	// it; on darwin it is a stable location outside WB's runtime directory, so
-	// a later home move cannot leave a unit writing into an abandoned one.
-	if daemonStartLogIsResolvedRuntimePath() && strings.Contains(logPath, runtimeDir) {
-		t.Fatalf("supervisor log %q pins the runtime directory", logPath)
+	// A supervisor that records the log path must not record a home-derived
+	// one, or a later home move leaves the unit writing into an abandoned
+	// directory. Where no unit records it, the log is the daemon's own runtime
+	// log and the launcher opens it.
+	if daemonSupervisorRecordsStartLog() {
+		if strings.Contains(logPath, runtimeDir) {
+			t.Fatalf("supervisor log %q would pin the runtime directory in a unit", logPath)
+		}
+	} else if !strings.Contains(logPath, runtimeDir) {
+		t.Fatalf("log %q is neither recorded by a supervisor nor the runtime log", logPath)
 	}
 }
 

@@ -95,7 +95,8 @@ func TestDqCovPersistRecordReportsUnwritableOperationFile(t *testing.T) {
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
-	service, err := NewService(t.TempDir(), "build", "1", allowRawForTest)
+	root := t.TempDir()
+	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
