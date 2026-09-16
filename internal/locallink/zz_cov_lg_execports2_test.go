@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,12 +56,21 @@ func TestLgCovContentHashReportsAStatusFailure(t *testing.T) {
 	}
 }
 
-// A write to the exclude file that fails must be reported: silently returning
-// success would leave the link artefact visible to git status.
-func TestLgCovExcludePathWriteFailure(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("/dev/full is a Linux-only device")
-	}
+// An exclude file that cannot be read must be reported: silently treating it as
+// empty would drop the pattern the caller asked to record.
+//
+// This replaces a version that symlinked `.git/info/exclude` to /dev/full to
+// make the *append* fail with ENOSPC. /dev/full also READS as an endless stream
+// of zero bytes, and ExcludePath reads the exclude file before appending, so the
+// read consumed memory until the kernel killed the process. On CI that killed
+// the whole coverage job -- as a bare SIGTERM with no output, which is why it
+// looked like an infrastructure problem for so long. It never reproduced on
+// darwin because the test skipped there.
+//
+// A directory in place of the file is a portable, root-proof fault that reaches
+// the same "do not silently drop the pattern" contract, and reading it cannot
+// consume memory.
+func TestLgCovExcludePathReportsAnUnreadableExcludeFile(t *testing.T) {
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	root := initRepository(t)
@@ -70,12 +78,12 @@ func TestLgCovExcludePathWriteFailure(t *testing.T) {
 	if err := os.Remove(exclude); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/dev/full", exclude); err != nil {
+	if err := os.Mkdir(exclude, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	err := git.ExcludePath(context.Background(), root, "/go.work")
-	if err == nil || !strings.Contains(err.Error(), "append") {
-		t.Fatalf("error = %v, want the failed append reported", err)
+	if err == nil {
+		t.Fatal("an unreadable exclude file was accepted")
 	}
 }
 
