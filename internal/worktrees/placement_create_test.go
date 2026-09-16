@@ -28,7 +28,7 @@ func TestCreateWorktreeAtPlacementPublishesConfiguredCheckout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			created, err := CreateWorktreeAtPlacement(context.Background(), fixture.canonical, placement, "placement-create", "acme/app", "wb/placement-create", "main", base)
+			created, err := CreateWorktreeAtPlacement(context.Background(), fixture.projectsRoot, fixture.canonical, placement, "placement-create", "acme/app", "wb/placement-create", "main", base)
 			if err != nil {
 				t.Fatal(err)
 			}
