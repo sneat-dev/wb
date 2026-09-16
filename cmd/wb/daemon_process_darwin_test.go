@@ -37,15 +37,18 @@ func TestLaunchdPIDFromAuthoritativeJobState(t *testing.T) {
 	}
 }
 
-// A unit written while a WB_HOME was set must carry that input, not a runtime
-// path resolved from it: a resolved path outlives the home it was resolved
-// from, which is how a daemon ended up serving an abandoned directory.
-func TestLaunchdPlistPinsWBHomeAndNoResolvedRuntimePath(t *testing.T) {
-	t.Setenv(wbhome.EnvOverride, "/tmp/wb-home-fixture")
+// A unit written while a projects root override was set must carry that input,
+// not a runtime path resolved from it: a resolved path outlives the root it was
+// resolved from, which is how a daemon ended up serving an abandoned directory.
+// The variable is the one the resolver reads (WB_PROJECTS_ROOT), because that
+// is the input the generator can honestly pin.
+func TestLaunchdPlistPinsProjectsRootAndNoResolvedRuntimePath(t *testing.T) {
+	t.Setenv(wbhome.EnvOverride, "/tmp/wb-root-fixture")
 	data := launchdPlistBytes("/tmp/wb", []string{"--projects-root", "/tmp/projects", "daemon", "serve", "--listen", daemonDefaultListen, "--managed-start"}, "/Users/someone/Library/Logs/wb/daemon.log")
 	text := string(data)
-	if !strings.Contains(text, "<key>EnvironmentVariables</key><dict><key>WB_HOME</key><string>/tmp/wb-home-fixture</string></dict>") {
-		t.Fatalf("plist does not pin WB_HOME: %s", text)
+	want := "<key>EnvironmentVariables</key><dict><key>" + wbhome.EnvOverride + "</key><string>/tmp/wb-root-fixture</string></dict>"
+	if !strings.Contains(text, want) {
+		t.Fatalf("plist does not pin %s: %s", wbhome.EnvOverride, text)
 	}
 	for _, forbidden := range []string{"runtime", "daemon-state.json", "--lifecycle-state"} {
 		if strings.Contains(text, forbidden) {
@@ -56,6 +59,6 @@ func TestLaunchdPlistPinsWBHomeAndNoResolvedRuntimePath(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, "")
 	plain := string(launchdPlistBytes("/tmp/wb", []string{"--projects-root", "/tmp/projects", "daemon", "serve"}, "/tmp/wb.log"))
 	if strings.Contains(plain, "EnvironmentVariables") {
-		t.Fatalf("an unset WB_HOME must not be invented: %s", plain)
+		t.Fatalf("an unset projects root override must not be invented: %s", plain)
 	}
 }

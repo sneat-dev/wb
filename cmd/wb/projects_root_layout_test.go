@@ -74,10 +74,14 @@ func TestDaemonStateFileResolvesUnderProjectsRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(root, ".wb", "runtime", "daemon-state.json")
-	if got := daemonStatePath(root); got != want {
+	got, err := daemonStatePath(root)
+	if err != nil {
+		t.Fatalf("daemonStatePath(%q): %v", root, err)
+	}
+	if got != want {
 		t.Fatalf("daemonStatePath(%q) = %q, want %q", root, got, want)
 	}
-	if got := daemonStatePath(root); got != filepath.Join(home, "runtime", "daemon-state.json") {
+	if got != filepath.Join(home, "runtime", "daemon-state.json") {
 		t.Fatalf("daemon state file %q is not inside the resolved state directory %q", got, home)
 	}
 }

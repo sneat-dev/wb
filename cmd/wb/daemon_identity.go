@@ -166,22 +166,69 @@ func (endpoint daemonLegacyEndpoint) describe() string {
 	return fmt.Sprintf("the runtime directory %s holds %s", endpoint.RuntimeDir, strings.Join(parts, " and "))
 }
 
-// detectLegacyDaemon looks, without modifying anything, for a daemon left in
-// the pre-resolver runtime directory.
+// detectLegacyDaemon looks, without modifying anything, for a daemon left in a
+// state home this invocation no longer serves: the fixed pre-resolver
+// <root>/.wb runtime directory, or a retired layout the home resolver still
+// reports for root. A directory this build writes to is never a leftover.
+//
+// The one-root schema makes <root>/.wb the current home, so the retired
+// default state directory $HOME/.wb is what a leftover daemon is normally
+// serving; the fixed shape is kept because a future layout may separate them
+// again.
 func detectLegacyDaemon(root string, alive func(int) bool) daemonLegacyEndpoint {
-	legacyDir := daemon.LegacyRuntimeDir(root)
-	if legacyDir == "" {
-		return daemonLegacyEndpoint{}
+	currentRuntime, currentErr := daemon.RuntimeDir(root)
+	for _, legacyDir := range daemonLegacyRuntimeDirs(root) {
+		// A home pinned to the legacy shape resolves its own runtime directory
+		// to that same path, and the same directory is not a leftover:
+		// detection is about a directory this build no longer writes to, not
+		// about the name.
+		if currentErr == nil && daemonSamePath(currentRuntime, legacyDir) {
+			continue
+		}
+		if endpoint := inspectLegacyRuntimeDir(legacyDir, alive); endpoint.present() {
+			return endpoint
+		}
 	}
-	// A home pinned to the legacy shape resolves its own runtime directory to
-	// that same path, and the same directory is not a leftover: detection is
-	// about a directory this build no longer writes to, not about the name.
-	if runtimeDir, err := daemon.RuntimeDir(root); err == nil && daemonSamePath(runtimeDir, legacyDir) {
-		return daemonLegacyEndpoint{}
+	return daemonLegacyEndpoint{}
+}
+
+// daemonLegacyRuntimeDirs lists the runtime directories this build no longer
+// writes for a projects root, deduplicated and in preference order: the fixed
+// pre-resolver shape first, then every retired state home the resolver reports
+// (the retired default state directory $HOME/.wb when it holds checkouts).
+func daemonLegacyRuntimeDirs(root string) []string {
+	dirs := make([]string, 0, 3)
+	add := func(dir string) {
+		if strings.TrimSpace(dir) == "" {
+			return
+		}
+		for _, existing := range dirs {
+			if daemonSamePath(existing, dir) {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
 	}
-	endpoint := daemonLegacyEndpoint{RuntimeDir: legacyDir, StatePath: daemon.LegacyStatePath(root)}
+	add(daemon.LegacyRuntimeDir(root))
+	if resolution, err := wbhome.Resolve(root); err == nil {
+		for _, layout := range resolution.Read {
+			if layout.Legacy {
+				add(filepath.Join(layout.Home, daemon.RuntimeDirName))
+			}
+		}
+	}
+	return dirs
+}
+
+// inspectLegacyRuntimeDir describes what, if anything, still serves one
+// candidate runtime directory. It never modifies the directory.
+func inspectLegacyRuntimeDir(legacyDir string, alive func(int) bool) daemonLegacyEndpoint {
 	if _, err := os.Lstat(legacyDir); err != nil {
 		return daemonLegacyEndpoint{}
+	}
+	endpoint := daemonLegacyEndpoint{
+		RuntimeDir: legacyDir,
+		StatePath:  filepath.Join(legacyDir, daemon.StateFileName),
 	}
 	if socketPath, ok := daemonSocketPathIn(legacyDir); ok {
 		endpoint.SocketPath = socketPath

@@ -20,8 +20,10 @@ import (
 // AC: runtime-moves-with-the-home
 func TestDaemonRuntimeLocationFollowsTheHome(t *testing.T) {
 	root := daemonTestRoot(t)
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
+	home, err := wbhome.Root(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	location, err := resolveDaemonLocation(root)
 	if err != nil {
@@ -35,6 +37,20 @@ func TestDaemonRuntimeLocationFollowsTheHome(t *testing.T) {
 	}
 	if filepath.Dir(location.SocketPath) != location.RuntimeDir || filepath.Dir(location.StatePath) != location.RuntimeDir {
 		t.Fatalf("socket %s and state %s must both live in %s", location.SocketPath, location.StatePath, location.RuntimeDir)
+	}
+	// A different projects root resolves a different home and runtime, so the
+	// daemon follows the root rather than a machine-wide default.
+	otherRoot := daemonTestRoot(t)
+	otherHome, err := wbhome.Root(otherRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherLocation, err := resolveDaemonLocation(otherRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !daemonSamePath(otherLocation.Home, otherHome) || daemonSamePath(otherLocation.RuntimeDir, location.RuntimeDir) {
+		t.Fatalf("runtime %q / home %q did not follow projects root %q", otherLocation.RuntimeDir, otherLocation.Home, otherRoot)
 	}
 	// A reader can name the endpoint without starting anything, and status
 	// reports exactly that endpoint.
@@ -222,18 +238,14 @@ func TestDaemonStatusRefusesARecordThatNamesAnotherStatePath(t *testing.T) {
 // AC: a-leftover-daemon-cannot-be-silently-doubled
 func TestDaemonStartRefusesWhileADaemonServesTheLegacyRuntimeDirectory(t *testing.T) {
 	root := daemonTestRoot(t)
-	// The legacy directory is only legacy when it is not the home this build
-	// writes to, so the fixture resolves its own home elsewhere.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
+	// The current home is <root>/.wb now, so the leftover daemon is the one
+	// still serving the retired default state home $HOME/.wb.
+	legacyDir := daemonLegacyFixture(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == 4321 }
-	legacyDir := daemon.LegacyRuntimeDir(root)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	legacy := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", time.Now())
 	legacy.MarkReady(4321, time.Now())
-	if err := (daemon.Store{Path: daemon.LegacyStatePath(root)}).Save(legacy); err != nil {
+	if err := (daemon.Store{Path: daemonLegacyStatePath(legacyDir)}).Save(legacy); err != nil {
 		t.Fatal(err)
 	}
 	before := daemonTestDirectorySnapshot(t, legacyDir)
@@ -431,22 +443,18 @@ func daemonTestDirectorySnapshot(t *testing.T, root string) string {
 }
 
 // The failure this feature was written after: a daemon answers, this home
-// records nothing, and the leftover lives in the runtime directory WB used to
-// write. Both facts must be reportable at once.
+// records nothing, and the leftover lives in a state home WB used to write.
+// Both facts must be reportable at once.
 func TestDaemonStatusNamesAnUnrecordedAnswerAndTheLegacyEndpoint(t *testing.T) {
 	root := daemonTestRoot(t)
-	// The home this invocation resolves is not the legacy directory, so the
-	// leftover is genuinely elsewhere.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
+	// The current home is <root>/.wb now, so the leftover sits in the retired
+	// default state home $HOME/.wb.
+	legacyDir := daemonLegacyFixture(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == 700 }
-	legacyDir := daemon.LegacyRuntimeDir(root)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	legacy := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", time.Now())
 	legacy.MarkReady(700, time.Now())
-	if err := (daemon.Store{Path: daemon.LegacyStatePath(root)}).Save(legacy); err != nil {
+	if err := (daemon.Store{Path: daemonLegacyStatePath(legacyDir)}).Save(legacy); err != nil {
 		t.Fatal(err)
 	}
 
