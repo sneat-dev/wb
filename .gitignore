@@ -32,3 +32,7 @@ test-results/
 # and `git add -A` will stage it, so ignoring it is the only thing that keeps a
 # routine build out of a commit.
 /wb
+
+# Local coverage measurement output: `wb coverage --report-dir` and --coverage-profile.
+/coverage-diagnostics/
+/profile.cov
