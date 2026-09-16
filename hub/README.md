@@ -36,6 +36,7 @@ What appears where, on the daemon's loopback listener (default
 |---|---|
 | `/` and `/api/v1/…` | the existing read-only WB dashboard and API |
 | `/v0/workbench/…` | this package's hub API (`hub.NewHandler`) |
+| `/v0/workbench/dashboard`, `/stats`, `/series`, `/leaderboards`, `/latest-merges`, `/worktrees` | the dashboard read API, answered from this machine's published snapshots (`githubapp.RemoteStateReadModel`) |
 | `/workbench/dashboard/` | the embedded bench dashboard from `hub/web/dist` |
 
 Starting the daemon prints one line to stderr naming the engine, the store

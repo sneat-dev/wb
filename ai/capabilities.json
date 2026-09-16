@@ -2254,7 +2254,7 @@
               ],
               "modes": [
                 "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener",
-                "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /workbench/ when wb.yaml has a hub: section",
+                "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /workbench/ when wb.yaml has a hub: section, and answers the dashboard's data routes (dashboard, stats, series, leaderboards, latest-merges, worktrees) from this machine's published snapshots, so the dashboard needs no hosted control plane",
                 "Polls GitHub for default-branch pushes and repository renames when hub.github.token_file is set and no App is configured (default interval 20m, floor 30s), narrating one console line per webhook delivery and per poll observation",
                 "--quiet silences the console lines; wb daemon start never passes it, so the detached daemon log keeps every line",
                 "Verifies and enqueues signed GitHub deliveries at /v0/workbench/github/webhook when hub.github.app is configured, never starting the poller in that mode so only the repository an event names is pulled; the start line ends with webhook=on public_url=... or webhook=off",

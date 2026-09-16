@@ -17,6 +17,12 @@ test-results/
 *.test
 *.out
 .DS_Store
+# SpecScore runtime state. The lifecycle skills append to
+# `.specscore/events.jsonl` and keep delivery bookkeeping in
+# `.specscore/event-outbox/`; both are local to one checkout — they record
+# absolute paths and uncommitted revisions — so they are never committed.
+# (`.specscore-lifecycle.lock` is the older sibling of this rule.)
+.specscore/
 .specscore-lifecycle.lock
 
 # Generated per-checkout marker; see AGENTS.md. Never commit it.

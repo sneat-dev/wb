@@ -18,6 +18,46 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+// holderHoldDuration is how long a test holder keeps the only CPU lease slot
+// after the waiter has genuinely registered on the queue. It exceeds
+// queueAdmissionGrace by a margin wide enough that the waiter's select observes
+// the grace timer expire well before its acquisition returns, even on a loaded
+// runner, so the wait is reported through the queued path rather than as an
+// immediate admission.
+const holderHoldDuration = queueAdmissionGrace + 150*time.Millisecond
+
+// waiterQueueTimeout bounds waitForWaiterQueued so a genuine admission bug
+// fails the test with a diagnostic instead of hanging it.
+const waiterQueueTimeout = 30 * time.Second
+
+// waitForWaiterQueued blocks until a waiter has registered on the queue, so a
+// holder's release deadline is anchored to the waiter actually reaching the
+// queue rather than to the test's own clock.
+//
+// The anchor matters. `wb run` resolves its manifest, projects root and CPU
+// budget before it calls runqueue.Acquire, which measured around 140ms on a
+// loaded CI runner. A fixed sleep started at test setup therefore left the
+// waiter as little as one runqueue.retryInterval (100ms) of hold time instead
+// of the full queueAdmissionGrace (200ms), and
+// TestRunHistoryRecordsQueueWaitAndAdmissionTime failed intermittently with
+// "QueueWaitMS = 100, want at least the admission grace period". Peek counts
+// only registered waiting tickets — holders are recorded separately in
+// .holder.json files — so an announced holder cannot satisfy this wait early.
+func waitForWaiterQueued(t *testing.T, root string, budget int) {
+	t.Helper()
+	deadline := time.Now().Add(waiterQueueTimeout)
+	for {
+		if runqueue.Peek(root, budget).Total > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("no waiter registered on the queue within %s; the queued path cannot be observed", waiterQueueTimeout)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted drives
 // acquireWithQueueVisibility directly against an injected queue whose only
 // slot is already held, with a heartbeat cadence shrunk for the test. It is
@@ -38,9 +78,11 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 	holderAnnouncement := held.Announce(runqueue.Participant{PID: holderPID, Summary: "go build"})
 	released := make(chan struct{})
 	go func() {
-		// Longer than queueAdmissionGrace so the wait goes through the
+		// Hold from the moment the waiter is genuinely queued, and for longer
+		// than queueAdmissionGrace, so the wait goes through the
 		// queued+heartbeat path rather than resolving as immediate.
-		time.Sleep(queueAdmissionGrace + 60*time.Millisecond)
+		waitForWaiterQueued(t, root, 1)
+		time.Sleep(holderHoldDuration)
 		holderAnnouncement.Cleanup()
 		held.Release()
 		close(released)
@@ -168,7 +210,8 @@ func TestRunCommandReportsQueueVisibilityOnStderr(t *testing.T) {
 	holderAnnouncement := held.Announce(runqueue.Participant{PID: os.Getpid(), Summary: "go build"})
 	released := make(chan struct{})
 	go func() {
-		time.Sleep(queueAdmissionGrace + 60*time.Millisecond)
+		waitForWaiterQueued(t, root, budget)
+		time.Sleep(holderHoldDuration)
 		holderAnnouncement.Cleanup()
 		held.Release()
 		close(released)
@@ -265,7 +308,8 @@ func TestRunHistoryRecordsQueueWaitAndAdmissionTime(t *testing.T) {
 	}
 	released := make(chan struct{})
 	go func() {
-		time.Sleep(queueAdmissionGrace + 40*time.Millisecond)
+		waitForWaiterQueued(t, root, budget)
+		time.Sleep(holderHoldDuration)
 		held.Release()
 		close(released)
 	}()

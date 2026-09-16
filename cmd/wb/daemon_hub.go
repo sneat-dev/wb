@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp"
+	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/hub/poller"
@@ -143,6 +144,72 @@ func (resolver fixedViewerResolver) Viewer(*http.Request) (hub.Viewer, error) {
 	return resolver.viewer, nil
 }
 
+// localWorkbenchViewerResolver authenticates the loopback operator for the
+// bench read API. Member is true because only this machine can reach the
+// listener and the hub stores exactly this operator's published machine state;
+// the read models stay private-classed so the same data is member-gated on any
+// other deployment.
+type localWorkbenchViewerResolver struct{ identityID string }
+
+func (resolver localWorkbenchViewerResolver) Viewer(*http.Request) (githubapp.Viewer, error) {
+	return githubapp.Viewer{Authenticated: true, Member: true, UserID: resolver.identityID}, nil
+}
+
+// localMachineAccess lets the loopback operator read every machine this hub
+// stores.
+type localMachineAccess struct{}
+
+func (localMachineAccess) CanViewMachine(context.Context, githubapp.Viewer, string, string) (bool, error) {
+	return true, nil
+}
+
+// hubSnapshotReader adapts the hub's machine snapshot store to the read-model
+// seam in api/githubapp. hub imports githubapp, so the read models cannot name
+// hub's record type; the conversion belongs here.
+type hubSnapshotReader struct{ store hub.MachineSnapshotStore }
+
+func (reader hubSnapshotReader) ListLatest(ctx context.Context) ([]machinesnapshot.StoredSnapshot, error) {
+	records, err := reader.store.ListLatest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]machinesnapshot.StoredSnapshot, 0, len(records))
+	for _, record := range records {
+		snapshots = append(snapshots, machinesnapshot.StoredSnapshot{
+			Snapshot:   record.Snapshot,
+			ReceivedAt: record.ReceivedAt,
+			Digest:     record.Digest,
+		})
+	}
+	return snapshots, nil
+}
+
+// workbenchReadPaths are the dashboard read routes the embedded dashboard
+// calls. hub.NewHandler owns every other path under /v0/workbench/, including
+// the webhook and machine-snapshot routes that both handlers register; naming
+// one owner per path keeps that overlap from turning into two registrations on
+// one mux.
+//
+// /v0/workbench/events is deliberately absent: the dashboard does not open an
+// event stream, and no local EventSource is configured, so exposing the route
+// would advertise something that cannot answer.
+var workbenchReadPaths = []string{"/dashboard", "/stats/", "/series", "/leaderboards", "/latest-merges", "/worktrees"}
+
+// composeWorkbenchAPI routes the dashboard reads to the bench read API and
+// everything else to the hub, on the one loopback listener both share.
+func composeWorkbenchAPI(readAPI, hubAPI http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path := strings.TrimPrefix(request.URL.Path, githubapp.APIPrefix)
+		for _, prefix := range workbenchReadPaths {
+			if path == prefix || strings.HasPrefix(path, prefix) {
+				readAPI.ServeHTTP(writer, request)
+				return
+			}
+		}
+		hubAPI.ServeHTTP(writer, request)
+	})
+}
+
 // mountHub builds the hub and the embedded dashboard when wb.yaml has a hub
 // section. It returns (nil, nil) when the section is absent, which is the
 // path every operator who does not self-host takes.
@@ -208,6 +275,26 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
 		return nil, err
 	}
+	// The read API serves the dashboard its data from the snapshots this hub
+	// already stores, so a self-hoster sees their own machine, repositories and
+	// worktrees with no hosted control plane.
+	snapshotsForRead := hubSnapshotReader{store: snapshots}
+	readAPI := githubapp.NewHandler(githubapp.HandlerOptions{
+		Service: githubapp.Service{
+			ReadModel: githubapp.RemoteStateReadModel{
+				Store:      snapshotsForRead,
+				Access:     localMachineAccess{},
+				StaleAfter: githubapp.DefaultMachineStaleAfter,
+			},
+			Worktrees: githubapp.RemoteStateWorktreeReadModel{
+				Store:      snapshotsForRead,
+				Access:     localMachineAccess{},
+				StaleAfter: githubapp.DefaultMachineStaleAfter,
+			},
+		},
+		ViewerResolver: localWorkbenchViewerResolver{identityID: localIdentityID},
+		AllowedOrigin:  "http://" + listenAddress,
+	})
 	return &hubMount{
 		Engine:       cfg.Store.Engine,
 		Store:        cfg.Location(),
@@ -219,7 +306,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		status:       status,
 		viewer:       viewer,
 		Mounts: map[string]http.Handler{
-			hub.APIPrefix + "/": handler,
+			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler),
 			web.MountPath:       web.Handler(),
 		},
 	}, nil

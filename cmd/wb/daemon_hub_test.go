@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/api/githubapp"
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/hub/web"
@@ -142,6 +143,40 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 				}
 			} else if !strings.Contains(body, "not built") {
 				t.Fatalf("unbuilt dashboard body = %q", body)
+			}
+		},
+		// The dashboard's own data feed. These routes exist on the read API
+		// that shares the loopback listener with the hub, so a 200 with the
+		// documented shape is what proves the two handlers were composed
+		// rather than one of them silently owning the whole prefix.
+		githubapp.APIPrefix + "/dashboard": func(t *testing.T, response *http.Response, body string) {
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("dashboard read API = %s %q", response.Status, body)
+			}
+			var payload struct {
+				Summary map[string]int `json:"summary"`
+				Fleet   *struct {
+					Machines []json.RawMessage `json:"machines"`
+				} `json:"fleet"`
+			}
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatalf("dashboard payload = %q: %v", body, err)
+			}
+			for _, field := range []string{"repositories", "open_pulls", "merged_pulls", "open_issues", "releases"} {
+				if _, ok := payload.Summary[field]; !ok {
+					t.Fatalf("dashboard summary is missing %q in %q", field, body)
+				}
+			}
+			if payload.Fleet == nil {
+				t.Fatalf("dashboard has no fleet projection: %q", body)
+			}
+		},
+		githubapp.APIPrefix + "/worktrees": func(t *testing.T, response *http.Response, body string) {
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("worktrees read API = %s %q", response.Status, body)
+			}
+			if !strings.Contains(body, `"rows"`) {
+				t.Fatalf("worktrees payload = %q", body)
 			}
 		},
 	} {
