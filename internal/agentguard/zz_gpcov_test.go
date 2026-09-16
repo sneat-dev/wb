@@ -930,11 +930,14 @@ func TestGpCovBraceExpansionLimit(t *testing.T) {
 func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 	merge := []string{"gh", "pr", "merge", "1"}
 
-	t.Run("a record is written when WB home is writable", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv(wbhome.EnvOverride, home)
-		if finding := inspectGh(merge, t.TempDir(), "operator asked"); finding != nil {
+	t.Run("a record is written when the state home is writable", func(t *testing.T) {
+		root := t.TempDir()
+		if finding := inspectGh(merge, root, "operator asked"); finding != nil {
 			t.Fatalf("override did not allow the call:\n%s", finding.Message)
+		}
+		home, err := wbhome.Root(root)
+		if err != nil {
+			t.Fatal(err)
 		}
 		raw, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
 		if err != nil {
@@ -945,30 +948,28 @@ func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
 		}
 	})
 
-	t.Run("an unresolvable WB home still allows the call", func(t *testing.T) {
+	t.Run("an unresolvable projects root still allows the call", func(t *testing.T) {
 		t.Setenv(wbhome.EnvOverride, "")
 		t.Setenv("HOME", "")
-		if finding := inspectGh(merge, t.TempDir(), "operator asked"); finding != nil {
+		if finding := inspectGh(merge, "", "operator asked"); finding != nil {
 			t.Fatalf("bookkeeping failure blocked an allowed call:\n%s", finding.Message)
 		}
 	})
 
-	t.Run("a WB home that is a file still allows the call", func(t *testing.T) {
+	t.Run("a projects root that is a file still allows the call", func(t *testing.T) {
 		blocker := filepath.Join(t.TempDir(), "blocker")
 		writeFile(t, blocker, "not a directory\n")
-		t.Setenv(wbhome.EnvOverride, blocker)
-		if finding := inspectGh(merge, t.TempDir(), "operator asked"); finding != nil {
+		if finding := inspectGh(merge, blocker, "operator asked"); finding != nil {
 			t.Fatalf("an uncreatable audit directory blocked an allowed call:\n%s", finding.Message)
 		}
 	})
 
 	t.Run("an unwritable audit file still allows the call", func(t *testing.T) {
-		home := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"), 0o755); err != nil {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv(wbhome.EnvOverride, home)
-		if finding := inspectGh(merge, t.TempDir(), "operator asked"); finding != nil {
+		if finding := inspectGh(merge, root, "operator asked"); finding != nil {
 			t.Fatalf("an unwritable audit file blocked an allowed call:\n%s", finding.Message)
 		}
 	})

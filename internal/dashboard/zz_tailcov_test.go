@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func tailCovWriteManifest(t *testing.T, worktree, effortID, repository, agentID, agentRuntime, createdAt string) {
@@ -245,33 +243,32 @@ func TestTailCovOverviewUsesHomeCacheWhenNoIndexPathIsConfigured(t *testing.T) {
 	}
 	tailCovWriteManifest(t, worktree, "task-a", "acme/widgets", "agent-7", "codex", "2026-09-06T10:00:00Z")
 
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
+	// The default index path derives from the projects root's state home now.
 	handler := NewHandler(Options{ProjectsRoot: projectsRoot, Version: "test"})
 	overview := tailCovLoadOverview(t, handler)
 	if overview.Diagnostics != 0 {
 		t.Fatalf("diagnostics = %d, want none", overview.Diagnostics)
 	}
-	if _, err := os.Stat(filepath.Join(home, "cache", "fleet-inventory-v1.json")); err != nil {
-		t.Fatalf("default home cache index was not written: %v", err)
+	if _, err := os.Stat(filepath.Join(projectsRoot, ".wb", "cache", "fleet-inventory-v1.json")); err != nil {
+		t.Fatalf("default state home cache index was not written: %v", err)
 	}
 }
 
-func TestTailCovOverviewCountsUnavailableWBHomeAsADiagnostic(t *testing.T) {
+func TestTailCovOverviewCountsUnavailableStateHomeAsADiagnostic(t *testing.T) {
 	projectsRoot := t.TempDir()
 	tailCovFleet(t, projectsRoot)
 
-	// WB_HOME pointing at a regular file cannot be created as a directory.
-	homeFile := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(homeFile, []byte("x"), 0o644); err != nil {
+	// A regular file where the state directory <projectsRoot>/.wb belongs
+	// cannot be created as a directory.
+	stateBlocker := filepath.Join(projectsRoot, ".wb")
+	if err := os.WriteFile(stateBlocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, homeFile)
 
 	handler := NewHandler(Options{ProjectsRoot: projectsRoot, Version: "test"})
 	overview := tailCovLoadOverview(t, handler)
 	if overview.Diagnostics != 1 {
-		t.Fatalf("diagnostics = %d, want the unavailable WB home counted once", overview.Diagnostics)
+		t.Fatalf("diagnostics = %d, want the unavailable state home counted once", overview.Diagnostics)
 	}
 }
 

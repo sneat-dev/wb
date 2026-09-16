@@ -346,14 +346,15 @@ func TestRPCovSummaryGroupByLabelReportsAMissingLabel(t *testing.T) {
 	}
 }
 
-func TestRPCovWriteRemovalReceiptReportsAnUnusableWBHome(t *testing.T) {
+func TestRPCovWriteRemovalReceiptReportsAnUnusableProjectsRoot(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("regular file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(blocker, "home"))
-	if _, err := writeRemovalReceipt("/p", RemovalReceipt{Repository: "o/r", CreatedAt: time.Now().UTC()}); err == nil {
-		t.Fatal("writeRemovalReceipt accepted a WB home it cannot create")
+	// The receipt's state home derives from the projects root now, so an
+	// unusable projects root is passed instead of an unusable WB_HOME.
+	if _, err := writeRemovalReceipt(filepath.Join(blocker, "projects"), RemovalReceipt{Repository: "o/r", CreatedAt: time.Now().UTC()}); err == nil {
+		t.Fatal("writeRemovalReceipt accepted a projects root it cannot create")
 	}
 }
 

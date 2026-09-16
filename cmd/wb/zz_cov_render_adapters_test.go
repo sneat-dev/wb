@@ -246,8 +246,8 @@ func TestCwCovClaimRowsAndClaimsTable(t *testing.T) {
 }
 
 func TestCwCovProposedTransitiveConsumersWalksTheRecordedGraph(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	// The deps-graph report lives in the projects root's state home, so the
+	// fixture writes it under <projectsRoot>/.wb rather than an ambient WB_HOME.
 	projectsRoot := t.TempDir()
 
 	// No graph evidence at all: found is false rather than guessing.
@@ -268,7 +268,7 @@ func TestCwCovProposedTransitiveConsumersWalksTheRecordedGraph(t *testing.T) {
 			{ProviderRepository: "acme/ignored", ConsumerRepository: ""},
 		},
 	}
-	path := filepath.Join(home, "reports", "deps-graph-go", "deps-graph.json")
+	path := filepath.Join(projectsRoot, ".wb", "reports", "deps-graph-go", "deps-graph.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
