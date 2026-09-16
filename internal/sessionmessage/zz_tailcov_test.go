@@ -116,6 +116,8 @@ func tailCovReceiveTmux(fixture *receiveFixture) *tailCovTmux {
 func TestTailCovReceiveRejectsMalformedAdmissionInput(t *testing.T) {
 	ctx := context.Background()
 
+	// The nil context is exactly what this test asserts is rejected.
+	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
 	if _, err := Receive(nil, Options{}); err == nil || !strings.Contains(err.Error(), "context is required") {
 		t.Fatalf("nil context err = %v", err)
 	}

@@ -15,22 +15,6 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
-func sdCovNewSynchestraDelivererForTest(t *testing.T, config sessionmove.SynchestraConfig,
-	options SynchestraOptions, runner commandRunner, sleep func(context.Context, time.Duration) error,
-) *synchestraDeliverer {
-	t.Helper()
-	deliverer, err := newSynchestraDeliverer(config, options, func(name string) (string, error) {
-		if name != synchestraExecutableName {
-			return "", errors.New("unexpected executable " + name)
-		}
-		return testExecutable(t), nil
-	}, runner, sleep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return deliverer
-}
-
 func TestSDCovNewSynchestraDelivererConstructorBranches(t *testing.T) {
 	executable := testExecutable(t)
 	missing := filepath.Join(t.TempDir(), "missing-synchestra")

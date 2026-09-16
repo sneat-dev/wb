@@ -79,7 +79,7 @@ func dapbNonZero(t *testing.T, ft reflect.Type) reflect.Value {
 		return reflect.ValueOf([]string{"dapb-a", "dapb-b"}).Convert(ft)
 	case reflect.Map:
 		return reflect.ValueOf(map[string]string{"dapb-k": "dapb-v"}).Convert(ft)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return reflect.New(ft.Elem())
 	default:
 		t.Fatalf("dapbNonZero: unhandled field kind %s for type %s", ft.Kind(), ft)

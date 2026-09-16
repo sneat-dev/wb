@@ -14,10 +14,16 @@ import (
 	"time"
 )
 
-// tailCovProcessGroupOf reports one root-owned process group that this process
-// is not allowed to signal. Signalling it therefore produces EPERM without
-// delivering anything, which is the only way to reach the escalation failure
-// path without actually disturbing a live daemon.
+// tailCovProcessGroupOf reports one process group that this process is not
+// allowed to signal. Signalling it therefore produces EPERM without delivering
+// anything, which is the only way to reach the escalation failure path without
+// actually disturbing a live daemon.
+//
+// A candidate is only returned after signal 0 has confirmed that the kernel
+// would refuse a real signal: signal 0 runs the same permission check but
+// delivers nothing. Without that probe this helper could hand back the CI
+// runner's own process group and the caller would really terminate it, which
+// killed the coverage job on GitHub Actions.
 func tailCovProcessGroupOf(t *testing.T) int {
 	t.Helper()
 	ps, err := exec.LookPath("ps")
@@ -30,16 +36,20 @@ func tailCovProcessGroupOf(t *testing.T) int {
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "0" {
+		if len(fields) < 2 {
 			continue
 		}
 		pgid, err := strconv.Atoi(fields[1])
 		if err != nil || pgid <= 1 {
-			// Process group 1 would be "every process the caller may signal",
-			// which is exactly what this test must never do.
+			// kill(2) treats -1 as "every process the caller may signal" and 0
+			// as the caller's own group, so neither may be probed or signalled.
 			continue
 		}
-		return pgid
+		// Signal 0 is the permission probe: it delivers nothing, and an EPERM
+		// here proves the real SIGTERM below would be refused too.
+		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.EPERM) {
+			return pgid
+		}
 	}
 	return 0
 }
@@ -148,7 +158,7 @@ func TestTailCovTerminateProcessGroupReportsASignalFailure(t *testing.T) {
 	}
 	pgid := tailCovProcessGroupOf(t)
 	if pgid == 0 {
-		t.Fatal("no root-owned process group found; cannot exercise the signal-refusal path")
+		t.Fatal("no process group this process may not signal was found; cannot exercise the signal-refusal path")
 	}
 
 	start := time.Now()

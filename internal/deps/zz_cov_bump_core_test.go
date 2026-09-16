@@ -474,7 +474,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 		wave.HeldRepositories = []HeldRepository{{Repository: "acme/adapter", PR: "https://github.test/acme/adapter/pull/1"}}
 		previous.Waves = []BumpWaveReport{wave}
 		options := depsCovResumeOptions()
-		options.Options.Timeout = 5 * time.Millisecond
+		options.Timeout = 5 * time.Millisecond
 		options.LatestGoVersion = func(context.Context, string) (string, error) { return "v0.4.0", nil }
 		options.Previous = &previous
 		report, _, startWave, err := resumeBumpReport(context.Background(), empty, seed, options)
@@ -741,7 +741,7 @@ func TestDepsCovBumpCoreRunBumpRecordsVerificationPolicyAndRefusesAHeldLock(t *t
 	t.Run("verification policy is recorded for a dry run", func(t *testing.T) {
 		githubDir, repositories := depsCovGoDryRunFleet(t)
 		options := depsCovDryRunBumpOptions(githubDir)
-		options.Options.Verify = true
+		options.Verify = true
 		report, err := RunBump(context.Background(), depsCovSeedEvents(), repositories, options)
 		if err != nil {
 			t.Fatal(err)
@@ -1022,7 +1022,7 @@ func TestDepsCovBumpCoreRunBumpRefusesToExceedMaxWaves(t *testing.T) {
 func TestDepsCovBumpCoreRunBumpStopsOnAHeldPullRequest(t *testing.T) {
 	fixture := newFetchCacheFixture(t)
 	options := depsCovPrepareMergeFixture(t, fixture)
-	options.Options.Hold = []string{"acme/lib"}
+	options.Hold = []string{"acme/lib"}
 	report, err := RunBump(context.Background(),
 		[]ReleaseEvent{{Dependency: "@acme/provider", Version: "2.0.0", Source: "explicit"}},
 		fixture.repos, options)
@@ -1368,7 +1368,7 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhileParkingCampaigns(t *te
 	t.Run("held release", func(t *testing.T) {
 		fixture := newFetchCacheFixture(t)
 		options := depsCovPrepareMergeFixture(t, fixture)
-		options.Options.Hold = []string{"acme/lib"}
+		options.Hold = []string{"acme/lib"}
 		sentinel := errors.New("persist held release failed")
 		recorder := &depsCovPersist{sentinel: sentinel}
 		recorder.failIf = func(report BumpReport) bool { return report.Status == "awaiting_hold_release" }

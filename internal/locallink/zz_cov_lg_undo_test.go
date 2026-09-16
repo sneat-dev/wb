@@ -19,13 +19,6 @@ func lgCovGoWorkLink(library string) streams.Link {
 	}
 }
 
-func lgCovPnpmLink(library, identity, workspace string) streams.Link {
-	return streams.Link{
-		Library: library, Mechanism: streams.MechanismPnpmLink, State: streams.LinkStateApplied,
-		Identity: identity, PreviousVersion: "1.0.0", Workspace: workspace,
-	}
-}
-
 // lgCovWriteGoWork makes a consumer genuinely linked, so undo has something
 // real to remove.
 func lgCovWriteGoWork(t *testing.T, consumer, library string) {

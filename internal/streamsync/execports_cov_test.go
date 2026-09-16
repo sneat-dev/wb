@@ -28,6 +28,10 @@ func stCovScratchRepo(t *testing.T) string {
 	stCovRequireGit(t)
 	root := t.TempDir()
 	runGit(t, "", "init", "--initial-branch=main", root)
+	// The port under test commits with its own environment, so the repository
+	// carries an explicit identity rather than relying on git autodetecting one.
+	runGit(t, root, "config", "user.email", "wb@example.test")
+	runGit(t, root, "config", "user.name", "WB Test")
 	commitFile(t, root, "base.txt", "base\n", "feat: base")
 	return root
 }

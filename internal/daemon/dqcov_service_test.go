@@ -224,7 +224,6 @@ func TestDqCovNewServiceReportsCorruptDurableRecords(t *testing.T) {
 		if err == nil {
 			t.Fatalf("NewService accepted %s", name)
 		}
-		return
 	}
 
 	t.Run("unreadable operation", func(t *testing.T) {

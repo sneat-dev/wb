@@ -142,6 +142,8 @@ func TestRPCovUseSharedGitHubObserverSelectsTheSharedTransport(t *testing.T) {
 
 func TestRPCovRunExternalAppliesTimeoutOnlyWhenConfigured(t *testing.T) {
 	withoutTimeout := &rpCovContextRunner{}
+	// The nil context is exactly what this test asserts is defaulted.
+	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
 	runExternal(nil, Options{Runner: withoutTimeout}, "gh", "api")
 	if withoutTimeout.sawContext == nil {
 		t.Fatal("runExternal passed a nil context through to the runner")
