@@ -73,6 +73,12 @@ func cwCovCloneWithOrigin(t *testing.T, seedRoot, name, clonePath string) string
 		t.Fatal(err)
 	}
 	runGit(t, filepath.Dir(clonePath), "clone", remote, clonePath)
+	// `git clone` does not inherit the seed's local config, so the clone needs
+	// its own identity before anything here runs `git commit-tree` on it. CI
+	// runs with an empty HOME and user.useConfigOnly, where git otherwise fails
+	// with "Author identity unknown".
+	runGit(t, clonePath, "config", "user.email", "wb@example.test")
+	runGit(t, clonePath, "config", "user.name", "WB Test")
 	return remote
 }
 
