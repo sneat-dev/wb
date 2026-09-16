@@ -98,6 +98,16 @@ The same message records "~165 of them exist under `~/projects/.wb` at the momen
 
 **Why it matters.** Silent wrong answers (a "5 consumers found" that is really 1 consumer in 5 checkouts), inflated search results, and search/index time proportional to the number of live agents.
 
+**Scope is the dominant variable, and this is easy to get wrong.** "Does a search hit checkouts?" has no single answer — it depends entirely on *where the walk starts*. Measured, for one actively-worked repository (`sneat-dev/wb`, 42 worktrees under `<canonical>/.worktrees`):
+
+| Walk starts at | Tool class | Sees checkouts? |
+|---|---|---|
+| inside one repo (`cd <repo> && find`) | any | **yes — 36,354 `.go` files vs 2,273 in the canonical tree: a 15× inflation** |
+| `<projects-home>` (root, all repos) | non-dot-aware | yes |
+| `<projects-home>` (root) | dot-aware (`rg`) | no |
+
+`[MEASURED]` **97 of 374 canonical clones carry a `.worktrees/` inside them** — and those are precisely the repositories under active work, i.e. the ones a person or agent actually searches. So the most common search scope is also the most polluted one. Any analysis of P1 must state the scope it is talking about; a claim like "recursive tools double-count" is only meaningful with the starting directory attached.
+
 ### P2 — Sandbox/workspace boundary mismatch
 
 **Statement.** The store must be *inside* the write-allowed workspace, but the workspace is *identical to* the tree that must not be scanned. These two requirements are unsatisfiable simultaneously when `workspaceRoot == projectsRoot`.
@@ -381,17 +391,30 @@ Five sub-decisions. They interact; a full answer must pick one option from each.
 - **`git clean`, `git status` and repo-scoped builds can never touch a checkout.**
 - **One root** for GC, locks, audit, and backup/indexer policy.
 - **`<host>` fixes a latent collision.** `<org>/<repo>` is unique only within one forge. Today the projects root is flat, so `github.com/acme/api` and `gitlab.com/acme/api` cannot coexist. A host level also makes the tree self-describing.
+- **It creates a query surface that does not exist today.** With the store ordered `<task>/<host>/<org>/<repo>`, a search can be scoped to one task (`<store>/<task>/`), one forge (`<store>/*/<host>/`), one org, or one repo across every task (`<store>/*/<host>/<org>/<repo>/`). Today a task's checkouts are scattered across unrelated repository directories, so *"search everything this task touched"* is not expressible at all without consulting the claim index. This is a capability gain, not just a tidiness gain — and it is the argument for ordering the store **task-first** rather than repo-first.
 
 **What it does not fix**
 
 | Problem | Effect |
 |---|---|
-| P1 — recursive tools | **Unchanged for tools that are neither dot-aware nor git-aware.** A walk of `<projects-home>` still sees every checkout. Because the store leaves the repository it also *loses* the git-exclude fence: protection drops from two fences (dot + git exclude) to one (dot). `rg`/`fd`/VS Code are still safe; `find`/`grep -r`/`os.walk`/`tar`/`rsync`/backup are still not. |
+| P1 — recursive tools | **Fixed for the two most common walk scopes; unchanged only at the root.** `[MEASURED]` Today a repo-scoped `find` in one actively-worked repository sees 36,354 `.go` files against 2,273 in its canonical tree (15×), and 97 of 374 clones carry a `.worktrees/` inside them. With the store at `<projects-home>/.worktrees`, **no repository contains a checkout**, and a walk of `<projects-home>/<host>` does not reach the store either (it is a sibling of `<host>`). Only a walk of `<projects-home>` itself still sees every checkout, and only for tools that are neither dot-aware nor git-aware. Caveat: the store also loses the git-exclude fence, so at root scope protection drops from two fences (dot + git exclude) to one (dot). |
 | P3 — registration repair | Unchanged. The migration itself must repair every existing checkout (~407 measured). Relative paths (§4.2 R-rel) would make *subsequent* moves cheap but not this one. |
 | P4 — path pinning | **Worse during migration.** A host level changes every canonical path, so every generated artifact that hardcodes `~/projects/<org>/<repo>` must be regenerated. Measured instances exist in `~/.claude/launch.json` and `settings.local.json`. |
 | P9 — cost | Unchanged; working trees still dominate. |
 
-**WB_HOME is a separate knob and must be moved too.** Making checkouts workspace-resident does *not* make coordination state workspace-resident. Hook shims pin `WB_HOME` `[MEASURED]`, and hook-runtime writes go to `$WB_HOME/hook-runtime`; if that stays at `~/.wb`, hooks still fail under `workspace-write`. Placing `WB_HOME` at `<projects-home>/.wb` completes the picture — and does so with a bonus:
+**Relocating checkouts addresses the smaller half of the problem.** `WB_HOME` is not a problem in itself — it is the component that *carries* P2 (unwritable under sandbox), P6 (a read path that writes) and P4 (a path materialised into generated files). It needs its own decision (§4.3), not a by-product of the checkout move. Every mutating command must write it:
+
+- `prepareOperationRoot` creates `<WB_HOME>/worktrees/<task>`, seeds `<WB_HOME>/README.md`, and takes the per-task lock there (`internal/worktrees/worktrees.go:2240-2283`);
+- `reserveOriginalPromptArchive` writes `<WB_HOME>/worklogs/<effort>/runs/<run>/original-prompt.txt` (`internal/worktrees/worklog.go:1494`).
+
+`[MEASURED]` **The first failure in the episode that produced this brief was a `WB_HOME` read**: `wb worktree create` returned `inspect existing work-log run before mutation: operation not permitted`, because `openPrivateChild` issues `fchmod` on a descriptor opened read-only (P6). A layout that relocates only checkouts therefore leaves the command that matters most still broken.
+
+Two couplings make `WB_HOME` harder to move than the store:
+
+- **P4 — it is materialised into generated files.** `[MEASURED]` 361 repositories pin `WB_HOME` inside managed hook shims, because a shim records the *resolved* default home at install time. Changing the home is a fleet-wide regeneration with no inventory; a symlinked home silently bakes in the resolved target and is invisible until something writes to the wrong tree.
+- **A third location that no layout choice moves.** The daemon runtime is neither `WB_HOME` nor the checkout store: it is hardcoded to `<projects-root>/.wb/runtime` in 10+ source locations (`cmd/wb/daemon.go:461-474`, `daemon_file_bridge.go:60,121`, `daemon_local_unix.go:31`, `internal/runqueue/queue.go:114`, `internal/repositoryevents/queue.go:75`, `internal/daemon/service.go:77`) and `daemon serve` exposes no relocation flag. Whatever else is decided, one writer remains in the projects tree until that changes.
+
+Placing `WB_HOME` at `<projects-home>/.wb` closes this out, with a bonus:
 
 - It **decouples** the small irreplaceable state (Work Logs measured at ~0.2% of the disk footprint) from the large disposable checkouts (§4.3).
 - It **disarms P5.** Legacy auto-discovery triggers on `<projects-root>/.wb/worktrees` *existing* (`wbhome.go:73`). With checkouts at `<projects-home>/.worktrees`, that directory never exists, so the implicit configuration bit can never fire.
