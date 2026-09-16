@@ -68,7 +68,7 @@ type MachineAccessResolver interface {
 // RemoteStateWorktreeReadModel projects existing WB machine snapshots through
 // a per-machine authorization boundary.
 type RemoteStateWorktreeReadModel struct {
-	Store      machinesnapshot.SnapshotStore
+	Store      SnapshotReader
 	Access     MachineAccessResolver
 	Now        func() time.Time
 	StaleAfter time.Duration
