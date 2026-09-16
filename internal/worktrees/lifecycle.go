@@ -2540,7 +2540,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		pendingLifecycleBacklogs := 0
 		defer func() {
 			retireNamespace := true
-			if selection.WorktreesRoot == filepath.Join(resolution.Write.Home, "worktrees") {
+			// The selection's root for a repository-local cleanup is the home's
+			// logical task namespace, so compare against that, not the physical
+			// checkout store.
+			if selection.WorktreesRoot == resolution.Write.StateWorktreesRoot() {
 				// A filtered cleanup may leave physical members in other canonical
 				// repositories. Check the whole task while its lock is still held;
 				// an empty coordination directory alone does not prove terminality.

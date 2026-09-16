@@ -35,11 +35,11 @@ func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 // member: joining as a linked consumer instead of a member must not be a way
 // to dodge the landing guard.
 func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv(wbhome.EnvOverride, home)
 	previousProjectsRoot := projectsRoot
 	projectsRoot = filepath.Join(t.TempDir(), "projects")
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	home := filepath.Join(projectsRoot, ".wb")
 
 	linkedWorktree := filepath.Join(projectsRoot, "acme", "linked", ".worktrees", "task")
 	stateDir := filepath.Join(home, "streams", "known")

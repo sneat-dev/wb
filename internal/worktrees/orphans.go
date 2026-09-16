@@ -136,16 +136,27 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 		staleAfter = 14 * 24 * time.Hour
 	}
 
-	// Classification is not a write-policy question. wbhome.Resolve narrows to
-	// a single layout when WB_HOME is explicit, which is right for creating
-	// state and wrong here: an isolated session must not blind the sweep to the
-	// legacy hierarchy that holds most of the fleet.
-	home, err := wbhome.Root(projectsRoot)
+	// Classification is not a write-policy question. The write layout's store is
+	// <root>/.worktrees; a retired $HOME/.wb that still holds checkouts is a
+	// separate read layout and keeps its own label, so the sweep sees every
+	// generation without ever moving one.
+	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {
 		return OrphanReport{}, err
 	}
-	currentRoot := filepath.Join(filepath.Clean(home), "worktrees")
-	legacyRoot := filepath.Join(projectsRoot, ".wb", "worktrees")
+	home := resolution.Write.Home
+	currentRoot := resolution.Write.WorktreesRoot
+	legacyRoot := ""
+	residueRoots := map[string]string{
+		currentRoot: LayoutCurrent,
+	}
+	for _, layout := range resolution.Read {
+		if !layout.Legacy {
+			continue
+		}
+		legacyRoot = layout.WorktreesRoot
+		residueRoots[layout.WorktreesRoot] = LayoutLegacy
+	}
 
 	clones, unscanned := discoverCanonicalClones(projectsRoot)
 	report := OrphanReport{Unscanned: unscanned}
@@ -154,10 +165,6 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 
 	families := map[string][]OrphanWorktree{}
 	registered := map[string]bool{}
-	residueRoots := map[string]string{
-		currentRoot: LayoutCurrent,
-		legacyRoot:  LayoutLegacy,
-	}
 	for _, clone := range clones {
 		residueRoots[filepath.Join(clone.path, ".worktrees")] = LayoutLocal
 		linked, err := linkedWorktreesOf(ctx, clone.path)

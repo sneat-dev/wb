@@ -500,12 +500,12 @@ func newEngineFixture(t *testing.T) engineFixture {
 func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	t.Helper()
 	root := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb. Scoping it per fixture, not shared package-wide, also keeps this
-	// test's worktree root unique from the other tests in this file that reuse
-	// the same "dependency-test" operation name.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root. Scoping it per fixture, not shared package-wide, also
+	// keeps this test's worktree root unique from the other tests in this file
+	// that reuse the same "dependency-test" operation name.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	githubDir := filepath.Join(root, "projects")

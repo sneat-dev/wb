@@ -470,10 +470,10 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	t.Setenv("GIT_COMMITTER_NAME", "WB Test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "wb@example.test")
 	root := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb; a hermetic test must not write there.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github", ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github"))
 	remotes := filepath.Join(root, "remotes")
 	providerSource := filepath.Join(root, "source", "provider")
 	consumerSource := filepath.Join(root, "source", "consumer")

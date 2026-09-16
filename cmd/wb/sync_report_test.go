@@ -13,21 +13,28 @@ import (
 	"github.com/sneat-dev/wb/internal/fleetsync"
 )
 
-// syncReportHome pins WB_HOME at a temporary directory. Every test here must
-// use it: without it the writer targets the developer's real ~/.wb.
+// syncReportHome pins WB_PROJECTS_ROOT at a temporary directory and returns the
+// state directory it derives, <root>/.wb. Every test here must use it: without
+// it the writer targets the developer's real projects root.
 //
-// EvalSymlinks matches what wbhome.Root does to WB_HOME (resolveAbs): where
+// EvalSymlinks matches what wbhome.Root does to the root (resolveAbs): where
 // TMPDIR is itself a symlink — macOS routes /var/folders through
 // /private/var/folders — the writer's announced path is the resolved one,
 // so an assertion built from the raw t.TempDir() would fail even though the
 // writer behaved correctly.
 func syncReportHome(t *testing.T) string {
 	t.Helper()
-	home, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
+	// The state directory is created lazily by the writer; tests that chmod it
+	// to prove the unwritable path need it on disk first.
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return home
 }
 
@@ -43,7 +50,7 @@ func TestWriteSyncIssuesReportWritesToWBHome(t *testing.T) {
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	path := filepath.Join(home, "last-sync-issues.md")
 	contents, err := os.ReadFile(path)
@@ -71,8 +78,8 @@ func TestWriteSyncIssuesReportOverwritesRatherThanAppends(t *testing.T) {
 		Status: fleetsync.Failed,
 		Err:    errors.New("boom"),
 	}}
-	writeSyncIssuesReport(syncReportMetaForTest(), results, "/home/ai/projects", &out, &errOut)
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -90,7 +97,7 @@ func TestWriteSyncIssuesReportLeavesNoTemporaryFileAfterASuccessfulWrite(t *test
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	entries, err := os.ReadDir(home)
 	if err != nil {
@@ -114,7 +121,7 @@ func TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails(t *testi
 	}
 	var out, errOut bytes.Buffer
 
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	if errOut.Len() == 0 {
 		t.Fatal("renaming onto a directory should have failed and been reported")
@@ -138,7 +145,7 @@ func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing
 	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
 	var out, errOut bytes.Buffer
 
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	if errOut.Len() == 0 {
 		t.Skip("this filesystem allowed the write; ordering is asserted by the happy path instead")
@@ -158,7 +165,7 @@ func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
 		Err:    errors.New("git pull: transport failure"),
 	}}
 	code := finishSync(syncReportMetaForTest(), results, false, false, remoteDeps{},
-		t.TempDir(), "", 1, &out, &errOut)
+		filepath.Dir(home), "", 1, &out, &errOut)
 
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
@@ -181,7 +188,7 @@ func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	code := finishSync(syncReportMetaForTest(), nil, false, false, remoteDeps{},
-		t.TempDir(), "", 1, &out, &errOut)
+		filepath.Dir(home), "", 1, &out, &errOut)
 
 	// The exit code is the point of this test and holds either way, so it is
 	// asserted before the skip: a report WB could not write must never fail a
@@ -206,7 +213,7 @@ func TestWriteSyncIssuesReportRedactsCredentialedRemoteURLs(t *testing.T) {
 		Status: fleetsync.Failed,
 		Err:    errors.New("git pull https://x-access-token:ghp_realsecret@github.com/o/r.git: authentication failed"),
 	}}
-	writeSyncIssuesReport(syncReportMetaForTest(), results, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
 
 	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
 	if err != nil {
@@ -233,7 +240,7 @@ func TestWriteSyncIssuesReportLeavesOrdinaryURLsUnchanged(t *testing.T) {
 		Status: fleetsync.Failed,
 		Err:    errors.New("git pull https://github.com/o/r.git: connection reset"),
 	}}
-	writeSyncIssuesReport(syncReportMetaForTest(), results, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
 
 	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
 	if err != nil {
@@ -248,7 +255,7 @@ func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
-	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
 
 	info, err := os.Stat(filepath.Join(home, "last-sync-issues.md"))
 	if err != nil {

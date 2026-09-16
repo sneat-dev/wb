@@ -33,8 +33,9 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	root := t.TempDir()
 	sourceRoot := filepath.Join(root, "source-projects")
 	targetRoot := filepath.Join(root, "target-projects")
-	sourceHome := filepath.Join(root, "source-home")
-	targetHome := filepath.Join(root, "target-home")
+	// State derives from each machine's own projects root now.
+	sourceHome := filepath.Join(sourceRoot, ".wb")
+	targetHome := filepath.Join(targetRoot, ".wb")
 	ambientXDGConfig := filepath.Join(root, "ambient-xdg-config")
 	ambientXDGState := filepath.Join(root, "ambient-xdg-state")
 	ambientXDGCache := filepath.Join(root, "ambient-xdg-cache")
@@ -46,7 +47,7 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv(wbhome.EnvOverride, sourceHome)
+	t.Setenv(wbhome.EnvOverride, sourceRoot)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 	// The source process deliberately carries conflicting XDG roots. The fake
 	// remote transport must replace all of them with target-owned paths; if it
@@ -568,8 +569,8 @@ target="$1"
 shift
 remote_wb="$1"
 shift
-exec env HOME=%s WB_HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s "$remote_wb" --projects-root %s "$@"
-`, shellQuote(targetHome), shellQuote(targetHome), shellQuote(filepath.Join(targetHome, ".config")),
+exec env HOME=%s WB_PROJECTS_ROOT=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s "$remote_wb" --projects-root %s "$@"
+`, shellQuote(targetHome), shellQuote(targetProjectsRoot), shellQuote(filepath.Join(targetHome, ".config")),
 		shellQuote(filepath.Join(targetHome, ".local", "state")), shellQuote(filepath.Join(targetHome, ".cache")), shellQuote(targetProjectsRoot))
 }
 

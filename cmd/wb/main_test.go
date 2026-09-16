@@ -279,7 +279,7 @@ func TestEveryJSONShortcutHasCanonicalFormatFlag(t *testing.T) {
 }
 
 func TestRunSeparatorPreservesChildOutputFlags(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	args := []string{"run", "--", "/usr/bin/printf", "%s|%s", "--format=json", "--json"}
 	if code := run(args, &stdout, &stderr); code != exitOK {

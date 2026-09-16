@@ -13,11 +13,12 @@ import (
 )
 
 func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
+	root := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, root)
 	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
+	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(root, ".wb")
 
 	previousRuntimeProcessCheck := sessionRegisterRuntimeProcess
 	previousCurrentPID := sessionRegisterCurrentPID

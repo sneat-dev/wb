@@ -16,14 +16,15 @@ import (
 func setUpShellRetirementFixture(t *testing.T) (projectsRoot, worktreesRoot string) {
 	t.Helper()
 	root := t.TempDir()
-	home := filepath.Join(root, ".wb")
-	t.Setenv(wbhome.EnvOverride, home)
+	projectsRoot = filepath.Join(root, "projects")
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 	worktreesRoot = filepath.Join(home, "worktrees")
 	if err := os.MkdirAll(worktreesRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(root, "projects"), worktreesRoot
+	return projectsRoot, worktreesRoot
 }
 
 // writeRetiredLock creates a plain, single-link file named like the ones

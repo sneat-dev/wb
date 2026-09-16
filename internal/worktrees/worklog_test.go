@@ -71,7 +71,7 @@ func TestListActiveClaimSummariesIsCompactFilteredAndExcludesSealedClaims(t *tes
 		t.Fatal(err)
 	}
 	home := filepath.Join(projectsRoot, ".wb")
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	worktree, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

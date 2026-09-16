@@ -515,7 +515,7 @@ func TestValidateGoWaveSelectionsDetectsLaterTargetConflict(t *testing.T) {
 
 func TestRunBumpResumesPersistedReleaseBaseline(t *testing.T) {
 	// Not t.Parallel(): this test drives a real (non-DryRun) orchestrate.Run,
-	// which needs WB_HOME scoped to this test's own temp dir so it can't
+	// which needs WB_PROJECTS_ROOT scoped to this test's own temp dir so it can't
 	// collide with, or leak into, anything else — and t.Setenv cannot be used
 	// safely once a test is parallel, since parallel siblings would then read
 	// and overwrite the same process-global env var concurrently.
@@ -609,7 +609,7 @@ func killedBumpProcessPID(t *testing.T) int {
 
 func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
 	// Not t.Parallel(): this test drives a real (non-DryRun) orchestrate.Run,
-	// which needs WB_HOME scoped to this test's own temp dir so it can't
+	// which needs WB_PROJECTS_ROOT scoped to this test's own temp dir so it can't
 	// collide with, or leak into, anything else — and t.Setenv cannot be used
 	// safely once a test is parallel, since parallel siblings would then read
 	// and overwrite the same process-global env var concurrently.

@@ -12,13 +12,20 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 )
 
-// agentTestEnv gives a test its own WB home and its own agent configuration, so
-// nothing here can read or write the operator's real state.
+// agentTestEnv gives a test its own projects root and its own agent
+// configuration, so nothing here can read or write the operator's real state.
+// It returns the derived state home, <root>/.wb.
 func agentTestEnv(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	root := t.TempDir()
+	home := filepath.Join(root, ".wb")
 	configHome := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	// The global is what the in-process remote entry point reads; pin it too so
+	// a test's own root never depends on which test ran first.
+	previousProjectsRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
 	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o700); err != nil {
@@ -407,9 +414,8 @@ func TestAgentStopRefusesTerminalAndUnknownRuns(t *testing.T) {
 }
 
 func TestAgentCommandsReportAMissingConfigurationWhenOneIsNeeded(t *testing.T) {
-	home := t.TempDir()
 	configHome := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
 

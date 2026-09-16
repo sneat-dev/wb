@@ -162,13 +162,13 @@ func TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors(t *testing.T) {
 // retroactive fix for those pre-existing shells, dry-run by default.
 func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
+	home := filepath.Join(root, "projects", ".wb")
 	worktreesRoot := filepath.Join(home, "worktrees")
 	shellDir := filepath.Join(worktreesRoot, "old-task", "sneat-co")
 	if err := os.MkdirAll(shellDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	var stdout, stderr bytes.Buffer
@@ -218,8 +218,8 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 // carried 55 of these and printed 55 `info:` lines before every single table.
 func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	home := filepath.Join(projects, ".wb")
 	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	if err := os.WriteFile(lock, []byte("operation=artifact-json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, projects)
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
@@ -264,8 +264,8 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 
 func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	home := filepath.Join(projects, ".wb")
 	const task = "artifact-only-blocked"
 	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
@@ -275,7 +275,7 @@ func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testi
 	if err := os.WriteFile(evidence, []byte("preserve\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, projects)
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
@@ -349,7 +349,7 @@ func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			home := filepath.Join(root, ".wb")
-			t.Setenv("WB_HOME", home)
+			t.Setenv("WB_PROJECTS_ROOT", root)
 			args := append([]string{"--projects-root", filepath.Join(root, "projects")}, test.args...)
 			var stdout, stderr bytes.Buffer
 			if code := run(args, &stdout, &stderr); code == exitOK {
@@ -448,8 +448,9 @@ func TestWorktreeCleanupFilterExcludesMalformedCandidateOutsideSelection(t *test
 // setUpMismatchedWorktreeFixture creates a canonical repository and a linked
 // worktree registered under a repository-name path segment that does not
 // match it — the same shape a GitHub repository rename leaves behind — and
-// points WB_HOME and related XDG state at the given root so the test never
-// touches the real environment. It returns the projects root and WB home.
+// points WB_PROJECTS_ROOT (and related XDG state) at the given root so the
+// test never touches the real environment. It returns the projects root and
+// its state home, <root>/.wb.
 func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home string) {
 	t.Helper()
 	projects = filepath.Join(root, "projects")
@@ -457,8 +458,8 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	home = filepath.Join(root, "home")
-	t.Setenv(wbhome.EnvOverride, home)
+	home = filepath.Join(projects, ".wb")
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
@@ -591,7 +592,7 @@ func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
 
 // setUpRenameCLIFixture creates a real canonical repository with a working
 // origin remote — `worktree create`'s canonical sync needs one to pull from —
-// and points WB_HOME and related XDG state at an isolated root.
+// and points WB_PROJECTS_ROOT (and related XDG state) at an isolated root.
 func setUpRenameCLIFixture(t *testing.T) (projects string) {
 	t.Helper()
 	root := t.TempDir()
@@ -623,7 +624,7 @@ func setUpRenameCLIFixture(t *testing.T) (projects string) {
 	runGit(canonical, "commit", "-m", "initial")
 	runGit(canonical, "push", "-u", "origin", "main")
 
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	return projects
@@ -946,7 +947,7 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 
 // TestWorktreeLogFinalizeReportSurfacesThroughListSummaryAndLog proves the
 // wb worktree log finalize --report journey end to end through the CLI: the
-// report body lands under WB_HOME (never source Git), wb worktree
+// report body lands under the state home <root>/.wb (never source Git), wb worktree
 // list/summary surface report_path/terminal_result/terminal_message/
 // finalized_at without the body, --finalized/--not-finalized filter on it,
 // and the redaction split holds -- log show never carries the body, the bare
@@ -1248,7 +1249,7 @@ func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.
 	if err := os.MkdirAll(projects, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	prepareStaleManagedHook := func(repository string) (string, []byte) {
@@ -1319,7 +1320,7 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	command := exec.Command("git", "-C", canonical, "init", "-b", "main")
@@ -1385,7 +1386,7 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
@@ -1438,7 +1439,7 @@ func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
@@ -1475,7 +1476,7 @@ func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
 }
 
 // findOriginalPromptArchive locates the single Work Log run's archived prompt
-// file for task under home, matching the layout WB_HOME/worklogs/<effort>/
+// file for task under home, matching the layout <root>/.wb/worklogs/<effort>/
 // runs/<run>/original-prompt.txt. It fails the test if there is not exactly
 // one run, so a stampede regression (multiple orphaned runs) is caught here
 // too rather than only in the internal/worktrees package tests.
@@ -1499,14 +1500,14 @@ func findOriginalPromptArchive(t *testing.T, home, task string) string {
 // TestWorktreeCreateAcceptsOriginalPromptFromStdin is the CLI-level regression
 // test for issue #88: --original-prompt-file - reads the exact prompt from
 // stdin instead of a caller-staged file, and WB itself writes the private
-// 0600 archive under WB_HOME. This proves the whole path end to end: stdin in,
+// 0600 archive under <root>/.wb. This proves the whole path end to end: stdin in,
 // an exact-content 0600 archive on disk, and that same body recoverable from
 // the Work Log exactly as a file-based --original-prompt-file would record it.
 func TestWorktreeCreateAcceptsOriginalPromptFromStdin(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := os.Getenv(wbhome.EnvOverride)
+	home := filepath.Join(projects, ".wb")
 
 	const prompt = "stdin-sourced original request, never staged to a shared path\n"
 	var stdout, stderr bytes.Buffer
@@ -1563,7 +1564,7 @@ func TestWorktreeCreateRefusesEmptyStdinPrompt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			home := filepath.Join(root, ".wb")
-			t.Setenv("WB_HOME", home)
+			t.Setenv("WB_PROJECTS_ROOT", root)
 			task := "empty-stdin-" + test.name
 			var stdout, stderr bytes.Buffer
 			code := runWithStdin(

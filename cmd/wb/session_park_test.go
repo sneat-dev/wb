@@ -79,8 +79,8 @@ func TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces(t *t
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	dir, err := sessionDir()
 	if err != nil {
 		t.Fatal(err)
@@ -171,8 +171,8 @@ func TestSessionParkCrashRetryRefusesChangedImmutableInputsBeforeLifecycleMarkin
 			previousProjectsRoot := projectsRoot
 			projectsRoot = t.TempDir()
 			t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-			home := filepath.Join(t.TempDir(), "wb-home")
-			t.Setenv("WB_HOME", home)
+			home := filepath.Join(projectsRoot, ".wb")
+			t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 			dir, err := sessionDir()
 			if err != nil {
 				t.Fatal(err)
@@ -234,8 +234,8 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	parkedID := "park-local-zero"
 	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
 	source := session.Record{PID: 41, WBSessionID: "wbs-parked-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
@@ -331,8 +331,8 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 			previousProjectsRoot := projectsRoot
 			projectsRoot = t.TempDir()
 			t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-			home := filepath.Join(t.TempDir(), "wb-home")
-			t.Setenv("WB_HOME", home)
+			home := filepath.Join(projectsRoot, ".wb")
+			t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 			parkedID := "park-local-interruption"
 			source := session.Record{PID: 41, WBSessionID: "wbs-local-interrupted-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
 			store := sessionpark.NewStore(filepath.Join(home, sessionpark.SourceDirName))
@@ -439,7 +439,7 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 		"--original-prompt-file", prompt}, stdout, stderr); code != exitOK {
 		t.Fatalf("worktree create code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	home := os.Getenv("WB_HOME")
+	home := filepath.Join(projects, ".wb")
 	worktree := filepath.Join(home, "worktrees", "park-refusal", "acme", "app")
 	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: projects, Workers: 1})
 	if err != nil {
@@ -512,8 +512,8 @@ func TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody(t *testing.T) 
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	parkedID := "park-local-preflight"
 	source := session.Record{PID: 41, WBSessionID: "wbs-local-preflight-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
 	store := sessionpark.NewStore(filepath.Join(home, sessionpark.SourceDirName))
@@ -741,8 +741,8 @@ func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) remoteR
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	custodyRoot := filepath.Join(projectsRoot, "custody")
 	for index := range worktrees {
 		worktrees[index].WorktreeDir = filepath.Join(custodyRoot, fmt.Sprintf("member-%d", index+1))
@@ -823,8 +823,8 @@ func registerParkChecklistSession(t *testing.T, wbSessionID string) string {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	dir, err := sessionDir()
 	if err != nil {
 		t.Fatal(err)
@@ -846,8 +846,8 @@ func unregisteredParkFixture(t *testing.T) (string, string) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	t.Setenv("WB_AGENT_PID", "")
 	t.Setenv("WB_AGENT_RUNTIME", "")
 	t.Setenv("WB_AGENT_MODEL", "")
