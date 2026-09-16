@@ -573,14 +573,20 @@ func TestOrchCovConflictingWorktreeMergePathsReportsAGitFailure(t *testing.T) {
 	}
 }
 
-// orchCovGitRepo creates a one-commit repository on main.
+// orchCovGitRepo creates a one-commit repository on main. The repository is
+// given its own identity because production code commits into it through plain
+// `git` invocations (a merge, for example), which do not carry the `-c`
+// overrides the fixture's own commits use. A developer machine lets git
+// auto-derive an identity; a CI runner has none, and the commit fails there.
 func orchCovGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
+	runEngineGit(t, dir, "config", "user.name", "WB Test")
+	runEngineGit(t, dir, "config", "user.email", "wb@example.test")
 	writeEngineFile(t, filepath.Join(dir, "base.txt"), "base\n")
 	runEngineGit(t, dir, "add", "-A")
-	runEngineGit(t, dir, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "initial")
+	runEngineGit(t, dir, "commit", "-m", "initial")
 	return dir
 }
 

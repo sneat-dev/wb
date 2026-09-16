@@ -221,8 +221,11 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if !ok {
 		t.Fatalf("processEvidence(%d) for this test binary reported no evidence", os.Getpid())
 	}
-	if want := filepath.Base(os.Args[0]); ownEvidence.Executable != want {
-		t.Fatalf("own executable = %q, want %q", ownEvidence.Executable, want)
+	// The platform reports different spellings here -- Linux resolves the full
+	// /proc/<pid>/exe path while darwin can return just the process name -- so
+	// compare basenames, which is the part that identifies the running binary.
+	if want := filepath.Base(os.Args[0]); filepath.Base(ownEvidence.Executable) != want {
+		t.Fatalf("own executable = %q, want a path ending in %q", ownEvidence.Executable, want)
 	}
 	if len(ownEvidence.Args) == 0 || filepath.Base(ownEvidence.Args[0]) != filepath.Base(os.Args[0]) {
 		t.Fatalf("own args = %#v, want the running command line", ownEvidence.Args)

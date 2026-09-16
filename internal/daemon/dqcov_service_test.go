@@ -404,6 +404,23 @@ func TestDqCovSubmitOperationRollsBackFailedDurableWrite(t *testing.T) {
 	if retried.Msg.State != daemonv1.OperationState_OPERATION_STATE_QUEUED {
 		t.Fatalf("retried operation = %#v", retried.Msg)
 	}
+	// Submission starts an asynchronous execution that writes state into the
+	// same tree t.TempDir removes. Drain it to a terminal state first, or the
+	// cleanup races the writer and fails with "directory not empty".
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		current, err := service.GetOperation(context.Background(), connect.NewRequest(&daemonv1.GetOperationRequest{OperationId: retried.Msg.OperationId}))
+		if err != nil {
+			t.Fatalf("get retried operation = %v", err)
+		}
+		if terminal(current.Msg.State) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("retried operation did not reach a terminal state: %v", current.Msg.State)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestDqCovGetAndWaitOperationErrorsAndDeadlines(t *testing.T) {
