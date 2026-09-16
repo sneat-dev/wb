@@ -11,4 +11,10 @@ go_test:
     # This package is safe to split by top-level test. cmd/wb and
     # internal/orchestrate contain real-clock and process-global journeys and
     # stay in the single unsharded job to avoid multiplying their setup cost.
+    #
+    # Adding internal/orchestrate here was tried while raising coverage and
+    # reverted: its shards all pass, but `wb coverage` then fails after every
+    # job succeeds, in the profile-merge/report step, and the failure is masked
+    # by commandError preferring command output over the underlying error. That
+    # needs its own investigation before this list can grow.
     - ./internal/worktrees
