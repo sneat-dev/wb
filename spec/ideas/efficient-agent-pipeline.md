@@ -222,7 +222,7 @@ Three constraints make that safe rather than merely cheap:
 ## MVP Scope
 
 Ship **Certify** first, in WB, and semantics-free: a phase list on `wb agent
-dispatch`, and `wb agent receipt <agent-id> --format json` returning a bounded set
+dispatch`, and a per-run conformance receipt returning a bounded set
 of facts WB observed about that run — isolation, base SHA, hooks, each phase's
 command, exit status and artifact path, landing route, CI verdict, cleanup. Each
 a yes/no plus an evidence pointer, none of them sourced from the worker.
@@ -231,6 +231,18 @@ The first consumer is a review phase running `specscore rehearse run` against th
 feature's acceptance criteria, but WB ships knowing nothing about that: it records
 a command that exited 0 and wrote an evidence file. A project with no SpecScore
 gets the same receipt with `go test` in the phase list.
+
+Extend the existing surface rather than inventing one. `wb verify receipt`
+already exists to "compose exact verification, remote, deployment, and cleanup
+evidence", and `internal/runlog` already writes a durable event per governed
+command — `duration_ms`, `user_cpu_ms`, `queue_wait_ms`, `admitted_at`,
+`exit_code` — to `<root>/.wb/local/run/events.jsonl`. The receipt is largely a
+join over records WB already keeps.
+
+That telemetry is also the strategy's own first evidence of the discovery
+problem: fleet-wide it holds **24 events, of which 2 are `go/test`**, because
+almost nothing is routed through `wb run --`. The instrument exists and is
+unused, which is why test cost could be suspected but not measured.
 
 Certify comes before Relocate and before worker-side landing because it is what
 makes both verifiable, and because it pays for itself alone: even with today's
