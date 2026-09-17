@@ -1659,7 +1659,9 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	defer func() { _ = mount.Close() }()
 	// Best-effort: an unresolved log path only disables /api/v1/log (503),
 	// it never blocks the daemon from serving everything else.
-	logPath, _ := daemonLogPath(projectsRoot)
+	// daemonStartLogPath is the cross-platform accessor (daemonLogPath is
+	// !darwin-only; darwin's launchd unit owns a fixed, home-derived path).
+	logPath, _ := daemonStartLogPath(projectsRoot)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
