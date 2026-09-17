@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -96,8 +97,8 @@ Exit codes: 0 nothing new, 1 new unreachable functions, 2 bad invocation.
 				if err := quality.WriteDeadcodeBaseline(path, report.Findings); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "recorded %d unreachable function(s) in %s\n", len(report.Findings), options.baseline)
-				return nil
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %d unreachable function(s) in %s\n", len(report.Findings), options.baseline)
+				return err
 			}
 
 			if err := writeDeadcodeReport(cmd, options.format, report); err != nil {
@@ -138,23 +139,27 @@ func writeDeadcodeReport(cmd *cobra.Command, format string, report quality.Deadc
 		return encoder.Encode(report)
 	}
 
+	// Rendered once and written once: a partial report torn by a write error
+	// midway would read as a shorter, passing verdict.
+	var text strings.Builder
 	if len(report.New) > 0 {
-		fmt.Fprintf(out, "New unreachable functions (%d):\n", len(report.New))
+		fmt.Fprintf(&text, "New unreachable functions (%d):\n", len(report.New))
 		for _, finding := range report.New {
-			fmt.Fprintf(out, "  %s:%d: %s\n", finding.File, finding.Line, finding.Identity)
+			fmt.Fprintf(&text, "  %s:%d: %s\n", finding.File, finding.Line, finding.Identity)
 		}
 	}
 	if len(report.Fixed) > 0 {
-		fmt.Fprintf(out, "\nBaseline entries now reachable or gone (%d) — rerun with --update-baseline to drop them:\n", len(report.Fixed))
+		fmt.Fprintf(&text, "\nBaseline entries now reachable or gone (%d) — rerun with --update-baseline to drop them:\n", len(report.Fixed))
 		for _, identity := range report.Fixed {
-			fmt.Fprintf(out, "  %s\n", identity)
+			fmt.Fprintf(&text, "  %s\n", identity)
 		}
 	}
 	if report.BaselineMissing && report.BaselinePath != "" {
-		fmt.Fprintf(out, "\nNo baseline at %s: every finding counts as new. Record the starting point with --update-baseline.\n", report.BaselinePath)
+		fmt.Fprintf(&text, "\nNo baseline at %s: every finding counts as new. Record the starting point with --update-baseline.\n", report.BaselinePath)
 	}
 	if len(report.New) == 0 && len(report.Fixed) == 0 {
-		fmt.Fprintf(out, "%d unreachable function(s), all baselined; nothing new.\n", len(report.Findings))
+		fmt.Fprintf(&text, "%d unreachable function(s), all baselined; nothing new.\n", len(report.Findings))
 	}
-	return nil
+	_, err := io.WriteString(out, text.String())
+	return err
 }
