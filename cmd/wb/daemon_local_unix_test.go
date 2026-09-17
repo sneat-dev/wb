@@ -169,12 +169,14 @@ func TestDaemonOperationCLIHelperProcess(t *testing.T) {
 }
 
 func TestDaemonLocalTransportRejectsOverlongSocketPath(t *testing.T) {
-	// The endpoint is derived from WB's home rather than from the projects
-	// root, so it is the *home* that has to be long: a hundred characters
-	// below /tmp leaves the socket path above the platform's ~104-byte
-	// sockaddr_un cap.
-	root := daemonTestRoot(t)
-	pinDaemonHome(t, filepath.Join("/tmp", strings.Repeat("a", 100)))
+	// The endpoint derives from the projects root, so it is the *root* that has
+	// to be long: a hundred characters below /tmp leaves the socket path above
+	// the platform's ~104-byte sockaddr_un cap. The long root is passed as the
+	// argument rather than through the environment, because the argument is what
+	// selects the root; pinning only the environment left the endpoint short
+	// enough to bind on platforms with shorter temporary paths.
+	root := filepath.Join("/tmp", strings.Repeat("a", 100))
+	pinDaemonHome(t, root)
 	if _, err := listenDaemonLocal(root); err == nil || !strings.Contains(err.Error(), "too long") {
 		t.Fatalf("overlong socket path error = %v", err)
 	}
