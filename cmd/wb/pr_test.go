@@ -40,11 +40,11 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 }
 
 func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
-	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
 	t.Setenv("PATH", t.TempDir())
 	previousProjectsRoot := projectsRoot
 	projectsRoot = filepath.Join(t.TempDir(), "projects")
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
 	command := newPRLandCmd()
 	var stderr bytes.Buffer
@@ -140,11 +140,12 @@ func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 // inventory that event log without calling it corrupt stream state before the
 // local-link guard can make its real decision.
 func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
 	previousProjectsRoot := projectsRoot
-	projectsRoot = t.TempDir()
+	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 
 	log, streamName := landingEventLog("acme/app")
 	if streamName != "" {

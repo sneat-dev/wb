@@ -681,8 +681,12 @@ func TestCwCovRepoIgnoreCommandTogglesTheMarker(t *testing.T) {
 }
 
 func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	// sessionDir and the prune command must resolve the same state home, which
+	// now derives from the projects root, so both are given the same root.
+	root := t.TempDir()
+	previousProjectsRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	dir, err := sessionDir()
 	if err != nil {
 		t.Fatal(err)
@@ -696,7 +700,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, home, newSessionPruneCmd)
+	stdout, _, err := cwCovExec(t, root, newSessionPruneCmd)
 	if err != nil {
 		t.Fatalf("session prune: %v", err)
 	}
@@ -712,7 +716,7 @@ func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
 	}
 
 	// A second prune is a no-op.
-	stdout, _, err = cwCovExec(t, home, newSessionPruneCmd)
+	stdout, _, err = cwCovExec(t, root, newSessionPruneCmd)
 	if err != nil {
 		t.Fatal(err)
 	}

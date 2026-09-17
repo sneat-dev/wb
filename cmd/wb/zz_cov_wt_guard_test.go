@@ -43,12 +43,11 @@ func TestCwWtWorktreeGuardAdmissionWarningOnUnrecordedWorktree(t *testing.T) {
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
 	cwCovCloneWithOrigin(t, seed, "app", clone)
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", home)
-
 	// A checkout placed at the resolver-recognized managed location with no
-	// recorded instruction is exactly what --admission enforce refuses.
-	managed := filepath.Join(home, "worktrees", "cw-wt-task", "acme", "app")
+	// recorded instruction is exactly what --admission enforce refuses. The
+	// recognized hierarchy derives from the projects root now, so the managed
+	// location is <root>/.wb/worktrees/<task>/<owner>/<repository>.
+	managed := filepath.Join(projects, ".wb", "worktrees", "cw-wt-task", "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(managed), 0o755); err != nil {
 		t.Fatal(err)
 	}

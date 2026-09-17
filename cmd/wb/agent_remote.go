@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,21 +13,6 @@ import (
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-// agentProjectsRootForRemote is the projects root the private remote entry
-// point uses. Each machine keeps its own fleet layout, so the remote's own
-// default applies unless that machine exports an override; the caller never
-// dictates a path on someone else's machine.
-func agentProjectsRootForRemote() string {
-	if override := strings.TrimSpace(os.Getenv("WB_PROJECTS_ROOT")); override != "" {
-		return override
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, "projects")
-}
 
 // agentDispatchDeps builds the dispatch seams shared by the local command and
 // the private remote entry point, so a remote dispatch performs exactly the
@@ -72,7 +55,7 @@ func RunAgentRemote(stdin io.Reader, stdout, stderr io.Writer) int {
 	// main handles this before cobra, so the persistent-flag defaults have not
 	// run; establish the one global the worktree side effects read.
 	if projectsRoot == "" {
-		projectsRoot = agentProjectsRootForRemote()
+		projectsRoot = defaultProjectsRoot()
 	}
 	request, err := decodeRemoteRequest(stdin)
 	response := agents.RemoteResponse{SchemaVersion: 1, Operation: request.Operation}

@@ -81,12 +81,12 @@ func TestCwDepsMergePolicyReportPath(t *testing.T) {
 	if _, err := mergePolicyReportPath(filepath.Join(blocker, "child")); err == nil {
 		t.Error("a report directory beneath a file must fail")
 	}
-	// No explicit path defaults beneath the WB home.
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
+	// No explicit path defaults beneath the projects root's state home.
 	previousRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousRoot })
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	home := filepath.Join(projectsRoot, ".wb")
 	derived, err := mergePolicyReportPath("")
 	if err != nil || !strings.HasPrefix(derived, home) || !strings.HasSuffix(derived, "merge-policy.json") {
 		t.Fatalf("derived report path = %q, %v", derived, err)

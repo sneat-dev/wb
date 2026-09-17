@@ -352,20 +352,19 @@ func TestCwWtActiveHelpers(t *testing.T) {
 }
 
 func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
-	// listActiveSessions fails when WB_HOME cannot be resolved: a path whose
-	// ancestor is a regular file is not merely absent.
+	// listActiveSessions fails when the projects root cannot be resolved: a
+	// path whose ancestor is a regular file is not merely absent.
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "home"))
-	if _, err := listActiveSessions(t.TempDir()); err == nil {
-		t.Fatal("listActiveSessions with an unresolvable WB_HOME must fail")
+	if _, err := listActiveSessions(filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("listActiveSessions with an unresolvable projects root must fail")
 	}
 
 	// Default dependencies against an empty root.
 	projects := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv(wbhome.EnvOverride, projects)
 	stdout, _, err := cwCovExec(t, projects, newWorktreeActiveCmd, "--local-only")
 	if err != nil {
 		t.Fatalf("active --local-only: %v", err)

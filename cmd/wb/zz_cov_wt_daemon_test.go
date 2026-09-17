@@ -332,24 +332,24 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 	}
 
 	// A status probe that cannot read the lifecycle state is reported. The
-	// daemon now derives its runtime directory from WB's home resolver rather
-	// than from the projects root, so the unusable thing has to be the home:
-	// pinning it beneath a regular file is what makes the runtime unreachable.
+	// daemon derives its runtime directory from the projects root's state home
+	// now, so the unusable thing has to be a root that cannot be resolved: a
+	// root beneath a regular file is not merely absent.
 	blocker := filepath.Join(root, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A status probe against an unusable home reports rather than fails. The
-	// daemon derives its runtime directory from WB's home resolver, not from
-	// the projects root, and Status deliberately treats a location it cannot
-	// resolve as one more thing to report instead of a hard error.
-	pinDaemonHome(t, blocker)
-	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, blocker, func() *cobra.Command { return newDaemonStatusCmd(deps) })
+	// A status probe against an unresolvable projects root reports rather than
+	// fails: Status deliberately treats a location it cannot resolve as one
+	// more thing to report instead of a hard error.
+	unusableRoot := filepath.Join(blocker, "projects")
+	pinDaemonHome(t, unusableRoot)
+	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, unusableRoot, func() *cobra.Command { return newDaemonStatusCmd(deps) })
 	if blockedStatusErr != nil {
-		t.Fatalf("status against an unusable home = %v", blockedStatusErr)
+		t.Fatalf("status against an unresolvable projects root = %v", blockedStatusErr)
 	}
 	if !strings.Contains(blockedStatus, "state=absent") || !strings.Contains(blockedStatus, "records no daemon") {
-		t.Fatalf("status against an unusable home = %q, want an absent-daemon report", blockedStatus)
+		t.Fatalf("status against an unresolvable projects root = %q, want an absent-daemon report", blockedStatus)
 	}
 	pinDaemonHome(t, root)
 

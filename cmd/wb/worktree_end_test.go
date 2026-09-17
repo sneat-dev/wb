@@ -97,8 +97,9 @@ func TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout(t *testing.T) {
 // The link guard reads both independent signals, so a hand-written go.work
 // with no stream record still refuses.
 func TestWorktreeEndLinkGuardReadsBothSignals(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	worktree := t.TempDir()
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	guard := streamLinkGuard{store: store}
@@ -127,8 +128,9 @@ func TestWorktreeEndLinkGuardReadsBothSignals(t *testing.T) {
 // A live link refuses the verb with exit 2 and names the command that clears
 // it, rather than retiring a checkout that builds against an unpublished tree.
 func TestWorktreeEndRefusesALiveLink(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"),
 		[]byte("go 1.27\n\nuse (\n\t/elsewhere/library\n)\n"), 0o644); err != nil {
@@ -164,7 +166,7 @@ func TestWorktreeEndRefusesALiveLink(t *testing.T) {
 // `wb worktree end` on a task WB does not know is an error, not a silent
 // success that would let a lane believe it had closed.
 func TestWorktreeEndOnAnUnknownTaskFails(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"worktree", "end", "no-such-task", "--non-interactive"}, &stdout, &stderr)
 	if code == exitOK {

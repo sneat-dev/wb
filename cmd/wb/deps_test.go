@@ -97,7 +97,7 @@ func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
 
 func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	reportDir := filepath.Join(root, "report")
 	githubDir := filepath.Join(root, "projects")
 	events := []deps.ReleaseEvent{{Dependency: "@acme/provider", Version: "0.2.0", Source: "explicit", CheckedAt: time.Unix(1, 0)}}
@@ -239,7 +239,7 @@ func TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport(t *testing.T) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	options := validNpmPublishOptions()
 	options.reportDir = reportDir
@@ -266,7 +266,7 @@ func TestNpmPublishPlanRetainsDuplicatePackageFleetFinding(t *testing.T) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	first := npmPublicationTestRepository(t, projectsRoot, "acme", "one", "@acme/duplicate")
 	second := npmPublicationTestRepository(t, projectsRoot, "acme", "two", "@acme/duplicate")
@@ -420,7 +420,7 @@ func TestNpmPublishRealAcceptanceCampaignPlansAsOneOperation(t *testing.T) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	reportDir := filepath.Join(t.TempDir(), "report")
 	var prepared npmPublishPrepared
 	runCalls := 0
@@ -496,7 +496,7 @@ func TestRunNpmPublishPlanRefusesActiveOperationLock(t *testing.T) {
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	options := validNpmPublishOptions()
 	options.reportDir = t.TempDir()
 	releases, err := alignedNpmReleases(options)
@@ -524,7 +524,7 @@ func TestRunNpmPublishApplyRefusesActiveOperationLockBeforeFleetDiscovery(t *tes
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	options := validNpmPublishOptions()
 	options.apply = true
 	options.reportDir = t.TempDir()
@@ -567,7 +567,7 @@ func TestNpmPublicationClaimLocksRejectOverlappingSubsetAndSupersetCampaigns(t *
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	defer func() { projectsRoot = previousProjectsRoot }()
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
 	assetus := validNpmPublishOptions()
 	assetus.repositories = []string{"sneat-co/assetus"}

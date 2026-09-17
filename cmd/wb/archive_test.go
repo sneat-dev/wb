@@ -13,7 +13,7 @@ import (
 // ordinary --apply preserves it, and the narrow explicit flag deletes only
 // that planned path before pruning the clone.
 func TestArchiveCleanCLI(t *testing.T) {
-	// Not t.Parallel(): this test uses t.Setenv for PATH and WB_HOME, which
+	// Not t.Parallel(): this test uses t.Setenv for PATH and WB_PROJECTS_ROOT, which
 	// Go's testing package forbids combining with parallel execution.
 	root := t.TempDir()
 	remotesRoot := t.TempDir()
@@ -25,8 +25,7 @@ func TestArchiveCleanCLI(t *testing.T) {
 	}
 
 	installArchivedFakeGh(t)
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_PROJECTS_ROOT", root)
 
 	plan := runWB(t, "archive", "clean", "--projects-root", root, "--filter", "acme")
 	if plan.exitCode != exitOK {

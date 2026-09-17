@@ -8,16 +8,15 @@ import (
 	"time"
 )
 
-// A WB_HOME whose ancestor is a regular file cannot be resolved, so the store
-// must fail rather than guess a location.
-func TestStoreOpenReportsAnUnresolvableHome(t *testing.T) {
+// A projects root whose ancestor is a regular file cannot be resolved, so the
+// store must fail rather than guess a location.
+func TestStoreOpenReportsAnUnresolvableProjectsRoot(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(blocker, "wb"))
-	if _, err := Open(t.TempDir()); err == nil {
-		t.Fatal("Open resolved a home directory whose ancestor is a regular file")
+	if _, err := Open(filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("Open resolved a projects root whose ancestor is a regular file")
 	}
 }
 

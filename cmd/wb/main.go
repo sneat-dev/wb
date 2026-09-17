@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -39,6 +40,20 @@ var (
 	// running a command. See the PersistentPreRunE in newRootCmd.
 	commandStarted bool
 )
+
+// defaultProjectsRoot is the root a command uses when --projects-root is not
+// given: WB_PROJECTS_ROOT when set, else ~/projects. It is the only place the
+// environment is consulted, so the flag always wins over it.
+func defaultProjectsRoot() string {
+	if override := strings.TrimSpace(os.Getenv(wbhome.EnvOverride)); override != "" {
+		return override
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "projects")
+}
 
 const rootLongHelp = `Workbench CLI — fleet-wide operations across your GitHub repositories.
 
@@ -76,7 +91,6 @@ set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
 
 func newRootCmd() *cobra.Command {
-	home, _ := os.UserHomeDir()
 	root := &cobra.Command{
 		Use:           "wb",
 		Short:         "Workbench CLI — fleet-wide operations across your GitHub repositories",
@@ -115,7 +129,7 @@ func newRootCmd() *cobra.Command {
 			return nil
 		},
 	}
-	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", filepath.Join(home, "projects"), "root dir containing {org}/{repo}")
+	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {org}/{repo}")
 	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")

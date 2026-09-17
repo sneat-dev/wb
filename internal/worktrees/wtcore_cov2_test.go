@@ -206,20 +206,20 @@ func TestWTCoreCovCreateWorktreeAtPlacementRefusesBadInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateWorktreeAtPlacement(ctx, filepath.Join(t.TempDir(), "absent"), placement, "task", "acme/app", "wb/task", "main", base); err == nil {
+	if _, err := CreateWorktreeAtPlacement(ctx, fixture.projectsRoot, filepath.Join(t.TempDir(), "absent"), placement, "task", "acme/app", "wb/task", "main", base); err == nil {
 		t.Fatal("an absent canonical repository was accepted")
 	}
 	mismatched := placement
 	mismatched.Root = filepath.Join(t.TempDir(), "elsewhere")
-	if _, err := CreateWorktreeAtPlacement(ctx, fixture.canonical, mismatched, "task", "acme/app", "wb/task", "main", base); err == nil {
+	if _, err := CreateWorktreeAtPlacement(ctx, fixture.projectsRoot, fixture.canonical, mismatched, "task", "acme/app", "wb/task", "main", base); err == nil {
 		t.Fatal("a placement that does not match configured policy was accepted")
 	} else if !strings.Contains(err.Error(), "does not match the configured policy") {
 		t.Fatalf("error %q does not name the placement mismatch", err)
 	}
-	if _, err := CreateWorktreeAtPlacement(ctx, fixture.canonical, placement, "task", "no-owner-slug", "wb/task", "main", base); err == nil {
+	if _, err := CreateWorktreeAtPlacement(ctx, fixture.projectsRoot, fixture.canonical, placement, "task", "no-owner-slug", "wb/task", "main", base); err == nil {
 		t.Fatal("an unqualified repository slug was accepted")
 	}
-	if _, err := CreateWorktreeAtPlacement(ctx, fixture.canonical, placement, "task", "acme/app", "main", "main", base); err == nil {
+	if _, err := CreateWorktreeAtPlacement(ctx, fixture.projectsRoot, fixture.canonical, placement, "task", "acme/app", "main", "main", base); err == nil {
 		t.Fatal("a branch already checked out in the canonical clone was accepted")
 	} else if !strings.Contains(err.Error(), "already checked out") {
 		t.Fatalf("error %q does not name the occupied branch", err)
@@ -234,7 +234,7 @@ func TestWTCoreCovCreateWorktreeAtPlacementRefusesBadInputs(t *testing.T) {
 	if err := os.MkdirAll(existingPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateWorktreeAtPlacement(ctx, fixture.canonical, existing, "occupied-task", "acme/app", "wb/occupied", "main", base); err == nil {
+	if _, err := CreateWorktreeAtPlacement(ctx, fixture.projectsRoot, fixture.canonical, existing, "occupied-task", "acme/app", "wb/occupied", "main", base); err == nil {
 		t.Fatal("an existing destination was accepted")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("error %q does not name the existing destination", err)

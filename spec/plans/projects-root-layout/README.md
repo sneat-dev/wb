@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Executing
 ---
 # Plan: Projects Root Layout: implementation and migration
 
-**Status:** Approved
+**Status:** Executing
 **Source Feature:** projects-root-layout
 **Date:** 2026-09-16
 **Owner:** trakhimenok
@@ -65,7 +65,7 @@ updated — `cmd/wb/skills_test.go` enforces both.
 **Id:** task-1
 **Verifies:** projects-root-layout#ac:one-root-no-second-knob, projects-root-layout#ac:root-namespace-stays-clean
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
 
 Replace `writeHome()`'s `WB_HOME` branch with a root derivation: read
 `WB_PROJECTS_ROOT` (env) and `--projects-root` (flag wins), then derive state at

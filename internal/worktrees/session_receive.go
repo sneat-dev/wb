@@ -431,6 +431,10 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	if err != nil {
 		return result, err
 	}
+	// The staged checkout below runs the repository's post-checkout hook under
+	// a filesystem sandbox; the helper must authorize this exact root's hook
+	// runtime directory.
+	ctx = withProjectsRoot(ctx, projectsRoot)
 	operationName := "session-" + spec.OperationID
 	operation, err := prepareOperationRoot(home, operationName, nil)
 	if err != nil {

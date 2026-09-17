@@ -90,13 +90,12 @@ func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
 }
 
 func TestRPCovCleanAuthorizedUntrackedReportsReceiptWriteFailure(t *testing.T) {
-	rpCovSetBrokenWBHome(t)
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: t.TempDir()}
 	planned := Result{
 		Repository: repo.Slug(), Path: repo.Path,
 		Untracked: []UntrackedEntry{{Path: "untracked.txt", Kind: "file"}},
 	}
-	result := cleanAuthorizedUntracked(context.Background(), "/p", repo, planned, Options{Apply: true, DeleteUntracked: true})
+	result := cleanAuthorizedUntracked(context.Background(), rpCovUnusableProjectsRoot(t), repo, planned, Options{Apply: true, DeleteUntracked: true})
 	if result.Error == "" || !strings.Contains(result.Error, "record untracked deletion receipt") {
 		t.Fatalf("result = %+v, want the unwritable-receipt refusal", result)
 	}
@@ -136,7 +135,6 @@ func TestRPCovCleanAuthorizedUntrackedRefusesADeletionThatFails(t *testing.T) {
 }
 
 func TestRPCovCleanAuthorizedUntrackedReportsAnUnwritableFinalReceipt(t *testing.T) {
-	home := isolateWBHome(t)
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	mustWriteFile(t, filepath.Join(f.canonical, "untracked.txt"), "delete me\n")
@@ -144,7 +142,8 @@ func TestRPCovCleanAuthorizedUntrackedReportsAnUnwritableFinalReceipt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptDirectory := filepath.Join(home, "reports", "archive-clean")
+	// The receipt is finalized under the fixture root's own state home now.
+	receiptDirectory := filepath.Join(f.projectsRoot, ".wb", "reports", "archive-clean")
 
 	result := cleanAuthorizedUntracked(context.Background(), f.projectsRoot,
 		discover.Repo{Org: "acme", Name: "widgets", Path: f.canonical},

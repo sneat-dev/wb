@@ -2,7 +2,9 @@ package wbhome
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -20,137 +22,253 @@ func resolvedTempDir(t *testing.T) string {
 	return dir
 }
 
-func TestRootDefaultsUnderUserHome(t *testing.T) {
+// TestStateDirectoryDerivesFromProjectsRootNotWBHome encodes
+// projects-root-layout#ac:one-root-no-second-knob: on a machine with WB_HOME
+// set and no WB_PROJECTS_ROOT, a state-creating command writes under
+// <root>/.wb and derives nothing from WB_HOME.
+func TestStateDirectoryDerivesFromProjectsRootNotWBHome(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t) // no .wb here: a fresh install
-	root, err := Root(projectsRoot)
+	ignored := filepath.Join(resolvedTempDir(t), "legacy-wb-home")
+	t.Setenv("WB_HOME", ignored)
+
+	root := resolvedTempDir(t)
+	home, err := Root(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".wb")
-	if root != want {
-		t.Fatalf("Root() = %q, want %q", root, want)
+	if want := filepath.Join(root, ".wb"); home != want {
+		t.Fatalf("Root(%q) = %q, want %q", root, home, want)
+	}
+	if resolved, err := filepath.EvalSymlinks(ignored); err == nil && strings.HasPrefix(home, resolved) {
+		t.Fatalf("Root(%q) = %q derives from WB_HOME %q", root, home, ignored)
 	}
 }
 
-func TestResolveKeepsNewDefaultWriteHomeAndReadsPopulatedLegacyDirectory(t *testing.T) {
+// TestEnvProjectsRootSelectsTheRootWhenNoArgumentIsGiven covers the middle
+// clause of the AC's precedence chain: --projects-root, else WB_PROJECTS_ROOT,
+// else the default root.
+func TestEnvProjectsRootSelectsTheRootWhenNoArgumentIsGiven(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
+	envRoot := resolvedTempDir(t)
+	t.Setenv(EnvOverride, envRoot)
+
+	home, err := Root("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(envRoot, ".wb"); home != want {
+		t.Fatalf("Root(\"\") = %q, want %q", home, want)
+	}
+}
+
+// TestDefaultRootIsProjectsUnderTheUserHome covers the final clause: with no
+// flag and no environment override, the root is ~/projects.
+func TestDefaultRootIsProjectsUnderTheUserHome(t *testing.T) {
+	userHome := resolvedTempDir(t)
+	t.Setenv("HOME", userHome)
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t)
-	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "some-task")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	resolution, err := Resolve(projectsRoot)
+
+	home, err := Root("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := resolution.Write.Home, filepath.Join(home, ".wb"); got != want {
-		t.Fatalf("write home = %q, want default %q", got, want)
-	}
-	if len(resolution.Read) != 2 || !resolution.Read[1].Legacy || resolution.Read[1].Home != filepath.Join(projectsRoot, ".wb") {
-		t.Fatalf("compatible layouts = %#v, want default + legacy", resolution.Read)
+	if want := filepath.Join(userHome, "projects", ".wb"); home != want {
+		t.Fatalf("Root(\"\") = %q, want %q", home, want)
 	}
 }
 
-func TestRootIgnoresEmptyLegacyDirectory(t *testing.T) {
+// TestStoreRootIsADotChildOfTheProjectsRoot encodes the store half of
+// projects-root-layout#req:single-root-derivation: the checkout store is
+// derived from the same root as the state directory.
+func TestStoreRootIsADotChildOfTheProjectsRoot(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t)
-	if err := os.MkdirAll(filepath.Join(projectsRoot, ".wb"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	root, err := Root(projectsRoot)
+	root := resolvedTempDir(t)
+	store, err := StoreRoot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".wb")
-	if root != want {
-		t.Fatalf("Root() = %q, want %q; an empty legacy directory carries no in-flight work to strand", root, want)
+	if want := filepath.Join(root, ".worktrees"); store != want {
+		t.Fatalf("StoreRoot(%q) = %q, want %q", root, store, want)
 	}
 }
 
-func TestRootEnvOverrideWinsOverLegacy(t *testing.T) {
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t)
-	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "some-task")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	override := resolvedTempDir(t)
-	t.Setenv(EnvOverride, override)
-	root, err := Root(projectsRoot)
+// TestResolveDerivesTheStoreFromTheProjectsRoot pins the store half of
+// projects-root-layout#req:single-root-derivation: the write layout's physical
+// checkout root is <root>/.worktrees, not a directory nested inside the state
+// directory.
+func TestResolveDerivesTheStoreFromTheProjectsRoot(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
+	t.Setenv(EnvOverride, "")
+	root := resolvedTempDir(t)
+	resolution, err := Resolve(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root != override {
-		t.Fatalf("Root() = %q, want the explicit override %q", root, override)
+	if want := filepath.Join(root, ".wb"); resolution.Write.Home != want {
+		t.Fatalf("write home = %q, want %q", resolution.Write.Home, want)
 	}
-	resolution, err := Resolve(projectsRoot)
-	if err != nil {
-		t.Fatal(err)
+	if want := filepath.Join(root, ".worktrees"); resolution.Write.WorktreesRoot != want {
+		t.Fatalf("write store = %q, want %q", resolution.Write.WorktreesRoot, want)
 	}
-	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != override {
-		t.Fatalf("explicit resolution = %#v, want only override", resolution)
+	if got := resolution.Write.StateWorktreesRoot(); got != filepath.Join(root, ".wb", "worktrees") {
+		t.Fatalf("logical task namespace = %q, want %q", got, filepath.Join(root, ".wb", "worktrees"))
 	}
 }
 
-func TestPinnedDefaultHookHomeKeepsLegacyLayoutReadable(t *testing.T) {
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t)
-	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
+// TestResolveKeepsTheRetiredDefaultHomeReadable pins
+// projects-root-layout#req:existing-checkouts-operable: checkouts left at the
+// retired default state directory $HOME/.wb/worktrees stay discoverable in
+// place, without being moved or rewritten.
+func TestResolveKeepsTheRetiredDefaultHomeReadable(t *testing.T) {
+	userHome := resolvedTempDir(t)
+	t.Setenv("HOME", userHome)
+	t.Setenv(EnvOverride, "")
+	retired := filepath.Join(userHome, ".wb", "worktrees", "in-flight", "acme", "app")
+	if err := os.MkdirAll(retired, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pinned := filepath.Join(home, ".wb")
-	t.Setenv(EnvOverride, pinned)
-	t.Setenv(EnvMigrationCompat, pinned)
-	resolution, err := Resolve(projectsRoot)
+	root := resolvedTempDir(t)
+	resolution, err := Resolve(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolution.Explicit || len(resolution.Read) != 2 || resolution.Read[0].Home != pinned || !resolution.Read[1].Legacy {
-		t.Fatalf("pinned default resolution = %#v, want default write + legacy read", resolution)
+	if want := filepath.Join(root, ".wb"); resolution.Write.Home != want {
+		t.Fatalf("write home = %q, want %q", resolution.Write.Home, want)
+	}
+	if len(resolution.Read) != 3 {
+		t.Fatalf("read layouts = %#v, want the checkout store, the state task namespace, and the retired default home", resolution.Read)
+	}
+	legacy := resolution.Read[2]
+	if !legacy.Legacy {
+		t.Fatalf("retired default home is not marked legacy: %#v", legacy)
+	}
+	if want := filepath.Join(userHome, ".wb"); legacy.Home != want {
+		t.Fatalf("legacy home = %q, want %q", legacy.Home, want)
+	}
+	if want := filepath.Join(userHome, ".wb", "worktrees"); legacy.WorktreesRoot != want {
+		t.Fatalf("legacy store = %q, want %q", legacy.WorktreesRoot, want)
 	}
 }
 
-func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
-	projectsRoot := resolvedTempDir(t)
-	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
+// TestResolveIgnoresAnEmptyRetiredHome keeps a stray empty ~/.wb from becoming
+// an implicit configuration bit that changes every command's read set.
+func TestResolveIgnoresAnEmptyRetiredHome(t *testing.T) {
+	userHome := resolvedTempDir(t)
+	t.Setenv("HOME", userHome)
+	t.Setenv(EnvOverride, "")
+	if err := os.MkdirAll(filepath.Join(userHome, ".wb"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	explicit := filepath.Join(resolvedTempDir(t), "isolated-home")
-	t.Setenv(EnvOverride, explicit)
-	// This is the prior release's generic marker. It may be ambient in a
-	// caller's shell but must not turn a non-default explicit home into a
-	// migration-compatible one.
-	t.Setenv(EnvMigrationCompat, "default")
-	resolution, err := Resolve(projectsRoot)
+	root := resolvedTempDir(t)
+	resolution, err := Resolve(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != explicit {
-		t.Fatalf("explicit home resolution = %#v, want only the explicit home", resolution)
+	if len(resolution.Read) != 2 || resolution.Read[0] != resolution.Write {
+		t.Fatalf("read layouts = %#v, want the checkout store plus the state task namespace", resolution.Read)
 	}
+	if got := resolution.Read[1].WorktreesRoot; got != resolution.Write.StateWorktreesRoot() {
+		t.Fatalf("state task namespace = %q, want %q", got, resolution.Write.StateWorktreesRoot())
+	}
+}
+
+// TestRootEnumerationYieldsHostDirectoriesOnly encodes
+// projects-root-layout#ac:root-namespace-stays-clean: a `*` glob and a bare
+// `ls` of a root holding host directories plus .wb and .worktrees return host
+// directories only.
+func TestRootEnumerationYieldsHostDirectoriesOnly(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
+	t.Setenv(EnvOverride, "")
+	root := resolvedTempDir(t)
+	hosts := []string{"github.com", "gitlab.com"}
+	for _, host := range hosts {
+		if err := os.MkdirAll(filepath.Join(root, host, "acme", "app", ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both WB-private children must really exist, or the enumeration would be
+	// clean for the wrong reason.
+	home, err := EnsureRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, ".wb"); home != want {
+		t.Fatalf("EnsureRoot(%q) = %q, want %q", root, home, want)
+	}
+	store, err := StoreRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(store, "some-task", "github.com", "acme", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	want := append([]string(nil), hosts...)
+	sort.Strings(want)
+
+	// A shell `*` glob, exactly as a search-scoped command expands it.
+	glob := exec.Command("sh", "-c", `for entry in *; do printf '%s\n' "$entry"; done`)
+	glob.Dir = root
+	globOut, err := glob.Output()
+	if err != nil {
+		t.Fatalf("expand * in %s: %v", root, err)
+	}
+	if got := nonEmptyLines(string(globOut)); !equalStrings(got, want) {
+		t.Fatalf("* glob in %s = %v, want host directories only %v", root, got, want)
+	}
+
+	// A bare `ls`, without -a.
+	ls := exec.Command("ls")
+	ls.Dir = root
+	lsOut, err := ls.Output()
+	if err != nil {
+		t.Fatalf("ls %s: %v", root, err)
+	}
+	if got := nonEmptyLines(string(lsOut)); !equalStrings(got, want) {
+		t.Fatalf("ls %s = %v, want host directories only %v", root, got, want)
+	}
+
+	for _, hidden := range []string{".wb", ".worktrees"} {
+		if _, err := os.Stat(filepath.Join(root, hidden)); err != nil {
+			t.Fatalf("fixture is missing %s: %v", hidden, err)
+		}
+	}
+}
+
+func nonEmptyLines(output string) []string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
 	root, err := EnsureRoot(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if want := filepath.Join(projectsRoot, ".wb"); root != want {
+		t.Fatalf("EnsureRoot(%q) = %q, want %q", projectsRoot, root, want)
 	}
 	contents, err := os.ReadFile(filepath.Join(root, "README.md"))
 	if err != nil {
@@ -172,8 +290,6 @@ func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
 
 func TestEnsureRootDoesNotOverwriteExistingReadme(t *testing.T) {
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
 	root, err := EnsureRoot(projectsRoot)
 	if err != nil {
@@ -219,8 +335,6 @@ func TestEnsureHomeRefusesSymlinkedHome(t *testing.T) {
 // EnsureRoot may create it.
 func TestEnsureRootDoesNotRaceCreateWorktreesOwnHomeOpen(t *testing.T) {
 	t.Setenv(EnvOverride, "")
-	home := resolvedTempDir(t)
-	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
 	root, err := Root(projectsRoot)
 	if err != nil {
@@ -245,11 +359,15 @@ func TestRootResolvesSymlinkedAncestorForNotYetCreatedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := Root("")
+	projectsRoot := filepath.Join(home, "projects")
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Root(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(resolvedHome, ".wb")
+	want := filepath.Join(resolvedHome, "projects", ".wb")
 	if root != want {
 		t.Fatalf("Root() = %q, want the ancestor-resolved %q", root, want)
 	}

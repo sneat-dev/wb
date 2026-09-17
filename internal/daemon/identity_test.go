@@ -112,13 +112,13 @@ func TestStateIsForeignHome(t *testing.T) {
 
 func TestRuntimePathsResolveThroughTheHome(t *testing.T) {
 	// The resolver resolves symlinks eagerly, so the fixture's own path has to
-	// be resolved the same way before it can be compared.
-	home, err := filepath.EvalSymlinks(t.TempDir())
+	// be resolved the same way before it can be compared. The home derives from
+	// the projects root now, so it is <root>/.wb.
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", home)
-	root := t.TempDir()
+	home := filepath.Join(root, ".wb")
 
 	runtimeDir, err := RuntimeDir(root)
 	if err != nil {

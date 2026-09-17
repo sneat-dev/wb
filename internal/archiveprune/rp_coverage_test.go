@@ -116,7 +116,11 @@ func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
 	t.Run("work log claims unreadable", func(t *testing.T) {
 		f := newFixture(t, "acme", "widgets")
 		f.archived()
-		rpCovSetBrokenWBHome(t)
+		// The claim scan reads the fixture root's own state home now, so an
+		// unreadable claim is planted there rather than in an ambient WB_HOME.
+		claimsDir := filepath.Join(f.projectsRoot, ".wb", "worklogs", "task", "runs", "run-1", "claims")
+		mustMkdirAll(t, claimsDir)
+		mustWriteFile(t, filepath.Join(claimsDir, "claim.json"), "{")
 		result := Evaluate(context.Background(), f.projectsRoot, discover.Repo{Org: "acme", Name: "widgets", Path: f.canonical})
 		if result.Eligible || !strings.Contains(result.Reason, "could not read WB Work Log claims") {
 			t.Fatalf("result = %+v", result)
@@ -222,9 +226,11 @@ func TestRPCovRemoteRefNamesSkipsMalformedLinesAndStripsThePeelSuffix(t *testing
 }
 
 func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
-	claimFor := func(home, claimID, repository, lifecycle string) {
+	// claimFor plants a claim in the state home that derives from the projects
+	// root the scan is given.
+	claimFor := func(root, claimID, repository, lifecycle string) {
 		t.Helper()
-		dir := filepath.Join(home, "worklogs", "task", "runs", "run-1", "claims")
+		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -237,74 +243,77 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 		mustWriteFile(t, filepath.Join(dir, claimID+".json"), string(raw))
 	}
 
-	t.Run("unresolvable home", func(t *testing.T) {
-		rpCovSetBrokenWBHome(t)
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil {
-			t.Fatal("nonTerminalClaims accepted an unresolvable WB home")
+	t.Run("unresolvable projects root", func(t *testing.T) {
+		blocker := filepath.Join(t.TempDir(), "regular-file")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := nonTerminalClaims(filepath.Join(blocker, "projects"), "acme/widgets"); err == nil {
+			t.Fatal("nonTerminalClaims accepted an unresolvable projects root")
 		}
 	})
 
 	t.Run("malformed glob", func(t *testing.T) {
-		home := isolateWBHome(t)
-		bracketed := filepath.Join(home, "home[")
-		if err := os.MkdirAll(bracketed, 0o700); err != nil {
+		// A projects root containing a glob metacharacter makes the claim
+		// pattern under its state home malformed.
+		root := filepath.Join(t.TempDir(), "projects[")
+		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("WB_HOME", bracketed)
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil {
-			t.Fatal("nonTerminalClaims accepted a home whose glob pattern is malformed")
+		if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil {
+			t.Fatal("nonTerminalClaims accepted a projects root whose glob pattern is malformed")
 		}
 	})
 
 	t.Run("claim path is not a file", func(t *testing.T) {
-		home := isolateWBHome(t)
-		dir := filepath.Join(home, "worklogs", "task", "runs", "run-1", "claims", "claim.json")
+		root := t.TempDir()
+		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims", "claim.json")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "read claim") {
+		if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "read claim") {
 			t.Fatalf("error = %v, want the unreadable-claim refusal", err)
 		}
 	})
 
 	t.Run("claim is not json", func(t *testing.T) {
-		home := isolateWBHome(t)
-		dir := filepath.Join(home, "worklogs", "task", "runs", "run-1", "claims")
+		root := t.TempDir()
+		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims")
 		mustMkdirAll(t, dir)
 		mustWriteFile(t, filepath.Join(dir, "claim.json"), "{")
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "parse claim") {
+		if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "parse claim") {
 			t.Fatalf("error = %v, want the unparseable-claim refusal", err)
 		}
 	})
 
 	t.Run("claim for another repository is ignored", func(t *testing.T) {
-		home := isolateWBHome(t)
-		claimFor(home, "claim", "other/repo", "active")
-		blockers, err := nonTerminalClaims(t.TempDir(), "acme/widgets")
+		root := t.TempDir()
+		claimFor(root, "claim", "other/repo", "active")
+		blockers, err := nonTerminalClaims(root, "acme/widgets")
 		if err != nil || len(blockers) != 0 {
 			t.Fatalf("blockers = %v, err=%v, want a claim for another repository ignored", blockers, err)
 		}
 	})
 
 	t.Run("claim without an id", func(t *testing.T) {
-		home := isolateWBHome(t)
-		dir := filepath.Join(home, "worklogs", "task", "runs", "run-1", "claims")
+		root := t.TempDir()
+		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims")
 		mustMkdirAll(t, dir)
 		mustWriteFile(t, filepath.Join(dir, "anonymous.json"),
 			`{"repository":"acme/widgets","task":"task","worktree":"/gone","lifecycle":"active"}`)
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "has no claim_id") {
+		if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "has no claim_id") {
 			t.Fatalf("error = %v, want the missing-claim-id refusal", err)
 		}
 	})
 
 	t.Run("terminal seal is unreadable", func(t *testing.T) {
-		home := isolateWBHome(t)
-		claimFor(home, "claim-1", "acme/widgets", "active")
-		terminalPath := filepath.Join(home, "worklogs", "task", "runs", "run-1", "terminals", "claim-1.json")
+		root := t.TempDir()
+		claimFor(root, "claim-1", "acme/widgets", "active")
+		terminalPath := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "terminals", "claim-1.json")
 		if err := os.MkdirAll(terminalPath, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "read terminal seal") {
+		if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "read terminal seal") {
 			t.Fatalf("error = %v, want the unreadable-terminal refusal", err)
 		}
 	})
@@ -524,14 +533,14 @@ func TestRPCovRemoveExactPathAtRefusesUndeclaredAndChangedDirectoryChildren(t *t
 }
 
 func TestRPCovWriteArchiveCleanReceiptReportsUnusableHomesAndTargets(t *testing.T) {
-	rpCovSetBrokenWBHome(t)
-	if _, err := writeArchiveCleanReceipt("/p", archiveCleanReceipt{Repository: "acme/widgets"}); err == nil {
-		t.Fatal("writeArchiveCleanReceipt accepted an unusable WB home")
+	if _, err := writeArchiveCleanReceipt(rpCovUnusableProjectsRoot(t), archiveCleanReceipt{Repository: "acme/widgets"}); err == nil {
+		t.Fatal("writeArchiveCleanReceipt accepted an unusable projects root")
 	}
 
-	home := isolateWBHome(t)
-	mustWriteFile(t, filepath.Join(home, "reports"), "a regular file where the reports directory belongs\n")
-	if _, err := writeArchiveCleanReceipt("/p", archiveCleanReceipt{Repository: "acme/widgets"}); err == nil {
+	root := t.TempDir()
+	mustMkdirAll(t, filepath.Join(root, ".wb"))
+	mustWriteFile(t, filepath.Join(root, ".wb", "reports"), "a regular file where the reports directory belongs\n")
+	if _, err := writeArchiveCleanReceipt(root, archiveCleanReceipt{Repository: "acme/widgets"}); err == nil {
 		t.Fatal("writeArchiveCleanReceipt accepted a receipt directory that is a file")
 	}
 
@@ -551,15 +560,17 @@ func TestRPCovWriteArchiveCleanReceiptReportsUnusableHomesAndTargets(t *testing.
 	}
 }
 
-// rpCovSetBrokenWBHome pins WB_HOME beneath a regular file so wbhome.Resolve
-// fails with a path error rather than returning a usable home.
-func rpCovSetBrokenWBHome(t *testing.T) {
+// rpCovUnusableProjectsRoot returns a projects root beneath a regular file so
+// path resolution fails rather than returning a usable state home. The state
+// home derives from the projects root now, so callers pass the returned root
+// explicitly instead of setting the retired WB_HOME.
+func rpCovUnusableProjectsRoot(t *testing.T) string {
 	t.Helper()
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(blocker, "home"))
+	return filepath.Join(blocker, "projects")
 }
 
 func rpCovShellQuote(value string) string {

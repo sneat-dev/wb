@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,12 +127,17 @@ func TestCwCovRunStatusTargetsWithProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The completion sink is called from the parallel workers, so the slice
+	// needs its own lock or the appends race and drop rows.
+	var completedMu sync.Mutex
 	var completed []string
 	reports := runStatusTargetsWithProgress([]qualityTarget{
 		{repository: "acme/clean", path: cleanRepo},
 		{repository: "acme/dirty", path: dirtyRepo},
 		{repository: "acme/missing", path: filepath.Join(root, "absent")},
 	}, 2, func(target qualityTarget, info repositoryStatusInfo) {
+		completedMu.Lock()
+		defer completedMu.Unlock()
 		completed = append(completed, target.repository+":"+info.Status)
 	})
 	if len(reports) != 3 {

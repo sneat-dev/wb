@@ -443,6 +443,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
+	// Carry the real root into every secure Git handoff below, so the helper
+	// that builds the sandbox authorizes the hook runtime directory the
+	// installed hook actually writes to.
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	home := resolution.Write.Home
 	userConfig, userConfigFound, userConfigPath, err := configuredUserWorktreesConfig()
 	if err != nil {
@@ -966,6 +970,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if err != nil {
 		return GuardResult{}, err
 	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
 	if err != nil {
 		return GuardResult{}, err
@@ -1982,7 +1987,7 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 		return nil, err
 	}
 	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-	command.Env = console.Env()
+	command.Env = secureHelperEnvironment(ctx)
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 	output, err := command.Output()
 	if err != nil {
@@ -2186,7 +2191,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		return 1
 	}
 	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: root}}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: prepare hook runtime layout: %v\n", err)
 		return 1
@@ -2839,7 +2844,7 @@ func runSecureStageCanonicalGitHelper(
 		exists = "1"
 	}
 	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, canonical.path, gitExecutable, branch, baseRevision, exists)
-	command.Env = console.Env()
+	command.Env = secureHelperEnvironment(ctx)
 	command.ExtraFiles = []*os.File{stageDirectory, canonical.root, canonical.common}
 	return command.CombinedOutput()
 }
@@ -2997,7 +3002,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
 		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: prepare hook runtime layout: %v\n", err)
 		return 1

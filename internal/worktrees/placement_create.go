@@ -27,13 +27,17 @@ func (created *PlacementWorktree) Close() {
 // journal/manifest ownership; this helper owns only the physical checkout
 // transaction. placement must be the result of ResolveWorktreePlacement for
 // canonicalPath and baseRevision, so a caller cannot direct Git to an
-// arbitrary directory by constructing WorktreePlacement itself.
+// arbitrary directory by constructing WorktreePlacement itself. projectsRoot is
+// the root the staged checkout's hooks will resolve, and is passed through so
+// the sandbox authorizes the same hook runtime directory.
 func CreateWorktreeAtPlacement(
 	ctx context.Context,
+	projectsRoot string,
 	canonicalPath string,
 	placement WorktreePlacement,
 	task, repository, branch, base, baseRevision string,
 ) (*PlacementWorktree, error) {
+	ctx = withProjectsRoot(ctx, projectsRoot)
 	canonical, err := openCanonicalRepository(canonicalPath)
 	if err != nil {
 		return nil, err

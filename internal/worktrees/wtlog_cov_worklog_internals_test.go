@@ -141,10 +141,12 @@ func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
 // returns the home, projects root, expectation, and claim id.
 func wtLogCovRemovedTerminalHome(t *testing.T) (string, string, TerminalWorkLogExpectation, string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
-	t.Setenv(wbhome.EnvMigrationCompat, "")
 	projectsRoot := t.TempDir()
+	// The home derives from the projects root now, so the fixture writes into
+	// <projectsRoot>/.wb and ValidateRemovedTerminalWorkLogs finds it there.
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
+	t.Setenv(wbhome.EnvMigrationCompat, "")
 	task, run := "removed-task", "removed-run"
 	baseSHA := strings.Repeat("a", 40)
 	claim := workLogClaim{Version: 1, EffortID: task, RunID: run, Task: task, Repository: "acme/app",

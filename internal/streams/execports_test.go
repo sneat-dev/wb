@@ -218,19 +218,23 @@ func TestInstalledHooksCheckerReportsAnUnreadableCheckoutAsAnError(t *testing.T)
 	}
 }
 
-func TestOpenResolvesTheStoreBelowWBHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
-	store, err := Open(t.TempDir())
+func TestOpenResolvesTheStoreBelowTheProjectsRoot(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
+	// WB_HOME no longer selects state; the store must derive from the root.
+	decoy := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", decoy)
+	store, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Root != filepath.Join(resolvedHome, "streams") {
-		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(resolvedHome, "streams"))
+	if want := filepath.Join(root, ".wb", "streams"); store.Root != want {
+		t.Fatalf("store root = %q, want %q", store.Root, want)
+	}
+	if strings.HasPrefix(store.Root, decoy) {
+		t.Fatalf("store root %q derives from WB_HOME", store.Root)
 	}
 }
 

@@ -43,7 +43,7 @@ type dispatchFixture struct {
 func newDispatchFixture(t *testing.T) *dispatchFixture {
 	t.Helper()
 	fixture := &dispatchFixture{home: t.TempDir()}
-	t.Setenv("WB_HOME", fixture.home)
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
 	fixture.deps = DispatchDeps{
 		ConfigPath:   "/tmp/wb.yaml",

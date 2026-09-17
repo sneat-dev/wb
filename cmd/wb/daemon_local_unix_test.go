@@ -20,7 +20,6 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestDaemonLocalTransportRequiresTokenAndProtectsSocket(t *testing.T) {
@@ -170,12 +169,14 @@ func TestDaemonOperationCLIHelperProcess(t *testing.T) {
 }
 
 func TestDaemonLocalTransportRejectsOverlongSocketPath(t *testing.T) {
-	// The endpoint is derived from WB's home rather than from the projects
-	// root, so it is the *home* that has to be long: a hundred characters
-	// below /tmp leaves the socket path above the platform's ~104-byte
-	// sockaddr_un cap.
-	root := daemonTestRoot(t)
-	pinDaemonHome(t, filepath.Join("/tmp", strings.Repeat("a", 100)))
+	// The endpoint derives from the projects root, so it is the *root* that has
+	// to be long: a hundred characters below /tmp leaves the socket path above
+	// the platform's ~104-byte sockaddr_un cap. The long root is passed as the
+	// argument rather than through the environment, because the argument is what
+	// selects the root; pinning only the environment left the endpoint short
+	// enough to bind on platforms with shorter temporary paths.
+	root := filepath.Join("/tmp", strings.Repeat("a", 100))
+	pinDaemonHome(t, root)
 	if _, err := listenDaemonLocal(root); err == nil || !strings.Contains(err.Error(), "too long") {
 		t.Fatalf("overlong socket path error = %v", err)
 	}
@@ -183,23 +184,15 @@ func TestDaemonLocalTransportRejectsOverlongSocketPath(t *testing.T) {
 
 // AC: a-leftover-daemon-cannot-be-silently-doubled
 //
-// An accepting socket at the pre-resolver runtime path is enough to refuse a
-// start: the leftover daemon does not have to be healthy, and nothing under
-// that path may be disturbed by WB looking.
+// An accepting socket at a retired runtime path is enough to refuse a start:
+// the leftover daemon does not have to be healthy, and nothing under that path
+// may be disturbed by WB looking.
 func TestDaemonStartRefusesWhileTheLegacySocketStillAnswers(t *testing.T) {
-	// A filesystem socket has a platform length limit, so this fixture lives
-	// directly under /tmp rather than in the longer per-test directory.
-	root, err := os.MkdirTemp("/tmp", "wb-legacy-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	pinDaemonHome(t, root)
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
-	legacyDir := daemon.LegacyRuntimeDir(root)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	root := daemonTestRoot(t)
+	// The current home is <root>/.wb now, so the accepting legacy socket lives
+	// in the retired default state home $HOME/.wb. The fixture keeps HOME under
+	// /tmp for the filesystem socket length limit.
+	legacyDir := daemonLegacyFixture(t)
 	socketPath, ok := daemonSocketPathIn(legacyDir)
 	if !ok {
 		t.Skip("this platform has no filesystem endpoint for the legacy runtime directory")

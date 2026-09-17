@@ -99,23 +99,29 @@ exit 1
 	}
 }
 
-func TestOrchCovLandingLaneGuardIsANoOpWithoutAResolvableHome(t *testing.T) {
+func TestOrchCovLandingLaneGuardIsANoOpWithoutAResolvableProjectsRoot(t *testing.T) {
 	for _, name := range []string{"WB_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
 		t.Setenv(name, "")
 	}
-	projectsRoot := t.TempDir()
+	// The state home derives from the projects root now, so an unusable
+	// projects root is passed instead of relying on an unresolvable WB_HOME.
+	blocker := filepath.Join(t.TempDir(), "regular-file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := filepath.Join(blocker, "projects")
 	if err := releaseLandingLane(projectsRoot, "acme/app", "main", "session-1"); err != nil {
-		t.Fatalf("release without a resolvable home = %v, want nil", err)
+		t.Fatalf("release without a resolvable projects root = %v, want nil", err)
 	}
 	if err := refreshLandingLaneHeartbeat(projectsRoot, "acme/app", "main", "session-1"); err != nil {
-		t.Fatalf("heartbeat without a resolvable home = %v, want nil", err)
+		t.Fatalf("heartbeat without a resolvable projects root = %v, want nil", err)
 	}
 	// Acquiring, unlike releasing, must fail loudly: a guard that silently
 	// did not run would let two sessions land on one target.
 	if _, err := acquireLandingLane(projectsRoot, "acme/app", "main", LaneGuardRequest{
 		Owner: landinglane.Owner{WBSessionID: "session-1"},
 	}); err == nil {
-		t.Fatal("acquire without a resolvable home silently skipped the guard")
+		t.Fatal("acquire without a resolvable projects root silently skipped the guard")
 	}
 }
 
@@ -496,12 +502,18 @@ func TestOrchCovFindAbsorbedConflictAcknowledgementReportsAnUnreadableReportsDir
 	}
 }
 
-func TestOrchCovFindAbsorbedConflictAcknowledgementNeedsAResolvableHome(t *testing.T) {
+func TestOrchCovFindAbsorbedConflictAcknowledgementNeedsAResolvableProjectsRoot(t *testing.T) {
 	for _, name := range []string{"WB_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
 		t.Setenv(name, "")
 	}
-	if _, _, err := FindAbsorbedConflictAcknowledgement(t.TempDir(), "task", "/worktree"); err == nil {
-		t.Fatal("a lookup without a resolvable WB home reported no error")
+	// The state home derives from the projects root now, so an unusable
+	// projects root is passed instead of relying on an unresolvable WB_HOME.
+	blocker := filepath.Join(t.TempDir(), "regular-file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := FindAbsorbedConflictAcknowledgement(filepath.Join(blocker, "projects"), "task", "/worktree"); err == nil {
+		t.Fatal("a lookup without a resolvable projects root reported no error")
 	}
 }
 

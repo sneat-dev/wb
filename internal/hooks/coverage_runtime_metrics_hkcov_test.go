@@ -37,22 +37,26 @@ func hkCovEvent(t *testing.T) Event {
 	}
 }
 
-// TestHkCovResolveExecutionLayoutReportsHomeFailure pins that an unusable write
-// home is reported rather than producing a relative runtime root.
+// TestHkCovResolveExecutionLayoutReportsHomeFailure pins that an unusable
+// projects root is reported rather than producing a relative runtime root. The
+// root now comes from the resolver's argument, so it is passed there.
 func TestHkCovResolveExecutionLayoutReportsHomeFailure(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := ResolveExecutionLayout(t.TempDir(), "/tmp/projects"); err == nil {
-		t.Fatal("ResolveExecutionLayout with an unusable home should fail")
+	if _, err := ResolveExecutionLayout(t.TempDir(), filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("ResolveExecutionLayout with an unusable projects root should fail")
 	}
 }
 
 func TestHkCovResolveExecutionLayoutSanitizesCheckoutSegments(t *testing.T) {
 	isolateEnvironment(t)
-	home := os.Getenv(wbhome.EnvOverride)
+	root := os.Getenv(wbhome.EnvOverride)
+	home, err := wbhome.Root(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := initRepo(t)
-	layout, err := ResolveExecutionLayout(repo, "/tmp/projects")
+	layout, err := ResolveExecutionLayout(repo, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +73,7 @@ func TestHkCovResolveExecutionLayoutSanitizesCheckoutSegments(t *testing.T) {
 	odd := filepath.Join(t.TempDir(), "space:in name")
 	mustMkdirAll(t, odd)
 	git(t, odd, "init", "-b", "main")
-	oddLayout, err := ResolveExecutionLayout(odd, "/tmp/projects")
+	oddLayout, err := ResolveExecutionLayout(odd, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +88,14 @@ func TestHkCovResolveExecutionLayoutSanitizesCheckoutSegments(t *testing.T) {
 
 func TestHkCovSecureExecutionWriteRoots(t *testing.T) {
 	isolateEnvironment(t)
+	root := os.Getenv(wbhome.EnvOverride)
 	repo := initRepo(t)
-	layout, err := ResolveExecutionLayout(repo, "/tmp/projects")
+	layout, err := ResolveExecutionLayout(repo, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	roots, err := SecureExecutionWriteRoots(repo, "", "/tmp/projects")
+	roots, err := SecureExecutionWriteRoots(repo, "", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,12 +106,13 @@ func TestHkCovSecureExecutionWriteRoots(t *testing.T) {
 
 	// Disabling metrics removes the metrics directory from the write roots.
 	isolateEnvironment(t)
+	root = os.Getenv(wbhome.EnvOverride)
 	hkCovWriteGlobalYAML(t, "git_hooks:\n  version: 1\n  metrics:\n    enabled: false\n")
-	layout, err = ResolveExecutionLayout(repo, "/tmp/projects")
+	layout, err = ResolveExecutionLayout(repo, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	roots, err = SecureExecutionWriteRoots(repo, "", "/tmp/projects")
+	roots, err = SecureExecutionWriteRoots(repo, "", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,26 +120,26 @@ func TestHkCovSecureExecutionWriteRoots(t *testing.T) {
 		t.Fatalf("SecureExecutionWriteRoots(metrics off) = %v, want only %s", roots, layout.Root)
 	}
 
-	if _, err := SecureExecutionWriteRoots(t.TempDir(), "", "/tmp/projects"); err == nil {
+	if _, err := SecureExecutionWriteRoots(t.TempDir(), "", root); err == nil {
 		t.Fatal("SecureExecutionWriteRoots(non-repo) should fail")
 	}
 
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := SecureExecutionWriteRoots(repo, "", "/tmp/projects"); err == nil {
-		t.Fatal("SecureExecutionWriteRoots with an unusable home should fail")
+	if _, err := SecureExecutionWriteRoots(repo, "", filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("SecureExecutionWriteRoots with an unusable projects root should fail")
 	}
 }
 
 func TestHkCovReplayPendingMetricsPreparesLayout(t *testing.T) {
 	isolateEnvironment(t)
+	root := os.Getenv(wbhome.EnvOverride)
 	repo := initRepo(t)
-	replayed, err := ReplayPendingMetrics(repo, "", "/tmp/projects")
+	replayed, err := ReplayPendingMetrics(repo, "", root)
 	if err != nil || replayed != 0 {
 		t.Fatalf("ReplayPendingMetrics = %d, %v; want 0, nil", replayed, err)
 	}
-	layout, err := ResolveExecutionLayout(repo, "/tmp/projects")
+	layout, err := ResolveExecutionLayout(repo, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,26 +153,26 @@ func TestHkCovReplayPendingMetricsPreparesLayout(t *testing.T) {
 		}
 	}
 
-	if _, err := ReplayPendingMetrics(t.TempDir(), "", "/tmp/projects"); err == nil {
+	if _, err := ReplayPendingMetrics(t.TempDir(), "", root); err == nil {
 		t.Fatal("ReplayPendingMetrics(non-repo) should fail")
 	}
 
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv(wbhome.EnvOverride, filepath.Join(blocker, "wb-home"))
-	if _, err := ReplayPendingMetrics(repo, "", "/tmp/projects"); err == nil {
-		t.Fatal("ReplayPendingMetrics with an unusable home should fail")
+	if _, err := ReplayPendingMetrics(repo, "", filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("ReplayPendingMetrics with an unusable projects root should fail")
 	}
 
 	// A runtime root occupied by a regular file cannot be prepared.
 	isolateEnvironment(t)
-	layout, err = ResolveExecutionLayout(repo, "/tmp/projects")
+	root = os.Getenv(wbhome.EnvOverride)
+	layout, err = ResolveExecutionLayout(repo, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustMkdirAll(t, filepath.Dir(layout.Root))
 	mustWrite(t, layout.Root, "occupied\n")
-	if _, err := ReplayPendingMetrics(repo, "", "/tmp/projects"); err == nil || !strings.Contains(err.Error(), "create hook runtime path") {
+	if _, err := ReplayPendingMetrics(repo, "", root); err == nil || !strings.Contains(err.Error(), "create hook runtime path") {
 		t.Fatalf("ReplayPendingMetrics(occupied root) error = %v", err)
 	}
 }

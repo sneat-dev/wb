@@ -20,18 +20,20 @@ func tailCovRegularFile(t *testing.T, dir, name string) string {
 }
 
 // TestTailCovResolutionSurfacesUnresolvableHomePaths pins that an unusable
-// WB_HOME or user home is an error rather than a silently wrong directory.
+// root, override, or user home is an error rather than a silently wrong
+// directory. The root now comes from the explicit argument first, so each case
+// passes an empty root to exercise the environment/default path it names.
 func TestTailCovResolutionSurfacesUnresolvableHomePaths(t *testing.T) {
 	t.Run("no user home", func(t *testing.T) {
 		t.Setenv(EnvOverride, "")
 		t.Setenv("HOME", "")
-		if _, err := Resolve(t.TempDir()); err == nil || !strings.Contains(err.Error(), "user home directory") {
+		if _, err := Resolve(""); err == nil || !strings.Contains(err.Error(), "user home directory") {
 			t.Fatalf("Resolve err = %v, want an unresolvable user home reported", err)
 		}
-		if _, err := Root(t.TempDir()); err == nil {
+		if _, err := Root(""); err == nil {
 			t.Fatal("Root must propagate an unresolvable home")
 		}
-		if _, err := EnsureRoot(t.TempDir()); err == nil {
+		if _, err := EnsureRoot(""); err == nil {
 			t.Fatal("EnsureRoot must propagate an unresolvable home")
 		}
 	})
@@ -40,14 +42,17 @@ func TestTailCovResolutionSurfacesUnresolvableHomePaths(t *testing.T) {
 		t.Setenv("HOME", dir)
 		file := tailCovRegularFile(t, dir, "regular")
 		t.Setenv(EnvOverride, filepath.Join(file, "home"))
-		if _, err := Resolve(t.TempDir()); err == nil {
+		if _, err := Resolve(""); err == nil {
 			t.Fatal("an override that cannot be resolved must fail instead of selecting a home")
 		}
 	})
-	t.Run("uninspectable legacy directory", func(t *testing.T) {
+	t.Run("uninspectable projects root", func(t *testing.T) {
 		t.Setenv(EnvOverride, "")
 		t.Setenv("HOME", resolvedTempDir(t))
-		notADir := tailCovRegularFile(t, t.TempDir(), "projects-root")
+		// A regular file used as a path component cannot be traversed, so the
+		// root cannot be inspected; the resolver must report that rather than
+		// hand back a half-resolved root.
+		notADir := filepath.Join(tailCovRegularFile(t, t.TempDir(), "projects-root"), "child")
 		if _, err := Resolve(notADir); err == nil {
 			t.Fatal("a projects root that cannot be inspected must fail")
 		}
@@ -55,13 +60,14 @@ func TestTailCovResolutionSurfacesUnresolvableHomePaths(t *testing.T) {
 }
 
 // TestTailCovEnsureRootRefusesAnUnusableWriteHome pins that EnsureRoot reports
-// a home it cannot prepare rather than proceeding to write into it.
+// a home it cannot prepare rather than proceeding to write into it. The root
+// comes from the override here, so the call passes an empty root argument.
 func TestTailCovEnsureRootRefusesAnUnusableWriteHome(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	file := tailCovRegularFile(t, dir, "regular")
 	t.Setenv(EnvOverride, file)
-	if _, err := EnsureRoot(t.TempDir()); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := EnsureRoot(""); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("EnsureRoot err = %v, want the unusable home reported", err)
 	}
 }
@@ -115,20 +121,33 @@ func TestTailCovSeedReadmeReportsFilesystemFailures(t *testing.T) {
 	})
 }
 
-// TestTailCovPinnedHomeMarkerRequiresAResolvableUserHome pins that the
-// migration marker alone cannot make an explicit home migration-compatible
-// when the default user home cannot be resolved for comparison.
+// TestTailCovPinnedHomeMarkerRequiresAResolvableUserHome keeps the intent of
+// the retired migration-compatibility test: the WB_HOME_MIGRATION_COMPAT
+// marker alone can neither select the state directory nor add a legacy read
+// layout. WB_PROJECTS_ROOT selects the root, the write layout is <root>/.wb,
+// and with no resolvable user home there is no retired $HOME/.wb to read.
 func TestTailCovPinnedHomeMarkerRequiresAResolvableUserHome(t *testing.T) {
-	pinned := resolvedTempDir(t)
-	t.Setenv("HOME", "")
-	t.Setenv(EnvOverride, pinned)
-	t.Setenv(EnvMigrationCompat, pinned)
-	resolution, err := Resolve(t.TempDir())
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != pinned {
-		t.Fatalf("resolution = %#v, want the explicit home alone with no migration compatibility", resolution)
+	t.Setenv("HOME", "")
+	t.Setenv(EnvOverride, root)
+	t.Setenv(EnvMigrationCompat, filepath.Join(root, ".wb"))
+	resolution, err := Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, ".wb"); resolution.Write.Home != want {
+		t.Fatalf("write home = %q, want %q", resolution.Write.Home, want)
+	}
+	if len(resolution.Read) != 2 || resolution.Read[0] != resolution.Write {
+		t.Fatalf("resolution = %#v, want the write layout first plus the state task namespace", resolution)
+	}
+	for _, layout := range resolution.Read {
+		if layout.Legacy {
+			t.Fatalf("the retired migration marker added a legacy read layout: %#v", layout)
+		}
 	}
 }
 

@@ -71,12 +71,12 @@ func TestHkCovRunReportsLayoutFailures(t *testing.T) {
 	isolateConfig(t)
 	hkCovRepoWithHook(t, repo, "pre-commit", "#!/bin/sh\nexit 0\n")
 
-	// An unusable write home fails before any block runs.
+	// An unusable projects root fails before any block runs.
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
-	t.Setenv("WB_HOME", filepath.Join(blocker, "wb-home"))
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(blocker, "projects"))
 	if _, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit"}); err == nil || !strings.Contains(err.Error(), "resolve hook runtime layout") {
-		t.Fatalf("Run with an unusable home error = %v", err)
+		t.Fatalf("Run with an unusable projects root error = %v", err)
 	}
 
 	// A runtime root occupied by a regular file cannot be prepared.

@@ -46,8 +46,8 @@ func init() {
 // filter must not execute Git once for every excluded checkout.
 func TestListWithFilterSkipsUnselectedGitCandidates(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	home := filepath.Join(projects, ".wb")
 	for index := 0; index < 240; index++ {
 		candidate := filepath.Join(home, "worktrees", fmt.Sprintf("historical-%03d", index), "unrelated", "repository")
 		if err := os.MkdirAll(candidate, 0o755); err != nil {
@@ -68,7 +68,7 @@ func TestListWithFilterSkipsUnselectedGitCandidates(t *testing.T) {
 	t.Setenv("PATH", gitDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(listFilterGitHelperEnv, "1")
 	t.Setenv(listFilterGitHelperLogEnv, logPath)
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	outcome, err := ListWithDiagnostics(context.Background(), ListOptions{
@@ -95,7 +95,6 @@ func TestListWithFilterSkipsUnselectedGitCandidates(t *testing.T) {
 // the subprocess path entirely.
 func TestListWithFilterSkipsUnselectedCanonicalRegistryGit(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
 	selected := filepath.Join(projects, "acme", "selected")
 	unrelated := filepath.Join(projects, "other", "repository")
@@ -118,7 +117,7 @@ func TestListWithFilterSkipsUnselectedCanonicalRegistryGit(t *testing.T) {
 	t.Setenv("PATH", gitDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(listFilterGitHelperEnv, "1")
 	t.Setenv(listFilterGitHelperLogEnv, logPath)
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	_, _ = ListWithDiagnostics(context.Background(), ListOptions{
@@ -139,8 +138,8 @@ func TestListWithFilterSkipsUnselectedCanonicalRegistryGit(t *testing.T) {
 
 func BenchmarkListWithFilterLargeHistoricalPopulation(b *testing.B) {
 	root := b.TempDir()
-	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	home := filepath.Join(projects, ".wb")
 	for index := 0; index < 610; index++ {
 		candidate := filepath.Join(home, "worktrees", fmt.Sprintf("historical-%03d", index), "unrelated", "repository")
 		if err := os.MkdirAll(candidate, 0o755); err != nil {
@@ -150,7 +149,7 @@ func BenchmarkListWithFilterLargeHistoricalPopulation(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	b.Setenv(wbhome.EnvOverride, home)
+	b.Setenv(wbhome.EnvOverride, projects)
 	b.Setenv(wbhome.EnvMigrationCompat, "")
 	b.ReportAllocs()
 	b.ResetTimer()

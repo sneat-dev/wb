@@ -85,7 +85,7 @@ func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 func ownedRun(t *testing.T, task string, timeout time.Duration) (Store, Record, string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_PROJECTS_ROOT", home)
 	t.Setenv("DEEPSEEK_API_KEY", "test-credential")
 	store := NewStore(home)
 	worktree := t.TempDir()

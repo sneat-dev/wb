@@ -1,10 +1,14 @@
 package worktrees
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 type secureHookRootHandle struct {
@@ -12,8 +16,71 @@ type secureHookRootHandle struct {
 	directory *os.File
 }
 
-func appendSecureHookExecutionCapabilityRoots(repoPath string, roots []gitFilesystemCapabilityRoot) ([]gitFilesystemCapabilityRoot, []secureHookRootHandle, error) {
-	layout, err := hooks.ResolveExecutionLayout(repoPath, "")
+// projectsRootContextKey carries the projects root through the secure Git
+// helper handoffs. A helper is a separate process that must authorize — and,
+// for the hook runtime root, create — the same directory the hook itself will
+// write to. With no root it would resolve the machine default instead, and on a
+// filesystem-enforcing platform the sandbox would then deny the hook's write.
+type projectsRootContextKey struct{}
+
+// withProjectsRoot records the projects root a secure Git handoff belongs to.
+// An empty root leaves the context untouched, preserving the legacy fallback to
+// the process environment and then the default root.
+func withProjectsRoot(ctx context.Context, projectsRoot string) context.Context {
+	root := strings.TrimSpace(projectsRoot)
+	if root == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, projectsRootContextKey{}, root)
+}
+
+// projectsRootFromContext returns the projects root recorded by
+// withProjectsRoot, or "" when the caller did not record one.
+func projectsRootFromContext(ctx context.Context) string {
+	root, _ := ctx.Value(projectsRootContextKey{}).(string)
+	return strings.TrimSpace(root)
+}
+
+// secureHelperEnvironment is the environment for a secure Git helper child:
+// console.Env() plus an explicit WB_PROJECTS_ROOT whenever the caller's context
+// carries one. An ambient value is replaced rather than duplicated, so the
+// child cannot pick up a different root than the caller is operating on.
+func secureHelperEnvironment(ctx context.Context) []string {
+	environment := console.Env()
+	root := projectsRootFromContext(ctx)
+	if root == "" {
+		return environment
+	}
+	return environmentWithValue(environment, wbhome.EnvOverride, root)
+}
+
+// helperProjectsRoot is the projects root a secure helper child reads back from
+// the environment its parent set. It is deliberately read from the environment
+// rather than derived from a repository path: task 2 adds a host level to the
+// canonical clone path, and any parent-directory walk would silently break.
+func helperProjectsRoot() string {
+	return strings.TrimSpace(os.Getenv(wbhome.EnvOverride))
+}
+
+func environmentWithValue(environment []string, name, value string) []string {
+	prefix := name + "="
+	filtered := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, prefix+value)
+}
+
+// appendSecureHookExecutionCapabilityRoots authorizes the hook runtime root a
+// hook process resolving projectsRoot would write to, so a sandboxed Git
+// handoff cannot be denied that write. projectsRoot must be the real root the
+// hook will use; "" falls back to the process environment and then the default
+// root, which is only correct when the caller has no other root.
+func appendSecureHookExecutionCapabilityRoots(repoPath, projectsRoot string, roots []gitFilesystemCapabilityRoot) ([]gitFilesystemCapabilityRoot, []secureHookRootHandle, error) {
+	layout, err := hooks.ResolveExecutionLayout(repoPath, projectsRoot)
 	if err != nil {
 		return nil, nil, err
 	}
