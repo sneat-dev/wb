@@ -933,12 +933,13 @@ func TestCwWtWorktreeSetAndLogVerbsInProcess(t *testing.T) {
 }
 
 func TestCwWtWorktreeErrorPropagationFromBackend(t *testing.T) {
-	// A projects root that is a regular file cannot be read as a directory,
-	// which drives the "backend failed" branches without any fixture.
+	// A projects root beneath a regular file cannot be resolved, which drives
+	// the "backend failed" branches without any fixture.
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unreadableRoot := filepath.Join(blocker, "projects")
 	builders := []struct {
 		name  string
 		build func() *cobra.Command
@@ -955,7 +956,7 @@ func TestCwWtWorktreeErrorPropagationFromBackend(t *testing.T) {
 		{name: "adopt", build: newWorktreeAdoptCmd, args: []string{"--all-external"}},
 	}
 	for _, builder := range builders {
-		if _, _, err := cwCovExec(t, blocker, builder.build, builder.args...); err == nil {
+		if _, _, err := cwCovExec(t, unreadableRoot, builder.build, builder.args...); err == nil {
 			t.Errorf("%s against an unreadable projects root returned no error", builder.name)
 		}
 	}
