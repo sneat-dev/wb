@@ -1,6 +1,6 @@
 ---
 name: wb-install
-description: Install, update, and verify the WB CLI and its build provenance. Use when wb is missing, a required command or flag is unavailable, or a task requires the exact build produced by a merged GitHub revision.
+description: Install, update, and verify the WB CLI and its build provenance, and install or upgrade sibling fleet CLIs (specscore, codegrapher, cover100) relevant to wb via `wb install`/`wb upgrade`. Use when wb is missing, a required command or flag is unavailable, a task requires the exact build produced by a merged GitHub revision, or the task is to install or upgrade wb itself (`wb self-update`) or a related fleet CLI.
 ---
 
 # WB install
@@ -97,9 +97,12 @@ wb install --format json          # machine-readable listing/result
 Detection, release resolution, checksum verification and placement are the
 same shared machinery `wb self-update` uses
 (`github.com/strongo/cli-helpers`), applied to a fleet-wide catalog instead
-of wb's own release. An unrecognized name is refused up front with the list
-of valid catalog ids; every failure is reported as a wb `findings` exit (1),
-never a fourth code.
+of wb's own release. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused up front — before any confirmation,
+network request, or write — with the list of valid catalog ids where
+relevant, and exit `2` (usage: the invocation itself was rejected); every
+other failure is reported as a wb `findings` exit (1), never a fourth code.
+Every message carries an exact `install: ` prefix.
 
 ## Upgrading installed fleet CLIs
 
@@ -124,4 +127,11 @@ wb upgrade --all --format json      # machine-readable report/result
 
 There is no `update` alias on `upgrade` (only `self-update` keeps one); wb
 is always upgraded last in a batch, after every other named target, because
-its after-update hook restarts the daemon and re-syncs skills.
+its after-update hook restarts the daemon and re-syncs skills. An unknown
+target, an invalid `--format`, or `--all` combined with names exit `2`,
+exactly like `install`'s own usage refusals; every other failure exits `1`,
+including "an upgrade is available" under an explicit `--check` (the bare,
+no-argument report never checks for that and exits `0` unless a lookup
+itself failed). Every message carries an exact `upgrade: ` prefix, and a
+permission failure names upgrade's own Homebrew cask-upgrade command, not
+install's cask-install command.

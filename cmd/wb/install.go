@@ -30,63 +30,76 @@ import (
 func newInstallCmd() *cobra.Command {
 	command := cobracmd.New(cobracmd.CommandOptions{
 		Short:  "List and install fleet CLIs relevant to wb",
-		Errors: installErrors{},
+		Errors: newInstallErrors(),
 		HostID: wbCatalogID,
 	})
 	setDiscoveryTerms(command, "install fleet cli sibling download release brew cask relevant catalog upgrade")
 	return command
 }
 
-// installErrors maps every cliinstall failure onto wb's own exitFindings
-// (1) — wb documents only three exit codes (see the const block in
-// main.go) and already treats "ran and found something worth reporting" as
-// exitFindings uniformly for self-update's own failures (selfUpdateErrors);
-// install's mapper makes the identical no-fourth-code choice rather than
-// reserving exitUsage for a runtime refusal that happens well after Cobra's
-// own flag parsing already accepted the invocation.
-//
-// Every message carries an "install: " prefix, never "self-update: "
+// fleetErrors maps every cliinstall failure onto wb's own three-code exit
+// contract; install.go and upgrade.go each configure one value with their
+// own message prefix and permission remedy rather than two independently
+// hard-coded copies of the identical switch (review S1: "make the mapper
+// take the prefix as a parameter"). Every message carries prefix's own
+// verb, never another command's — including never "self-update: "
 // (cli-install#req:host-owned-exit-codes: "MUST NOT ... print a
-// self-update: message prefix"), so a script grepping stderr for one prefix
-// cannot mistake this command's failure for a self-update failure.
-type installErrors struct{}
+// self-update: message prefix") — so a script grepping stderr for one
+// prefix cannot mistake one fleet command's failure for another's.
+type fleetErrors struct {
+	// prefix names the command whose failure this is ("install" or
+	// "upgrade"), used both as the message prefix and as the permission
+	// remedy's own verb.
+	prefix string
+	// remedyCommand is the exact `brew ...` command the permission remedy
+	// names: the managed path that would have avoided the permission
+	// failure in the first place — install's own cask-install command for
+	// install, self-update's cask-upgrade command for upgrade (review S1:
+	// "The permission remedy for upgrade should be the upgrade command,
+	// not brew install").
+	remedyCommand string
+}
 
-// Failure maps every install failure to exitFindings, explicitly
-// enumerating the three FailureKinds cli-install appends after
-// KindManagedCommand — KindUnknownTarget, KindNoInstallDir,
+// Failure maps every install/upgrade failure onto wb's documented exit
+// codes, explicitly enumerating the three FailureKinds cli-install appends
+// after KindManagedCommand — KindUnknownTarget, KindNoInstallDir,
 // KindDestinationExists — as cli-install#req:host-owned-exit-codes requires
 // ("Every host MUST map the three new kinds explicitly ... MUST NOT let
 // them fall into a self-update default branch"), plus every shared
 // selfupdate.FailureKind self-update's own mapper already classifies
 // (TestInstallErrors_SharedKindsMatchSelfUpdateErrors pins that the two
-// mappers agree on every one), and *cobracmd.UsageError, the distinguishable
-// type for a usage mistake caught inside install's own RunE (an invalid
+// agree on exit code for every one), and *cobracmd.UsageError, the
+// distinguishable type for a usage mistake caught inside RunE (an invalid
 // --format, or --all combined with names).
 //
+// KindUnknownTarget and *cobracmd.UsageError map to exitUsage (2), matching
+// cli-install#req:host-owned-exit-codes's own MUST ("KindUnknownTarget to
+// its usage or invalid-argument code") and wb's own documented "2 — the
+// invocation was rejected before any work started": an unknown target, an
+// invalid --format, and --all combined with names are all refused before
+// any confirmation, network request, or write, exactly the class of mistake
+// exitUsage exists for (review S2) — every other failure kind, including
+// KindNoInstallDir/KindDestinationExists (the library's own "invalid-state
+// or general failure" pairing) and KindPermission, still maps to
+// exitFindings (1), wb's no-fourth-code choice for a runtime failure that
+// happens after the invocation was accepted.
+//
 // err is never nil here in practice: cliinstall/cobracmd v0.21.0's
-// mapFailure short-circuits nil before ever calling this method (fixed
-// upstream from the v0.20.0 bug this comment used to document — see that
-// version's mapFailure doc comment and TestMapFailure_NeverCallsMapperWithNil).
-// The switch below still resolves harmlessly for a nil err regardless
+// mapFailure short-circuits nil before ever calling this method. The switch
+// below still resolves harmlessly for a nil err regardless
 // (selfupdate.KindOf(nil) is KindUnexpected), so no explicit guard is
 // needed to stay nil-safe.
-func (installErrors) Failure(err error) error {
+func (e fleetErrors) Failure(err error) error {
 	var usage *cobracmd.UsageError
 	if errors.As(err, &usage) {
-		// wb reserves exitUsage for an invocation Cobra itself rejects
-		// before the root PersistentPreRunE runs (see exitCodeFor's own
-		// doc comment); a UsageError surfaces from inside install's own
-		// RunE, after that gate already passed, so it joins every other
-		// install-time failure at exitFindings rather than claiming
-		// exitUsage retroactively.
-		return &exitError{code: exitFindings, message: fmt.Sprintf("install: %v", err)}
+		return &exitError{code: exitUsage, message: fmt.Sprintf("%s: %v", e.prefix, err)}
 	}
 
 	switch selfupdate.KindOf(err) {
 	case selfupdate.KindUnknownTarget:
-		return &exitError{code: exitFindings, message: fmt.Sprintf("install: %v", err)}
+		return &exitError{code: exitUsage, message: fmt.Sprintf("%s: %v", e.prefix, err)}
 	case selfupdate.KindNoInstallDir, selfupdate.KindDestinationExists:
-		return &exitError{code: exitFindings, message: fmt.Sprintf("install: %v", err)}
+		return &exitError{code: exitFindings, message: fmt.Sprintf("%s: %v", e.prefix, err)}
 	case selfupdate.KindPermission:
 		path := ""
 		var failure *selfupdate.Failure
@@ -94,11 +107,11 @@ func (installErrors) Failure(err error) error {
 			path = failure.Path
 		}
 		if path == "" {
-			path = "the install destination"
+			path = "the " + e.prefix + " destination"
 		}
 		return &exitError{code: exitFindings, message: fmt.Sprintf(
-			"install: permission denied writing %s: %v; re-run with elevated permissions, or install the supported way: %s",
-			path, err, selfUpdateHomebrewInstallCommand)}
+			"%s: permission denied writing %s: %v; re-run with elevated permissions, or %s the supported way: %s",
+			e.prefix, path, err, e.prefix, e.remedyCommand)}
 	default:
 		// Every other shared selfupdate.FailureKind (KindAmbiguous,
 		// KindReleaseLookup, KindDownload, KindChecksum, KindNonInteractive,
@@ -107,6 +120,14 @@ func (installErrors) Failure(err error) error {
 		// future kind a later library version adds — wb's self-update
 		// mapper (selfUpdateErrors) makes the identical no-fourth-code
 		// choice for the same kinds.
-		return &exitError{code: exitFindings, message: fmt.Sprintf("install: %v", err)}
+		return &exitError{code: exitFindings, message: fmt.Sprintf("%s: %v", e.prefix, err)}
 	}
+}
+
+// installErrors is install's own fleetErrors value: "install: " messages,
+// and the cask-install command as its permission remedy.
+type installErrors struct{ fleetErrors }
+
+func newInstallErrors() installErrors {
+	return installErrors{fleetErrors{prefix: "install", remedyCommand: selfUpdateHomebrewInstallCommand}}
 }

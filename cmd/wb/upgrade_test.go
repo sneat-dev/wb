@@ -52,56 +52,88 @@ func TestUpgradeCmd_PanicsForUnknownHostID(t *testing.T) {
 }
 
 // AC: install#req:upgrade-exit-code-mapping, cli-install#req:upgrade-targets
-// (unknown-target-refused) — `wb upgrade nosuchcli` MUST fail before any
-// confirmation, network request or write, exits exitFindings, and the
-// message names the unknown target. namedUpgradeCandidates rejects every
-// unknown name before probing or looking up anything, so this is
+// (unknown-target-refused), review S2 — `wb upgrade nosuchcli` MUST fail
+// before any confirmation, network request or write, exits exitUsage (the
+// invocation was rejected before any work started), and the message
+// carries an exact "upgrade: " prefix and names the unknown target, never
+// "install:"/"self-update:" (review S1). namedUpgradeCandidates rejects
+// every unknown name before probing or looking up anything, so this is
 // offline-safe with no injected Env.
-func TestUpgradeCmd_UnknownTargetExitsFindings(t *testing.T) {
+func TestUpgradeCmd_UnknownTargetExitsUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"upgrade", "nosuchcli"}, &stdout, &stderr)
-	if code != exitFindings {
-		t.Fatalf("exit code = %d, want exitFindings (%d); stderr: %s", code, exitFindings, stderr.String())
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want exitUsage (%d); stderr: %s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "upgrade: ") {
+		t.Errorf("stderr does not carry the exact upgrade: prefix: %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "nosuchcli") {
 		t.Errorf("stderr does not name the unknown target: %q", stderr.String())
 	}
+	for _, wrongPrefix := range []string{"install:", "self-update:"} {
+		if strings.Contains(stderr.String(), wrongPrefix) {
+			t.Errorf("stderr carries a %s prefix; upgrade errors MUST NOT: %q", wrongPrefix, stderr.String())
+		}
+	}
 }
 
 // AC: install#req:upgrade-exit-code-mapping — upgradeErrors.Failure reuses
-// installErrors.Failure exactly (embedding, not a hand-rolled duplicate
-// switch), so it maps every FailureKind, including the three cli-install
-// appends after KindManagedCommand, to wb's exitFindings exactly like
-// install's own mapper does — see TestInstallErrors_FailureExitCodes for
-// the per-kind table this mirrors.
+// fleetErrors.Failure exactly (embedding, not a hand-rolled duplicate
+// switch), so it maps KindUnknownTarget to exitUsage (review S2) and every
+// other FailureKind, including the two remaining kinds cli-install appends
+// after KindManagedCommand, to wb's exitFindings exactly like install's own
+// mapper does — see TestInstallErrors_FailureExitCodes for the per-kind
+// table this mirrors — but with its own exact "upgrade: " prefix (review
+// S1), never "install:"/"self-update:".
 func TestUpgradeErrors_FailureExitCodes(t *testing.T) {
-	cases := []selfupdate.FailureKind{
-		selfupdate.KindUnknownTarget, selfupdate.KindNoInstallDir, selfupdate.KindDestinationExists,
-		selfupdate.KindAmbiguous, selfupdate.KindReleaseLookup, selfupdate.KindDownload,
-		selfupdate.KindChecksum, selfupdate.KindPermission, selfupdate.KindNonInteractive,
-		selfupdate.KindDowngrade, selfupdate.KindUnknownTag, selfupdate.KindUnsupportedPlatform,
-		selfupdate.KindManagedVersion, selfupdate.KindManagedCommand, selfupdate.KindUnexpected,
+	cases := []struct {
+		name string
+		kind selfupdate.FailureKind
+		want int
+	}{
+		{"unknown_target", selfupdate.KindUnknownTarget, exitUsage},
+		{"no_install_dir", selfupdate.KindNoInstallDir, exitFindings},
+		{"destination_exists", selfupdate.KindDestinationExists, exitFindings},
+		{"ambiguous", selfupdate.KindAmbiguous, exitFindings},
+		{"release_lookup", selfupdate.KindReleaseLookup, exitFindings},
+		{"download", selfupdate.KindDownload, exitFindings},
+		{"checksum", selfupdate.KindChecksum, exitFindings},
+		{"permission", selfupdate.KindPermission, exitFindings},
+		{"non_interactive", selfupdate.KindNonInteractive, exitFindings},
+		{"downgrade", selfupdate.KindDowngrade, exitFindings},
+		{"unknown_tag", selfupdate.KindUnknownTag, exitFindings},
+		{"unsupported_platform", selfupdate.KindUnsupportedPlatform, exitFindings},
+		{"managed_version", selfupdate.KindManagedVersion, exitFindings},
+		{"managed_command", selfupdate.KindManagedCommand, exitFindings},
+		{"unexpected", selfupdate.KindUnexpected, exitFindings},
 	}
-	for _, kind := range cases {
-		t.Run(kind.String(), func(t *testing.T) {
-			mapped := (upgradeErrors{}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			mapped := (newUpgradeErrors()).Failure(&selfupdate.Failure{Kind: testCase.kind, Err: errors.New("boom")})
 			var coded *exitError
 			if !errors.As(mapped, &coded) {
-				t.Fatalf("Failure(%v) did not return an *exitError: %v", kind, mapped)
+				t.Fatalf("Failure(%v) did not return an *exitError: %v", testCase.kind, mapped)
 			}
-			if coded.code != exitFindings {
-				t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
+			if coded.code != testCase.want {
+				t.Errorf("code = %d, want %d", coded.code, testCase.want)
+			}
+			if !strings.HasPrefix(coded.message, "upgrade: ") {
+				t.Errorf("message %q does not carry the exact upgrade: prefix", coded.message)
 			}
 		})
 	}
 }
 
-// upgradeErrors.Failure and installErrors.Failure MUST agree on every
-// shared FailureKind's exit code, since upgradeErrors embeds installErrors
-// rather than duplicating its switch (cli-install#req:host-owned-exit-codes:
-// "The upgrade command MUST use the same error mapper").
+// upgradeErrors.Failure and installErrors.Failure MUST agree on the exit
+// CODE for every shared FailureKind, since both embed fleetErrors and
+// differ only by prefix/remedy (cli-install#req:host-owned-exit-codes:
+// "The upgrade command MUST use the same error mapper"); their MESSAGES are
+// deliberately not identical any more — each carries its own command's
+// exact prefix (review S1), asserted here.
 func TestUpgradeErrors_FailureMatchesInstallErrors(t *testing.T) {
 	shared := []selfupdate.FailureKind{
+		selfupdate.KindUnknownTarget,
 		selfupdate.KindAmbiguous, selfupdate.KindReleaseLookup, selfupdate.KindDownload,
 		selfupdate.KindChecksum, selfupdate.KindPermission, selfupdate.KindNonInteractive,
 		selfupdate.KindDowngrade, selfupdate.KindUnknownTag, selfupdate.KindUnsupportedPlatform,
@@ -109,12 +141,47 @@ func TestUpgradeErrors_FailureMatchesInstallErrors(t *testing.T) {
 	}
 	for _, kind := range shared {
 		t.Run(kind.String(), func(t *testing.T) {
-			upgradeErr := (upgradeErrors{}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
-			installErr := (installErrors{}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
-			if upgradeErr.Error() != installErr.Error() {
-				t.Errorf("upgrade error = %q, install error = %q; want identical", upgradeErr, installErr)
+			upgradeErr := (newUpgradeErrors()).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
+			installErr := (newInstallErrors()).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
+			var upgradeCoded, installCoded *exitError
+			if !errors.As(upgradeErr, &upgradeCoded) {
+				t.Fatalf("upgrade error %v does not resolve to an *exitError", upgradeErr)
+			}
+			if !errors.As(installErr, &installCoded) {
+				t.Fatalf("install error %v does not resolve to an *exitError", installErr)
+			}
+			if upgradeCoded.code != installCoded.code {
+				t.Errorf("upgrade code = %d, install code = %d; want equal for shared kind %v", upgradeCoded.code, installCoded.code, kind)
+			}
+			if !strings.HasPrefix(upgradeCoded.message, "upgrade: ") {
+				t.Errorf("upgrade message %q does not carry the exact upgrade: prefix", upgradeCoded.message)
+			}
+			if !strings.HasPrefix(installCoded.message, "install: ") {
+				t.Errorf("install message %q does not carry the exact install: prefix", installCoded.message)
 			}
 		})
+	}
+}
+
+// The permission remedy for an upgrade failure names upgrade's own Homebrew
+// cask-UPGRADE command, not install's cask-install command (review S1:
+// "The permission remedy for upgrade should be the upgrade command, not
+// brew install").
+func TestUpgradeErrors_FailurePermissionNamesUpgradeCommand(t *testing.T) {
+	mapped := (newUpgradeErrors()).Failure(&selfupdate.Failure{
+		Kind: selfupdate.KindPermission,
+		Path: "/usr/local/bin/specscore",
+		Err:  errors.New("permission denied"),
+	})
+	var coded *exitError
+	if !errors.As(mapped, &coded) {
+		t.Fatalf("Failure(permission) did not return an *exitError: %v", mapped)
+	}
+	if !strings.Contains(coded.message, selfUpdateHomebrewUpgradeCommand) {
+		t.Errorf("message %q does not name upgrade's own cask-upgrade remedy %q", coded.message, selfUpdateHomebrewUpgradeCommand)
+	}
+	if strings.Contains(coded.message, selfUpdateHomebrewInstallCommand) {
+		t.Errorf("message %q names install's own cask-install remedy instead of upgrade's", coded.message)
 	}
 }
 
@@ -127,7 +194,7 @@ func TestUpgradeErrors_UpgradesAvailableMapsToExitFindings(t *testing.T) {
 		{Target: "specscore", Current: "1.0.0", Latest: "1.1.0", Verdict: selfupdate.UpdateAvailable},
 		{Target: "wb", Current: "unknown", Latest: "1.1.0", Verdict: selfupdate.Undetermined},
 	}
-	mapped := (upgradeErrors{}).UpgradesAvailable(cases)
+	mapped := (newUpgradeErrors()).UpgradesAvailable(cases)
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
 		t.Fatalf("UpgradesAvailable(%+v) did not return an *exitError: %v", cases, mapped)
@@ -166,7 +233,7 @@ func TestUpgradeErrors_UpgradesAvailableMatchesSelfUpdateUpdateAvailable(t *test
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			upgradeErr := (upgradeErrors{}).UpgradesAvailable(testCase.results)
+			upgradeErr := (newUpgradeErrors()).UpgradesAvailable(testCase.results)
 			selfUpdateErr := (selfUpdateErrors{}).UpdateAvailable(testCase.check)
 			var upgradeCoded, selfUpdateCoded *exitError
 			if !errors.As(upgradeErr, &upgradeCoded) {
@@ -232,6 +299,20 @@ func TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput(t *tes
 	}
 	if selfOut.Len() == 0 {
 		t.Fatal("hook produced no output; test fixture did not exercise the shared path")
+	}
+}
+
+// AC: review M5 — wbAfterUpdate must never panic if a future refactor
+// leaves *cmd nil by the time AfterUpdate fires (today's declare-build-
+// assign order makes that unreachable, but the hook stays defensive
+// against it): it falls back to a fresh *cobra.Command whose Out/Err
+// default to the process's own stdout/stderr rather than dereferencing nil.
+func TestWBAfterUpdate_NilCommandPointerFallsBackWithoutPanic(t *testing.T) {
+	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
+	var nilCmd *cobra.Command
+	hook := wbAfterUpdate(&nilCmd)
+	if err := hook(context.Background(), successfulSelfUpdate(binary)); err != nil {
+		t.Fatalf("hook with nil command pointer = %v, want nil", err)
 	}
 }
 

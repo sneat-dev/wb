@@ -53,83 +53,92 @@ func TestInstallCmd_PanicsForUnknownHostID(t *testing.T) {
 }
 
 // AC: cli-install#ac:direct-install-writes-only-verified-new-files,
-// cli-install#req:unknown-target-refused — `wb install nosuchcli` MUST fail
-// before any confirmation, network request or write, exits exitFindings
-// (wb's install mapper reserves no separate code), and the message names
-// the unknown target and carries no "self-update:" prefix. Plan() rejects
-// every unknown name before probing anything, so this is offline-safe with
-// no injected Env.
-func TestInstallCmd_UnknownTargetExitsFindings(t *testing.T) {
+// cli-install#req:host-owned-exit-codes ("KindUnknownTarget to its usage or
+// invalid-argument code") — `wb install nosuchcli` MUST fail before any
+// confirmation, network request or write, exits exitUsage (review S2: the
+// invocation was rejected before any work started, exactly wb's own
+// documented meaning for exit 2), and the message carries an exact
+// "install: " prefix and names the unknown target, never "self-update:" or
+// "upgrade:" (review S1). Plan() rejects every unknown name before probing
+// anything, so this is offline-safe with no injected Env.
+func TestInstallCmd_UnknownTargetExitsUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"install", "nosuchcli"}, &stdout, &stderr)
-	if code != exitFindings {
-		t.Fatalf("exit code = %d, want exitFindings (%d); stderr: %s", code, exitFindings, stderr.String())
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want exitUsage (%d); stderr: %s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "install: ") {
+		t.Errorf("stderr does not carry the exact install: prefix: %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "nosuchcli") {
 		t.Errorf("stderr does not name the unknown target: %q", stderr.String())
 	}
-	if strings.Contains(stderr.String(), "self-update:") {
-		t.Errorf("stderr carries a self-update: prefix; install errors MUST NOT (cli-install#req:host-owned-exit-codes): %q", stderr.String())
+	for _, wrongPrefix := range []string{"self-update:", "upgrade:"} {
+		if strings.Contains(stderr.String(), wrongPrefix) {
+			t.Errorf("stderr carries a %s prefix; install errors MUST NOT (cli-install#req:host-owned-exit-codes): %q", wrongPrefix, stderr.String())
+		}
 	}
 }
 
-// AC: cli-install#req:host-owned-exit-codes — installErrors.Failure maps
-// every FailureKind, including the three cli-install appends after
-// KindManagedCommand, to wb's exitFindings, and no message carries a
-// "self-update:" prefix.
+// AC: cli-install#req:host-owned-exit-codes — fleetErrors.Failure maps
+// KindUnknownTarget to exitUsage (review S2) and every other FailureKind,
+// including the two remaining kinds cli-install appends after
+// KindManagedCommand, to wb's exitFindings; every message carries the exact
+// "install: " prefix and never "self-update:"/"upgrade:" (review S1).
 func TestInstallErrors_FailureExitCodes(t *testing.T) {
 	cases := []struct {
 		name string
 		kind selfupdate.FailureKind
+		want int
 	}{
-		{"unknown_target", selfupdate.KindUnknownTarget},
-		{"no_install_dir", selfupdate.KindNoInstallDir},
-		{"destination_exists", selfupdate.KindDestinationExists},
-		{"ambiguous", selfupdate.KindAmbiguous},
-		{"release_lookup", selfupdate.KindReleaseLookup},
-		{"download", selfupdate.KindDownload},
-		{"checksum", selfupdate.KindChecksum},
-		{"permission", selfupdate.KindPermission},
-		{"non_interactive", selfupdate.KindNonInteractive},
-		{"downgrade", selfupdate.KindDowngrade},
-		{"unknown_tag", selfupdate.KindUnknownTag},
-		{"unsupported_platform", selfupdate.KindUnsupportedPlatform},
-		{"managed_version", selfupdate.KindManagedVersion},
-		{"managed_command", selfupdate.KindManagedCommand},
-		{"unexpected", selfupdate.KindUnexpected},
+		{"unknown_target", selfupdate.KindUnknownTarget, exitUsage},
+		{"no_install_dir", selfupdate.KindNoInstallDir, exitFindings},
+		{"destination_exists", selfupdate.KindDestinationExists, exitFindings},
+		{"ambiguous", selfupdate.KindAmbiguous, exitFindings},
+		{"release_lookup", selfupdate.KindReleaseLookup, exitFindings},
+		{"download", selfupdate.KindDownload, exitFindings},
+		{"checksum", selfupdate.KindChecksum, exitFindings},
+		{"permission", selfupdate.KindPermission, exitFindings},
+		{"non_interactive", selfupdate.KindNonInteractive, exitFindings},
+		{"downgrade", selfupdate.KindDowngrade, exitFindings},
+		{"unknown_tag", selfupdate.KindUnknownTag, exitFindings},
+		{"unsupported_platform", selfupdate.KindUnsupportedPlatform, exitFindings},
+		{"managed_version", selfupdate.KindManagedVersion, exitFindings},
+		{"managed_command", selfupdate.KindManagedCommand, exitFindings},
+		{"unexpected", selfupdate.KindUnexpected, exitFindings},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			mapped := (installErrors{}).Failure(&selfupdate.Failure{Kind: testCase.kind, Err: errors.New("boom")})
+			mapped := (newInstallErrors()).Failure(&selfupdate.Failure{Kind: testCase.kind, Err: errors.New("boom")})
 			var coded *exitError
 			if !errors.As(mapped, &coded) {
 				t.Fatalf("Failure(%v) did not return an *exitError: %v", testCase.kind, mapped)
 			}
-			if coded.code != exitFindings {
-				t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
+			if coded.code != testCase.want {
+				t.Errorf("code = %d, want %d", coded.code, testCase.want)
 			}
-			if strings.Contains(coded.message, "self-update:") {
-				t.Errorf("message %q carries a self-update: prefix; install errors MUST NOT", coded.message)
+			if !strings.HasPrefix(coded.message, "install: ") {
+				t.Errorf("message %q does not carry the exact install: prefix", coded.message)
 			}
 		})
 	}
 }
 
 // *cobracmd.UsageError (an invalid --format, or --all combined with names)
-// MUST map to exitFindings too — wb has no separate usage code available
-// this late in the command's own RunE (see installErrors.Failure's doc
-// comment) — and MUST NOT carry a self-update: prefix.
+// MUST map to exitUsage (review S2: it is refused before any work started,
+// wb's own documented meaning for exit 2) and carry the exact "install: "
+// prefix, never "self-update:"/"upgrade:" (review S1).
 func TestInstallErrors_FailureUsageError(t *testing.T) {
-	mapped := (installErrors{}).Failure(&cobracmd.UsageError{Err: errors.New("invalid --format")})
+	mapped := (newInstallErrors()).Failure(&cobracmd.UsageError{Err: errors.New("invalid --format")})
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
 		t.Fatalf("Failure(usage error) did not return an *exitError: %v", mapped)
 	}
-	if coded.code != exitFindings {
-		t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
+	if coded.code != exitUsage {
+		t.Errorf("code = %d, want exitUsage (%d)", coded.code, exitUsage)
 	}
-	if strings.Contains(coded.message, "self-update:") {
-		t.Errorf("message %q carries a self-update: prefix; install errors MUST NOT", coded.message)
+	if !strings.HasPrefix(coded.message, "install: ") {
+		t.Errorf("message %q does not carry the exact install: prefix", coded.message)
 	}
 }
 
@@ -137,7 +146,7 @@ func TestInstallErrors_FailureUsageError(t *testing.T) {
 // for anything that isn't one) still maps to exitFindings rather than
 // panicking or losing the underlying message.
 func TestInstallErrors_FailureWrapsPlainError(t *testing.T) {
-	mapped := (installErrors{}).Failure(errors.New("not a *selfupdate.Failure"))
+	mapped := (newInstallErrors()).Failure(errors.New("not a *selfupdate.Failure"))
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
 		t.Fatalf("Failure(plain error) did not return an *exitError: %v", mapped)
@@ -152,9 +161,9 @@ func TestInstallErrors_FailureWrapsPlainError(t *testing.T) {
 
 // A permission failure names the executable path and wb's own Homebrew
 // install command, exactly like selfUpdateErrors's own permission remedy
-// (REQ: permission-remedy-names-brew), but with an "install: " prefix.
+// (REQ: permission-remedy-names-brew), with an exact "install: " prefix.
 func TestInstallErrors_FailurePermissionNamesPathAndBrew(t *testing.T) {
-	mapped := (installErrors{}).Failure(&selfupdate.Failure{
+	mapped := (newInstallErrors()).Failure(&selfupdate.Failure{
 		Kind: selfupdate.KindPermission,
 		Path: "/usr/local/bin/specscore",
 		Err:  errors.New("permission denied"),
@@ -162,6 +171,9 @@ func TestInstallErrors_FailurePermissionNamesPathAndBrew(t *testing.T) {
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
 		t.Fatalf("Failure(permission) did not return an *exitError: %v", mapped)
+	}
+	if !strings.HasPrefix(coded.message, "install: ") {
+		t.Errorf("message %q does not carry the exact install: prefix", coded.message)
 	}
 	for _, want := range []string{"/usr/local/bin/specscore", "elevated permissions", selfUpdateHomebrewInstallCommand} {
 		if !strings.Contains(coded.message, want) {
@@ -171,7 +183,7 @@ func TestInstallErrors_FailurePermissionNamesPathAndBrew(t *testing.T) {
 }
 
 func TestInstallErrors_FailurePermissionWithoutPath(t *testing.T) {
-	mapped := (installErrors{}).Failure(&selfupdate.Failure{Kind: selfupdate.KindPermission, Err: errors.New("permission denied")})
+	mapped := (newInstallErrors()).Failure(&selfupdate.Failure{Kind: selfupdate.KindPermission, Err: errors.New("permission denied")})
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
 		t.Fatalf("Failure(permission) did not return an *exitError: %v", mapped)
@@ -252,7 +264,7 @@ func TestInstallErrors_SharedKindsMatchSelfUpdateErrors(t *testing.T) {
 	}
 	for _, kind := range shared {
 		t.Run(kind.String(), func(t *testing.T) {
-			installErr := (installErrors{}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
+			installErr := (newInstallErrors()).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			selfUpdateErr := (selfUpdateErrors{}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			var installCoded, selfUpdateCoded *exitError
 			if !errors.As(installErr, &installCoded) {

@@ -119,10 +119,21 @@ func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 // upgrade's — because AfterUpdateFunc's signature carries no io.Writer of
 // its own for restartDaemonAfterSelfUpdate/syncSkillsAfterSelfUpdate to
 // write warnings and the verified-version line to.
+//
+// *cmd is nil only if a future refactor breaks that declare-build-assign
+// order (review M5) — both current callers make it impossible today, since
+// AfterUpdate never fires until well after construction returns. The
+// fallback below keeps that a loud, visible bug (output still reaches the
+// terminal via a fresh command whose Out/Err default to the process's own
+// stdout/stderr) rather than a nil-pointer panic.
 func wbAfterUpdate(cmd **cobra.Command) selfupdate.AfterUpdateFunc {
 	return func(ctx context.Context, update selfupdate.AfterUpdate) error {
-		restartDaemonAfterSelfUpdate(*cmd, ctx, update)
-		return syncSkillsAfterSelfUpdate(*cmd, ctx, update)
+		target := *cmd
+		if target == nil {
+			target = &cobra.Command{}
+		}
+		restartDaemonAfterSelfUpdate(target, ctx, update)
+		return syncSkillsAfterSelfUpdate(target, ctx, update)
 	}
 }
 

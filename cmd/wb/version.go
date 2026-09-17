@@ -55,6 +55,13 @@ func newVersionCmd() *cobra.Command {
 func printVersion(out io.Writer, asJSON bool) int {
 	info := collectVersion()
 	if asJSON {
+		// cli-install#req:version-json-contract's own undetermined placeholder
+		// ("dev") differs from wb's text-banner convention (buildinfo.Unknown,
+		// "unknown") that info.Version otherwise carries for every other
+		// caller (the text path below, and self-update's Config.CurrentVersion
+		// via collectVersion().Version). Override only the JSON-encoded copy;
+		// the plain `wb version` banner stays exactly as it prints today.
+		info.Version = buildinfo.JSON().Version
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(info); err != nil {

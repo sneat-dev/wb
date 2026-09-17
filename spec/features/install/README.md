@@ -142,44 +142,57 @@ both commands configure, never two independent copies that could drift.
 
 #### REQ: exit-code-mapping
 
-The command MUST report through wb's documented three exit codes and MUST NOT
-introduce a fourth: `0` for success (including a no-op batch, e.g. every
-target already installed, and a `--dry-run` report), `1` for every failure —
-an unknown target, no usable destination directory, a destination already
-occupied by a file the library will not overwrite, and every failure kind
+The command MUST report through wb's documented three exit codes: `0` for
+success (including a no-op batch, e.g. every target already installed, and a
+`--dry-run` report); `2` for an invocation refused before any confirmation,
+network request, or write — an unknown target
+(`selfupdate.KindUnknownTarget`) and a usage mistake caught inside the
+command's own RunE (an invalid `--format`, or `--all` combined with names,
+`*cobracmd.UsageError`) both belong here, matching wb's own documented
+meaning for exit `2` ("the invocation was rejected before any work
+started") and cli-install#req:host-owned-exit-codes's own MUST ("map
+`KindUnknownTarget` to its usage or invalid-argument code"); and `1` for
+every other failure — no usable destination directory, a destination
+already occupied by a file the library will not overwrite
+(`KindNoInstallDir`, `KindDestinationExists`: the library's own
+"invalid-state or general failure" pairing), and every failure kind
 [self-update](../self-update/README.md#req-exit-code-mapping) already maps
 (ambiguous detection, release-lookup or download failure, checksum mismatch,
 permission denied, a refused downgrade, an unhonorable version pin, or a
-managed command failing) — and `2` stays reserved for an invocation Cobra
-itself rejects before any command starts. This includes the three kinds
-`cli-install` appends after `KindManagedCommand`
-(`KindUnknownTarget`, `KindNoInstallDir`, `KindDestinationExists`), each
-mapped explicitly rather than falling into a default branch
-(cli-install#req:host-owned-exit-codes). No message from this command carries
-a `self-update:` prefix, so a script that greps for one to distinguish the two
-commands cannot mistake one for the other.
+managed command failing). wb introduces no fourth code. Every message
+carries an exact `install: ` prefix and never `self-update:`/`upgrade:`, so
+a script grepping stderr for one prefix cannot mistake this command's
+failure for another fleet command's (cli-install#req:host-owned-exit-codes).
 
 #### REQ: upgrade-exit-code-mapping
 
-`wb upgrade` MUST use the identical error mapper `wb install` does, extended
-with the upgrades-available method `cli-install#req:upgrade-check` requires
-(cli-install#req:host-owned-exit-codes: "The upgrade command MUST use the
-same error mapper"), so every failure kind maps exactly as
-[REQ: exit-code-mapping](#req-exit-code-mapping) already maps it for install.
-`--check` (or the bare, no-argument report) with at least one target reporting
-an available or undetermined upgrade MUST map onto wb's `exitFindings`,
+`wb upgrade` MUST use the identical error mapper `wb install` does —
+[REQ: exit-code-mapping](#req-exit-code-mapping)'s own kind-to-code table,
+including `KindUnknownTarget`/`*cobracmd.UsageError` mapping to exit `2` —
+extended with the upgrades-available method `cli-install#req:upgrade-check`
+requires (cli-install#req:host-owned-exit-codes: "The upgrade command MUST
+use the same error mapper"), but with its own exact `upgrade: ` message
+prefix and its own permission remedy (the Homebrew cask-UPGRADE command, not
+install's cask-install command — re-running an install command is the wrong
+advice for a copy that is already installed and merely failed to write
+during an upgrade), never `install:`/`self-update:`. An explicit `--check`
+(named targets, `--all`, or both) with at least one target reporting an
+available or undetermined upgrade MUST map onto wb's `exitFindings`,
 mirroring how [self-update maps its own `UpdateAvailable`
 signal](../self-update/README.md#req-exit-code-mapping)
 (cli-install#req:upgrade-check: "a host maps it as its self-update maps
-UpdateAvailable"). wb reserves no fourth exit code for "an upgrade is
-available" any more than self-update does.
+UpdateAvailable"); wb reserves no fourth exit code for "an upgrade is
+available" any more than self-update does. The bare, no-argument report
+(cli-install#req:upgrade-no-args-reports) is different: it never calls the
+upgrades-available method at all and MUST exit `0` unless a lookup itself
+failed, whether or not an upgrade is available.
 
 ## Interaction with Other Features
 
 | Feature | Interaction |
 |---|---|
 | [strongo/cli-helpers: CLI Install Command Library](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/cli-install?op=explore) | Owns the behavior contract this Feature binds. wb is a consumer; behavior changes belong there. |
-| [Self-Update](../self-update/README.md) | Sibling command built on the same fleet catalog (`cliinstall.ByID("wb")`); `wb install wb` is reported as already installed with a `wb self-update` pointer rather than reinstalling; `wb upgrade wb` and `wb self-update` reach the identical library call (REQ: upgrade-host-config-and-hook, cli-install#req:self-update-equals-upgrade-self). |
+| [Self-Update](../self-update/README.md) | Sibling command built on the same fleet catalog (`cliinstall.ByID("wb")`); `wb install wb` is reported as already installed with a `wb self-update` pointer rather than reinstalling — library behavior per cli-install#req:already-installed-no-op ("MUST report the installed version, date and commit, name `<target> self-update` as the way to update it"), not restated or independently tested here; `wb upgrade wb` and `wb self-update` reach the identical library call (REQ: upgrade-host-config-and-hook, cli-install#req:self-update-equals-upgrade-self). |
 
 ## Acceptance Criteria
 
@@ -200,8 +213,8 @@ request or filesystem write.
 **Given** an installed `wb` binary
 **When** the user runs `wb install nosuchcli`
 **Then** the command fails before any confirmation, network request, or
-write, exits `1`, and the message names the unknown target and lists valid
-catalog ids, carrying no `self-update:` prefix.
+write, exits `2`, and the message carries an exact `install: ` prefix,
+names the unknown target, and lists valid catalog ids.
 
 ### AC: shared-failures-map-like-self-update
 
@@ -220,7 +233,8 @@ a `self-update:` prefix on the install side.
 **Given** an installed `wb` binary
 **When** the user runs `wb upgrade nosuchcli`
 **Then** the command fails before any confirmation, network request, or
-write, and exits `1` naming the unknown target and listing valid catalog ids.
+write, exits `2`, and the message carries an exact `upgrade: ` prefix,
+names the unknown target, and lists valid catalog ids.
 
 ### AC: self-update-equals-upgrade-self
 

@@ -114,10 +114,22 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			commandStarted = true
+			id := persistentCommandID(cmd)
+			// `wb version` (including --json) MUST stay side-effect-free
+			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
+			// install/upgrade status probe execs it from inside the caller's own
+			// cwd, which may itself be a WB worktree. Recording a heartbeat or
+			// invoked-command there on every probe would make a lane a prober
+			// merely glanced at look busy, and would misattribute whatever that
+			// worktree's write path records next. Skip both for "version" alone
+			// — every other command still gets them.
+			if id == "version" {
+				return nil
+			}
 			// Publish which command is running so anything it writes into a
 			// worktree records what touched it, without each call site having
 			// to thread the name through.
-			worktrees.SetInvokedCommand(persistentCommandID(cmd))
+			worktrees.SetInvokedCommand(id)
 			// A lane working in a worktree is using it, whatever it happens to
 			// be running. Recording that here — once, from the working
 			// directory the command was run in — is what lets WB tell a
@@ -125,7 +137,7 @@ func newRootCmd() *cobra.Command {
 			// day, without every verb having to remember to say so. It is
 			// deliberately keyed to the current directory: a fleet-wide sweep
 			// run from somewhere else must not make every lane look busy.
-			worktrees.TouchHeartbeatForCurrentDirectory(persistentCommandID(cmd))
+			worktrees.TouchHeartbeatForCurrentDirectory(id)
 			return nil
 		},
 	}

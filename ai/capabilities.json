@@ -6042,7 +6042,7 @@
           "references": [
             {
               "path": "cmd/wb/install_test.go",
-              "name": "TestInstallCmd_UnknownTargetExitsFindings",
+              "name": "TestInstallCmd_UnknownTargetExitsUsage",
               "kind": "unit"
             },
             {
@@ -6054,7 +6054,7 @@
           "limitation": null
         }
       },
-      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; every failure, including the three kinds cli-install adds, maps to wb's exitFindings (1) with an \"install: \" prefix, never \"self-update: \"."
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; an unknown target or a usage mistake (invalid --format, --all with names) exits wb's exitUsage (2, rejected before any work started); every other failure, including the two remaining kinds cli-install adds, maps to wb's exitFindings (1). Every message carries an exact \"install: \" prefix, never \"self-update: \"/\"upgrade: \"."
     },
     {
       "id": "wb.land",
@@ -10321,19 +10321,29 @@
           "references": [
             {
               "path": "cmd/wb/upgrade_test.go",
-              "name": "TestUpgradeCmd_UnknownTargetExitsFindings",
+              "name": "TestUpgradeCmd_UnknownTargetExitsUsage",
               "kind": "unit"
             },
             {
               "path": "cmd/wb/upgrade_test.go",
               "name": "TestUpgradeErrors_FailureExitCodes",
               "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestSelfUpdateAndUpgradeSelf_ReachSameCheckVerdict",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput",
+              "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall's upgrade adapter against wb's own compiled catalog entry; the host row (wb itself) is configured from the EXACT SAME selfupdate.Config and after-update hook wb's own self-update command uses, so `wb upgrade wb` and `wb self-update` reach the identical library call. Every failure maps through installErrors, extended with the upgrades-available method, onto wb's exitFindings (1)."
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall's upgrade adapter against wb's own compiled catalog entry; the host row (wb itself) is configured from the EXACT SAME selfupdate.Config and after-update hook wb's own self-update command uses, so `wb upgrade wb` and `wb self-update` reach the identical library call. Every failure maps through fleetErrors, extended with the upgrades-available method: an unknown target or a usage mistake exits wb's exitUsage (2); every other failure exits exitFindings (1). Every message carries an exact \"upgrade: \" prefix, and a permission remedy names upgrade's own Homebrew cask-upgrade command, never install's."
     },
     {
       "id": "wb.verify",

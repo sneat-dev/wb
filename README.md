@@ -2318,10 +2318,13 @@ identical `github.com/strongo/cli-helpers` machinery `wb self-update` binds,
 applied to a fleet-wide catalog (`github.com/strongo/cli-helpers/cliinstall`)
 instead of wb's own release. Both commands resolve wb's release identity from
 the same compiled-in catalog entry, so they can never disagree about how wb
-itself is installed. An unrecognized name is refused before any confirmation,
-network request or write, naming the valid catalog ids; every failure reports
-through wb's ordinary `1` (findings) exit code with an `install: ` message
-prefix, never `self-update: `.
+itself is installed. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused before any confirmation, network request
+or write, and exit `2` — wb's usage code, since the invocation itself was
+rejected before any work started — naming the valid catalog ids where
+relevant; every other failure reports through wb's ordinary `1` (findings)
+exit code. Every message carries an exact `install: ` prefix, never
+`self-update: `.
 
 ### `wb upgrade` — upgrade installed fleet CLIs, including wb itself
 
@@ -2344,10 +2347,17 @@ restart, skills re-sync) self-update's own command configures, so the two
 can never disagree about the outcome for wb itself. `upgrade` gets no
 `update` alias (only `self-update` keeps one), and wb is always upgraded
 last in a batch, after every other named target, because its after-update
-hook restarts the daemon. Every failure reports through wb's ordinary `1`
-(findings) exit code, exactly as `install` does — including "an upgrade is
-available" under `--check`, which wb folds into the same code rather than
-reserving a fourth one.
+hook restarts the daemon. An unknown target, an invalid `--format`, or
+`--all` combined with names exit `2`, exactly as `install`'s own usage
+refusals do; every other failure reports through wb's ordinary `1`
+(findings) exit code — including "an upgrade is available" under an
+explicit `--check`, which wb folds into the same code rather than reserving
+a fourth one (the bare, no-argument report is different: it never checks
+for an available upgrade at all and exits `0` unless a lookup itself
+failed). Every message carries an exact `upgrade: ` prefix, never
+`install: `/`self-update: ` — including the permission remedy, which names
+upgrade's own Homebrew cask-upgrade command rather than install's
+cask-install command.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 
