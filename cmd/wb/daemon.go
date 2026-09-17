@@ -1657,10 +1657,13 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		return fmt.Errorf("mount the bench hub: %w", err)
 	}
 	defer func() { _ = mount.Close() }()
+	// Best-effort: an unresolved log path only disables /api/v1/log (503),
+	// it never blocks the daemon from serving everything else.
+	logPath, _ := daemonLogPath(projectsRoot)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
-		Mounts: mount.handlers(), Hub: mount.hubHealth(),
+		Mounts: mount.handlers(), Hub: mount.hubHealth(), LogPath: logPath,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
 	rpcMux := http.NewServeMux()

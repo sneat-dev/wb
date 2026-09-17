@@ -151,3 +151,63 @@ func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 		t.Fatalf("/workbench/dashboard/ = %d; want the catch-all index page", recorder.Code)
 	}
 }
+
+func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+}
+
+func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "daemon.log")
+	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("content type = %q", recorder.Header().Get("Content-Type"))
+	}
+	if recorder.Header().Get("X-Log-Truncated") != "false" {
+		t.Fatalf("truncated = %q; want false for a short file", recorder.Header().Get("X-Log-Truncated"))
+	}
+	if recorder.Body.String() != "line one\nline two\nline three\n" {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log?tail=9", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if recorder.Header().Get("X-Log-Truncated") != "true" {
+		t.Fatalf("truncated = %q; want true once tail cuts the file short", recorder.Header().Get("X-Log-Truncated"))
+	}
+	if recorder.Body.String() != "ne three\n" {
+		t.Fatalf("tail body = %q", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log?tail=not-a-number", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for an invalid tail", recorder.Code)
+	}
+}
+
+func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+}
