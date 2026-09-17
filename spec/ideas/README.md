@@ -15,6 +15,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [claim-at-push-visibility](claim-at-push-visibility.md) | Draft | 2026-09-02 | alex | — |
 | [dependency-policy-check](dependency-policy-check.md) | Approved | 2026-08-21 | alex | — |
 | [developer-lifecycle-metrics](developer-lifecycle-metrics.md) | Draft | 2026-07-20 | alex | — |
+| [efficient-agent-pipeline](efficient-agent-pipeline.md) | Draft | 2026-09-17 | ai | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
 | [graph-assisted-fleet-optimization](graph-assisted-fleet-optimization.md) | Draft | 2026-09-05 | alex | — |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
