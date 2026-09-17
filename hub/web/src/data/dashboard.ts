@@ -20,7 +20,7 @@ export function dashboardApiURLForScope(scope: DashboardScope): string {
 }
 
 export function dashboardScopeFromPath(pathname: string): DashboardScope | undefined {
-  const path = pathname.replace(/^\/bench(?=\/|$)/, '').replace(/\/+$/, '') || '/';
+  const path = pathname.replace(/^\/workbench(?=\/|$)/, '').replace(/\/+$/, '') || '/';
   const parts = path.split('/').filter(Boolean).map((part) => {
     try { return decodeURIComponent(part); } catch { return ''; }
   });

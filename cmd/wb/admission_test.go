@@ -14,7 +14,7 @@ import (
 
 func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 	// Keep this check at the command boundary: these flags are the explicit
-	// contract users select before a backend can inspect WB_HOME or Git.
+	// contract users select before a backend can inspect WB state or Git.
 	checks := []struct {
 		name        string
 		flagPresent func(string) bool
@@ -42,8 +42,10 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 }
 
 func TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv(wbhome.EnvOverride, home)
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	t.Setenv(wbhome.EnvOverride, projects)
+	home := filepath.Join(projects, ".wb")
 	t.Setenv(worktrees.EnvAgentPID, "")
 	t.Setenv(worktrees.EnvAgentRuntime, "")
 	t.Setenv(worktrees.EnvAgentModel, "")
@@ -51,7 +53,6 @@ func TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome(t *testing.T) {
 	t.Setenv(worktrees.EnvSessionID, "")
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return worktrees.AgentIdentity{}, false })
 	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
-	projects := filepath.Join(t.TempDir(), "projects")
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(prompt, []byte("admission test\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -164,8 +165,8 @@ func TestAutoAdmissionInfersAgentModeFromAmbientIdentity(t *testing.T) {
 }
 
 func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv(wbhome.EnvOverride, home)
+	root := filepath.Join(t.TempDir(), "wb-root")
+	t.Setenv(wbhome.EnvOverride, root)
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return worktrees.AgentIdentity{}, false })
 	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
 	log := newWorktreeWorkLogCmd()
@@ -192,7 +193,7 @@ func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
 			release()
 		}
 	}
-	if _, err := os.Stat(home); !os.IsNotExist(err) {
-		t.Fatalf("dry-run admission touched WB_HOME: stat err=%v", err)
+	if _, err := os.Stat(filepath.Join(root, ".wb")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run admission touched WB state: stat err=%v", err)
 	}
 }

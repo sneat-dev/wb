@@ -1,12 +1,13 @@
 // Package wbhome resolves the directories WB uses to coordinate work across
 // agents and sessions: task worktrees, operation locks, and reports.
 //
-// That directory used to live at <projects-root>/.wb. A recursive tool that
-// doesn't know WB's exclusion rules — a search indexer, backup, an ad-hoc
-// grep — walks straight into it and double-counts every in-flight worktree as
-// a separate repository. Moving the default to the user's home directory
-// makes "don't walk into WB's state" the default for every tool, not a rule
-// each one has to learn.
+// Every one of those paths derives from a single projects root.
+// --projects-root (the flag) wins over WB_PROJECTS_ROOT (the environment),
+// which wins over the default root, ~/projects. Private state lives at
+// <root>/.wb and the checkout store at <root>/.worktrees — both dot-named
+// direct children of the root, siblings of the {host} directories, so a
+// single-level enumeration of the root (a `*` glob, a bare `ls`) yields host
+// directories only. WB_HOME no longer selects anything.
 package wbhome
 
 import (
@@ -17,68 +18,113 @@ import (
 	"strings"
 )
 
-// EnvOverride names the environment variable that pins WB's home directory,
-// overriding both the new default and legacy detection. Tests use it to stay
-// hermetic; operators use it for unusual layouts.
-const EnvOverride = "WB_HOME"
+// EnvOverride names the environment variable that selects WB's projects root.
+// The --projects-root flag wins over it. WB_HOME is deliberately not consulted:
+// it used to name the state directory directly, which made the state directory
+// and the checkout store independent knobs.
+const EnvOverride = "WB_PROJECTS_ROOT"
 
-// EnvMigrationCompat is written only by a managed hook that pinned the normal
-// default home at installation time. Its value must be that resolved default
-// home, rather than a generic boolean. This lets the resolver distinguish the
-// one migration-compatible hook context from an arbitrary explicit WB_HOME.
+// EnvMigrationCompat is written only by a managed hook installed by an earlier
+// release. It has no effect on path derivation any more; the constant remains
+// until the hook shims stop emitting it.
 const EnvMigrationCompat = "WB_HOME_MIGRATION_COMPAT"
 
-// Layout is one supported on-disk WB state layout. Home is the parent of its
-// worktrees, locks, and reports. Legacy is true only for the historic
-// <projects-root>/.wb layout that remains readable during the migration.
+// Layout is one supported on-disk WB location set. Home is the private
+// coordination state directory (claims, locks, Work Logs, reports) and
+// WorktreesRoot is where checkouts physically land for that layout. Legacy is
+// true only for a retired home whose checkouts remain readable in place.
 type Layout struct {
 	Home          string
 	WorktreesRoot string
 	Legacy        bool
 	// Local is true only for a canonical repository's default
-	// <canonical>/.worktrees root. Home remains WB_HOME authority.
+	// <canonical>/.worktrees root. Home remains the state-directory authority.
 	Local bool
 }
 
-// Resolution makes the migration policy explicit. Write is the only layout
-// where new state may be created; Read contains Write plus a discovered legacy
-// layout when the default migration path can safely support it.
-//
-// An explicit WB_HOME is intentionally authoritative: it is commonly used by
-// parallel agents and hermetic tests, neither of which may accidentally scan
-// or mutate a neighbouring projects-root legacy directory.
-type Resolution struct {
-	Write    Layout
-	Read     []Layout
-	Explicit bool
+// StateWorktreesRoot is the logical task namespace inside the private state
+// directory: <Home>/worktrees. It holds coordination state — task shells,
+// locks, retired locks — and is deliberately distinct from WorktreesRoot,
+// which is a physical checkout store and may sit outside the state directory.
+func (layout Layout) StateWorktreesRoot() string {
+	return filepath.Join(layout.Home, "worktrees")
 }
 
-// Resolve returns the write home and every compatible read layout for one
-// projects root. New state always belongs under ~/.wb by default; the legacy
-// projects-root directory is never selected as a silent write fallback.
+// Resolution is the layout for one projects root. Write is where new state may
+// be created; Read contains Write plus any additional readable layout.
+type Resolution struct {
+	Write Layout
+	Read  []Layout
+	// Root is the projects root every path above derives from.
+	Root string
+}
+
+// Resolve returns the write layout and every compatible read layout for one
+// projects root. An empty projectsRoot falls back to WB_PROJECTS_ROOT and then
+// to the default root.
+//
+// The write layout derives both paths from that one root: private state at
+// <root>/.wb and the checkout store at <root>/.worktrees. A retired default
+// state directory ($HOME/.wb) is added as a read-only legacy layout when it
+// still holds checkouts, so guard, inventory, cleanup and relocate keep
+// operating on existing placements in place instead of going blind to them.
 func Resolve(projectsRoot string) (Resolution, error) {
-	home, explicit, err := writeHome()
+	root, err := projectsRootAbs(projectsRoot)
 	if err != nil {
 		return Resolution{}, err
 	}
-	write := newLayout(home, false)
-	resolution := Resolution{Write: write, Read: []Layout{write}, Explicit: explicit}
-	if explicit || strings.TrimSpace(projectsRoot) == "" {
-		return resolution, nil
-	}
-	legacy, err := resolveAbs(filepath.Join(projectsRoot, ".wb"))
+	write := newLayout(root)
+	resolution := Resolution{Write: write, Read: []Layout{write}, Root: root}
+	// Coordination state — task shells, locks, retired stages — lives in the
+	// logical task namespace under the state directory, not in the checkout
+	// store. Register it as its own readable layout so every sweep still sees
+	// it; the store layout above carries the physical checkouts.
+	resolution.Read = append(resolution.Read, Layout{Home: write.Home, WorktreesRoot: write.StateWorktreesRoot()})
+	legacy, found, err := legacyUserLayout()
 	if err != nil {
 		return Resolution{}, err
 	}
-	if filepath.Clean(legacy) == filepath.Clean(write.Home) || !hasWorktrees(legacy) {
-		return resolution, nil
+	if found && filepath.Clean(legacy.Home) != filepath.Clean(write.Home) {
+		resolution.Read = append(resolution.Read, legacy)
 	}
-	resolution.Read = append(resolution.Read, newLayout(legacy, true))
 	return resolution, nil
 }
 
-// Root resolves WB's authoritative write home. It remains for callers that
-// only create state; worktree migration-aware callers must use Resolve.
+// legacyUserLayout describes the retired default state directory $HOME/.wb as a
+// read-only layout. It is reported only when that directory actually holds a
+// worktrees root: WB must stay able to validate and operate on checkouts left
+// there by earlier releases, and an empty-but-present directory must not become
+// an implicit configuration bit that changes every command's read set.
+func legacyUserLayout() (Layout, bool, error) {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return Layout{}, false, nil
+	}
+	home, err := resolveAbs(filepath.Join(userHome, ".wb"))
+	if err != nil {
+		return Layout{}, false, err
+	}
+	if !hasWorktrees(home) {
+		return Layout{}, false, nil
+	}
+	return Layout{Home: home, WorktreesRoot: filepath.Join(home, "worktrees"), Legacy: true}, true, nil
+}
+
+// StoreRoot returns the central checkout store for a projects root:
+// <root>/.worktrees. It is the write layout's physical checkout root — the
+// same value as Resolve(root).Write.WorktreesRoot — and the path a later
+// store-mode implementation places task checkouts under. It does not create
+// anything.
+func StoreRoot(projectsRoot string) (string, error) {
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return resolution.Write.WorktreesRoot, nil
+}
+
+// Root resolves WB's authoritative write home: <root>/.wb. It remains for
+// callers that only create state.
 //
 // Root never creates the directory itself: worktrees.Create opens this same
 // path through its own descriptor-anchored, symlink-rejecting check, and
@@ -164,47 +210,30 @@ func SeedReadme(home string) error {
 	return nil
 }
 
-func writeHome() (home string, explicit bool, err error) {
-	if override := strings.TrimSpace(os.Getenv(EnvOverride)); override != "" {
-		root, resolveErr := resolveAbs(override)
-		if resolveErr != nil {
-			return "", true, resolveErr
+// projectsRootAbs resolves the projects root with the AC's precedence: the
+// caller-supplied value (the --projects-root flag, already parsed by the CLI)
+// wins, then WB_PROJECTS_ROOT, then the default root ~/projects.
+func projectsRootAbs(projectsRoot string) (string, error) {
+	root := strings.TrimSpace(projectsRoot)
+	if root == "" {
+		root = strings.TrimSpace(os.Getenv(EnvOverride))
+	}
+	if root == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home directory: %w", err)
 		}
-		// A generic ambient marker must never make an explicitly selected home
-		// migration-compatible. Managed shims pin both WB_HOME and this marker
-		// to the exact, resolved default location. Only that exact pairing is
-		// allowed to discover the legacy layout.
-		return root, !isPinnedDefaultHome(root), nil
+		root = filepath.Join(userHome, "projects")
 	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", false, fmt.Errorf("resolve user home directory: %w", err)
-	}
-	root, err := resolveAbs(filepath.Join(userHome, ".wb"))
-	return root, false, err
+	return resolveAbs(root)
 }
 
-func isPinnedDefaultHome(home string) bool {
-	marker := strings.TrimSpace(os.Getenv(EnvMigrationCompat))
-	if marker == "" {
-		return false
-	}
-	pinned, err := resolveAbs(marker)
-	if err != nil || filepath.Clean(pinned) != filepath.Clean(home) {
-		return false
-	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	defaultHome, err := resolveAbs(filepath.Join(userHome, ".wb"))
-	return err == nil && filepath.Clean(home) == filepath.Clean(defaultHome)
+func newLayout(root string) Layout {
+	return Layout{Home: filepath.Join(root, ".wb"), WorktreesRoot: filepath.Join(root, ".worktrees")}
 }
 
-func newLayout(home string, legacy bool) Layout {
-	return Layout{Home: home, WorktreesRoot: filepath.Join(home, "worktrees"), Legacy: legacy}
-}
-
+// hasWorktrees reports whether a home directory carries a worktrees root. It is
+// the marker that a retired home actually holds checkouts worth reading.
 func hasWorktrees(home string) bool {
 	info, err := os.Stat(filepath.Join(home, "worktrees"))
 	return err == nil && info.IsDir()

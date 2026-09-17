@@ -316,7 +316,7 @@ func launchWorker(request WorkerRequest) error {
 	arguments := []string{"hooks", "lifecycle", "run-pending", "--config", request.ConfigPath, "--state-dir", request.StateDir, "--receipt", request.ReceiptPath}
 	command := exec.Command(executable, arguments...) //nolint:gosec // current WB executable and fixed argv
 	command.Env = os.Environ()
-	configureDetached(command)
+	process.ConfigureDetached(command)
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return err

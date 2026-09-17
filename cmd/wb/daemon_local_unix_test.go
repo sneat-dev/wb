@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,19 +28,20 @@ func TestDaemonLocalTransportRequiresTokenAndProtectsSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
 	listener, err := listenDaemonLocal(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	info, err := os.Stat(daemonLocalAddress(root))
+	info, err := os.Stat(mustDaemonPath(t, daemonLocalAddress, root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if permissions := info.Mode().Perm(); permissions != 0o600 {
 		t.Fatalf("socket permissions = %o", permissions)
 	}
-	service, err := daemon.NewService(root, "test-build", "9", func() error { return nil })
+	service, err := daemonTestService(t, root, "test-build", "9", func() error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +78,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
 	t.Chdir(root)
 	t.Setenv("WB_DAEMON_CLI_HELPER", "1")
 	previousRoot := projectsRoot
@@ -90,7 +93,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		state, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+		state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 		if err != nil || !found {
 			return 0, fmt.Errorf("load starting lifecycle state: found=%t: %w", found, err)
 		}
@@ -98,7 +101,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		service, err := daemon.NewService(root, "test-build", fmt.Sprint(state.Queue.Generation), func() error { return nil })
+		service, err := daemonTestService(t, root, "test-build", fmt.Sprint(state.Queue.Generation), func() error { return nil })
 		if err != nil {
 			_ = listener.Close()
 			return 0, err
@@ -166,8 +169,53 @@ func TestDaemonOperationCLIHelperProcess(t *testing.T) {
 }
 
 func TestDaemonLocalTransportRejectsOverlongSocketPath(t *testing.T) {
+	// The endpoint derives from the projects root, so it is the *root* that has
+	// to be long: a hundred characters below /tmp leaves the socket path above
+	// the platform's ~104-byte sockaddr_un cap. The long root is passed as the
+	// argument rather than through the environment, because the argument is what
+	// selects the root; pinning only the environment left the endpoint short
+	// enough to bind on platforms with shorter temporary paths.
 	root := filepath.Join("/tmp", strings.Repeat("a", 100))
-	if _, err := listenDaemonLocal(root); err == nil {
-		t.Fatal("expected overlong socket path to fail")
+	pinDaemonHome(t, root)
+	if _, err := listenDaemonLocal(root); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("overlong socket path error = %v", err)
+	}
+}
+
+// AC: a-leftover-daemon-cannot-be-silently-doubled
+//
+// An accepting socket at a retired runtime path is enough to refuse a start:
+// the leftover daemon does not have to be healthy, and nothing under that path
+// may be disturbed by WB looking.
+func TestDaemonStartRefusesWhileTheLegacySocketStillAnswers(t *testing.T) {
+	root := daemonTestRoot(t)
+	// The current home is <root>/.wb now, so the accepting legacy socket lives
+	// in the retired default state home $HOME/.wb. The fixture keeps HOME under
+	// /tmp for the filesystem socket length limit.
+	legacyDir := daemonLegacyFixture(t)
+	socketPath, ok := daemonSocketPathIn(legacyDir)
+	if !ok {
+		t.Skip("this platform has no filesystem endpoint for the legacy runtime directory")
+	}
+	listener, listenErr := net.Listen(daemonLocalNetwork, socketPath)
+	if listenErr != nil {
+		t.Fatal(listenErr)
+	}
+	defer func() { _ = listener.Close() }()
+
+	deps := daemonTestDependencies(t, root)
+	deps.start = func(string, []string, string) (int, error) {
+		t.Fatal("a refused start must not launch a daemon")
+		return 0, nil
+	}
+	result, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen)
+	if err == nil || !strings.Contains(err.Error(), socketPath) {
+		t.Fatalf("refusal = %v, want it to name %s", err, socketPath)
+	}
+	if result.LegacyRuntime == nil || !result.LegacyRuntime.SocketAnswers {
+		t.Fatalf("refusal did not report the accepting legacy socket: %#v", result.LegacyRuntime)
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("the legacy socket was disturbed: %v", err)
 	}
 }

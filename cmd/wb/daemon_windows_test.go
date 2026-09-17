@@ -16,7 +16,7 @@ import (
 // ACL implementation. ProtectOwnerOnlyFile uses file.Name(), so both WB lock
 // handles must retain the actual filesystem path rather than a display label.
 func TestWindowsDaemonLifecycleLocksUseRealPaths(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	controller := newDaemonController(daemonTestDependencies(t, root), root)
 
 	releaseState, err := controller.stateLock()
@@ -38,9 +38,9 @@ func TestWindowsDaemonLifecycleLocksUseRealPaths(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		daemonStateLockPath(root),
-		daemonLifecycleLockPath(root),
-		daemonLifecycleOwnerPath(root),
+		mustDaemonPath(t, daemonStateLockPath, root),
+		mustDaemonPath(t, daemonLifecycleLockPath, root),
+		mustDaemonPath(t, daemonLifecycleOwnerPath, root),
 	} {
 		if err := daemonlifecycle.ValidateOwnerOnly(path); err != nil {
 			t.Fatalf("private lifecycle path %s: %v", path, err)
@@ -49,7 +49,7 @@ func TestWindowsDaemonLifecycleLocksUseRealPaths(t *testing.T) {
 }
 
 func TestWindowsDaemonFileBridgeRejectsUntrustedAncestorMutation(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestWindowsDaemonFileBridgeRejectsUntrustedAncestorMutation(t *testing.T) {
 }
 
 func TestWindowsDaemonFileBridgeAcceptsInheritedAncestorsAndProtectsRuntime(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
@@ -100,10 +100,10 @@ func TestWindowsDaemonFileBridgeAcceptsInheritedAncestorsAndProtectsRuntime(t *t
 
 	for _, path := range []string{
 		filepath.Join(root, ".wb", "runtime"),
-		daemonFileBridgeDirectory(root),
+		mustDaemonPath(t, daemonFileBridgeDirectory, root),
 		requests,
 		responses,
-		daemonFileBridgeKeyPath(root),
+		mustDaemonPath(t, daemonFileBridgeKeyPath, root),
 	} {
 		if err := daemonlifecycle.ValidateOwnerOnly(path); err != nil {
 			t.Fatalf("private bridge path %s: %v", path, err)

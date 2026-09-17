@@ -43,7 +43,7 @@ func installArchivedFakeGh(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 }
 
 // newRemote creates a bare repo with one commit on main and returns its path.

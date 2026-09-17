@@ -75,6 +75,20 @@ func TestGoCoverageArgumentsKeepTestResultCacheEnabled(t *testing.T) {
 	}
 }
 
+func TestShardedGoCoverageArgumentsPropagateAttemptTimeout(t *testing.T) {
+	profile := filepath.Join("tmp", "coverage.out")
+	for name, arguments := range map[string][]string{
+		"unsharded": goCoverageArgumentsWithTimeout(profile, 17*time.Minute),
+		"shard":     goCoverageArgumentsWithTimeout(profile, 17*time.Minute, "./internal/worktrees", "-run", "^(TestOne|TestTwo)$"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if joined := strings.Join(arguments, " "); !strings.Contains(joined, "-timeout 17m0s") {
+				t.Fatalf("coverage command omitted caller timeout: %s", joined)
+			}
+		})
+	}
+}
+
 func TestVerifyWithRepositoryPolicyUsesShardedGoTest(t *testing.T) {
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/verify-shards\n\ngo 1.24\n")
@@ -214,19 +228,33 @@ func TestRunShardedCoverageRetriesOnlyFailedShardsAndMergesFinalProfiles(t *test
 	}
 }
 
+// shardDeadlineStuckFixture sleeps far longer than the deadlines under test,
+// and far longer than compiling this fixture can plausibly take. The assertions
+// below bound total elapsed time well underneath it: a run that honours the
+// deadline finishes in compile time, while one that ignores it would have to
+// wait out this sleep. An earlier version slept only 2s and bounded the call at
+// 2s, so it measured the Go toolchain's compile time as much as the deadline and
+// failed intermittently on a loaded machine -- including on main.
+const shardDeadlineStuckFixture = `package serial
+import ("testing"; "time")
+func TestStuck(t *testing.T) { time.Sleep(120 * time.Second) }
+`
+
+// shardDeadlineElapsedBound sits an order of magnitude below
+// shardDeadlineStuckFixture's sleep, so no plausible amount of build latency can
+// make a correct run look like a deadline that was ignored.
+const shardDeadlineElapsedBound = 60 * time.Second
+
 func TestRunShardedCoverageStopsAStuckShardAtItsDeadline(t *testing.T) {
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/shard-timeout\n\ngo 1.24\n")
-	writeGoShardFixturePackage(t, module, "serial", "package serial\n", `package serial
-import ("testing"; "time")
-func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
-`)
+	writeGoShardFixturePackage(t, module, "serial", "package serial\n", shardDeadlineStuckFixture)
 	started := time.Now()
 	_, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "unused.cov"), []string{"./serial"}, 2, "", "", 30*time.Millisecond, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout error = %v, want deadline", err)
 	}
-	if attempts != 1 || time.Since(started) > 2*time.Second {
+	if attempts != 1 || time.Since(started) > shardDeadlineElapsedBound {
 		t.Fatalf("timeout attempts/duration = %d/%s, want one bounded attempt", attempts, time.Since(started))
 	}
 }
@@ -234,19 +262,19 @@ func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
 func TestRunCoverageWithOptionsUsesExplicitShardAttemptDeadline(t *testing.T) {
 	module := t.TempDir()
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/explicit-shard-timeout\n\ngo 1.24\n")
-	writeGoShardFixturePackage(t, module, "serial", "package serial\n", `package serial
-import ("testing"; "time")
-func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
-`)
+	writeGoShardFixturePackage(t, module, "serial", "package serial\n", shardDeadlineStuckFixture)
 	started := time.Now()
+	// The overall budget must leave ample room for compiling the fixture, so the
+	// error can only name the shard-attempt deadline. A tighter budget made this
+	// test fail whenever the build alone nearly exhausted it.
 	_, attempts, err := runCoverageWithOptions(context.Background(), RunOptions{
-		Timeout: 5 * time.Second, ShardAttemptTimeout: 500 * time.Millisecond,
+		Timeout: shardDeadlineElapsedBound, ShardAttemptTimeout: 500 * time.Millisecond,
 		GoTestShards: 2, GoShardPackages: []string{"./serial"},
 	}, module, filepath.Join(module, "unused.cov"))
 	if err == nil || !strings.Contains(err.Error(), "timed out after 500ms") {
 		t.Fatalf("explicit shard timeout error = %v, want deadline", err)
 	}
-	if attempts != 1 || time.Since(started) > 3*time.Second {
+	if attempts != 1 || time.Since(started) > shardDeadlineElapsedBound {
 		t.Fatalf("explicit shard timeout attempts/duration = %d/%s, want one bounded attempt", attempts, time.Since(started))
 	}
 }

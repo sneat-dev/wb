@@ -100,12 +100,13 @@ func newSessionRequestHandoffCmd() *cobra.Command {
 func newSessionRequestHandoffCmdWithDeps(deps sessionMessageDependencies) *cobra.Command {
 	var resume, format string
 	command := &cobra.Command{
-		Use:   "request-handoff <wb-session-id>",
-		Short: "Ask a recorded successor to hand control back to this predecessor",
-		Args:  cobra.ExactArgs(1),
+		Use:     "recall <wb-session-id>",
+		Aliases: []string{"request-handoff"},
+		Short:   "Ask a recorded successor to return control to this predecessor",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			return runSessionMessage(command, deps, args[0], sessionmove.MessageKindRequestHandoff, "",
-				strings.TrimSpace(resume), format, "request-handoff")
+				strings.TrimSpace(resume), format, "recall")
 		},
 	}
 	command.Flags().StringVar(&resume, "resume", "", "retry the exact durable handoff request for an existing message ID")

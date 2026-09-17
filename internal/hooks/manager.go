@@ -688,7 +688,9 @@ func resolvedWBHome(projectsRoot string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	return resolution.Write.Home, !resolution.Explicit, nil
+	// The historic <projects-root>/.wb read layout no longer exists, so a shim
+	// never needs the migration-compatibility marker.
+	return resolution.Write.Home, false, nil
 }
 
 // managedHooksDirectory retains the repository, Git common-directory, and

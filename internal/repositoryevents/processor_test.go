@@ -252,7 +252,7 @@ func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(projects, ".wb"))
+	t.Setenv("WB_PROJECTS_ROOT", projects)
 	remoteRoot := filepath.Join(t.TempDir(), "remotes")
 	oldRemote := filepath.Join(remoteRoot, "acme", "old-app.git")
 	newRemote := filepath.Join(remoteRoot, "acme", "new-app.git")

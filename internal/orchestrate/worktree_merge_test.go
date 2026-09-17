@@ -391,6 +391,8 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
 		{name: "coverage failure subset with changed shard placement", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\n- [unsharded packages] TestRemoved\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\nWB coverage raw output\ncandidate output")},
 		{name: "coverage failure introduces test", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\n- [unsharded packages] TestNew\nWB coverage raw output\ncandidate output"), wantError: true},
+		{name: "coverage timeout names an incidental test only on one side", baseline: failing("WB coverage failure index:\n- [unsharded packages] TestModuleArchiveIncludesCmdWBEmbedInputs\n- [github.com/sneat-dev/wb/internal/worktrees shard 4/4] command failed without a named Go test\nWB coverage raw output\n[unsharded packages]\nok  \tgithub.com/sneat-dev/wb/internal/migrate\t29.113s\ntimed out after 8m0s\n[github.com/sneat-dev/wb/internal/worktrees shard 4/4]\n\ntimed out after 8m0s"), candidate: failing("WB coverage failure index:\n- [unsharded packages] command failed without a named Go test\n- [github.com/sneat-dev/wb/internal/worktrees shard 1/4] command failed without a named Go test\nWB coverage raw output\n[unsharded packages]\nok  \tgithub.com/sneat-dev/wb/api/githubapp\t1.494s\ntimed out after 25m0s\n[github.com/sneat-dev/wb/internal/worktrees shard 1/4]\n\ntimed out after 25m0s")},
+		{name: "unnamed timeout is not accepted for a named baseline failure that did not time out", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\n[github.com/sneat-dev/wb/internal/worktrees shard 2/8]\n--- FAIL: TestStable (0.10s)"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 1/4] command failed without a named Go test\nWB coverage raw output\n[github.com/sneat-dev/wb/internal/worktrees shard 1/4]\n\ntimed out after 25m0s"), wantError: true},
 		{name: "same Nx failure at different quoted snapshot paths", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"`)},
 		{name: "different Nx failure remains different", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"; install dependencies first`), wantError: true},
 		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
@@ -937,6 +939,46 @@ func TestResumeWorktreeMergeAdoptsExistingExactHeadPullRequest(t *testing.T) {
 	if persisted.Status != WorktreeMergePublished || persisted.PullRequest != published.PullRequest ||
 		persisted.PublishedCandidateSHA != receipt.Candidate.SHA {
 		t.Fatalf("persisted adopted handoff = %+v", persisted)
+	}
+}
+
+func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "published-chain-source", "feature/published-chain", "published-chain.txt", "published\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := receipt.Candidate.SHA
+	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", published
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "recorded.txt"), "recorded\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "recorded.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: record validated descendant")
+	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "resolved.txt"), "resolved\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "resolved.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: resolve later target conflict")
+	head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt)
+	if err != nil {
+		t.Fatalf("advance exact published ancestry chain: %v", err)
+	}
+	if !advanced || receipt.Candidate.SHA != head {
+		t.Fatalf("advanced=%v candidate=%s, want %s", advanced, receipt.Candidate.SHA, head)
+	}
+
+	receipt.Candidate.SHA = head
+	receipt.PublishedCandidateSHA = strings.Repeat("f", 40)
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "untrusted.txt"), "untrusted\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "untrusted.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: untrusted ancestry probe")
+	if _, err := advancePublishedWorktreeMergeCandidate(context.Background(), &receipt); err == nil || !strings.Contains(err.Error(), "published candidate predecessor") {
+		t.Fatalf("unrelated published predecessor was not refused: %v", err)
 	}
 }
 

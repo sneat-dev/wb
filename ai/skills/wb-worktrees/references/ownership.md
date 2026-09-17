@@ -170,49 +170,6 @@ exception, never a silent bypass.
 
 ## Move a registered session over SSH
 
-## Park and resume an agent session
-
-**Registration is not a precondition. Park registers you if needed:**
-
-```sh
-wb session park --context-file <file>
-```
-
-If no session is registered for the calling process, park registers one first
-from what it can observe — the agent PID from `--pid`, `WB_AGENT_PID`, or the
-nearest recognised harness above this process; the runtime from `--runtime`,
-the environment, or the observed parent process name; the model from `--model`
-or the environment; the machine from this hostname — and then parks. Both the
-session record and the park output carry `registered_at_park`, and the output
-names the `wb_session_id` it created, so you learn your own identity from the
-park itself. A runtime or model WB was neither told nor able to observe is
-recorded as `unknown`: missing metadata never refuses a park. Never hand-roll
-parking because you are unregistered — that is the exact failure this removes.
-`--wb-session-id` parks an already-registered session instead and never creates
-a registration.
-
-`wb session park --context-file <file>` records an append-only checkpoint
-containing every worktree owned by the active session. The context file may be
-`-` for stdin and is read as a bounded, regular, no-follow private input. It
-preserves dirty local work and does not commit, push, or remove any worktree.
-Local `wb session resume <parked-session-id>` launches one fresh successor and
-attaches it to every retained member. Before a fresh launch claims its route or
-changes custody, it preflights the fixed tmux, harness, and WB executables. An
-early harness exit retains its exit status and a bounded terminal diagnostic;
-retry uses the same receipt-gated attempt evidence rather than allocating a
-second successor silently.
-
-## Receive a parked session bundle
-
-`wb session receive-park` accepts one bounded canonical parked-session envelope
-on stdin. It authenticates the local target and returns only a durable target
-receipt; private continuation is never printed. The public command is
-implemented, but source resume and coordinator launch remain gated.
-
-```sh
-wb session receive-park --format json
-```
-
 Session movement is fail-closed. The invoking process must belong to a live
 registered session that owns the worktree's active managed Work Log, and the
 worktree must be clean on a named branch that can advance `origin` without a
@@ -226,8 +183,9 @@ wb session move --to hetzner-vm1 --via ssh --harness claude-code \
 ```
 
 Omit `--harness` to continue in the source runtime. The only supported
-harnesses are `codex` and `claude-code`; same-harness moves retain the source
-model, while cross-harness moves use the target harness's default model.
+harnesses are `codex` and `claude-code`. Spoken `claude` selects `claude-code`.
+A requested `--model` is passed even across harnesses. Omit `--to` to deliver
+on this machine via the in-process loopback courier.
 
 Before checkpoint mutation, WB validates the requested harness and resolves
 the configured courier. It preallocates the successor identity, generates and
@@ -261,7 +219,52 @@ wb session move --resume <handoff-id>
 Resume does not checkpoint again. It reloads the byte-identical admitted
 request and immutable courier address, so a later `wb.yaml` host/default change
 cannot redirect the handoff. Do not start a fresh move to recover an ambiguous
-attempt.
+attempt. For a whole-session transfer that may be dirty, park then pickup.
+
+## Park and resume an agent session
+
+**Registration is not a precondition. Park registers you if needed:**
+
+```sh
+wb session park --context-file <file>
+wb session pickup <parked-session-id>
+wb session resume <parked-session-id>
+```
+
+If no session is registered for the calling process, park registers one first
+from what it can observe — the agent PID from `--pid`, `WB_AGENT_PID`, or the
+nearest recognised harness above this process; the runtime from `--runtime`,
+the environment, or the observed parent process name; the model from `--model`
+or the environment; the machine from this hostname — and then parks. Both the
+session record and the park output carry `registered_at_park`, and the output
+names the `wb_session_id` it created, so you learn your own identity from the
+park itself. A runtime or model WB was neither told nor able to observe is
+recorded as `unknown`: missing metadata never refuses a park. Never hand-roll
+parking because you are unregistered — that is the exact failure this removes.
+`--wb-session-id` parks an already-registered session instead and never creates
+a registration.
+
+`wb session park --context-file <file>` records an append-only checkpoint
+containing every worktree owned by the active session. The context file may be
+`-` for stdin and is read as a bounded, regular, no-follow private input. It
+preserves dirty local work and does not commit, push, or remove any worktree.
+Local `wb session pickup <parked-session-id>` (alias of `wb session resume`)
+launches one fresh successor and attaches it to every retained member. Before a fresh launch claims its route or
+changes custody, it preflights the fixed tmux, harness, and WB executables. An
+early harness exit retains its exit status and a bounded terminal diagnostic;
+retry uses the same receipt-gated attempt evidence rather than allocating a
+second successor silently.
+
+## Receive a parked session bundle
+
+`wb session receive-park` accepts one bounded canonical parked-session envelope
+on stdin. It authenticates the local target and returns only a durable target
+receipt; private continuation is never printed. The public command is
+implemented, but source resume and coordinator launch remain gated.
+
+```sh
+wb session receive-park --format json
+```
 
 ## Receive a pinned target checkpoint
 
@@ -292,7 +295,7 @@ the matching worktree, launch state, tmux session, and successor PID; a
 completed `successor_started` replay performs no Git fetch. The receiver does
 not create a receipt or change predecessor custody in this stage.
 
-## Message a recorded successor and request handoff back
+## Message a recorded successor and recall control
 
 After a completed move, address the successor only by the stable WB session ID
 printed in the receipt. WB resolves the immutable successor address and its
@@ -302,13 +305,14 @@ override on these commands.
 ```sh
 wb session send <successor-wb-session-id> --message-file message.txt
 wb session send <successor-wb-session-id> --message-file - < message.txt
-wb session request-handoff <successor-wb-session-id>
+wb session recall <successor-wb-session-id>
 ```
 
 `send` accepts exactly one bounded `--message` or `--message-file` input. The
-standard `request-handoff` message has an empty body; its typed kind and
-`reply_to_wb_session_id` identify the predecessor to which control should
-return. WB durably records the exact canonical JSON before courier use, and the
+standard recall message (`request_handoff` on the wire) has an empty body; its
+typed kind and `reply_to_wb_session_id` identify the predecessor to which
+control should return. `wb session request-handoff` remains an alias of `recall`.
+WB durably records the exact canonical JSON before courier use, and the
 receiver pastes those exact typed bytes through a verified named tmux buffer.
 Acknowledgement proves durable recording and paste to the recorded live pane;
 it does not assert that the agent processed the input.
@@ -318,7 +322,7 @@ WB. Resume reloads the already-durable bytes and rejects a replacement body:
 
 ```sh
 wb session send <successor-wb-session-id> --resume <message-id>
-wb session request-handoff <successor-wb-session-id> --resume <message-id>
+wb session recall <successor-wb-session-id> --resume <message-id>
 ```
 
 Never start a fresh message to recover an ambiguous attempt. The target will

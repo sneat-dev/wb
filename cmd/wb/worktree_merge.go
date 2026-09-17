@@ -118,7 +118,7 @@ LANDING LANE. Only one live WB session may drive this (repository, target)
 lane at a time, across merge, prepare, land, resume, and revert. A different
 live session already landing here is refused, naming that session, its pid,
 and the receipt it is driving; ask it to hand off with
-'wb session request-handoff <id>', or force the issue with
+'wb session recall <id>', or force the issue with
 --take-over-lane --lane-reason "<text>" (recorded on the lane and the
 receipt). A session whose registry entry is gone, or whose heartbeat has gone
 stale, is taken over automatically with a printed note.`,
@@ -560,22 +560,22 @@ func newWorktreeMergeAcknowledgeStrandedLandingCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "acknowledge-stranded-landing <merge-receipt>",
 		Short: "Acknowledge a proved stranded pull-request landing without rewriting its receipt",
-		Long: `Prove, using only GitHub's own remote state, that a land conflict
+		Long: `Prove, using only GitHub's own remote state, that a recoverable land
 receipt's published pull request reports MERGED at its receipted candidate
 or a strict descendant, and that its server merge commit, observed head, and
 preserved candidate are contained in the freshly fetched current remote target,
 then record a separate audited acknowledgement
-so a fresh candidate can own the lane. This accepts only a land-phase conflict
-receipt that never recorded a landing SHA but did publish an exact candidate
-in a pull request: the case where a resume's own landing-result read failed
-on pure I/O or environment error, typically because the candidate worktree
-was already removed. Unlike acknowledge-landed-failed, this proof never reads
-or requires the candidate or any receipted source worktree. The immutable
-Work Log and historical merge receipt are never rewritten. This is a dry-run
-by default; --apply requires --actor and --reason and writes only the new
-acknowledgement artifact. A pull request that is not proved MERGED, or a
-merge commit or candidate not proved contained in the current remote target,
-refuses closed.`,
+so a fresh candidate can own the lane. This accepts only a land-phase receipt
+with conflict, published, checks_pending, or checks_failed status that never
+recorded a landing SHA but did publish an exact candidate in a pull request:
+the case where a resume's own landing-result read failed on pure I/O or
+environment error, typically because the candidate worktree was already
+removed. Unlike acknowledge-landed-failed, this proof never reads or requires
+the candidate or any receipted source worktree. The immutable Work Log and
+historical merge receipt are never rewritten. This is a dry-run by default;
+--apply requires --actor and --reason and writes only the new acknowledgement
+artifact. A pull request that is not proved MERGED, or a merge commit or
+candidate not proved contained in the current remote target, refuses closed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {

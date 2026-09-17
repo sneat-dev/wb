@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +35,7 @@ type Options struct {
 	// Mounts attaches extra subtrees to the same loopback listener, keyed by
 	// the path prefix each one owns (it must start and end with "/"). A
 	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
-	// embedded dashboard under /bench/; without a hub section the map is
+	// embedded dashboard under /workbench/; without a hub section the map is
 	// empty and the served routes are exactly what they were.
 	Mounts map[string]http.Handler
 	// Hub reports the live state of a self-hosted bench hub for
@@ -43,7 +45,20 @@ type Options struct {
 	// own StatusService resolves — reach it through the health endpoint rather
 	// than by opening the hub's store a second time. Nil when there is no hub.
 	Hub func(context.Context) HubHealth
+	// LogPath is the daemon's own runtime log file. When set, /api/v1/log
+	// serves a tail of it directly — the daemon is the log's only authority,
+	// so a reverse proxy in front of it never needs disk access of its own.
+	// Empty disables the endpoint (503).
+	LogPath string
 }
+
+// defaultLogTailBytes bounds an unqualified /api/v1/log request. It is large
+// enough for a useful scrollback without letting one request read an
+// unbounded multi-GB log file into memory.
+const defaultLogTailBytes = 256 << 10
+
+// maxLogTailBytes bounds an explicit ?tail= request the same way.
+const maxLogTailBytes = 4 << 20
 
 // HubHealth is the self-hosted bench hub's live state, as /api/v1/health
 // reports it. Every field is derived from the hub's own services; none of it
@@ -118,6 +133,7 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("GET /api/v1/overview", server.overview)
+	mux.HandleFunc("GET /api/v1/log", server.log)
 	return securityHeaders(withMounts(options.Mounts, mux))
 }
 
@@ -139,7 +155,7 @@ func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler 
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		for prefix, handler := range routes {
-			// "/bench" reaches the same mount as "/bench/": the trailing
+			// "/workbench" reaches the same mount as "/workbench/": the trailing
 			// slash is what an operator omits, and the mounted handler is the
 			// one that knows where to redirect them.
 			if request.URL.Path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(request.URL.Path, prefix) {
@@ -302,6 +318,74 @@ func buildOverview(_ context.Context, projectsRoot, version string, now time.Tim
 	return overview, nil
 }
 
+// log serves a tail of the daemon's own runtime log file as plain text, so a
+// reverse proxy in front of the daemon never reads the file from disk itself.
+// ?tail=<bytes> requests fewer or more than defaultLogTailBytes, capped at
+// maxLogTailBytes.
+func (server *service) log(writer http.ResponseWriter, request *http.Request) {
+	if server.options.LogPath == "" {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+			"schema_version": APISchemaVersion,
+			"error":          "log_unavailable",
+			"message":        "this daemon was not started with a runtime log path",
+		})
+		return
+	}
+	tail := int64(defaultLogTailBytes)
+	if raw := request.URL.Query().Get("tail"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{
+				"schema_version": APISchemaVersion,
+				"error":          "invalid_tail",
+				"message":        "tail must be a positive number of bytes",
+			})
+			return
+		}
+		tail = parsed
+		if tail > maxLogTailBytes {
+			tail = maxLogTailBytes
+		}
+	}
+	file, err := os.Open(server.options.LogPath)
+	if err != nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+			"schema_version": APISchemaVersion,
+			"error":          "log_unavailable",
+			"message":        err.Error(),
+		})
+		return
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+			"schema_version": APISchemaVersion,
+			"error":          "log_unavailable",
+			"message":        err.Error(),
+		})
+		return
+	}
+	start := info.Size() - tail
+	truncated := start > 0
+	if start < 0 {
+		start = 0
+	}
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
+			"schema_version": APISchemaVersion,
+			"error":          "log_unavailable",
+			"message":        err.Error(),
+		})
+		return
+	}
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Log-Truncated", strconv.FormatBool(truncated))
+	writer.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(writer, file)
+}
+
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
@@ -311,10 +395,13 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'")
+		// frame-ancestors 'self' / SAMEORIGIN: the dashboard may frame its own
+		// pages (e.g. a wrapper page embedding /workbench/dashboard/ and
+		// /api/v1/log side by side), but no other origin may frame it.
+		writer.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
-		writer.Header().Set("X-Frame-Options", "DENY")
+		writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		next.ServeHTTP(writer, request)
 	})
 }

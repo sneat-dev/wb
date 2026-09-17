@@ -199,3 +199,58 @@ func TestLoadConfigRejectsANonLoopbackHTTPHubURL(t *testing.T) {
 		t.Fatalf("LoadConfig = %v, want ErrHubURL", err)
 	}
 }
+
+// TestLoadConfigMissingGitRepoReportsRepo covers the git-provider half of the
+// required-field check: an omitted repo is reported by name so the printed
+// snippet and the missing list agree.
+func TestLoadConfigMissingGitRepoReportsRepo(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, "remote:\n  machine: m\n"))
+	var unconfigured *UnconfiguredError
+	if !errors.As(err, &unconfigured) {
+		t.Fatalf("err = %v, want UnconfiguredError", err)
+	}
+	if strings.Join(unconfigured.Missing, ",") != "repo" {
+		t.Fatalf("Missing = %v, want [\"repo\"]", unconfigured.Missing)
+	}
+	if !strings.Contains(err.Error(), ConfigSnippet) {
+		t.Fatalf("ConfigSnippet missing from %q", err.Error())
+	}
+}
+
+// TestLoadConfigUnreadablePathIsNotUnconfigured proves a config file that
+// exists but cannot be read is a plain I/O error, never the "not configured"
+// guidance that would tell the user to write a file that is already there.
+// A directory is used as the unreadable path because it fails identically on
+// every platform: ReadFile cannot return its contents.
+func TestLoadConfigUnreadablePathIsNotUnconfigured(t *testing.T) {
+	_, err := LoadConfig(t.TempDir())
+	if err == nil {
+		t.Fatal("expected an error reading a directory as a config file")
+	}
+	var unconfigured *UnconfiguredError
+	if errors.As(err, &unconfigured) {
+		t.Fatalf("err = %v, should not be UnconfiguredError", err)
+	}
+	if !strings.Contains(err.Error(), "read config") {
+		t.Fatalf("\"read config\" missing from %q", err.Error())
+	}
+}
+
+// TestStoreIDNamesTheProviderThatOwnsTheStore pins the non-secret identity
+// written into snapshots, including the trailing-slash trim that keeps one hub
+// from looking like two stores to remote status.
+func TestStoreIDNamesTheProviderThatOwnsTheStore(t *testing.T) {
+	for name, tc := range map[string]struct {
+		config Config
+		want   string
+	}{
+		"git":                     {Config{Provider: "git", Repo: "sneat-dev/wb-state"}, "git:sneat-dev/wb-state"},
+		"default provider is git": {Config{Repo: "sneat-dev/wb-state"}, "git:sneat-dev/wb-state"},
+		"hub":                     {Config{Provider: "hub", URL: "https://wb-github-app.sneat.dev"}, "hub:https://wb-github-app.sneat.dev"},
+		"hub trailing slash":      {Config{Provider: "hub", URL: "https://wb-github-app.sneat.dev/"}, "hub:https://wb-github-app.sneat.dev"},
+	} {
+		if got := tc.config.StoreID(); got != tc.want {
+			t.Errorf("%s: StoreID() = %q, want %q", name, got, tc.want)
+		}
+	}
+}

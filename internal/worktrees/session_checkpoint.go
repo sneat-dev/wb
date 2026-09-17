@@ -38,6 +38,7 @@ type SessionCheckpointOptions struct {
 	SourceSession        session.Record
 	TargetMachine        string
 	RequestedHarness     string
+	RequestedModel       string
 	HandoffID            string
 	SuccessorWBSessionID string
 	Handover             SessionHandover
@@ -102,8 +103,9 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 		return result, fmt.Errorf("target machine is required")
 	}
 	options.RequestedHarness = strings.TrimSpace(options.RequestedHarness)
-	if strings.ContainsAny(options.RequestedHarness, "\r\n") {
-		return result, fmt.Errorf("requested harness must be single-line")
+	options.RequestedModel = strings.TrimSpace(options.RequestedModel)
+	if strings.ContainsAny(options.RequestedHarness+options.RequestedModel, "\r\n") {
+		return result, fmt.Errorf("requested harness and model must be single-line")
 	}
 	if options.Now.IsZero() {
 		options.Now = time.Now().UTC()
@@ -166,6 +168,7 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 		SourceModel:           options.SourceSession.Model,
 		SourceNativeHarnessID: sourceNativeHarnessID(options.SourceSession),
 		RequestedHarness:      options.RequestedHarness,
+		RequestedModel:        strings.TrimSpace(options.RequestedModel),
 		WorkLogReference:      preflight.workLogReference,
 		SourceOfferMessage:    offerMessage,
 		SourceOfferNextAction: offerNextAction,

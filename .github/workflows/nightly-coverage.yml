@@ -1,0 +1,79 @@
+name: Nightly coverage
+
+# The full merged-coverage backstop.
+#
+# `Go CI`'s coverage job gates every pull request on the merged statement
+# threshold, and a merged total cannot be computed from a subset — so that gate
+# is what forces the whole suite to run on every revision. wb accounts for
+# roughly 82% of the fleet's CI test wall-clock as a result.
+#
+# This workflow exists so that gate can be relaxed on the pull-request path
+# without losing the floor: the merged total is still proved daily against
+# main, and a regression surfaces within 24 hours instead of at merge time.
+#
+# It deliberately duplicates only the threshold. Shard configuration and the
+# process-isolated package list stay in the repository-owned .wb/quality.yaml,
+# which `wb coverage` reads, so this file and go-ci.yml cannot drift on them.
+# The threshold below must stay in step with the `--minimum` in
+# .github/workflows/go-ci.yml.
+
+on:
+  schedule:
+    # 03:00 UTC daily, off the working peak for this fleet.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A nightly run is never worth queueing behind another nightly run.
+  group: nightly-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  coverage:
+    name: Full merged coverage (main)
+    runs-on: ubuntu-latest
+    # Matches go-ci.yml's coverage budget: internal/orchestrate is not
+    # process-isolated, so its single unsharded binary runs for well over 15
+    # minutes and is the wall-clock long pole.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with merged coverage threshold
+        run: >-
+          go run ./cmd/wb coverage .
+          --coverage-profile profile.cov
+          --report-dir coverage-diagnostics
+          --minimum=88
+          --format json
+          --non-interactive
+          --timeout 35m
+
+      - name: Upload coverage diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-nightly-coverage-diagnostics
+          path: coverage-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-nightly-go-coverage
+          path: profile.cov
+          if-no-files-found: error
+          # Kept longer than go-ci's copy: this is the series a coverage trend
+          # is read from, and the pull-request profiles are transient.
+          retention-days: 30

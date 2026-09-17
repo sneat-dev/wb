@@ -884,6 +884,14 @@ func validateCorrectionIdentity(options CorrectExecutionIdentityOptions) error {
 	return nil
 }
 
+// ValidExecutionIdentifier reports whether value may be recorded as execution
+// route metadata: model, CLI, or provider. It is the single authority for that
+// rule, shared by every caller that records an execution identity so the
+// accepted syntax cannot drift between them.
+func ValidExecutionIdentifier(value string, allowUnknown bool) bool {
+	return validExecutionIdentifier(value, allowUnknown)
+}
+
 func validExecutionIdentifier(value string, allowUnknown bool) bool {
 	if value == "unknown" {
 		return allowUnknown

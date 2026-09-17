@@ -287,8 +287,9 @@ other private metadata.
 
 ## Local execution and throttling
 
-The daemon persists jobs below the projects root in
-`.wb/runtime/daemon/repository-events/`. The cursor, pending acknowledgement,
+The daemon persists jobs in its own runtime directory — `runtime/daemon/`
+under this WB home (`~/.wb/runtime/daemon/repository-events/` by default). The
+cursor, pending acknowledgement,
 queued jobs, attempts, retry time, progress, transfer-cleanup receipt and
 recovery command survive process and machine restarts.
 

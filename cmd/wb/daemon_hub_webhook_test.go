@@ -292,7 +292,7 @@ func TestPollIntervalPrefersTheTestOverride(t *testing.T) {
 // TestDaemonStatusReportsWebhookMode is the status half: an operator asks
 // whether GitHub is expected to reach them, and where.
 func TestDaemonStatusReportsWebhookMode(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.hubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
 	status := newDaemonController(deps, root).hubStatus(context.Background(), "")

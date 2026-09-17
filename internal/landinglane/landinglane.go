@@ -112,7 +112,7 @@ func (e *ConflictError) Error() string {
 	}
 	return fmt.Sprintf(
 		"landing lane %s (%s -> %s) is held by session %s (pid %d, %s) since %s, running %s; receipt: %s; "+
-			"ask it to hand off with `wb session request-handoff %s`, or override with --take-over-lane --lane-reason <text>",
+			"ask it to return control with `wb session recall %s`, or override with --take-over-lane --lane-reason <text>",
 		e.Record.Lane, e.Record.Repository, e.Record.Target,
 		owner.WBSessionID, owner.PID, runtime, since, command, receipt, owner.WBSessionID,
 	)

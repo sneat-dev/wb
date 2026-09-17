@@ -80,8 +80,8 @@ func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T
 	t.Setenv(EnvSessionID, "")
 	SetSessionResolver(func() (AgentIdentity, bool) { return AgentIdentity{}, false })
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
-	home := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv(wbhome.EnvOverride, home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot:    projectsRoot,
@@ -2376,15 +2376,17 @@ func configureFixtureSharedWorktrees(t *testing.T, fixture *gitFixture) {
 func newGitFixtureForRepository(t *testing.T, repository string) *gitFixture {
 	t.Helper()
 	root := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// projectsRoot has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb — a hermetic test must never write there. Scoping it per fixture,
-	// not per package, also keeps each test's worktree root unique even when
-	// two tests reuse the same operation name, matching this suite's existing
-	// per-fixture isolation.
-	home := filepath.Join(root, ".wb")
-	t.Setenv(wbhome.EnvOverride, home)
+	// Scope state to this fixture's own projects root. WB_PROJECTS_ROOT keeps
+	// a call that passes no root hermetic; an explicit ProjectsRoot wins over
+	// it. Scoping per fixture, not per package, also keeps each test's
+	// worktree root unique even when two tests reuse the same operation name.
+	projectsRoot := filepath.Join(root, "projects")
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	// Pin HOME so the retired $HOME/.wb read layout can never be this
+	// machine's real fleet state.
+	t.Setenv("HOME", filepath.Join(root, "home"))
 	return newGitFixtureAtRepository(t, root, home, repository)
 }
 
@@ -2395,10 +2397,14 @@ func newDefaultHomeGitFixture(t *testing.T) *gitFixture {
 	if err := os.MkdirAll(homeParent, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(wbhome.EnvOverride, "")
+	// State always derives from the projects root now: <projectsRoot>/.wb. The
+	// fixture pins HOME too, so an accidental fallback to the default root is
+	// still hermetic.
+	projectsRoot := filepath.Join(root, "projects")
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 	t.Setenv("HOME", homeParent)
-	return newGitFixtureAt(t, root, filepath.Join(homeParent, ".wb"))
+	return newGitFixtureAt(t, root, filepath.Join(projectsRoot, ".wb"))
 }
 
 func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {

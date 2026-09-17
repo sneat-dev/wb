@@ -14,10 +14,10 @@ import (
 
 func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 	fixture := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb; a hermetic test must not write there.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, "projects"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")
@@ -128,10 +128,10 @@ func TestDependencyPullRequestBodiesReportValidationAuthorityTruthfully(t *testi
 
 func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 	fixture := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb; a hermetic test must not write there.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, "projects"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")
@@ -165,10 +165,10 @@ func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 
 func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
 	fixture := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb; a hermetic test must not write there.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, "projects"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")

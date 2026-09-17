@@ -1046,6 +1046,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	if err != nil {
 		return ListOutcome{}, err
 	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
 	if err != nil {
 		return ListOutcome{}, err
@@ -2204,6 +2205,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	// Carry the real root into every secure Git handoff below, so the helper
+	// that builds the sandbox authorizes the hook runtime directory the
+	// installed hook actually writes to.
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	// Remote parked-session receivers use a resume/member-derived physical
 	// task directory so concurrent resumes cannot collide. Their immutable
 	// manifest retains the logical effort, which is what an operator naturally
@@ -2545,7 +2550,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		pendingLifecycleBacklogs := 0
 		defer func() {
 			retireNamespace := true
-			if selection.WorktreesRoot == filepath.Join(resolution.Write.Home, "worktrees") {
+			// The selection's root for a repository-local cleanup is the home's
+			// logical task namespace, so compare against that, not the physical
+			// checkout store.
+			if selection.WorktreesRoot == resolution.Write.StateWorktreesRoot() {
 				// A filtered cleanup may leave physical members in other canonical
 				// repositories. Check the whole task while its lock is still held;
 				// an empty coordination directory alone does not prove terminality.
@@ -5284,7 +5292,7 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 		gitExecutable, remotePath, strconv.Itoa(remoteFD),
 	}, gitArgs...)
 	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Env = secureCleanupGitHelperEnvironment()
+	command.Env = secureCleanupGitHelperEnvironment(ctx)
 	if worktreeDirectory != nil {
 		if worktreeParent == nil || worktreeParentPath == "" {
 			return fmt.Errorf("cleanup worktree parent descriptor is unavailable")
@@ -5315,8 +5323,8 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 // outside the retained repository, while discovering WB's own parent go.work
 // from a temporary hook repository is equally incorrect. The hook still
 // receives its explicit private Go cache paths from the resolved hook layout.
-func secureCleanupGitHelperEnvironment() []string {
-	parent := console.Env()
+func secureCleanupGitHelperEnvironment(ctx context.Context) []string {
+	parent := secureHelperEnvironment(ctx)
 	environment := make([]string, 0, len(parent))
 	for _, entry := range parent {
 		key, _, found := strings.Cut(entry, "=")
@@ -5466,7 +5474,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		}
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: prepare hook runtime layout: %v\n", err)
 		return 1

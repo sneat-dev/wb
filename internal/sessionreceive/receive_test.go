@@ -81,8 +81,8 @@ func TestReceiveIdenticalRetryReturnsReceiptWithoutDuplicateReceiverEffects(t *t
 	request, raw, _ := receiveTestRequest(t)
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
-	home := filepath.Join(root, "home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(projectsRoot, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}

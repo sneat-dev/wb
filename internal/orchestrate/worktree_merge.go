@@ -1716,8 +1716,15 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *Worktr
 	if head == receipt.Candidate.SHA {
 		return false, nil
 	}
-	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+	if receipt.PublishedCandidateSHA == "" {
 		return false, fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head)
+	}
+	publishedContainsRecorded, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
+	if err != nil {
+		return false, fmt.Errorf("verify published candidate predecessor: %w", err)
+	}
+	if !publishedContainsRecorded {
+		return false, fmt.Errorf("recorded candidate %s does not descend from published candidate %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
 	}
 	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, head)
 	if err != nil {
@@ -3590,7 +3597,14 @@ func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candid
 var (
 	goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
 	goCoverageCommandShardsPattern  = regexp.MustCompile(`\s+\([0-9]+\s+process-isolated shards for [^)]*\)$`)
+	// A raw-output section header: either the unsharded group or one package
+	// path, optionally carrying its scheduler shard placement.
+	goCoveragePlacementHeaderPattern = regexp.MustCompile(`^\[(unsharded packages|[^\[\] \t]+)(\s+shard\s+[0-9]+/[0-9]+)?\]$`)
 )
+
+// goCoverageTimeoutIdentity is the failure identity of a group that ran out of
+// time instead of failing a named test.
+const goCoverageTimeoutIdentity = "timed out"
 
 func normalizeGoCoverageCommand(command string) string {
 	return goCoverageCommandShardsPattern.ReplaceAllString(command, " (<process-isolated shards>)")
@@ -3607,9 +3621,17 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 		return identities
 	}
 	index := detail[indexStart+len(failureIndexHeader):]
-	if rawOutput := strings.Index(index, rawOutputHeader); rawOutput >= 0 {
-		index = index[:rawOutput]
+	rawOutput := ""
+	if raw := strings.Index(index, rawOutputHeader); raw >= 0 {
+		rawOutput = index[raw+len(rawOutputHeader):]
+		index = index[:raw]
 	}
+	// A test-binary timeout kills the group wherever it happens to be, so the
+	// test it names is incidental: the same pre-existing timeout names a
+	// different test, or none at all, on the next run. Collapse a timed-out
+	// placement to one identity so a repeated timeout is recognised as the
+	// baseline failure it is instead of reading as a newly introduced one.
+	timedOut := goCoverageTimedOutPlacements(rawOutput)
 	for _, rawLine := range strings.Split(index, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "- [") {
@@ -3625,9 +3647,30 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 		if placement == "" || testName == "" {
 			continue
 		}
+		if _, ok := timedOut[placement]; ok {
+			testName = goCoverageTimeoutIdentity
+		}
 		identities[placement+"\x00"+testName] = struct{}{}
 	}
 	return identities
+}
+
+// goCoverageTimedOutPlacements reports which check placements recorded a
+// test-binary timeout in WB's coverage raw output.
+func goCoverageTimedOutPlacements(rawOutput string) map[string]struct{} {
+	placements := make(map[string]struct{})
+	placement := ""
+	for _, rawLine := range strings.Split(rawOutput, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if goCoveragePlacementHeaderPattern.MatchString(line) {
+			placement = goCoverageShardPlacementPattern.ReplaceAllString(strings.Trim(line, "[]"), "")
+			continue
+		}
+		if placement != "" && strings.Contains(line, "timed out after") {
+			placements[placement] = struct{}{}
+		}
+	}
+	return placements
 }
 
 // matchSpecScoreBaselineFailure treats the exact violation identity set as the

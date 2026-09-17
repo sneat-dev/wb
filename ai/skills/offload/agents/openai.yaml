@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Offload"
+  short_description: "Delegate a bounded task to a WB-dispatched worker and verify the result"
+  default_prompt: "Use $offload to delegate one bounded coding task: start a cheap supervisor subagent that runs wb agent dispatch and wb agent await, verifies the worker's worktree and tests against the original acceptance criteria, and returns exactly one PASS, FAIL, or ESCALATE verdict with evidence — without pulling the worker transcript into this session."

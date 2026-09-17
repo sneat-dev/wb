@@ -341,7 +341,7 @@ func TestRecoverRepositoryTransferCleanupRecordsRestoredDestination(t *testing.T
 		t.Fatal(err)
 	}
 	projectsRoot := filepath.Join(temporaryRoot, "projects")
-	t.Setenv("WB_HOME", filepath.Join(temporaryRoot, "wb-home"))
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
 	destination := filepath.Join(projectsRoot, "newco", "renamed")
 	quarantine := filepath.Join(projectsRoot, "newco", ".wb-replaced-renamed-0123456789ab")
 	if err := os.MkdirAll(quarantine, 0o755); err != nil {

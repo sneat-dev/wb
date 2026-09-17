@@ -32,7 +32,7 @@ func TestDaemonRequiresLoopbackListener(t *testing.T) {
 }
 
 func TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	previousRoot := projectsRoot
 	projectsRoot = root
@@ -57,15 +57,15 @@ func TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut(t *testing.T) {
 }
 
 func TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == 900 }
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", time.Now())
 	state.MarkReady(900, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +105,13 @@ func TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock(t *testing.T) {
 	if contents, err := os.ReadFile(lockPath); err != nil || string(contents) != "pid=800\n" {
 		t.Fatalf("recovery rewrote stable lock contents=%q err=%v", contents, err)
 	}
-	if contents, err := os.ReadFile(daemonLifecycleOwnerPath(root)); err != nil || string(contents) != "pid=0\n" {
+	if contents, err := os.ReadFile(mustDaemonPath(t, daemonLifecycleOwnerPath, root)); err != nil || string(contents) != "pid=0\n" {
 		t.Fatalf("applied owner contents=%q err=%v", contents, err)
 	}
 }
 
 func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	release, err := controller.lifecycleLock()
@@ -127,19 +127,19 @@ func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
 	}
 	release()
 
-	if err := os.Remove(daemonLifecycleOwnerPath(root)); err != nil {
+	if err := os.Remove(mustDaemonPath(t, daemonLifecycleOwnerPath, root)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(daemonLifecycleLockPath(root), []byte("pid=800\n"), 0o600); err != nil {
+	if err := os.WriteFile(mustDaemonPath(t, daemonLifecycleLockPath, root), []byte("pid=800\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := controller.provenance()
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := daemon.NewStarting(nil, daemonDefaultListen, provenance, "owner", deps.now().Add(-daemonReadyTimeout-time.Second))
+	state := daemonTestState(t, root, daemonDefaultListen, provenance, "owner", deps.now().Add(-daemonReadyTimeout-time.Second))
 	controller.deps.health = func(context.Context, string) error { return errors.New("not reachable") }
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	result, err := controller.RecoverLifecycleLock(context.Background(), false)
@@ -152,7 +152,7 @@ func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
 	if _, err := controller.lifecycleLock(); err == nil || !strings.Contains(err.Error(), "recovery is unsafe") {
 		t.Fatalf("non-terminal lifecycle acquisition error = %v", err)
 	}
-	if contents, err := os.ReadFile(daemonLifecycleLockPath(root)); err != nil || string(contents) != "pid=800\n" {
+	if contents, err := os.ReadFile(mustDaemonPath(t, daemonLifecycleLockPath, root)); err != nil || string(contents) != "pid=800\n" {
 		t.Fatalf("refused recovery changed lock: contents=%q err=%v", contents, err)
 	}
 	applied, err := controller.RecoverLifecycleLock(context.Background(), true)
@@ -162,7 +162,7 @@ func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
 	if !applied.Applied || applied.Reason != "interrupted_start" {
 		t.Fatalf("applied interrupted-start recovery = %#v", applied)
 	}
-	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	stored, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 	if err != nil || !found || stored.Status != daemon.StatusStopped || stored.PID != 0 || stored.OwnerToken == "owner" {
 		t.Fatalf("recovered startup state = %#v, found=%t, err=%v", stored, found, err)
 	}
@@ -174,15 +174,15 @@ func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
 }
 
 func TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", time.Now())
 	state.MarkStopped(time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -208,13 +208,13 @@ func TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode(t *testing.T) {
 	if contents, err := os.ReadFile(lockPath); err != nil || string(contents) != "pid=800\n" {
 		t.Fatalf("lifecycle transition rewrote stable lock contents=%q err=%v", contents, err)
 	}
-	if contents, err := os.ReadFile(daemonLifecycleOwnerPath(root)); err != nil || string(contents) != "pid=0\n" {
+	if contents, err := os.ReadFile(mustDaemonPath(t, daemonLifecycleOwnerPath, root)); err != nil || string(contents) != "pid=0\n" {
 		t.Fatalf("released owner contents=%q err=%v", contents, err)
 	}
 }
 
 func TestDaemonRecoverReturnsJSONForActiveTransitionAndApplyRefuses(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	release, err := controller.lifecycleLock()
@@ -250,7 +250,7 @@ func TestDaemonRecoverReturnsJSONForActiveTransitionAndApplyRefuses(t *testing.T
 }
 
 func TestDaemonRecoverReportsIdleLockAsNoStaleOwner(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	release, err := controller.lifecycleLock()
@@ -268,17 +268,17 @@ func TestDaemonRecoverReportsIdleLockAsNoStaleOwner(t *testing.T) {
 }
 
 func TestDaemonLifecycleOwnerRefusesPartialAtomicRecord(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(lockPath, []byte("pid=800\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(daemonLifecycleOwnerPath(root), []byte("pid="), 0o600); err != nil {
+	if err := os.WriteFile(mustDaemonPath(t, daemonLifecycleOwnerPath, root), []byte("pid="), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := controller.lifecycleLock(); err == nil || !strings.Contains(err.Error(), "ambiguous ownership metadata") {
@@ -294,10 +294,10 @@ func TestDaemonLifecycleOwnerRefusesPartialAtomicRecord(t *testing.T) {
 }
 
 func TestDaemonRecoverHandlesInterruptedInitializationBeforeState(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestDaemonRecoverHandlesInterruptedInitializationBeforeState(t *testing.T) 
 }
 
 func TestDaemonRecoverySerializesWithStartingChildState(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == os.Getpid() }
 	controller := newDaemonController(deps, root)
@@ -330,11 +330,11 @@ func TestDaemonRecoverySerializesWithStartingChildState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := daemon.NewStarting(nil, daemonDefaultListen, provenance, "owner", deps.now().Add(-daemonReadyTimeout-time.Second))
+	state := daemonTestState(t, root, daemonDefaultListen, provenance, "owner", deps.now().Add(-daemonReadyTimeout-time.Second))
 	if err := controller.store.Save(state); err != nil {
 		t.Fatal(err)
 	}
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestDaemonRecoverySerializesWithStartingChildState(t *testing.T) {
 }
 
 func TestDaemonRecoveryRefusesUnverifiedLiveStartingProcess(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == os.Getpid() }
 	deps.ownedHealth = func(context.Context, string, int, uint64) error {
@@ -383,12 +383,12 @@ func TestDaemonRecoveryRefusesUnverifiedLiveStartingProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := daemon.NewStarting(nil, daemonDefaultListen, provenance, "owner", deps.now())
+	state := daemonTestState(t, root, daemonDefaultListen, provenance, "owner", deps.now())
 	state.MarkStartingPID(os.Getpid(), deps.now())
 	if err := controller.store.Save(state); err != nil {
 		t.Fatal(err)
 	}
-	lockPath := daemonLifecycleLockPath(root)
+	lockPath := mustDaemonPath(t, daemonLifecycleLockPath, root)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestDaemonOwnedHealthyRequiresExactPIDAndGeneration(t *testing.T) {
 }
 
 func TestDaemonLaunchDoesNotPromoteChildThatExitsAfterHealthCheck(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.now()
 	deps.now = func() time.Time { return now }
@@ -470,11 +470,11 @@ func TestDaemonLaunchDoesNotPromoteChildThatExitsAfterHealthCheck(t *testing.T) 
 }
 
 func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
 	state.MarkReady(900, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	result, err := newDaemonController(deps, root).Status(context.Background())
@@ -484,25 +484,33 @@ func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
 	if result.State.Status != daemon.StatusStopped || result.State.PID != 0 || result.Reachable {
 		t.Fatalf("dead ready daemon status = %#v", result)
 	}
-	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	stored, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 	if err != nil || !found || stored.Status != daemon.StatusStopped {
 		t.Fatalf("persisted stale daemon state = %#v, %t, %v", stored, found, err)
 	}
 }
 
 func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
-	state.MarkReady(900, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
-		t.Fatal(err)
-	}
 	deps.alive = func(pid int) bool { return pid == 900 }
 	deps.health = func(context.Context, string) error { return errors.New("connect: operation not permitted") }
 	deps.bridgeHealth = func(context.Context, string, string) error { return errors.New("bridge unavailable") }
+	controller := newDaemonController(deps, root)
+	// The subject here is the separation of a ready record from a failing API
+	// probe, so the record must match this build: a provenance mismatch is its
+	// own condition and would make the reported state unverified.
+	current, err := controller.provenance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := daemonTestState(t, root, daemonDefaultListen, current, "owner", time.Now())
+	state.MarkReady(900, time.Now())
+	if err := controller.store.Save(state); err != nil {
+		t.Fatal(err)
+	}
 
-	result, err := newDaemonController(deps, root).Status(context.Background())
+	result, err := controller.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,18 +538,18 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 			t.Fatalf("JSON status %q does not contain %q", jsonOutput.String(), want)
 		}
 	}
-	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	stored, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 	if err != nil || !found || stored.Status != daemon.StatusReady || stored.Queue.Generation != 1 {
 		t.Fatalf("probe failure mutated lifecycle state = %#v, %t, %v", stored, found, err)
 	}
 }
 
 func TestDaemonStatusUsesAuthenticatedFileBridgeAfterDirectTransportDenial(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
 	state.MarkReady(901, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	deps.alive = func(pid int) bool { return pid == 901 }
@@ -585,11 +593,11 @@ func TestDaemonStatusUsesAuthenticatedFileBridgeAfterDirectTransportDenial(t *te
 }
 
 func TestDaemonStatusReportsDirectTransportWithoutBridgeProbe(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
 	state.MarkReady(902, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	deps.alive = func(pid int) bool { return pid == 902 }
@@ -609,11 +617,11 @@ func TestDaemonStatusReportsDirectTransportWithoutBridgeProbe(t *testing.T) {
 }
 
 func TestDaemonStatusDoesNotBridgeDisallowedDirectFailure(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
 	state.MarkReady(903, time.Now())
-	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
 		t.Fatal(err)
 	}
 	deps.alive = func(pid int) bool { return pid == 903 }
@@ -633,7 +641,7 @@ func TestDaemonStatusDoesNotBridgeDisallowedDirectFailure(t *testing.T) {
 }
 
 func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	first, err := controller.Start(context.Background(), daemonDefaultListen)
@@ -661,7 +669,7 @@ func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T
 }
 
 func TestDaemonStartKeepsOwnerTokenOutOfProcessArguments(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	originalStart := deps.start
 	deps.start = func(executable string, args []string, logPath string) (int, error) {
@@ -681,7 +689,7 @@ func TestDaemonStartKeepsOwnerTokenOutOfProcessArguments(t *testing.T) {
 }
 
 func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	first, err := controller.Start(context.Background(), daemonDefaultListen)
@@ -742,7 +750,7 @@ func TestDaemonRestartProgressIsPhaseAwareAndBounded(t *testing.T) {
 func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 	for _, format := range []string{"text", "json"} {
 		t.Run(format, func(t *testing.T) {
-			root := t.TempDir()
+			root := daemonTestRoot(t)
 			deps := daemonTestDependencies(t, root)
 			if _, err := newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen); err != nil {
 				t.Fatal(err)
@@ -778,7 +786,7 @@ func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 }
 
 func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := newDaemonController(deps, root)
 	first, err := controller.Start(context.Background(), daemonDefaultListen)
@@ -849,13 +857,15 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		},
 	}
 	deps.start = func(_ string, args []string, _ string) (int, error) {
-		statePath := ""
-		for index := range args {
-			if args[index] == "--lifecycle-state" && index+1 < len(args) {
-				statePath = args[index+1]
+		// The supervisor unit no longer pins the lifecycle state path: it
+		// passes --managed-start and the daemon resolves its own runtime
+		// directory, so this fake resolves it the same way.
+		for _, argument := range args {
+			if argument == "--lifecycle-state" {
+				t.Fatalf("daemon start pinned a resolved lifecycle path: %v", args)
 			}
 		}
-		state, ok, err := (daemon.Store{Path: statePath}).Load()
+		state, ok, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
 		if err != nil || !ok || state.OwnerToken == "" {
 			t.Fatalf("starting state = %#v, %t, %v", state, ok, err)
 		}

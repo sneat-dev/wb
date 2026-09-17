@@ -71,16 +71,21 @@ type Dashboard struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	Summary     Summary   `json:"summary"`
 	Links       []Link    `json:"links,omitempty"`
+	// Fleet is the published machine and worktree projection. A self-hosted
+	// hub serves it from its own store; a control-plane deployment without a
+	// fleet projection omits it.
+	Fleet *FleetSnapshot `json:"fleet,omitempty"`
 }
 
 // Stat is one scoped repository, organization, or user result.
 type Stat struct {
-	Scope       Scope     `json:"scope"`
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	Summary     Summary   `json:"summary"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	Links       []Link    `json:"links,omitempty"`
+	Scope       Scope          `json:"scope"`
+	ID          string         `json:"id"`
+	DisplayName string         `json:"display_name"`
+	Summary     Summary        `json:"summary"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	Links       []Link         `json:"links,omitempty"`
+	Fleet       *FleetSnapshot `json:"fleet,omitempty"`
 }
 
 // SeriesPoint can render either a graph point or a table row.

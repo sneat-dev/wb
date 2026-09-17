@@ -474,6 +474,24 @@ func (hub ExecGitHub) CreateDraftPullRequest(ctx context.Context, dir, base, hea
 	return pullRequest, nil
 }
 
+// UpdatePullRequestTitle implements GitHub and asserts the effect.
+func (hub ExecGitHub) UpdatePullRequestTitle(ctx context.Context, dir string, number int, title string) error {
+	if _, err := hub.run(ctx, dir, "pr", "edit", strconv.Itoa(number), "--title", title); err != nil {
+		return fmt.Errorf("update pull request %d title: %w", number, err)
+	}
+	pullRequest, found, err := hub.PullRequest(ctx, dir, number)
+	if err != nil {
+		return fmt.Errorf("verify pull request %d title: %w", number, err)
+	}
+	if !found {
+		return fmt.Errorf("updated pull request %d title but it no longer resolves; treat the update as unverified", number)
+	}
+	if pullRequest.Title != title {
+		return fmt.Errorf("`gh pr edit` succeeded but pull request %d title is %q, not %q", number, pullRequest.Title, title)
+	}
+	return nil
+}
+
 type pullRequestJSON struct {
 	Number      int    `json:"number"`
 	URL         string `json:"url"`

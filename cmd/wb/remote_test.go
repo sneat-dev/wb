@@ -116,7 +116,7 @@ func newRemoteFixture(t *testing.T, machine string) remoteFixture {
 	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: "+machine+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(base, "wbhome"))
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(base, "wbhome"))
 	return remoteFixture{projectsRoot: projectsRoot, origin: origin, configPath: configPath}
 }
 
@@ -204,9 +204,8 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	remoteGit(t, canonical, "commit", "-q", "--allow-empty", "-m", "seed")
 	remoteGit(t, canonical, "push", "-q", "-u", "origin", "main")
 
-	home := filepath.Join(base, "wbhome")
-	t.Setenv("WB_HOME", home)
-	orphanWorktree := filepath.Join(home, "worktrees", "orphan-task", "acme", "widgets")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
+	orphanWorktree := filepath.Join(projectsRoot, ".worktrees", "orphan-task", "acme", "widgets")
 	remoteGit(t, canonical, "worktree", "add", "-q", "-b", "agent/orphan-task", orphanWorktree, "main")
 
 	stateOrigin := filepath.Join(base, "origin.git")

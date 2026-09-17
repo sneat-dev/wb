@@ -23,6 +23,7 @@ import (
 	"github.com/strongo/cli-helpers/daemonlifecycle"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 )
@@ -56,12 +57,19 @@ type daemonFileEnvelope struct {
 	MAC                 string              `json:"mac"`
 }
 
-func daemonFileBridgeKeyPath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "file-bridge.key")
+func daemonFileBridgeKeyPath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "file-bridge.key"), nil
 }
 
 func daemonFileBridgeKey(root string, create bool) (string, error) {
-	path := daemonFileBridgeKeyPath(root)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		return "", err
+	}
 	if create {
 		if err := secureBridgeRuntime(root); err != nil {
 			return "", err
@@ -79,6 +87,12 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 			}
 			if _, err = file.Write([]byte(hex.EncodeToString(value))); err == nil {
 				err = file.Sync()
+			}
+			if err == nil {
+				err = daemonlifecycle.ProtectOwnerOnlyFile(file)
+			}
+			if err == nil {
+				err = daemonlifecycle.ValidateOwnerOnlyFile(file)
 			}
 			if closeErr := file.Close(); err == nil {
 				err = closeErr
@@ -111,15 +125,22 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 	return string(contents), nil
 }
 
-func daemonFileBridgeDirectory(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "file-bridge")
+func daemonFileBridgeDirectory(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "file-bridge"), nil
 }
 
 func prepareDaemonFileBridge(root string) (requests, responses string, err error) {
 	if err := secureBridgeRuntime(root); err != nil {
 		return "", "", err
 	}
-	base := daemonFileBridgeDirectory(root)
+	base, baseErr := daemonFileBridgeDirectory(root)
+	if baseErr != nil {
+		return "", "", baseErr
+	}
 	for _, directory := range []string{base, filepath.Join(base, "requests"), filepath.Join(base, "responses")} {
 		if err = secureBridgeDirectory(directory); err != nil {
 			return "", "", err
@@ -143,11 +164,16 @@ func secureDaemonRuntime(root string) error {
 	if err := verifyBridgePathSecurity(root, info, info.Mode().Perm(), false); err != nil {
 		return err
 	}
-	wbDirectory := filepath.Join(root, ".wb")
-	if err := secureBridgeParentDirectory(wbDirectory, false); err != nil {
+	runtimeDirectory, err := daemon.RuntimeDir(root)
+	if err != nil {
 		return err
 	}
-	return secureBridgeParentDirectory(filepath.Join(wbDirectory, "runtime"), true)
+	// The runtime directory's parent is WB's home; both are created with the
+	// same discipline the daemon applies to every other runtime artefact.
+	if err := secureBridgeParentDirectory(filepath.Dir(runtimeDirectory), false); err != nil {
+		return err
+	}
+	return secureBridgeParentDirectory(runtimeDirectory, true)
 }
 
 func secureBridgeParentDirectory(path string, private bool) error {

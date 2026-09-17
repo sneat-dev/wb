@@ -18,6 +18,7 @@ type Courier string
 
 const (
 	CourierSSH        Courier = "ssh"
+	CourierLoopback   Courier = "loopback"
 	CourierSynchestra Courier = "synchestra"
 )
 

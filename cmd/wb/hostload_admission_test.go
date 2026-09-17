@@ -306,7 +306,7 @@ func TestWorktreeMergeResumeOfValidationFailedReceiptIsRefusedUnderSaturatedLoad
 // load and floor the override admitted past.
 func TestWorktreeMergePrepareRecordsHostLoadOverrideOnReceipt(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	projectsRoot := filepath.Join(root, "projects")
