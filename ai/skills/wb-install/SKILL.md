@@ -100,3 +100,28 @@ same shared machinery `wb self-update` uses
 of wb's own release. An unrecognized name is refused up front with the list
 of valid catalog ids; every failure is reported as a wb `findings` exit (1),
 never a fourth code.
+
+## Upgrading installed fleet CLIs
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI — named ones, or all of them with `--all` —
+to its latest release, including wb itself. `wb self-update` and
+`wb upgrade wb` reach the identical outcome, because upgrade configures wb
+as a target from the SAME release identity and after-update hook self-update
+does.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb; never modifies
+wb upgrade --check                  # same report, but exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore                # upgrade just specscore, confirm once
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade wb                       # exactly `wb self-update`: same Config, same after-update hook
+wb upgrade nosuchcli                # refused before any confirmation, network request, or write
+wb upgrade --all --format json      # machine-readable report/result
+```
+
+There is no `update` alias on `upgrade` (only `self-update` keeps one); wb
+is always upgraded last in a batch, after every other named target, because
+its after-update hook restarts the daemon and re-syncs skills.

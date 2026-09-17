@@ -10263,6 +10263,79 @@
       "notes": "Pickup starts a successor for a previously parked task."
     },
     {
+      "id": "wb.upgrade",
+      "feature_refs": [
+        "spec/features/install/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb upgrade",
+              "flags": [
+                "--all",
+                "--check",
+                "--dry-run",
+                "--format",
+                "--yes"
+              ],
+              "modes": [
+                "Upgrades installed fleet CLIs to their latest release, named ones or all of them with --all, including wb itself; the bare or --check form only reports."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb upgrade --help",
+              "contains": [
+                "--all",
+                "--check",
+                "--dry-run",
+                "--yes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-install/SKILL.md",
+              "marker": "## Upgrading installed fleet CLIs",
+              "examples": [
+                "wb upgrade"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestUpgradeCmd_UnknownTargetExitsFindings",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestUpgradeErrors_FailureExitCodes",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall's upgrade adapter against wb's own compiled catalog entry; the host row (wb itself) is configured from the EXACT SAME selfupdate.Config and after-update hook wb's own self-update command uses, so `wb upgrade wb` and `wb self-update` reach the identical library call. Every failure maps through installErrors, extended with the upgrades-available method, onto wb's exitFindings (1)."
+    },
+    {
       "id": "wb.verify",
       "feature_refs": [],
       "since": "existing",

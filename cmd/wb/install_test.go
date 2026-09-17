@@ -73,15 +73,6 @@ func TestInstallCmd_UnknownTargetExitsFindings(t *testing.T) {
 	}
 }
 
-// A nil err IS a real, reachable call on the success/dry-run path — see
-// installErrors.Failure's own doc comment for why cliinstall/cobracmd
-// v0.20.0 calls opts.Errors.Failure(nil) on every successful run.
-func TestInstallErrors_FailureNilIsNil(t *testing.T) {
-	if err := (installErrors{}).Failure(nil); err != nil {
-		t.Errorf("Failure(nil) = %v, want nil", err)
-	}
-}
-
 // AC: cli-install#req:host-owned-exit-codes — installErrors.Failure maps
 // every FailureKind, including the three cli-install appends after
 // KindManagedCommand, to wb's exitFindings, and no message carries a

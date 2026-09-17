@@ -63,23 +63,14 @@ type installErrors struct{}
 // type for a usage mistake caught inside install's own RunE (an invalid
 // --format, or --all combined with names).
 //
-// A nil err IS a real, reachable call on the ordinary success and dry-run
-// path, not just a defensive guard: cliinstall/cobracmd v0.20.0's
-// runInstall calls mapFailure(opts, plan.Failure()) and
-// mapFailure(opts, result.Failure()) unconditionally, and both return nil
-// for a fully successful batch, so opts.Errors.Failure(nil) is called on
-// every successful `wb install` and `wb install <name> --dry-run` run.
-// Feedback for cli-helpers (known bug, unchanged as of v0.20.0): mapFailure
-// itself should short-circuit nil before calling opts.Errors.Failure,
-// matching what ErrorMapper.Failure's own doc comment already promises
-// ("maps a non-nil command error") — see specscore-cli's identical
-// nil-guard note on its own install command against the same library
-// version.
+// err is never nil here in practice: cliinstall/cobracmd v0.21.0's
+// mapFailure short-circuits nil before ever calling this method (fixed
+// upstream from the v0.20.0 bug this comment used to document — see that
+// version's mapFailure doc comment and TestMapFailure_NeverCallsMapperWithNil).
+// The switch below still resolves harmlessly for a nil err regardless
+// (selfupdate.KindOf(nil) is KindUnexpected), so no explicit guard is
+// needed to stay nil-safe.
 func (installErrors) Failure(err error) error {
-	if err == nil {
-		return nil
-	}
-
 	var usage *cobracmd.UsageError
 	if errors.As(err, &usage) {
 		// wb reserves exitUsage for an invocation Cobra itself rejects

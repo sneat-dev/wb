@@ -97,6 +97,9 @@
       "park",
       "pickup"
     ],
+    "upgrade": [
+      "wb-install"
+    ],
     "verify": [
       "wb-fleet"
     ],

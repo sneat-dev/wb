@@ -93,20 +93,37 @@ func newSelfUpdateCmd() *cobra.Command {
 func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 	var command *cobra.Command
 	command = cobracmd.New(cfg, cobracmd.CommandOptions{
-		Short:      "Update the installed wb binary to the latest release",
-		Aliases:    []string{"update"},
-		JSONFormat: true,
-		Errors:     selfUpdateErrors{},
-		AfterUpdate: func(ctx context.Context, update selfupdate.AfterUpdate) error {
-			// A running daemon retains the old executable image after an atomic
-			// replacement. The lifecycle command performs the durable drain and
-			// queue-generation handoff; --if-running avoids starting a daemon for
-			// users who only updated the CLI.
-			restartDaemonAfterSelfUpdate(command, ctx, update)
-			return syncSkillsAfterSelfUpdate(command, ctx, update)
-		},
+		Short:       "Update the installed wb binary to the latest release",
+		Aliases:     []string{"update"},
+		JSONFormat:  true,
+		Errors:      selfUpdateErrors{},
+		AfterUpdate: wbAfterUpdate(&command),
 	})
 	return command
+}
+
+// wbAfterUpdate returns the after-update hook wb's self-update AND upgrade
+// commands both configure — restart the daemon, then sync skills — so
+// `wb self-update` and `wb upgrade wb` reach the identical hook
+// (cli-install#req:self-update-equals-upgrade-self). A running daemon
+// retains the old executable image after an atomic replacement; the
+// lifecycle command performs the durable drain and queue-generation
+// handoff, and --if-running avoids starting a daemon for users who only
+// updated the CLI.
+//
+// cmd is a pointer to the CALLER's own *cobra.Command variable, assigned
+// only after cobracmd.New/NewUpgrade returns (the declare-build-assign
+// pattern newSelfUpdateCmdWithConfig and newUpgradeCmd both use): the
+// closure resolves *cmd lazily, when AfterUpdate actually fires — by which
+// time it names whichever command instance is running, self-update's own or
+// upgrade's — because AfterUpdateFunc's signature carries no io.Writer of
+// its own for restartDaemonAfterSelfUpdate/syncSkillsAfterSelfUpdate to
+// write warnings and the verified-version line to.
+func wbAfterUpdate(cmd **cobra.Command) selfupdate.AfterUpdateFunc {
+	return func(ctx context.Context, update selfupdate.AfterUpdate) error {
+		restartDaemonAfterSelfUpdate(*cmd, ctx, update)
+		return syncSkillsAfterSelfUpdate(*cmd, ctx, update)
+	}
 }
 
 func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) {

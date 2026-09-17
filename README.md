@@ -103,6 +103,7 @@ wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
 wb install [name...]         # list/install sibling fleet CLIs relevant to wb
+wb upgrade [name...]         # upgrade installed fleet CLIs, including wb itself
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
@@ -2321,6 +2322,32 @@ itself is installed. An unrecognized name is refused before any confirmation,
 network request or write, naming the valid catalog ids; every failure reports
 through wb's ordinary `1` (findings) exit code with an `install: ` message
 prefix, never `self-update: `.
+
+### `wb upgrade` — upgrade installed fleet CLIs, including wb itself
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI to its latest release, named ones or all of
+them with `--all`, including wb itself.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb
+wb upgrade --check                  # same report; exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade --format json            # machine-readable report/result
+```
+
+`wb self-update` is exactly `wb upgrade wb`: upgrade configures wb as a
+target from the SAME `selfupdate.Config` and after-update hook (daemon
+restart, skills re-sync) self-update's own command configures, so the two
+can never disagree about the outcome for wb itself. `upgrade` gets no
+`update` alias (only `self-update` keeps one), and wb is always upgraded
+last in a batch, after every other named target, because its after-update
+hook restarts the daemon. Every failure reports through wb's ordinary `1`
+(findings) exit code, exactly as `install` does — including "an upgrade is
+available" under `--check`, which wb folds into the same code rather than
+reserving a fourth one.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 

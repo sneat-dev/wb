@@ -176,7 +176,7 @@ for a wb user specifically.
 | Feature | Interaction |
 |---|---|
 | [strongo/cli-helpers: Self-Update Library](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/self-update?op=explore) | Owns the behavior contract this Feature binds. wb is a consumer; behavior changes belong there. |
-| [Install](../install/README.md) | Sibling command built on the same fleet catalog entry (`cliinstall.ByID("wb")`); `wb install wb` reports wb as already installed with a `wb self-update` pointer rather than reinstalling. |
+| [Install](../install/README.md) | Sibling command built on the same fleet catalog entry (`cliinstall.ByID("wb")`); `wb install wb` reports wb as already installed with a `wb self-update` pointer rather than reinstalling. `wb upgrade`, from the same Feature, is the fleet-wide counterpart: `wb upgrade wb` configures the EXACT SAME `selfupdate.Config` and after-update hook this command does (install#req:upgrade-host-config-and-hook), so `wb self-update` is `wb upgrade wb` by construction, not by convention. |
 | [Fleet Status](../fleet-status/README.md) | Unrelated in mechanism. Self-update is the one wb command that deliberately writes to the wb install itself. |
 
 ## Acceptance Criteria
