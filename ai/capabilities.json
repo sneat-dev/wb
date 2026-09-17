@@ -5985,6 +5985,78 @@
       "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
     },
     {
+      "id": "wb.install",
+      "feature_refs": [
+        "spec/features/install/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb install",
+              "flags": [
+                "--all",
+                "--dir",
+                "--dry-run",
+                "--format",
+                "--yes"
+              ],
+              "modes": [
+                "Lists the fleet CLIs relevant to wb with live installed status, or installs named ones consistently with how wb itself was installed."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb install --help",
+              "contains": [
+                "--all",
+                "--dry-run",
+                "--yes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-install/SKILL.md",
+              "marker": "## Installing sibling fleet CLIs",
+              "examples": [
+                "wb install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/install_test.go",
+              "name": "TestInstallCmd_UnknownTargetExitsFindings",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/install_test.go",
+              "name": "TestInstallErrors_FailureExitCodes",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; every failure, including the three kinds cli-install adds, maps to wb's exitFindings (1) with an \"install: \" prefix, never \"self-update: \"."
+    },
+    {
       "id": "wb.land",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md",

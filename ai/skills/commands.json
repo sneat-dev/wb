@@ -42,6 +42,9 @@
     "hooks": [
       "wb-hooks"
     ],
+    "install": [
+      "wb-install"
+    ],
     "land": [
       "wb",
       "wb-worktrees",

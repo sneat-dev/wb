@@ -76,3 +76,27 @@ the install method is ambiguous, it refuses rather than guessing — fall back
 to the `go install` recipe above in that case. `--check --format json` gives
 a machine-readable verdict (`up_to_date`, `update_available`, or
 `undetermined`) for scripts that need to branch on it without parsing text.
+
+## Installing sibling fleet CLIs
+
+`wb install` is a different command from everything above: it installs
+*other* fleet CLIs relevant to wb (currently `specscore`, `codegrapher`, and
+`cover100`), consistently with how wb itself was installed, rather than
+updating wb's own binary.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan for specscore, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install nosuchcli               # refused before any confirmation, network request, or write
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement are the
+same shared machinery `wb self-update` uses
+(`github.com/strongo/cli-helpers`), applied to a fleet-wide catalog instead
+of wb's own release. An unrecognized name is refused up front with the list
+of valid catalog ids; every failure is reported as a wb `findings` exit (1),
+never a fourth code.

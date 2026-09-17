@@ -102,6 +102,7 @@ wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
+wb install [name...]         # list/install sibling fleet CLIs relevant to wb
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
@@ -2295,6 +2296,31 @@ blocking on input when no terminal is attached and `--yes` was not given, so
 scripts and agents driving wb never hang. wb publishes no Windows build, so
 the self-replace path is macOS/Linux only; a Windows host reaching it refuses
 with a clear message instead of attempting a swap it has no asset for.
+
+### `wb install` — install sibling fleet CLIs
+
+`wb install` is a different command from `wb self-update`: it installs *other*
+fleet CLIs relevant to wb (`specscore`, `codegrapher`, `cover100`), not wb
+itself.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement reuse the
+identical `github.com/strongo/cli-helpers` machinery `wb self-update` binds,
+applied to a fleet-wide catalog (`github.com/strongo/cli-helpers/cliinstall`)
+instead of wb's own release. Both commands resolve wb's release identity from
+the same compiled-in catalog entry, so they can never disagree about how wb
+itself is installed. An unrecognized name is refused before any confirmation,
+network request or write, naming the valid catalog ids; every failure reports
+through wb's ordinary `1` (findings) exit code with an `install: ` message
+prefix, never `self-update: `.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 

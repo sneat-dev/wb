@@ -169,6 +169,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
+		groupedRootCommand(newInstallCmd(), rootGroupLearn),
 		groupedRootCommand(newSkillsCmd(), rootGroupLearn),
 		groupedRootCommand(newVersionCmd(), rootGroupLearn),
 		groupedRootCommand(newCommandsCmd(), rootGroupLearn),

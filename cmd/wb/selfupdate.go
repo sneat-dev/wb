@@ -9,9 +9,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/strongo/cli-helpers/cliinstall"
 	"github.com/strongo/cli-helpers/selfupdate"
 	"github.com/strongo/cli-helpers/selfupdate/cobracmd"
 )
+
+// wbCatalogID is wb's own id in github.com/strongo/cli-helpers/cliinstall's
+// compiled-in fleet catalog (cli-install#req:host-identity-from-catalog).
+// newSelfUpdateConfig and newInstallCmd both resolve this SAME entry, so
+// `wb self-update` and every other fleet CLI's `install wb` agree on how wb
+// is released, by construction rather than by two copies staying in sync
+// (cli-install#req:catalog-identity-single-source).
+const wbCatalogID = "wb"
 
 // wb binds the shared github.com/strongo/cli-helpers/selfupdate library rather than
 // reimplementing any of it: install-method detection, release resolution,
@@ -22,24 +31,6 @@ import (
 // exit-code contract. See spec/features/self-update/README.md for the
 // Feature spec that draws this boundary, and REQ: library-provided-behavior
 // in particular.
-
-// selfUpdateUndeterminedVersions are the Config.CurrentVersion values meaning
-// "this build cannot say its own version" (REQ: wb-version-identity). wb has
-// two, and neither is the library's default placeholder "dev":
-//
-//   - "unknown" — collectVersion's own final fallback, when neither a
-//     link-time stamp nor module metadata is available.
-//   - "(devel)" — what the Go toolchain stamps into build.Main.Version for a
-//     binary built from a source tree rather than resolved from a module
-//     version, i.e. every `go build ./cmd/wb`. Without it declared, a locally
-//     built wb compares "(devel)" against the latest release as if it were a
-//     real version, and reports an update available from a version that does
-//     not exist.
-//
-// A Go pseudo-version is deliberately NOT in this set: it is a known version
-// that sorts below its eventual release, so "update available" is the right
-// answer for it.
-var selfUpdateUndeterminedVersions = []string{"unknown", "(devel)"}
 
 // selfUpdateHomebrewUpgradeCommand is the exact command printed for a
 // Homebrew-managed install. wb ships as a cask, not a formula, so this must
@@ -54,40 +45,33 @@ const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --yes --ca
 // (REQ: permission-remedy-names-brew).
 const selfUpdateHomebrewInstallCommand = "brew install --cask sneat-dev/tap/wb"
 
-// newSelfUpdateConfig returns wb's own selfupdate.Config: its release
-// identity, the one package manager it ships through, and the platforms
-// its GoReleaser build publishes. It is a plain function, not inlined into
-// newSelfUpdateCmd, purely so selfupdate_test.go can assert its fields
-// directly without constructing a command or touching any I/O
-// (REQ: wb-release-identity, REQ: wb-homebrew-cask, REQ: wb-version-identity).
+// newSelfUpdateConfig returns wb's own selfupdate.Config, built from its
+// compiled-in cliinstall catalog entry rather than restated by hand
+// (cli-install#req:catalog-identity-single-source; REQ: wb-release-identity,
+// REQ: wb-homebrew-cask, REQ: wb-version-identity). It is a plain function,
+// not inlined into newSelfUpdateCmd, purely so selfupdate_test.go can assert
+// its fields directly without constructing a command or touching any I/O.
+//
+// The catalog entry (github.com/strongo/cli-helpers/cliinstall's own
+// catalog_wb.go) already reproduces wb's release identity field for field —
+// the GitHub repository, the Homebrew cask manager
+// (selfupdate.HomebrewCask("wb"), whose UpgradeCommand is byte-identical to
+// selfUpdateHomebrewUpgradeCommand below), the supported darwin/linux
+// platforms .goreleaser.yml publishes, the {"version","--json"} probe args,
+// and the "unknown"/"(devel)" undetermined placeholders — so binding it here
+// is not a behavior change, only a single source of truth: a future drift
+// between wb's own self-update and any other fleet CLI's `install wb` now
+// fails cli-helpers' own catalog-snapshot tests instead of silently
+// diverging between two hand-copied literals.
 func newSelfUpdateConfig() selfupdate.Config {
-	return selfupdate.Config{
-		BinaryName:           "wb",
-		Repository:           "sneat-dev/wb",
-		CurrentVersion:       collectVersion().Version,
-		UndeterminedVersions: selfUpdateUndeterminedVersions,
-		Managers: []selfupdate.Manager{
-			selfupdate.HomebrewCask("wb"),
-		},
-		// Matches .goreleaser.yml's builds.goos/goarch. A host outside this
-		// set is refused by the library's own unsupported-platform rule
-		// rather than attempting a swap wb publishes no asset for
-		// (REQ: wb-release-identity).
-		SupportedPlatforms: []selfupdate.Platform{
-			{GOOS: "darwin", GOARCH: "amd64"},
-			{GOOS: "darwin", GOARCH: "arm64"},
-			{GOOS: "linux", GOARCH: "amd64"},
-			{GOOS: "linux", GOARCH: "arm64"},
-		},
-		// wb's machine-readable version spelling, used for the library's
-		// post-swap version probe (REQ: wb-version-identity).
-		VersionProbeArgs: []string{"version", "--json"},
-		// AssetName, ChecksumsName, and DownloadURL are left at the
-		// library's GoReleaser-shaped defaults: wb_<version>_<os>_<arch>.tar.gz
-		// and wb_<version>_checksums.txt, matching .goreleaser.yml's own
-		// archives.name_template and checksum.name_template exactly
-		// (REQ: wb-release-identity).
+	entry, ok := cliinstall.ByID(wbCatalogID)
+	if !ok {
+		// A host id absent from the compiled catalog is a programming error
+		// caught by TestNewSelfUpdateConfigIdentity, never a runtime state a
+		// user can trigger (cli-install#req:host-identity-from-catalog).
+		panic(fmt.Sprintf("cliinstall: no catalog entry for %q", wbCatalogID))
 	}
+	return entry.Config(collectVersion().Version)
 }
 
 // newSelfUpdateCmd returns the "self-update" command (aliased "update"). Its
