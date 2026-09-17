@@ -5985,6 +5985,78 @@
       "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
     },
     {
+      "id": "wb.install",
+      "feature_refs": [
+        "spec/features/install/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb install",
+              "flags": [
+                "--all",
+                "--dir",
+                "--dry-run",
+                "--format",
+                "--yes"
+              ],
+              "modes": [
+                "Lists the fleet CLIs relevant to wb with live installed status, or installs named ones consistently with how wb itself was installed."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb install --help",
+              "contains": [
+                "--all",
+                "--dry-run",
+                "--yes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-install/SKILL.md",
+              "marker": "## Installing sibling fleet CLIs",
+              "examples": [
+                "wb install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/install_test.go",
+              "name": "TestInstallCmd_UnknownTargetExitsUsage",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/install_test.go",
+              "name": "TestInstallErrors_FailureExitCodes",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; an unknown target or a usage mistake (invalid --format, --all with names) exits wb's exitUsage (2, rejected before any work started); every other failure, including the two remaining kinds cli-install adds, maps to wb's exitFindings (1). Every message carries an exact \"install: \" prefix, never \"self-update: \"/\"upgrade: \"."
+    },
+    {
       "id": "wb.land",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md",
@@ -10189,6 +10261,89 @@
         }
       },
       "notes": "Pickup starts a successor for a previously parked task."
+    },
+    {
+      "id": "wb.upgrade",
+      "feature_refs": [
+        "spec/features/install/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb upgrade",
+              "flags": [
+                "--all",
+                "--check",
+                "--dry-run",
+                "--format",
+                "--yes"
+              ],
+              "modes": [
+                "Upgrades installed fleet CLIs to their latest release, named ones or all of them with --all, including wb itself; the bare or --check form only reports."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb upgrade --help",
+              "contains": [
+                "--all",
+                "--check",
+                "--dry-run",
+                "--yes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-install/SKILL.md",
+              "marker": "## Upgrading installed fleet CLIs",
+              "examples": [
+                "wb upgrade"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestUpgradeCmd_UnknownTargetExitsUsage",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestUpgradeErrors_FailureExitCodes",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestSelfUpdateAndUpgradeSelf_ReachSameCheckVerdict",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/upgrade_test.go",
+              "name": "TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall's upgrade adapter against wb's own compiled catalog entry; the host row (wb itself) is configured from the EXACT SAME selfupdate.Config and after-update hook wb's own self-update command uses, so `wb upgrade wb` and `wb self-update` reach the identical library call. Every failure maps through fleetErrors, extended with the upgrades-available method: an unknown target or a usage mistake exits wb's exitUsage (2); every other failure exits exitFindings (1). Every message carries an exact \"upgrade: \" prefix, and a permission remedy names upgrade's own Homebrew cask-upgrade command, never install's."
     },
     {
       "id": "wb.verify",

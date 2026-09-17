@@ -102,6 +102,8 @@ wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
+wb install [name...]         # list/install sibling fleet CLIs relevant to wb
+wb upgrade [name...]         # upgrade installed fleet CLIs, including wb itself
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
@@ -2295,6 +2297,67 @@ blocking on input when no terminal is attached and `--yes` was not given, so
 scripts and agents driving wb never hang. wb publishes no Windows build, so
 the self-replace path is macOS/Linux only; a Windows host reaching it refuses
 with a clear message instead of attempting a swap it has no asset for.
+
+### `wb install` — install sibling fleet CLIs
+
+`wb install` is a different command from `wb self-update`: it installs *other*
+fleet CLIs relevant to wb (`specscore`, `codegrapher`, `cover100`), not wb
+itself.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement reuse the
+identical `github.com/strongo/cli-helpers` machinery `wb self-update` binds,
+applied to a fleet-wide catalog (`github.com/strongo/cli-helpers/cliinstall`)
+instead of wb's own release. Both commands resolve wb's release identity from
+the same compiled-in catalog entry, so they can never disagree about how wb
+itself is installed. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused before any confirmation, network request
+or write, and exit `2` — wb's usage code, since the invocation itself was
+rejected before any work started — naming the valid catalog ids where
+relevant; every other failure reports through wb's ordinary `1` (findings)
+exit code. Every message carries an exact `install: ` prefix, never
+`self-update: `.
+
+### `wb upgrade` — upgrade installed fleet CLIs, including wb itself
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI to its latest release, named ones or all of
+them with `--all`, including wb itself.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb
+wb upgrade --check                  # same report; exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade --format json            # machine-readable report/result
+```
+
+`wb self-update` is exactly `wb upgrade wb`: upgrade configures wb as a
+target from the SAME `selfupdate.Config` and after-update hook (daemon
+restart, skills re-sync) self-update's own command configures, so the two
+can never disagree about the outcome for wb itself. `upgrade` gets no
+`update` alias (only `self-update` keeps one), and wb is always upgraded
+last in a batch, after every other named target, because its after-update
+hook restarts the daemon. An unknown target, an invalid `--format`, or
+`--all` combined with names exit `2`, exactly as `install`'s own usage
+refusals do; every other failure reports through wb's ordinary `1`
+(findings) exit code — including "an upgrade is available" under an
+explicit `--check`, which wb folds into the same code rather than reserving
+a fourth one (the bare, no-argument report is different: it never checks
+for an available upgrade at all and exits `0` unless a lookup itself
+failed). Every message carries an exact `upgrade: ` prefix, never
+`install: `/`self-update: ` — including the permission remedy, which names
+upgrade's own Homebrew cask-upgrade command rather than install's
+cask-install command.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 

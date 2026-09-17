@@ -110,6 +110,15 @@ the supported platforms `darwin` and `linux` on `amd64` and `arm64`. A host
 outside that set MUST be refused by the library's unsupported-platform rule
 rather than attempting a swap wb publishes no asset for.
 
+This identity is a single source, not restated by hand: wb's `selfupdate.Config`
+is built from `cliinstall.ByID("wb").Config(version)`, the same compiled-in
+`github.com/strongo/cli-helpers/cliinstall` catalog entry that
+[Install](../install/README.md#req-wb-host-identity) and every other fleet
+CLI's `install wb` resolve, per that library's own
+`cli-install#req:catalog-identity-single-source`. A future change to wb's
+GoReleaser archive or checksum naming updates that catalog entry first, not
+this Feature or wb's own source.
+
 #### REQ: wb-homebrew-cask
 
 wb MUST configure Homebrew as its managing package manager, with the display
@@ -167,6 +176,7 @@ for a wb user specifically.
 | Feature | Interaction |
 |---|---|
 | [strongo/cli-helpers: Self-Update Library](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/self-update?op=explore) | Owns the behavior contract this Feature binds. wb is a consumer; behavior changes belong there. |
+| [Install](../install/README.md) | Sibling command built on the same fleet catalog entry (`cliinstall.ByID("wb")`); `wb install wb` reports wb as already installed with a `wb self-update` pointer rather than reinstalling — library behavior per cli-install#req:already-installed-no-op, not restated or independently tested here. `wb upgrade`, from the same Feature, is the fleet-wide counterpart: `wb upgrade wb` configures the EXACT SAME `selfupdate.Config` and after-update hook this command does (install#req:upgrade-host-config-and-hook), so `wb self-update` is `wb upgrade wb` by construction, not by convention. |
 | [Fleet Status](../fleet-status/README.md) | Unrelated in mechanism. Self-update is the one wb command that deliberately writes to the wb install itself. |
 
 ## Acceptance Criteria
