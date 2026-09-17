@@ -27,31 +27,50 @@ expensive. The sessions were expensive because they took a great many turns.
 
 ### The cost law this repository should design against
 
-With prompt caching, the dominant term in a session's cost is not what a turn
-carries — it is that a turn happens at all. Each turn re-reads the whole prefix
-accumulated so far, so if the prefix grows roughly linearly in turns, total cost
-grows with the **square** of turn count:
+An earlier draft of this idea asserted that cost grows with the **square** of
+turn count. Adversarial review falsified that, and the correction matters
+because the lever ordering was derived from it.
+
+The mechanism is real: each turn re-reads the prefix accumulated so far, at the
+cache-read rate. The error was assuming the prefix grows without bound. It does
+not — harnesses compact, so the prefix saturates at a ceiling `W`, and above that
+ceiling cost is **linear**:
 
 ```text
-cost ≈ Σ(prefix_i × cache_read_rate) ≈ rate × growth × N² / 2
+cost ≈ read_rate × Σⱼ bⱼ·(N−j)      below the compaction ceiling
+cost ≈ read_rate × N × W̄            above it
 ```
 
-Two consequences follow, and they should drive design decisions here:
+The quadratic term is real only in the first stretch of a session, before
+compaction binds. Past that, every additional turn costs about the same.
 
-- **Halving turns quarters cost.** A 30% reduction in turns is a ~51% reduction
-  in spend. Turn-count reductions compound in a way byte-count reductions do not.
-- **Splitting one N-turn session into k sessions divides cost by k.** Three
-  300-turn sessions cost about a third of one 900-turn session for identical
-  work.
+The triggering sessions are the evidence *against* the quadratic reading, not
+for it: three sessions at 800–900 turns cost **$79 to $294**, a 3.7× spread.
+N² can account for at most 1.27× of that, so turn count explains well under a
+third of the variation. The linear model, with prefix size as the multiplier,
+accounts for the whole band.
 
-The triggering sessions confirm the mechanism directly. Their total Bash
-tool-result payload was only 250–411 KB each — about 110 tokens of output per
-turn across 900 turns. Almost none of the cost was the output. **The unit of
-cost is the turn, not the byte.**
+Three consequences, all different from the earlier draft:
 
-This re-orders the obvious optimisations. Trimming verbose command output is
-close to worthless. Removing a turn is worth a multiple of its own size, because
-every later turn stops paying for it too.
+- **Halving turns halves cost.** Not quarters it. Still worth doing, worth less
+  than claimed.
+- **Prefix size `W̄` is a first-class multiplier.** Trimming what each turn
+  carries — verbose command output, oversized loaded skills — is *not* worthless,
+  as the earlier draft said. It scales the whole session linearly.
+- **Splitting a session into k parts does not divide cost by k.** It helps only
+  while the parts stay below the compaction ceiling, and it adds the cost of
+  re-establishing context. Taken to its limit the earlier claim drives cost to
+  zero, which is its own refutation.
+
+One mechanism the earlier draft added and this one removes: cache-expiry misses.
+A turn that blocks longer than the cache TTL would pay a cache *write* rather
+than a read. But the harness in use here runs a **1-hour** TTL, not the 5-minute
+default, so ordinary CI waits sit comfortably inside it. Keep-alive polling to
+hold a cache warm is waste, and the harness documentation says so directly.
+
+What replaces it is simpler and verifiable: **never let a turn be pure waiting.**
+Background a long command and do other work; the harness reports completion
+without a turn spent watching.
 
 ### What is already true here
 
@@ -102,15 +121,19 @@ They are complementary, not alternatives.
    verb. Already the house style (`rule:wb-principles-speed-and-load`), already
    proven by `wb pr land`.
 2. **Relocate** — work that genuinely needs many turns runs in a disposable
-   transcript, not in the orchestrator's growing one. This is `wb agent
-   dispatch`. The worker's turns cost what they cost once; they are never
-   replayed.
+   transcript, not in the orchestrator's growing one. A harness-native subagent
+   already does this, and is the default; `wb agent dispatch` earns its keep only
+   where isolation, CPU admission, model routing or cross-machine execution are
+   the point. Either way the delegate's turns are paid once and never replayed.
 3. **Certify** — the orchestrator confirms an outcome by reading a bounded
    receipt of facts WB observed, never by re-deriving those facts from raw
    evidence. Reading a diff, a log, or a CI page to decide "did this go well"
    costs many turns and imports unbounded text.
-4. **Reset** — bound turns per session. Park and hand off rather than letting one
-   session reach 900 turns, so the quadratic restarts from a small prefix.
+4. **Don't block** — never spend a turn waiting. Background long commands and
+   let completion be reported. This replaces the earlier "Reset" lever (park to
+   restart the quadratic), which the corrected cost law largely deflates: above
+   the compaction ceiling, splitting a session buys far less than it appeared to
+   and costs a handoff.
 
 Governing all four is one standing constraint: **what crosses into the
 orchestrator must be decision-relevant and bounded.** Transcripts, raw logs and
@@ -137,7 +160,12 @@ what the phase meant. That keeps WB a standalone efficiency multiplier: with no
 SpecScore in the project at all, phases are still useful (build, tests, lint), and
 the receipt is still worth reading.
 
-The seam between them is deliberately thin — **exit codes and artifact paths**.
+The seam between them is deliberately thin, but it is **not** semantics-free, and
+an earlier draft overclaimed that it was. WB needs exactly one semantic bit per
+phase — `required: bool` — plus a stated convention: **a phase's exit code is the
+gate decision**. Severity policy, waivers and flake handling live in whatever
+produces that exit code, not in WB. With that one bit named, the seam is exit
+codes, artifact paths and a required flag.
 A review phase is just `specscore consilium verdict …` or `specscore rehearse
 run …` run as a phase. WB sees a command that exited 0 and wrote a file. SpecScore
 sees its own artifacts. Neither imports the other, and either can be swapped.
@@ -171,22 +199,23 @@ Three constraints make that safe rather than merely cheap:
   SpecScore's own artifact). One self-reported field degrades the whole artifact
   from a receipt to a claim, and makes a confidently wrong `PASS` available again.
   This is `rule:lane-reports-are-claims-not-receipts` enforced by construction.
-- **WB decides who lands, and it already holds the facts to decide.** The
-  preconditions are machine-checkable: clean merge, CI green, required phases
-  green, no competing claim on the target — and, critically, no unlanded consumer
-  that must follow this repo. That last one is not a guess: WB already carries the
-  cross-repo dependency graph behind `wb deps` and propagates releases in order
-  with `wb deps propagate`. Landing order is therefore **derivable from data WB
-  owns**, not reasoned about by an agent holding the fleet's topology in its
-  context. When the preconditions hold, the worker lands its own work and the
-  orchestrator never spends those turns; when they do not, WB holds the run for a
-  landing owner, preserving `rule:one-landing-owner-per-target` by construction.
+- **WB decides who lands — but not yet from `wb deps`.** An earlier draft
+  claimed consumer ordering was derivable from the cross-repo dependency graph.
+  It is not: `wb deps graph` inspects manifests on `origin/<base>` (defaulting to
+  `main`), so it is blind to unlanded work by construction, and
+  `RepositoryOrder` derives provider-first layering from requirement evidence —
+  *who depends on whom*, never *who has work in flight*. It also sees only
+  locally checked-out repos, one ecosystem at a time, and no coupling that is by
+  API contract rather than manifest.
 
-  This is the strongest argument for putting the gate in WB rather than in a
-  brief: today an orchestrator coordinating a provider-then-consumers wave keeps
-  that ordering alive in its own context across hundreds of turns, and pays for it
-  on every one of them. WB can answer the same question from the graph in a single
-  call.
+  The predicate actually needed — "does any consumer have unlanded work that must
+  follow this repo?" — is stream and worktree state (`wb stream status`, worktree
+  manifests), not dependency topology. Until that is wired, **worker-side
+  auto-landing must fail closed**: land automatically only for a single repo with
+  no active stream, a clean merge, green CI and green required phases, and hold
+  for a landing owner in every other case. The failure mode of getting this wrong
+  is silent and damaging, which is the one kind of error this whole direction
+  exists to remove.
 
 ## Alternatives Considered
 
@@ -237,7 +266,11 @@ already exists to "compose exact verification, remote, deployment, and cleanup
 evidence", and `internal/runlog` already writes a durable event per governed
 command — `duration_ms`, `user_cpu_ms`, `queue_wait_ms`, `admitted_at`,
 `exit_code` — to `<root>/.wb/local/run/events.jsonl`. The receipt is largely a
-join over records WB already keeps.
+join over records WB already keeps — with one gap that must be closed first:
+`runlog` resolves its store per managed worktree (`internal/runlog/runlog.go:310`),
+records nothing outside one, and is deleted with the worktree. A receipt cannot
+join over records the cleanup step it attests has already destroyed, so store
+export or relocation is part of this MVP, not an afterthought.
 
 That telemetry is also the strategy's own first evidence of the discovery
 problem: fleet-wide it holds **24 events, of which 2 are `go/test`**, because
@@ -273,7 +306,7 @@ exists to stop trusting.
 
 ## SpecScore Integration
 
-- **New Features this would create:** a semantics-free phase list on `wb agent dispatch`; an agent-run conformance receipt (`wb agent receipt`); precondition-driven landing ownership reading `wb deps`
+- **New Features this would create:** a phase list (with `required`) on `wb agent dispatch`; a conformance receipt extending the existing `wb verify receipt`; fail-closed, precondition-driven landing ownership
 - **Existing Features affected:** `wb agent dispatch`/`await`/`status`/`logs`, `wb pr land`, `wb worktree land`, `wb deps`, the WB skill routing surface
 - **Dependencies:** [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) for the routing fix; [agent-lane-verbs](agent-lane-verbs.md) shares the Collapse lever. No code dependency on SpecScore — the review gate composes through phase exit codes and artifact paths only
 
