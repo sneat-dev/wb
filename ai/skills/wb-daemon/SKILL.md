@@ -24,6 +24,35 @@ wb daemon stop
 wb daemon restart --if-running
 ```
 
+`wb daemon status` reports identity, not just reachability: read `identity`,
+`ready_verified` and `reported_state` before believing `state=ready`. A daemon
+that answers on the loopback port but belongs to another WB home, or that was
+recorded before the home was, is reported as `identity=foreign_home`,
+`identity=unrecorded` or `identity=process_recycled` with `reported_state`
+`unverified`. `legacy_runtime` names a daemon still serving this build's
+pre-resolver runtime directory, and `wb daemon start` refuses while one is live
+rather than starting a second daemon on another home. Stop a leftover daemon
+under the WB home it belongs to; never delete the directory out from under it.
+
+If a lifecycle command reports an interrupted transition, inspect it before
+retrying:
+
+```sh
+wb daemon recover --format json
+wb daemon recover --apply --format json
+```
+
+Recovery is a dry-run unless `--apply` is explicit. It refuses a live or
+ambiguous owner; a non-terminal startup or drain is recoverable only when WB
+can prove and fence the interruption. Apply clears stale ownership and also
+reconciles durable lifecycle state: it promotes an exactly verified healthy
+child to ready, or marks a proven interrupted start or drain stopped. The
+lifecycle lock uses one stable
+kernel-locked inode plus an atomically replaced owner record, so a killed WB
+process releases exclusion without corrupting its evidence. Never delete
+`daemon.lifecycle.lock` by hand. Windows remains fail-closed until WB can
+verify owner-only ACLs for these records.
+
 For foreground debugging, run `wb daemon serve`.
 
 Start a normal execution worker inside the caller or harness sandbox. Give it a
@@ -45,11 +74,12 @@ restart; an interrupted running lease becomes `recovery_required`.
 WB tries the protected local socket first. If the harness sandbox returns a
 permission or reachability error, the client reports that it is using the
 project-root file bridge. Do not move the worker outside the sandbox. The bridge
-uses owner-only atomic request and response envelopes under
-`<projects-root>/.wb/runtime/file-bridge`; every envelope is authenticated and
-fenced to the scheduler generation and explicit worker ID. It carries no
-environment overrides. Authentication, protocol, or generation failures never
-trigger fallback or local execution.
+uses owner-only atomic request and response envelopes under the `runtime/`
+directory of this WB home (`~/.wb/runtime/file-bridge` by default; run
+`wb daemon status` for the path this invocation resolves); every envelope is
+authenticated and fenced to the scheduler generation and explicit worker ID. It
+carries no environment overrides. Authentication, protocol, or generation
+failures never trigger fallback or local execution.
 
 Raw command submission from the daemon process is a trusted fallback and is
 disabled by default. An administrator may opt in by creating
@@ -82,7 +112,10 @@ Cloudflare Tunnel protected by Cloudflare Access service authentication.
 installed WB executable, it drains the old generation and hands the durable
 queue owner record to the installed executable. `stop` and `restart` preserve
 that handoff record; `restart --if-running` is safe for the verified
-self-update path because it never starts a daemon that was absent.
+self-update path because it never starts a daemon that was absent. Every
+lifecycle transition keeps the same lock inode and atomically records its owner
+PID in a sidecar while holding a kernel lock; process death releases the kernel
+lock without losing or partially rewriting the recovery evidence.
 
 The dashboard stays on read-only loopback HTTP. Mutating operation RPCs prefer
 a separate mode-0600 Unix socket plus the private lifecycle owner token.

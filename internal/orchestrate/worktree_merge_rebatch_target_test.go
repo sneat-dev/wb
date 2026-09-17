@@ -177,6 +177,9 @@ func TestPublishedRebatchRefusesRewoundOrLandedTarget(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("refusal = %v, want %s", err, want)
 			}
+			if mode == "advanced" && !strings.Contains(err.Error(), "wb worktree merge resume "+old.ReceiptPath) {
+				t.Fatalf("same-source refusal omitted exact retry command: %v", err)
+			}
 			after, err := os.ReadFile(old.ReceiptPath)
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatalf("refusal changed historical receipt: %v", err)

@@ -657,12 +657,13 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
 	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergeSHA := remoteBranchForTest(t, fixture.canonical, "main")
 	gitTest(t, fixture.canonical, "push", "origin", ":deleted-target")
 	if got := remoteBranchForTest(t, fixture.canonical, "deleted-target"); got != "" {
 		t.Fatalf("deleted recorded target still exists remotely at %s", got)
 	}
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
-	installMergedPullRequestFixture(t, head, mergedAt)
+	installExactMergedPullRequestForDeletedTarget(t, head, mergeSHA, "deleted-target", "main", mergedAt)
 
 	listed, err := List(context.Background(), ListOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -677,6 +678,17 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 		listed[0].MergedPullRequest == nil || listed[0].MergedPullRequest.HeadSHA != head {
 		t.Fatalf("merged PR target recovery = %#v", listed)
 	}
+	garbageCollected, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"cleanup-deleted-recorded-target"},
+		SessionFreshness: DisableSessionFreshness,
+		Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, garbageCollected, "cleanup-deleted-recorded-target"); !entry.Eligible || entry.Class != GCClassLandedClean || entry.PullRequest == nil || entry.PullRequest.MergeSHA != mergeSHA || !strings.Contains(strings.Join(entry.Evidence, " "), "absorbed-by=") {
+		t.Fatalf("GC deleted-target recovery = %#v", entry)
+	}
 
 	planned, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -690,6 +702,110 @@ func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
 	}
 	if len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Base != "main" {
 		t.Fatalf("cleanup plan after deleted recorded target = %#v", planned)
+	}
+}
+
+// TestCleanupRetiresStreamSquashAncestorFromReceipt proves the hand-off used
+// by stream end. A surviving member can be clean at an ancestor of the stream
+// PR head after the PR was squash-merged, but ordinary commit ancestry cannot
+// see its work in main. Only the receipt binds that local source to the exact
+// PR candidate and its tree-identical landing commit.
+func TestCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "deleted")
+}
+
+// TestCleanupRetiresStreamSquashAncestorFromReceiptWithExactRemoteCandidate
+// covers stream end --keep-remote-branch. The receipt may preserve only its
+// exact candidate ref; an arbitrary remote advance remains a refusal.
+func TestCleanupRetiresStreamSquashAncestorFromReceiptWithExactRemoteCandidate(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "kept")
+}
+
+func TestCleanupRefusesStreamSquashReceiptAfterRemoteCandidateAdvances(t *testing.T) {
+	testCleanupRetiresStreamSquashAncestorFromReceipt(t, "advanced")
+}
+
+func testCleanupRetiresStreamSquashAncestorFromReceipt(t *testing.T, remoteMode string) {
+	fixture := newGitFixture(t)
+	const task = "stream-squash-ancestor"
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: task, Branch: "stream/squash-ancestor", BranchChosen: true,
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "source.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "source.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source")
+	sourceSHA := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	writer := filepath.Join(t.TempDir(), "stream-pr-writer")
+	gitTest(t, t.TempDir(), "clone", fixture.remote, writer)
+	configureGitUser(t, writer)
+	gitTest(t, writer, "checkout", result.Branch)
+	if err := os.WriteFile(filepath.Join(writer, "candidate.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, writer, "add", "candidate.txt")
+	gitTest(t, writer, "commit", "-m", "stream PR head")
+	candidateSHA := gitTestOutput(t, writer, "rev-parse", "HEAD")
+	gitTest(t, writer, "push", "origin", result.Branch)
+
+	gitTest(t, fixture.canonical, "fetch", "origin")
+	gitTest(t, fixture.canonical, "merge", "--squash", candidateSHA)
+	gitTest(t, fixture.canonical, "commit", "-m", "squash stream PR")
+	landingSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	switch remoteMode {
+	case "deleted":
+		gitTest(t, fixture.canonical, "push", "origin", ":"+result.Branch)
+	case "advanced":
+		if err := os.WriteFile(filepath.Join(writer, "advanced.txt"), []byte("must remain\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, writer, "add", "advanced.txt")
+		gitTest(t, writer, "commit", "-m", "remote advance")
+		gitTest(t, writer, "push", "origin", result.Branch)
+	}
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, OlderThan: 0,
+		MergeReceiptProofs: []MergeReceiptCleanupProof{{
+			Repository: result.Repository, Target: "main", SourceTask: task,
+			SourceWorktree: result.WorktreeDir, SourceBranch: result.Branch,
+			SourceSHA: sourceSHA, CandidateSHA: candidateSHA, LandingSHA: landingSHA,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteMode == "advanced" {
+		if len(applied.Results) != 1 || applied.Results[0].Applied || applied.Results[0].Eligible ||
+			!strings.Contains(applied.Results[0].Reason, "remote branch advanced") {
+			t.Fatalf("advanced remote must refuse receipt cleanup = %#v", applied)
+		}
+		if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+			t.Fatalf("advanced remote cleanup removed member: %v", statErr)
+		}
+		return
+	}
+	if len(applied.Results) != 1 || !applied.Results[0].Applied || !applied.Results[0].WorktreeGone ||
+		!applied.Results[0].AbsorbedAtOrigin || applied.Results[0].AbsorbedBySHA != landingSHA {
+		t.Fatalf("receipt-bound stream squash cleanup = %#v", applied)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("squash-absorbed member remains after cleanup: %v", statErr)
+	}
+	if remoteMode == "kept" {
+		if remote := remoteBranchForTest(t, fixture.canonical, result.Branch); remote != candidateSHA {
+			t.Fatalf("kept remote stream candidate = %q, want %q", remote, candidateSHA)
+		}
 	}
 }
 
@@ -803,7 +919,7 @@ func TestCleanupRefusesOpenExactHeadPRWhileMergedPRRecoversStaleTarget(t *testin
 	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature into main")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
-	installOpenAndMergedExactHeadPullRequestFixture(t, head, "stale-target", "main", mergedAt)
+	installOpenAndMergedExactHeadPullRequestFixture(t, head, "acme/app", result.Branch, "stale-target", "main", mergedAt)
 
 	assertRefused := func(t *testing.T, outcome CleanupOutcome) {
 		t.Helper()
@@ -852,6 +968,129 @@ func TestCleanupRefusesOpenExactHeadPRWhileMergedPRRecoversStaleTarget(t *testin
 	assertRefused(t, applied)
 }
 
+func TestMatchingOpenPullRequestRequiresExactSourceIdentity(t *testing.T) {
+	const head = "0123456789012345678901234567890123456789"
+	for _, test := range []struct {
+		name       string
+		repository string
+		branch     string
+		want       bool
+	}{
+		{name: "same SHA on target branch", repository: "acme/app", branch: "stream/execution-records"},
+		{name: "same SHA and branch in another repository", repository: "fork/app", branch: "incidentius-task2-core-contract"},
+		{name: "exact source identity", repository: "acme/app", branch: "incidentius-task2-core-contract", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pullRequests := []githubPullRequest{{
+				Number: 325, URL: "https://github.com/acme/app/pull/325", State: "open",
+				Head: githubRef{
+					Ref: "incidentius-task2-core-contract", SHA: head,
+					Repo: &githubRepository{FullName: test.repository},
+				},
+				Base: githubRef{Ref: "main"},
+			}}
+			open, _ := matchingPullRequests(pullRequests, "acme/app", "stream/execution-records", test.branch, head)
+			if (open != nil) != test.want {
+				t.Fatalf("open pull request = %#v, want present=%t", open, test.want)
+			}
+		})
+	}
+}
+
+func TestCleanupLandedChildIgnoresOpenTargetPullRequestSharingHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	const target = "stream/execution-records"
+	gitTest(t, fixture.canonical, "branch", target, "main")
+	gitTest(t, fixture.canonical, "push", "origin", target)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "incidentius-task2-core-contract",
+		Base:         target,
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := created[0]
+	if err := os.WriteFile(filepath.Join(child.WorktreeDir, "contract.txt"), []byte("landed child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, child.WorktreeDir, "add", "contract.txt")
+	gitTest(t, child.WorktreeDir, "commit", "-m", "land child")
+	head := gitTestOutput(t, child.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, child.WorktreeDir, "push", "-u", "origin", child.Branch)
+	gitTest(t, fixture.canonical, "checkout", target)
+	gitTest(t, fixture.canonical, "merge", "--ff-only", child.Branch)
+	gitTest(t, fixture.canonical, "push", "origin", target)
+	gitTest(t, fixture.canonical, "checkout", "main")
+	githubLog := installOpenTargetPullRequestFixture(t, head, target)
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "incidentius-task2-core-contract",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied || !outcome.Results[0].WorktreeGone ||
+		!outcome.Results[0].BranchDeleted || !outcome.Results[0].RemoteDeleted || outcome.Results[0].OpenPullRequest != nil {
+		t.Fatalf("landed child cleanup = %#v", outcome)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, target); got != head {
+		t.Fatalf("target branch moved or was deleted: got %s, want %s", got, head)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, child.Branch); got != "" {
+		t.Fatalf("child remote branch still exists at %s", got)
+	}
+	if _, err := os.Stat(child.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("child worktree still exists: %v", err)
+	}
+	assertPullRequestFixtureWasReadOnly(t, githubLog)
+}
+
+func TestCleanupEndsZeroDiffChildIgnoringOpenTargetPullRequestSharingHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	const target = "stream/execution-records"
+	gitTest(t, fixture.canonical, "branch", target, "main")
+	gitTest(t, fixture.canonical, "push", "origin", target)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "incidentius-task2-cli-evidence",
+		Base:         target,
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := created[0]
+	head := gitTestOutput(t, child.WorktreeDir, "rev-parse", "HEAD")
+	githubLog := installOpenTargetPullRequestFixture(t, head, target)
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "incidentius-task2-cli-evidence",
+		Apply:        true,
+		OlderThan:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied || !outcome.Results[0].WorktreeGone ||
+		!outcome.Results[0].BranchDeleted || outcome.Results[0].OpenPullRequest != nil {
+		t.Fatalf("zero-diff child end cleanup = %#v", outcome)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, target); got != head {
+		t.Fatalf("target branch moved or was deleted: got %s, want %s", got, head)
+	}
+	if _, err := os.Stat(child.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("zero-diff child worktree still exists: %v", err)
+	}
+	assertPullRequestFixtureWasReadOnly(t, githubLog)
+}
+
 func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	const head = "0123456789012345678901234567890123456789"
@@ -873,6 +1112,164 @@ func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{merged("main", "unrelated")}, head, "deleted-target"); ok || target != "" {
 		t.Fatalf("unrelated merged PR target = %q, %t; want empty, false", target, ok)
 	}
+}
+
+func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *testing.T) {
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	head := strings.Repeat("a", 40)
+	merge := strings.Repeat("b", 40)
+	valid := func() githubPullRequest {
+		return githubPullRequest{
+			Number: 323, URL: "https://github.com/acme/app/pull/323", State: "closed", MergedAt: &mergedAt,
+			Head: githubRef{Ref: "stream/deleted", SHA: head}, Base: githubRef{Ref: "main"}, MergeCommitSHA: merge,
+		}
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*githubPullRequest)
+		want   bool
+	}{
+		{name: "exact receipt", want: true},
+		{name: "head mismatch", mutate: func(pr *githubPullRequest) { pr.Head.SHA = strings.Repeat("c", 40) }},
+		{name: "wrong base", mutate: func(pr *githubPullRequest) { pr.Base.Ref = "release" }},
+		{name: "missing merge identity", mutate: func(pr *githubPullRequest) { pr.MergeCommitSHA = "" }},
+		{name: "wrong recorded source", mutate: func(pr *githubPullRequest) { pr.Head.Ref = "feature/other" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pullRequest := valid()
+			if test.mutate != nil {
+				test.mutate(&pullRequest)
+			}
+			receipt, err := selectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{pullRequest}, "stream/deleted", "main", head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (receipt != nil) != test.want {
+				t.Fatalf("receipt = %#v, want present=%t", receipt, test.want)
+			}
+		})
+	}
+}
+
+func TestRemoteDefaultBranchReadsOriginHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch, err := remoteDefaultBranch(context.Background(), fixture.canonical)
+	if err != nil || branch != "main" {
+		t.Fatalf("remote default branch = %q, %v; want main", branch, err)
+	}
+}
+
+func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(t *testing.T, fixture *gitFixture, result CreateResult, head, merge string, mergedAt time.Time)
+		want      string
+		dirty     bool
+	}{
+		{
+			name: "wrong base", want: "no exact merged receipt",
+			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
+				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "release", mergedAt)
+			},
+		},
+		{
+			name: "missing immutable merge identity", want: "no exact merged receipt",
+			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, _ string, mergedAt time.Time) {
+				installExactMergedPullRequestForDeletedTarget(t, head, "", "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "merge not in current default", want: "not contained",
+			configure: func(t *testing.T, fixture *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
+				gitTest(t, fixture.canonical, "push", "--force", "origin", merge+"^:refs/heads/main")
+				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "default fetch failure", want: "origin did not resolve a default branch",
+			configure: func(t *testing.T, fixture *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
+				gitTest(t, fixture.remote, "config", "receive.denyDeleteCurrent", "ignore")
+				gitTest(t, fixture.canonical, "push", "origin", ":main")
+				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "unpushed residue", want: "no exact merged receipt",
+			configure: func(t *testing.T, _ *gitFixture, result CreateResult, head, merge string, mergedAt time.Time) {
+				if err := os.WriteFile(filepath.Join(result.WorktreeDir, "residue.txt"), []byte("must remain\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitTest(t, result.WorktreeDir, "add", "residue.txt")
+				gitTest(t, result.WorktreeDir, "commit", "-m", "unpublished residue")
+				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "dirty checkout", dirty: true,
+			configure: func(t *testing.T, _ *gitFixture, result CreateResult, head, merge string, mergedAt time.Time) {
+				if err := os.WriteFile(filepath.Join(result.WorktreeDir, "dirty.txt"), []byte("must remain\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "main", mergedAt)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := "deleted-target-" + strings.ReplaceAll(test.name, " ", "-")
+			fixture, result, head, merge, mergedAt := prepareDeletedTargetRecoveryFixture(t, task)
+			test.configure(t, fixture, result, head, merge, mergedAt)
+			outcome, err := GC(context.Background(), GCOptions{
+				ProjectsRoot: fixture.projectsRoot, Tasks: []string{task},
+				SessionFreshness: DisableSessionFreshness,
+				Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.dirty {
+				entry := entryFor(t, outcome, task)
+				if entry.Eligible || entry.Class != GCClassDirty {
+					t.Fatalf("dirty deleted-target GC = %#v", entry)
+				}
+				return
+			}
+			if len(outcome.Entries) != 0 {
+				t.Fatalf("unsafe deleted-target recovery produced entries: %#v", outcome.Entries)
+			}
+			diagnostics := fmt.Sprint(outcome.Diagnostics)
+			if !strings.Contains(diagnostics, test.want) {
+				t.Fatalf("diagnostics = %s, want %q", diagnostics, test.want)
+			}
+		})
+	}
+}
+
+func prepareDeletedTargetRecoveryFixture(t *testing.T, task string) (*gitFixture, CreateResult, string, string, time.Time) {
+	t.Helper()
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "deleted-target", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "deleted-target")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: task, Base: "deleted-target", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	merge := remoteBranchForTest(t, fixture.canonical, "main")
+	gitTest(t, fixture.canonical, "push", "origin", ":deleted-target")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "main", mergedAt)
+	return fixture, result, head, merge, mergedAt
 }
 
 // TestCleanupRetiresTaskNamespaceResidueOnTerminalApply is the regression
@@ -2321,6 +2718,38 @@ func installMergedPullRequestFixture(t *testing.T, head string, mergedAt time.Ti
 	installMergedPullRequestFixturesWithMerge(t, []string{head}, nil, mergedAt)
 }
 
+func installExactMergedPullRequestForDeletedTarget(t *testing.T, head, merge, source, base string, mergedAt time.Time) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := `#!/bin/sh
+set -eu
+if [ "$1 $2" != "api --paginate" ]; then
+    echo "unexpected gh command: $*" >&2
+    exit 2
+fi
+printf '%s\n' "$WB_TEST_MERGED_PULLS"
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal([]map[string]any{{
+		"number":           77,
+		"html_url":         "https://github.com/acme/app/pull/77",
+		"state":            "closed",
+		"merged_at":        mergedAt.Format(time.RFC3339),
+		"head":             map[string]any{"ref": source, "sha": head},
+		"base":             map[string]any{"ref": base, "sha": ""},
+		"merge_commit_sha": merge,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func installMergedPullRequestFixtures(t *testing.T, heads []string, mergedAt time.Time) {
 	installMergedPullRequestFixturesWithMerge(t, heads, nil, mergedAt)
 }
@@ -2368,7 +2797,7 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, openBase, mergedBase string, mergedAt time.Time) {
+func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, repository, source, openBase, mergedBase string, mergedAt time.Time) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
@@ -2386,7 +2815,7 @@ printf '%s\n' "$WB_TEST_PULLS"
 	pulls := []map[string]any{
 		{
 			"number": 31, "html_url": "https://github.com/acme/app/pull/31", "state": "open",
-			"head": map[string]any{"ref": "feature/test", "sha": head},
+			"head": map[string]any{"ref": source, "sha": head, "repo": map[string]any{"full_name": repository}},
 			"base": map[string]any{"ref": openBase, "sha": ""},
 		},
 		{
@@ -2403,6 +2832,58 @@ printf '%s\n' "$WB_TEST_PULLS"
 	t.Setenv("WB_TEST_PULLS", string(payload))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installOpenTargetPullRequestFixture(t *testing.T, head, branch string) string {
+	t.Helper()
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "gh.log")
+	script := filepath.Join(binDir, "gh")
+	content := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$WB_TEST_GH_LOG"
+if [ "$1 $2" != "api --paginate" ]; then
+    echo "unexpected mutating gh command: $*" >&2
+    exit 2
+fi
+printf '%s\n' "$WB_TEST_PULLS"
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal([]map[string]any{{
+		"number": 325, "html_url": "https://github.com/acme/app/pull/325", "state": "open",
+		"head": map[string]any{
+			"ref": branch, "sha": head,
+			"repo": map[string]any{"full_name": "acme/app"},
+		},
+		"base": map[string]any{"ref": "main", "sha": ""},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_GH_LOG", logPath)
+	t.Setenv("WB_TEST_PULLS", string(payload))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
+func assertPullRequestFixtureWasReadOnly(t *testing.T, logPath string) {
+	t.Helper()
+	contents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) == 0 {
+		t.Fatal("cleanup did not query pull-request evidence")
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "api --paginate repos/acme/app/commits/") || !strings.HasSuffix(line, "/pulls") {
+			t.Fatalf("cleanup mutated or queried unexpected pull-request state: %q", line)
+		}
+	}
 }
 
 func installFailingGitHubFixture(t *testing.T) {

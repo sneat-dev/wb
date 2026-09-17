@@ -116,7 +116,7 @@ func newRemoteFixture(t *testing.T, machine string) remoteFixture {
 	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: "+machine+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(base, "wbhome"))
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(base, "wbhome"))
 	return remoteFixture{projectsRoot: projectsRoot, origin: origin, configPath: configPath}
 }
 
@@ -204,9 +204,8 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	remoteGit(t, canonical, "commit", "-q", "--allow-empty", "-m", "seed")
 	remoteGit(t, canonical, "push", "-q", "-u", "origin", "main")
 
-	home := filepath.Join(base, "wbhome")
-	t.Setenv("WB_HOME", home)
-	orphanWorktree := filepath.Join(home, "worktrees", "orphan-task", "acme", "widgets")
+	t.Setenv("WB_PROJECTS_ROOT", projectsRoot)
+	orphanWorktree := filepath.Join(projectsRoot, ".worktrees", "orphan-task", "acme", "widgets")
 	remoteGit(t, canonical, "worktree", "add", "-q", "-b", "agent/orphan-task", orphanWorktree, "main")
 
 	stateOrigin := filepath.Join(base, "origin.git")
@@ -363,10 +362,24 @@ func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
+	for _, want := range []string{"remote provider: git (git:team/wb-state)", "stale=1", "alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status output lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestRemoteStatusDiagnosticsReportProviderMismatch(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	cfg := remotestate.Config{Provider: "hub", URL: "https://wb.example", Machine: "vm"}
+	entries := []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: now, RemoteStore: "git:team/wb-state"}}}
+	rows := machineRows(entries, now, 24*time.Hour)
+	diagnostics := buildRemoteStatusDiagnostics(cfg, entries, rows, now)
+	if diagnostics.Provider != "hub" || diagnostics.Store != "hub:https://wb.example" || len(diagnostics.Mismatches) != 1 {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if !strings.Contains(diagnostics.Mismatches[0], "alice/laptop publishes via git:team/wb-state") {
+		t.Fatalf("mismatch = %q", diagnostics.Mismatches[0])
 	}
 }
 

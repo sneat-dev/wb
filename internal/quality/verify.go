@@ -46,6 +46,10 @@ type RunOptions struct {
 	// GoShardPackages are module-relative package patterns such as
 	// ./internal/worktrees. Packages not named here still run exactly once.
 	GoShardPackages []string
+	// GoLintCommands replaces the default `go vet ./...` lint step with the
+	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
+	// keeps exact tool pins reproducible without invoking a shell.
+	GoLintCommands [][]string
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
@@ -58,8 +62,10 @@ type RunOptions struct {
 	CoverageDiagnosticsRepository string
 	// SingleWorker constrains every check to one worker, so a verification
 	// run cannot exceed the workstation's concurrency cap on its own. Go tests
-	// gain `-p 1` and never `-race`; Node runs gain `--parallel=1` and
-	// `--maxWorkers=1` with the Nx daemon and cache disabled.
+	// gain `-p 1` and never `-race`; package-script Node runs gain
+	// `--parallel=1` and `--maxWorkers=1`, while mixed Nx target runs gain
+	// only Nx's executor-neutral `--parallel=1`. The Nx daemon and cache are
+	// disabled in either case.
 	//
 	// Serialization is deliberately *not* a substitute for per-file
 	// isolation: nothing here relaxes an isolation flag, because a serialized
@@ -154,9 +160,10 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			if check == CheckSpec {
 				continue
 			}
-			command := goCommand(check, options.SingleWorker)
-			entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
-			report.Results = append(report.Results, entry)
+			for _, command := range goCommands(check, options) {
+				entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
+				report.Results = append(report.Results, entry)
+			}
 		}
 	}
 	if nodes, ok, err := nodeProjects(path); err != nil {
@@ -165,7 +172,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		for _, node := range nodes {
 			hasScript := false
 			for _, check := range checks {
-				if check != CheckSpec && node.Scripts[string(check)] {
+				if check != CheckSpec && (node.Scripts[string(check)] || node.Nx) {
 					hasScript = true
 					break
 				}
@@ -178,11 +185,11 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 				if check == CheckSpec {
 					continue
 				}
-				if !node.Scripts[string(check)] {
+				if !node.Scripts[string(check)] && !node.Nx {
 					report.Results = append(report.Results, VerificationEntry{Language: "node", Module: node.Module, Check: check, Status: StatusSkipped, Detail: "script is not defined"})
 					continue
 				}
-				command := nodeCheckCommand(node.PackageManager, check, options.SingleWorker)
+				command := nodeCheckCommand(node.PackageManager, check, node.Nx && !node.Scripts[string(check)], options.SingleWorker)
 				entry := runVerification(ctx, options, "node", node.Module, check, node.Path, command...)
 				report.Results = append(report.Results, entry)
 			}
@@ -417,19 +424,23 @@ func plansStoreOwnerOrRepo(segment string) bool {
 	return segment != "" && segment[0] != '.'
 }
 
-func goCommand(check Check, singleWorker bool) []string {
+func goCommand(check Check, singleWorker bool, timeout time.Duration) []string {
 	switch check {
 	case CheckLint:
 		return []string{"go", "vet", "./..."}
 	case CheckTest:
+		testTimeout := timeout.String()
+		if timeout == 0 {
+			testTimeout = "0"
+		}
 		if singleWorker {
 			// -p 1 bounds how many packages compile and run at once, which is
 			// the knob that keeps a verification run inside the workstation's
 			// concurrency cap. -race is deliberately absent: it multiplies
 			// wall time and memory, and CI on the stream pull request owns it.
-			return []string{"go", "test", "-p", "1", "./..."}
+			return []string{"go", "test", "-timeout", testTimeout, "-p", "1", "./..."}
 		}
-		return []string{"go", "test", "./..."}
+		return []string{"go", "test", "-timeout", testTimeout, "./..."}
 	case CheckBuild:
 		return []string{"go", "build", "./..."}
 	default:
@@ -437,9 +448,32 @@ func goCommand(check Check, singleWorker bool) []string {
 	}
 }
 
-// nodeCheckCommand appends the single-worker flags after the script separator,
-// so they reach the underlying runner rather than the package manager.
-func nodeCheckCommand(packageManager string, check Check, singleWorker bool) []string {
+func goCommands(check Check, options RunOptions) [][]string {
+	if check == CheckLint && len(options.GoLintCommands) > 0 {
+		commands := make([][]string, len(options.GoLintCommands))
+		for i := range options.GoLintCommands {
+			commands[i] = append([]string(nil), options.GoLintCommands[i]...)
+		}
+		return commands
+	}
+	return [][]string{goCommand(check, options.SingleWorker, options.Timeout)}
+}
+
+// nodeCheckCommand runs an explicit package script when one exists. An Nx
+// workspace need not duplicate every project target as a root script, so WB
+// falls back to Nx run-many and executes the target across applicable projects.
+func nodeCheckCommand(packageManager string, check Check, nxTarget, singleWorker bool) []string {
+	if nxTarget {
+		// The locked install above has already prepared this scope. Invoke its
+		// local Nx entrypoint directly so package-manager "exec" hooks cannot
+		// start a second dependency-status install before the actual check.
+		command := []string{"node", filepath.FromSlash("node_modules/nx/dist/bin/nx.js")}
+		command = append(command, "run-many", "--target="+string(check), "--all", "--skip-nx-cache")
+		if singleWorker {
+			command = append(command, "--parallel=1")
+		}
+		return command
+	}
 	command := []string{packageManager, "run", string(check)}
 	if !singleWorker {
 		return command
@@ -530,6 +564,7 @@ type nodeProjectInfo struct {
 	Path           string
 	Module         string
 	Locked         bool
+	Nx             bool
 }
 
 func nodeProject(root, path string, locked bool) (nodeProjectInfo, error) {
@@ -542,6 +577,11 @@ func nodeProject(root, path string, locked bool) (nodeProjectInfo, error) {
 		return nodeProjectInfo{}, fmt.Errorf("parse package.json: %w", err)
 	}
 	project := nodeProjectInfo{Scripts: map[string]bool{}, PackageManager: detectPackageManager(root, manifest.PackageManager), Path: root, Locked: locked}
+	if info, statErr := os.Lstat(filepath.Join(root, "nx.json")); statErr == nil {
+		project.Nx = info.Mode().IsRegular()
+	} else if !os.IsNotExist(statErr) {
+		return nodeProjectInfo{}, fmt.Errorf("inspect nx.json: %w", statErr)
+	}
 	for name := range manifest.Scripts {
 		project.Scripts[name] = true
 	}

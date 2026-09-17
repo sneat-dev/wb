@@ -9,9 +9,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/strongo/cli-helpers/cliinstall"
 	"github.com/strongo/cli-helpers/selfupdate"
 	"github.com/strongo/cli-helpers/selfupdate/cobracmd"
 )
+
+// wbCatalogID is wb's own id in github.com/strongo/cli-helpers/cliinstall's
+// compiled-in fleet catalog (cli-install#req:host-identity-from-catalog).
+// newSelfUpdateConfig and newInstallCmd both resolve this SAME entry, so
+// `wb self-update` and every other fleet CLI's `install wb` agree on how wb
+// is released, by construction rather than by two copies staying in sync
+// (cli-install#req:catalog-identity-single-source).
+const wbCatalogID = "wb"
 
 // wb binds the shared github.com/strongo/cli-helpers/selfupdate library rather than
 // reimplementing any of it: install-method detection, release resolution,
@@ -23,28 +32,10 @@ import (
 // Feature spec that draws this boundary, and REQ: library-provided-behavior
 // in particular.
 
-// selfUpdateUndeterminedVersions are the Config.CurrentVersion values meaning
-// "this build cannot say its own version" (REQ: wb-version-identity). wb has
-// two, and neither is the library's default placeholder "dev":
-//
-//   - "unknown" — collectVersion's own final fallback, when neither a
-//     link-time stamp nor module metadata is available.
-//   - "(devel)" — what the Go toolchain stamps into build.Main.Version for a
-//     binary built from a source tree rather than resolved from a module
-//     version, i.e. every `go build ./cmd/wb`. Without it declared, a locally
-//     built wb compares "(devel)" against the latest release as if it were a
-//     real version, and reports an update available from a version that does
-//     not exist.
-//
-// A Go pseudo-version is deliberately NOT in this set: it is a known version
-// that sorts below its eventual release, so "update available" is the right
-// answer for it.
-var selfUpdateUndeterminedVersions = []string{"unknown", "(devel)"}
-
 // selfUpdateHomebrewUpgradeCommand is the exact command printed for a
 // Homebrew-managed install. wb ships as a cask, not a formula, so this must
 // carry --cask (REQ: wb-homebrew-cask).
-const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --cask wb"
+const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --yes --cask -- wb"
 
 // selfUpdateHomebrewInstallCommand is named alongside elevated permissions
 // in the permission-failure remedy. It only ever fires on the manual-install
@@ -54,44 +45,33 @@ const selfUpdateHomebrewUpgradeCommand = "brew update && brew upgrade --cask wb"
 // (REQ: permission-remedy-names-brew).
 const selfUpdateHomebrewInstallCommand = "brew install --cask sneat-dev/tap/wb"
 
-// newSelfUpdateConfig returns wb's own selfupdate.Config: its release
-// identity, the one package manager it ships through, and the platforms
-// its GoReleaser build publishes. It is a plain function, not inlined into
-// newSelfUpdateCmd, purely so selfupdate_test.go can assert its fields
-// directly without constructing a command or touching any I/O
-// (REQ: wb-release-identity, REQ: wb-homebrew-cask, REQ: wb-version-identity).
+// newSelfUpdateConfig returns wb's own selfupdate.Config, built from its
+// compiled-in cliinstall catalog entry rather than restated by hand
+// (cli-install#req:catalog-identity-single-source; REQ: wb-release-identity,
+// REQ: wb-homebrew-cask, REQ: wb-version-identity). It is a plain function,
+// not inlined into newSelfUpdateCmd, purely so selfupdate_test.go can assert
+// its fields directly without constructing a command or touching any I/O.
+//
+// The catalog entry (github.com/strongo/cli-helpers/cliinstall's own
+// catalog_wb.go) already reproduces wb's release identity field for field —
+// the GitHub repository, the Homebrew cask manager
+// (selfupdate.HomebrewCask("wb"), whose UpgradeCommand is byte-identical to
+// selfUpdateHomebrewUpgradeCommand below), the supported darwin/linux
+// platforms .goreleaser.yml publishes, the {"version","--json"} probe args,
+// and the "unknown"/"(devel)" undetermined placeholders — so binding it here
+// is not a behavior change, only a single source of truth: a future drift
+// between wb's own self-update and any other fleet CLI's `install wb` now
+// fails cli-helpers' own catalog-snapshot tests instead of silently
+// diverging between two hand-copied literals.
 func newSelfUpdateConfig() selfupdate.Config {
-	return selfupdate.Config{
-		BinaryName:           "wb",
-		Repository:           "sneat-dev/wb",
-		CurrentVersion:       collectVersion().Version,
-		UndeterminedVersions: selfUpdateUndeterminedVersions,
-		Managers: []selfupdate.Manager{
-			selfupdate.Homebrew(selfUpdateHomebrewUpgradeCommand).
-				WithExecutableUpgradeSteps(
-					selfupdate.ManagedCommand{Executable: "brew", Args: []string{"update"}},
-					selfupdate.ManagedCommand{Executable: "brew", Args: []string{"upgrade", "--cask", "wb"}},
-				),
-		},
-		// Matches .goreleaser.yml's builds.goos/goarch. A host outside this
-		// set is refused by the library's own unsupported-platform rule
-		// rather than attempting a swap wb publishes no asset for
-		// (REQ: wb-release-identity).
-		SupportedPlatforms: []selfupdate.Platform{
-			{GOOS: "darwin", GOARCH: "amd64"},
-			{GOOS: "darwin", GOARCH: "arm64"},
-			{GOOS: "linux", GOARCH: "amd64"},
-			{GOOS: "linux", GOARCH: "arm64"},
-		},
-		// wb's machine-readable version spelling, used for the library's
-		// post-swap version probe (REQ: wb-version-identity).
-		VersionProbeArgs: []string{"version", "--json"},
-		// AssetName, ChecksumsName, and DownloadURL are left at the
-		// library's GoReleaser-shaped defaults: wb_<version>_<os>_<arch>.tar.gz
-		// and wb_<version>_checksums.txt, matching .goreleaser.yml's own
-		// archives.name_template and checksum.name_template exactly
-		// (REQ: wb-release-identity).
+	entry, ok := cliinstall.ByID(wbCatalogID)
+	if !ok {
+		// A host id absent from the compiled catalog is a programming error
+		// caught by TestNewSelfUpdateConfigIdentity, never a runtime state a
+		// user can trigger (cli-install#req:host-identity-from-catalog).
+		panic(fmt.Sprintf("cliinstall: no catalog entry for %q", wbCatalogID))
 	}
+	return entry.Config(collectVersion().Version)
 }
 
 // newSelfUpdateCmd returns the "self-update" command (aliased "update"). Its
@@ -113,20 +93,48 @@ func newSelfUpdateCmd() *cobra.Command {
 func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 	var command *cobra.Command
 	command = cobracmd.New(cfg, cobracmd.CommandOptions{
-		Short:      "Update the installed wb binary to the latest release",
-		Aliases:    []string{"update"},
-		JSONFormat: true,
-		Errors:     selfUpdateErrors{},
-		AfterUpdate: func(ctx context.Context, update selfupdate.AfterUpdate) error {
-			// A running daemon retains the old executable image after an atomic
-			// replacement. The lifecycle command performs the durable drain and
-			// queue-generation handoff; --if-running avoids starting a daemon for
-			// users who only updated the CLI.
-			restartDaemonAfterSelfUpdate(command, ctx, update)
-			return syncSkillsAfterSelfUpdate(command, ctx, update)
-		},
+		Short:       "Update the installed wb binary to the latest release",
+		Aliases:     []string{"update"},
+		JSONFormat:  true,
+		Errors:      selfUpdateErrors{},
+		AfterUpdate: wbAfterUpdate(&command),
 	})
 	return command
+}
+
+// wbAfterUpdate returns the after-update hook wb's self-update AND upgrade
+// commands both configure — restart the daemon, then sync skills — so
+// `wb self-update` and `wb upgrade wb` reach the identical hook
+// (cli-install#req:self-update-equals-upgrade-self). A running daemon
+// retains the old executable image after an atomic replacement; the
+// lifecycle command performs the durable drain and queue-generation
+// handoff, and --if-running avoids starting a daemon for users who only
+// updated the CLI.
+//
+// cmd is a pointer to the CALLER's own *cobra.Command variable, assigned
+// only after cobracmd.New/NewUpgrade returns (the declare-build-assign
+// pattern newSelfUpdateCmdWithConfig and newUpgradeCmd both use): the
+// closure resolves *cmd lazily, when AfterUpdate actually fires — by which
+// time it names whichever command instance is running, self-update's own or
+// upgrade's — because AfterUpdateFunc's signature carries no io.Writer of
+// its own for restartDaemonAfterSelfUpdate/syncSkillsAfterSelfUpdate to
+// write warnings and the verified-version line to.
+//
+// *cmd is nil only if a future refactor breaks that declare-build-assign
+// order (review M5) — both current callers make it impossible today, since
+// AfterUpdate never fires until well after construction returns. The
+// fallback below keeps that a loud, visible bug (output still reaches the
+// terminal via a fresh command whose Out/Err default to the process's own
+// stdout/stderr) rather than a nil-pointer panic.
+func wbAfterUpdate(cmd **cobra.Command) selfupdate.AfterUpdateFunc {
+	return func(ctx context.Context, update selfupdate.AfterUpdate) error {
+		target := *cmd
+		if target == nil {
+			target = &cobra.Command{}
+		}
+		restartDaemonAfterSelfUpdate(target, ctx, update)
+		return syncSkillsAfterSelfUpdate(target, ctx, update)
+	}
 }
 
 func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) {

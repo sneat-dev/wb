@@ -5,7 +5,7 @@ description: Synchronize, inspect, test, build, and measure local repository fle
 
 # WB fleet
 
-For the preconfigured CodeGrapher local-tool plugin, see [CodeGrapher](references/codegrapher.md). It installs, updates, and reports the executable only; it does not refresh repository graphs.
+For trusted post-update indexing, see [Lifecycle hooks](references/lifecycle-hooks.md). WB runs the configured executable only after an exact checkout change.
 
 Choose one command that answers the question:
 

@@ -14,12 +14,13 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 		SchemaVersion: machinesnapshot.SchemaVersion,
 		Login:         source.Login, Machine: source.Machine,
 		PublishedAt: source.PublishedAt, LastSeenAt: source.LastSeenAt,
+		RemoteStore:  source.RemoteStore,
 		Repositories: hostedRepositories(source.KnownRepositories),
 		Worktrees:    make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
 	}
 	for _, sourceWorktree := range source.Worktrees {
 		result.Worktrees = append(result.Worktrees, machinesnapshot.Worktree{
-			Task: sourceWorktree.Task, Stream: sourceWorktree.Stream,
+			Task: sourceWorktree.Task, TaskSummary: sourceWorktree.TaskSummary, Stream: sourceWorktree.Stream,
 			Repository: sourceWorktree.Repository, Branch: sourceWorktree.Branch,
 			Lifecycle: sourceWorktree.Lifecycle, OwnerState: sourceWorktree.OwnerState,
 			Owner: sourceWorktree.Owner, LastActivityAt: sourceWorktree.LastActivityAt,
@@ -43,12 +44,13 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		SchemaVersion: remotestate.SchemaVersion,
 		Login:         stored.Snapshot.Login, Machine: stored.Snapshot.Machine,
 		PublishedAt: stored.Snapshot.PublishedAt, LastSeenAt: lastSeenAt,
+		RemoteStore:       stored.Snapshot.RemoteStore,
 		KnownRepositories: remoteRepositories(stored.Snapshot.Repositories),
 		Worktrees:         make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
 	}
 	for _, worktree := range stored.Snapshot.Worktrees {
 		snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{
-			Task: worktree.Task, Stream: worktree.Stream, Repository: worktree.Repository,
+			Task: worktree.Task, TaskSummary: worktree.TaskSummary, Stream: worktree.Stream, Repository: worktree.Repository,
 			Branch: worktree.Branch, Lifecycle: worktree.Lifecycle,
 			OwnerState: worktree.OwnerState, Owner: worktree.Owner,
 			LastActivityAt: worktree.LastActivityAt, NeedsAttention: worktree.NeedsAttention,

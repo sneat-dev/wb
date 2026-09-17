@@ -436,7 +436,10 @@ func reservationRunNames(reservations []preApplyRenameReservationCandidate) []st
 // crashed rename can leave either a retired lock or its exact dead-owner lock;
 // the latter follows the existing interrupted-lock proof before reuse.
 func acquirePreApplyReservationTask(resolution wbhome.Resolution, task string) (*cleanupTaskHandle, error) {
-	root := filepath.Join(resolution.Write.Home, "worktrees")
+	// The reservation shell and its lock are coordination state, so they live
+	// in the logical task namespace under the state directory — not in the
+	// physical checkout store.
+	root := resolution.Write.StateWorktreesRoot()
 	if _, err := os.Lstat(filepath.Join(root, task)); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {

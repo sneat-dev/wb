@@ -38,7 +38,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
@@ -49,6 +49,9 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	prepare, _, err := command.Find([]string{"prepare"})
 	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
 		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
+	}
+	if prepare.Flags().Lookup("allow-unfenced") != nil {
+		t.Fatal("merge prepare must not expose landing-only --allow-unfenced")
 	}
 	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if prepare.Flags().Lookup(flag) == nil {
@@ -80,9 +83,15 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 			t.Errorf("merge resume is missing --%s", flag)
 		}
 	}
+	if resume.Flags().Lookup("allow-unfenced") == nil {
+		t.Fatal("merge resume must expose --allow-unfenced")
+	}
 	land, _, err := command.Find([]string{"land"})
 	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
 		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
+	}
+	if land.Flags().Lookup("allow-unfenced") == nil {
+		t.Fatal("merge land must expose --allow-unfenced")
 	}
 	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
 		if land.Flags().Lookup(flag) != nil {
@@ -104,6 +113,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	stranded, _, err := command.Find([]string{"acknowledge-stranded-landing"})
 	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
+	}
+	for _, status := range []string{"conflict", "published", "checks_pending", "checks_failed"} {
+		if !strings.Contains(stranded.Long, status) {
+			t.Errorf("acknowledge-stranded-landing help does not mention supported %q receipts: %q", status, stranded.Long)
+		}
 	}
 	missingCleanup, _, err := command.Find([]string{"acknowledge-missing-cleanup"})
 	if err != nil || missingCleanup == nil || missingCleanup.Flags().Lookup("apply") == nil || missingCleanup.Flags().Lookup("actor") == nil || missingCleanup.Flags().Lookup("reason") == nil {
@@ -129,7 +143,7 @@ func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
 	if command.Name() != "land" {
 		t.Fatalf("Name() = %q", command.Name())
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("land is missing --%s", flag)
 		}
@@ -521,7 +535,7 @@ type cliWorktreeMergeFixture struct {
 func newCLIWorktreeMergeFixture(t *testing.T, sourceCount int) cliWorktreeMergeFixture {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	projectsRoot := filepath.Join(root, "projects")

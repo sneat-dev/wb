@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -11,7 +12,51 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 )
+
+func TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts(t *testing.T) {
+	results := []fleetsync.Result{
+		{Repo: discover.Repo{Org: "acme", Name: "cloned", Path: "/projects/acme/cloned"}, Status: fleetsync.Cloned, HeadSHA: "clone-head"},
+		{Repo: discover.Repo{Org: "acme", Name: "updated", Path: "/projects/acme/updated"}, Status: fleetsync.Pulled, Updated: true, BeforeHeadSHA: "old", HeadSHA: "new"},
+		{Repo: discover.Repo{Org: "acme", Name: "current", Path: "/projects/acme/current"}, Status: fleetsync.Pulled, BeforeHeadSHA: "same", HeadSHA: "same"},
+		{Repo: discover.Repo{Org: "acme", Name: "dirty", Path: "/projects/acme/dirty"}, Status: fleetsync.SkippedDirty, HeadSHA: "dirty"},
+	}
+	var got []lifecyclehooks.Event
+	dispatch := func(_ context.Context, events []lifecyclehooks.Event) (lifecyclehooks.Report, error) {
+		got = append(got, events...)
+		return lifecyclehooks.Report{Executed: len(events)}, nil
+	}
+	if code := finishSyncLifecycleHooks(context.Background(), results, dispatch, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events=%+v, want cloned and updated only", got)
+	}
+	if got[0].Repository != "github.com/acme/cloned" || got[0].OldSHA != "" || got[0].NewSHA != "clone-head" {
+		t.Fatalf("clone event=%+v", got[0])
+	}
+	if got[1].Repository != "github.com/acme/updated" || got[1].OldSHA != "old" || got[1].NewSHA != "new" {
+		t.Fatalf("pull event=%+v", got[1])
+	}
+}
+
+func TestFinishSyncLifecycleHooksWarnsWithoutChangingSyncOutcome(t *testing.T) {
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "acme", Name: "updated", Path: "/projects/acme/updated"},
+		Status: fleetsync.Pulled, Updated: true, BeforeHeadSHA: "old", HeadSHA: "new",
+	}}
+	var errOut bytes.Buffer
+	dispatch := func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error) {
+		return lifecyclehooks.Report{}, errors.New("invalid hook configuration")
+	}
+	if code := finishSyncLifecycleHooks(context.Background(), results, dispatch, &errOut); code != 0 {
+		t.Fatalf("exit code = %d, want successful repository update", code)
+	}
+	if !strings.Contains(errOut.String(), "warning: lifecycle hooks were not dispatched") {
+		t.Fatalf("warning = %q", errOut.String())
+	}
+}
 
 func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 	var out bytes.Buffer

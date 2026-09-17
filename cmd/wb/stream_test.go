@@ -19,8 +19,9 @@ import (
 // Requirements: dependency-streams#req:verbs-share-an-exit-code-and-envelope-contract,
 // dependency-streams#req:every-refusal-names-the-sanctioned-command.
 func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
 		Name:    "holder",
@@ -71,8 +72,9 @@ func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
 // `wb stream status` with no name lists every stream from WB-owned state, and
 // the JSON document on stdout stays parseable.
 func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
 		Name:    "listed",
@@ -207,7 +209,7 @@ func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
 // A stream name that could not also be a worktree task name is rejected before
 // anything durable is created.
 func TestStreamStartRejectsAnInvalidName(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(prompt, []byte("request\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -244,7 +246,7 @@ func TestStreamStartRejectsAnInvalidName(t *testing.T) {
 // An unsupported --role is the same contract: exit 2 with an envelope naming
 // the sanctioned invocation.
 func TestStreamJoinRejectsAnUnsupportedRoleWithTheUsageEnvelope(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(prompt, []byte("request\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -281,8 +283,9 @@ func TestStreamJoinRejectsAnUnsupportedRoleWithTheUsageEnvelope(t *testing.T) {
 // `wb stream delete` refuses an open stream and names the command that makes
 // it deletable.
 func TestStreamDeleteRefusesAnOpenStream(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
 		Name: "held", Phase: streams.PhaseOpen,
@@ -304,8 +307,9 @@ func TestStreamDeleteRefusesAnOpenStream(t *testing.T) {
 // names the exact undo command, so an agent never has to hand-chain git to
 // clear a link.
 func TestStreamEndRefusesALiveLinkAndNamesTheUndoCommand(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
 		Name: "linked",

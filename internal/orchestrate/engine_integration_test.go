@@ -692,12 +692,12 @@ func newEngineFixture(t *testing.T) engineFixture {
 func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	t.Helper()
 	root := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb. Scoping it per fixture, not shared package-wide, also keeps this
-	// test's worktree root unique from the other tests in this file that reuse
-	// the same "dependency-test" operation name.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root. Scoping it per fixture, not shared package-wide, also
+	// keeps this test's worktree root unique from the other tests in this file
+	// that reuse the same "dependency-test" operation name.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	githubDir := filepath.Join(root, "projects")
@@ -724,12 +724,27 @@ func (fixture engineFixture) options() Options {
 
 func writeEngineFile(t *testing.T, path, contents string) {
 	t.Helper()
+	if filepath.Base(path) == "gh" {
+		contents = withEmptyActionsRuns(contents)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func withEmptyActionsRuns(contents string) string {
+	if strings.Contains(contents, "/actions/runs?head_sha=") {
+		return contents
+	}
+	const response = `if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":0,"workflow_runs":[]}'
+  exit 0
+fi
+`
+	return strings.Replace(contents, "#!/bin/sh\n", "#!/bin/sh\n"+response, 1)
 }
 
 func mustReadEngineFile(t *testing.T, path string) string {

@@ -443,6 +443,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
+	// Carry the real root into every secure Git handoff below, so the helper
+	// that builds the sandbox authorizes the hook runtime directory the
+	// installed hook actually writes to.
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	home := resolution.Write.Home
 	userConfig, userConfigFound, userConfigPath, err := configuredUserWorktreesConfig()
 	if err != nil {
@@ -912,8 +916,8 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if base == "" {
 		base = "main"
 	}
-	if !validBranch(ctx, base) {
-		return GuardResult{}, fmt.Errorf("invalid base branch %q", base)
+	if err := branchValidationError(ctx, "base branch", base); err != nil {
+		return GuardResult{}, err
 	}
 	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -966,6 +970,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if err != nil {
 		return GuardResult{}, err
 	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
 	if err != nil {
 		return GuardResult{}, err
@@ -1610,11 +1615,13 @@ func normalizeCreateOptions(options CreateOptions) (CreateOptions, error) {
 		return CreateOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
 	}
 	ctx := context.Background()
-	if !validBranch(ctx, options.Base) {
-		return CreateOptions{}, fmt.Errorf("invalid base branch %q", options.Base)
+	if err := branchValidationError(ctx, "base branch", options.Base); err != nil {
+		return CreateOptions{}, err
 	}
-	if options.Branch != "" && !validBranch(ctx, options.Branch) {
-		return CreateOptions{}, fmt.Errorf("invalid feature branch %q", options.Branch)
+	if options.Branch != "" {
+		if err := branchValidationError(ctx, "feature branch", options.Branch); err != nil {
+			return CreateOptions{}, err
+		}
 	}
 	if options.Branch != "" && options.Branch == options.Base {
 		return CreateOptions{}, fmt.Errorf("feature branch must differ from base branch %q", options.Base)
@@ -1863,20 +1870,28 @@ func validBranch(ctx context.Context, branch string) bool {
 	if gitPath == "" {
 		return false
 	}
-	command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
-	// This syntax-only Git command must not inherit a worktree that cleanup has
-	// just removed. A final local-branch retirement persists its durable
-	// backlog stage after removing that checkout; using a stable directory keeps
-	// validation independent of the caller's current directory.
-	command.Dir = os.TempDir()
-	command.Env = console.Env()
-	valid := command.Run() == nil
-	// A cancelled context makes Run fail for reasons unrelated to the name;
-	// never remember that as a verdict about the string.
-	if ctx.Err() == nil {
-		validBranchMemo.Store(branch, valid)
+	for attempt := 0; attempt < 3; attempt++ {
+		command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
+		// This syntax-only Git command must not inherit a worktree that cleanup has
+		// just removed. A final local-branch retirement persists its durable
+		// backlog stage after removing that checkout; using a stable directory keeps
+		// validation independent of the caller's current directory.
+		command.Dir = os.TempDir()
+		command.Env = console.Env()
+		if command.Run() == nil {
+			validBranchMemo.Store(branch, true)
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
 	}
-	return valid
+	// A failed subprocess is not durable evidence about branch grammar. Under
+	// process-sharded tests (and on saturated hosts) a transient spawn or signal
+	// used to cache `main=false` for the rest of the process, cascading one
+	// environmental failure into every later repository fixture. Valid names are
+	// still memoized; failures stay retryable.
+	return false
 }
 
 func canonicalCoordinates(projectsRoot, root string) (owner, name string, err error) {
@@ -1972,7 +1987,7 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 		return nil, err
 	}
 	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
-	command.Env = console.Env()
+	command.Env = secureHelperEnvironment(ctx)
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 	output, err := command.Output()
 	if err != nil {
@@ -2176,7 +2191,7 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		return 1
 	}
 	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: root}}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: prepare hook runtime layout: %v\n", err)
 		return 1
@@ -2757,8 +2772,34 @@ func gitWorktreeAddFromStageDirectory(
 	return nil
 }
 
+// trustedGitExecutableFn is the resolution step behind trustedGitExecutable.
+// Platform resolution memoizes its outcome in a sync.Once, so without this seam
+// a test cannot reach the path where Git is unavailable at all.
+var trustedGitExecutableFn = platformTrustedGitExecutable
+
 func trustedGitExecutable() (string, error) {
-	return platformTrustedGitExecutable()
+	return trustedGitExecutableFn()
+}
+
+// branchValidationError reports why a branch name cannot be used, separating a
+// name Git rejects from Git itself being unusable.
+//
+// validBranch collapses both causes into false, so a caller that reported only
+// "invalid base branch" blamed the name even when the resolver had failed
+// outright. That is exactly backwards for the case that matters most: "main" is
+// always a valid name, so the message sends the reader hunting for a branch
+// configuration typo while the real fault is that no Git executable could be
+// resolved. Observed when an unaccepted Xcode licence made
+// `/usr/bin/xcrun --find git` fail, which surfaced to the user as
+// `invalid base branch "main"` on the pre-push path.
+func branchValidationError(ctx context.Context, kind, branch string) error {
+	if validBranch(ctx, branch) {
+		return nil
+	}
+	if _, err := trustedGitExecutable(); err != nil {
+		return fmt.Errorf("cannot validate %s %q: %w", kind, branch, err)
+	}
+	return fmt.Errorf("invalid %s %q", kind, branch)
 }
 
 func worktreeAddArguments(checkout, branch, baseRevision string, branchExists bool) []string {
@@ -2803,7 +2844,7 @@ func runSecureStageCanonicalGitHelper(
 		exists = "1"
 	}
 	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, canonical.path, gitExecutable, branch, baseRevision, exists)
-	command.Env = console.Env()
+	command.Env = secureHelperEnvironment(ctx)
 	command.ExtraFiles = []*os.File{stageDirectory, canonical.root, canonical.common}
 	return command.CombinedOutput()
 }
@@ -2961,7 +3002,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
 		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: prepare hook runtime layout: %v\n", err)
 		return 1

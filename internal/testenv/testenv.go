@@ -15,6 +15,7 @@ package testenv
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,4 +79,13 @@ func IsolateProcess() {
 		}
 	}
 	_ = os.Setenv("GOWORK", "off")
+	// WB's descriptor-secure paths intentionally refuse symlinked ancestors.
+	// macOS commonly exposes its temporary directory through /var while the
+	// physical path is /private/var; leaving that alias in TMPDIR makes fixtures
+	// test the host alias instead of the WB behavior they were written for.
+	// Resolve it once for the whole package test process so every t.TempDir uses
+	// the same physical identity that WB's path resolvers return.
+	if resolved, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		_ = os.Setenv("TMPDIR", resolved)
+	}
 }

@@ -101,9 +101,9 @@ wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
-wb plugin list --format=json # typed lifecycle registry for preconfigured local tools
-wb codegrapher status|install|update # inspect or manage CodeGrapher (install/update require --yes)
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
+wb install [name...]         # list/install sibling fleet CLIs relevant to wb
+wb upgrade [name...]         # upgrade installed fleet CLIs, including wb itself
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
@@ -603,6 +603,82 @@ wb sync -o your-org            # sync only one org
 wb sync -j 16                  # more parallelism
 ```
 
+#### Trusted checkout-update hooks
+
+When WB actually changes a canonical checkout, it can run user-owned tools from
+the standard `~/.config/wb/wb.yaml`. An already-current pull, fetch without a
+checkout change, dry run, dirty skip, and failed update do not fire. A new clone
+does fire once because it has new checked-out content.
+
+Executors are direct executable-plus-arguments declarations, never shell
+strings, and only this user-owned file may declare them. Repository
+`.wb/hooks.yaml` remains Git-hook policy; repository content cannot authorize an
+automatic lifecycle command.
+
+```yaml
+hooks:
+  version: 1
+  executors:
+    code-index:
+      run: /opt/homebrew/bin/codegrapher
+      args: [sync, --init, .]
+      cwd: repository
+      mode: coalesced
+      timeout: 2m
+      failure: warn
+  bindings:
+    - on: [checkout-updated]
+      match:
+        repositories:
+          include: ['*/*/*']
+      execute: [code-index]
+```
+
+Repository patterns match canonical `host/owner/repository` identities;
+exclusions win. Matching updates are durably queued, so the Git operation does
+not wait for the external tool. Repeated pending events for the same executor
+and checkout coalesce across WB processes to the earliest old commit and latest
+new commit. One background worker owns the queue and runs at most two executors
+at once; interrupted claims return to the queue on the next worker start.
+
+The XDG config and state roots must resolve outside every matched checkout.
+Config, state, and receipt storage reject symlinks or untrusted ownership and
+write permissions. Executors must resolve outside the checkout, be owned by the
+current user or root, and not be group/world-writable. On Windows they must be
+direct `.exe` or `.com` files with a trusted owner and no broadly writable ACL.
+Immediately before execution, WB revalidates the executable identity plus the
+checkout's physical directory, canonical repository identity, and queued HEAD.
+
+Delivery is at least once, so executors must be idempotent for a repository and
+target commit. Each terminal attempt appends a private receipt beneath the
+user's XDG state directory and a per-ID index supports exact retries. Standard
+output and standard error are stored separately in private per-attempt files
+capped at 64 KiB each, never printed or copied into the receipt. Invalid queue
+records are quarantined without blocking valid work; invalid receipt lines are
+reported without hiding later records.
+
+```sh
+wb hooks lifecycle check                 # validate config and executable trust
+wb hooks lifecycle status                # queue, worker health, receipts, diagnostics
+wb hooks lifecycle resume                # wake stranded durable work
+wb hooks lifecycle retry <receipt-id>    # requeue one exact failed attempt
+wb hooks lifecycle gc                    # preview receipt/diagnostic retention
+wb hooks lifecycle gc --apply            # remove only the previewed old data
+wb hooks lifecycle backfill              # preview existing canonical repos
+wb hooks lifecycle backfill --apply      # enqueue the previewed matches
+```
+
+Backfill does not change Git and is deliberately dry-run by default. It reads
+each canonical repository's current HEAD and passes matching entries through
+the same durable queue. Executor arguments remain generic; in the example,
+`--init` lets CodeGrapher initialize an index that does not exist yet. Hook,
+configuration, queue, worker-start, and receipt failures warn but do not rewrite
+a successful Git update as a failed update. Asynchronous failures remain in
+worker health and produce a warning on the next lifecycle dispatch. GC retains
+at least the newest 1,000 receipts, removes nothing newer than 30 days, and
+protects failed receipts whose warning has not yet been surfaced; both defaults
+are configurable by flags.
+
 ### `wb run` — governed commands and config-driven recipes
 
 Use `--` to execute a command through WB. The command keeps its stdin, stdout,
@@ -730,7 +806,7 @@ wb coverage . --test-shards 8 \
   --shard-package ./internal/worktrees \
   --coverage-profile profile.cov --minimum 58
 
-# Run Go vet/test/build and defined Node lint/test/build scripts.
+# Run Go vet/test/build and Node lint/test/build scripts or Nx targets.
 wb verify --fleet --filter sneat-co/ --parallel=2
 
 # Restrict verification to compilation-oriented checks for one repository.
@@ -770,10 +846,19 @@ tracked `.wb/quality.yaml`:
 
 ```yaml
 version: 1
+go_lint:
+  commands:
+    - [go, vet, ./...]
+    - [go, run, "example.com/linter@v1.2.3", run, ./...]
 go_test:
-  shards: 8
+  shards: 4
   packages: [./internal/worktrees]
 ```
+
+The lint commands are structured argv, so a repository can run the exact
+CI-pinned linter without shell parsing or relying on whichever global binary is
+on PATH. Only packages whose process-global test setup is safe to repeat belong
+in the shard list; the remaining packages run once.
 
 `wb worktree land` validates the candidate first using this policy, proves the
 remote landing receipt, and cleans the source by default. The legacy
@@ -786,9 +871,12 @@ comparison is needed, avoiding a redundant full baseline on green candidates.
 separately-named task per repository — but one `wb worktree land`/`wb land`
 call only takes worktrees of a single repository, so that one task still
 lands with one call per repository.
-Verification runs `go vet ./...`, `go test ./...`,
+Verification runs the repository's configured Go lint commands (defaulting to
+`go vet ./...`), `go test -timeout <WB timeout> ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.
+If an Nx workspace omits those root scripts, WB runs the corresponding Nx
+targets across all applicable projects instead of silently skipping them.
 Other stacks remain explicit, reusable `wb run` recipes.
 
 `wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
@@ -1370,17 +1458,11 @@ call, import, and impact exploration beneath WB's fleet-level topology. These
 links are deterministic and passive: WB does not query CodeGrapher, publish a
 snapshot, or trigger indexing while generating a report.
 
-Install and inspect the local CodeGrapher CLI through WB's default tool plugin:
-
-```sh
-wb codegrapher status --format=json
-wb codegrapher install --yes
-wb codegrapher update --yes
-```
-
-This local-tool lifecycle does not index or synchronize a repository. A graph
-refresh will be added only after CodeGrapher can attest the exact repository
-revision it processed.
+CodeGrapher is installed and updated with its own CLI distribution. WB does not
+contain CodeGrapher-specific lifecycle code; the generic trusted
+`checkout-updated` hook shown above can invoke `codegrapher sync --init .`
+after an exact checkout change. CodeGrapher initializes a missing local index
+on the first update and uses its incremental reconciler thereafter.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and
@@ -1909,41 +1991,42 @@ regular, executable file outside the repository before invoking it.
 #### Hook policy, detection, and composable profiles
 
 Policy layers in this order: WB's conservative built-ins (including worktree
-admission), the user's global
-`~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
+admission), the user's global `git_hooks:` section in
+`~/.config/wb/wb.yaml`, then the repository's `.wb/hooks.yaml`. A repository
 entry overrides the same global hook. Automatic profiles are opt-in, so
 upgrading WB never adds expensive checks to an existing installation
 unexpectedly.
 
 ```yaml
-version: 1
+git_hooks:
+  version: 1
 
-profiles:
-  auto: true                    # detect all built-in and custom definitions
-  # include: [sneat-product]    # force a profile even without a match
-  # exclude: [node, worktree]   # explicit opt-out of a detected/default profile
-  definitions:
-    sneat-product:              # custom product/tool/domain profile
-      order: 200
-      detect:
-        any_files:
-          - sneat.project.yaml
-      hooks:
-        pre-push:
-          template: templates/sneat-product/pre-push.sh
+  profiles:
+    auto: true                  # detect all built-in and custom definitions
+    # include: [sneat-product]  # force a profile even without a match
+    # exclude: [node, worktree] # explicit opt-out of a detected/default profile
+    definitions:
+      sneat-product:            # custom product/tool/domain profile
+        order: 200
+        detect:
+          any_files:
+            - sneat.project.yaml
+        hooks:
+          pre-push:
+            template: templates/sneat-product/pre-push.sh
 
-# A direct hook replaces WB's conservative base block. Setting it disabled
-# suppresses the whole hook, including blocks contributed by profiles.
-# hooks:
-#   pre-push:
-#     disabled: true
+  # A direct hook replaces WB's conservative base block. Setting it disabled
+  # suppresses the whole hook, including blocks contributed by profiles.
+  # hooks:
+  #   pre-push:
+  #     disabled: true
 
-metrics:
-  enabled: true
-  # path: ~/.local/state/wb/hook-events.jsonl
-  labels:                       # optional, user-chosen pseudonyms
-    developer: dev-17
-    machine: laptop-a
+  metrics:
+    enabled: true
+    # path: ~/.local/state/wb/hook-events.jsonl
+    labels:                     # optional, user-chosen pseudonyms
+      developer: dev-17
+      machine: laptop-a
 ```
 
 With `profiles.auto: true`, the built-in detectors currently contribute:
@@ -2214,6 +2297,67 @@ blocking on input when no terminal is attached and `--yes` was not given, so
 scripts and agents driving wb never hang. wb publishes no Windows build, so
 the self-replace path is macOS/Linux only; a Windows host reaching it refuses
 with a clear message instead of attempting a swap it has no asset for.
+
+### `wb install` — install sibling fleet CLIs
+
+`wb install` is a different command from `wb self-update`: it installs *other*
+fleet CLIs relevant to wb (`specscore`, `codegrapher`, `cover100`), not wb
+itself.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement reuse the
+identical `github.com/strongo/cli-helpers` machinery `wb self-update` binds,
+applied to a fleet-wide catalog (`github.com/strongo/cli-helpers/cliinstall`)
+instead of wb's own release. Both commands resolve wb's release identity from
+the same compiled-in catalog entry, so they can never disagree about how wb
+itself is installed. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused before any confirmation, network request
+or write, and exit `2` — wb's usage code, since the invocation itself was
+rejected before any work started — naming the valid catalog ids where
+relevant; every other failure reports through wb's ordinary `1` (findings)
+exit code. Every message carries an exact `install: ` prefix, never
+`self-update: `.
+
+### `wb upgrade` — upgrade installed fleet CLIs, including wb itself
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI to its latest release, named ones or all of
+them with `--all`, including wb itself.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb
+wb upgrade --check                  # same report; exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade --format json            # machine-readable report/result
+```
+
+`wb self-update` is exactly `wb upgrade wb`: upgrade configures wb as a
+target from the SAME `selfupdate.Config` and after-update hook (daemon
+restart, skills re-sync) self-update's own command configures, so the two
+can never disagree about the outcome for wb itself. `upgrade` gets no
+`update` alias (only `self-update` keeps one), and wb is always upgraded
+last in a batch, after every other named target, because its after-update
+hook restarts the daemon. An unknown target, an invalid `--format`, or
+`--all` combined with names exit `2`, exactly as `install`'s own usage
+refusals do; every other failure reports through wb's ordinary `1`
+(findings) exit code — including "an upgrade is available" under an
+explicit `--check`, which wb folds into the same code rather than reserving
+a fourth one (the bare, no-argument report is different: it never checks
+for an available upgrade at all and exits `0` unless a lookup itself
+failed). Every message carries an exact `upgrade: ` prefix, never
+`install: `/`self-update: ` — including the permission remedy, which names
+upgrade's own Homebrew cask-upgrade command rather than install's
+cask-install command.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 

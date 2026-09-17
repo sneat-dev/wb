@@ -212,6 +212,10 @@ if [ "$1" = api ]; then
       printf '%s\n' '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'
       exit 0
       ;;
+    repos/*'/actions/runs?head_sha='*'&per_page=100')
+      printf '%s\n' '{"total_count":0,"workflow_runs":[]}'
+      exit 0
+      ;;
     repos/*/commits/*/status*)
       printf '%s\n' '{"total_count":0,"statuses":[]}'
       exit 0
@@ -330,8 +334,8 @@ func (fixture fetchCacheFixture) bumpOptions(fetchCache bool) BumpOptions {
 func runFetchCacheCampaign(t *testing.T, fixture fetchCacheFixture, fetchCache bool) BumpReport {
 	t.Helper()
 	// Not t.Parallel(): this drives a real (non-DryRun) orchestrate.Run and
-	// mutates process env (WB_HOME, PATH, shim state) via t.Setenv.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture.root, ".wb"))
+	// mutates process env (WB_PROJECTS_ROOT, PATH, shim state) via t.Setenv.
+	t.Setenv(wbhome.EnvOverride, fixture.githubDir)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(fixture.root, "state"))
 	fixture.installServerSideMergeGH(t)
 	fixture.installFetchCountingGit(t)

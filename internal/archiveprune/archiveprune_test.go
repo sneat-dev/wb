@@ -101,13 +101,17 @@ func run(t *testing.T, dir, name string, args ...string) {
 	}
 }
 
-// isolateWBHome points WB_HOME at a fresh empty directory so a claim-scan test
-// never sees this machine's real fleet state.
+// isolateWBHome points WB_PROJECTS_ROOT at a fresh empty directory so a
+// claim-scan test never sees this machine's real fleet state. A fixture's own
+// explicit ProjectsRoot still wins over it.
 func isolateWBHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
-	return home
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	// Pin HOME too: the retired $HOME/.wb read layout must not be this
+	// machine's real fleet state.
+	t.Setenv("HOME", root)
+	return filepath.Join(root, ".wb")
 }
 
 func cleanOne(ctx context.Context, t *testing.T, f *fixture, apply bool) Result {
@@ -257,9 +261,9 @@ func TestClean_ApplyRequiresExplicitUntrackedDeletionAuthority(t *testing.T) {
 }
 
 func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) {
-	home := isolateWBHome(t)
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
+	home := filepath.Join(f.projectsRoot, ".wb")
 	mustWriteFile(t, filepath.Join(f.canonical, "cache", "nested.txt"), "delete me\n")
 
 	result := cleanWithOptions(context.Background(), t, f, Options{Apply: true, DeleteUntracked: true})
@@ -456,9 +460,9 @@ func TestClean_RefusesUnpushedTag(t *testing.T) {
 // task against this repository open, even if its worktree directory no
 // longer exists.
 func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
-	home := isolateWBHome(t)
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
+	home := filepath.Join(f.projectsRoot, ".wb")
 
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
@@ -487,9 +491,9 @@ func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
 // A terminal claim for the same repository must not block anything: the task
 // is finished, and every other check still has to pass on its own.
 func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
-	home := isolateWBHome(t)
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
+	home := filepath.Join(f.projectsRoot, ".wb")
 
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
@@ -513,9 +517,9 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 }
 
 func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
-	home := isolateWBHome(t)
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
+	home := filepath.Join(f.projectsRoot, ".wb")
 	runDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1")
 	if err := os.MkdirAll(filepath.Join(runDir, "claims"), 0o700); err != nil {
 		t.Fatal(err)
@@ -544,7 +548,8 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 }
 
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
-	home := isolateWBHome(t)
+	root := t.TempDir()
+	home := filepath.Join(root, ".wb")
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	terminalDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "terminals")
 	if err := os.MkdirAll(claimDir, 0o700); err != nil {
@@ -562,7 +567,7 @@ func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T)
 	mustWriteFile(t, filepath.Join(claimDir, claimID+".json"), string(raw))
 	terminalPath := filepath.Join(terminalDir, claimID+".json")
 	mustWriteFile(t, terminalPath, "{")
-	if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "parse terminal seal") {
+	if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "parse terminal seal") {
 		t.Fatalf("malformed sibling terminal seal error = %v", err)
 	}
 	mismatch := map[string]any{"claim_id": claimID, "repository": "acme/other", "task": "some-task", "worktree": "/gone", "lifecycle": "terminal"}
@@ -571,7 +576,7 @@ func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T)
 		t.Fatal(err)
 	}
 	mustWriteFile(t, terminalPath, string(raw))
-	if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "does not match") {
+	if _, err := nonTerminalClaims(root, "acme/widgets"); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("mismatched sibling terminal seal error = %v", err)
 	}
 }

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *testing.T) {
@@ -48,7 +51,7 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
 	t.Helper()
 	bin := t.TempDir()
 	script := filepath.Join(bin, "gh")
-	body := "#!/bin/sh\nset -eu\ncase \"$*\" in\n  'pr view " + pullRequest + ` --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+	body := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >>\"$WB_TEST_GH_LOG\"\ncase \"$*\" in\n  'pr view " + pullRequest + ` --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     pr_head="${WB_TEST_PR_HEAD_SHA:-$WB_TEST_CANDIDATE_SHA}"
     if [ "$WB_TEST_PR_STATE" = MERGED ]; then
       printf '{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$pr_head" "$WB_TEST_MERGE_COMMIT_SHA"
@@ -77,14 +80,27 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
     sha="${2##*/}"
     tree="$(git --git-dir="$WB_TEST_REMOTE" rev-parse "$sha^{tree}" 2>/dev/null || true)"
     printf '{"tree":{"sha":"%s"}}\n' "$tree" ;;
+  'api --paginate repos/acme/app/commits/'*'/pulls'|'api repos/acme/app/commits/'*'/pulls?per_page=100 --include'|'api repos/acme/app/commits/'*'/pulls?per_page=100')
+    printf '[]\n' ;;
+  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
+    printf '%s\n' '{"protected":false,"protection":{}}' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100')
+    printf '%s\n' '[]' ;;
+  *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100')
+    printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
+  *'/status?per_page=100 --include'|*'/status?per_page=100')
+    printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_REMOTE", remoteGitDir)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
+	if os.Getenv("XDG_STATE_HOME") == "" {
+		t.Setenv("XDG_STATE_HOME", t.TempDir())
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -115,7 +131,7 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	}
 
 	// The candidate actually landed as a fast-forward of main.
-	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", receipt.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", receipt.Candidate.SHA)
 	runEngineGit(t, fixture.canonical, "push", "origin", "main")
 
 	// Remove the candidate worktree entirely: this receipt shape is defined
@@ -129,6 +145,13 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	t.Setenv("WB_TEST_PR_STATE", "MERGED")
 	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
 	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", receipt.Candidate.SHA)
+	if preview, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
+		ProjectsRoot: fixture.githubDir, Task: receipt.Sources[0].Task, Base: receipt.Target, ExactRepository: receipt.Repository,
+		AbsorbedBy: receipt.Candidate.SHA, MergeReceiptProofs: worktreeMergeCleanupProofs(receipt, receipt.Sources[0].Task),
+		Apply: false, DeleteRemote: true, Workers: 1,
+	}); err != nil || len(preview.Results) != 1 {
+		t.Fatalf("fake GitHub environment hid the live source before resume: preview=%+v err=%v", preview, err)
+	}
 
 	dryRun, err := AcknowledgeStrandedPullRequestLanding(context.Background(), WorktreeMergeStrandedLandingAcknowledgementOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath,
@@ -187,6 +210,54 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	}
 	if next.Status != WorktreeMergePrepared || next.Candidate.SHA == "" {
 		t.Fatalf("new merge preflight = %+v", next)
+	}
+}
+
+func TestResumeWorktreeMergeRecoversMergedPublishedPRWithoutCandidateWorktree(t *testing.T) {
+	fixture, source, receipt, _ := landedTerminalCleanupFixture(t)
+	externallyTerminalizeTask(t, fixture, &receipt, receipt.Candidate.Task)
+	if _, err := os.Stat(source.WorktreeDir); err != nil {
+		t.Fatalf("source worktree disappeared while only candidate was terminalized: %v", err)
+	}
+	if view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: source.WorktreeDir}); err != nil || view.Claim == nil {
+		t.Fatalf("live source lost its Work Log claim after candidate cleanup: view=%+v err=%v", view, err)
+	}
+	receipt.LandingSHA = ""
+	receipt.CanonicalSync = ""
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeChecksPending
+	receipt.PullRequest = "https://example.test/acme/app/pull/98"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.Checks.Status = PullRequestWaitPassed
+	receipt.Failure = "target policy has no nonempty server-enforced strict up-to-date fence"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", receipt.Candidate.SHA)
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Cleanup: true, AllowUnfenced: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != WorktreeMergeComplete || resumed.LandingSHA != receipt.Candidate.SHA || !resumed.AllowUnfenced {
+		t.Fatalf("recovered receipt = %+v", resumed)
+	}
+	if _, err := os.Stat(source.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("remaining source worktree was not cleaned after candidate recovery: %v", err)
+	}
+	if resumed.Checks.Status != PullRequestWaitPassed || resumed.Checks.PullRequest != "" || resumed.Checks.ObservedTargetHead != receipt.Candidate.SHA {
+		t.Fatalf("recovery did not replace candidate-check evidence with a post-target receipt: %+v", resumed.Checks)
+	}
+	ghLog := mustReadEngineFile(t, os.Getenv("WB_TEST_GH_LOG"))
+	if count := strings.Count(ghLog, "/check-runs?per_page=100"); count < 2 {
+		t.Fatalf("recovery observed target check-runs %d times, want stable reread; gh log:\n%s", count, ghLog)
 	}
 }
 
@@ -381,8 +452,8 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 		mutate  func(*WorktreeMergeReceipt)
 		wantErr string
 	}{
-		{name: "wrong phase", mutate: func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhasePrepare }, wantErr: "want land conflict"},
-		{name: "wrong status", mutate: func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergeValidationFailed }, wantErr: "want land conflict"},
+		{name: "wrong phase", mutate: func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhasePrepare }, wantErr: "want recoverable land receipt"},
+		{name: "wrong status", mutate: func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }, wantErr: "want recoverable land receipt"},
 		{name: "already has a landing SHA", mutate: func(r *WorktreeMergeReceipt) { r.LandingSHA = strings.Repeat("c", 40) }, wantErr: "already recorded a landing SHA"},
 		{name: "no pull request", mutate: func(r *WorktreeMergeReceipt) { r.PullRequest = "" }, wantErr: "no published pull request"},
 		{name: "published candidate mismatch", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = strings.Repeat("d", 40) }, wantErr: "does not match its exact preserved candidate"},

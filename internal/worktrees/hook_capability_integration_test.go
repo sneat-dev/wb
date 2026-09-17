@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestSecureCleanupGitHelperRunsRealGoHookWithSharedCachesAndAuthorizedMetrics(t *testing.T) {
@@ -16,8 +15,6 @@ func TestSecureCleanupGitHelperRunsRealGoHookWithSharedCachesAndAuthorizedMetric
 		t.Skipf("secure Git capability unavailable: %v", err)
 	}
 	fixture := newGitFixture(t)
-	wbHome := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv(wbhome.EnvOverride, wbHome)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 	t.Setenv("XDG_STATE_HOME", "")
 	// The descriptor-capability child must not pass instrumentation or a

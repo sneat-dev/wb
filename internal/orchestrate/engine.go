@@ -648,7 +648,7 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 			return nil, fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
 		}
 	}
-	return worktrees.CreateWorktreeAtPlacement(ctx, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
+	return worktrees.CreateWorktreeAtPlacement(ctx, options.GitHubDir, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
 }
 
 // recordWorktreeManifest gives every worktree this engine creates the WB

@@ -101,6 +101,85 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	}
 }
 
+func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/lint\n\ngo 1.27\n")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "commands.log")
+	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report := VerifyWithOptions(context.Background(), "example/lint", repository, []Check{CheckLint}, RunOptions{
+		GoLintCommands: [][]string{{"go", "vet", "./..."}, {"go", "run", "example.test/linter@v1", "run", "./..."}},
+	})
+	if report.Status != StatusPassed || len(report.Results) != 2 {
+		t.Fatalf("report = %+v", report)
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "vet ./...\nrun example.test/linter@v1 run ./..."; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestVerifyRunsNxTargetsWhenRootScriptsAreAbsent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	writeQualityFile(t, filepath.Join(repository, "package.json"), `{"devDependencies":{"nx":"22.0.0"}}`)
+	writeQualityFile(t, filepath.Join(repository, "nx.json"), `{}`)
+	writeQualityFile(t, filepath.Join(repository, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "commands.log")
+	writeQualityFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeQualityFile(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "node"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report := Verify(context.Background(), "example/nx", repository, []Check{CheckLint, CheckTest, CheckBuild})
+	if report.Status != StatusPassed || len(report.Results) != 4 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, result := range report.Results {
+		if result.Status != StatusPassed {
+			t.Fatalf("Nx verification did not run: %+v", result)
+		}
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"install --frozen-lockfile",
+		"node node_modules/nx/dist/bin/nx.js run-many --target=lint --all --skip-nx-cache",
+		"node node_modules/nx/dist/bin/nx.js run-many --target=test --all --skip-nx-cache",
+		"node node_modules/nx/dist/bin/nx.js run-many --target=build --all --skip-nx-cache",
+	}, "\n")
+	if got := strings.TrimSpace(string(contents)); got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
 // TestVerifyPreparesEveryIndependentNodeScopeBeforeScripts exercises the same
 // verifier used by deps set and deps bump after they create an empty linked
 // worktree. The shim refuses to run a script until its frozen install has
@@ -243,6 +322,14 @@ func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
 		if got := strings.Join(nodeInstallCommand(manager), " "); got != want {
 			t.Errorf("nodeInstallCommand(%q) = %q, want %q", manager, got, want)
 		}
+	}
+}
+
+func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testing.T) {
+	got := strings.Join(nodeCheckCommand("pnpm", CheckLint, true, true), " ")
+	want := "node node_modules/nx/dist/bin/nx.js run-many --target=lint --all --skip-nx-cache --parallel=1"
+	if got != want {
+		t.Fatalf("single-worker Nx command = %q, want %q", got, want)
 	}
 }
 
@@ -886,6 +973,15 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	}
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
+	}
+}
+
+func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
+	if got := strings.Join(goCommand(CheckTest, false, 20*time.Minute), " "); got != "go test -timeout 20m0s ./..." {
+		t.Fatalf("go test command=%q", got)
+	}
+	if got := strings.Join(goCommand(CheckTest, true, 0), " "); got != "go test -timeout 0 -p 1 ./..." {
+		t.Fatalf("unbounded single-worker go test command=%q", got)
 	}
 }
 

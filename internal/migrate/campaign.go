@@ -454,7 +454,9 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 
 func (c *campaign) apply() error {
 	defer c.syncReport()
-	if err := runRepositoriesParallel(c.repos, c.options.Parallel, c.progressAction("prepare", 0, c.repos, prepareCampaignRepository)); err != nil {
+	if err := runRepositoriesParallel(c.repos, c.options.Parallel, c.progressAction("prepare", 0, c.repos, func(repo *campaignRepository) error {
+		return prepareCampaignRepository(repo, c.options.GitHubDir)
+	})); err != nil {
 		return err
 	}
 	moduleRoots := map[string]string{}
@@ -1249,7 +1251,7 @@ func (c *campaign) syncReport() {
 	}
 }
 
-func prepareCampaignRepository(repo *campaignRepository) error {
+func prepareCampaignRepository(repo *campaignRepository, githubDir string) error {
 	if _, err := os.Stat(repo.canonical); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(repo.canonical), 0o755); err != nil {
 			return err
@@ -1298,7 +1300,7 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 	if placementErr != nil {
 		return placementErr
 	}
-	created, createErr := worktrees.CreateWorktreeAtPlacement(context.Background(), repo.canonical, placement, campaignTaskFromBranch(repo.branch), repo.owner+"/"+repo.name, repo.branch, repo.ref, baseRevision)
+	created, createErr := worktrees.CreateWorktreeAtPlacement(context.Background(), githubDir, repo.canonical, placement, campaignTaskFromBranch(repo.branch), repo.owner+"/"+repo.name, repo.branch, repo.ref, baseRevision)
 	if createErr != nil {
 		return createErr
 	}

@@ -30,11 +30,13 @@ const (
 	MaxIdentityLength = 128
 	MaxRepositoryLen  = 256
 	MaxTaskLength     = 256
+	MaxTaskSummaryLen = 240
 	MaxBranchLength   = 512
 	MaxStatusLength   = 64
 	MaxOwnerLength    = 256
 	MaxAttentionLen   = 1024
 	MaxPRURLLength    = 2048
+	MaxRemoteStoreLen = 2048
 
 	AttentionOwnerInactive      = "owner session is no longer active"
 	AttentionSupersessionReview = "supersession evidence requires review"
@@ -71,6 +73,7 @@ type Snapshot struct {
 	Machine       string     `json:"machine" firestore:"machine"`
 	PublishedAt   time.Time  `json:"published_at" firestore:"published_at"`
 	LastSeenAt    time.Time  `json:"last_seen_at,omitempty" firestore:"last_seen_at,omitempty"`
+	RemoteStore   string     `json:"remote_store,omitempty" firestore:"remote_store,omitempty"`
 	Repositories  []string   `json:"repositories" firestore:"repositories"`
 	Worktrees     []Worktree `json:"worktrees" firestore:"worktrees"`
 }
@@ -78,6 +81,7 @@ type Snapshot struct {
 // Worktree is the hosted dashboard projection of one WB worktree.
 type Worktree struct {
 	Task            string       `json:"task" firestore:"task"`
+	TaskSummary     string       `json:"task_summary,omitempty" firestore:"task_summary,omitempty"`
 	Stream          string       `json:"stream,omitempty" firestore:"stream,omitempty"`
 	Repository      string       `json:"repository" firestore:"repository"`
 	Branch          string       `json:"branch" firestore:"branch"`
@@ -180,6 +184,9 @@ func (snapshot Snapshot) Validate() error {
 	if snapshot.PublishedAt.IsZero() {
 		return fmt.Errorf("%w: published_at is required", ErrInvalidSnapshot)
 	}
+	if len(snapshot.RemoteStore) > MaxRemoteStoreLen || !printable(snapshot.RemoteStore) || strings.ContainsAny(snapshot.RemoteStore, "\r\n\t") {
+		return fmt.Errorf("%w: remote_store is invalid", ErrInvalidSnapshot)
+	}
 	if len(snapshot.Worktrees) > MaxWorktrees {
 		return fmt.Errorf("%w: worktrees exceeds %d entries", ErrInvalidSnapshot, MaxWorktrees)
 	}
@@ -229,6 +236,9 @@ func (worktree Worktree) validate() error {
 	}
 	if len(worktree.Task) > MaxTaskLength || len(worktree.Stream) > MaxTaskLength {
 		return errors.New("task or stream is too long")
+	}
+	if utf8.RuneCountInString(worktree.TaskSummary) > MaxTaskSummaryLen || !printable(worktree.TaskSummary) || strings.ContainsAny(worktree.TaskSummary, "\r\n") {
+		return errors.New("task summary is invalid")
 	}
 	owner, name, found := strings.Cut(worktree.Repository, "/")
 	if len(worktree.Repository) > MaxRepositoryLen || !found || strings.Contains(name, "/") ||

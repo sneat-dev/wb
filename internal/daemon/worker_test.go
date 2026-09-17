@@ -16,7 +16,7 @@ import (
 
 func TestWorkerExecutesNormalQueueWithoutRawAdministratorPolicy(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "7", func() error { return errors.New("raw disabled") })
+	service, err := newTestService(t, root, "daemon-build", "7", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestWorkerExecutesNormalQueueWithoutRawAdministratorPolicy(t *testing.T) {
 
 func TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "8", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "8", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestWorkerReconnectFencesOldGenerationAndHandsOffQueuedWork(t *testing.T) {
 
 func TestQueuedOperationCannotCrossWorkersThatShareARoot(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "shared-root", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "shared-root", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestQueuedOperationCannotCrossWorkersThatShareARoot(t *testing.T) {
 
 func TestNormalWorkerSubmissionRequiresExplicitTarget(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "missing-target", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "missing-target", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,12 +143,12 @@ func TestNormalWorkerSubmissionRequiresExplicitTarget(t *testing.T) {
 
 func TestQueuedWorkerOperationSurvivesDaemonRestartAndReconnect(t *testing.T) {
 	root := t.TempDir()
-	before, err := NewService(root, "old-build", "3", func() error { return errors.New("raw disabled") })
+	before, err := newTestService(t, root, "old-build", "3", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	queued := submitWorkerTestOperation(t, before, root, "survive-restart", "reconnected-worker")
-	after, err := NewService(root, "new-build", "4", func() error { return errors.New("raw disabled") })
+	after, err := newTestService(t, root, "new-build", "4", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestQueuedWorkerOperationSurvivesDaemonRestartAndReconnect(t *testing.T) {
 
 func TestWorkerLeaseExpiryRequiresRecovery(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "9", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "9", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestWorkerLeaseExpiryRequiresRecovery(t *testing.T) {
 
 func TestWorkerDisconnectRequiresRecoveryForRunningLease(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "9", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "9", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestWorkerDisconnectRequiresRecoveryForRunningLease(t *testing.T) {
 func TestWorkerRegistrationAndQueueFailClosedOnPermissionsAndSecrets(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	service, err := NewService(root, "daemon-build", "10", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "10", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestWorkerRegistrationAndQueueFailClosedOnPermissionsAndSecrets(t *testing.
 
 func TestWorkerIdempotencyCannotCrossTrustedRawBoundary(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewService(root, "daemon-build", "11", allowRawForTest)
+	service, err := newTestService(t, root, "daemon-build", "11", allowRawForTest)
 	if err != nil {
 		t.Fatal(err)
 	}

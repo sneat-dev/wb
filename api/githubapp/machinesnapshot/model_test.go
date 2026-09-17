@@ -87,6 +87,21 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("unsafe attention err = %v", err)
 	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.Worktrees[0].TaskSummary = "line one\nline two"
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("multiline task summary err = %v", err)
+	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.RemoteStore = "git:team/wb-state\nsecret"
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("multiline remote store err = %v", err)
+	}
+	snapshot = validSnapshot(time.Now().UTC())
+	snapshot.RemoteStore = strings.Repeat("x", MaxRemoteStoreLen+1)
+	if err := snapshot.Validate(); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("oversized remote store err = %v", err)
+	}
 }
 
 func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {
@@ -106,6 +121,7 @@ func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {
 func validSnapshot(at time.Time) Snapshot {
 	return Snapshot{
 		SchemaVersion: SchemaVersion, Login: "alice", Machine: "laptop", PublishedAt: at,
+		RemoteStore:  "git:team/wb-state",
 		Repositories: []string{"github.com/acme/widgets"},
 		Worktrees: []Worktree{{
 			Task: "dashboard", Repository: "acme/widgets", Branch: "feature/dashboard",

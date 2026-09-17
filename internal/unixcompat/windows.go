@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	win "golang.org/x/sys/windows"
 )
 
 const (
@@ -15,7 +17,7 @@ const (
 	O_RDWR      = 2
 	O_CREAT     = 0x40
 	O_EXCL      = 0x80
-	O_DIRECTORY = 0
+	O_DIRECTORY = 0x100000
 	// These flags are interpreted by the compatibility adapters. Keep
 	// O_NOFOLLOW non-zero so Openat can enforce it with Lstat before opening.
 	O_NOFOLLOW          = 0x200000
@@ -55,23 +57,19 @@ var files struct {
 	paths map[int]string
 }
 
-func remember(f *os.File, path string) int {
+func rememberHandle(handle win.Handle, path string) int {
 	files.Lock()
 	defer files.Unlock()
 	if files.paths == nil {
 		files.paths = map[int]string{}
 	}
-	fd := int(f.Fd())
+	fd := int(handle)
 	files.paths[fd] = path
 	return fd
 }
 func pathOf(fd int) string { files.Lock(); defer files.Unlock(); return files.paths[fd] }
-func Open(path string, flags, mode int) (int, error) {
-	f, err := os.OpenFile(path, openFlags(flags), os.FileMode(mode))
-	if err != nil {
-		return -1, err
-	}
-	return remember(f, path), nil
+func Open(path string, flags, _ int) (int, error) {
+	return openWindows(path, flags, flags&O_NOFOLLOW != 0)
 }
 func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
 	dir := pathOf(dirfd)
@@ -79,57 +77,80 @@ func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
 		return -1, errors.New("unknown directory handle")
 	}
 	path := filepath.Join(dir, name)
-	if flags&O_NOFOLLOW != 0 {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return -1, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return -1, errors.New("symbolic link refused")
-		}
-	}
 	return Open(path, int(flags), int(mode))
 }
-func openFlags(flags int) int {
-	result := os.O_RDONLY
-	switch flags & 3 {
+
+func openNoFollow(path string, flags int) (int, error) {
+	return openWindows(path, flags, true)
+}
+
+func openWindows(path string, flags int, noFollow bool) (int, error) {
+	name, err := win.UTF16PtrFromString(path)
+	if err != nil {
+		return -1, err
+	}
+	access := uint32(win.GENERIC_READ)
+	switch flags & (O_WRONLY | O_RDWR) {
 	case O_WRONLY:
-		result = os.O_WRONLY
+		access = win.GENERIC_WRITE
 	case O_RDWR:
-		result = os.O_RDWR
+		access = win.GENERIC_READ | win.GENERIC_WRITE
 	}
 	if flags&O_CREAT != 0 {
-		result |= os.O_CREATE
+		access |= win.GENERIC_WRITE
 	}
-	if flags&O_EXCL != 0 {
-		result |= os.O_EXCL
+	creation := uint32(win.OPEN_EXISTING)
+	switch {
+	case flags&(O_CREAT|O_EXCL) == O_CREAT|O_EXCL:
+		creation = win.CREATE_NEW
+	case flags&O_CREAT != 0:
+		creation = win.OPEN_ALWAYS
 	}
-	return result
+	attributes := uint32(win.FILE_ATTRIBUTE_NORMAL)
+	if noFollow {
+		attributes |= win.FILE_FLAG_OPEN_REPARSE_POINT
+	}
+	if flags&O_DIRECTORY != 0 {
+		attributes |= win.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := win.CreateFile(name, access, win.FILE_SHARE_READ|win.FILE_SHARE_WRITE, nil, creation, attributes, 0)
+	if err != nil {
+		return -1, err
+	}
+	var info win.ByHandleFileInformation
+	if err := win.GetFileInformationByHandle(handle, &info); err != nil {
+		_ = win.CloseHandle(handle)
+		return -1, err
+	}
+	if noFollow && info.FileAttributes&win.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		_ = win.CloseHandle(handle)
+		return -1, errors.New("symbolic link or reparse point refused")
+	}
+	return rememberHandle(handle, path), nil
 }
 func Close(fd int) error {
 	files.Lock()
 	delete(files.paths, fd)
 	files.Unlock()
-	return os.NewFile(uintptr(fd), "").Close()
+	return win.CloseHandle(win.Handle(fd))
 }
 func Fstat(fd int, stat *Stat_t) error {
-	f := os.NewFile(uintptr(fd), "")
-	if f == nil {
-		return os.ErrInvalid
-	}
-	info, err := f.Stat()
-	if err != nil {
+	var info win.ByHandleFileInformation
+	if err := win.GetFileInformationByHandle(win.Handle(fd), &info); err != nil {
 		return err
 	}
-	stat.Size = info.Size()
-	stat.Mode = uint32(info.Mode().Perm())
-	if info.IsDir() {
-		stat.Mode |= S_IFDIR
-	} else {
-		stat.Mode |= S_IFREG
-		stat.Mode = (stat.Mode & S_IFMT) | 0o644
-	}
+	// Keep identity and link-count semantics aligned with Lstat/Fstatat. The
+	// Windows compatibility adapter historically reports zero identities and a
+	// single link, and callers compare path and handle results.
+	stat.Dev = 0
+	stat.Ino = 0
 	stat.Nlink = 1
+	stat.Size = int64(uint64(info.FileSizeHigh)<<32 | uint64(info.FileSizeLow))
+	if info.FileAttributes&win.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		stat.Mode = S_IFDIR | 0o777
+	} else {
+		stat.Mode = S_IFREG | 0o644
+	}
 	return nil
 }
 func Lstat(path string, stat *Stat_t) error {
@@ -157,18 +178,18 @@ func Renameat(olddirfd int, oldname string, newdirfd int, newname string) error 
 	return os.Rename(filepath.Join(pathOf(olddirfd), oldname), filepath.Join(pathOf(newdirfd), newname))
 }
 func Fchmod(fd int, mode uint32) error { return nil }
-func Fsync(fd int) error               { return os.NewFile(uintptr(fd), "").Sync() }
+func Fsync(fd int) error               { return win.FlushFileBuffers(win.Handle(fd)) }
 func Flock(fd, op int) error           { return nil }
 func Dup(fd int) (int, error) {
-	f := os.NewFile(uintptr(fd), "")
-	if f == nil {
-		return -1, os.ErrInvalid
-	}
-	dup, err := os.OpenFile(pathOf(fd), os.O_RDWR, 0)
+	process, err := win.GetCurrentProcess()
 	if err != nil {
 		return -1, err
 	}
-	return remember(dup, pathOf(fd)), nil
+	var duplicate win.Handle
+	if err := win.DuplicateHandle(process, win.Handle(fd), process, &duplicate, 0, false, win.DUPLICATE_SAME_ACCESS); err != nil {
+		return -1, err
+	}
+	return rememberHandle(duplicate, pathOf(fd)), nil
 }
 func CloseOnExec(fd int) {}
 func Mkdirat(dirfd int, name string, mode uint32) error {

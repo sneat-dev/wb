@@ -20,8 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/strongo/cli-helpers/daemonlifecycle"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 )
@@ -55,12 +57,19 @@ type daemonFileEnvelope struct {
 	MAC                 string              `json:"mac"`
 }
 
-func daemonFileBridgeKeyPath(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "file-bridge.key")
+func daemonFileBridgeKeyPath(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "file-bridge.key"), nil
 }
 
 func daemonFileBridgeKey(root string, create bool) (string, error) {
-	path := daemonFileBridgeKeyPath(root)
+	path, err := daemonFileBridgeKeyPath(root)
+	if err != nil {
+		return "", err
+	}
 	if create {
 		if err := secureBridgeRuntime(root); err != nil {
 			return "", err
@@ -71,8 +80,19 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 		}
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
+			if err = daemonlifecycle.ProtectOwnerOnly(path); err != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return "", fmt.Errorf("protect daemon file bridge key: %w", err)
+			}
 			if _, err = file.Write([]byte(hex.EncodeToString(value))); err == nil {
 				err = file.Sync()
+			}
+			if err == nil {
+				err = daemonlifecycle.ProtectOwnerOnlyFile(file)
+			}
+			if err == nil {
+				err = daemonlifecycle.ValidateOwnerOnlyFile(file)
 			}
 			if closeErr := file.Close(); err == nil {
 				err = closeErr
@@ -92,7 +112,7 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 	if !info.Mode().IsRegular() || info.Size() != 64 {
 		return "", errors.New("daemon file bridge key is not a regular 32-byte hex key")
 	}
-	if err := verifyBridgePathSecurity(path, info, 0o600); err != nil {
+	if err := verifyBridgePathSecurity(path, info, 0o600, true); err != nil {
 		return "", err
 	}
 	contents, err := os.ReadFile(path)
@@ -105,15 +125,22 @@ func daemonFileBridgeKey(root string, create bool) (string, error) {
 	return string(contents), nil
 }
 
-func daemonFileBridgeDirectory(root string) string {
-	return filepath.Join(root, ".wb", "runtime", "file-bridge")
+func daemonFileBridgeDirectory(root string) (string, error) {
+	dir, err := daemon.RuntimeDir(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "file-bridge"), nil
 }
 
 func prepareDaemonFileBridge(root string) (requests, responses string, err error) {
 	if err := secureBridgeRuntime(root); err != nil {
 		return "", "", err
 	}
-	base := daemonFileBridgeDirectory(root)
+	base, baseErr := daemonFileBridgeDirectory(root)
+	if baseErr != nil {
+		return "", "", baseErr
+	}
 	for _, directory := range []string{base, filepath.Join(base, "requests"), filepath.Join(base, "responses")} {
 		if err = secureBridgeDirectory(directory); err != nil {
 			return "", "", err
@@ -123,6 +150,10 @@ func prepareDaemonFileBridge(root string) (requests, responses string, err error
 }
 
 func secureBridgeRuntime(root string) error {
+	return secureDaemonRuntime(root)
+}
+
+func secureDaemonRuntime(root string) error {
 	if !filepath.IsAbs(root) {
 		return errors.New("daemon file bridge projects root must be absolute")
 	}
@@ -130,22 +161,29 @@ func secureBridgeRuntime(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("daemon file bridge projects root is not a real directory: %s", root)
 	}
-	if err := verifyBridgePathSecurity(root, info, info.Mode().Perm()); err != nil {
+	if err := verifyBridgePathSecurity(root, info, info.Mode().Perm(), false); err != nil {
 		return err
 	}
-	wbDirectory := filepath.Join(root, ".wb")
-	if err := secureBridgeParentDirectory(wbDirectory, false); err != nil {
+	runtimeDirectory, err := daemon.RuntimeDir(root)
+	if err != nil {
 		return err
 	}
-	return secureBridgeParentDirectory(filepath.Join(wbDirectory, "runtime"), true)
+	// The runtime directory's parent is WB's home; both are created with the
+	// same discipline the daemon applies to every other runtime artefact.
+	if err := secureBridgeParentDirectory(filepath.Dir(runtimeDirectory), false); err != nil {
+		return err
+	}
+	return secureBridgeParentDirectory(runtimeDirectory, true)
 }
 
 func secureBridgeParentDirectory(path string, private bool) error {
 	info, err := os.Lstat(path)
+	created := false
 	if os.IsNotExist(err) {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			return fmt.Errorf("create daemon file bridge parent: %w", err)
 		}
+		created = true
 		info, err = os.Lstat(path)
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -154,8 +192,14 @@ func secureBridgeParentDirectory(path string, private bool) error {
 	want := info.Mode().Perm()
 	if private {
 		want = 0o700
+		if created {
+			err = daemonlifecycle.ProtectOwnerOnly(path)
+		}
+		if err != nil {
+			return fmt.Errorf("protect daemon file bridge parent: %w", err)
+		}
 	}
-	return verifyBridgePathSecurity(path, info, want)
+	return verifyBridgePathSecurity(path, info, want, private)
 }
 
 func secureBridgeDirectory(path string) error {
@@ -172,7 +216,7 @@ func secureBridgeDirectory(path string) error {
 		return fmt.Errorf("daemon file bridge path is not a real directory: %s", path)
 	}
 	if created {
-		err = os.Chmod(path, 0o700)
+		err = daemonlifecycle.ProtectOwnerOnly(path)
 	}
 	if err != nil {
 		return fmt.Errorf("protect daemon file bridge directory: %w", err)
@@ -184,7 +228,7 @@ func secureBridgeDirectory(path string) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("daemon file bridge path is not a real directory: %s", path)
 	}
-	return verifyBridgePathSecurity(path, info, 0o700)
+	return verifyBridgePathSecurity(path, info, 0o700, true)
 }
 
 type daemonFileBridgeServer struct {
@@ -749,6 +793,9 @@ func writeDaemonFileEnvelope(directory, id string, envelope daemonFileEnvelope) 
 			_ = os.Remove(temporary)
 		}
 	}()
+	if err := daemonlifecycle.ProtectOwnerOnly(temporary); err != nil {
+		return fmt.Errorf("protect daemon file bridge envelope: %w", err)
+	}
 	if _, err = file.Write(contents); err == nil {
 		err = file.Sync()
 	}
@@ -773,7 +820,7 @@ func readDaemonFileEnvelope(path string) (daemonFileEnvelope, error) {
 	if !info.Mode().IsRegular() || info.Size() > daemonFileBridgeMaxBytes {
 		return daemonFileEnvelope{}, errors.New("daemon file bridge envelope is not a bounded regular file")
 	}
-	if err := verifyBridgePathSecurity(path, info, 0o600); err != nil {
+	if err := verifyBridgePathSecurity(path, info, 0o600, true); err != nil {
 		return daemonFileEnvelope{}, err
 	}
 	contents, err := os.ReadFile(path)

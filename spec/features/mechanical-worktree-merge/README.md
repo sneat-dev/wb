@@ -71,14 +71,17 @@ the repair through a fresh route and pull request.
 
 ```text
 wb worktree merge <source-worktree...> [--target <branch>]
-  [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
+  [--route auto|direct|pr] [--cleanup] [--allow-unfenced]
+  [--on-failure stop|revert]
 
 wb worktree merge prepare <source-worktree...> [--target <branch>]
   [--rebatch-receipt <prepared-receipt>]
 wb worktree merge land <candidate-worktree-or-receipt>
-  [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
-wb worktree merge resume <candidate-worktree-or-receipt>
-wb worktree merge revert <landing-receipt> [--route auto|direct|pr]
+  [--route auto|direct|pr] [--cleanup] [--allow-unfenced]
+  [--on-failure stop|revert]
+wb worktree merge resume <candidate-worktree-or-receipt> [--allow-unfenced]
+wb worktree merge revert <landing-receipt>
+  [--route auto|direct|pr] [--allow-unfenced]
 wb worktree merge seal-validation-failed <validation-failed-receipt>
   [--apply --actor <identity> --reason <reason>]
 wb worktree merge supersede-validation-failed <validation-failed-receipt>
@@ -99,6 +102,22 @@ resume, and revert intent all route to the merge/worktree skills. Every new
 managed worktree also receives a locally ignored `.worktree.md` reminder with
 the one-command, two-phase, resume, and forward-revert paths; a repository-owned
 file with that name is preserved unchanged.
+
+When the target has no server-enforced strict up-to-date fence, landing refuses
+with the exact `wb worktree merge resume ... --allow-unfenced` command. Once
+approved, that widening is recorded in the receipt and survives every later
+resume and the post-target phase. It permits unavailable branch-policy
+authority in both phases, and it makes an empty observed check set with no
+enumerated required checks terminal for a pull-request candidate as well as a
+direct target, so a repository with no CI at all lands instead of polling until
+the slice deadline; each phase still requires stable exact-head check
+observations whenever checks exist. If another landing path merged the
+published pull request and retired its integration worktree first, resume uses
+GitHub's current PR, commit, tree, ancestry, and target evidence to recover the
+landing before continuing the normal target-check, canonical-sync, and cleanup
+journey. When only some cleanup assets are already absent, each absent asset
+must have exact immutable terminal Work Log and branch-removal evidence before
+WB records it and cleans the remaining live assets normally.
 
 ### Safety and state
 
@@ -148,6 +167,12 @@ file with that name is preserved unchanged.
 - `--cleanup` is ignored until remote receipt and required canonical
   synchronization have succeeded. Cleanup retains the landing receipt needed
   to prepare a later revert.
+- A corrected historical self-supersession remains effective after its
+  replacement worktree is terminally cleaned. WB accepts the missing checkout
+  only when an exact, structurally valid WB cleanup receipt records the same
+  repository, target, task, path, branch, and integrated head, and the freshly
+  fetched target still contains that head and every immutable correction root.
+  A missing checkout without that receipt remains a refusal.
 
 ## Acceptance Criteria
 
@@ -214,6 +239,10 @@ drift after PR publication, WB leaves every source commit and managed worktree
 recoverable, records the exact failed phase, and prints an exact resume or
 remediation command.
 
+If an operator asks to rebatch without adding a distinct source, the refusal
+MUST name `wb worktree merge resume <receipt>` as the same-source retry that
+preserves the existing candidate, receipt, and pull-request lineage.
+
 ### AC: landed-failure-has-a-forward-revert-path
 
 Given an exact landing receipt whose post-target checks fail, `merge revert`
@@ -252,6 +281,23 @@ Given a remotely receipted landing, omission of `--cleanup` retains all assets
 and reports cleanup pending; inclusion removes only the exact absorbed source
 and candidate assets after canonical synchronization and leaves the durable
 landing/revert receipt readable.
+
+Given a corrected historical self-supersession whose replacement was safely
+landed and cleaned, a later merge accepts the append-only correction when the
+matching terminal cleanup receipt and fresh target ancestry validate. Deleting
+the replacement checkout without a matching cleanup receipt does not make the
+correction effective.
+
+Given an interrupted unpublished `preparing` receipt whose exact candidate was
+later discarded through `wb worktree abort`, the unpublished-prepare
+acknowledgement accepts only WB's private, complete lifecycle-backlog proof for
+that exact task, repository, target, path, branch, and SHA. It also rechecks that
+the checkout, local branch, remote branch, and target ancestry do not show a
+surviving or landed candidate. A missing, incomplete, mismatched, or forged
+cleanup record leaves the lane blocked while preserving every source worktree.
+A source may advance only as a clean descendant of its receipted SHA; the
+acknowledgement records that observed descendant head rather than representing
+it as the historical source.
 
 ### AC: squash-recovery-preserves-target-content-and-history-records
 

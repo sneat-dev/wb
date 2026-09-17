@@ -36,7 +36,8 @@ What appears where, on the daemon's loopback listener (default
 |---|---|
 | `/` and `/api/v1/…` | the existing read-only WB dashboard and API |
 | `/v0/workbench/…` | this package's hub API (`hub.NewHandler`) |
-| `/bench/dashboard/` | the embedded bench dashboard from `hub/web/dist` |
+| `/v0/workbench/dashboard`, `/stats`, `/series`, `/leaderboards`, `/latest-merges`, `/worktrees` | the dashboard read API, answered from this machine's published snapshots (`githubapp.RemoteStateReadModel`) |
+| `/workbench/dashboard/` | the embedded bench dashboard from `hub/web/dist` |
 
 Starting the daemon prints one line to stderr naming the engine, the store
 location and the dashboard URL. `wb daemon status` repeats it as
@@ -141,7 +142,7 @@ unauthenticated loopback dashboard.
 ### Building the dashboard
 
 `hub/web/dist` is embedded at build time. A clean clone carries only
-`dist/.gitkeep`, and `/bench/` then serves a one-line page saying so. To get
+`dist/.gitkeep`, and `/workbench/` then serves a one-line page saying so. To get
 the real pages:
 
 ```sh

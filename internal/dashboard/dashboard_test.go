@@ -12,7 +12,7 @@ import (
 )
 
 func TestDashboardServesUIAndHealth(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3"})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
 
 	for _, test := range []struct {
 		path        string
@@ -37,6 +37,25 @@ func TestDashboardServesUIAndHealth(t *testing.T) {
 		if response.Header().Get("Content-Security-Policy") == "" {
 			t.Errorf("%s omitted security headers", test.path)
 		}
+	}
+}
+
+func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d", response.Code)
+	}
+	var payload struct {
+		PID        int    `json:"daemon_pid"`
+		Generation uint64 `json:"scheduler_generation"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.PID != 123 || payload.Generation != 45 {
+		t.Fatalf("health identity = %#v", payload)
 	}
 }
 
@@ -92,7 +111,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 		Version:      "test",
 		Mounts: map[string]http.Handler{
 			"/v0/workbench/": mounted,
-			"/bench/":        mounted,
+			"/workbench/":    mounted,
 			// Refused shapes: a prefix must start and end with "/", and a nil
 			// handler is ignored rather than panicking the mux.
 			"no-slash/": mounted,
@@ -101,7 +120,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 		},
 	})
 
-	for _, target := range []string{"/v0/workbench/github/status", "/bench/dashboard/", "/bench"} {
+	for _, target := range []string{"/v0/workbench/github/status", "/workbench/dashboard/", "/workbench"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
 		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Body.String(), "mounted ") {
@@ -127,8 +146,68 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/bench/dashboard/", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workbench/dashboard/", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<") {
-		t.Fatalf("/bench/dashboard/ = %d; want the catch-all index page", recorder.Code)
+		t.Fatalf("/workbench/dashboard/ = %d; want the catch-all index page", recorder.Code)
+	}
+}
+
+func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+}
+
+func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "daemon.log")
+	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("content type = %q", recorder.Header().Get("Content-Type"))
+	}
+	if recorder.Header().Get("X-Log-Truncated") != "false" {
+		t.Fatalf("truncated = %q; want false for a short file", recorder.Header().Get("X-Log-Truncated"))
+	}
+	if recorder.Body.String() != "line one\nline two\nline three\n" {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log?tail=9", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if recorder.Header().Get("X-Log-Truncated") != "true" {
+		t.Fatalf("truncated = %q; want true once tail cuts the file short", recorder.Header().Get("X-Log-Truncated"))
+	}
+	if recorder.Body.String() != "ne three\n" {
+		t.Fatalf("tail body = %q", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log?tail=not-a-number", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for an invalid tail", recorder.Code)
+	}
+}
+
+func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", recorder.Code)
 	}
 }

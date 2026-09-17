@@ -2,8 +2,10 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -174,5 +176,77 @@ func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
 	_ = validBranch(ctx, name)
 	if _, ok := validBranchMemo.Load(name); ok {
 		t.Fatal("a verdict produced under a cancelled context must not be remembered")
+	}
+}
+
+func TestValidBranchDoesNotMemoizeFailure(t *testing.T) {
+	name := "invalid..branch"
+	validBranchMemo.Delete(name)
+	t.Cleanup(func() { validBranchMemo.Delete(name) })
+
+	if validBranch(context.Background(), name) {
+		t.Fatalf("%q should be rejected", name)
+	}
+	if _, ok := validBranchMemo.Load(name); ok {
+		t.Fatal("a failed branch validation must remain retryable, not poison the process memo")
+	}
+}
+func TestValidBranchGitLookupRecoversAfterTemporaryPATHRestriction(t *testing.T) {
+	originalPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", originalPath) })
+	if err := os.Setenv("PATH", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	_ = validBranchGit()
+	if err := os.Setenv("PATH", originalPath); err != nil {
+		t.Fatal(err)
+	}
+	if gitPath := validBranchGit(); gitPath == "" {
+		t.Fatal("a temporary PATH restriction permanently poisoned Git discovery")
+	}
+}
+
+// TestBranchValidationErrorSeparatesUnusableGitFromInvalidName pins the
+// distinction between a branch name Git rejects and Git being unusable. The
+// second case reported `invalid base branch "main"` on the pre-push path when
+// an unaccepted Xcode licence made the resolver fail, which points the reader
+// at branch configuration for a fault that has nothing to do with the branch.
+//
+// Deliberately sequential: it swaps a package-level resolver seam, and
+// parallel tests only resume once sequential tests in the package finish.
+func TestBranchValidationErrorSeparatesUnusableGitFromInvalidName(t *testing.T) {
+	// A name Git genuinely rejects keeps the original message while Git works.
+	err := branchValidationError(context.Background(), "base branch", "not a valid branch name")
+	if err == nil {
+		t.Fatal("expected a rejected branch name to be reported")
+	}
+	if !strings.Contains(err.Error(), `invalid base branch "not a valid branch name"`) {
+		t.Fatalf("rejected name message changed: %v", err)
+	}
+
+	// With no resolvable Git the cause must be surfaced instead of the name.
+	original := trustedGitExecutableFn
+	trustedGitExecutableFn = func() (string, error) {
+		return "", errors.New("resolve developer Git with xcrun: license not accepted")
+	}
+	t.Cleanup(func() { trustedGitExecutableFn = original })
+
+	// A name "main" cannot serve here: validBranchMemo caches successful
+	// verdicts process-wide, so an earlier test that validated "main" would
+	// decide this call before the resolver seam was consulted. Use a valid name
+	// nothing else validates, and clear any entry left by a previous run.
+	const probe = "wb-resolver-probe"
+	validBranchMemo.Delete(probe)
+
+	err = branchValidationError(context.Background(), "base branch", probe)
+	if err == nil {
+		t.Fatal("expected an error when no Git executable can be resolved")
+	}
+	if strings.Contains(err.Error(), "invalid base branch") {
+		t.Fatalf("blamed the branch name instead of the resolver: %v", err)
+	}
+	if !strings.Contains(err.Error(), `cannot validate base branch "`+probe+`"`) ||
+		!strings.Contains(err.Error(), "license not accepted") {
+		t.Fatalf("resolver cause not surfaced: %v", err)
 	}
 }

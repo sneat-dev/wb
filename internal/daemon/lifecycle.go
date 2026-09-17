@@ -13,13 +13,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 const (
-	StateSchemaVersion = 1
-	QueueSchemaVersion = 1
+	// StateSchemaVersion is the version this build writes. Load accepts every
+	// version in SupportedStateSchemaVersions: a running daemon's record must
+	// stay readable across an upgrade, and refusing an older record would make
+	// the daemon that wrote it look absent.
+	StateSchemaVersion      = 2
+	MinSupportedStateSchema = 1
+	QueueSchemaVersion      = 1
 )
+
+// SupportedStateSchemaVersions lists the record versions this build can read.
+func SupportedStateSchemaVersions() []int {
+	versions := make([]int, 0, StateSchemaVersion-MinSupportedStateSchema+1)
+	for version := MinSupportedStateSchema; version <= StateSchemaVersion; version++ {
+		versions = append(versions, version)
+	}
+	return versions
+}
 
 type Status string
 
@@ -69,11 +84,39 @@ type State struct {
 	Queue         Queue      `json:"queue"`
 	StartedAt     time.Time  `json:"started_at,omitempty"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+
+	// WBHome and StatePath record *where* this daemon lives, so a reader can
+	// tell "the daemon belonging to my home" from "a daemon answering on my
+	// endpoint". They are empty in records written before schema 2, which is
+	// reported as unknown home identity rather than assumed to match.
+	WBHome    string `json:"wb_home,omitempty"`
+	StatePath string `json:"state_path,omitempty"`
+
+	// ProcessStartedAt is the recorded process's start time. PID alone is a
+	// liveness coordinate that a recycled number can satisfy; the start time is
+	// what makes "still running" a claim about *this* process. Zero means the
+	// platform could not observe it, which is reported as unknown rather than
+	// treated as a match.
+	ProcessStartedAt time.Time `json:"process_started_at,omitempty"`
+
+	// StoppedReason explains a stop the daemon did not choose — a runtime
+	// directory removed underneath it, or an endpoint it could not bind. It is
+	// recorded so the condition survives the process that hit it: a supervisor
+	// restarts the daemon, and without this the reason would exist only in a
+	// log the same removal may have unlinked.
+	StoppedReason string `json:"stopped_reason,omitempty"`
 }
 
 func (s State) Valid() error {
-	if s.SchemaVersion != StateSchemaVersion {
-		return fmt.Errorf("unsupported daemon state schema %d", s.SchemaVersion)
+	supported := false
+	for _, version := range SupportedStateSchemaVersions() {
+		if s.SchemaVersion == version {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		return fmt.Errorf("unsupported daemon state schema %d (supported: %v)", s.SchemaVersion, SupportedStateSchemaVersions())
 	}
 	if s.Queue.SchemaVersion != QueueSchemaVersion {
 		return fmt.Errorf("unsupported daemon queue schema %d", s.Queue.SchemaVersion)
@@ -88,6 +131,19 @@ func (s State) Valid() error {
 // stay in the durable queue file owned by the scheduler; this record tells the
 // replacement scheduler exactly which binary owned the preceding generation.
 func NewStarting(previous *State, listen string, provenance Provenance, ownerToken string, now time.Time) State {
+	return NewStartingAt(previous, listen, provenance, ownerToken, "", "", now)
+}
+
+// NewStartingAt is NewStarting with the daemon's own location recorded, so the
+// generation it opens names the home it belongs to.
+func NewStartingAt(previous *State, listen string, provenance Provenance, ownerToken, wbHome, statePath string, now time.Time) State {
+	state := newStarting(previous, listen, provenance, ownerToken, now)
+	state.WBHome = wbHome
+	state.StatePath = statePath
+	return state
+}
+
+func newStarting(previous *State, listen string, provenance Provenance, ownerToken string, now time.Time) State {
 	generation := uint64(1)
 	queue := Queue{SchemaVersion: QueueSchemaVersion}
 	if previous != nil {
@@ -119,7 +175,20 @@ func NewStarting(previous *State, listen string, provenance Provenance, ownerTok
 }
 
 func (s *State) MarkReady(pid int, now time.Time) {
+	s.MarkReadyWithProcess(pid, time.Time{}, now)
+}
+
+// MarkReadyWithProcess records the process generation that is now serving. A
+// zero processStartedAt records that the platform could not observe one.
+func (s *State) MarkReadyWithProcess(pid int, processStartedAt time.Time, now time.Time) {
 	s.Status = StatusReady
+	s.PID = pid
+	s.ProcessStartedAt = processStartedAt.UTC()
+	s.UpdatedAt = now.UTC()
+}
+
+func (s *State) MarkStartingPID(pid int, now time.Time) {
+	s.Status = StatusStarting
 	s.PID = pid
 	s.UpdatedAt = now.UTC()
 }
@@ -133,6 +202,13 @@ func (s *State) MarkStopped(now time.Time) {
 	s.Status = StatusStopped
 	s.PID = 0
 	s.UpdatedAt = now.UTC()
+}
+
+// MarkStoppedWithReason records a stop the daemon did not choose, keeping the
+// reason readable after the process is gone.
+func (s *State) MarkStoppedWithReason(reason string, now time.Time) {
+	s.MarkStopped(now)
+	s.StoppedReason = strings.TrimSpace(reason)
 }
 
 // Store reads and atomically replaces the local state record. Its directory

@@ -194,7 +194,7 @@ a registration.`,
 					return err
 				}
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "parked session %s with %d owned worktrees; resume with wb session resume %s\n", id, len(owned), id)
+			_, err = fmt.Fprintf(command.OutOrStdout(), "parked session %s with %d owned worktrees; pickup with wb session pickup %s\n", id, len(owned), id)
 			return err
 		},
 	}
@@ -272,13 +272,14 @@ func defaultSessionResumeDependencies() sessionResumeDependencies {
 func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.Command {
 	var target, via, configPath, format string
 	command := &cobra.Command{
-		Use:   "resume <parked-session-id>",
-		Short: "Resume a parked session as one fresh successor session",
+		Use:     "resume <parked-session-id>",
+		Aliases: []string{"pickup"},
+		Short:   "Resume a parked session as one fresh successor session",
 		Long: `Resume a parked session as one fresh successor session.
 
 Use the parked_session_id returned by wb session park or shown for the parked
 row by wb session list --format json. wb_session_id identifies the source
-agent session and is not a resume argument.
+agent session and is not a resume argument. pickup is an alias of resume.
 
 Before a fresh local resume claims a route or changes custody, WB verifies the
 fixed tmux, harness, and WB executables. If the released harness exits during

@@ -13,9 +13,11 @@ import (
 
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +40,20 @@ var (
 	// running a command. See the PersistentPreRunE in newRootCmd.
 	commandStarted bool
 )
+
+// defaultProjectsRoot is the root a command uses when --projects-root is not
+// given: WB_PROJECTS_ROOT when set, else ~/projects. It is the only place the
+// environment is consulted, so the flag always wins over it.
+func defaultProjectsRoot() string {
+	if override := strings.TrimSpace(os.Getenv(wbhome.EnvOverride)); override != "" {
+		return override
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "projects")
+}
 
 const rootLongHelp = `Workbench CLI — fleet-wide operations across your GitHub repositories.
 
@@ -75,7 +91,6 @@ set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
 
 func newRootCmd() *cobra.Command {
-	home, _ := os.UserHomeDir()
 	root := &cobra.Command{
 		Use:           "wb",
 		Short:         "Workbench CLI — fleet-wide operations across your GitHub repositories",
@@ -99,10 +114,22 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			commandStarted = true
+			id := persistentCommandID(cmd)
+			// `wb version` (including --json) MUST stay side-effect-free
+			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
+			// install/upgrade status probe execs it from inside the caller's own
+			// cwd, which may itself be a WB worktree. Recording a heartbeat or
+			// invoked-command there on every probe would make a lane a prober
+			// merely glanced at look busy, and would misattribute whatever that
+			// worktree's write path records next. Skip both for "version" alone
+			// — every other command still gets them.
+			if id == "version" {
+				return nil
+			}
 			// Publish which command is running so anything it writes into a
 			// worktree records what touched it, without each call site having
 			// to thread the name through.
-			worktrees.SetInvokedCommand(persistentCommandID(cmd))
+			worktrees.SetInvokedCommand(id)
 			// A lane working in a worktree is using it, whatever it happens to
 			// be running. Recording that here — once, from the working
 			// directory the command was run in — is what lets WB tell a
@@ -110,11 +137,11 @@ func newRootCmd() *cobra.Command {
 			// day, without every verb having to remember to say so. It is
 			// deliberately keyed to the current directory: a fleet-wide sweep
 			// run from somewhere else must not make every lane look busy.
-			worktrees.TouchHeartbeatForCurrentDirectory(persistentCommandID(cmd))
+			worktrees.TouchHeartbeatForCurrentDirectory(id)
 			return nil
 		},
 	}
-	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", filepath.Join(home, "projects"), "root dir containing {org}/{repo}")
+	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {org}/{repo}")
 	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
@@ -131,6 +158,8 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newPRCmd(), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(), rootGroupAgent),
+		groupedRootCommand(newAgentCmd(), rootGroupAgent),
+		groupedRootCommand(newTaskCmd(), rootGroupAgent),
 		groupedRootCommand(newStreamCmd(), rootGroupChange),
 		groupedRootCommand(newStatusCmd(), rootGroupFleet),
 		groupedRootCommand(newFleetCmd(), rootGroupFleet),
@@ -151,9 +180,9 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
-		groupedRootCommand(newPluginCmd(), rootGroupLearn),
-		groupedRootCommand(newCodeGrapherCmd(), rootGroupLearn),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
+		groupedRootCommand(newInstallCmd(), rootGroupLearn),
+		groupedRootCommand(newUpgradeCmd(), rootGroupLearn),
 		groupedRootCommand(newSkillsCmd(), rootGroupLearn),
 		groupedRootCommand(newVersionCmd(), rootGroupLearn),
 		groupedRootCommand(newCommandsCmd(), rootGroupLearn),
@@ -171,7 +200,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"sync": true, "run": true, "migrate": true,
 		"sync-report publish": true,
 		"dashboard":           true,
-		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		"worker connect": true,
 		"deps graph":     true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
@@ -179,6 +208,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"hooks measure":            true,
+		"hooks lifecycle backfill": true,
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"verify receipt": true, "repo transfer cleanup": true,
@@ -187,14 +217,16 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"layout audit": true, "layout clean": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
+		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"pr land":        true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
-		"session send": true, "session request-handoff": true, "session receive-message": true,
+		"agent dispatch": true, "agent status": true, "agent await": true, "agent list": true, "agent logs": true, "agent stop": true,
+		"session send": true, "session recall": true, "session receive-message": true,
+		"task offload": true, "task park": true, "task pickup": true,
 		"branch list": true, "branch cleanup": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
@@ -207,9 +239,10 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true,
-		"coverage": true, "verify": true, "check": true, "status": true,
+		"hooks lifecycle backfill": true,
+		"coverage":                 true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "remote publish": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
+		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
 		"branch list": true, "branch cleanup": true,
 		"archive clean": true,
@@ -293,34 +326,107 @@ func persistentCommandID(cmd *cobra.Command) string {
 	return strings.Join(parts, " ")
 }
 
+// main is deliberately only the process exit edge: every decision it used to
+// make lives in dispatch, so the hidden protocol entry points and the runtime
+// executable handoff are reachable from an in-process test instead of only
+// from a subprocess that no coverage profile can observe.
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
-		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
+	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+// processHandlers are the pre-cobra entry points dispatch routes to. They are
+// function values rather than direct calls because the six secure Git helpers
+// deliberately operate on inherited file descriptors 3..9: invoking one
+// in-process against the test binary's own descriptors corrupts the Go
+// runtime, so the routing can only be asserted by substituting the handler.
+type processHandlers struct {
+	privateLauncher func(args []string) int
+	ownerCLI        func(args []string, deps agents.OwnerDeps) int
+	agentRemote     func(stdin io.Reader, stdout, stderr io.Writer) int
+	// secureGitHelper resolves one hidden argv value to its helper. The second
+	// result reports whether the argument named a helper at all; an unknown
+	// value falls through to cobra, exactly as the previous if-chain did.
+	secureGitHelper func(argument string, args []string) (code int, known bool)
+	lookupEnv       func(string) (string, bool)
+	executable      func() (string, error)
+	setEnv          func(string, string) error
+}
+
+// secureGitHelpers maps every hidden argv value that must be resolved before
+// cobra to its handler. It is a function rather than a package-level map so the
+// table is rebuilt per process, and so a test can assert its membership without
+// invoking a helper that expects inherited descriptors 3..9.
+func secureGitHelpers() map[string]func([]string) int {
+	return map[string]func([]string) int{
+		worktrees.SecureCleanupGitHelperArgument:        worktrees.RunSecureCleanupGitHelper,
+		hooks.SecureHooksGitHelperArgument:              hooks.RunSecureHooksGitHelper,
+		worktrees.SecureStageGitHelperArgument:          worktrees.RunSecureStageGitHelper,
+		worktrees.SecureCanonicalGitHelperArgument:      worktrees.RunSecureCanonicalGitHelper,
+		worktrees.SecureStageCanonicalGitHelperArgument: worktrees.RunSecureStageCanonicalGitHelper,
+		worktrees.SecureRenameGitHelperArgument:         worktrees.RunSecureRenameGitHelper,
+	}
+}
+
+func defaultProcessHandlers() processHandlers {
+	helpers := secureGitHelpers()
+	return processHandlers{
+		privateLauncher: sessionlaunch.RunPrivateLauncher,
+		ownerCLI:        agents.OwnerCLI,
+		agentRemote:     RunAgentRemote,
+		secureGitHelper: func(argument string, args []string) (int, bool) {
+			helper, known := helpers[argument]
+			if !known {
+				return 0, false
+			}
+			return helper(args), true
+		},
+		lookupEnv:  os.LookupEnv,
+		executable: os.Executable,
+		setEnv:     os.Setenv,
+	}
+}
+
+func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return dispatchWithHandlers(defaultProcessHandlers(), args, stdin, stdout, stderr)
+}
+
+// dispatchWithHandlers resolves everything that must be decided before cobra
+// parses anything. The hidden protocol arguments are matched as an exact argv
+// value, so a remote caller can never reach a flag parser and have its request
+// reinterpreted as shell text, and the runtime-executable handoff must happen
+// before any child Git hook is spawned. It returns the documented exit code
+// rather than exiting, which is what keeps this routing testable in-process.
+func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// Both the first token and the argument tail are derived once, from a
+	// length-checked slice: `wb` with no arguments at all is a valid invocation
+	// that must reach cobra, not a slice-bounds panic.
+	var first string
+	var rest []string
+	if len(args) > 0 {
+		first = args[0]
+		rest = args[1:]
+	}
+	switch first {
+	case sessionlaunch.PrivateLauncherArgument:
+		return handlers.privateLauncher(rest)
+	case agents.OwnerArgument:
+		return handlers.ownerCLI(rest, agents.DefaultOwnerDeps())
+	case agents.RemoteArgument:
+		// The private remote entry point is a validated protocol value on stdin,
+		// not a command line: it is handled here so a remote caller can never
+		// reach a flag parser, and so its request cannot be reinterpreted as
+		// shell text.
+		return handlers.agentRemote(stdin, stdout, stderr)
 	}
 	installSessionResolver()
-	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)
-		os.Exit(exitFindings)
+	if err := propagateRuntimeWBExecutable(handlers.lookupEnv, handlers.executable, handlers.setEnv); err != nil {
+		_, _ = fmt.Fprintln(stderr, "wb: establish runtime executable for child Git hooks:", err)
+		return exitFindings
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
+	if code, known := handlers.secureGitHelper(first, rest); known {
+		return code
 	}
-	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
-		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
-	}
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	return run(args, stdout, stderr)
 }
 
 // propagateRuntimeWBExecutable gives Git hooks started by this WB process a

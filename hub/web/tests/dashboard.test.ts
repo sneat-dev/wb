@@ -16,7 +16,7 @@ describe('dashboard public surface', () => {
     expect(dashboardSource).toContain('path="/dashboard/"');
     expect(repoRouteSource).toContain("kind: 'repo'");
     expect(orgRouteSource).toContain("kind: 'org'");
-    expect(astroConfigSource).toContain("base: '/bench'");
+    expect(astroConfigSource).toContain("base: '/workbench'");
   });
 
   it('keeps live data unavailable by default and never substitutes sample data', async () => {
@@ -43,9 +43,9 @@ describe('dashboard public surface', () => {
   });
 
   it('recognises public scope routes and uses the provider scoped contract', () => {
-    expect(dashboardScopeFromPath('/bench/dashboard')).toEqual({ kind: 'user' });
-    expect(dashboardScopeFromPath('/bench/org/github.com/acme')).toEqual({ kind: 'org', host: 'github.com', org: 'acme' });
-    expect(dashboardScopeFromPath('/bench/repo/github.com/acme/widgets')).toEqual({ kind: 'repo', host: 'github.com', org: 'acme', repo: 'widgets' });
+    expect(dashboardScopeFromPath('/workbench/dashboard')).toEqual({ kind: 'user' });
+    expect(dashboardScopeFromPath('/workbench/org/github.com/acme')).toEqual({ kind: 'org', host: 'github.com', org: 'acme' });
+    expect(dashboardScopeFromPath('/workbench/repo/github.com/acme/widgets')).toEqual({ kind: 'repo', host: 'github.com', org: 'acme', repo: 'widgets' });
     expect(dashboardApiURLForScope({ kind: 'org', host: 'github.com', org: 'acme' })).toBe('https://wb-github-app.sneat.dev/v0/workbench/stats/organization/github.com%2Facme');
     expect(dashboardApiURLForScope({ kind: 'repo', host: 'github.com', org: 'acme', repo: 'widgets' })).toBe('https://wb-github-app.sneat.dev/v0/workbench/stats/repository/github.com%2Facme%2Fwidgets');
     expect(repoRouteSource).toContain('dashboardShell');

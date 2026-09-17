@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/gitremote"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -23,6 +24,7 @@ type SyncProcessor struct {
 	verifyOrigin       func(string, string) error
 	recoverCleanup     func(context.Context, worktrees.RepositoryTransferCleanupOptions) (worktrees.RepositoryTransferCleanupResult, error)
 	finalizeRelocation func(context.Context, worktrees.RepositoryRelocateOptions) ([]string, error)
+	dispatchLifecycle  func(context.Context, []lifecyclehooks.Event) (lifecyclehooks.Report, error)
 }
 
 func (processor SyncProcessor) Process(ctx context.Context, event repositoryevent.Event, state ProcessState) (ProcessResult, error) {
@@ -136,12 +138,43 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 	if result.Status == fleetsync.Failed {
 		return out, result.Err
 	}
+	if hookEvent, ok := syncLifecycleEvent(event.Repository, result); ok {
+		dispatch := processor.dispatchLifecycle
+		if dispatch == nil {
+			dispatch = lifecyclehooks.Dispatch
+		}
+		report, err := dispatch(ctx, []lifecyclehooks.Event{hookEvent})
+		var hookWarnings []string
+		if err != nil {
+			hookWarnings = append(hookWarnings, "lifecycle hooks were not dispatched: "+err.Error())
+		}
+		hookWarnings = append(hookWarnings, report.Warnings...)
+		if len(hookWarnings) > 0 {
+			out.Detail = strings.Trim(strings.Join([]string{out.Detail, "hook warning: " + strings.Join(hookWarnings, "; ")}, "; "), "; ")
+		}
+	}
 	if relocated {
-		out.Detail = "relocated; " + result.Status.String()
+		out.Detail = strings.Trim(strings.Join([]string{"relocated", result.Status.String(), out.Detail}, "; "), "; ")
 		return out, nil
 	}
-	out.Detail = result.Status.String()
+	out.Detail = strings.Trim(strings.Join([]string{result.Status.String(), out.Detail}, "; "), "; ")
 	return out, nil
+}
+
+func syncLifecycleEvent(repository string, result fleetsync.Result) (lifecyclehooks.Event, bool) {
+	cause := ""
+	switch {
+	case result.Status == fleetsync.Cloned && result.HeadSHA != "":
+		cause = "repository-event-clone"
+	case result.Updated && result.HeadSHA != "":
+		cause = "repository-event-pull"
+	default:
+		return lifecyclehooks.Event{}, false
+	}
+	return lifecyclehooks.Event{
+		Name: lifecyclehooks.EventCheckoutUpdated, Repository: repository,
+		Checkout: result.Repo.Path, OldSHA: result.BeforeHeadSHA, NewSHA: result.HeadSHA, Cause: cause,
+	}, true
 }
 
 func repositoryParts(repository string) (string, string) {

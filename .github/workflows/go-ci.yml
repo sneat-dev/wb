@@ -177,9 +177,13 @@ jobs:
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
     # integration suite grows.
-    # The inner command bounds test execution at 7m30s. Keep setup and failure
-    # diagnostic upload outside that budget so a timeout still leaves evidence.
-    timeout-minutes: 12
+    # The repository-owned .wb/quality.yaml defines every process-isolated
+    # package. internal/orchestrate is not process-isolated, so its single
+    # unsharded binary is now the wall-clock long pole: it alone runs for well
+    # over 15 minutes. The inner deadline and this job budget were raised to
+    # cover it, while keeping setup and failure diagnostic upload outside the
+    # inner budget so a timeout still leaves evidence.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -191,14 +195,12 @@ jobs:
       - name: Test with merged coverage threshold
         run: >-
           go run ./cmd/wb coverage .
-          --test-shards 8
-          --shard-package ./internal/worktrees
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=58
+          --minimum=88
           --format json
           --non-interactive
-          --timeout 7m30s
+          --timeout 35m
       - name: Upload coverage diagnostics on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
@@ -242,6 +244,7 @@ jobs:
           go test -race -timeout 15m
           ./internal/deps/...
           ./internal/githubobserver/...
+          ./internal/lifecyclehooks/...
           ./internal/fleetsync/...
 
   windows:
@@ -266,6 +269,14 @@ jobs:
         run: >-
           go test ./internal/session
           -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
+      - name: Test lifecycle-hook Windows trust
+        run: >-
+          go test ./internal/lifecyclehooks
+          -run '^TestWindowsTrust'
+      - name: Test daemon Windows ACL consumers
+        run: >-
+          go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb
+          -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 

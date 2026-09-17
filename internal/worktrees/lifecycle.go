@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,6 +268,11 @@ type ListResult struct {
 	RebaseMergedAtOrigin     bool   `json:"rebase_merged_at_origin,omitempty"`
 	AbsorbedAtOrigin         bool   `json:"absorbed_at_origin,omitempty"`
 	AbsorbedBySHA            string `json:"absorbed_by_sha,omitempty"`
+	// mergeReceiptCandidateSHA is internal, re-verified cleanup evidence. A
+	// retained stream branch may point at this exact squash candidate even
+	// while the source checkout is at an ancestor; no other remote mismatch is
+	// eligible for cleanup.
+	mergeReceiptCandidateSHA string
 	// RecordedBase preserves the immutable manifest/claim target in a cleanup
 	// receipt when exact landing evidence authorizes another target.
 	RecordedBase string `json:"recorded_base,omitempty"`
@@ -313,7 +319,10 @@ type ListResult struct {
 	// WorkLogSessionID is the immutable session link from the active private
 	// claim. It lets session park recover a claim even when the owner event was
 	// not projected, while remaining absent for legacy claims.
-	WorkLogSessionID  string       `json:"work_log_session_id,omitempty"`
+	WorkLogSessionID string `json:"work_log_session_id,omitempty"`
+	// TaskSummary is the optional bounded, non-sensitive description captured
+	// at creation. It is never reconstructed from the private prompt archive.
+	TaskSummary       string       `json:"task_summary,omitempty"`
 	OwnerState        string       `json:"owner_state"`
 	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
@@ -990,8 +999,13 @@ type githubPullRequest struct {
 }
 
 type githubRef struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	Ref  string            `json:"ref"`
+	SHA  string            `json:"sha"`
+	Repo *githubRepository `json:"repo"`
+}
+
+type githubRepository struct {
+	FullName string `json:"full_name"`
 }
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
@@ -1032,6 +1046,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	if err != nil {
 		return ListOutcome{}, err
 	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
 	if err != nil {
 		return ListOutcome{}, err
@@ -2190,6 +2205,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	// Carry the real root into every secure Git handoff below, so the helper
+	// that builds the sandbox authorizes the hook runtime directory the
+	// installed hook actually writes to.
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	// Remote parked-session receivers use a resume/member-derived physical
 	// task directory so concurrent resumes cannot collide. Their immutable
 	// manifest retains the logical effort, which is what an operator naturally
@@ -2531,7 +2550,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		pendingLifecycleBacklogs := 0
 		defer func() {
 			retireNamespace := true
-			if selection.WorktreesRoot == filepath.Join(resolution.Write.Home, "worktrees") {
+			// The selection's root for a repository-local cleanup is the home's
+			// logical task namespace, so compare against that, not the physical
+			// checkout store.
+			if selection.WorktreesRoot == resolution.Write.StateWorktreesRoot() {
 				// A filtered cleanup may leave physical members in other canonical
 				// repositories. Check the whole task while its lock is still held;
 				// an empty coordination directory alone does not prove terminality.
@@ -3541,8 +3563,10 @@ func inspectLifecycleWorktree(
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
 		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+			result.TaskSummary = claim.TaskSummary
 		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
 			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
+			result.TaskSummary = terminal.TaskSummary
 			if terminal.FinalizeReport != nil {
 				result.TerminalResult = terminal.FinalizeReport.Result
 				result.TerminalMessage = terminal.FinalizeReport.Message
@@ -3555,6 +3579,7 @@ func inspectLifecycleWorktree(
 		var pullRequests []githubPullRequest
 		var known bool
 		integrationBase := base
+		recoveredByDefaultReceipt := false
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
 		if err != nil {
 			// A timeout or other transport failure is not evidence that the
@@ -3564,30 +3589,43 @@ func inspectLifecycleWorktree(
 			if !isMissingRemoteTargetError(err) {
 				return ListResult{}, err
 			}
-			var pullRequestErr error
-			pullRequests, known, pullRequestErr = githubPullRequestsForCommit(ctx, worktree, slug, head)
-			if pullRequestErr != nil {
-				return ListResult{}, pullRequestErr
+			defaultBase, defaultErr := remoteDefaultBranch(ctx, canonical)
+			if defaultErr != nil {
+				return ListResult{}, defaultErr
 			}
-			// A deleted recorded target is recoverable only when GitHub's
-			// immutable commit index supplies one unambiguous merged PR for this
-			// exact head. The PR target is then fetched freshly and all ordinary
-			// containment/tree checks below still run against that target.
-			var ok bool
-			integrationBase, ok = mergedPullRequestTarget(ctx, pullRequests, head, base)
-			if !ok {
-				return ListResult{}, err
+			// A deleted recorded target is recoverable only through a GitHub
+			// receipt for that target branch itself. The commit-to-PR index is
+			// intentionally insufficient here: after a squash merge it associates
+			// the source head with its PR into the deleted stream, not with the
+			// stream PR that landed it on the repository default branch.
+			receipt, receiptErr := exactDeletedTargetDefaultBranchReceipt(ctx, worktree, slug, base, defaultBase, head)
+			if receiptErr != nil {
+				return ListResult{}, receiptErr
 			}
+			if receipt == nil {
+				return ListResult{}, fmt.Errorf("recorded target origin/%s is absent and GitHub has no exact merged receipt into default branch %s for head %s", base, defaultBase, head)
+			}
+			integrationBase = defaultBase
 			result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
 			if err != nil {
 				return ListResult{}, err
+			}
+			mergeInTarget, mergeErr := isAncestor(ctx, canonical, receipt.MergeSHA, result.RemoteTargetSHA)
+			if mergeErr != nil {
+				return ListResult{}, fmt.Errorf("verify merged receipt #%d against fetched origin/%s: %w", receipt.Number, integrationBase, mergeErr)
+			}
+			if !mergeInTarget {
+				return ListResult{}, fmt.Errorf("merged receipt #%d commit %s is not contained in freshly fetched origin/%s", receipt.Number, receipt.MergeSHA, integrationBase)
 			}
 			if result.RecordedBase == "" {
 				result.RecordedBase = base
 			}
 			result.Base = integrationBase
-			result.HeadUnknownToRemote = !known
-			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, integrationBase, head)
+			result.HeadUnknownToRemote = false
+			result.MergedPullRequest = receipt
+			result.AbsorbedAtOrigin = true
+			result.AbsorbedBySHA = receipt.MergeSHA
+			recoveredByDefaultReceipt = true
 		} else {
 			var pullRequestErr error
 			pullRequests, known, pullRequestErr = githubPullRequestsForCommit(ctx, worktree, slug, head)
@@ -3595,7 +3633,7 @@ func inspectLifecycleWorktree(
 				return ListResult{}, pullRequestErr
 			}
 			result.HeadUnknownToRemote = !known
-			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
+			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, branch, head)
 			integratedIntoRecordedTarget, integrationErr := isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
 			if integrationErr != nil {
 				return ListResult{}, integrationErr
@@ -3615,16 +3653,17 @@ func inspectLifecycleWorktree(
 					}
 					result.RecordedBase = base
 					integrationBase = recoveredBase
-					result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, recoveredBase, head)
+					result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, recoveredBase, branch, head)
 				}
 			}
 		}
 		base = integrationBase
 		result.Base = base
-		result.IntegratedAtOrigin, err = isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
-		if err != nil {
-			return ListResult{}, err
+		containedAtOrigin, containedErr := isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
+		if containedErr != nil {
+			return ListResult{}, containedErr
 		}
+		result.IntegratedAtOrigin = containedAtOrigin || recoveredByDefaultReceipt
 		// LocallyMerged historically described the remote-tracking ref. Once an
 		// exact fetched target is available, report the stronger observation.
 		result.LocallyMerged = result.IntegratedAtOrigin
@@ -3867,6 +3906,33 @@ func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch strin
 	return head, nil
 }
 
+// remoteDefaultBranch obtains the repository's current default branch from
+// origin itself. A caller's --base is a useful fallback for legacy manifests,
+// but it cannot authorize replacing a deleted recorded target with an
+// arbitrary release branch.
+func remoteDefaultBranch(ctx context.Context, repository string) (string, error) {
+	output, err := git(ctx, repository, "ls-remote", "--symref", "origin", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read origin default branch: %w", err)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ref: ") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "ref: "))
+		if len(fields) != 2 || fields[1] != "HEAD" || !strings.HasPrefix(fields[0], "refs/heads/") {
+			continue
+		}
+		branch := strings.TrimPrefix(fields[0], "refs/heads/")
+		if !validBranch(ctx, branch) {
+			return "", fmt.Errorf("origin default branch is invalid: %q", branch)
+		}
+		return branch, nil
+	}
+	return "", fmt.Errorf("origin did not resolve a default branch")
+}
+
 // githubPullRequests reads pull requests associated with the immutable source
 // commit rather than filtering by the current branch name. A branch can be
 // renamed, deleted, or (as in a rebase merge) differ from the managed
@@ -3905,6 +3971,67 @@ func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head
 	return pullRequests, true, nil
 }
 
+// githubPullRequestsForBranch reads closed pull requests for an exact recorded
+// source branch. It is used only after that branch disappeared from origin:
+// GitHub keeps the PR's immutable head SHA after deleting its ref, whereas the
+// commit-to-PR index can point solely to the earlier PR into that branch.
+func githubPullRequestsForBranch(ctx context.Context, worktree, repository, branch, base string) ([]githubPullRequest, error) {
+	owner, _, ok := strings.Cut(repository, "/")
+	if !ok || owner == "" || branch == "" || base == "" {
+		return nil, fmt.Errorf("query exact merged pull request requires repository, source branch, and default base")
+	}
+	query := url.Values{
+		"base":  []string{base},
+		"head":  []string{owner + ":" + branch},
+		"state": []string{"closed"},
+	}.Encode()
+	result := githubobserver.Execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/pulls?"+query)
+	if result.Err != nil {
+		return nil, fmt.Errorf("query pull requests for deleted target %s in %s: %w: %s", branch, repository, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)))
+	}
+	var pullRequests []githubPullRequest
+	if err := json.Unmarshal(result.Stdout, &pullRequests); err != nil {
+		return nil, fmt.Errorf("decode pull requests for deleted target %s in %s: %w", branch, repository, err)
+	}
+	return pullRequests, nil
+}
+
+// exactDeletedTargetDefaultBranchReceipt selects the only receipt that may
+// replace a missing recorded target. It binds the recorded branch and current
+// worktree head to a merged PR into the repository default branch, and keeps
+// both immutable GitHub commit identities for the subsequent ancestry check.
+func exactDeletedTargetDefaultBranchReceipt(ctx context.Context, worktree, repository, recordedTarget, defaultBase, head string) (*PullRequest, error) {
+	if !validBranch(ctx, recordedTarget) || !validBranch(ctx, defaultBase) || !isGitObjectID(head) {
+		return nil, fmt.Errorf("invalid deleted-target recovery identity")
+	}
+	pullRequests, err := githubPullRequestsForBranch(ctx, worktree, repository, recordedTarget, defaultBase)
+	if err != nil {
+		return nil, err
+	}
+	return selectExactDeletedTargetDefaultBranchReceipt(ctx, repository, pullRequests, recordedTarget, defaultBase, head)
+}
+
+func selectExactDeletedTargetDefaultBranchReceipt(ctx context.Context, repository string, pullRequests []githubPullRequest, recordedTarget, defaultBase, head string) (*PullRequest, error) {
+	var receipt *PullRequest
+	for _, candidate := range pullRequests {
+		if candidate.MergedAt == nil || !strings.EqualFold(candidate.State, "closed") ||
+			candidate.Head.Ref != recordedTarget || candidate.Head.SHA != head ||
+			candidate.Base.Ref != defaultBase || !isGitObjectID(candidate.Head.SHA) || !isGitObjectID(candidate.MergeCommitSHA) {
+			continue
+		}
+		candidateReceipt := &PullRequest{
+			Number: candidate.Number, URL: candidate.URL, Repository: repository, State: "MERGED",
+			Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
+			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
+		}
+		if receipt != nil && (receipt.Number != candidateReceipt.Number || receipt.MergeSHA != candidateReceipt.MergeSHA) {
+			return nil, fmt.Errorf("multiple exact merged pull-request receipts found for deleted target %s at head %s", recordedTarget, head)
+		}
+		receipt = candidateReceipt
+	}
+	return receipt, nil
+}
+
 // unknownGitHubCommit recognizes only GitHub's own structured answer that the
 // commit does not exist there. It reads the API error body rather than
 // matching human-readable text anywhere in the output, so an unrelated
@@ -3920,7 +4047,7 @@ func unknownGitHubCommit(body []byte) bool {
 	return failure.Status == "422" && strings.HasPrefix(failure.Message, "No commit found for SHA")
 }
 
-func matchingPullRequests(pullRequests []githubPullRequest, repository, base, head string) (open, merged *PullRequest) {
+func matchingPullRequests(pullRequests []githubPullRequest, repository, base, branch, head string) (open, merged *PullRequest) {
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
@@ -3931,11 +4058,13 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 		}
 		pullRequest.MergeSHA = candidate.MergeCommitSHA
 		if strings.EqualFold(candidate.State, "OPEN") {
-			// An open PR for the exact immutable head is a cleanup veto on
-			// every base. Target recovery may find a separate merged PR and
-			// switch the integration check to that PR's base, but it must not
-			// hide live review state for the same source commit.
-			if candidate.Head.SHA != head {
+			// A SHA can name several branches after a child lands directly or
+			// starts with zero changes over its target. Only the exact source
+			// repository and branch owns an open-PR cleanup veto. Merged PR
+			// recovery below deliberately remains bound to immutable head/base
+			// identities because its source ref may already be renamed or gone.
+			if candidate.Head.SHA != head || candidate.Head.Ref != branch || candidate.Head.Repo == nil ||
+				!strings.EqualFold(candidate.Head.Repo.FullName, repository) {
 				continue
 			}
 			if open == nil || candidate.Number > open.Number {
@@ -4557,7 +4686,9 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 			entry.AbsorbedByRejection
 	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
-	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA && !entry.RemoteHeadAncestorOfHead:
+	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA &&
+		(entry.mergeReceiptCandidateSHA == "" || entry.RemoteHeadSHA != entry.mergeReceiptCandidateSHA) &&
+		!entry.RemoteHeadAncestorOfHead:
 		return false, "remote branch advanced after the merged pull request"
 	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
 		return false, "merged pull request is newer than the cleanup safety window"
@@ -4583,6 +4714,7 @@ func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCle
 		entry.IntegratedAtOrigin = true
 		entry.AbsorbedAtOrigin = true
 		entry.AbsorbedBySHA = proof.LandingSHA
+		entry.mergeReceiptCandidateSHA = proof.CandidateSHA
 		entry.AbsorbedByRejection = ""
 		return nil
 	}
@@ -5160,7 +5292,7 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 		gitExecutable, remotePath, strconv.Itoa(remoteFD),
 	}, gitArgs...)
 	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Env = secureCleanupGitHelperEnvironment()
+	command.Env = secureCleanupGitHelperEnvironment(ctx)
 	if worktreeDirectory != nil {
 		if worktreeParent == nil || worktreeParentPath == "" {
 			return fmt.Errorf("cleanup worktree parent descriptor is unavailable")
@@ -5191,8 +5323,8 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 // outside the retained repository, while discovering WB's own parent go.work
 // from a temporary hook repository is equally incorrect. The hook still
 // receives its explicit private Go cache paths from the resolved hook layout.
-func secureCleanupGitHelperEnvironment() []string {
-	parent := console.Env()
+func secureCleanupGitHelperEnvironment(ctx context.Context) []string {
+	parent := secureHelperEnvironment(ctx)
 	environment := make([]string, 0, len(parent))
 	for _, entry := range parent {
 		key, _, found := strings.Cut(entry, "=")
@@ -5342,7 +5474,7 @@ func RunSecureCleanupGitHelper(args []string) int {
 		}
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
 	}
-	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], helperProjectsRoot(), writeRoots)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: prepare hook runtime layout: %v\n", err)
 		return 1

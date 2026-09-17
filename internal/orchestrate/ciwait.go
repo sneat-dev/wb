@@ -89,9 +89,6 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	if strings.TrimSpace(options.Repository) == "" || strings.TrimSpace(options.Target) == "" || strings.TrimSpace(options.Head) == "" {
 		return PullRequestWaitResult{}, fmt.Errorf("repository, target, and exact head are required")
 	}
-	if options.AllowUnfenced && strings.TrimSpace(options.PullRequest) == "" {
-		return PullRequestWaitResult{}, fmt.Errorf("unfenced validation is supported only for pull-request checks")
-	}
 	if options.Slice <= 0 || options.Slice > MaxForegroundCheckWaitSlice {
 		return PullRequestWaitResult{}, fmt.Errorf("check wait slice must be positive and at most %s", MaxForegroundCheckWaitSlice)
 	}
@@ -238,8 +235,15 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
 		// authoritative receipt in that case. PR mode deliberately never takes
-		// this route: it still requires a nonempty strict server freshness fence.
-		noApplicableChecks := options.PullRequest == "" && len(checks) == 0 && len(requiredChecks) == 0
+		// this route on its own: without a server-enforced strict freshness fence
+		// an empty check set cannot be told apart from CI that has not registered
+		// yet, so it demands a nonempty observed set. An explicit
+		// --allow-unfenced gives up that fence, and then the empty receipt is
+		// authoritative for a candidate too. Without this a repository that has
+		// no CI at all can only poll until its slice deadline and report
+		// checks_pending on every landing.
+		noApplicableChecks := len(checks) == 0 && len(requiredChecks) == 0 &&
+			(options.PullRequest == "" || options.AllowUnfenced)
 		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
 			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
@@ -342,10 +346,12 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
 			} else if options.PullRequest != "" && result.PolicyAuthorityUnavailable != "" {
 				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the pull-request base, exact candidate head, target containment, and observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication"
-			} else if options.PullRequest != "" {
-				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, and the observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication; server-side target freshness was intentionally not required because this path does not merge"
 			} else if noApplicableChecks {
 				result.Reason = "GitHub's required-check policy was enumerated as empty, complete check-run and status receipts registered no checks, and that no-applicable-check receipt stayed unchanged across a bounded stable reread"
+			} else if options.PullRequest != "" {
+				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, and the observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication; server-side target freshness was intentionally not required because this path does not merge"
+			} else if result.PolicyAuthorityUnavailable != "" {
+				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the exact remote target head and observed GitHub check set stayed terminal across a bounded stable reread"
 			} else {
 				result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the exact remote target's observed check set stayed terminal across a bounded stable reread"
 			}
@@ -506,6 +512,8 @@ func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCh
 		builder.WriteString(check.Link)
 		builder.WriteByte('\x00')
 		fmt.Fprintf(&builder, "%d", check.AppID)
+		builder.WriteByte('\x00')
+		fmt.Fprintf(&builder, "%d", check.CheckRunID)
 	}
 	return builder.String()
 }
@@ -590,7 +598,10 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 		authority += "+pr-base-verified"
 	}
 	if policyUnavailable != "" {
-		authority = "github-branch-policy-unavailable-under-allow-unfenced+pr-base-verified"
+		authority = "github-branch-policy-unavailable-under-allow-unfenced"
+		if options.PullRequest != "" {
+			authority += "+pr-base-verified"
+		}
 	}
 	checks := make([]RequiredRemoteCheck, 0, len(required))
 	for _, expectation := range required {
@@ -802,16 +813,114 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	if response.TotalCount > len(response.CheckRuns) {
 		return nil, false, fmt.Sprintf("GitHub returned only %d of %d observed check runs for %s; refusing an incomplete CI receipt", len(response.CheckRuns), response.TotalCount, options.Head)
 	}
-	checks := make([]RemoteCheck, 0, len(response.CheckRuns))
+	actionsBySuite, latestActionsRuns, reason := githubActionsRunsForHead(ctx, options)
+	if reason != "" {
+		return nil, false, reason
+	}
+
+	// GitHub retains jobs from historical Actions workflow executions on the
+	// same commit. The Actions run receipt supplies the workflow, event, suite,
+	// and created_at chronology needed to distinguish a replacement execution
+	// from another workflow. Third-party check apps have no equivalent workflow
+	// identity here, so retain all their observations rather than guessing.
+	observedActionsRuns := make(map[githubActionsRunIdentity]int, len(latestActionsRuns))
+	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
 	pending := false
 	for _, check := range response.CheckRuns {
+		if strings.EqualFold(check.App.Slug, "github-actions") {
+			if check.ID <= 0 || check.CheckSuite.ID <= 0 {
+				return nil, false, fmt.Sprintf("GitHub Actions check run %q omitted a positive check-run or check-suite ID", check.Name)
+			}
+			run, ok := actionsBySuite[check.CheckSuite.ID]
+			if !ok {
+				return nil, false, fmt.Sprintf("GitHub Actions check run %q names suite %d, which the exact-head workflow-run receipt omitted", check.Name, check.CheckSuite.ID)
+			}
+			identity := run.identity()
+			latest := latestActionsRun(latestActionsRuns, identity)
+			if latest.ID == 0 {
+				return nil, false, fmt.Sprintf("GitHub Actions workflow %d event %q has no newest exact-head run receipt", identity.WorkflowID, identity.Event)
+			}
+			if run.ID != latest.ID {
+				continue
+			}
+			observedActionsRuns[identity]++
+		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
 		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
 	}
+	for _, run := range latestActionsRuns {
+		bucket := checkRunBucket(run.Status, run.Conclusion)
+		if observedActionsRuns[run.identity()] > 0 && (bucket == "pass" || bucket == "skipping" || bucket == "fail" || bucket == "cancel") {
+			continue
+		}
+		checks = append(checks, RemoteCheck{
+			Name:   fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
+			Bucket: bucket,
+			Link:   run.HTMLURL,
+		})
+		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
+			pending = true
+		}
+	}
 	return checks, pending, ""
+}
+
+func githubActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) (map[int64]githubActionsRun, []githubActionsRun, string) {
+	endpoint := "repos/" + options.Repository + "/actions/runs?head_sha=" + url.QueryEscape(options.Head) + "&per_page=100"
+	output, err := githubGet(ctx, "", options.Repository, options.Target, options.Head, endpoint)
+	if err != nil {
+		return nil, nil, err.Error()
+	}
+	var response githubActionsRunsResponse
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, nil, fmt.Sprintf("decode GitHub Actions runs for %s: %v", options.Head, err)
+	}
+	if response.TotalCount > len(response.WorkflowRuns) {
+		return nil, nil, fmt.Sprintf("GitHub returned only %d of %d Actions runs for %s; refusing an incomplete CI receipt", len(response.WorkflowRuns), response.TotalCount, options.Head)
+	}
+	bySuite := make(map[int64]githubActionsRun, len(response.WorkflowRuns))
+	latest := make(map[githubActionsRunIdentity]githubActionsRun, len(response.WorkflowRuns))
+	for _, run := range response.WorkflowRuns {
+		if run.ID <= 0 || run.WorkflowID <= 0 || run.CheckSuiteID <= 0 || run.CreatedAt.IsZero() || strings.TrimSpace(run.Event) == "" {
+			return nil, nil, fmt.Sprintf("GitHub Actions returned a malformed exact-head workflow-run identity for %s", options.Head)
+		}
+		if previous, ok := bySuite[run.CheckSuiteID]; ok && previous.ID != run.ID {
+			return nil, nil, fmt.Sprintf("GitHub Actions suite %d maps to conflicting workflow runs %d and %d", run.CheckSuiteID, previous.ID, run.ID)
+		}
+		bySuite[run.CheckSuiteID] = run
+		identity := run.identity()
+		previous, ok := latest[identity]
+		if !ok || run.CreatedAt.After(previous.CreatedAt) {
+			latest[identity] = run
+			continue
+		}
+		if run.CreatedAt.Equal(previous.CreatedAt) && run.ID != previous.ID {
+			return nil, nil, fmt.Sprintf("GitHub Actions workflow %d event %q has ambiguous same-time runs %d and %d", run.WorkflowID, run.Event, previous.ID, run.ID)
+		}
+	}
+	latestRuns := make([]githubActionsRun, 0, len(latest))
+	for _, run := range latest {
+		latestRuns = append(latestRuns, run)
+	}
+	sort.Slice(latestRuns, func(i, j int) bool {
+		if latestRuns[i].WorkflowID == latestRuns[j].WorkflowID {
+			return latestRuns[i].Event < latestRuns[j].Event
+		}
+		return latestRuns[i].WorkflowID < latestRuns[j].WorkflowID
+	})
+	return bySuite, latestRuns, ""
+}
+
+func latestActionsRun(runs []githubActionsRun, identity githubActionsRunIdentity) githubActionsRun {
+	for _, run := range runs {
+		if run.identity() == identity {
+			return run
+		}
+	}
+	return githubActionsRun{}
 }
 
 func commitStatuses(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
@@ -934,6 +1043,32 @@ type githubCheckRunsResponse struct {
 	CheckRuns  []githubCheckRun `json:"check_runs"`
 }
 
+type githubActionsRunsResponse struct {
+	TotalCount   int                `json:"total_count"`
+	WorkflowRuns []githubActionsRun `json:"workflow_runs"`
+}
+
+type githubActionsRun struct {
+	ID           int64     `json:"id"`
+	WorkflowID   int64     `json:"workflow_id"`
+	RunAttempt   int       `json:"run_attempt"`
+	Event        string    `json:"event"`
+	Status       string    `json:"status"`
+	Conclusion   string    `json:"conclusion"`
+	CreatedAt    time.Time `json:"created_at"`
+	HTMLURL      string    `json:"html_url"`
+	CheckSuiteID int64     `json:"check_suite_id"`
+}
+
+func (run githubActionsRun) identity() githubActionsRunIdentity {
+	return githubActionsRunIdentity{WorkflowID: run.WorkflowID, Event: run.Event}
+}
+
+type githubActionsRunIdentity struct {
+	WorkflowID int64
+	Event      string
+}
+
 type githubCommitStatusResponse struct {
 	TotalCount int                  `json:"total_count"`
 	Statuses   []githubCommitStatus `json:"statuses"`
@@ -952,8 +1087,12 @@ type githubCheckRun struct {
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
 	App        struct {
-		ID int64 `json:"id"`
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
 	} `json:"app"`
+	CheckSuite struct {
+		ID int64 `json:"id"`
+	} `json:"check_suite"`
 }
 
 const (

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 func git(t *testing.T, dir string, args ...string) {
@@ -42,7 +43,7 @@ func installArchivedFakeGh(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 }
 
 // newRemote creates a bare repo with one commit on main and returns its path.
@@ -98,6 +99,10 @@ func TestSyncPullClean(t *testing.T) {
 	if out, err := exec.Command("git", "clone", "-q", remote, cloneDir).CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
+	before, err := gitops.HeadSHA(cloneDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	seed := t.TempDir()
 	if out, err := exec.Command("git", "clone", "-q", remote, seed).CombinedOutput(); err != nil {
@@ -115,6 +120,9 @@ func TestSyncPullClean(t *testing.T) {
 	}
 	if !res.PullAttempted || !res.PullSucceeded || !res.Updated || res.PullSummary() != "updated from remote" {
 		t.Fatalf("pull action = %+v, want successful remote update", res)
+	}
+	if res.BeforeHeadSHA != before || res.HeadSHA == "" || res.HeadSHA == before {
+		t.Fatalf("HEAD boundary = %s..%s, want exact changed commits", res.BeforeHeadSHA, res.HeadSHA)
 	}
 	got, err := os.ReadFile(filepath.Join(cloneDir, "f.txt"))
 	if err != nil {

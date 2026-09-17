@@ -33,33 +33,40 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	root := t.TempDir()
 	sourceRoot := filepath.Join(root, "source-projects")
 	targetRoot := filepath.Join(root, "target-projects")
-	sourceHome := filepath.Join(root, "source-home")
-	targetHome := filepath.Join(root, "target-home")
+	// State derives from each machine's own projects root now.
+	sourceHome := filepath.Join(sourceRoot, ".wb")
+	targetHome := filepath.Join(targetRoot, ".wb")
+	ambientXDGConfig := filepath.Join(root, "ambient-xdg-config")
+	ambientXDGState := filepath.Join(root, "ambient-xdg-state")
+	ambientXDGCache := filepath.Join(root, "ambient-xdg-cache")
 	fakeBin := filepath.Join(root, "bin")
 	tmuxState := filepath.Join(root, "tmux")
 	harnessReceipt := filepath.Join(root, "target-harness-receipt")
-	for _, directory := range []string{sourceRoot, targetRoot, fakeBin, tmuxState} {
+	for _, directory := range []string{sourceRoot, targetRoot, ambientXDGConfig, ambientXDGState, ambientXDGCache, fakeBin, tmuxState} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv(wbhome.EnvOverride, sourceHome)
+	t.Setenv(wbhome.EnvOverride, sourceRoot)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	// The source process deliberately carries conflicting XDG roots. The fake
+	// remote transport must replace all of them with target-owned paths; if it
+	// inherits even one, the target cannot find its config or writes custody
+	// state into the source environment. This reproduces the GitHub runner
+	// environment that exposed the original fixture leak on every platform.
+	t.Setenv("XDG_CONFIG_HOME", ambientXDGConfig)
+	t.Setenv("XDG_STATE_HOME", ambientXDGState)
+	t.Setenv("XDG_CACHE_HOME", ambientXDGCache)
 
 	binary := buildJourneyWB(t)
 	// Park always invokes the fixed remote command name, so the target is
 	// reached by placing the built binary on PATH as "wb" rather than by
 	// configuring ssh.wb_path, which park ignores.
 	linkJourneyRemoteWB(t, filepath.Join(fakeBin, "wb"), binary)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "tmux"), journeyTmuxScript)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "codex"), journeyCodexScript)
-	writeJourneyExecutable(t, filepath.Join(fakeBin, "ssh"), journeySSHScript)
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "tmux"), journeyTmuxScript(tmuxState))
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "codex"), journeyCodexScript(harnessReceipt))
+	writeJourneyExecutable(t, filepath.Join(fakeBin, "ssh"), journeySSHScript(targetHome, targetRoot))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WB_TEST_TARGET_HOME", targetHome)
-	t.Setenv("WB_TEST_TARGET_WB_HOME", targetHome)
-	t.Setenv("WB_TEST_TARGET_PROJECTS_ROOT", targetRoot)
-	t.Setenv("WB_TEST_TMUX_DIR", tmuxState)
-	t.Setenv("WB_TEST_HARNESS_RECEIPT", harnessReceipt)
 	t.Cleanup(func() { terminateJourneyTmuxProcesses(t, tmuxState) })
 
 	sourceMembers := prepareJourneySourceWorktrees(t, root, sourceRoot)
@@ -205,7 +212,7 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 			t.Fatalf("target replay mutated member custody events for %s", member.Repository)
 		}
 	}
-	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt)
+	harnessRaw := readJourneyHarnessReceipt(t, harnessReceipt, continuation, "as session "+receipt.SuccessorWBSessionID)
 	if !bytes.Contains(harnessRaw, []byte("WB_SESSION_CONTINUATION_FILE=")) || !bytes.Contains(harnessRaw, []byte(continuation)) ||
 		!bytes.Contains(harnessRaw, []byte("as session "+receipt.SuccessorWBSessionID)) {
 		t.Fatalf("target harness receipt = %q, want the resumed identity and private continuation file", harnessRaw)
@@ -468,9 +475,27 @@ func runJourneyWB(t *testing.T, binary, projectsRoot string, args ...string) []b
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("wb %s: %v\nstdout:\n%s\nstderr:\n%s%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes(), journeyRemoteFailureDiagnostic(stderr.String()))
 	}
 	return stdout.Bytes()
+}
+
+func journeyRemoteFailureDiagnostic(stderr string) string {
+	const marker = "remote stderr written to:\n  "
+	start := strings.Index(stderr, marker)
+	if start < 0 {
+		return ""
+	}
+	path := strings.TrimSpace(strings.SplitN(stderr[start+len(marker):], "\n", 2)[0])
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("\nread test remote stderr %s: %v", path, err)
+	}
+	const limit = 8 << 10
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+	return "\ntest remote stderr:\n" + string(raw)
 }
 
 func journeyGit(t *testing.T, directory string, args ...string) {
@@ -516,22 +541,27 @@ func terminateJourneyTmuxProcesses(t *testing.T, tmuxState string) {
 	}
 }
 
-func readJourneyHarnessReceipt(t *testing.T, path string) []byte {
+func readJourneyHarnessReceipt(t *testing.T, path string, completeMarkers ...string) []byte {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		raw, err := os.ReadFile(path)
-		if err == nil {
+		complete := err == nil
+		for _, marker := range completeMarkers {
+			complete = complete && bytes.Contains(raw, []byte(marker))
+		}
+		if complete {
 			return raw
 		}
-		if !os.IsNotExist(err) || time.Now().After(deadline) {
-			t.Fatalf("read target harness receipt: %v", err)
+		if (err != nil && !os.IsNotExist(err)) || time.Now().After(deadline) {
+			t.Fatalf("read complete target harness receipt: %v; content=%q", err, raw)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 }
 
-const journeySSHScript = `#!/bin/sh
+func journeySSHScript(targetHome, targetProjectsRoot string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
 while [ "$1" != "--" ]; do shift; done
 shift
@@ -539,11 +569,15 @@ target="$1"
 shift
 remote_wb="$1"
 shift
-exec env HOME="$WB_TEST_TARGET_HOME" WB_HOME="$WB_TEST_TARGET_WB_HOME" "$remote_wb" --projects-root "$WB_TEST_TARGET_PROJECTS_ROOT" "$@"
-`
+exec env HOME=%s WB_PROJECTS_ROOT=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s XDG_CACHE_HOME=%s "$remote_wb" --projects-root %s "$@"
+`, shellQuote(targetHome), shellQuote(targetProjectsRoot), shellQuote(filepath.Join(targetHome, ".config")),
+		shellQuote(filepath.Join(targetHome, ".local", "state")), shellQuote(filepath.Join(targetHome, ".cache")), shellQuote(targetProjectsRoot))
+}
 
-const journeyTmuxScript = `#!/bin/sh
+func journeyTmuxScript(stateDir string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
+state_dir=%s
 case "$1" in
 new-session)
   shift
@@ -564,8 +598,8 @@ new-session)
   (
     cd "$cwd"
     exec "$executable" "$launch_flag" "$store_root" "$handoff_id" "$attempt_id" "$plan_digest"
-  ) >/dev/null 2>"$WB_TEST_TMUX_DIR/$name.stderr" &
-  echo "$!" >"$WB_TEST_TMUX_DIR/$name.pid"
+  ) >/dev/null 2>"$state_dir/$name.stderr" &
+  echo "$!" >"$state_dir/$name.pid"
   ;;
 list-panes)
   name=""
@@ -574,12 +608,12 @@ list-panes)
     case "$value" in =*) name="${value#=}" ;; esac
     case "$value" in *pane_dead*) format="$value" ;; esac
   done
-  pid_file="$WB_TEST_TMUX_DIR/$name.pid"
+  pid_file="$state_dir/$name.pid"
   if [ -n "$name" ] && [ -f "$pid_file" ]; then
     pid="$(cat "$pid_file")"
     if kill -0 "$pid" 2>/dev/null; then
       case "$format" in
-        *pane_pid*) printf '%s\t0\n' "$pid" ;;
+        *pane_pid*) printf '%%s\t0\n' "$pid" ;;
         *) printf '0\t\n' ;;
       esac
       exit 0
@@ -593,23 +627,26 @@ list-panes)
   exit 2
   ;;
 esac
-`
+`, shellQuote(stateDir))
+}
 
-const journeyCodexScript = `#!/bin/sh
+func journeyCodexScript(receiptPath string) string {
+	return fmt.Sprintf(`#!/bin/sh
 set -eu
 {
   echo "PID=$$"
   echo "WB_SESSION_CONTINUATION_FILE=${WB_SESSION_CONTINUATION_FILE:-}"
   printf 'ARGS='
-  printf '%s ' "$@"
+  printf '%%s ' "$@"
   printf '\n'
   if [ -n "${WB_SESSION_CONTINUATION_FILE:-}" ]; then
     cat "$WB_SESSION_CONTINUATION_FILE"
   fi
-} >"$WB_TEST_HARNESS_RECEIPT"
+} >%s
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
-`
+`, shellQuote(receiptPath))
+}
 
 // linkJourneyRemoteWB publishes the built binary under the fixed remote
 // command name park uses, so the controlled ssh shim resolves it from PATH.

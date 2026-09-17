@@ -311,14 +311,25 @@ than inferring ownership from a terminal or parent PID.
 
 ### Lifecycle MVP: loopback ownership and handoff
 
-The first operational lifecycle slice is `wb daemon start|status|stop|restart`.
+The first operational lifecycle slice is `wb daemon start|status|stop|restart|recover`.
 Each command accepts canonical `--format=text|json`; `--json` is the shortcut
-for JSON. `start` is idempotent when a reachable loopback daemon has the exact
+for JSON. `recover` dry-runs by default and clears an interrupted transition
+only with `--apply`, after proving the recorded owner dead and the lifecycle
+state safe to fence or already stable. The transition lock is one retained,
+owner-only inode guarded by a kernel lock; an atomically replaced sidecar keeps
+PID evidence crash-safe. Process death releases exclusion without deleting its
+ownership evidence. `start` is idempotent when a reachable loopback daemon has the exact
 installed executable provenance (path, SHA-256, WB version, and revision). If
 that provenance differs, it marks the old generation draining, waits for it to
 stop, then starts the installed executable with the next durable queue
 generation. `restart --if-running` is used only after a verified WB install so
 an update never starts a previously absent daemon.
+
+An idle retained lock reports `no_stale_owner`, not `already_recovered`, because
+no recovery action occurred. Owner-only validation and advisory locking use the
+shared `strongo/cli-helpers/daemonlifecycle` implementation. Windows MUST verify
+a protected current-user DACL and keep the lifecycle recovery and protected
+file-bridge paths available; Unix mode bits are not accepted as Windows proof.
 
 The lifecycle record is private local state, atomically written with a schema
 version, fenced queue generation, owner provenance/token, and predecessor

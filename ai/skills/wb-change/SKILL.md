@@ -8,8 +8,8 @@ description: Deliver a safe code change through WB worktrees, fleet-standard hoo
 Compose the low-level skills; do not restate their command details.
 
 1. Confirm the required WB surface with `$wb-install`.
-2. Identify every repository that needs edits and search for relevant open PRs
-   or branches before creating another.
+2. Identify every repository that needs edits. Before creating another task,
+   use `$wb-worktrees`' compact active-work preflight and check relevant PRs.
 3. Use `$wb-worktrees` to create all editable checkouts in one task.
 4. Use `$wb-hooks` to check or repair fleet-standard hooks.
 5. Implement and run only the smallest targeted checks needed for the changed

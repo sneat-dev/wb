@@ -16,8 +16,9 @@ import (
 // AC: merge-refuses-while-a-link-is-live — `wb worktree merge` refuses before
 // any push, names the link and the command that clears it.
 func TestWorktreeMergeRefusesAWorktreeWithARecordedLink(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	worktree := t.TempDir()
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
@@ -48,7 +49,7 @@ func TestWorktreeMergeRefusesAWorktreeWithARecordedLink(t *testing.T) {
 // The second, independent signal: a hand-written go.work with a use entry and
 // no stream record still refuses.
 func TestWorktreeMergeRefusesAHandWrittenGoWork(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"), []byte("go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library\n)\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -67,8 +68,9 @@ func TestWorktreeMergeRefusesAHandWrittenGoWork(t *testing.T) {
 // touching one tracked file, and its JSON report carries the content hash and
 // the version the link replaced.
 func TestDepsPropagateLocalLinksAGoConsumer(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	base := t.TempDir()
 	library := initGitRepository(t, filepath.Join(base, "library"), map[string]string{
 		"backend/go.mod": "module github.com/acme/library/backend\n\ngo 1.27\n",
@@ -141,7 +143,7 @@ func TestDepsPropagateLocalLinksAGoConsumer(t *testing.T) {
 }
 
 func TestDepsPropagateLocalRequiresAConsumer(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"deps", "propagate", "local", t.TempDir(), "--non-interactive"}, &stdout, &stderr); code == exitOK {
 		t.Fatal("propagating to nothing succeeded")
@@ -202,8 +204,9 @@ func gitPorcelain(t *testing.T, root string) string {
 // worktree path, and used to skip the live-link guard entirely — so preparing
 // before linking and then landing the receipt pushed a linked worktree.
 func TestWorktreeMergeLandRefusesALinkedWorktreeFromItsReceipt(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	worktree := t.TempDir()
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
@@ -247,8 +250,9 @@ func TestWorktreeMergeLandRefusesALinkedWorktreeFromItsReceipt(t *testing.T) {
 // someone remembering to add a call. That is exactly how merge land/resume
 // came to be on the landing surface without ever calling the guard.
 func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("WB_HOME", home)
+	root := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	home := filepath.Join(root, ".wb")
 	worktree := t.TempDir()
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{

@@ -36,7 +36,7 @@ func TestLoadPolicyLayersGlobalAndRepositoryTemplates(t *testing.T) {
 	globalDir := filepath.Join(configHome, "wb")
 	mustMkdirAll(t, filepath.Join(globalDir, "templates"))
 	mustWrite(t, filepath.Join(globalDir, "templates", "pre-push.sh"), "#!/bin/sh\necho global\n")
-	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), `version: 1
+	mustWriteGlobalHooks(t, globalDir, `version: 1
 hooks:
   pre-push:
     template: templates/pre-push.sh
@@ -85,6 +85,24 @@ metrics:
 	}
 	if got, want := expectedHookNames(policy), []string{"post-checkout", "post-commit", "pre-commit"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected hooks = %v, want %v", got, want)
+	}
+}
+
+func TestLoadPolicyDoesNotFallBackToLegacyUserHooksFile(t *testing.T) {
+	repo := initRepo(t)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	legacyDir := filepath.Join(configHome, "wb")
+	mustMkdirAll(t, legacyDir)
+	mustWrite(t, filepath.Join(legacyDir, "hooks.yaml"), "version: 1\nprofiles:\n  exclude: [worktree]\n")
+
+	policy, err := LoadPolicy(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.ConfigPaths) != 0 || !policy.ProfileSelections["worktree"] {
+		t.Fatalf("legacy policy was loaded: paths=%v selections=%v", policy.ConfigPaths, policy.ProfileSelections)
 	}
 }
 
@@ -360,18 +378,19 @@ func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
 	configDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, configDir)
 	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
-	projects := filepath.Join(t.TempDir(), "projects")
-	home := filepath.Join(t.TempDir(), "explicit-home")
-	resolvedHomeParent, err := filepath.EvalSymlinks(filepath.Dir(home))
+	projectsParent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedHome := filepath.Join(resolvedHomeParent, filepath.Base(home))
+	projects := filepath.Join(projectsParent, "projects")
+	// The shim persists the state directory derived from the projects root:
+	// <projects>/.wb. WB_HOME is a decoy and must not select it.
+	home := filepath.Join(projects, ".wb")
 	logPath := filepath.Join(t.TempDir(), "wb.log")
 	fakeWB := filepath.Join(t.TempDir(), "wb")
 	mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s|%s\\n' \"$WB_HOME\" \"$*\" >> \"$WB_TEST_LOG\"\n")
 	t.Setenv("WB_TEST_LOG", logPath)
-	t.Setenv("WB_HOME", home)
+	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "explicit-home"))
 
 	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: fakeWB, ProjectsRoot: projects}); err != nil {
 		t.Fatal(err)
@@ -401,7 +420,7 @@ func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(shim), "export WB_HOME='"+resolvedHome+"'") {
+	if !strings.Contains(string(shim), "export WB_HOME='"+home+"'") {
 		t.Fatalf("refreshed shim does not persist WB_HOME:\n%s", shim)
 	}
 	command := exec.Command(filepath.Join(managed, "pre-commit"))
@@ -418,7 +437,7 @@ func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(output)), resolvedHome+"|--projects-root "+projects+" hooks run pre-commit --"; got != want {
+	if got, want := strings.TrimSpace(string(output)), home+"|--projects-root "+projects+" hooks run pre-commit --"; got != want {
 		t.Fatalf("persisted shim invocation = %q, want %q", got, want)
 	}
 }
@@ -1242,7 +1261,7 @@ func TestProfileSelectionCanOverrideEarlierLayerAndDisableWholeHook(t *testing.T
 	mustWrite(t, filepath.Join(repo, "package.json"), "{}\n")
 	globalDir := filepath.Join(configHome, "wb")
 	mustMkdirAll(t, globalDir)
-	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), "version: 1\nprofiles:\n  auto: true\n  exclude: [node, worktree]\n")
+	mustWriteGlobalHooks(t, globalDir, "version: 1\nprofiles:\n  auto: true\n  exclude: [node, worktree]\n")
 	repoConfigDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, repoConfigDir)
 	mustWrite(t, filepath.Join(repoConfigDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [node]\nhooks:\n  pre-push:\n    disabled: true\n")
@@ -2112,7 +2131,16 @@ func isolateConfig(t *testing.T) {
 	isolateEnvironment(t)
 	globalDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "wb")
 	mustMkdirAll(t, globalDir)
-	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), "version: 1\nprofiles:\n  exclude: [worktree]\n")
+	mustWriteGlobalHooks(t, globalDir, "version: 1\nprofiles:\n  exclude: [worktree]\n")
+}
+
+func mustWriteGlobalHooks(t *testing.T, directory, content string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	for i := range lines {
+		lines[i] = "  " + lines[i]
+	}
+	mustWrite(t, filepath.Join(directory, "wb.yaml"), "git_hooks:\n"+strings.Join(lines, "\n")+"\n")
 }
 
 func git(t *testing.T, dir string, args ...string) string {

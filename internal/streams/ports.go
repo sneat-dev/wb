@@ -25,6 +25,14 @@ type Git interface {
 	RemoteHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
 	// LocalHead resolves the worktree's HEAD.
 	LocalHead(ctx context.Context, dir string) (string, error)
+	// LocalBranchHead resolves a local branch without consulting origin. It is
+	// used when a stream worktree has already disappeared: a surviving local
+	// stream ref can still carry unpushed work that must block retirement.
+	LocalBranchHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
+	// IsAncestor reports whether ancestor is reachable from descendant. Stream
+	// cleanup uses commit ancestry, not patch similarity, when a merged PR is
+	// the sole receipt that authorizes retiring a squash-merged member.
+	IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error)
 	// CommitsNotIn lists the commits on branch whose patch base does not
 	// already carry, by patch identity rather than by SHA — a rebase landing
 	// rewrites SHAs, so an ancestry test would refuse every landed stream
@@ -38,10 +46,11 @@ type Git interface {
 	// LogSubjects lists the subjects of commits in the exclusive range
 	// from..to. An empty from means "every commit reachable from to".
 	LogSubjects(ctx context.Context, dir, from, to string) ([]string, error)
-	// DeleteRemoteBranch removes a branch from origin and verifies it is
-	// gone, so "removes its own scaffolding" covers the remote as well as the
-	// local checkout.
-	DeleteRemoteBranch(ctx context.Context, dir, branch string) error
+	// DeleteRemoteBranch removes a branch from origin only if it remains at
+	// expectedSHA, then verifies it is gone. The lease closes the interval
+	// between stream proof and deletion: a later remote write must refuse, not
+	// be erased as stream scaffolding.
+	DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error
 }
 
 // PullRequest is the subset of a pull request stream verbs read.
@@ -54,6 +63,11 @@ type PullRequest struct {
 	Base   string `json:"base"`
 	Draft  bool   `json:"draft"`
 	State  string `json:"state"`
+	// HeadSHA and MergeSHA are immutable GitHub identities. They are required
+	// when a stream member was already retired by wb pr land: the missing
+	// checkout cannot be used as evidence of what the PR actually landed.
+	HeadSHA  string `json:"head_sha,omitempty"`
+	MergeSHA string `json:"merge_sha,omitempty"`
 }
 
 // GitHub is the remote surface stream verbs use. Every method takes the
@@ -62,6 +76,9 @@ type PullRequest struct {
 type GitHub interface {
 	// CreateDraftPullRequest opens a draft pull request from head to base.
 	CreateDraftPullRequest(ctx context.Context, dir, base, head, title, body string) (PullRequest, error)
+	// UpdatePullRequestTitle changes one pull request's title and verifies the
+	// remote effect before returning success.
+	UpdatePullRequestTitle(ctx context.Context, dir string, number int, title string) error
 	// PullRequestForBranch finds the open pull request whose head is branch.
 	PullRequestForBranch(ctx context.Context, dir, branch string) (PullRequest, bool, error)
 	// OpenPullRequestsTargeting lists every open pull request whose base is
