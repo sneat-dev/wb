@@ -20,7 +20,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [graph-assisted-fleet-optimization](graph-assisted-fleet-optimization.md) | Draft | 2026-09-05 | alex | — |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
-| [orchestrator-default-to-dispatch](orchestrator-default-to-dispatch.md) | Draft | 2026-09-17 | ai | — |
+| [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) | Draft | 2026-09-17 | ai | — |
 | [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Draft | 2026-07-21 | alex | — |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |
 | [unify-session-move-and-park-continuation-storage](unify-session-move-and-park-continuation-storage.md) | Draft | 2026-08-27 | alex | — |

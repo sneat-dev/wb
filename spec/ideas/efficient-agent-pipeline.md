@@ -10,7 +10,7 @@ status: Draft
 **Owner:** ai
 **Promotes To:** —
 **Supersedes:** —
-**Related Ideas:** extends:agent-lane-verbs, extends:mechanical-worktree-merge, extends:graph-assisted-fleet-optimization, depends_on:orchestrator-default-to-dispatch
+**Related Ideas:** extends:agent-lane-verbs, extends:mechanical-worktree-merge, extends:graph-assisted-fleet-optimization, depends_on:mutation-requires-an-isolated-worktree
 
 ## Problem Statement
 
@@ -64,7 +64,7 @@ those attacks has already shipped and proved the thesis:
 | [agent-lane-verbs](agent-lane-verbs.md) | Draft | Repository facts re-derived once per session |
 | [graph-assisted-fleet-optimization](graph-assisted-fleet-optimization.md) | Draft | Ad-hoc, unauditable test selection |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | Secret values landing in an agent's context |
-| [orchestrator-default-to-dispatch](orchestrator-default-to-dispatch.md) | Draft | Worker lifecycle run turn-by-turn by the orchestrator |
+| [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) | Draft | Worker lifecycle run turn-by-turn by the orchestrator |
 
 `mechanical-worktree-merge` asked how to land changes "without spending AI
 tokens on mechanical Git and GitHub operations", shipped, and `wb pr land` is now
@@ -275,7 +275,7 @@ exists to stop trusting.
 
 - **New Features this would create:** a semantics-free phase list on `wb agent dispatch`; an agent-run conformance receipt (`wb agent receipt`); precondition-driven landing ownership reading `wb deps`
 - **Existing Features affected:** `wb agent dispatch`/`await`/`status`/`logs`, `wb pr land`, `wb worktree land`, `wb deps`, the WB skill routing surface
-- **Dependencies:** [orchestrator-default-to-dispatch](orchestrator-default-to-dispatch.md) for the routing fix; [agent-lane-verbs](agent-lane-verbs.md) shares the Collapse lever. No code dependency on SpecScore — the review gate composes through phase exit codes and artifact paths only
+- **Dependencies:** [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) for the routing fix; [agent-lane-verbs](agent-lane-verbs.md) shares the Collapse lever. No code dependency on SpecScore — the review gate composes through phase exit codes and artifact paths only
 
 ## Open Questions
 
