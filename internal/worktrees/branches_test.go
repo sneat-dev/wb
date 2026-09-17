@@ -491,7 +491,7 @@ func installOpenPullRequestFixture(t *testing.T, head string) {
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	payload := `[{"number":9,"html_url":"https://example.test/pull/9","state":"open","head":{"ref":"feature/open-pr","sha":"` + head + `"},"base":{"ref":"main","sha":""}}]`
+	payload := `[{"number":9,"html_url":"https://example.test/pull/9","state":"open","head":{"ref":"feature/open-pr","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}]`
 	t.Setenv("WB_TEST_OPEN_PULLS", payload)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

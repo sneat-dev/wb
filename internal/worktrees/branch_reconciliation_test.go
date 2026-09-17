@@ -402,7 +402,10 @@ func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number": 99, "html_url": "https://github.com/acme/app/pull/99", "state": "open",
-		"merged_at": nil, "head": map[string]any{"ref": "codex/branch-reconcile-landing", "sha": head},
+		"merged_at": nil, "head": map[string]any{
+			"ref": "codex/branch-reconcile-landing", "sha": head,
+			"repo": map[string]any{"full_name": "acme/app"},
+		},
 		"base": map[string]any{"ref": "main", "sha": ""}, "merge_commit_sha": "",
 	}})
 	if err != nil {
