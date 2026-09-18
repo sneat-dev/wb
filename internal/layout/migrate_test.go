@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -398,13 +399,16 @@ func TestGitOperationInProgressDetectsEveryMarker(t *testing.T) {
 	}
 }
 
-// TestMigrateSkipsACloneWithAnUnPickedUpParkedSession covers reviewer
-// BLOCKING #2's second refusal: a parked session (`wb session park`) that has
-// not yet been resumed binds one of its member worktrees to an exact active
-// Work Log claim and custody record. Migrating that worktree's clone out from
-// under it before the session resumes would leave that binding pointing at a
-// location it no longer describes, so it must refuse instead.
-func TestMigrateSkipsACloneWithAnUnPickedUpParkedSession(t *testing.T) {
+// TestMigrateDoesNotRefuseACloneWithAnUnPickedUpParkedSession covers
+// projects-root-layout#req:clone-migration-refusals as amended: a parked
+// session (`wb session park`) that has not yet been resumed names one of its
+// member worktrees as this clone's own path. That alone must not refuse the
+// clone any more -- `wb session resume` resolves each member by identity
+// (repository, branch, Work Log reference), not by its recorded absolute
+// paths, so it finds the member at its new location after the clone moves.
+// See TestMigrateMovesCloneReferencedByParkedSessionAndResumeResolvesByIdentity
+// for the full resume-survives-a-migration journey.
+func TestMigrateDoesNotRefuseACloneWithAnUnPickedUpParkedSession(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	canonical := initRemoteClone(t, root, "acme", "parked", "acme/parked")
@@ -439,8 +443,8 @@ func TestMigrateSkipsACloneWithAnUnPickedUpParkedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	clone, found := findMigrateClone(report, "acme/parked")
-	if !found || clone.Status != "skipped" || !strings.Contains(clone.Reason, "parked session") {
-		t.Fatalf("clone with an un-picked-up parked session = %+v, want skipped naming the parked session", clone)
+	if !found || clone.Status != "planned" || strings.Contains(clone.Reason, "parked session") {
+		t.Fatalf("clone with an un-picked-up parked session = %+v, want planned, not refused for the parked session", clone)
 	}
 }
 
@@ -1412,5 +1416,211 @@ func TestMigrateUndoHonoursManifestRecordedInclusions(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].CanonicalDir != canonical {
 		t.Fatalf("t-undo resolution after undo = %+v, want exactly one result naming the restored path %s", listed, canonical)
+	}
+}
+
+// TestMigrateMovesCloneReferencedByParkedSessionAndResumeResolvesByIdentity
+// covers projects-root-layout#ac:migrate-moves-clones-referenced-by-parked-sessions
+// and park-and-resume-agent-sessions#ac:resume-survives-a-layout-migration: a
+// parked session names one member worktree in a legacy home (whose own path
+// never moves; only the clone's canonical_dir changes) and one member
+// worktree inside the clone (which physically moves with it, and gets a
+// relocation intent/receipt recorded). Migrate no longer refuses the clone
+// for the parked bundle naming it; --include-active-tasks lifts the
+// ordinary, unrelated live-claim refusal each member's still-active claim
+// would otherwise still trigger. Resume's identity-based resolution
+// (session_park_local.go's acquire) then accepts both members at their
+// current paths; a member switched to another branch after park is still
+// refused; and undoing the migration restores both members' original
+// paths, which resume still accepts.
+func TestMigrateMovesCloneReferencedByParkedSessionAndResumeResolvesByIdentity(t *testing.T) {
+	// Not t.Parallel(): uses t.Setenv (HOME, XDG_CONFIG_HOME, WB_AGENT_*) to
+	// select the legacy claim home, store mode, and agent identity, which
+	// testing forbids alongside t.Parallel.
+	root := t.TempDir()
+	legacyHome := t.TempDir()
+	t.Setenv("HOME", legacyHome)
+	if err := os.MkdirAll(filepath.Join(legacyHome, ".wb", "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := initRemoteClone(t, root, "acme", "parked", "acme/parked")
+	realRemote := filepath.Join(root, "acme", "parked.git")
+	// initRemoteClone already points origin at the literal forge URL
+	// "git@github.com:acme/parked.git": migrate's OriginAddress reads that
+	// back verbatim via `git remote get-url`, exactly as it must for a real
+	// GitHub clone. A url.insteadOf rewrite would make get-url itself return
+	// the rewritten local path instead, which migrate refuses as not
+	// identifying a forge host -- so instead a fake SSH transport, exactly
+	// like cmd/wb's self_hosted_bench_e2e_test.go fakeGitHubRemote, serves
+	// the real local bare repository for any actual Git network operation
+	// (ls-remote, fetch) against that literal URL, while `remote get-url`
+	// itself never touches it.
+	sshScript := filepath.Join(t.TempDir(), "github-ssh")
+	if err := os.WriteFile(sshScript, []byte("#!/bin/sh\nexec git-upload-pack "+realRemote+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSH_COMMAND", sshScript)
+
+	source := session.Record{
+		PID: os.Getpid(), WBSessionID: "wbs-park-source", Machine: "vm1", Runtime: "codex",
+		Model: "gpt-5", NativeHarnessID: "native-park-source", StartedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	t.Setenv("WB_AGENT_PID", strconv.Itoa(source.PID))
+	t.Setenv("WB_AGENT_RUNTIME", source.Runtime)
+	t.Setenv("WB_AGENT_MODEL", source.Model)
+	t.Setenv("WB_AGENT_ID", source.NativeHarnessID)
+
+	// Member in-clone: repository-local store mode nests its worktree inside
+	// the clone, so the clone's own directory move physically relocates it.
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "wb")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "worktrees.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	createdInClone, err := worktrees.Create(context.Background(), []string{"acme/parked"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-inclone", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create t-inclone: %v", err)
+	}
+	inCloneWorktree := createdInClone[0].WorktreeDir
+	if err := worktrees.EnsurePrompt(inCloneWorktree, worktrees.PromptHeader{Source: worktrees.PromptSourceAgent}, []byte("park t-inclone\n")); err != nil {
+		t.Fatalf("record t-inclone prompt: %v", err)
+	}
+	guardInClone, err := worktrees.Guard(context.Background(), inCloneWorktree, worktrees.GuardOptions{ProjectsRoot: root, Admission: worktrees.AdmissionOff})
+	if err != nil {
+		t.Fatalf("guard t-inclone: %v", err)
+	}
+	memberInClone, err := worktrees.CaptureParkedSessionWorktree(context.Background(), root, worktrees.ListResult{
+		Repository: "acme/parked", CanonicalDir: guardInClone.CanonicalDir, WorktreeDir: inCloneWorktree,
+		WorktreesRoot: guardInClone.WorktreesRoot, Branch: guardInClone.Branch,
+	}, source)
+	if err != nil {
+		t.Fatalf("capture t-inclone: %v", err)
+	}
+
+	// Member in a legacy home: central store default places its worktree
+	// outside the clone, so the clone's own move never touches its path;
+	// only its recorded canonical_dir goes stale. Its Work Log claim is
+	// moved to the retired legacy $HOME/.wb layout after being recorded --
+	// the same real-machine placement the founder found on vm1.
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	createdLegacy, err := worktrees.Create(context.Background(), []string{"acme/parked"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-legacy", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create t-legacy: %v", err)
+	}
+	legacyWorktree := createdLegacy[0].WorktreeDir
+	if err := worktrees.EnsurePrompt(legacyWorktree, worktrees.PromptHeader{Source: worktrees.PromptSourceAgent}, []byte("park t-legacy\n")); err != nil {
+		t.Fatalf("record t-legacy prompt: %v", err)
+	}
+	guardLegacy, err := worktrees.Guard(context.Background(), legacyWorktree, worktrees.GuardOptions{ProjectsRoot: root, Admission: worktrees.AdmissionOff})
+	if err != nil {
+		t.Fatalf("guard t-legacy: %v", err)
+	}
+	memberLegacy, err := worktrees.CaptureParkedSessionWorktree(context.Background(), root, worktrees.ListResult{
+		Repository: "acme/parked", CanonicalDir: guardLegacy.CanonicalDir, WorktreeDir: legacyWorktree,
+		WorktreesRoot: guardLegacy.WorktreesRoot, Branch: guardLegacy.Branch,
+	}, source)
+	if err != nil {
+		t.Fatalf("capture t-legacy: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(legacyHome, ".wb", "worklogs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(root, ".wb", "worklogs", "t-legacy"), filepath.Join(legacyHome, ".wb", "worklogs", "t-legacy")); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := sessionpark.Bundle{
+		SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-migrate-survives",
+		Source: source, Continuation: "private continuation", ParkedAt: time.Now().UTC(),
+		Worktrees: []sessionpark.Worktree{memberLegacy, memberInClone},
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{IncludeActiveTasks: true, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/parked")
+	if !found || clone.Status != "done" {
+		t.Fatalf("clone = %+v, want done", report.Clones)
+	}
+	var inCloneRelocation *MigrateRelocation
+	for index := range clone.Relocations {
+		if clone.Relocations[index].Task == "t-inclone" {
+			inCloneRelocation = &clone.Relocations[index]
+		}
+	}
+	if inCloneRelocation == nil {
+		t.Fatalf("clone.Relocations = %+v, want an entry recording the in-clone parked member t-inclone", clone.Relocations)
+	}
+
+	// Resume's acquire path (WithParkedLocalResumeCustody) resolves both
+	// members by identity and accepts them at their current paths.
+	var resolved map[string]string
+	if err := worktrees.WithParkedLocalResumeCustody(context.Background(), root, bundle, func(custody *worktrees.ParkedLocalCustody) error {
+		resolved = custody.ResolvedWorktreeDirs()
+		return nil
+	}); err != nil {
+		t.Fatalf("resume acquire after migration: %v", err)
+	}
+	if _, err := os.Stat(legacyWorktree); err != nil {
+		t.Fatalf("t-legacy's worktree must remain exactly where it was: %v", err)
+	}
+	if got := resolved[memberLegacy.WorktreeDir]; got != legacyWorktree {
+		t.Fatalf("ResolvedWorktreeDirs()[legacy] = %q, want unchanged %q", got, legacyWorktree)
+	}
+	if got := resolved[memberInClone.WorktreeDir]; got == "" || got == memberInClone.WorktreeDir {
+		t.Fatalf("ResolvedWorktreeDirs()[in-clone] = %q, want the new post-migration path", got)
+	}
+
+	// A member switched to another branch after park is still refused.
+	relative, err := filepath.Rel(canonical, inCloneWorktree)
+	if err != nil {
+		t.Fatalf("compute relative path of t-inclone's worktree: %v", err)
+	}
+	inClonePath := filepath.Join(clone.Destination, relative)
+	if _, err := os.Stat(inClonePath); err != nil {
+		t.Fatalf("t-inclone's worktree must have moved with its clone to %s: %v", inClonePath, err)
+	}
+	run(t, inClonePath, "git", "checkout", "-b", "switched-after-park")
+	if err := worktrees.WithParkedLocalResumeCustody(context.Background(), root, bundle, func(*worktrees.ParkedLocalCustody) error {
+		return nil
+	}); err == nil {
+		t.Fatal("a member switched to another branch after park must still be refused")
+	}
+	run(t, inClonePath, "git", "checkout", memberInClone.Branch)
+
+	// Undo restores both members' original paths, which resume still
+	// accepts.
+	undone, err := Migrate(context.Background(), root, MigrateOptions{UndoID: report.ManifestID, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undoneClone, found := findMigrateClone(undone, "acme/parked")
+	if !found || undoneClone.Status != "reversed" {
+		t.Fatalf("undo clone = %+v, want reversed", undone.Clones)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("undo must restore the clone at its original path: %v", err)
+	}
+	status := gitOutput(t, canonical, "status", "--porcelain=v1")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("git status after undo = %q, want clean", status)
+	}
+	if err := worktrees.WithParkedLocalResumeCustody(context.Background(), root, bundle, func(*worktrees.ParkedLocalCustody) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("resume acquire after undo: %v", err)
 	}
 }

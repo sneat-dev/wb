@@ -536,7 +536,7 @@ func resumeParkedLocal(ctx context.Context, deps sessionResumeDependencies, stor
 		if _, _, err := store.PrepareLocalUnderLock(lock, now); err != nil {
 			return err
 		}
-		continuationPath, continuation, err := store.EnsureLocalSuccessorContextUnderLock(lock)
+		continuationPath, continuation, err := store.EnsureLocalSuccessorContextUnderLock(lock, custody.ResolvedWorktreeDirs())
 		if err != nil {
 			return err
 		}

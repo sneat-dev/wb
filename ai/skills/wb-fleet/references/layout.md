@@ -55,15 +55,23 @@ owner/repository differs from its path, its origin host is not a valid
 directory name, its destination already exists, a Git operation (merge,
 rebase, cherry-pick, revert, or a held index lock) is in progress or cannot be
 inspected, a live Work Log claim holds it or a linked worktree (checked across
-every home WB resolves, including a retired legacy one), an un-picked-up
-`wb session park` bundle names it or a linked worktree as a member, or (Linux
-only; skipped elsewhere, noted once in the report) a live process has its
-working directory inside it or a linked worktree, named by PID and command.
-Every refusal is re-checked immediately before that clone's actual move, not
-only when the run was planned. Uncommitted changes are never a refusal
-reason — the rename preserves them, and neither is an unborn `HEAD` (a
-repository with no commit yet). The command exits with the findings code
-whenever any clone is skipped or fails.
+every home WB resolves, including a retired legacy one), or (Linux only;
+skipped elsewhere, noted once in the report) a live process has its working
+directory inside it or a linked worktree, named by PID and command. Every
+refusal is re-checked immediately before that clone's actual move, not only
+when the run was planned. Uncommitted changes are never a refusal reason — the
+rename preserves them, and neither is an unborn `HEAD` (a repository with no
+commit yet). The command exits with the findings code whenever any clone is
+skipped or fails.
+
+An un-picked-up `wb session park` bundle naming a clone or a linked worktree
+as a member does NOT by itself refuse the move: `wb session resume` resolves
+each member by identity (repository, branch, Work Log reference), not by its
+recorded absolute paths, so it finds the member at its new location after the
+clone moves. A parked member worktree inside the clone that this move
+physically relocates still gets a relocation intent/receipt recorded, exactly
+like any other active task's in-clone checkout (see below) — that is what lets
+resume find it at its new path.
 
 `--include-task <task>` (repeatable) and `--include-active-tasks` each lift
 only the live-Work-Log-claim refusal — for the named tasks, or for every

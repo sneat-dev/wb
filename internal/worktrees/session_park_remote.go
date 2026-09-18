@@ -9,7 +9,6 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // WithParkedRemoteResumeCustody retains every member's exact Git descriptors
@@ -26,9 +25,25 @@ func WithParkedRemoteResumeCustody(ctx context.Context, projectsRoot string, bun
 	members := make([]parkedSessionCaptureMember, len(bundle.Worktrees))
 	for index, snapshot := range bundle.Worktrees {
 		members[index].snapshot = snapshot
+		// Resolve this member by identity -- the same resolver acquire()
+		// (internal/worktrees/session_park_local.go) uses for local resume,
+		// not the recorded, possibly-stale CanonicalDir/WorktreesRoot/
+		// WorktreeDir: the canonical clone through repopath, the checkout
+		// through its recorded path or the relocation-receipt chain for its
+		// Work Log reference. WorktreesRoot is left unset, exactly like
+		// local resume, since it is not part of a member's identity.
+		resolvedCanonicalDir, err := resolveParkedMemberCanonicalDir(projectsRoot, snapshot.Repository)
+		if err != nil {
+			return fmt.Errorf("resolve canonical clone for %s: %w", snapshot.Repository, err)
+		}
+		resolvedWorktreeDir, err := resolveParkedMemberWorktreeDir(projectsRoot, snapshot)
+		if err != nil {
+			return err
+		}
+		members[index].resolvedWorktreeDir = resolvedWorktreeDir
 		members[index].listed = ListResult{
-			Repository: snapshot.Repository, CanonicalDir: snapshot.CanonicalDir, WorktreeDir: snapshot.WorktreeDir,
-			WorktreesRoot: snapshot.WorktreesRoot, Branch: snapshot.Branch,
+			Repository: snapshot.Repository, CanonicalDir: resolvedCanonicalDir, WorktreeDir: resolvedWorktreeDir,
+			Branch: snapshot.Branch,
 		}
 	}
 	sort.SliceStable(members, func(i, j int) bool { return members[i].snapshot.WorktreeDir < members[j].snapshot.WorktreeDir })
@@ -55,6 +70,11 @@ func WithParkedRemoteResumeCustody(ctx context.Context, projectsRoot string, bun
 		}
 		if err := members[index].acquire(ctx, projectsRoot); err != nil {
 			return fmt.Errorf("retain remote parked-session member %s: %w", members[index].snapshot.WorktreeDir, err)
+		}
+		if remote := members[index].snapshot.RepositoryRemote; remote != "" {
+			if reason := verifyParkedMemberOriginRemote(ctx, members[index].guard.CanonicalDir, remote); reason != "" {
+				return fmt.Errorf("retain remote parked-session member %s: managed worktree identity changed since park: %s", members[index].snapshot.WorktreeDir, reason)
+			}
 		}
 	}
 	for index := range members {
@@ -98,16 +118,12 @@ func validateRemoteParkedMember(ctx context.Context, projectsRoot string, prepar
 	if err != nil || remoteHead != member.Head {
 		return fmt.Errorf("remote branch no longer has the exact parked commit")
 	}
-	projection, err := readWorkLogProjection(member.WorktreeDir)
+	projection, err := readWorkLogProjection(prepared.resolvedWorktreeDir)
 	if err != nil || projection.Lifecycle != "active" ||
 		"worklog:"+projection.EffortID+"/"+projection.RunID+"/"+projection.ClaimID != member.WorkLogReference {
 		return fmt.Errorf("active source Work Log claim changed after park")
 	}
-	home, err := wbhome.Root(projectsRoot)
-	if err != nil {
-		return err
-	}
-	if err := corroborateProjectionWithPrivateClaim(home, member.WorktreeDir, projection); err != nil {
+	if err := corroborateProjectionAcrossHomes(projectsRoot, prepared.resolvedWorktreeDir, projection); err != nil {
 		return fmt.Errorf("corroborate source Work Log claim: %w", err)
 	}
 	if _, err := sessionmove.ParseWorkLogReference(member.WorkLogReference); err != nil {

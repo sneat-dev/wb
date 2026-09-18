@@ -566,7 +566,15 @@ func (s Store) ContinuationPathUnderLock(lock *SourceLock) (string, error) {
 // EnsureLocalSuccessorContextUnderLock publishes the single private file read
 // by a local successor. It binds the original continuation to every retained
 // member path without copying or modifying worktree bytes.
-func (s Store) EnsureLocalSuccessorContextUnderLock(lock *SourceLock) (string, []byte, error) {
+//
+// resolvedWorktreeDirs maps a member's recorded (park-time) WorktreeDir to its
+// currently resolved checkout path (see
+// worktrees.ParkedLocalCustody.ResolvedWorktreeDirs), so a member whose
+// canonical clone or checkout moved since park (a layout migration, a
+// relocation) is described by its CURRENT path, never the stale recorded one
+// -- REQ: resume-resolves-members-by-identity. A nil map, or a member missing
+// from it, falls back to the recorded path unchanged.
+func (s Store) EnsureLocalSuccessorContextUnderLock(lock *SourceLock, resolvedWorktreeDirs map[string]string) (string, []byte, error) {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return "", nil, fmt.Errorf("publish local successor context requires retained source authority")
 	}
@@ -583,8 +591,12 @@ func (s Store) EnsureLocalSuccessorContextUnderLock(lock *SourceLock) (string, [
 		body.WriteString("- none\n")
 	}
 	for index, member := range lock.bundle.Worktrees {
+		path := member.WorktreeDir
+		if resolved, ok := resolvedWorktreeDirs[member.WorktreeDir]; ok && resolved != "" {
+			path = resolved
+		}
 		fmt.Fprintf(&body, "- member-%03d %s\n  path: %s\n  branch: %s\n  commit: %s\n  work_log: %s\n",
-			index+1, member.Repository, member.WorktreeDir, member.Branch, member.Head, member.WorkLogReference)
+			index+1, member.Repository, path, member.Branch, member.Head, member.WorkLogReference)
 	}
 	raw := []byte(body.String())
 	if len(raw) > MaxSuccessorContextBytes {
