@@ -2,6 +2,7 @@ package quality
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,5 +228,47 @@ func TestWriteDeadcodeBaselineRoundTripsThroughLoad(t *testing.T) {
 	}
 	if len(entries) != 2 || !entries["a/pkg.A"] || !entries["b/pkg.B"] {
 		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+// commandError previously preferred a failing command's stdout over the error
+// that described why it failed. When both carry distinct information — a
+// coverage run whose tests pass and whose profile merge then fails — the cause
+// was discarded and only the successful-looking output survived.
+func TestCommandErrorKeepsTheUnderlyingErrorAlongsideOutput(t *testing.T) {
+	detail := commandError("wb coverage .", "ok  \tgithub.com/acme/app\t0.4s\tcoverage: 91.2% of statements",
+		errors.New("merge coverage profiles: inconsistent mode line"))
+	if !strings.Contains(detail, "coverage: 91.2%") {
+		t.Fatalf("command output was dropped: %q", detail)
+	}
+	if !strings.Contains(detail, "inconsistent mode line") {
+		t.Fatalf("underlying error was dropped, which is the defect: %q", detail)
+	}
+}
+
+func TestCommandErrorDoesNotRepeatAnErrorAlreadyInTheOutput(t *testing.T) {
+	detail := commandError("go test ./...", "FAIL\nexit status 1", errors.New("exit status 1"))
+	if got := strings.Count(detail, "exit status 1"); got != 1 {
+		t.Fatalf("error duplicated %d times: %q", got, detail)
+	}
+}
+
+func TestCommandErrorFallsBackToTheErrorWhenOutputIsEmpty(t *testing.T) {
+	detail := commandError("go build ./...", "   \n  ", errors.New("no space left on device"))
+	if detail != "no space left on device" {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+// The truncation keeps a head and a tail. The appended error must survive it,
+// which is why it is appended rather than prefixed.
+func TestCommandErrorSurvivesTruncationOfLargeOutput(t *testing.T) {
+	detail := commandError("wb coverage .", strings.Repeat("noise line that says nothing useful\n", 200),
+		errors.New("merge coverage profiles: inconsistent mode line"))
+	if len(detail) > 1000 {
+		t.Fatalf("detail not truncated: %d bytes", len(detail))
+	}
+	if !strings.Contains(detail, "inconsistent mode line") {
+		t.Fatalf("truncation dropped the underlying error: %q", detail)
 	}
 }
