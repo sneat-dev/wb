@@ -104,18 +104,21 @@ func ApplyCloneMove(ctx context.Context, source, destination string) (CloneMoveR
 	return plan, nil
 }
 
-// VerifyClonePlacement checks that the clone's worktree registry has no
-// missing or prunable entry, that every named worktree path exists and its
-// common Git directory resolves to the clone's `.git`, and that `git status`
-// succeeds in each — the same verification `ApplyCloneMove` performs, exposed
-// so a caller (undo, tests) can re-check a placement independently.
+// VerifyClonePlacement checks that every named worktreePath is registered
+// against clonePath, exists, has its common Git directory resolving to the
+// clone's `.git`, and that `git status` succeeds in it — the same
+// verification `ApplyCloneMove` performs, exposed so a caller (undo, tests)
+// can re-check a placement independently.
+//
+// This deliberately checks only worktreePaths, not every entry the clone's
+// registry happens to hold: a caller re-verifying just the worktree(s) it
+// itself moved or repaired (ReconcileClonePlacement's apply path) must not
+// fail because some OTHER, unrelated worktree of the same clone is prunable
+// or missing for a reason this migration did not cause and cannot fix.
 func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths []string) error {
 	out, err := gitRawOutput(ctx, clonePath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
-	}
-	if strings.Contains(out, "\nprunable") || strings.HasPrefix(out, "prunable") {
-		return fmt.Errorf("worktree registration for %s reports a prunable entry", clonePath)
 	}
 	listed := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
@@ -145,38 +148,127 @@ func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths [
 	return nil
 }
 
-// ReconcileClonePlacement checks that a clone already at its expected location
-// is actually intact — its worktree registry has no missing or prunable entry
-// and every registered worktree's common Git directory resolves to this
-// clone's `.git` — and, if not, repairs it with `git worktree repair` before
-// re-checking once. It returns "verified" when the clone was already correct,
-// "repaired" when a repair fixed it, or an error naming exactly what is still
-// wrong when it could not be repaired.
+// ReconcileClonePlacement inspects a clone already at its expected location
+// clonePath for administrative breakage a clone migration itself can leave
+// behind, without running `git status` — or any other check — on a worktree
+// migration cannot have broken. legacyClonePath is the clone's pre-migration
+// <root>/<owner>/<repository> path, always derivable from its current
+// host-level location whether or not it was ever actually migrated through
+// here; it is used only to recognise a linked worktree that physically moved
+// along with an earlier directory rename (a manual `mv`, or an interrupted
+// migration) whose Git registration was never repaired to match.
 //
-// This exists because a clone can reach its destination path outside a full,
-// verified `ApplyCloneMove` — a manual `mv`, or an interrupted earlier
-// migration that renamed the directory but never repaired the worktree
-// registry — and reporting such a clone `already_done` without checking would
-// hide a stranded, broken placement behind a success status.
-func ReconcileClonePlacement(ctx context.Context, clonePath string) (string, error) {
-	paths, err := registeredWorktreePaths(ctx, clonePath)
+// For each worktree Git has registered against clonePath: if the recorded
+// path is missing on disk but rebasing it from legacyClonePath onto clonePath
+// names a directory that DOES exist, that worktree moved with the clone and
+// its `.git` pointer file is read directly (no subprocess) and compared
+// against clonePath's own `.git`; a mismatch means the migration left it
+// stranded. A worktree whose recorded path is missing and does not rebase to
+// something that exists, or whose `.git` pointer cannot be read at all, is
+// breakage this migration cannot explain: it is reported back as
+// informational, never repaired automatically and never treated as a
+// failure or reflected in a caller's exit code.
+//
+// Without apply, ReconcileClonePlacement only detects: it returns
+// "needs_repair" when migration-caused breakage was found, so a dry run never
+// changes anything on disk — the repair itself, and the lock that must be
+// held while performing it, are entirely the caller's responsibility, taken
+// only when apply is true. With apply, that breakage is repaired with `git
+// worktree repair`, using the CURRENT (rebased, existing) path rather than
+// the stale recorded one — passing the stale, nonexistent path is exactly
+// what makes `git worktree repair` fail with "invalid path" against a
+// worktree nested inside the clone — and the repair is verified, including
+// `git status`, only for the worktree(s) just repaired.
+func ReconcileClonePlacement(ctx context.Context, clonePath, legacyClonePath string, apply bool) (status string, informational []string, err error) {
+	recorded, err := registeredWorktreePaths(ctx, clonePath)
 	if err != nil {
-		return "", fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
+		return "", nil, fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
 	}
-	if err := VerifyClonePlacement(ctx, clonePath, paths); err == nil {
-		return "verified", nil
+	commonDir := filepath.Clean(filepath.Join(clonePath, ".git"))
+	var toRepair []string
+	for _, path := range recorded {
+		current := path
+		if _, statErr := os.Stat(path); statErr != nil {
+			rebased, ok := rebaseUnderNewClone(path, legacyClonePath, clonePath)
+			if !ok {
+				informational = append(informational, path)
+				continue
+			}
+			current = rebased
+		}
+		common, readErr := readWorktreeCommonDir(current)
+		if readErr != nil {
+			informational = append(informational, path)
+			continue
+		}
+		if filepath.Clean(common) == commonDir {
+			continue
+		}
+		toRepair = append(toRepair, current)
 	}
-	if _, err := git(ctx, clonePath, append([]string{"worktree", "repair"}, paths...)...); err != nil {
-		return "", fmt.Errorf("repair worktree registration for %s: %w", clonePath, err)
+	if len(toRepair) == 0 {
+		return "verified", informational, nil
 	}
-	paths, err = registeredWorktreePaths(ctx, clonePath)
+	if !apply {
+		return "needs_repair", informational, nil
+	}
+	if _, err := git(ctx, clonePath, append([]string{"worktree", "repair"}, toRepair...)...); err != nil {
+		return "", informational, fmt.Errorf("repair worktree registration for %s: %w", clonePath, err)
+	}
+	if err := VerifyClonePlacement(ctx, clonePath, toRepair); err != nil {
+		return "", informational, fmt.Errorf("clone at %s is stranded: %w", clonePath, err)
+	}
+	return "repaired", informational, nil
+}
+
+// rebaseUnderNewClone reports whether path — which does not currently exist —
+// is nested under legacyClonePath (the clone's pre-migration location) and
+// whether rebasing it under clonePath (the clone's current location) names a
+// directory that does exist, meaning it physically moved there along with an
+// earlier, unrepaired clone rename.
+func rebaseUnderNewClone(path, legacyClonePath, clonePath string) (string, bool) {
+	if legacyClonePath == "" {
+		return "", false
+	}
+	legacyClonePath = filepath.Clean(legacyClonePath)
+	path = filepath.Clean(path)
+	if path != legacyClonePath && !strings.HasPrefix(path, legacyClonePath+string(filepath.Separator)) {
+		return "", false
+	}
+	relative, err := filepath.Rel(legacyClonePath, path)
 	if err != nil {
-		return "", fmt.Errorf("list worktree registration for %s after repair: %w", clonePath, err)
+		return "", false
 	}
-	if err := VerifyClonePlacement(ctx, clonePath, paths); err != nil {
-		return "", fmt.Errorf("clone at %s is stranded: %w", clonePath, err)
+	rebased := filepath.Join(clonePath, relative)
+	if _, statErr := os.Stat(rebased); statErr != nil {
+		return "", false
 	}
-	return "repaired", nil
+	return rebased, true
+}
+
+// readWorktreeCommonDir reads a linked worktree's own `.git` file — a plain
+// text pointer, not a directory — and returns the common Git directory it
+// currently names, without spawning Git: exactly the check needed to tell a
+// worktree whose pointer still names a clone's pre-move location from a
+// healthy one, at the cost of a single small file read rather than a process,
+// which is what makes checking every worktree of every host-level clone on
+// every run affordable.
+func readWorktreeCommonDir(worktreeDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(worktreeDir, ".git"))
+	if err != nil {
+		return "", err
+	}
+	content := strings.TrimSpace(string(data))
+	target := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
+	if target == "" {
+		return "", fmt.Errorf("worktree %s has an empty .git pointer", worktreeDir)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktreeDir, target)
+	}
+	// target names <clone>/.git/worktrees/<id>; its common directory is its
+	// own grandparent.
+	return filepath.Dir(filepath.Dir(filepath.Clean(target))), nil
 }
 
 // registeredWorktreePaths lists every worktree Git has registered against

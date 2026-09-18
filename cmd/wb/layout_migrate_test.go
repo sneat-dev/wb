@@ -340,3 +340,62 @@ func TestLayoutMigrateIsReversible(t *testing.T) {
 		gitOutput(t, checkout, "status", "--porcelain=v1")
 	}
 }
+
+// TestLayoutMigrateUndoPrintsPartialReportOnManifestWriteFailure covers
+// MINOR #F of the second review round: when a manifest write fails partway
+// through `--undo`, the operator must still see what was already reversed
+// before the failure, not just a bare error. The manifest's own directory is
+// made read-only (but still readable and traversable) after a successful
+// `--apply`, so `--undo` can still READ the manifest but cannot write its
+// updated outcome back — the exact failure this guards against — and the
+// clone it reversed just before that write must still appear in the
+// command's JSON output on stdout.
+func TestLayoutMigrateUndoPrintsPartialReportOnManifestWriteFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	legacy := filepath.Join(root, "acme", "app")
+	initOriginRepository(t, legacy, "acme/app")
+
+	applied := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
+	if applied.exitCode != exitOK {
+		t.Fatalf("apply exit = %d; stderr=%s", applied.exitCode, applied.stderr)
+	}
+	report := decodeMigrateReport(t, applied.stdout)
+	if report.ManifestID == "" {
+		t.Fatal("apply did not record a manifest id")
+	}
+	manifestDir := filepath.Join(root, ".wb", "layout-migrations", report.ManifestID)
+	if _, err := os.Stat(filepath.Join(manifestDir, "manifest.json")); err != nil {
+		t.Fatalf("manifest file missing: %v", err)
+	}
+	// Read-only + execute: --undo can still open and read manifest.json (an
+	// existing file needs no directory write permission to read), but cannot
+	// create the temp file its atomic writeManifest needs to record the
+	// reversal outcome, which needs write permission on the directory itself.
+	if err := os.Chmod(manifestDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(manifestDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	undone := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--undo", report.ManifestID, "--apply", "--format", "json")
+	if undone.exitCode == exitOK {
+		t.Fatalf("undo with an unwritable manifest directory must not exit ok; stdout=%s", undone.stdout)
+	}
+	undoReport := decodeMigrateReport(t, undone.stdout)
+	index, found := findMigrateClone(undoReport, "acme/app")
+	if !found {
+		t.Fatalf("undo's partial report must still be printed to stdout despite the manifest-write error; stdout=%s stderr=%s", undone.stdout, undone.stderr)
+	}
+	if undoReport.Clones[index].Status != "reversed" {
+		t.Fatalf("partial report clone = %+v, want reversed (the move-back itself succeeded before the manifest write failed)", undoReport.Clones[index])
+	}
+	// The move-back is a real filesystem change independent of the manifest
+	// write that failed: the clone really is back at its legacy path.
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatal("the reversed clone must actually be back at its legacy path even though the manifest write failed")
+	}
+}

@@ -2,9 +2,12 @@ package layout
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -440,15 +443,45 @@ func TestMigrateSkipsACloneWithAnUnPickedUpParkedSession(t *testing.T) {
 	}
 }
 
-// TestMigrateRepairsAStrandedAlreadyAtDestinationClone covers reviewer
-// BLOCKING #3: a clone that reached its host-level path outside a full,
-// verified ApplyCloneMove (a manual rename, or an earlier migration
-// interrupted after the directory move but before `git worktree repair`)
-// must not be silently reported already_done while its linked worktree is
-// unusable. Migrate must detect the broken registration, repair it, and
-// report the clone as `repaired` — and a subsequent run must then see it as
-// genuinely `already_done`.
-func TestMigrateRepairsAStrandedAlreadyAtDestinationClone(t *testing.T) {
+// snapshotGitAdminFiles checksums every Git administrative file under root —
+// anything inside a `.git` directory, or a linked worktree's own `.git`
+// pointer file — so a caller can prove a run touched none of them. It
+// deliberately does not look at ordinary working-tree content: the contract
+// under test is "no Git administration changed," not "the working tree is
+// byte-identical."
+func snapshotGitAdminFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	sums := map[string]string{}
+	sep := string(filepath.Separator)
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.Contains(path, sep+".git"+sep) && !strings.HasSuffix(path, sep+".git") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		sum := sha256.Sum256(data)
+		sums[path] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	return sums
+}
+
+// TestMigrateDryRunNeverRepairsAStrandedClone covers BLOCKING #A of the
+// second review round: without --apply, a clone already at its host-level
+// path whose worktree registration was left stranded by an earlier or
+// partial move must only be DETECTED, reported `needs_repair` (the
+// dry-run analogue of `planned`), and left entirely untouched — not
+// silently repaired, which is exactly what a plain reconcile-and-fix scan
+// running on every dry run would otherwise do. Every Git administrative
+// file's checksum is snapshotted before and after the dry run and must not
+// differ by a single byte. --apply then performs the actual repair, and a
+// subsequent dry run sees it as genuinely `already_done`.
+func TestMigrateDryRunNeverRepairsAStrandedClone(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	canonical := initRemoteClone(t, root, "dal-go", "dalgo", "dal-go/dalgo")
@@ -473,13 +506,33 @@ func TestMigrateRepairsAStrandedAlreadyAtDestinationClone(t *testing.T) {
 		t.Fatal("stranded worktree fixture must still exist on disk")
 	}
 
-	report, err := Migrate(context.Background(), root, MigrateOptions{})
+	before := snapshotGitAdminFiles(t, root)
+	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"dal-go/dalgo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	after := snapshotGitAdminFiles(t, root)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("dry run must not change any Git administrative file\nbefore=%v\nafter=%v", before, after)
+	}
 	clone, found := findMigrateClone(report, "dal-go/dalgo")
+	if !found || clone.Status != "needs_repair" {
+		t.Fatalf("stranded clone dry run = %+v, want status needs_repair", clone)
+	}
+	if MigrateFailed(report) {
+		t.Fatal("needs_repair, like planned, must not be reported as a finding")
+	}
+	if err := worktrees.VerifyClonePlacement(context.Background(), destination, []string{external}); err == nil {
+		t.Fatal("dry run must not have actually repaired the stranded worktree")
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"dal-go/dalgo"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(applied, "dal-go/dalgo")
 	if !found || clone.Status != "repaired" {
-		t.Fatalf("stranded clone = %+v, want status repaired", clone)
+		t.Fatalf("apply on stranded clone = %+v, want status repaired", clone)
 	}
 	if err := worktrees.VerifyClonePlacement(context.Background(), destination, []string{external}); err != nil {
 		t.Fatalf("clone must be genuinely repaired: %v", err)
@@ -499,6 +552,62 @@ func TestMigrateRepairsAStrandedAlreadyAtDestinationClone(t *testing.T) {
 	}
 	if MigrateFailed(again) {
 		t.Fatal("a repaired-then-verified clone must not be reported as a finding")
+	}
+}
+
+// TestMigrateRepairsANestedStrandedWorktree covers SERIOUS #B of the second
+// review round: a clone whose linked worktree lives INSIDE it (nested under
+// `.worktrees/`) can be stranded the same way — a manual `mv`, or an
+// interrupted earlier migration, renamed the whole clone directory tree
+// (nested worktree included) without ever running `git worktree repair`.
+// The nested worktree's directory genuinely exists at its new, rebased
+// location; only its Git registration is stale, still naming the pre-move
+// legacy path. Passing that stale, now-nonexistent path straight to `git
+// worktree repair` is exactly what used to fail with "invalid path" — the
+// fix is to rebase it onto the clone's current location first, which is a
+// path that actually exists, before calling repair.
+func TestMigrateRepairsANestedStrandedWorktree(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "dal-go", "dalgo", "dal-go/dalgo")
+	nested := filepath.Join(canonical, ".worktrees", "t1")
+	run(t, canonical, "git", "worktree", "add", "-b", "t1", nested)
+
+	destination := filepath.Join(root, "github.com", "dal-go", "dalgo")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The whole tree — clone and its nested worktree together — moves in one
+	// rename, exactly as a manual `mv` or an interrupted migration would
+	// leave it: the nested worktree's directory now lives at its correctly
+	// rebased new location, but neither side's Git registration was updated.
+	if err := os.Rename(canonical, destination); err != nil {
+		t.Fatal(err)
+	}
+	rebasedNested := filepath.Join(destination, ".worktrees", "t1")
+	if _, err := os.Stat(rebasedNested); err != nil {
+		t.Fatal("nested worktree fixture must have moved along with the clone")
+	}
+
+	dry, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"dal-go/dalgo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(dry, "dal-go/dalgo")
+	if !found || clone.Status != "needs_repair" {
+		t.Fatalf("nested-stranded clone dry run = %+v, want status needs_repair", clone)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"dal-go/dalgo"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(applied, "dal-go/dalgo")
+	if !found || clone.Status != "repaired" {
+		t.Fatalf("apply on nested-stranded clone = %+v, want status repaired (not failed with an invalid-path error)", clone)
+	}
+	if err := worktrees.VerifyClonePlacement(context.Background(), destination, []string{rebasedNested}); err != nil {
+		t.Fatalf("nested worktree must be genuinely repaired: %v", err)
 	}
 }
 
@@ -684,5 +793,154 @@ func TestMigrateIncludesDotNamedClones(t *testing.T) {
 	clone, found = findMigrateClone(again, "acme/.github")
 	if !found || clone.Status != "already_done" {
 		t.Fatalf("dot-named clone re-scan = %+v, want already_done", clone)
+	}
+}
+
+// TestMigrateReportsUnrelatedWorktreeBreakageAsInformational covers SERIOUS
+// #C of the second review round: a host-level clone's linked worktree can be
+// broken for a reason a clone migration cannot possibly have caused — here,
+// its directory was simply deleted, never having been nested under any
+// legacy pre-migration path. That must be reported informationally at most:
+// the clone itself stays `already_done`, the run is not reported as a
+// finding, and no automated repair is attempted for a path this migration
+// has no rebasing to justify.
+func TestMigrateReportsUnrelatedWorktreeBreakageAsInformational(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	hostLevel := filepath.Join(root, "github.com", "acme", "app")
+	seedRemoteClone(t, root, "app", "acme/app", hostLevel)
+	external := filepath.Join(root, "worktrees", "t1", "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(external), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, hostLevel, "git", "worktree", "add", "-b", "t1", external)
+	// Delete the worktree directory outright: this is not something a clone
+	// migration could have caused (the worktree was never nested under any
+	// legacy path this clone might have moved from), so it must be treated
+	// as breakage unrelated to migration.
+	if err := os.RemoveAll(external); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/app"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/app")
+	if !found || clone.Status != "already_done" {
+		t.Fatalf("clone with unrelated worktree breakage = %+v, want already_done", clone)
+	}
+	if MigrateFailed(report) {
+		t.Fatal("breakage a migration did not cause must never be reported as a finding")
+	}
+	foundNote := false
+	for _, note := range report.Notes {
+		if strings.Contains(note, "acme/app") && strings.Contains(note, "not caused by migration") {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Fatalf("notes = %+v, want one naming acme/app's unrelated worktree breakage", report.Notes)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/app"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(applied, "acme/app")
+	if !found || clone.Status != "already_done" {
+		t.Fatalf("apply on unrelated breakage = %+v, want already_done (never auto-repaired)", clone)
+	}
+	if MigrateFailed(applied) {
+		t.Fatal("apply must not turn unrelated breakage into a finding either")
+	}
+}
+
+// TestMigrateKeptOwnersReflectFinalDiskStateNotPerCloneObservation covers
+// MINOR #E of the second review round: whether a legacy owner directory is
+// reported kept must reflect what is actually still on disk once the WHOLE
+// run finishes, not what one clone observed while a sibling under the same
+// owner directory had not yet been migrated in the same run. Two clones
+// share one legacy owner directory; migrating both in the same run empties
+// and removes it, so it must not appear in KeptOwners at all.
+func TestMigrateKeptOwnersReflectFinalDiskStateNotPerCloneObservation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	owner := filepath.Join(root, "acme")
+	// A bare, seedless clone per repository — unlike initRemoteClone, this
+	// leaves nothing else behind under the shared owner directory, so it
+	// genuinely becomes empty once both clones below have moved.
+	for _, name := range []string{"one", "two"} {
+		canonical := filepath.Join(owner, name)
+		if err := os.MkdirAll(canonical, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run(t, canonical, "git", "init", "-b", "main")
+		run(t, canonical, "git", "config", "user.email", "wb@example.test")
+		run(t, canonical, "git", "config", "user.name", "WB Test")
+		if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("acme/"+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run(t, canonical, "git", "add", ".")
+		run(t, canonical, "git", "commit", "-m", "init")
+		run(t, canonical, "git", "remote", "add", "origin", "git@github.com:acme/"+name+".git")
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/one", "acme/two"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range []string{"acme/one", "acme/two"} {
+		if clone, found := findMigrateClone(report, repository); !found || clone.Status != "done" {
+			t.Fatalf("%s = %+v, want done", repository, clone)
+		}
+	}
+	if _, err := os.Stat(owner); !os.IsNotExist(err) {
+		t.Fatalf("legacy owner directory must be gone once both siblings moved, err=%v", err)
+	}
+	for _, kept := range report.KeptOwners {
+		if kept.Path == owner {
+			t.Fatalf("kept owners = %+v, must not list %s: it was actually removed by the end of the run", report.KeptOwners, owner)
+		}
+	}
+}
+
+// TestBusyProcessSelfAncestorGivesCdOutGuidance covers MINOR #D of the second
+// review round: when the busy-process refusal is triggered by this very
+// process's own working directory (or an ancestor's, such as its parent
+// shell) rather than some unrelated agent or user session, the reason must
+// say to `cd` out of the clone and re-run — a completely different, and much
+// more actionable, remedy than naming an unrelated PID to go investigate.
+//
+// Not run in parallel: it changes this process's own working directory,
+// which every other test in this package assumes is stable. It restores the
+// original directory before returning, and Go only runs t.Parallel() tests
+// concurrently with each other, never with a non-parallel test still
+// executing — see busyProcessReason's own doc for why this is exactly the
+// process-tree case it must recognise.
+func TestBusyProcessSelfAncestorGivesCdOutGuidance(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("busy-process detection only runs on linux")
+	}
+	root := t.TempDir()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(original); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	reason := busyProcessReason([]string{root})
+	if reason == "" {
+		t.Fatal("want a busy-process reason for this process's own cwd")
+	}
+	if !strings.Contains(reason, "cd out") {
+		t.Fatalf("reason = %q, want self-ancestor cd-out guidance", reason)
 	}
 }

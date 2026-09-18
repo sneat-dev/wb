@@ -49,18 +49,16 @@ type MigrateClone struct {
 	Source      string            `json:"source"`
 	Destination string            `json:"destination"`
 	Worktrees   []MigrateWorktree `json:"worktrees,omitempty"`
-	// Status is one of: planned, done, already_done, repaired, skipped,
-	// failed, reversed.
+	// Status is one of: planned, done, already_done, needs_repair, repaired,
+	// skipped, failed, reversed. needs_repair is a dry-run-only finding: a
+	// clone already at its host-level path whose worktree registration was
+	// left stranded by an earlier or partial move; like planned, it is not a
+	// failure — it names what `--apply` will fix.
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
 	// Head is the clone's own HEAD at plan time, carried through to the
 	// undo manifest. It is not part of the report's public JSON shape.
 	Head string `json:"-"`
-	// keptOwner is set when this clone's move left its legacy owner
-	// directory in place because it still holds something; migrateApply
-	// collects these into MigrateReport.KeptOwners, deduplicated by path.
-	keptOwnerPath   string
-	keptOwnerReason string
 }
 
 // MigrateReport is the result of one wb layout migrate run.
@@ -191,7 +189,14 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 				continue
 			}
 			clone := MigrateClone{Repository: slug, Source: path, Destination: path}
-			status, reconcileErr := worktrees.ReconcileClonePlacement(ctx, path)
+			// legacyClonePath is this clone's pre-migration <root>/<org>/<repo>
+			// path, derived from its current host-level location regardless
+			// of whether it was ever actually migrated through here. It need
+			// not exist; ReconcileClonePlacement only uses it to recognise a
+			// nested worktree that moved along with an earlier, unrepaired
+			// rename.
+			legacyClonePath := filepath.Join(root, owner.Name, entry.Name())
+			status, informational, reconcileErr := worktrees.ReconcileClonePlacement(ctx, path, legacyClonePath, options.Apply)
 			switch {
 			case reconcileErr != nil:
 				clone.Status = "failed"
@@ -199,9 +204,17 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			case status == "repaired":
 				clone.Status = "repaired"
 				clone.Reason = "worktree registration was stranded after an earlier or partial move; repaired in place"
+			case status == "needs_repair":
+				clone.Status = "needs_repair"
+				clone.Reason = "worktree registration was stranded after an earlier or partial move; run --apply to repair"
 			default:
 				clone.Status = "already_done"
 				clone.Reason = "already at the host-level path"
+			}
+			if len(informational) > 0 {
+				report.Notes = append(report.Notes, fmt.Sprintf(
+					"%s: worktree breakage not caused by migration, left as-is: %s",
+					slug, strings.Join(informational, ", ")))
 			}
 			report.Clones = append(report.Clones, clone)
 		}
@@ -285,23 +298,43 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 
 	report.Clones = append(report.Clones, planned...)
 	sort.Slice(report.Clones, func(i, j int) bool { return report.Clones[i].Repository < report.Clones[j].Repository })
-	report.KeptOwners = collectKeptOwners(planned)
+	if options.Apply {
+		var ownerCandidates []string
+		for _, clone := range planned {
+			if clone.Status == "done" {
+				ownerCandidates = append(ownerCandidates, filepath.Dir(clone.Source))
+			}
+		}
+		report.KeptOwners = finalizeKeptOwners(ownerCandidates)
+	}
 	report.DaemonRestartRequired = daemonRunning(root)
 	return report, nil
 }
 
-// collectKeptOwners gathers every non-empty kept-owner path/reason recorded
-// on clones, deduplicated by path: more than one clone under the same legacy
-// owner directory can each observe it non-empty and report the same path.
-func collectKeptOwners(clones []MigrateClone) []MigrateKeptOwner {
+// finalizeKeptOwners recomputes, once at the very end of a migrate or undo
+// run, which of the given candidate owner (or host) directories are still on
+// disk and non-empty. This is the only trustworthy way to report it: a
+// directory one clone observed non-empty earlier in the same run, which a
+// later clone in that same run then emptied and removed, must never still be
+// listed as kept just because of what an earlier clone saw before that later
+// clone ran. Deduplicates by path; candidates are tried in the given order,
+// so a caller that lists an owner directory before the host directory above
+// it gives the owner directory a chance to be removed first, making the host
+// directory's own check accurate.
+func finalizeKeptOwners(candidates []string) []MigrateKeptOwner {
+	seen := make(map[string]bool, len(candidates))
 	var kept []MigrateKeptOwner
-	seen := make(map[string]bool)
-	for _, clone := range clones {
-		if clone.keptOwnerPath == "" || seen[clone.keptOwnerPath] {
+	for _, dir := range candidates {
+		if dir == "" || seen[dir] {
 			continue
 		}
-		seen[clone.keptOwnerPath] = true
-		kept = append(kept, MigrateKeptOwner{Path: clone.keptOwnerPath, Reason: clone.keptOwnerReason})
+		seen[dir] = true
+		if _, statErr := os.Stat(dir); statErr != nil {
+			continue
+		}
+		if removed, reason := removeEmptyLegacyOwner(dir); !removed {
+			kept = append(kept, MigrateKeptOwner{Path: dir, Reason: reason})
+		}
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Path < kept[j].Path })
 	return kept
@@ -530,9 +563,12 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	for _, worktree := range clone.Worktrees {
 		regenerateMarkers(root, worktree.Destination)
 	}
-	if removed, reason := removeEmptyLegacyOwner(filepath.Dir(clone.Source)); !removed && reason != "" {
-		clone.keptOwnerPath, clone.keptOwnerReason = filepath.Dir(clone.Source), reason
-	}
+	// Best-effort immediate cleanup so a long run frees directories as it
+	// goes; migrateApply's own final pass (finalizeKeptOwners), not this
+	// attempt, is what the report's KeptOwners is built from — a sibling
+	// clone processed later in the same run can still empty this same
+	// directory, which only a pass after the whole loop can see accurately.
+	_, _ = removeEmptyLegacyOwner(filepath.Dir(clone.Source))
 	clone.Status = "done"
 }
 
@@ -597,7 +633,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 	if err != nil {
 		return MigrateReport{}, fmt.Errorf("read migration manifest %s: %w", options.UndoID, err)
 	}
-	var keptOwners []MigrateKeptOwner
+	var reversedDestinations []string
 	for index := range manifest.Clones {
 		entry := manifest.Clones[index]
 		clone := MigrateClone{Repository: entry.Repository, Source: entry.Destination, Destination: entry.Source}
@@ -650,15 +686,12 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		// <root>/<host> itself, its first clone). Reversing the last clone
 		// under either must remove them, mirroring the legacy owner-directory
 		// cleanup the forward move performs, or they are left behind forever.
-		hostOrgDir := filepath.Dir(entry.Destination)
-		hostDir := filepath.Dir(hostOrgDir)
-		if removed, reason := removeEmptyLegacyOwner(hostOrgDir); !removed && reason != "" {
-			keptOwners = appendKeptOwner(keptOwners, hostOrgDir, reason)
-		} else if removed {
-			if removedHost, hostReason := removeEmptyLegacyOwner(hostDir); !removedHost && hostReason != "" {
-				keptOwners = appendKeptOwner(keptOwners, hostDir, hostReason)
-			}
-		}
+		// This is only a best-effort immediate attempt; migrateUndo's own
+		// final pass (finalizeKeptOwners), not this attempt, is what the
+		// report's KeptOwners is built from once every entry is processed.
+		_, _ = removeEmptyLegacyOwner(filepath.Dir(entry.Destination))
+		_, _ = removeEmptyLegacyOwner(filepath.Dir(filepath.Dir(entry.Destination)))
+		reversedDestinations = append(reversedDestinations, entry.Destination)
 		clone.Status = "reversed"
 		report.Clones = append(report.Clones, clone)
 		now := options.Now()
@@ -675,21 +708,16 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 	}
 	if options.Apply {
 		invalidateLocalIndex(root)
+		var orgCandidates, hostCandidates []string
+		for _, destination := range reversedDestinations {
+			orgDir := filepath.Dir(destination)
+			orgCandidates = append(orgCandidates, orgDir)
+			hostCandidates = append(hostCandidates, filepath.Dir(orgDir))
+		}
+		report.KeptOwners = finalizeKeptOwners(append(orgCandidates, hostCandidates...))
 	}
-	report.KeptOwners = keptOwners
 	report.DaemonRestartRequired = daemonRunning(root)
 	return report, nil
-}
-
-// appendKeptOwner records a kept host-level directory undo left in place,
-// deduplicating against anything already collected.
-func appendKeptOwner(kept []MigrateKeptOwner, path, reason string) []MigrateKeptOwner {
-	for _, existing := range kept {
-		if existing.Path == path {
-			return kept
-		}
-	}
-	return append(kept, MigrateKeptOwner{Path: path, Reason: reason})
 }
 
 // manifestUnprocessedClones reports every manifest entry from index onward as

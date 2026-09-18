@@ -10,6 +10,54 @@ import (
 	"strings"
 )
 
+// selfAndAncestorPIDs returns the current process's own pid together with
+// every ancestor pid up to (but not including) pid 1, by following /proc's
+// stat ppid field. It is used to recognise when a busy-process refusal is
+// caused by the very process running this migration — its own working
+// directory, or its parent shell's — rather than by some unrelated agent or
+// user session, since the remedy for those two cases is completely
+// different: an unrelated process must finish or be asked to leave, but this
+// process (or its shell) just needs to `cd` out of the clone before
+// re-running the same command.
+func selfAndAncestorPIDs() map[int]bool {
+	pids := map[int]bool{}
+	pid := os.Getpid()
+	for i := 0; i < 64 && pid > 1 && !pids[pid]; i++ {
+		pids[pid] = true
+		ppid, ok := readPPID(pid)
+		if !ok {
+			break
+		}
+		pid = ppid
+	}
+	return pids
+}
+
+// readPPID reads pid's parent pid from /proc/<pid>/stat. The comm field
+// (2nd, in parentheses) may itself contain spaces or parentheses, so the
+// remaining fields are parsed starting just after the stat line's LAST ')',
+// where ppid is always the first of them regardless of comm's contents.
+func readPPID(pid int) (int, bool) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, false
+	}
+	content := string(data)
+	closing := strings.LastIndexByte(content, ')')
+	if closing < 0 || closing+2 >= len(content) {
+		return 0, false
+	}
+	fields := strings.Fields(content[closing+2:])
+	if len(fields) < 2 {
+		return 0, false
+	}
+	ppid, convErr := strconv.Atoi(fields[1])
+	if convErr != nil {
+		return 0, false
+	}
+	return ppid, true
+}
+
 // busyProcessCheckSupported reports whether busyProcessReason can actually
 // inspect live process working directories on this OS. Linux exposes this
 // through /proc; other kernels have no equivalent WB relies on here.
@@ -36,6 +84,7 @@ func busyProcessReason(paths []string) string {
 	if len(cleaned) == 0 {
 		return ""
 	}
+	selfAndAncestors := selfAndAncestorPIDs()
 	for _, entry := range entries {
 		pid, convErr := strconv.Atoi(entry.Name())
 		if convErr != nil || pid <= 0 {
@@ -55,6 +104,9 @@ func busyProcessReason(paths []string) string {
 			comm := "unknown"
 			if raw, commErr := os.ReadFile(filepath.Join("/proc", entry.Name(), "comm")); commErr == nil {
 				comm = strings.TrimSpace(string(raw))
+			}
+			if selfAndAncestors[pid] {
+				return fmt.Sprintf("this command's own process tree (pid %d, %s) has its working directory inside %s; cd out of the clone and re-run", pid, comm, path)
 			}
 			return fmt.Sprintf("process %d (%s) has its working directory inside %s", pid, comm, path)
 		}

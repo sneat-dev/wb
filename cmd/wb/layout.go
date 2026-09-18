@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,6 +166,15 @@ done.`,
 				UndoID:       undoID,
 			})
 			if err != nil {
+				// A manifest-write failure returns the partial report built
+				// so far alongside the error: what was already recorded and
+				// moved before the write failed must still reach the
+				// operator, not be silently discarded behind a bare error.
+				if report.SchemaVersion != 0 {
+					if writeErr := writeLayoutOutput(cmd, format, report.Markdown(), report); writeErr != nil {
+						return errors.Join(err, writeErr)
+					}
+				}
 				return err
 			}
 			if reportDir != "" {
