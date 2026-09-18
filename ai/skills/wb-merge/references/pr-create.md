@@ -20,6 +20,13 @@ wb pr create --add pkg/x.go,pkg/x_test.go -m "feat: the change" --land --approve
 wb pr create
 wb pr land sneat-co/sneat-go#1041
 
+# Always name the issue(s) this pull request closes when the task named one.
+wb pr create --closes 591 -m "feat: the change" --commit-all
+
+# --land with a declared reviewer identity: WB posts the review as a comment.
+wb pr create --commit-all -m "feat: the change" --land \
+  --approved-by opus@codex@run-42 --review-comment "scoped review, looks right"
+
 # Open a draft with an explicit title.
 wb pr create --draft --title "feat: the change"
 
@@ -83,3 +90,22 @@ approval; a non-mechanical one is refused without `--approved-by`. Arming is
 skipped, with the pull request left open, wherever it would bypass a guard
 `wb pr land` would also refuse to bypass without `--allow-unfenced`.
 `--draft --auto-merge` is rejected: a draft pull request cannot be merged.
+`--approved-by`'s reviewer-identity form (with `--review-comment`/
+`--review-comment-file`) works with `--land`, exactly as it does for
+`wb pr land` itself — see `pr-land.md`. Plain `--auto-merge` (without
+`--land`) only accepts the back-compat review-file/comment-URL forms.
+
+## `--closes` (issue #615)
+
+`wb pr create --closes N[,N…]` writes one `Closes #N` line per issue at the
+top of the pull request body, ahead of whatever body would otherwise be
+sent. **Always pass it** when the task names an issue.
+
+`wb pr create` never adds an issue number on its own: when the task's
+original prompt (Work Log) names one (`#591`), it prints a suggestion on
+stderr — `suggestion: this task's prompt names #591; pass --closes to link
+them` — and stops there. Only `--closes` links it.
+
+`wb pr land` then reports whichever issues GitHub's own
+`closingIssuesReferences` names for the landed pull request — see
+`pr-land.md`.

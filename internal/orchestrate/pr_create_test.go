@@ -429,6 +429,28 @@ func TestCreateBodyFlagIsLiteralAndWinsOverCommitBody(t *testing.T) {
 	}
 }
 
+// #615: --closes writes one "Closes #N" line per issue at the top of the
+// body, ahead of whatever body (literal, file, or commit-derived) would
+// otherwise be sent.
+func TestCreateClosesWritesOneLinePerIssueAtTheTopOfTheBody(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "closes-task", "feature/closes", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		Body: "literal body text", Closes: []int{591, 614},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess {
+		t.Fatalf("outcome=%s reason=%s", result.Outcome, result.Reason)
+	}
+	log := fixture.ghLog(t)
+	if !strings.Contains(log, "Closes #591\nCloses #614\n\nliteral body text") {
+		t.Fatalf("gh log = %q, missing the closes-prefixed body", log)
+	}
+}
+
 func TestCreateBindsTheTaskToThePullRequestDurably(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "bind-task", "feature/bind", "main", "main.go")

@@ -245,10 +245,19 @@ case "$*" in
     printf 'true' >"$S/merged"
     printf 'closed' >"$S/pr-state"
     printf '{"sha":"%s","merged":true,"message":"Pull Request successfully merged"}\n' "$requested" ;;
+  'api --method POST repos/acme/app/issues/7/comments'*)
+    printf '%s\n' "$*" >>"$S/posted-comments"
+    printf '{"html_url":"https://github.com/acme/app/pull/7#issuecomment-1"}\n' ;;
   'api graphql'*)
     # Auto-merge is armed and withdrawn through GraphQL. The fixture records
     # that it was asked, so a test can assert arming without a real GitHub.
     case "$*" in
+      *closingIssuesReferences*)
+        if [ -f "$S/closes" ]; then
+          printf '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":%s}}}}}\n' "$(cat "$S/closes")"
+        else
+          printf '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[]}}}}}\n'
+        fi ;;
       *enablePullRequestAutoMerge*)
         if [ -f "$S/auto-merge-unavailable" ]; then
           printf '{"errors":[{"message":"Pull request Auto merge is not allowed for this repository"}]}\n' >&2

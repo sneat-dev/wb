@@ -23,7 +23,7 @@ func newPRCmd() *cobra.Command {
 }
 
 func newPRLandCmd() *cobra.Command {
-	var format, approvedBy, subject, reason, laneReason, mergeMethod string
+	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile string
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
@@ -124,6 +124,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if takeOverLane && strings.TrimSpace(laneReason) == "" {
 				return usageError("--take-over-lane requires --lane-reason <text>")
 			}
+			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
+				return usageError("--review-comment and --review-comment-file are mutually exclusive")
+			}
 			repository, number, err := splitPullRequestSelector(args[0])
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
@@ -147,6 +150,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				ProjectsRoot:        projectsRoot,
 				Keep:                keep,
 				ApprovedBy:          approvedBy,
+				ReviewComment:       reviewComment,
+				ReviewCommentFile:   reviewCommentFile,
 				MergeMethod:         mergeMethod,
 				MergeMethodExplicit: command.Flags().Changed("merge-method"),
 				Subject:             subject,
@@ -197,7 +202,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 		},
 	}
 	command.Flags().BoolVar(&keep, "keep", false, "retain the task's worktree and claim instead of retiring them")
-	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file or a comment URL")
+	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file, a comment URL, \"ci\", or a reviewer identity {model}[@{harness}[@{session}]] (needs --review-comment/--review-comment-file)")
+	command.Flags().StringVar(&reviewComment, "review-comment", "", "the review text; required with a reviewer-identity --approved-by; mutually exclusive with --review-comment-file")
+	command.Flags().StringVar(&reviewCommentFile, "review-comment-file", "", "path to the review text; required with a reviewer-identity --approved-by; mutually exclusive with --review-comment")
 	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
 	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; required with --keep-commits")
@@ -277,6 +284,16 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 		}
 		if result.Kept {
 			if _, err := fmt.Fprintln(out, "kept the worktree (--keep)"); err != nil {
+				return err
+			}
+		}
+		if result.Reviewer != "" {
+			if _, err := fmt.Fprintf(out, "reviewer: %s (head %s)\n", result.Reviewer, shortSHAForDisplay(result.ReviewedHeadSHA)); err != nil {
+				return err
+			}
+		}
+		if len(result.Closes) > 0 || result.Evidence["closes"] != "" {
+			if _, err := fmt.Fprintf(out, "%s\n", result.Evidence["closes"]); err != nil {
 				return err
 			}
 		}
