@@ -98,9 +98,11 @@ func waitForUpdatedHead(ctx context.Context, repository, number, previousHead st
 // resolve; everything else is WB's to report as it found it.
 func updateBranchConflict(reason string) bool {
 	lowered := strings.ToLower(reason)
+	// Deliberately not a bare "conflict": an HTTP 409 says "Conflict" too,
+	// and reporting that as the author's merge conflict would send them to
+	// resolve something that does not exist.
 	return strings.Contains(lowered, "merge conflict") ||
-		strings.Contains(lowered, "not mergeable") ||
-		strings.Contains(lowered, "conflict")
+		strings.Contains(lowered, "not mergeable")
 }
 
 // waitDeadline is the wall-clock end of this landing's total check-wait budget.
@@ -117,4 +119,18 @@ func waitDeadline(options PullRequestLandOptions) time.Time {
 		budget = MaxForegroundCheckWaitSlice
 	}
 	return now().Add(budget)
+}
+
+// updateBranchHeadMoved reports a compare-and-swap miss: the branch moved
+// between the read and the update. That is the lease doing its job, and the
+// answer is to re-read, not to fail.
+func updateBranchHeadMoved(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "expected head sha")
+}
+
+// targetMovedUnderHead reports a wait that failed only because the target
+// advanced past the head — while or after the checks ran.
+func targetMovedUnderHead(reason string) bool {
+	return strings.Contains(reason, "does not contain current target") ||
+		strings.Contains(reason, "advanced after checks passed")
 }

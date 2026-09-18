@@ -62,8 +62,11 @@ its own; one that does not is refused, naming a smaller set, because a commit
 that does not build is not a place anyone can bisect to.
 
 AUTO-MERGE IS ARMED FIRST. Before waiting on anything, wb arms GitHub
-auto-merge with the chosen merge method, so the pull request lands even if this
-process, its session or its host dies while the checks run. CI is the gate: a
+auto-merge with the chosen merge method and WB's own commit message, pinned to
+the head it observed, so the pull request lands even if this process, its
+session or its host dies while the checks run — provided the target does not
+move again first: GitHub does not bring a behind branch up to date by itself,
+so a pull request left behind waits for the next 'wb pr land'. CI is the gate: a
 failed check refuses this invocation but auto-merge stays armed, so whoever
 pushes the fix gets it landed as soon as the required checks pass. Put any gate
 that must hold (an AI review, say) in the CI workflow. --no-auto-merge opts out.
@@ -72,7 +75,9 @@ BEHIND IS NOT A REFUSAL. On a target that requires branches to be up to date, a
 candidate behind the target is brought up to date through GitHub's
 update-branch (with the observed head as a compare-and-swap), and the checks are
 waited on again, inside one --timeout budget. A target that moves again while
-the checks run is caught up again. A conflicting update refuses with
+the checks run is caught up again. Auto-merge is not armed where it would skip
+one of this verb's guards: with --keep-commits, or on a target without a strict
+up-to-date policy unless --allow-unfenced is explicit. A conflicting update refuses with
 update-branch-conflict. --no-update-branch refuses a behind candidate instead.
 
 REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,

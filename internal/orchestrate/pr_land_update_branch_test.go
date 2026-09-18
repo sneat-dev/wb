@@ -103,6 +103,7 @@ func TestUpdateBranchConflictClassification(t *testing.T) {
 		"update pull request branch: not mergeable":                        true,
 		"update pull request branch: HTTP 403 forbidden":                   false,
 		"update pull request branch: HTTP 502 bad gateway":                 false,
+		"update pull request branch: HTTP 409: Conflict":                   false,
 	} {
 		if got := updateBranchConflict(reason); got != want {
 			t.Errorf("updateBranchConflict(%q) = %v, want %v", reason, got, want)
@@ -229,5 +230,97 @@ func TestAutoMergeNeverArmsForKeptCommits(t *testing.T) {
 	options := PullRequestLandOptions{KeepCommits: []string{"4f2a1c9"}, AllowUnfenced: true}
 	if got := autoMergeBypassesAGuard(context.Background(), options, "main"); !strings.Contains(got, "--keep-commits") {
 		t.Fatalf("autoMergeBypassesAGuard = %q, want the --keep-commits guard named", got)
+	}
+}
+
+// TestLandTreatsAGitHubMergeDuringTheWaitAsALanding is the normal success path
+// once auto-merge is armed: GitHub merges within seconds of green, usually
+// before WB's confirming observation, and the wait then sees the target move
+// past the head. Reporting that as checks-failed would call a landing a
+// failure and skip the sync, branch deletion and cleanup.
+func TestLandTreatsAGitHubMergeDuringTheWaitAsALanding(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	fixtureMarker(t, fixture, "github-merges-on-arm")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.Evidence["merged_by"] != "github auto-merge" {
+		t.Errorf("merged_by = %q, want the merge attributed to GitHub", result.Evidence["merged_by"])
+	}
+	if !result.LandingOnBase {
+		t.Error("the GitHub merge was not verified on the base")
+	}
+}
+
+// TestLandArmsWithTheObservedHeadAndWBsMessage: GitHub merges with what it
+// was armed with, so the arming must carry WB's subject and be pinned to the
+// head WB observed.
+func TestLandArmsWithTheObservedHeadAndWBsMessage(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	head := fixture.readState(t, "head")
+	if _, err := LandPullRequest(context.Background(), landOptions(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	args := fixture.readState(t, "auto-merge-args")
+	for _, want := range []string{"expectedHeadOid", "head=" + head, "subject=feat: the change (#7)"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("arming arguments lack %q: %s", want, args)
+		}
+	}
+}
+
+// TestLandUpdatesWhenTheTargetMovesDuringTheWait: the wait reports a target
+// that advanced past the head as a failure. With updating allowed that is not
+// a verdict on the work, so the verb updates and waits again.
+func TestLandUpdatesWhenTheTargetMovesDuringTheWait(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	fixtureMarker(t, fixture, "advance-on-checks")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fixtureHasMarker(fixture, "update-branch") {
+		t.Fatalf("the candidate was not updated after the target moved; outcome = %s (%s): %s",
+			result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+}
+
+// TestLandTreatsABudgetShorterThanOnePollAsSpent: a budget that cannot hold
+// one observation is spent, which is pending, never an error.
+func TestLandTreatsABudgetShorterThanOnePollAsSpent(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	options := landOptions(fixture)
+	options.CheckPollInterval = time.Minute
+	options.Slice = 30 * time.Second
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("a short budget must end pending, not in an error: %v", err)
+	}
+	if result.RefusalCode != LandRefusalChecksPending {
+		t.Fatalf("refusal = %s, want %s: %s", result.RefusalCode, LandRefusalChecksPending, result.Reason)
+	}
+}
+
+// TestTargetMovedClassification pins which wait failures mean the target
+// moved, and which update failures mean the head moved.
+func TestTargetMovedClassification(t *testing.T) {
+	for reason, want := range map[string]bool{
+		"pull request head abc does not contain current target main at def; rebase": true,
+		"target main advanced after checks passed from a to b; rebase":              true,
+		"required check CI concluded failure":                                       false,
+	} {
+		if got := targetMovedUnderHead(reason); got != want {
+			t.Errorf("targetMovedUnderHead(%q) = %v, want %v", reason, got, want)
+		}
+	}
+	if !updateBranchHeadMoved("update: expected head sha didn't match current head ref") {
+		t.Error("a compare-and-swap miss was not recognised")
 	}
 }

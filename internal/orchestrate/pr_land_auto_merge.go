@@ -21,7 +21,7 @@ import (
 // authority to merge now — the same approval, the same lane, the same
 // server-enforced required checks — and never as a way to land something that
 // could not have been landed directly.
-func enablePullRequestAutoMerge(ctx context.Context, repository, number, mergeMethod string) string {
+func enablePullRequestAutoMerge(ctx context.Context, repository, number, mergeMethod, head, subject, body string) string {
 	method := strings.ToUpper(strings.TrimSpace(mergeMethod))
 	switch method {
 	case "MERGE", "SQUASH", "REBASE":
@@ -34,13 +34,19 @@ func enablePullRequestAutoMerge(ctx context.Context, repository, number, mergeMe
 	if reason != "" {
 		return reason
 	}
-	mutation := "mutation($id:ID!,$method:PullRequestMergeMethod!){" +
-		"enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}){" +
+	// expectedHeadOid pins the arming to the head WB observed, and the commit
+	// message is WB's own: when GitHub performs the merge it uses what it was
+	// armed with, not the subject and body WB would have sent.
+	mutation := "mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!,$subject:String!,$body:String!){" +
+		"enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method,expectedHeadOid:$head,commitHeadline:$subject,commitBody:$body}){" +
 		"pullRequest{autoMergeRequest{enabledAt}}}}"
 	response := githubExecute(ctx, "", "api", "graphql",
 		"-f", "query="+mutation,
-		"-F", "id="+nodeID,
-		"-F", "method="+method)
+		"-f", "id="+nodeID,
+		"-f", "method="+method,
+		"-f", "head="+head,
+		"-f", "subject="+subject,
+		"-f", "body="+body)
 	if response.ExitCode != 0 {
 		message := strings.TrimSpace(string(response.Stderr))
 		if message == "" {

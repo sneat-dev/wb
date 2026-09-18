@@ -26,8 +26,13 @@ the landing could not be verified) · `2` a guard refused.
 
 ## Auto-merge is armed first; behind is not a refusal
 
-Before waiting on anything, `wb pr land` arms GitHub auto-merge, so the pull
-request lands even if the process, session or host dies while checks run. CI is
+Before waiting on anything, `wb pr land` arms GitHub auto-merge (pinned to the
+observed head, carrying WB's commit message), so the pull request lands even if
+the process, session or host dies while checks run — unless the target moves
+again first: GitHub does not update a behind branch by itself, so rerun
+`wb pr land` for a pull request left behind. When GitHub wins the race to merge
+the green head, the verb still verifies, syncs and cleans up, and records
+`merged_by: github auto-merge`. CI is
 the gate: a red check ends the invocation with exit 1 but **auto-merge stays
 armed**, so whoever pushes the fix gets it landed when the required checks pass.
 Anything that must hold — an AI review, say — belongs in the CI workflow.

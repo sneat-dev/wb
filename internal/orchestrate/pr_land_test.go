@@ -48,6 +48,11 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	// The fake GitHub commits in the remote itself (update-branch, another
+	// landing advancing main), so it needs an identity of its own: a CI runner
+	// has no global one to fall back on.
+	runEngineGit(t, remote, "config", "user.name", "WB Test")
+	runEngineGit(t, remote, "config", "user.email", "wb@example.test")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +206,13 @@ case "$*" in
     ref="${4#*git/refs/heads/}"
     git --git-dir="$WB_LAND_REMOTE" update-ref -d "refs/heads/$ref" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100')
+    if [ -f "$S/advance-on-checks" ]; then
+      # Another landing reaches main while this candidate's checks run.
+      rm -f "$S/advance-on-checks"
+      tip=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)
+      next=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$tip^{tree}")" -p "$tip" -m "landed mid-wait")
+      git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$next"
+    fi
     printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")" ;;
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
@@ -218,6 +230,9 @@ case "$*" in
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' \
       "$status" "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$left")" "$(git --git-dir="$WB_LAND_REMOTE" merge-base "$left" "$right" 2>/dev/null || git --git-dir="$WB_LAND_REMOTE" rev-parse "$left")" ;;
   'api --method PUT repos/acme/app/pulls/7/merge'*)
+    if [ "$(cat "$S/merged")" = true ]; then
+      printf '{"message":"Pull Request is not mergeable"}\n'; exit 1
+    fi
     requested=""
     for arg in "$@"; do
       case "$arg" in sha=*) requested="${arg#sha=}" ;; esac
@@ -240,6 +255,14 @@ case "$*" in
           exit 1
         fi
         printf 'armed' >"$S/auto-merge"
+        printf '%s' "$*" >"$S/auto-merge-args"
+        if [ -f "$S/github-merges-on-arm" ]; then
+          # GitHub merging the moment it is armed on an already-green head:
+          # the race a real auto-merge wins against WB's confirming poll.
+          git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$(cat "$S/head")"
+          printf 'true' >"$S/merged"
+          printf 'closed' >"$S/pr-state"
+        fi
         printf '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-09-18T00:00:00Z"}}}}}\n' ;;
       *) echo "unexpected graphql: $*" >&2; exit 2 ;;
     esac ;;
@@ -970,6 +993,9 @@ func TestLandReportsAFindingWhenTheWorktreeCannotBeRetired(t *testing.T) {
 	}
 	if fixture.readState(t, "merged") != "false" {
 		t.Fatal("the refusal must happen before the merge, while refusing is still free")
+	}
+	if fixtureHasMarker(fixture, "auto-merge") {
+		t.Fatal("auto-merge was armed before the cleanup pre-flight refused; GitHub would merge it anyway")
 	}
 	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
 		t.Fatalf("a refused landing must leave the worktree alone: %v", statErr)
