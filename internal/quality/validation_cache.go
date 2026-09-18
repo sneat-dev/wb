@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const validationCacheSchema = 1
+const validationCacheSchema = 2
 
 // ValidationCacheKey identifies the exact inputs that make a verification
 // report reusable. Checks remain ordered because the order is part of the
@@ -27,6 +27,10 @@ type ValidationCacheKey struct {
 	WBRevision       string   `json:"wb_revision"`
 	GoToolchain      string   `json:"go_toolchain"`
 	ModuleFiles      []string `json:"module_files"`
+	// ValidatorSHAs binds cached evidence to the executable bytes that produced
+	// it. In particular, SpecScore's rules can change between installed
+	// versions while the repository and WB revision remain identical.
+	ValidatorSHAs map[string]string `json:"validator_shas,omitempty"`
 }
 
 type validationCacheRecord struct {
@@ -36,13 +40,22 @@ type validationCacheRecord struct {
 	Digest string             `json:"digest"`
 }
 
-// NewValidationCacheKey fingerprints repository-local policy and module
-// manifests. The caller supplies the exact target revision and WB revision.
-func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check) (ValidationCacheKey, error) {
+// NewValidationCacheKey fingerprints repository-local policy, module manifests,
+// and the executable digests used by external validators. The caller supplies
+// the exact target revision and WB revision, and passes nil validatorSHAs when
+// no external validator participates.
+//
+// One constructor rather than two: the original signature was kept alongside a
+// WithValidators variant that delegated to it, and `wb deadcode` immediately
+// reported the original as unreachable once the only caller moved. A dead
+// wrapper beside a live near-identical function is a reliable way to have the
+// wrong one called later.
+func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string) (ValidationCacheKey, error) {
 	key := ValidationCacheKey{
 		Repository: repository, TargetRevision: targetRevision,
 		Checks: append([]Check(nil), checks...), WBRevision: wbRevision,
-		GoToolchain: runtime.Version(),
+		GoToolchain:   runtime.Version(),
+		ValidatorSHAs: cloneStringMap(validatorSHAs),
 	}
 	for _, name := range []string{repositoryQualityConfigPath} {
 		path := filepath.Join(root, name)
@@ -83,6 +96,17 @@ func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, 
 		key.ModuleFiles = append(key.ModuleFiles, filepath.ToSlash(rel)+"="+digest)
 	}
 	return key, nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func addValidationCacheFile(dst *string, path string) error {

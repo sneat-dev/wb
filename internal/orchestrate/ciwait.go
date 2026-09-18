@@ -242,6 +242,30 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// authoritative for a candidate too. Without this a repository that has
 		// no CI at all can only poll until its slice deadline and report
 		// checks_pending on every landing.
+		//
+		// Rejected alternative, 2026-09-18 (#544): make the pull-request route
+		// fail fast here instead, refusing an authoritatively empty policy and
+		// telling the operator to rerun with --route direct. It was written to
+		// stop a PR route spending repeated full timeout slices in a permanently
+		// pending state, which is a real problem — but the branch above already
+		// solves it, by terminating rather than polling.
+		//
+		// The deciding argument was cost to the agents that run this command,
+		// not correctness: both behaviours are defensible. Failing fast costs a
+		// refused landing, a diagnostic to interpret and a re-run under a
+		// different route — two or more further turns, each re-reading the whole
+		// session context. Accepting the receipt finishes in one. On a fleet
+		// where that context is the dominant line on the bill, an extra round
+		// trip per landing is the expensive option.
+		//
+		// What makes accepting safe is that --allow-unfenced is explicit. The
+		// operator asked for a candidate to be judged without a server-enforced
+		// fence, and this is that judgement, recorded in a receipt that states
+		// the policy was enumerated as empty and reread unchanged. It is not a
+		// default, and it is not silent. Note the distinction the flag draws: it
+		// waives a fence that could not be read, and separately permits an empty
+		// one that was read. A policy WB failed to fetch and a policy WB fetched
+		// and found empty are different receipts.
 		noApplicableChecks := len(checks) == 0 && len(requiredChecks) == 0 &&
 			(options.PullRequest == "" || options.AllowUnfenced)
 		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
