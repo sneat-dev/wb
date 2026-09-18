@@ -179,7 +179,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "source", "static", "lint", "coverage", "race", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
 		job, ok := jobs[name].(map[string]any)
@@ -198,15 +198,29 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok || len(goScopeSteps) != 2 {
 		t.Fatalf("Go validation scope steps=%v", goScope["steps"])
 	}
-	goScopeFilter, _ := goScopeSteps[1].(map[string]any)
+	goScopeFilter, _ := goScopeSteps[0].(map[string]any)
 	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@v4")
+	// Push, tag and manual runs always validate, so they must not depend on a
+	// git-history diff that can fail after a force-push.
+	assert("Go scope filter only on pull requests", goScopeFilter["if"], "github.event_name == 'pull_request'")
+	decide, _ := goScopeSteps[1].(map[string]any)
+	assert("Go scope decision only on pull requests", decide["if"], "github.event_name == 'pull_request'")
+	assert("Go scope output", goScope["outputs"], map[string]any{"required": "${{ steps.decide.outputs.required }}"})
+	contract, ok := jobs["go-contract-inputs"].(map[string]any)
+	if !ok {
+		t.Fatal("non-Go contract inputs job missing")
+	}
+	assert("contract inputs gate", contract["if"], "github.event_name == 'pull_request' && needs.go-scope.outputs.required == 'false'")
+	assert("contract inputs commands", workflowContractTestCommands(t, contract), []string{
+		"go test ./cmd/wb -count=1 -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract)$'",
+	})
 	filters, _ := goScopeFilter["with"].(map[string]any)
 	var scope map[string][]string
 	if err := yaml.Unmarshal([]byte(fmt.Sprint(filters["filters"])), &scope); err != nil {
 		t.Fatalf("parse Go scope filters: %v", err)
 	}
 	// Every non-Go path Go embeds or reads in tests must stay in scope.
-	for _, pattern := range []string{"**/*.go", "go.mod", "go.sum", "cmd/**", "internal/**", "api/**", "ai/**", "skills", "hub/web/dist/**", "proto/**", "examples/**", ".wb/**", ".github/**", ".claude-plugin/**", ".codex-plugin/**", "docs/cli-flag-matrix.md", "README.md", ".goreleaser.yml"} {
+	for _, pattern := range []string{"**/*.go", "**/go.mod", "**/go.sum", "go.work", "go.work.sum", "vendor/**", "agents/**", ".golangci.*", ".gitattributes", "cmd/**", "internal/**", "api/**", "ai/**", "skills", "hub/web/dist/**", "proto/**", "examples/**", ".wb/**", ".github/**", ".claude-plugin/**", ".codex-plugin/**", "docs/cli-flag-matrix.md", "README.md", ".goreleaser.yml"} {
 		if !slices.Contains(scope["required"], pattern) {
 			t.Errorf("Go scope filter drops %q", pattern)
 		}
@@ -333,14 +347,17 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal("required check must only summarize the validation results")
 	}
 	step := steps[0]
-	if len(step.Env) != 12 {
-		t.Fatalf("summary receives %d environment values, want the twelve event/eligibility/reuse/scope/validation/Windows values", len(step.Env))
+	if len(step.Env) != 13 {
+		t.Fatalf("summary receives %d environment values, want the thirteen event/eligibility/reuse/scope/contract/validation/Windows values", len(step.Env))
 	}
 	runValues := func(values map[string]string) error {
 		cmd := exec.Command("sh", "-c", step.Run)
 		cmd.Env = os.Environ()
 		for key := range step.Env {
 			value := "success"
+			if key == "CONTRACT_RESULT" {
+				value = "skipped"
+			}
 			if override, ok := values[key]; ok {
 				value = override
 			}
@@ -358,7 +375,7 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
 	}
 	for key := range step.Env {
-		if key == "REUSE_RESULT" || key == "EVENT_NAME" || key == "GO_REQUIRED" {
+		if key == "REUSE_RESULT" || key == "EVENT_NAME" || key == "GO_REQUIRED" || key == "CONTRACT_RESULT" {
 			continue
 		}
 		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
@@ -389,6 +406,10 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		}
 	})
 	allSkipped := func(event, goRequired string) map[string]string {
+		contractResult := "skipped"
+		if event == "pull_request" && goRequired == "false" {
+			contractResult = "success"
+		}
 		return map[string]string{
 			"EVENT_NAME":      event,
 			"GO_REQUIRED":     goRequired,
@@ -399,11 +420,40 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"COVERAGE_RESULT": "skipped",
 			"RACE_RESULT":     "skipped",
 			"WINDOWS_RESULT":  "skipped",
+			"CONTRACT_RESULT": contractResult,
 		}
 	}
 	t.Run("spec-only pull request skips Go validation", func(t *testing.T) {
 		if err := runValues(allSkipped("pull_request", "false")); err != nil {
 			t.Fatalf("spec-only pull request was rejected: %v", err)
+		}
+	})
+	for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+		t.Run("spec-only pull request rejects contract inputs "+result, func(t *testing.T) {
+			values := allSkipped("pull_request", "false")
+			values["CONTRACT_RESULT"] = result
+			if err := runValues(values); err == nil {
+				t.Fatalf("summary accepted contract inputs %q", result)
+			}
+		})
+	}
+	for _, scope := range []string{"", "TRUE", "unknown"} {
+		t.Run("pull request rejects scope "+scope, func(t *testing.T) {
+			if err := runValues(allSkipped("pull_request", scope)); err == nil {
+				t.Fatalf("summary accepted Go scope %q", scope)
+			}
+		})
+	}
+	t.Run("Go-relevant pull request rejects a contract run", func(t *testing.T) {
+		values := map[string]string{"EVENT_NAME": "pull_request", "GO_REQUIRED": "true", "REUSE_RESULT": "false", "CONTRACT_RESULT": "success"}
+		if err := runValues(values); err == nil {
+			t.Fatal("summary accepted a contract-only run for a Go-relevant pull request")
+		}
+	})
+	t.Run("Go-relevant pull request validates", func(t *testing.T) {
+		values := map[string]string{"EVENT_NAME": "pull_request", "GO_REQUIRED": "true", "REUSE_RESULT": "false"}
+		if err := runValues(values); err != nil {
+			t.Fatalf("validated Go-relevant pull request was rejected: %v", err)
 		}
 	})
 	t.Run("Go-relevant pull request must validate", func(t *testing.T) {
