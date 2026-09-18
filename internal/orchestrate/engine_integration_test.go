@@ -154,7 +154,6 @@ func TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges(t *testing.T) {
 }
 
 func TestRunRejectsPublicationFromManagedInputBeforeInspection(t *testing.T) {
-	t.Parallel()
 	for index, test := range []struct {
 		name       string
 		configure  func(*Options)
@@ -234,7 +233,6 @@ func TestRunClonesMissingRepositoryBeforeInspectingGitLayout(t *testing.T) {
 }
 
 func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name string
 		path func(*testing.T, engineFixture) string

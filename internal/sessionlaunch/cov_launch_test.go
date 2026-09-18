@@ -482,7 +482,6 @@ func TestSlCovResolveAuthorityRejectsInvalidAuthority(t *testing.T) {
 }
 
 func TestSlCovDefaultDependenciesEntryPointsAndPreflight(t *testing.T) {
-	t.Parallel()
 	t.Run("tmux unavailable", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		if _, err := defaultDependencies(""); err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {

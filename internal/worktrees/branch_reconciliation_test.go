@@ -218,7 +218,6 @@ func TestReconcileClaimBranchRefusesUnreadableOwnerMetadata(t *testing.T) {
 }
 
 func TestReconcileClaimBranchRefusesMovedOldLocalOrRemoteRef(t *testing.T) {
-	t.Parallel()
 	for name, move := range map[string]func(*gitFixture, CreateResult){
 		"local": func(fixture *gitFixture, result CreateResult) {
 			gitTest(t, fixture.canonical, "update-ref", "refs/heads/"+result.Branch, "origin/main")

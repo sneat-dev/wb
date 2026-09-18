@@ -3543,7 +3543,6 @@ func TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock(t *testi
 }
 
 func TestCleanupResumeInterruptedNamedTaskPreservesAmbiguousLock(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(t *testing.T, lockPath, task string) string
@@ -3778,7 +3777,6 @@ func assertRecoveryFailureReport(t *testing.T, path string) {
 }
 
 func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(t *testing.T) {
-	t.Parallel()
 	t.Run("dirty merged task", func(t *testing.T) {
 		const task = "cleanup-recovery-dirty-merged"
 		fixture, created, head, mergedAt := prepareMergedTask(t, task)

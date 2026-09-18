@@ -120,7 +120,6 @@ func TestDepsCovBumpReleaseWaveHandlerInspectClassifiesAssessment(t *testing.T) 
 // whose official tooling fails, and an npm wave that edits manifests and then
 // reaches the Nx version-plan hook.
 func TestDepsCovBumpReleaseWaveHandlerApplyGoAndNpm(t *testing.T) {
-	t.Parallel()
 	t.Run("go applies and validates the exact final selection", func(t *testing.T) {
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -542,7 +541,6 @@ func TestDepsCovBumpReleaseDiscoverExistingReleaseCarriers(t *testing.T) {
 // resolver seam and every failure mode of the real `go mod download -json`
 // path, driven by a fake `go` on PATH so no network is touched.
 func TestDepsCovBumpReleaseLatestPublishedGoRelease(t *testing.T) {
-	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
 		t.Parallel()
 		release, err := latestPublishedGoRelease(context.Background(), "example.com/provider", BumpOptions{
@@ -891,7 +889,6 @@ func TestDepsCovBumpReleaseRegistryDispatchers(t *testing.T) {
 // TestDepsCovBumpReleaseLatestNpmVersion pins the injected seam, the fake
 // `pnpm view` path, and the invalid/command-failure outcomes.
 func TestDepsCovBumpReleaseLatestNpmVersion(t *testing.T) {
-	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
 		t.Parallel()
 		version, err := latestNpmVersion(context.Background(), "@acme/core", BumpOptions{
@@ -957,7 +954,6 @@ func depsCovBumpReleaseFakePnpmRelease(t *testing.T, version, fields string) {
 // TestDepsCovBumpReleaseLatestPublishedNpmRelease pins the injected seam and
 // the real two-command `pnpm view` path, including parse and command failures.
 func TestDepsCovBumpReleaseLatestPublishedNpmRelease(t *testing.T) {
-	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
 		t.Parallel()
 		release, err := latestPublishedNpmRelease(context.Background(), "@acme/core", BumpOptions{
@@ -1094,7 +1090,6 @@ func TestDepsCovBumpReleaseParsePublishedNpmRequirements(t *testing.T) {
 // TestDepsCovBumpReleaseLatestGoVersion pins the injected seam and every
 // outcome of `go list -m -json`, driven by a fake `go` on PATH.
 func TestDepsCovBumpReleaseLatestGoVersion(t *testing.T) {
-	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
 		t.Parallel()
 		version, err := latestGoVersion(context.Background(), "example.com/core", BumpOptions{

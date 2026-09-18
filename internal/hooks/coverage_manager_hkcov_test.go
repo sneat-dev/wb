@@ -357,7 +357,6 @@ func TestHkCovApplyReportsSymlinkedManagedHook(t *testing.T) {
 // TestHkCovApplySeamFailures drives every test-only seam Apply exposes, so each
 // late-swap refusal is asserted rather than assumed.
 func TestHkCovApplySeamFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("managed hook swapped mid loop", func(t *testing.T) {
 		repo := initRepo(t)
 		isolateConfig(t)

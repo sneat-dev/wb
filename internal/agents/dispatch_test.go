@@ -415,7 +415,6 @@ func TestDispatchRecordsALaunchFailureInsteadOfHidingIt(t *testing.T) {
 }
 
 func TestDispatchRefusesBadRequestsAsRequestErrors(t *testing.T) {
-	t.Parallel()
 	cases := map[string]func(*DispatchRequest){
 		"no worktree mode": func(r *DispatchRequest) { r.Worktree = "  " },
 		"no task":          func(r *DispatchRequest) { r.Task = "" },

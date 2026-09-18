@@ -252,6 +252,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 			"member work nope": func(value *Receipt) { value.Members[0].TargetWorkLogReference = "bogus" },
 		} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				candidate := receipt
 				candidate.Members = append([]ReceiptMember(nil), receipt.Members...)
 				mutate(&candidate)
@@ -268,6 +269,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 			"model":   func(value *Receipt) { value.Model = "gpt-5" },
 		} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				candidate := receipt
 				candidate.Members = append([]ReceiptMember(nil), receipt.Members...)
 				mutate(&candidate)

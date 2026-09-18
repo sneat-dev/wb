@@ -336,7 +336,6 @@ func TestCentralStoreEmbedsTheOriginHostForALegacyClone(t *testing.T) {
 // .wb/worktrees.yaml may not select or override the mode (or the central store
 // root), and the refusal must name the machine-local configuration path.
 func TestRepositoryTrackedStoreModeIsRejectedNamingTheUserConfig(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		contents string

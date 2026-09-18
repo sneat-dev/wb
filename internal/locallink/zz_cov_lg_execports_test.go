@@ -48,7 +48,6 @@ func lgCovRequireGit(t *testing.T) {
 // is not a repository at all, and a bare repository with no working tree. Each
 // must be reported rather than silently returning an empty identity.
 func TestLgCovContentHashFailurePaths(t *testing.T) {
-	t.Parallel()
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
 
@@ -100,7 +99,6 @@ func TestLgCovTrackedChangesReportsGitFailure(t *testing.T) {
 // The exclude file is resolved through git; each failure of that resolution,
 // of reading the file, and of writing it must be reported.
 func TestLgCovExcludePathFailurePaths(t *testing.T) {
-	t.Parallel()
 	lgCovRequireGit(t)
 	git := ExecGit{Timeout: 30 * time.Second}
 	ctx := context.Background()
@@ -248,7 +246,6 @@ func TestLgCovExcludedPatternsMissingVersusUnreadable(t *testing.T) {
 // FrozenInstall must select the lockfile's own manager, refuse when the
 // manager is absent, report a failed install, and pass a clean one.
 func TestLgCovFrozenInstallDrivesTheSelectedManager(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	node := ExecNode{Timeout: 30 * time.Second}
 
@@ -391,7 +388,6 @@ func lgCovBuildLibrary(t *testing.T, distRel string) (library, dist string) {
 // Build runs the repository's own build target, caches the dist by content
 // hash, and reports each way that can fail.
 func TestLgCovBuildRunsAndRecordsTheCachedDist(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("success caches the dist", func(t *testing.T) {

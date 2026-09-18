@@ -746,7 +746,6 @@ func TestDepsCovBumpCoreOperationPrefixAndWavePromptDefaultToGoAndSortEvents(t *
 // -- RunBump --------------------------------------------------------------
 
 func TestDepsCovBumpCoreRunBumpRecordsVerificationPolicyAndRefusesAHeldLock(t *testing.T) {
-	t.Parallel()
 	t.Run("verification policy is recorded for a dry run", func(t *testing.T) {
 		t.Parallel()
 		githubDir, repositories := depsCovGoDryRunFleet(t)
@@ -787,7 +786,6 @@ func TestDepsCovBumpCoreRunBumpRecordsVerificationPolicyAndRefusesAHeldLock(t *t
 }
 
 func TestDepsCovBumpCoreRunBumpResumesCompletedAndRefusesMismatchedReports(t *testing.T) {
-	t.Parallel()
 	t.Run("completed report is returned without a new wave", func(t *testing.T) {
 		t.Setenv(wbhome.EnvOverride, t.TempDir())
 		seed := depsCovSeedEvents()
@@ -1322,7 +1320,6 @@ func depsCovNpmCarrierCampaignOptions(githubDir string) BumpOptions {
 }
 
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhileParkingCampaigns(t *testing.T) {
-	t.Parallel()
 	carrierSeed := []ReleaseEvent{{Dependency: "@acme/provider", Version: "2.0.0", Source: "explicit"}}
 
 	t.Run("dry-run carrier park", func(t *testing.T) {

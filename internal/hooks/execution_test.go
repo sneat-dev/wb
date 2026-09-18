@@ -14,7 +14,6 @@ import (
 )
 
 func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name     string
 		lockfile string
@@ -63,7 +62,6 @@ func TestBuiltInNodePrePushSkipsUndefinedScripts(t *testing.T) {
 }
 
 func TestBuiltInNodePrePushReportsMissingTools(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		lockfile  string

@@ -206,7 +206,6 @@ func TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *te
 // terminal error joins: incompatible shard profiles and an unwritable
 // diagnostics directory.
 func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("incompatible shard profiles", func(t *testing.T) {
 		module := t.TempDir()
 		dqCovFakeGo(t, module)

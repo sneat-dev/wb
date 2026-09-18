@@ -538,7 +538,6 @@ func TestExecBumperApplyGoReportsAFailedGetOrTidy(t *testing.T) {
 }
 
 func TestExecBumperApplyNpmUsesTheLockfileOwner(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		manager string
@@ -811,7 +810,6 @@ func TestExecBumperApplyReportsAGoModuleScanFailure(t *testing.T) {
 }
 
 func TestExecGitCommitAllReportsAStagingOrCommitFailure(t *testing.T) {
-	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()

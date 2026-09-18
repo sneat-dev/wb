@@ -89,7 +89,6 @@ func TestCampaignLockReleasePreservesLateReplacement(t *testing.T) {
 }
 
 func TestCampaignLockRefusesSymlinkAndHardLinkRemnants(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name string
 		link func(string, string) error

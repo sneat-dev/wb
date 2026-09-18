@@ -88,7 +88,6 @@ func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
 }
 
 func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
-	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Run("git unavailable", func(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
@@ -130,6 +129,7 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 			t.Fatalf("dirty pinned worktree = %v", err)
 		}
 		t.Run("dirty parked-local worktree is allowed", func(t *testing.T) {
+			t.Parallel()
 			parked := plan
 			parked.RootMode = string(sessionauthority.LaunchRootParkedLocal)
 			if err := verifyPinnedWorktree(context.Background(), parked); err != nil {

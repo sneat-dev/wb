@@ -612,7 +612,6 @@ func TestAcknowledgeLandedFailureAcceptsOlderClaimBaseOnlyWhenItIsAnAncestor(t *
 }
 
 func TestAcknowledgeLandedFailureRefusesNonAncestorClaimBaseAndIdentityMismatch(t *testing.T) {
-	t.Parallel()
 	t.Run("non-ancestor claim base", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		initialTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
@@ -768,7 +767,6 @@ func TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingR
 }
 
 func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescendant(t *testing.T) {
-	t.Parallel()
 	t.Run("recorded source descendant retains every root", func(t *testing.T) {
 		fixture, receipt, replacement := supersessionFixture(t)
 		originalReceipt, originalCandidateClaim, replacementClaim := mergeSupersessionImmutableBytes(t, fixture, receipt, replacement)
@@ -1104,7 +1102,6 @@ func TestSupersedeValidationFailedWorktreeMergeBindsCleanCandidateDescendant(t *
 }
 
 func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
-	t.Parallel()
 	t.Run("dirty original candidate", func(t *testing.T) {
 		fixture, receipt, replacement := supersessionFixture(t)
 		receipt.Status = WorktreeMergeConflict
@@ -1342,7 +1339,6 @@ func assertMergeSupersessionImmutableBytes(t *testing.T, fixture engineFixture, 
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, replacement worktrees.CreateResult)
@@ -1473,7 +1469,6 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRefusesMissingSourceAncestryAndTampering(t *testing.T) {
-	t.Parallel()
 	t.Run("missing receipted source ancestry", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		source := createMergeSource(t, fixture, "missing-source", "feature/missing-source", "source.txt", "source\n")
@@ -1977,9 +1972,7 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 }
 
 func TestCorrectValidationFailedSelfSupersessionRefusesUnsafeHistoricalEvidence(t *testing.T) {
-	t.Parallel()
 	t.Run("malformed receipt state or landing", func(t *testing.T) {
-		t.Parallel()
 		for _, mutate := range []struct {
 			name  string
 			apply func(*WorktreeMergeReceipt)

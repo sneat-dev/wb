@@ -131,7 +131,6 @@ func TestDqCovVerifyWithOptionsFailsOnUnreadableWorkspace(t *testing.T) {
 // only request never becomes a Go or Node command, while a Node project with a
 // missing script is recorded as an explicit skip.
 func TestDqCovVerifyWithOptionsSkipsSpecInsideGoAndNodeLoops(t *testing.T) {
-	t.Parallel()
 	t.Run("go module with spec check only", func(t *testing.T) {
 		t.Parallel()
 		repository := t.TempDir()

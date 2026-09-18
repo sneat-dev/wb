@@ -198,7 +198,6 @@ func gpCovClaimPrompt() string {
 // a real live claim, and that each malformed worktree entry is skipped rather
 // than allowed to crash or to refuse on its own.
 func TestGpCovLiveClaimBaselineAndFalsePositives(t *testing.T) {
-	t.Parallel()
 	t.Run("a live claim is refused", func(t *testing.T) {
 		layout := gpCovClaimedRepository(t)
 		finding := inspectDispatchIntoLiveClaim(toolInput{Prompt: gpCovClaimPrompt()}, t.TempDir(), layout.ProjectsRoot)
@@ -258,7 +257,6 @@ func TestGpCovLiveClaimBaselineAndFalsePositives(t *testing.T) {
 // Each layout holds a claim file, so skipping the malformed entry is the only
 // reason the call is allowed.
 func TestGpCovLiveClaimMalformedWorktreeEntries(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name  string
 		build func(t *testing.T, layout gpCovRepoLayout)
@@ -548,7 +546,6 @@ func gpCovAssertOptionalBool(t *testing.T, name string, value, ok bool, want *bo
 // reads: the repository config (both values), the global policy, the workflow
 // heuristic, and no signal at all.
 func TestGpCovAutoTaggingSignals(t *testing.T) {
-	t.Parallel()
 	t.Run("repository agent.autoTags: true wins", func(t *testing.T) {
 		repo := newTagRepoFixture(t)
 		repo.writeHooksConfig(t, true)
@@ -959,7 +956,6 @@ func TestGpCovBraceExpansionLimit(t *testing.T) {
 // fail-open: an allowed call stays allowed even when the record cannot be
 // written, and the record is written when it can.
 func TestGpCovGhOverrideRecordingIsBestEffort(t *testing.T) {
-	t.Parallel()
 	merge := []string{"gh", "pr", "merge", "1"}
 
 	t.Run("a record is written when the state home is writable", func(t *testing.T) {

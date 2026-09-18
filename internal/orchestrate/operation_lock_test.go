@@ -149,7 +149,6 @@ func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 }
 
 func TestAcquireOperationLockPreservesAmbiguousLinks(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name string
 		link func(string, string) error

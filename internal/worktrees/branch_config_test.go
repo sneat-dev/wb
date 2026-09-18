@@ -203,7 +203,6 @@ func TestCreateResumeIgnoresMalformedUnrelatedRegisteredClaim(t *testing.T) {
 }
 
 func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name          string
 		initialPolicy string
@@ -265,7 +264,6 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 }
 
 func TestRepositoryBranchPolicyRejectsUnsafeOrInvalidBlob(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name     string
 		contents string

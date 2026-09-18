@@ -174,7 +174,6 @@ func TestRunOwnerRecordsASuccessfulRun(t *testing.T) {
 }
 
 func TestRunOwnerRecordsFailureTimeoutAndUnfinishedTurns(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name      string
 		task      string

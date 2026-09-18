@@ -44,7 +44,6 @@ func TestRPCovCleanReportsProgressForEveryRepository(t *testing.T) {
 }
 
 func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
-	t.Parallel()
 	t.Run("skip-sync marker unreadable", func(t *testing.T) {
 		isolateWBHome(t)
 		f := newFixture(t, "acme", "widgets")

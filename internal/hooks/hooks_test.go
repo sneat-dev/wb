@@ -148,7 +148,6 @@ func TestLoadPolicyRejectsUnknownAndMissingTemplates(t *testing.T) {
 }
 
 func TestLoadPolicyAutoDetectsOnlyRelevantBuiltInProfiles(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		files        []string
@@ -295,7 +294,6 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 // prevent, so enforce is the default. It stays off wherever an instruction
 // cannot be recorded anyway, and WB_ADMISSION still relaxes it.
 func TestWorktreeGuardRequestsCommitAdmissionOnlyAtCommit(t *testing.T) {
-	t.Parallel()
 	for _, testCase := range []struct {
 		hook      string
 		args      []string
@@ -2245,7 +2243,6 @@ func hasFinding(findings []Finding, code string) bool {
 // A fleet still adopting the journal must be able to step back to reporting
 // without editing hook policy.
 func TestWorktreeAdmissionRespectsEnvironmentOverride(t *testing.T) {
-	t.Parallel()
 	for _, mode := range []string{"warn", "off"} {
 		t.Run(mode, func(t *testing.T) {
 			repo := initRepo(t)

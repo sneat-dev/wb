@@ -144,7 +144,6 @@ func TestResolveCanonicalRepositoryReportsMissingOrigin(t *testing.T) {
 }
 
 func TestResolveCanonicalRepositoryReportsGitHubFailures(t *testing.T) {
-	t.Parallel()
 	const apiCall = "api repos/oldco/app --include"
 	t.Run("gh failure", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: apiCall, stderr: "gh: not logged into any GitHub hosts", exit: 1})
@@ -280,7 +279,6 @@ func TestListRemoteReturnsNoRepositoriesForAnEmptyOwner(t *testing.T) {
 }
 
 func TestListRemoteReportsFailures(t *testing.T) {
-	t.Parallel()
 	const listCall = "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl"
 	t.Run("gh error", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: listCall, stderr: "gh: not logged into any GitHub hosts", exit: 1})
@@ -303,7 +301,6 @@ func TestListRemoteReportsFailures(t *testing.T) {
 }
 
 func TestIsArchivedRejectsUnexpectedOutput(t *testing.T) {
-	t.Parallel()
 	for name, output := range map[string]string{"non boolean": "yes", "empty": ""} {
 		t.Run(name, func(t *testing.T) {
 			installFakeGhRepoView(t, "acme/widgets", output, true)
@@ -330,7 +327,6 @@ func TestAuthUserReturnsTheAuthenticatedLogin(t *testing.T) {
 }
 
 func TestAuthUserReportsFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("gh error", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: "api user --include", stderr: "gh: not logged into any GitHub hosts", exit: 1})
 		if _, err := AuthUser(); err == nil {
@@ -371,7 +367,6 @@ func TestMemberOrgsReturnsNothingForAUserWithoutOrganizations(t *testing.T) {
 }
 
 func TestMemberOrgsReportsFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("gh error", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: "api user/orgs --include", stderr: "gh: not logged into any GitHub hosts", exit: 1})
 		if _, err := MemberOrgs(); err == nil {

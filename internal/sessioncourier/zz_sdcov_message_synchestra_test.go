@@ -642,6 +642,7 @@ func TestSDCovDecodeSynchestraMessageReceiptArtifactBranches(t *testing.T) {
 		}
 		for name, mutate := range mutations {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				artifact := valid
 				mutate(&artifact)
 				if _, err := decodeSynchestraMessageReceiptArtifact(sdCovMessageArtifactRef(t, artifact), message, raw); err == nil ||

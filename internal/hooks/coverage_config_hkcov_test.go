@@ -154,7 +154,6 @@ func TestHkCovLoadPolicyRejectsDirectoryTemplateNotRegular(t *testing.T) {
 // TestHkCovLoadWBConfigGitHooksBranches drives each decode branch inside the
 // global wb.yaml git_hooks reader.
 func TestHkCovLoadWBConfigGitHooksBranches(t *testing.T) {
-	t.Parallel()
 	repo := initRepo(t)
 	cases := []struct {
 		name       string
@@ -208,7 +207,6 @@ func TestHkCovLoadWBConfigGitHooksReportsOpenFailure(t *testing.T) {
 }
 
 func TestHkCovLoadPolicyReportsRepositoryConfigErrors(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name    string
 		setup   func(t *testing.T, repo string)

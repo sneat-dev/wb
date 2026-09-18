@@ -204,7 +204,6 @@ func TestSlCovRunPrivateLauncherParkFailsClosed(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherCustodyConflicts(t *testing.T) {
-	t.Parallel()
 	t.Run("abandonment does not bind attempt", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)

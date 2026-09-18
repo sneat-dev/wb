@@ -1043,7 +1043,6 @@ func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktr
 }
 
 func TestResumeWorktreeMergeStopBeforeMergeRefusesTargetOrSourceDrift(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		drift func(t *testing.T, fixture engineFixture, source worktrees.CreateResult)
@@ -2089,7 +2088,6 @@ func TestMissingCleanupAcknowledgementRefusesRemoteTargetRewind(t *testing.T) {
 }
 
 func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name          string
 		breakEvidence func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, claims map[string]string)
@@ -2269,7 +2267,6 @@ func assertTerminalWorkLogBytes(t *testing.T, claims map[string]string, want map
 }
 
 func TestCleanupWorktreeMergeReceiptProofRefusesBrokenLinks(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name         string
 		breakReceipt func(*WorktreeMergeReceipt, string)
@@ -2834,7 +2831,6 @@ func TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates(t *te
 }
 
 func TestAdvanceResolvedConflictCandidateRefusesUnsafeEvidence(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt)
@@ -3490,7 +3486,6 @@ func TestPrepareWorktreeMergeRebatchesExactOpenPublishedPendingReceipt(t *testin
 }
 
 func TestPrepareWorktreeMergeRefusesMalformedPreparedReceipt(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*WorktreeMergeReceipt)
@@ -3522,7 +3517,6 @@ func TestPrepareWorktreeMergeRefusesMalformedPreparedReceipt(t *testing.T) {
 }
 
 func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		prState     string
@@ -3880,7 +3874,6 @@ func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing
 }
 
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		branchJSON string

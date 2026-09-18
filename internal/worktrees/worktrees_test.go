@@ -562,7 +562,6 @@ func TestCreateDoesNotFollowSubstitutedWBHomeBeforeInitialOpen(t *testing.T) {
 }
 
 func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(*testing.T, *gitFixture, string)
@@ -2047,7 +2046,6 @@ func TestGuardAdmitsCommitInAnAdoptedWorktree(t *testing.T) {
 }
 
 func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
-	t.Parallel()
 	for _, mode := range []struct {
 		name  string
 		args  []string

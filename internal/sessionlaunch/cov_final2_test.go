@@ -131,7 +131,6 @@ func TestSlCovValidateAbandonmentReadyDigestAbsenceAndFenceError(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRemainingGates(t *testing.T) {
-	t.Parallel()
 	t.Run("store root conflict", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		modified := fx.plan

@@ -115,7 +115,6 @@ exit 1
 // The unpushed-work probe is built from several git calls; each failure must be
 // surfaced rather than silently reported as "no unpushed work".
 func TestLgCovUnpushedWorkSurfacesGitFailures(t *testing.T) {
-	t.Parallel()
 	headRef := "refs/heads/main\t0123456789012345678901234567890123456789\t\t"
 
 	t.Run("remote ref probe fails", func(t *testing.T) {
@@ -254,7 +253,6 @@ exit 0
 // Status composes git status, git stash list, and the unpushed probe; a failure
 // in any of them must be returned, not flattened into an empty-looking status.
 func TestLgCovStatusSurfacesGitFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("status fails", func(t *testing.T) {
 		lgCovGitIdentity(t)
 		if _, err := Status(t.TempDir()); err == nil {
@@ -293,7 +291,6 @@ exit 0
 // AddCommit returns an error when it cannot tell whether anything was staged,
 // and when the commit itself fails, instead of reporting an idempotent no-op.
 func TestLgCovAddCommitSurfacesGitFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("staged diff fails", func(t *testing.T) {
 		lgCovFakeGit(t, `
 case "$1" in

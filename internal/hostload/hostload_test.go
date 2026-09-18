@@ -144,7 +144,6 @@ func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
 // fixed floor would refuse genuine `wb run`/`wb worktree merge` work inside
 // CI workflows, not just protect a shared developer machine.
 func TestResolveDisablesInCI(t *testing.T) {
-	t.Parallel()
 	for _, env := range []string{"CI", "GITHUB_ACTIONS"} {
 		t.Run(env, func(t *testing.T) {
 			clearAdmissionEnv(t)

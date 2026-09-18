@@ -24,7 +24,6 @@ func tailCovRegularFile(t *testing.T, dir, name string) string {
 // directory. The root now comes from the explicit argument first, so each case
 // passes an empty root to exercise the environment/default path it names.
 func TestTailCovResolutionSurfacesUnresolvableHomePaths(t *testing.T) {
-	t.Parallel()
 	t.Run("no user home", func(t *testing.T) {
 		t.Setenv(EnvOverride, "")
 		t.Setenv("HOME", "")

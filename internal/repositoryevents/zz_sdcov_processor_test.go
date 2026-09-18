@@ -277,7 +277,6 @@ func TestSdCovProcessorSyncsAbsentCheckoutAndPropagatesFailure(t *testing.T) {
 }
 
 func TestSdCovProcessorDispatchesLifecycleEventsThroughBothSeams(t *testing.T) {
-	t.Parallel()
 	cloned := func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result {
 		return fleetsync.Result{Repo: discover.Repo{Path: "/projects/acme/app"}, Status: fleetsync.Cloned, HeadSHA: strings.Repeat("a", 40)}
 	}

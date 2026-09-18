@@ -96,7 +96,6 @@ func TestTailCovEvaluateCommandRecipePreviewsDryRun(t *testing.T) {
 }
 
 func TestTailCovEvaluateTemplateSectionFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("template cannot be read", func(t *testing.T) {
 		t.Parallel()
 		r := Recipe{Type: KindTemplateSection, Marker: "tailcov", Template: filepath.Join(t.TempDir(), "missing.md")}

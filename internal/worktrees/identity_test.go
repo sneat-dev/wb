@@ -36,7 +36,6 @@ func TestIdentityFromEnvIsUndeclaredWhenUnset(t *testing.T) {
 // A malformed PID must leave liveness unknown rather than fail the command it
 // was attached to, and must never be recorded as a real process.
 func TestIdentityFromEnvRejectsAMalformedPID(t *testing.T) {
-	t.Parallel()
 	for _, value := range []string{"not-a-number", "0", "-5", " "} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(EnvAgentPID, value)

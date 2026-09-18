@@ -218,7 +218,6 @@ func TestAgentDispatchRefusesLiveClaimNamedBesideWorktreeCreate(t *testing.T) {
 // not refuse: the same lane continuing its own work, an unclaimed
 // repository, a released claim, and a prompt naming no repository at all.
 func TestAgentDispatchLiveClaimFalsePositives(t *testing.T) {
-	t.Parallel()
 	t.Run("dispatch from inside the claimed worktree is the same lane continuing", func(t *testing.T) {
 		claim := newClaimFixture(t)
 		prompt := "Continue the fix in /Users/alex/projects/" + claim.Owner + "/" + claim.Repository + "."

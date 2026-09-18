@@ -216,7 +216,6 @@ func (orchCovIdleHandler) Apply(_ context.Context, worktree string, _ Repository
 }
 
 func TestOrchCovProcessRepositorySkipsEveryUnapplicableVerdict(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		assessment Assessment[string]
@@ -248,7 +247,6 @@ func TestOrchCovProcessRepositorySkipsEveryUnapplicableVerdict(t *testing.T) {
 }
 
 func TestOrchCovProcessRepositoryFailsTheStageThatFailed(t *testing.T) {
-	t.Parallel()
 	t.Run("inspect", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		_, err := Run(context.Background(), []Repository{fixture.repository},
@@ -351,7 +349,6 @@ func TestOrchCovProcessRepositoryPushesAVerifiedCommit(t *testing.T) {
 }
 
 func TestOrchCovOpenPullRequestReusesOrCreatesExactlyOne(t *testing.T) {
-	t.Parallel()
 	const script = `#!/bin/sh
 S="$ORCHCOV_GH_STATE"
 if [ "$1" = pr ] && [ "$2" = list ]; then cat "$S/list"; exit 0; fi

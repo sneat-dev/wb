@@ -367,7 +367,6 @@ func lgCovStagedPackage(t *testing.T, consumer, packageName, manifest string) st
 }
 
 func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	node := ExecNode{}
 
@@ -515,7 +514,6 @@ func TestLgCovSamePathAndRemoveSiblingEdges(t *testing.T) {
 // verifyRuntimeGraph's failure surface, driven entirely through a fake node so
 // every branch is deterministic.
 func TestLgCovVerifyRuntimeGraphFailurePaths(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("node absent", func(t *testing.T) {

@@ -281,7 +281,6 @@ func TestReceiveSessionBundleDoesNotReclaimInterruptedLockUnderSameHandoffFenceF
 }
 
 func TestReceiveSessionBundleRecoversExactInterruptedReceivePublication(t *testing.T) {
-	t.Parallel()
 	for _, state := range []string{"staged", "published_before_repair", "published_after_repair"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newSessionReceiveFixture(t)
@@ -376,7 +375,6 @@ func TestReceiveSessionBundleNeverRecoversPinBranchFromArbitraryPath(t *testing.
 }
 
 func TestReceiveSessionBundleRefusesUnsafeInterruptedReceiveStage(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name      string
 		stageName string
@@ -481,7 +479,6 @@ func TestReceiveSessionBundleRefusesMovedBranchBeforeTargetWorktree(t *testing.T
 }
 
 func TestReceiveSessionBundleRefusesInvalidBundleEvidenceBeforeTargetWorktree(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name    string
 		mutate  func(t *testing.T, fixture *sessionReceiveFixture)
@@ -553,7 +550,6 @@ func TestReceiveSessionBundleRefusesInvalidBundleEvidenceBeforeTargetWorktree(t 
 }
 
 func TestReceiveSessionBundleRefusesUnsafeReuse(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, fixture *sessionReceiveFixture, worktree string)

@@ -65,7 +65,6 @@ func TestOrchCovMergePullRequestReturnsTheLandedCommit(t *testing.T) {
 }
 
 func TestOrchCovMergePullRequestClassifiesEveryRefusal(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		exit     string
@@ -127,7 +126,6 @@ exit "$(cat "$S/exit")"
 `
 
 func TestOrchCovCommitIsOnBranchReadsTheComparisonStatus(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		status string
@@ -201,7 +199,6 @@ func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
 }
 
 func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
-	t.Parallel()
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 

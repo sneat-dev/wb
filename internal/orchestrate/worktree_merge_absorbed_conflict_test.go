@@ -116,7 +116,6 @@ func TestAcknowledgeAbsorbedConflictProvesAncestorAndContentAbsorbedSourcesAndFr
 }
 
 func TestAcknowledgeAbsorbedConflictRefusals(t *testing.T) {
-	t.Parallel()
 	t.Run("source worktree still exists", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		source := createMergeSourceOnBase(t, fixture, "task-a", "feature/a", "main", "a.txt", "a\n")
@@ -443,7 +442,6 @@ func TestAcknowledgeAbsorbedConflictDerivedPathExcusesGeneratedIndex(t *testing.
 }
 
 func TestAcknowledgeAbsorbedConflictDerivedPathRefusals(t *testing.T) {
-	t.Parallel()
 	t.Run("non-allowlisted shape refuses", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		source := createMergeSourceOnBase(t, fixture, "task-derived-bad-shape", "feature/derived-bad-shape", "main", "docs/README.md", "index-v1\n")

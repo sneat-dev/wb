@@ -215,7 +215,6 @@ func TestStartRetainsImmediateHarnessExitStatusAndDiagnostic(t *testing.T) {
 }
 
 func TestPreflightLocalDistinguishesMissingTmuxAndHarness(t *testing.T) {
-	t.Parallel()
 	t.Run("missing tmux", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		err := PreflightLocal(RuntimeCodex)

@@ -10,7 +10,6 @@ import (
 // comparison the package cannot make fails loudly instead of reporting "no
 // lowered floors".
 func TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed(t *testing.T) {
-	t.Parallel()
 	t.Run("the root is not a git repository", func(t *testing.T) {
 		root := t.TempDir()
 		// Keep discovery from escaping into a repository that happens to

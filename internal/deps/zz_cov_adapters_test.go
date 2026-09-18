@@ -714,7 +714,6 @@ func TestDepsCovAdaptersResolveGitHubRefShortCircuitsAndDelegates(t *testing.T) 
 }
 
 func TestDepsCovAdaptersResolveGitHubRefQueriesTagsWithFakeGit(t *testing.T) {
-	t.Parallel()
 	direct := strings.Repeat("1", 40)
 	dereferenced := strings.Repeat("2", 40)
 	for _, testCase := range []struct {
@@ -1278,7 +1277,6 @@ func TestDepsCovAdaptersNpmLockfileDirectoriesClassifiesLockfiles(t *testing.T) 
 }
 
 func TestDepsCovAdaptersRegenerateAffectedLockfilesHandlesEachKind(t *testing.T) {
-	t.Parallel()
 	target := depsCovNpmTarget("@sneat/core", "1.3.0")
 
 	t.Run("no changed files", func(t *testing.T) {

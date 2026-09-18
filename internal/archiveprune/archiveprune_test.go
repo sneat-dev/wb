@@ -294,7 +294,6 @@ func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) 
 }
 
 func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(t *testing.T, clone string)

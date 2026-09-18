@@ -575,7 +575,6 @@ exit 0
 // declared require version with an explicit reason when go is unavailable or
 // returns nothing.
 func TestDepsCovDriftSelectedGoModuleVersionFallbacks(t *testing.T) {
-	t.Parallel()
 	at := driftObservedAt()
 	t.Run("go list wins", func(t *testing.T) {
 		depsCovWriteFakeExecutable(t, "go", "printf '%s\\n' 'v1.2.3'\nexit 0\n")
@@ -610,7 +609,6 @@ func TestDepsCovDriftSelectedGoModuleVersionFallbacks(t *testing.T) {
 // records the proxy version on success and an explicit reason when the proxy
 // lookup fails.
 func TestDepsCovDriftObserveLatestGoVersion(t *testing.T) {
-	t.Parallel()
 	at := driftObservedAt()
 	t.Run("valid version", func(t *testing.T) {
 		depsCovWriteFakeExecutable(t, "go", "printf '%s\\n' '{\"Version\":\"v1.2.3\"}'\nexit 0\n")

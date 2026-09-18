@@ -49,7 +49,6 @@ func TestLgCovHasLiveLinkReportsAnUnreadableWorkspace(t *testing.T) {
 }
 
 func TestLgCovGuardGitProbeFailures(t *testing.T) {
-	t.Parallel()
 	t.Run("git cannot be run at all", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovRestrictPath(t, t.TempDir())
@@ -88,7 +87,6 @@ esac`)
 }
 
 func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
-	t.Parallel()
 	t.Run("a module directory that does not resolve", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./missing")
 		lgCovGitScript(t, "exit 0")

@@ -18,7 +18,6 @@ import (
 // stream's go.work still named it). The guard fires for both link
 // mechanisms `wb deps propagate local` records.
 func TestCleanupRefusesAWorktreeStillLinkedAsASource(t *testing.T) {
-	t.Parallel()
 	for _, mechanism := range []streams.Mechanism{streams.MechanismPnpmLink, streams.MechanismGoWork} {
 		mechanism := mechanism
 		t.Run(string(mechanism), func(t *testing.T) {

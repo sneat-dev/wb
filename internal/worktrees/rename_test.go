@@ -13,7 +13,6 @@ import (
 )
 
 func TestSecureRenameHelperRejectsSubstitutedDescriptorsAndGitMetadata(t *testing.T) {
-	t.Parallel()
 	t.Run("linked .git redirect", func(t *testing.T) {
 		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
 		defer canonical.close()
@@ -670,7 +669,6 @@ func TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse(t *testing.T)
 }
 
 func TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		swap   func(t *testing.T, oldPath, newPath string)
@@ -752,7 +750,6 @@ func TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution(t *testing.T) 
 }
 
 func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		configure func(*RenameOptions)

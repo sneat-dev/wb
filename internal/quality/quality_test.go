@@ -338,7 +338,6 @@ func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testi
 }
 
 func TestVerifySpecScoreConfiguration(t *testing.T) {
-	t.Parallel()
 	t.Run("configured missing root fails closed", func(t *testing.T) {
 		t.Parallel()
 		repository := t.TempDir()
@@ -474,7 +473,6 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 // not exactly an external store must run specscore spec lint (fail closed);
 // a stub specscore records whether it ran.
 func TestVerifyExternalPlansStore(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper and symlinks are POSIX-only")
 	}

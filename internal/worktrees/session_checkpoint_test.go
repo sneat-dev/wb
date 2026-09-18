@@ -224,7 +224,6 @@ func TestCreateSessionCheckpointReturnsAdmittedIdentityAfterPostAdmissionFailure
 }
 
 func TestCreateSessionCheckpointRefusesBeforeAnyMutation(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name    string
 		prepare func(t *testing.T, fixture *gitFixture, worktree string, options *SessionCheckpointOptions)

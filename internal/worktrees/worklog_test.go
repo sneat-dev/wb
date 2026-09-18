@@ -921,7 +921,6 @@ func TestCreateResumePreservesIndependentActiveClaimsAcrossRepositories(t *testi
 }
 
 func TestCreateRollsBackPublishedGitAfterWorkLogStageFailure(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name           string
 		configure      func(*CreateOptions)

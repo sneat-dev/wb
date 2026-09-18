@@ -13,7 +13,6 @@ import (
 // be able to see which layout each row uses, and asking for the inventory must
 // not move any of them.
 func TestInventoryReportsEachCheckoutsPlacement(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	for _, testCase := range []struct {
 		name      string

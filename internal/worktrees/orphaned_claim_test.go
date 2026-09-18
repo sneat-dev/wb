@@ -154,7 +154,6 @@ func TestAbortOrphanedClaimRechecksImmutableClaimUnderLock(t *testing.T) {
 }
 
 func TestAbortOrphanedClaimRefusesEveryNonAbsentPredicate(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name  string
 		setup func(*testing.T, *gitFixture, CreateResult, workLogClaim)

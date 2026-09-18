@@ -1110,7 +1110,6 @@ func TestBashAllowsAnInterpreterWithNoDashC(t *testing.T) {
 // hooks_agent.go's doc comment promised. The ambient case below pins that it
 // is no longer honoured at all.
 func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
-	t.Parallel()
 	repositories := newFixture(t)
 	t.Run("no override still refuses", func(t *testing.T) {
 		t.Parallel()

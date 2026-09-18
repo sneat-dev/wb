@@ -80,7 +80,6 @@ func orchCovUnrelatedSHA(t *testing.T) string {
 // repositoryPullRequestMergeMethod: the PR-land engine (mergePullRequest, via
 // mergeOrAdoptAutoMerge) is exercised by pr_land_test.go / pr_land_coverage_test.go.
 func TestOrchCovRepositoryPullRequestMergeMethodPicksTheAllowedMethod(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		settings string
@@ -104,7 +103,6 @@ func TestOrchCovRepositoryPullRequestMergeMethodPicksTheAllowedMethod(t *testing
 }
 
 func TestOrchCovRepositoryPullRequestMergeMethodRefusesEveryUnusableRoute(t *testing.T) {
-	t.Parallel()
 	t.Run("no supported method", func(t *testing.T) {
 		orchCovMergeGH(t, `{"allow_merge_commit":false,"allow_squash_merge":false,"allow_rebase_merge":false}`, `{}`)
 		_, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")

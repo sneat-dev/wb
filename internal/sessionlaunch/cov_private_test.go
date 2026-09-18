@@ -86,7 +86,6 @@ func TestSlCovRunPrivateLauncherRejectsInvalidInvocation(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsChangedPlanAndRequest(t *testing.T) {
-	t.Parallel()
 	t.Run("missing plan", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		if err := os.Remove(filepath.Join(slCovStateDir(fx.store.Root), "plan.json")); err != nil {
@@ -151,7 +150,6 @@ func TestSlCovRunPrivateLauncherRejectsChangedPlanAndRequest(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsExistingCustody(t *testing.T) {
-	t.Parallel()
 	t.Run("abandoned", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
@@ -230,7 +228,6 @@ func TestSlCovRunPrivateLauncherRejectsExistingCustody(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsExecutableAndSessionConflicts(t *testing.T) {
-	t.Parallel()
 	t.Run("running WB mismatch", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		other := slCovExecutable(t, t.TempDir(), "wb")
@@ -288,7 +285,6 @@ func TestSlCovRunPrivateLauncherRejectsExecutableAndSessionConflicts(t *testing.
 }
 
 func TestSlCovRunPrivateLauncherSurfacesFailureAndReleaseConflicts(t *testing.T) {
-	t.Parallel()
 	t.Run("ready publication failure", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		slCovReadOnly(t, filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), readyDirectoryName))

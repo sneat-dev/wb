@@ -514,7 +514,6 @@ func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
 }
 
 func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		branchSummary string

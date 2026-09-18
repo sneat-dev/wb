@@ -114,7 +114,6 @@ func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) 
 }
 
 func TestOrchCovPrepareWorktreeRefusesAnExistingWorktreeOrBranch(t *testing.T) {
-	t.Parallel()
 	t.Run("existing worktree", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		options := fixture.options()

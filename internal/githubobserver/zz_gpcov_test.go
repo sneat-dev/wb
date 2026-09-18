@@ -1152,7 +1152,6 @@ func TestGpCovIsAPIOrPRViewCommandClassifiesArguments(t *testing.T) {
 // stateDir must resolve, in order, an explicit setting, XDG_STATE_HOME, the
 // user's home directory, and finally a relative fallback.
 func TestGpCovStateDirResolutionOrder(t *testing.T) {
-	t.Parallel()
 	if got := (&Observer{StateDir: "/tmp/explicit"}).stateDir(); got != "/tmp/explicit" {
 		t.Fatalf("stateDir() = %q, want the explicit setting", got)
 	}

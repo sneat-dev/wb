@@ -331,7 +331,6 @@ func TestOrchCovPullRequestHeadChecksRefusesAnUnsatisfiedRequiredCheck(t *testin
 }
 
 func TestOrchCovPullRequestHeadChecksWeighsAnEmptyObservationAgainstTheRequiredSet(t *testing.T) {
-	t.Parallel()
 	// A head CI has not run on yet is reported as unproven when the target
 	// requires something, and as green when the target requires nothing: the
 	// requirement is what an empty observation is measured against.
@@ -401,7 +400,6 @@ func TestOrchCovActiveBranchRulesReportsAReadFailure(t *testing.T) {
 }
 
 func TestOrchCovPullRequestHeadChecksReportsEveryUnreadableObservation(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		slot    string

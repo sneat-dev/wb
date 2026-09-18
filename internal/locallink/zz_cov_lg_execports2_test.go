@@ -373,7 +373,6 @@ func TestLgCovClearStagedLinkAndSupersededLink(t *testing.T) {
 }
 
 func TestLgCovRunBoundedSuccessTimeoutAndFailure(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 
