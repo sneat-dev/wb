@@ -64,6 +64,53 @@ watch" design would introduce:
 A durable-watch programme is therefore mostly **wiring existing parts**, not new
 architecture. Two consequences follow, one encouraging and one constraining.
 
+### Measured: the existing wait verb is real, and agents route around it
+
+`wb ci wait` is not missing. It is unused relative to the hand-rolled
+alternative. Counted across 857 Claude session transcripts on this machine:
+
+| What agents actually ran | Occurrences | Distinct sessions |
+|---|---|---|
+| `wb ci wait` | 366 | 46 |
+| Hand-rolled `gh` polling loops | 400 | 50 |
+| `gh run watch` | 391 | — |
+| Any `sleep N; done` loop | 1384 | — |
+
+Ad-hoc waiting outnumbers the WB verb by more than two to one and reaches more
+sessions. (These are text matches in transcripts, so an occurrence includes a
+command quoted in a plan rather than executed. Both sides are counted the same
+way, so the ratio is the signal, not the absolute counts.)
+
+The cause is in the signature, not in agent discipline:
+
+```text
+--target  required target branch containing the exact direct-push head, or the PR base
+--head    required exact 40- or 64-hex Git head SHA
+--pr      optional pull request number or URL to corroborate before waiting
+```
+
+Waiting on a pull request requires already knowing the repository, the base
+branch and the **exact head SHA**; `--pr` only corroborates and cannot stand
+alone. So "tell me when #581 is done" costs one or two `gh` calls before
+`wb ci wait` may be called at all, whereas `gh pr view 581 --json
+mergeStateStatus` in a loop costs none. Agents took the cheaper path, and were
+right to.
+
+Two contributing factors compound it:
+
+- The nine-minute cap exists to keep "a single agent-tool call under the common
+  ten-minute harness ceiling", so the command cannot be fire-and-forget; it
+  returns pending and must be re-invoked.
+- It lives under `wb ci`, whose skill is described as auditing CI/CD *policy*.
+  Waiting does not sound like it belongs there.
+
+This is the decisive design input. A waiting verb an agent will actually use
+must accept the reference the agent already has — `owner/repo#number` — and
+resolve target and head itself. And the nine-minute ceiling is precisely the
+gap a background command fills: a harness background job is not a foreground
+tool call, so it is not bound by that ceiling. The new verb therefore extends
+the existing stance rather than overriding it.
+
 ### Constraint: the App event contract cannot carry rich context
 
 `api/githubapp/repositoryevent` states its exclusion list as a requirement, not
@@ -182,6 +229,22 @@ coalescing the prompt asks for, and it needs no event bus.
 - No enrichment of the shared App event contract with repository content.
 - No autonomous merge that the agent did not pre-authorise with review evidence.
 - `wb wait` is not merge evidence; `wb ci wait` remains that.
+
+### Already close: `wb pr land` waits and then lands
+
+`wb pr land --timeout` already "uses bounded resumable CI observation slices
+internally" and lands when checks pass, so the motivating scenario is nearer to
+solved than it looked. Its default budget is eight minutes and each internal
+slice is capped at nine, but the total budget is the caller's.
+
+That narrows what is genuinely missing to four things:
+
+1. **Observation without action.** `wb pr land` lands. There is no way to ask
+   "tell me when this changes" without authorising a merge.
+2. **More than one target per process.** One landing call watches one PR.
+3. **Conditions other than checks.** Review submitted, changes requested, a new
+   comment, a conflict appearing — none are waitable today.
+4. **A reference an agent already has.** See the measurement above.
 
 ## Open Questions
 
