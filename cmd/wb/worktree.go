@@ -2695,9 +2695,13 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 			}
 		}
 		age := worktreeAgeLabel(result)
+		placement := result.Placement
+		if placement == "" {
+			placement = "unknown"
+		}
 		line := fmt.Sprintf(
-			"%s  %s  %s  %s  owner=%s  age=%s  %s",
-			result.Task, result.Repository, branch, state, result.Owner, age, pr,
+			"%s  %s  %s  %s  placement=%s  owner=%s  age=%s  %s",
+			result.Task, result.Repository, branch, state, placement, result.Owner, age, pr,
 		)
 		if result.TerminalResult != "" {
 			report := result.ReportPath

@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Executing
+status: Blocked
 ---
 # Plan: Projects Root Layout: implementation and migration
 
-**Status:** Executing
+**Status:** Blocked
 **Source Feature:** projects-root-layout
 **Date:** 2026-09-16
 **Owner:** trakhimenok
@@ -151,7 +151,7 @@ behaviour is unchanged.
 **Id:** task-7
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable
 **Depends-On:** task-1, task-2, task-3, task-6
-**Status:** planning
+**Status:** complete
 
 Revise `authoritative-write-home`, `local-default-and-user-shared-root`,
 `migration-layout-compatibility` and `legacy-mixed-inventory` in
@@ -168,7 +168,13 @@ each checkout's placement alongside its task identity.
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
 **Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7
-**Status:** planning
+**Status:** blocked
+
+**Blocked by:** the operator deferred this one-off machine migration until the
+active agent sessions that depend on the current checkout paths have been shut
+down. Running it now would move canonical clones and task checkouts out from
+under live sessions. Tasks 1-7 and 9 land the behaviour and the dry-runnable
+plan; this task is the only one that touches this machine.
 
 One-off migration of the operator's machine, since there are no external
 operators to keep compatible. Capture a manifest of every canonical clone and
@@ -187,7 +193,7 @@ migration must be dry-runnable.
 **Id:** task-9
 **Verifies:** projects-root-layout#ac:one-root-no-second-knob, projects-root-layout#ac:clone-path-inverts-to-url
 **Depends-On:** task-1, task-2, task-3
-**Status:** planning
+**Status:** complete
 
 Document the root schema, the two store modes and the writable-path contract,
 including the fact that the root is the sandbox workspace root expected by the

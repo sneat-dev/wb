@@ -336,6 +336,13 @@ type ListResult struct {
 	// Local marks WB's default <canonical>/.worktrees/<task> placement.
 	// It is managed by WB (unlike External) but uses WB_HOME for the task lock.
 	Local bool `json:"local,omitempty"`
+	// Placement names the layout this checkout uses, so an inventory row tells
+	// an operator which layout it came from alongside its task identity. It is
+	// one of repository-local, external, legacy, or central (which includes the
+	// configured central store root, since that selects the same layout).
+	// Consumers must treat an empty value as unknown: a record reconstructed
+	// from a receipt written before this field existed carries none.
+	Placement string `json:"placement,omitempty"`
 	// Detached marks a checkout with no current branch. Branch is empty for
 	// one, so every branch-shaped operation must skip it rather than act on an
 	// empty ref. It is populated only when ListOptions.IncludeDetached is set.
@@ -3476,6 +3483,26 @@ func (policy inspectPolicy) clock() time.Time {
 	return time.Now()
 }
 
+// listResultPlacement names the layout a checkout was discovered in. External
+// wins over everything else: an adopted checkout is registered under WB's task
+// directory but its real, unmoved path may sit anywhere. Repository-local is
+// the canonical clone's own .worktrees root, legacy is the retired $HOME/.wb
+// worktrees root, and everything else — the projects-root store, an overridden
+// central store root, and the logical task namespace inside the state
+// directory — is the central layout.
+func listResultPlacement(layout wbhome.Layout, external bool) string {
+	switch {
+	case external:
+		return "external"
+	case layout.Local:
+		return "repository-local"
+	case layout.Legacy:
+		return "legacy"
+	default:
+		return "central"
+	}
+}
+
 func inspectLifecycleWorktree(
 	ctx context.Context,
 	projectsRoot string,
@@ -3583,6 +3610,7 @@ func inspectLifecycleWorktree(
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 		External: external, Local: layout.Local, Detached: detached,
+		Placement: listResultPlacement(layout, external),
 	}
 	if target := mergeReceiptCleanupTargetOverride(ctx, policy.mergeReceiptProofs, result); target != "" && target != result.Base {
 		result.RecordedBase = result.Base

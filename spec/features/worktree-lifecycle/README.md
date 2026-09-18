@@ -55,46 +55,62 @@ the remote only when `--github` is explicit.
 
 #### REQ: authoritative-write-home
 
-New Work Logs, task locks, receipts, and cleanup reports MUST use the resolver's
-write home: `~/.wb` by default, or the exact directory named by `WB_HOME` when
-that variable is set. A populated `<projects-root>/.wb` MUST NOT silently
-become the write home. `WB_HOME` MUST remain authoritative for commands later
-started by a managed hook installed from that environment, but MUST NOT choose
-the default physical checkout location.
+New Work Logs, task locks, receipts, and cleanup reports MUST use the write home
+the projects-root resolver derives — `<root>/.wb`, where `<root>` is
+`--projects-root`, else `WB_PROJECTS_ROOT`, else `~/projects`. See
+[`projects-root-layout#req:single-root-derivation`](../projects-root-layout/README.md).
+`WB_HOME` MUST NOT select the state directory; when it is set to a non-empty
+value WB MUST report the ignored variable, its value, and the state directory in
+use, then continue. A populated `<projects-root>/.wb` MUST NOT silently become
+the write home. The write home MUST NOT choose the physical checkout location:
+placement is governed by `local-default-and-user-shared-root` below.
 
 #### REQ: local-default-and-user-shared-root
 
-Without a user `worktrees.root` setting, creation MUST place a new checkout at
-`<canonical-repository>/.worktrees/<task>`. An explicit root may come only
-from the user's `$XDG_CONFIG_HOME/wb/worktrees.yaml` or
-`~/.config/wb/worktrees.yaml`; after `~` expansion it MUST be absolute and
-places a checkout at `<root>/<task>/<owner>/<repository>`. Repository policy
-MUST NOT set or override the root. The creator needs permissions for both the
-private `WB_HOME` state and the selected physical checkout directory.
+Placement MUST follow
+[`projects-root-layout#req:central-store-default`](../projects-root-layout/README.md).
+Without a user `worktrees.store` setting the central store `<root>/.worktrees` is
+the default and creation places a new checkout at
+`<root>/.worktrees/<task>/<host>/<org>/<repository>`; selecting the
+`repository-local` mode places it at `<canonical-repository>/.worktrees/<task>`.
+An explicit central store root may come only from the user's
+`$XDG_CONFIG_HOME/wb/worktrees.yaml` or `~/.config/wb/worktrees.yaml`; after `~`
+expansion it MUST be absolute. Repository policy MUST NOT set or override either
+the mode or the store root. The creator needs permission for the private state
+directory and the selected physical checkout directory, and MUST fail with a
+diagnostic naming the unwritable path, its role, and at least one remedy rather
+than a bare permission error — see
+[`projects-root-layout#req:actionable-permission-error`](../projects-root-layout/README.md).
 
 #### REQ: migration-layout-compatibility
 
-Guard, inventory, and cleanup MUST continue to validate and operate on existing
-local, configured-shared, and historic `<projects-root>/.wb/worktrees` linked
-worktrees governed by the same `WB_HOME`, using their actual placement.
-Changing `worktrees.root` MUST NOT relocate them or stop their discovery. A
-managed hook that pins the normal default home MUST preserve that compatibility
-without treating a user-selected `WB_HOME` as non-authoritative.
+Guard, inventory, cleanup, and relocate MUST continue to validate and operate on
+existing linked worktrees at every previously used placement, using their actual
+on-disk location: the historic `~/.wb/worktrees/...` tasks, the repository-local
+`<canonical-repository>/.worktrees/<task>`, and a configured absolute shared
+root. Changing `worktrees.root` or `worktrees.store` MUST NOT relocate a
+checkout, stop its discovery, or re-select it for a task that already has one.
+`WB_HOME` MUST NOT be consulted to decide which placement is authoritative: the
+checkout's recorded claim is.
 
 #### REQ: legacy-mixed-inventory
 
-Inventory MUST recognize default local `<canonical-repository>/.worktrees/<task>`
-entries, configured shared `<task>/<owner>/<repository>` entries, and historic
-direct-repository `<task>/<repository>` entries. Once a Git root is recognized,
-traversal MUST stop below it. Malformed candidates MUST yield deterministic
-diagnostics without hiding valid sibling repositories whenever the command's
-result API permits.
+Inventory MUST recognize repository-local
+`<canonical-repository>/.worktrees/<task>` entries, central-store
+`<task>/<host>/<org>/<repository>` entries, the historic
+`~/.wb/worktrees/<task>/...` entries, and adopted external checkouts. The host
+level is the canonical clone's literal forge hostname, or its legacy
+`<task>/<org>/<repository>` suffix when its origin names no forge. Each result
+MUST report its placement alongside its task identity, so an operator can see
+which layout a checkout uses. Once a Git root is recognized, traversal MUST stop
+below it. Malformed candidates MUST yield deterministic diagnostics without
+hiding valid sibling repositories whenever the command's result API permits.
 
 #### REQ: validated-identity
 
-Each result MUST be a real linked worktree at the expected task, owner, and
-repository path for either supported layout, backed by the expected canonical
-clone. Results MUST include task, repository, branch, head, cleanliness, lock
+Each result MUST be a real linked worktree at the expected task, host, owner,
+and repository path for its recognized placement, backed by the expected
+canonical clone. Results MUST include task, repository, branch, head, cleanliness, lock
 state, last commit time, and local merge state.
 
 ### Guard and hooks
