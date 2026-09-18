@@ -85,6 +85,20 @@ record and the park output. Keep `--wb-session-id` targeting an already
 registered session, refuse to overwrite a parked or resumed record at the same
 PID, and leave `wb session move` and every fail-closed member check untouched.
 
+### Task 4: Resume resolves members by identity
+
+**Id:** task-4
+**Verifies:** park-and-resume-agent-sessions#ac:resume-survives-a-layout-migration
+**Depends-On:** —
+**Status:** queued
+
+Replace the exact absolute-path comparison in `acquire`
+(`internal/worktrees/session_park_local.go`) with resolution by identity:
+resolve the canonical clone from the member's repository through `repopath`,
+resolve a checkout whose recorded path no longer exists through the relocation
+receipts for its Work Log reference, then verify repository, branch and Work
+Log reference. Implemented together with projects-root-layout task 13.
+
 ## Open Questions
 
 None at this time.

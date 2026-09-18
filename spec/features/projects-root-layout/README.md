@@ -510,6 +510,18 @@ reads the current resolved home, a limitation that predates this AC and is
 out of scope here. `t-one`'s claim resolution after migration is proved by
 task-scoped lookup across every resolved home instead.
 
+### AC: migrate-moves-clones-referenced-by-parked-sessions
+
+**Requirements:** projects-root-layout#req:clone-migration-refusals
+
+**Given** a legacy clone that a parked session names through one member
+worktree in a legacy home and one inside the clone, with no live claim, no
+process and no Git operation in progress
+**When** `wb layout migrate --apply` runs
+**Then** the clone moves, a relocation receipt is recorded for the in-clone
+member under its Work Log reference, and `wb session resume` of that session
+accepts both members at their new paths.
+
 ### AC: migrate-is-reversible
 
 **Requirements:** projects-root-layout#req:clone-migration-manifest-and-undo

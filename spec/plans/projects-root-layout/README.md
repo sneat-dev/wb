@@ -255,7 +255,7 @@ relocated checkout's `.worktree.md` after the relocation: the vm1 test on
 ### Task 13: Parked sessions resolve members by identity; migrate stops refusing them
 
 **Id:** task-13
-**Verifies:** park-and-resume-agent-sessions#ac:resume-survives-a-layout-migration
+**Verifies:** projects-root-layout#ac:migrate-moves-clones-referenced-by-parked-sessions
 **Depends-On:** task-12
 **Status:** queued
 
