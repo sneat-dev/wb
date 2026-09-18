@@ -428,6 +428,30 @@ Nothing in WB records that a wait is outstanding. `wb session list` reports
 as one idle because it gave up. The only recourse available to a watching human
 is to interrupt, which destroys the quiet the feature exists to create.
 
+#### What the harness does and does not show
+
+Verified against Claude Code's current behaviour, because the answer decides how
+much WB has to carry:
+
+| Surface | Exists | Limit |
+|---|---|---|
+| `Ctrl+B` | yes — interactive background-task view | in tmux the first press is swallowed; press twice |
+| `/tasks` | yes — lists background tasks and subagents | must be typed; nothing prompts it |
+| Persistent indicator | **no** | a session with live waiters looks identical to an idle one |
+| Completion | terminal notification | the session does not visibly re-engage on its own |
+| Custom `statusLine` | **cannot close this** | its payload carries no background-task state, and it refreshes only on events — during an idle wait nothing fires, so any "waiting" text goes stale immediately |
+
+Two consequences for WB.
+
+First, the harness surfaces work only **inside** the session that owns the
+waiter. A second agent, a second terminal, or a human on another machine sees
+nothing. WB's records work from anywhere, which is why they are worth keeping
+even though `Ctrl+B` exists.
+
+Second, a session that *dies* holding a wait is invisible to the harness — there
+is no session left to press `Ctrl+B` in. A stale record is the only remaining
+evidence that something was supposed to be watched and no longer is.
+
 So delegated waiting has a precondition the first draft never stated:
 
 > **A delegated wait MUST be observable by someone other than the process doing
@@ -444,6 +468,14 @@ Note what this justifies and what it does not. It justifies durable *state about
 waits*. It does not resurrect the durable watch programme: WB still cannot wake
 an arbitrary session, and the App event contract still cannot carry pull-request
 state. Observability is a much cheaper requirement than delivery.
+
+### What this still does not do
+
+Both surfaces require someone to look. Nothing pushes an outstanding wait into
+view, and per the refresh model above a status line cannot sustain one during
+idle. Closing that needs a push channel outside WB — a notification hook, or a
+periodic prompt — and is deliberately out of scope here: WB's job is to make the
+state true and queryable, not to own the operator's attention.
 
 ## Open Questions
 
