@@ -934,8 +934,9 @@
                 "PR mode proves the candidate contains the exact current target and requires a nonempty strict required-status-check policy",
                 "PR mode never gates on current-target CI health and rejects target advance before merge",
                 "Requires an unchanged terminal reread; a checks-bearing terminal set confirms it on a shortened delay (15s default, tunable, at most one shortened reread per terminal episode with churn falling back to the poll cadence), and pending and failed observations exit 1 with pending including exact resume arguments",
-                "--workflow (repeatable, exact GitHub Actions workflow name) and --check (repeatable, exact name or a simple * glob) narrow the wait to a subset of the head's checks; required-check completeness is then evaluated only over the required checks the filter selects, and the JSON result and resume arguments carry the filter (sneat-dev/wb#627)",
-                "A filter that selects nothing once the head's observed checks are all terminal is pending with an explicit not-found reason, never a vacuous pass; never pass --workflow/--check to a landing route"
+                "--workflow (repeatable, exact GitHub Actions workflow name; workflows sharing a name are all selected) and --check (repeatable, exact name, or a glob where * matches any run of characters including / and everything else is literal -- not path.Match, no ?/[...]/escapes/regex) narrow the wait to a subset of the head's checks; required-check completeness is then evaluated only over the required checks the filter selects, and the JSON result and resume arguments carry the filter (sneat-dev/wb#627)",
+                "A not-yet-terminal Actions workflow run stays part of the wait as long as one of its jobs was selected, so a later needs:-gated job with no check-run yet cannot slip through unobserved",
+                "A filter that selects nothing keeps polling at the normal cadence until a match registers or the slice ends, pending with \"no check matching the filter has registered yet\" -- never a vacuous pass and never a claim the filter can never match"
               ]
             }
           ],
@@ -962,7 +963,10 @@
                 "future optional workflow",
                 "narrow the wait to a subset",
                 "never a vacuous pass",
-                "explicit not-found reason",
+                "both selected",
+                "including \"/\"",
+                "cannot slip through unobserved",
+                "no check matching the filter has registered yet",
                 "Never pass these flags"
               ]
             }

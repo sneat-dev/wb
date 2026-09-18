@@ -177,14 +177,17 @@ exit 30
 }
 
 // TestCIWaitFilterMatchingNothingDoesNotPass covers the required "a filter
-// matching nothing does not pass" behaviour and its explicit not-found
-// reason once the head's observed checks are all terminal.
+// matching nothing does not pass" behaviour (sneat-dev/wb#627 M2, red-team
+// finding on PR #629): it stays pending with a diagnostic that only says
+// nothing has registered YET — never that it "will not match later" or is
+// "not found", since WB cannot know that from an absence and a late
+// workflow_run-triggered workflow can still register within the slice.
 func TestCIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
 	writeCIWaitFilterExecutable(t, ciWaitTwoWorkflowTerminalScript)
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
 		"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead,
-		"--workflow", "Nonexistent Workflow", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+		"--workflow", "Nonexistent Workflow", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
 	}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
@@ -196,8 +199,17 @@ func TestCIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
 	if code == exitOK {
 		t.Fatalf("a filter matching nothing must exit nonzero: code %d output=%+v", code, output)
 	}
-	if !strings.Contains(output.Reason, "not found") {
-		t.Fatalf("filter-matches-nothing reason lacks an explicit not-found diagnostic: %q", output.Reason)
+	if output.Status != "pending" {
+		t.Fatalf("a filter matching nothing should stay pending, not fail: %+v", output)
+	}
+	if !strings.HasPrefix(output.Reason, "no check matching the filter has registered yet") {
+		t.Fatalf("filter-matches-nothing reason wording changed: %q", output.Reason)
+	}
+	if strings.Contains(output.Reason, "not found") || strings.Contains(output.Reason, "will not match later") {
+		t.Fatalf("filter-matches-nothing reason must never claim the filter can never match: %q", output.Reason)
+	}
+	if len(output.ResumeArgs) == 0 {
+		t.Fatalf("a filter matching nothing must resume, not dead-end: %+v", output)
 	}
 	if output.Filter == nil || output.Filter.MatchedChecks != 0 {
 		t.Fatalf("filter block should report zero matched checks: %+v", output.Filter)
@@ -205,7 +217,10 @@ func TestCIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
 }
 
 // TestCIWaitFilterFailureInsideSubsetFails covers the required "a failure
-// inside the subset fails" behaviour.
+// inside the subset fails" behaviour, and (sneat-dev/wb#627 M1, red-team
+// finding on PR #629) that the "filter" block is present on a FAILED result
+// too, not only a passed one — the filter block is set before the first
+// possible return, not filled in only on the terminal path.
 func TestCIWaitFilterFailureInsideSubsetFails(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
@@ -251,6 +266,26 @@ exit 30
 	}
 	if code != exitFindings || output.Status != "failed" {
 		t.Fatalf("failure inside the filtered subset should fail: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.Filter == nil {
+		t.Fatalf("a failed filtered result must still carry the filter block: %+v", output)
+	}
+	if len(output.Filter.Checks) != 1 || output.Filter.Checks[0] != "Release / *" {
+		t.Fatalf("filter block on a failed result has the wrong pattern: %+v", output.Filter)
+	}
+
+	// The text spelling of the same failed, filtered result must carry the
+	// "filter:" line too.
+	var textOut, textErr bytes.Buffer
+	textCode := run([]string{
+		"ci", "wait", "--repo", "acme/glob", "--target", "main", "--head", ciWaitHead,
+		"--check", "Release / *", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(),
+	}, &textOut, &textErr)
+	if textCode != exitFindings {
+		t.Fatalf("text-mode failed filtered wait = code %d stderr=%s", textCode, textErr.String())
+	}
+	if !strings.Contains(textOut.String(), "filter:") {
+		t.Fatalf("a failed filtered text result must still carry the filter: line: %s", textOut.String())
 	}
 }
 
@@ -352,6 +387,203 @@ func TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered(t *testing.T) {
 	}
 	if strings.Contains(unfilteredOut.String(), `"filter"`) {
 		t.Fatalf("unfiltered JSON output must never carry a filter block: %s", unfilteredOut.String())
+	}
+}
+
+// TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered covers B1
+// (red-team finding on PR #629): a --check filter must not pass while its
+// parent Actions workflow run is still in_progress, even though the one job
+// the filter selected has already passed — the classic `needs:` chain case,
+// where a later job (e.g. "Release / Finalize public release tag") has no
+// check-run of its own yet because it has not started. WB's only observable
+// evidence that the workflow run itself is still going is the synthetic
+// "workflow-run:<id>:<event>" entry, which this filter must keep even though
+// its own synthetic name never matches a --check pattern.
+func TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/release/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/release/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"Release / Build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":601}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  if [ "${WB_CI_WAIT_INVOCATION:-0}" -lt 2 ]; then
+    echo '{"total_count":1,"workflow_runs":[{"id":7001,"name":"Release","workflow_id":3,"event":"push","status":"in_progress","conclusion":"","check_suite_id":601,"created_at":"2026-01-01T00:00:00Z"}]}'
+  else
+    echo '{"total_count":1,"workflow_runs":[{"id":7001,"name":"Release","workflow_id":3,"event":"push","status":"completed","conclusion":"success","check_suite_id":601,"created_at":"2026-01-01T00:00:00Z"}]}'
+  fi
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Invocation 1: "Release / Build" has passed, but the parent "Release"
+	// workflow run is still in_progress (a later needs:-gated job has not
+	// registered). The filtered wait must stay pending, not pass.
+	t.Setenv("WB_CI_WAIT_INVOCATION", "1")
+	var pendingOut, pendingErr bytes.Buffer
+	pendingCode := run([]string{
+		"ci", "wait", "--repo", "acme/release", "--target", "main", "--head", ciWaitHead,
+		"--check", "Release / *", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &pendingOut, &pendingErr)
+	var pending ciWaitOutput
+	if err := json.Unmarshal(pendingOut.Bytes(), &pending); err != nil {
+		t.Fatalf("output=%q: %v", pendingOut.String(), err)
+	}
+	if pendingCode != exitFindings || pending.Status != "pending" {
+		t.Fatalf("filtered wait must stay pending while the parent workflow run is in_progress: code %d output=%+v stderr=%s", pendingCode, pending, pendingErr.String())
+	}
+	foundSyntheticEntry := false
+	for _, check := range pending.Checks {
+		if strings.HasPrefix(check.Name, "workflow-run:3:") {
+			foundSyntheticEntry = true
+			if check.Bucket == "pass" || check.Bucket == "skipping" || check.Bucket == "fail" || check.Bucket == "cancel" {
+				t.Fatalf("synthetic workflow-run entry should still be pending: %#v", check)
+			}
+		}
+	}
+	if !foundSyntheticEntry {
+		t.Fatalf("filter dropped the owning workflow's still-running synthetic entry: %#v", pending.Checks)
+	}
+
+	// Invocation 2: the "Release" workflow run has now completed. The
+	// filtered wait can pass.
+	t.Setenv("WB_CI_WAIT_INVOCATION", "2")
+	var passedOut, passedErr bytes.Buffer
+	passedCode := run([]string{
+		"ci", "wait", "--repo", "acme/release", "--target", "main", "--head", ciWaitHead,
+		"--check", "Release / *", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &passedOut, &passedErr)
+	var passed ciWaitOutput
+	if err := json.Unmarshal(passedOut.Bytes(), &passed); err != nil {
+		t.Fatalf("output=%q: %v", passedOut.String(), err)
+	}
+	if passedCode != exitOK || passed.Status != "passed" {
+		t.Fatalf("filtered wait should pass once the parent workflow run completes: code %d output=%+v stderr=%s", passedCode, passed, passedErr.String())
+	}
+	if len(passed.Checks) != 1 || passed.Checks[0].Name != "check-run:Release / Build" {
+		t.Fatalf("passed receipt should carry only the completed job, not the now-skipped synthetic entry: %#v", passed.Checks)
+	}
+}
+
+// TestCIWaitCheckGlobCrossesSlashes covers B2 (red-team finding on PR #629):
+// "*" must match any run of characters including "/", so "Release / *"
+// matches matrix job names like "Release / Smoke test published artifact
+// (linux/amd64)". It also proves an exact name containing "[" is accepted
+// and matched literally, not rejected as invalid glob syntax.
+func TestCIWaitCheckGlobCrossesSlashes(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/smoke/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/smoke/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":3,"check_runs":[{"id":1,"name":"Release / Smoke test published artifact (linux/amd64)","status":"completed","conclusion":"success"},{"id":2,"name":"Release / Smoke test Homebrew cask install (darwin/arm64)","status":"completed","conclusion":"success"},{"id":3,"name":"unrelated [tag]","status":"completed","conclusion":"success"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/smoke", "--target", "main", "--head", ciWaitHead,
+		"--check", "Release / *", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("glob crossing / must select both smoke-test checks: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.Checks) != 2 {
+		t.Fatalf("glob should select exactly the two Release / Smoke test checks, not the unrelated one: %#v", output.Checks)
+	}
+	for _, check := range output.Checks {
+		if !strings.Contains(check.Name, "Smoke test") {
+			t.Fatalf("glob selected an unexpected check: %#v", output.Checks)
+		}
+	}
+}
+
+// TestCIWaitCheckExactNameWithBracketIsLiteral covers B2's validation side:
+// an exact --check name containing "[" must be accepted (not rejected as
+// invalid glob syntax the way path.Match would) and matched literally.
+func TestCIWaitCheckExactNameWithBracketIsLiteral(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/bracket/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/bracket/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":1,"name":"deploy [staging]","status":"completed","conclusion":"success"},{"id":2,"name":"deploy [production]","status":"in_progress"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/bracket", "--target", "main", "--head", ciWaitHead,
+		"--check", "deploy [staging]", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("an exact --check name containing [ must be accepted and matched literally: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:deploy [staging]" {
+		t.Fatalf("[ should be a literal character, matching only the exact name: %#v", output.Checks)
 	}
 }
 

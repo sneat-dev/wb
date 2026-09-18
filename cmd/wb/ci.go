@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -58,17 +57,22 @@ func newCIWaitCmd() *cobra.Command {
 		Short: "Wait one bounded foreground slice for checks on an exact head",
 		Long: `Observe all GitHub checks for exactly one pull-request or direct-push head.
 
-Pass --workflow (repeatable, exact GitHub Actions workflow name) or --check
-(repeatable, exact check-run name/commit-status context or a simple "*"
-glob — no regex) to narrow the wait to a subset of the head's checks, for
+Pass --workflow (repeatable, exact GitHub Actions workflow name; two
+workflows that share a name are both selected) or --check (repeatable, exact
+check-run name/commit-status context, or a glob where "*" matches any run of
+characters, including "/" — everything else is literal; no "?", "[...]",
+escapes, or regex) to narrow the wait to a subset of the head's checks, for
 example when only a release or deploy job matters and other checks are still
 running. Required-check completeness is then evaluated only over the
 required checks the filter selects, and the JSON result carries a "filter"
-block naming what matched. A filter that selects nothing, once every
-observed check on the head is terminal, is never a vacuous pass: it is
-reported pending with an explicit not-found reason. Never pass these flags
-to a landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
-evaluates the full required set.
+block naming what matched. A filter also keeps any not-yet-terminal Actions
+workflow run open as long as one of its jobs was selected, so a later job
+gated by "needs:" cannot slip through unobserved. A filter that selects
+nothing is never a vacuous pass: it keeps observing, at the normal cadence,
+until a matching check registers or the slice ends — reported pending with
+"no check matching the filter has registered yet", never a claim that the
+filter can never match. Never pass these flags to a landing route (` + "`wb pr land`" + `
+or a worktree merge) — landing always evaluates the full required set.
 
 Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
@@ -140,8 +144,8 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
-	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name; never pass this to a landing route")
-	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name or a simple * glob (no regex); never pass this to a landing route")
+	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name (workflows sharing a name are all selected); never pass this to a landing route")
+	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name, or a glob where * matches any run of characters including / (everything else literal, no regex); never pass this to a landing route")
 	return command
 }
 
@@ -174,11 +178,16 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 		}
 	}
 	for _, pattern := range checkPatterns {
+		// Every "--check" value is syntactically valid: "*" matches any run
+		// of characters (including "/"), and every other rune — including
+		// "[", "]", "?" and "\" — is literal. There is no character-class,
+		// escape, or "?" syntax to reject, so an exact name containing "["
+		// or "\" is an ordinary literal pattern (sneat-dev/wb#627 B2,
+		// red-team finding on PR #629: this used to validate with
+		// path.Match, which both split "*" on "/" and rejected those
+		// characters as glob syntax errors).
 		if strings.TrimSpace(pattern) == "" {
 			return fmt.Errorf("--check must not be empty")
-		}
-		if _, err := path.Match(pattern, ""); err != nil {
-			return fmt.Errorf("--check %q is not a valid exact name or simple * glob: %v", pattern, err)
 		}
 	}
 	return nil

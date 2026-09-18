@@ -156,7 +156,16 @@ type RemoteCheck struct {
 	// a synthetic workflow-run entry's own name. Empty for a third-party
 	// check-run app or a commit-status-derived check, neither of which
 	// belongs to an Actions workflow, so --workflow can never select them.
+	// Present on every receipt, filtered or not — additive, never a breaking
+	// change to the unfiltered result.
 	WorkflowName string `json:"workflow_name,omitempty" yaml:"workflow_name,omitempty"`
+	// WorkflowID is the GitHub Actions workflow's numeric ID backing this
+	// check, alongside WorkflowName (sneat-dev/wb#627). Filter matching
+	// prefers this over the name where both are known — two workflows can
+	// share a display name, and the ID is what GitHub itself uses to group
+	// runs. Zero for a third-party check-run or a commit-status-derived
+	// check.
+	WorkflowID int64 `json:"workflow_id,omitempty" yaml:"workflow_id,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
@@ -285,9 +294,12 @@ type PullRequestWaitResult struct {
 	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
 	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
 	// Filter is present only when the wait was scoped by --workflow/--check
-	// (sneat-dev/wb#627), so an unfiltered receipt stays byte-for-byte
-	// unchanged. Checks and RequiredChecks above already carry the selected
-	// subset; this states that a filter was in force and how many it matched.
+	// (sneat-dev/wb#627); an unfiltered receipt carries no filter field at
+	// all (the field is additive and does not otherwise change unfiltered
+	// pass/fail/pending decisions — see RemoteCheck.WorkflowName/WorkflowID
+	// for the one additive field present on every receipt, filtered or not).
+	// Checks and RequiredChecks above already carry the selected subset;
+	// this states that a filter was in force and how many it matched.
 	Filter *CheckWaitFilter `json:"filter,omitempty" yaml:"filter,omitempty"`
 	Reason string           `json:"reason,omitempty" yaml:"reason,omitempty"`
 	// Evidence carries auxiliary receipt facts that are not part of the wait

@@ -95,8 +95,9 @@ used as merge evidence. `wb wait pr` reports and is **not** merge evidence.
 
 To wait for one workflow or job (a release, a deploy, a single job) instead of
 every check on the head, add `--workflow <name>` or `--check <pattern>`
-(repeatable, exact name or a simple `*` glob) to `wb wait checks --repo …
---head …`:
+(repeatable, exact name, or a glob where `*` matches any run of
+characters — including `/` — and everything else is literal) to
+`wb wait checks --repo … --head …`:
 
 ```sh
 wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json

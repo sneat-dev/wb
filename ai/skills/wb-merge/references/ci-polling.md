@@ -35,15 +35,31 @@ normal effort lifecycle.
 To wait for only one workflow or job — a release, a deploy, a single job
 inside a bigger CI run — while other checks on the same head are still
 running, add `--workflow <name>` (repeatable, exact GitHub Actions workflow
-name) or `--check <pattern>` (repeatable, exact check-run name/commit-status
-context, or a simple `*` glob — no regex) to `wb wait checks` / `wb ci wait`.
+name — two workflows that share a name are both selected) or `--check
+<pattern>` (repeatable, exact check-run name/commit-status context, or a
+glob) to `wb wait checks` / `wb ci wait`. In a `--check` pattern, `*` matches
+any run of characters — zero or more, **including `/`** — and every other
+character, including `[`, `]`, `?` and `\`, is literal: there is no
+character-class, escape, or `?` syntax, and it is not `path.Match` or regex.
+`"Release / *"` therefore matches `"Release / Smoke test published artifact
+(linux/amd64)"` and `"Release / Finalize public release tag"` alike, because
+the glob crosses the `/`.
+
 Required-check completeness is then evaluated only over the required checks
 the filter selects, and the JSON result carries a `filter` block naming what
-matched. A filter that selects nothing, once every observed check on the head
-is terminal, is never a vacuous pass — it comes back pending with an explicit
-not-found reason, so a mistyped workflow or check name cannot masquerade as
-success. Never pass `--workflow`/`--check` to a landing route (`wb pr land` or
-a worktree merge): landing always evaluates the full required set.
+matched. Once a job the filter selected has registered, the wait also keeps
+its parent Actions workflow run open — even if a later job in that run,
+gated by `needs:`, has not started and so has no check-run of its own yet —
+so the wait cannot pass while a chained job is still queued.
+
+A filter that selects nothing is never a vacuous pass. It keeps observing, at
+the normal poll cadence, until a matching check registers or the slice ends,
+reporting pending with "no check matching the filter has registered yet" —
+never a claim that the filter will never match, since a workflow triggered by
+`workflow_run` (or one that is simply slow to register) can still appear
+later in the same slice. Resume the same wait to keep watching. Never pass
+`--workflow`/`--check` to a landing route (`wb pr land` or a worktree merge):
+landing always evaluates the full required set.
 
 Never hand-roll a `gh run list` / `gh api` polling loop to watch a single job
 or workflow — that is exactly the case these flags exist to replace.

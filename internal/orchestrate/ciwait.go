@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -108,6 +107,14 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		Target:             options.Target,
 		Head:               options.Head,
 		UnfencedValidation: options.AllowUnfenced,
+	}
+	// The filter block is set before any return, not only on a terminal
+	// path (sneat-dev/wb#627 M1, red-team finding on PR #629): a failed,
+	// early-pending, or transient-read-pending result must still say a
+	// filter was in force. Counts start at zero and are filled in once
+	// checks/required checks are known.
+	if filterActive(options) {
+		result.Filter = &CheckWaitFilter{Workflows: options.Workflow, Checks: options.Check}
 	}
 	deadline := time.Now().Add(options.Slice)
 	sliceCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -247,16 +254,17 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		}
 		missingRequired := missingRequiredChecks(checks, requiredChecks)
 		// A filter that selects no observed and no required check is never a
-		// vacuous pass, even once the exact head's observed checks are all
-		// terminal — that state means the name/workflow never registered, not
-		// that nothing applies (#627). Once nothing more can appear, report it
-		// immediately rather than polling out the rest of the slice.
+		// vacuous pass (#627). Unlike the unfiltered no-applicable-checks
+		// receipt below, this is not treated as authoritatively empty even
+		// once every check observed SO FAR is terminal: a workflow gated by
+		// `workflow_run`, or one whose registration is merely slow, can still
+		// appear later in the same slice (sneat-dev/wb#627 M2, red-team
+		// finding on PR #629). So this keeps polling at the normal cadence
+		// until the slice ends or a matching check registers, rather than
+		// returning on the first observation and rather than claiming the
+		// filter "will never match" — WB cannot know that from an absence.
 		if filterActive(options) && len(checks) == 0 && len(requiredChecks) == 0 {
-			result.Reason = "no observed or required check matched --workflow/--check on this exact head"
-			if allChecksTerminal(observedChecks) {
-				result.Reason += "; every observed GitHub check for the head is terminal, so this filter will not match later (not found)"
-				return pendingCommitWaitResult(result), nil
-			}
+			result.Reason = "no check matching the filter has registered yet"
 		}
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
@@ -312,8 +320,8 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			switch {
 			case filterActive(options) && len(checks) == 0 && len(requiredChecks) == 0:
 				// Reason was already set above with the filter-specific
-				// not-found diagnostic; keep it rather than the generic
-				// "no GitHub checks have registered" text below.
+				// diagnostic; keep it rather than the generic "no GitHub
+				// checks have registered" text below.
 			case len(missingRequired) > 0:
 				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
 			case len(checks) == 0:
@@ -594,8 +602,10 @@ func remoteCheckExecuted(check RemoteCheck) bool {
 
 // filterActive reports whether a wait scopes its evaluation to a
 // --workflow/--check subset (sneat-dev/wb#627). With neither set, every
-// filter helper below is a no-op and the receipt is byte-for-byte the
-// unfiltered behaviour.
+// filter helper below is a no-op: pass/fail/pending and required-check
+// completeness are decided exactly as before #627. The one additive change
+// present even unfiltered is RemoteCheck.WorkflowName/WorkflowID, now
+// populated on every Actions-produced check regardless of any filter.
 func filterActive(options PullRequestWaitOptions) bool {
 	return len(options.Workflow) > 0 || len(options.Check) > 0
 }
@@ -617,20 +627,64 @@ func checkWaitFilterBlock(options PullRequestWaitOptions, checks []RemoteCheck, 
 
 // filterSelectedChecks narrows checks to the caller's --workflow/--check
 // selection (sneat-dev/wb#627). With neither set it returns checks unchanged
-// so the unfiltered path stays byte-for-byte identical.
+// (same slice, same order) so the unfiltered evaluation is identical to
+// before #627.
 func filterSelectedChecks(checks []RemoteCheck, workflows, patterns []string) []RemoteCheck {
 	if len(workflows) == 0 && len(patterns) == 0 {
 		return checks
 	}
+	selectedIndex := make([]bool, len(checks))
+	owningWorkflowIDs := map[int64]bool{}
+	owningWorkflowNames := map[string]bool{}
+	for index, check := range checks {
+		if !checkSelected(check, workflows, patterns) {
+			continue
+		}
+		selectedIndex[index] = true
+		switch {
+		case check.WorkflowID != 0:
+			owningWorkflowIDs[check.WorkflowID] = true
+		case check.WorkflowName != "":
+			owningWorkflowNames[check.WorkflowName] = true
+		}
+	}
+	// A non-terminal synthetic "workflow-run:<id>:<event>" entry belonging to
+	// a workflow already selected above is retained even though its own
+	// synthetic name never matches a --check pattern (sneat-dev/wb#627 B1,
+	// red-team finding on PR #629): it is the only observable evidence, on a
+	// commit whose Actions workflow chains jobs with `needs:`, that a later
+	// job inside that same selected workflow run has not started yet. A
+	// filter that dropped it could see every job registered so far pass,
+	// declare the run terminal, and pass the wait while the next `needs:`
+	// gated job in the workflow was still queued to start.
+	for index, check := range checks {
+		if selectedIndex[index] || !isWorkflowRunEntry(check) || checkBucketTerminal(check.Bucket) {
+			continue
+		}
+		owned := false
+		switch {
+		case check.WorkflowID != 0:
+			owned = owningWorkflowIDs[check.WorkflowID]
+		case check.WorkflowName != "":
+			owned = owningWorkflowNames[check.WorkflowName]
+		}
+		if owned {
+			selectedIndex[index] = true
+		}
+	}
 	selected := make([]RemoteCheck, 0, len(checks))
-	for _, check := range checks {
-		if checkSelected(check, workflows, patterns) {
+	for index, check := range checks {
+		if selectedIndex[index] {
 			selected = append(selected, check)
 		}
 	}
 	return selected
 }
 
+// checkSelected reports whether check satisfies both filters (AND), when
+// set. --workflow matches by exact GitHub Actions workflow name — two
+// workflows sharing a display name are indistinguishable to the CLI, which
+// only accepts a name, so both are selected together (sneat-dev/wb#627 M5).
 func checkSelected(check RemoteCheck, workflows, patterns []string) bool {
 	if len(workflows) > 0 && !containsExact(workflows, check.WorkflowName) {
 		return false
@@ -641,6 +695,25 @@ func checkSelected(check RemoteCheck, workflows, patterns []string) bool {
 	return true
 }
 
+// isWorkflowRunEntry reports whether check is the synthetic
+// "workflow-run:<id>:<event>" entry commitCheckRuns adds to represent an
+// Actions workflow run's own aggregate status (sneat-dev/wb#627 B1), as
+// opposed to one job's individual check-run.
+func isWorkflowRunEntry(check RemoteCheck) bool {
+	return strings.HasPrefix(check.Name, "workflow-run:")
+}
+
+// checkBucketTerminal reports whether bucket is one of the terminal buckets
+// checkRunBucket/commitStatusBucket can produce.
+func checkBucketTerminal(bucket string) bool {
+	switch bucket {
+	case "pass", "skipping", "fail", "cancel":
+		return true
+	default:
+		return false
+	}
+}
+
 // filterSelectedRequiredChecks narrows required to the checks the filter
 // selects (sneat-dev/wb#627): completeness is then evaluated only over this
 // subset. A --check pattern matches the required check's own name directly.
@@ -649,8 +722,9 @@ func checkSelected(check RemoteCheck, workflows, patterns []string) bool {
 // selected when some observed check under one of the selected workflows
 // carries its exact display name. A required check that has never been
 // observed under that workflow is excluded rather than guessed at — the
-// caller's allChecksTerminal/not-found handling is what catches a filter that
-// can never match, not a false inclusion here.
+// caller's "no check matching the filter has registered yet" handling covers
+// a filter that has not (yet, or ever) matched anything, not a false
+// inclusion here.
 func filterSelectedRequiredChecks(required []RequiredRemoteCheck, observedChecks []RemoteCheck, workflows, patterns []string) []RequiredRemoteCheck {
 	if len(workflows) == 0 && len(patterns) == 0 {
 		return required
@@ -699,34 +773,48 @@ func checkDisplayName(name string) string {
 }
 
 // checkNameMatchesAny reports whether name matches any pattern: an exact
-// string, or a simple path.Match glob (sneat-dev/wb#627). path.Match's "*"
-// never crosses a "/", so a pattern like "Release / *" only matches within
-// the one segment after the slash. No regex is supported, by design.
+// string, or a simple glob (sneat-dev/wb#627). This is deliberately not
+// path.Match or regexp: path.Match's "*" never crosses a "/", which silently
+// excluded real GitHub check-run names such as "Release / Smoke test
+// published artifact (linux/amd64)" from a pattern like "Release / *"
+// (red-team finding B2 on PR #629). Here "*" matches any run of characters —
+// zero or more, including "/" — and every other rune, including "[", "]",
+// "?" and "\", must match literally. There is no character-class, escape, or
+// "?" syntax at all.
 func checkNameMatchesAny(name string, patterns []string) bool {
 	for _, pattern := range patterns {
-		if name == pattern {
-			return true
-		}
-		if matched, err := path.Match(pattern, name); err == nil && matched {
+		if simpleGlobMatch(pattern, name) {
 			return true
 		}
 	}
 	return false
 }
 
-// allChecksTerminal reports whether every observed check is terminal
-// (pass/skipping/fail/cancel). An empty set is never "terminal" by this
-// definition: nothing has registered yet, which is different from a filter
-// whose selection can now never appear (sneat-dev/wb#627).
-func allChecksTerminal(checks []RemoteCheck) bool {
-	if len(checks) == 0 {
-		return false
+// simpleGlobMatch matches value against pattern using only one special
+// character, "*", which matches any run of characters (including none, and
+// including "/"). Every other rune in pattern must match literally. An exact
+// pattern with no "*" requires an exact match.
+func simpleGlobMatch(pattern, value string) bool {
+	segments := strings.Split(pattern, "*")
+	if len(segments) == 1 {
+		return pattern == value
 	}
-	for _, check := range checks {
-		switch check.Bucket {
-		case "pass", "skipping", "fail", "cancel":
+	rest := value
+	for index, segment := range segments {
+		switch {
+		case index == 0:
+			if !strings.HasPrefix(rest, segment) {
+				return false
+			}
+			rest = rest[len(segment):]
+		case index == len(segments)-1:
+			return strings.HasSuffix(rest, segment)
 		default:
-			return false
+			position := strings.Index(rest, segment)
+			if position < 0 {
+				return false
+			}
+			rest = rest[position+len(segment):]
 		}
 	}
 	return true
@@ -1084,10 +1172,12 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
 	pending := false
 	for _, check := range response.CheckRuns {
-		// workflowName is the Actions workflow that produced this check-run,
-		// used only to back --workflow filtering (sneat-dev/wb#627); empty
-		// for a third-party check-run app, which has no such identity here.
+		// workflowName/workflowID are the Actions workflow that produced this
+		// check-run, used to back --workflow filtering and B1's owning-workflow
+		// matching (sneat-dev/wb#627); both zero-valued for a third-party
+		// check-run app, which has no such identity here.
 		workflowName := ""
+		var workflowID int64
 		if strings.EqualFold(check.App.Slug, "github-actions") {
 			if check.ID <= 0 || check.CheckSuite.ID <= 0 {
 				return nil, false, fmt.Sprintf("GitHub Actions check run %q omitted a positive check-run or check-suite ID", check.Name)
@@ -1106,9 +1196,10 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			}
 			observedActionsRuns[identity]++
 			workflowName = run.Name
+			workflowID = run.WorkflowID
 		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
-		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID, WorkflowName: workflowName})
+		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID, WorkflowName: workflowName, WorkflowID: workflowID})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -1124,6 +1215,7 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			Conclusion:   run.Conclusion,
 			Link:         run.HTMLURL,
 			WorkflowName: run.Name,
+			WorkflowID:   run.WorkflowID,
 		})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
