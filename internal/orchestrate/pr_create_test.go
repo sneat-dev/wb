@@ -1168,3 +1168,69 @@ func TestCreateCommitAllOnARerunWithNothingLeftToCommitContinues(t *testing.T) {
 		t.Fatal("the rerun must still reach pull-request creation/adoption, not stop at the no-op commit")
 	}
 }
+
+// TestCreateSetsUpstreamSoAPlainPushWorksAfterward proves #609: after `wb pr
+// create` pushes a brand-new branch, the worktree carries a real upstream —
+// not just a successful push — so a later plain `git push`, with no
+// `--set-upstream` of its own, succeeds.
+func TestCreateSetsUpstreamSoAPlainPushWorksAfterward(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "upstream-task", "feature/upstream", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess {
+		t.Fatalf("outcome=%s reason=%s", result.Outcome, result.Reason)
+	}
+
+	upstream := strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "--abbrev-ref", "@{upstream}"))
+	if upstream != "origin/feature/upstream" {
+		t.Fatalf("upstream = %q, want origin/feature/upstream", upstream)
+	}
+
+	// A follow-up commit, then a plain `git push` with no flags: this is
+	// what fails today with "no upstream branch" (#609) when the fix is
+	// missing.
+	writeEngineFile(t, filepath.Join(worktree, "second.go"), "package app\n")
+	runEngineGit(t, worktree, "add", "-A")
+	runEngineGit(t, worktree, "commit", "-m", "feat: add second.go")
+	runEngineGit(t, worktree, "push")
+
+	pushed := runEngineGit(t, fixture.remote, "log", "--format=%s", "refs/heads/feature/upstream")
+	if !strings.Contains(pushed, "add second.go") {
+		t.Fatalf("plain git push did not reach the remote branch: %q", pushed)
+	}
+}
+
+// TestCreateOnAWorktreeWithAnExistingUpstreamLeavesItUnchanged proves the
+// fix does not disturb a worktree that already has a correct upstream
+// (e.g. a rerun of `wb pr create`, or one set by an earlier `wb worktree
+// create`): the recorded upstream stays exactly what it already was.
+func TestCreateOnAWorktreeWithAnExistingUpstreamLeavesItUnchanged(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "existing-upstream-task", "feature/existing-upstream", "main", "main.go")
+	runEngineGit(t, worktree, "push", "--set-upstream", "origin", "HEAD:refs/heads/feature/existing-upstream")
+	before := strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "--abbrev-ref", "@{upstream}"))
+
+	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\tmain\n")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess {
+		t.Fatalf("outcome=%s reason=%s", result.Outcome, result.Reason)
+	}
+
+	after := strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "--abbrev-ref", "@{upstream}"))
+	if after != before {
+		t.Fatalf("upstream changed from %q to %q, want unchanged", before, after)
+	}
+	if after != "origin/feature/existing-upstream" {
+		t.Fatalf("upstream = %q, want origin/feature/existing-upstream", after)
+	}
+}
