@@ -151,6 +151,47 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	}
 }
 
+// TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool is
+// the large-machine (N=18) end-to-end counterpart to
+// TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted above:
+// it drives admitWithQueueVisibility itself — the real progress/queue
+// visibility layer `wb run --` uses — through the adaptive heavy-job pool
+// (sneat-dev/wb#621) rather than the legacy budget-sum pool, proving the
+// two are wired together end to end and not just at the pure-function
+// level. Review finding (PR #628, M8).
+func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *testing.T) {
+	defer runqueue.SetNumCPUForTest(18)()
+	root := t.TempDir()
+	broadArgv := []string{"go", "test", "./..."}
+
+	var firstOut bytes.Buffer
+	firstProgress := newRunQueueProgressWithHeartbeat(&firstOut, true, "", 5*time.Millisecond)
+	firstSelf := runqueue.Participant{PID: os.Getpid(), Summary: "first"}
+	firstLease, firstUnits, _, err := admitWithQueueVisibility(context.Background(), root, broadArgv, firstSelf, firstProgress)
+	if err != nil {
+		t.Fatalf("first admitWithQueueVisibility = %v", err)
+	}
+	defer firstLease.Release()
+	if firstUnits != 18 {
+		t.Fatalf("first alone = %d units, want 18 (the whole machine)", firstUnits)
+	}
+	if !strings.Contains(firstOut.String(), "wb run: admitted (queue empty)") {
+		t.Fatalf("first output = %q, want the immediate-admission line", firstOut.String())
+	}
+
+	var secondOut bytes.Buffer
+	secondProgress := newRunQueueProgressWithHeartbeat(&secondOut, true, "", 5*time.Millisecond)
+	secondSelf := runqueue.Participant{PID: os.Getpid(), Summary: "second"}
+	secondLease, secondUnits, _, err := admitWithQueueVisibility(context.Background(), root, broadArgv, secondSelf, secondProgress)
+	if err != nil {
+		t.Fatalf("second admitWithQueueVisibility = %v", err)
+	}
+	defer secondLease.Release()
+	if secondUnits != 9 {
+		t.Fatalf("second while the first holds 18 = %d units, want min(12, 27-18) = 9", secondUnits)
+	}
+}
+
 // TestAcquireWithQueueVisibilitySkipsEverythingForKindNone covers a
 // non-CPU-governed command (git status, and the vast majority of `wb run
 // --` invocations): no ticket, no lines, immediate return.

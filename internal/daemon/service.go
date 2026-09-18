@@ -644,12 +644,12 @@ func allowedEnvironment(input map[string]string) (map[string]string, error) {
 func governedChildEnvironment(base []string, argv []string, additions map[string]string, operationID string, units int) []string {
 	result := mergeEnvironment(base, additions)
 	cpuAdditions := map[string]string{
-		"GOMAXPROCS":      fmt.Sprint(units),
+		"GOMAXPROCS":      runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units),
 		"NX_PARALLEL":     fmt.Sprint(units),
 		"WB_CPU_UNITS":    fmt.Sprint(units),
 		"WB_OPERATION_ID": operationID,
 	}
-	if goFlags := runqueue.GovernGoFlags(argv, os.Getenv("GOFLAGS"), units); goFlags != "" {
+	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
 		cpuAdditions["GOFLAGS"] = goFlags
 	}
 	result = mergeEnvironment(result, cpuAdditions)

@@ -416,8 +416,8 @@ On a machine with 8 or more CPUs, a "heavy" job (a broad Go/Node test or
 build, or any coverage or race run) is instead admitted adaptively. This
 replaced an earlier fixed-weight design after three agent lanes serialized
 behind one `go test ./...` for about 45 minutes on a nearly idle 18-core
-machine (sneat-dev/wb#621). The founder, watching three lanes test
-concurrently at a one-minute load of 4.86 on that machine (86% idle):
+machine (sneat-dev/wb#621), observed at a load average of 2.7 with 56%
+memory free. The founder:
 
 > "Can we make it smarter? If no queue we can start 100%. If something is
 > running and queue has more than 2 items start 2 with 2/3. If all finished
@@ -443,9 +443,10 @@ A newly admitted heavy job actually gets `min(share(k), 1.5×N -
 allocated_heavy)`, where `allocated_heavy` is the sum of already-running heavy
 jobs' own fixed allocations — so the total across concurrently running heavy
 jobs never exceeds 150% of N. If that result is below N/4, the job waits
-instead, in strict FIFO order among heavy waiters (no backfill: "The
-backfill-with-aging item from the brief is replaced by this: FIFO among heavy
-waiters, and focused jobs never wait behind heavy ones."). At most 3 heavy
+instead, in strict FIFO order among heavy waiters (lead design: this
+replaces the backfill-with-aging admission from the earlier brief entirely —
+strict FIFO among heavy waiters, and focused jobs never wait behind heavy
+ones). At most 3 heavy
 jobs ever run at once, kept only as a defensive bound — the share floor (N/2
 at k≥3) and the 150% cap already make a 4th concurrent heavy job impossible.
 
@@ -457,15 +458,26 @@ Allocation is fixed at admission and never revised for a job already
 running, because a running process's `GOMAXPROCS` cannot be changed. A job
 admitted alone at 100% keeps that share even after others arrive and are
 admitted at a smaller one; a burst can therefore briefly leave the machine
-oversubscribed. The founder accepted this explicitly: these commands mostly
+oversubscribed. Lead design accepts this trade-off: these commands mostly
 wait on I/O and subprocesses, not pure CPU, so the oversubscription is brief
 and rarely binding in practice.
 
-WB sets `GOMAXPROCS`, Go `-p`, and supported Node/Nx/Vitest workers from the
-allocation — the caller's own explicit `-p` or `GOMAXPROCS` still wins over
-the derived value. One scheduler slot cannot hide eight test processes. The
-existing dependency-stream cap of at most two Go builds, one Angular build,
-and three validation lanes remains the upper bound.
+WB sets `GOMAXPROCS`, Go `-p`, and Nx's own `NX_PARALLEL` from the
+allocation — no Vitest-specific worker-count variable is set today, since
+Vitest does not read `NX_PARALLEL` — and the caller's own explicit `-p` or
+`GOMAXPROCS` still wins over the derived value. One scheduler slot cannot
+hide eight test processes. The existing dependency-stream cap of at most
+two Go builds, one Angular build, and three validation lanes remains the
+upper bound.
+
+**Known limitation (sneat-dev/wb#642 follow-up):** the heavy pool above, the
+small-machine budget-sum `Acquire` pool, and any other caller sharing that
+same plain unit-weighted capacity (for example `internal/repositoryevents`)
+are three separate accounting namespaces on disk. A heavy job and a legacy
+`Acquire` caller never contend with, or see, each other's admissions, so
+the machine-wide picture `wb run --queue` shows is per-pool, not global.
+Unifying them into one accounting surface is tracked separately rather than
+folded into this fix.
 
 `wb run --queue` shows each running holder's fixed allocation alongside the
 current k (every heavy job alive, running or waiting, right now).

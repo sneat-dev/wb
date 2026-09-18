@@ -51,24 +51,28 @@ func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Comma
 WB while preserving its standard streams and exit code.
 
 Recipe mode is a dry-run by default; --apply lands the recipe. Command mode
-records privacy-safe receipts and admits CPU-heavy work against a machine-wide
-CPUCount-1 budget. A focused job (a single-package Go test/vet, or a light
-lint) is always admitted immediately at max(1, NumCPU/8) and never waits
-behind a heavy one. On a machine with fewer than 8 CPUs, every governed
-command follows the original spec table unchanged (focused 1, broad 2,
-coverage/race the whole budget). On a machine with 8 or more CPUs, a "heavy"
-job (a broad Go/Node test or build, or any coverage/race run) is instead
-admitted adaptively: when k heavy jobs (itself included) are running or
-waiting at the moment it is admitted, it gets min(share(k), 1.5xNumCPU minus
-the sum of already-running heavy jobs' own allocations) — share(k) is
-NumCPU at k=1, 2/3 of NumCPU at k=2, and half of NumCPU at k>=3 — so one
-heavy job alone gets the whole machine, and a burst of them share it, never
-exceeding 150% of NumCPU in total. A candidate below NumCPU/4 waits instead,
-in strict FIFO order among heavy waiters. Each job's own GOMAXPROCS and Go
--p equal its allocation once admitted, fixed for its whole run — a slower
-job that arrives later can therefore briefly leave the machine
-oversubscribed, which is accepted because these commands mostly wait on I/O
-and subprocesses rather than pure CPU. It is synchronous by default; --async
+records privacy-safe receipts and admits CPU-heavy work. On a machine with
+fewer than 8 CPUs, every governed command follows the original spec table
+unchanged, admitted against a machine-wide CPUCount-1 budget (focused 1,
+broad 2, coverage/race the whole budget). On a machine with 8 or more CPUs,
+that fixed budget does not apply: a focused job (a single-package Go
+test/vet, or a light lint) is always admitted immediately at max(1,
+NumCPU/8) and never waits behind a heavy one, and a "heavy" job (a broad
+Go/Node test or build, or any coverage/race run) is instead admitted
+adaptively out of the full NumCPU: when k heavy jobs (itself included) are
+running or waiting at the moment it is admitted, it gets min(share(k),
+1.5xNumCPU minus the sum of already-running heavy jobs' own allocations) —
+share(k) is NumCPU at k=1, 2/3 of NumCPU at k=2, and half of NumCPU at
+k>=3 — so one heavy job alone gets the whole machine, and a burst of them
+share it, never exceeding 150% of NumCPU in total. A candidate below
+NumCPU/4 waits instead, in strict FIFO order among heavy waiters. Each
+job's own GOMAXPROCS and Go -p equal its allocation once admitted, fixed
+for its whole run because a running process's GOMAXPROCS cannot change
+after the fact — so a later arrival admitted at a smaller share does not
+shrink an already-running job, and the machine can briefly run above 100%
+(bounded by the 150% cap above) until the earlier job finishes; this is
+accepted because these commands mostly wait on I/O and subprocesses rather
+than pure CPU. It is synchronous by default; --async
 submits through the authenticated durable local daemon queue for the
 explicitly selected sandboxed wb worker connect process to execute. Command
 arguments are durable journal data; pass secrets through the worker's
@@ -465,9 +469,9 @@ func governedEnvironment(environment []string, operationID string, args []string
 		return environment
 	}
 	environment = withEnvironmentValue(environment, "WB_CPU_UNITS", fmt.Sprint(units))
-	environment = withEnvironmentValue(environment, "GOMAXPROCS", fmt.Sprint(units))
+	environment = withEnvironmentValue(environment, "GOMAXPROCS", runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(environment, "GOMAXPROCS"), units))
 	environment = withEnvironmentValue(environment, "NX_PARALLEL", fmt.Sprint(units))
-	if goFlags := runqueue.GovernGoFlags(args, os.Getenv("GOFLAGS"), units); goFlags != "" {
+	if goFlags := runqueue.GovernGoFlags(args, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
 		environment = withEnvironmentValue(environment, "GOFLAGS", goFlags)
 	}
 	return environment

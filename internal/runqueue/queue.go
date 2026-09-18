@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,16 +18,16 @@ const retryInterval = 100 * time.Millisecond
 
 // numCPU is the machine's logical CPU count (N in the admission formulas
 // below). A var, not a direct runtime.NumCPU() call, so tests can drive
-// every N in the founder's table (sneat-dev/wb#621) without depending on the
-// machine the test happens to run on; production code never assigns it.
+// every N this package's table of cases covers (sneat-dev/wb#621) without
+// depending on the machine the test happens to run on; production code
+// never assigns it.
 var numCPU = runtime.NumCPU
 
 // smallMachineThreshold: below this NumCPU, admission keeps the original
 // spec table (budget = N-1; focused 1, broad 2, coverage/race the whole
-// budget) with no adaptive heavy-job sharing at all. Founder 2026-09-18
-// (sneat-dev/wb#621): "Small machines. When N < 8, keep today's spec table
-// exactly (budget = N-1; focused 1, broad 2, coverage 3; no adaptive
-// shares). One core stays free for interactive work there."
+// budget) with no adaptive heavy-job sharing at all — lead design, so a
+// small machine (the spec's four-vCPU default included) is unaffected by
+// this change; one core stays free for interactive work there, as before.
 const smallMachineThreshold = 8
 
 func smallMachine() bool { return numCPU() < smallMachineThreshold }
@@ -74,8 +75,8 @@ const (
 )
 
 // IsHeavy reports whether kind is "heavy" under the adaptive (N >= 8)
-// model. Founder 2026-09-18 (sneat-dev/wb#621): "A 'heavy' job is a broad
-// Go/Node test or build, or any coverage or race run."
+// model — lead design (sneat-dev/wb#621): a heavy job is a broad Go/Node
+// test or build, or any coverage or race run.
 func (kind Kind) IsHeavy() bool { return kind == KindBroad || kind == KindRaceOrCover }
 
 // Classify reports what kind of governed work argv is. KindNone means argv
@@ -88,39 +89,175 @@ func Classify(argv []string) Kind {
 	arguments := argv[1:]
 	switch tool {
 	case "go":
-		if !hasAny(arguments, "test", "vet", "build") {
-			return KindNone
-		}
-		if hasPrefix(arguments, "-race") || hasPrefix(arguments, "-cover") {
-			return KindRaceOrCover
-		}
+		return classifyGo(arguments)
+	case "golangci-lint":
+		// Review finding (PR #628, M7): an explicit broad scope
+		// (`run ./...`, or no target at all as golangci-lint's own
+		// default) is a whole-repository lint and should be heavy; a
+		// scoped `run ./path/to/one/package` stays focused (light lint).
 		if hasBroadScope(arguments) {
 			return KindBroad
 		}
 		return KindFocused
-	case "golangci-lint", "staticcheck", "pytest", "vitest", "jest", "mocha":
+	case "staticcheck", "pytest":
 		return KindFocused
+	case "vitest", "jest", "mocha":
+		return classifyNodeTestRunner(arguments)
 	case "nx":
-		if hasAny(arguments, "build", "run-many", "affected") {
-			return KindBroad
-		}
-		if hasAny(arguments, "test", "lint", "e2e") {
-			return KindFocused
-		}
+		return classifyNx(arguments)
 	case "npm", "pnpm", "yarn", "bun", "npx":
-		joined := strings.ToLower(strings.Join(arguments, " "))
-		if strings.Contains(joined, "build") || strings.Contains(joined, "e2e") || strings.Contains(joined, "affected") {
-			return KindBroad
-		}
-		if strings.Contains(joined, "test") || strings.Contains(joined, "lint") {
-			return KindFocused
-		}
+		return classifyNodePackageManager(arguments)
 	case "cargo":
 		if hasAny(arguments, "test", "build", "check", "clippy") {
 			return KindBroad
 		}
 	}
 	return KindNone
+}
+
+// classifyGo classifies a `go` invocation. Review finding (PR #628, M7):
+// -race/-cover given through the GOFLAGS environment variable (not just
+// argv) must be caught too, and an explicit list of 2+ package paths is
+// broad even without a "..." wildcard.
+func classifyGo(arguments []string) Kind {
+	if !hasAny(arguments, "test", "vet", "build") {
+		return KindNone
+	}
+	if hasPrefix(arguments, "-race") || hasPrefix(arguments, "-cover") || goflagsRaceOrCover() {
+		return KindRaceOrCover
+	}
+	if hasBroadScope(arguments) || countGoPackagePaths(arguments) >= 2 {
+		return KindBroad
+	}
+	return KindFocused
+}
+
+// goflagsRaceOrCover reports whether the GOFLAGS environment variable
+// itself (as opposed to an explicit argv flag) carries -race or -cover, so
+// a caller that sets it ambiently still gets the heavy classification.
+func goflagsRaceOrCover() bool {
+	fields := strings.Fields(os.Getenv("GOFLAGS"))
+	return hasPrefix(fields, "-race") || hasPrefix(fields, "-cover")
+}
+
+// countGoPackagePaths counts argv entries that look like an explicit Go
+// package path ("./..." handling is hasBroadScope's job; this counts
+// ordinary paths like "./internal/foo") rather than a flag or its value.
+func countGoPackagePaths(arguments []string) int {
+	count := 0
+	for _, argument := range arguments {
+		if argument == "." || strings.HasPrefix(argument, "./") {
+			count++
+		}
+	}
+	return count
+}
+
+// classifyNx classifies a direct `nx` invocation (also reused by
+// classifyNodePackageManager for `pnpm nx …`/`npx nx …`). Review finding
+// (PR #628, S3): a run-many or affected invocation always spans multiple
+// projects and is heavy regardless of its target; a single-verb command
+// with no explicit project (or project:target) argument — "pnpm nx
+// run-many" with no target included — is unscoped and therefore also
+// heavy; only a verb with an explicit project argument is focused.
+func classifyNx(arguments []string) Kind {
+	if hasAny(arguments, "run-many", "affected") {
+		return KindBroad
+	}
+	if hasAny(arguments, "build") {
+		return KindBroad
+	}
+	if hasAny(arguments, "test", "lint", "e2e", "run") {
+		if hasExplicitNxTarget(arguments) {
+			return KindFocused
+		}
+		return KindBroad
+	}
+	return KindNone
+}
+
+// hasExplicitNxTarget reports whether an nx verb (test/lint/e2e/run) is
+// followed by a positional, non-flag argument naming the project (or
+// project:target) it scopes to.
+func hasExplicitNxTarget(arguments []string) bool {
+	sawVerb := false
+	for _, argument := range arguments {
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		if !sawVerb {
+			sawVerb = true
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// classifyNodeTestRunner classifies a direct vitest/jest/mocha invocation.
+// Review finding (PR #628, S3): a bare `jest`, `mocha`, or `vitest run`
+// with no file or path argument runs the whole suite and is heavy; an
+// explicit file or path argument scopes it to one area and is focused.
+func classifyNodeTestRunner(arguments []string) Kind {
+	for _, argument := range arguments {
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		if argument == "run" || argument == "test" {
+			continue
+		}
+		return KindFocused
+	}
+	return KindBroad
+}
+
+// classifyNodePackageManager classifies npm/pnpm/yarn/bun/npx, including
+// the common "<package manager> nx …" and "<package manager> <runner> …"
+// delegation shapes. Review finding (PR #628, S3): a bare `pnpm test` /
+// `npx vitest run` with no workspace filter or file argument runs across
+// the whole workspace and is heavy; only an explicit --filter/-w/--scope
+// flag or a file/path argument narrows it to one package.
+func classifyNodePackageManager(arguments []string) Kind {
+	if len(arguments) == 0 {
+		return KindNone
+	}
+	switch strings.ToLower(arguments[0]) {
+	case "nx":
+		return classifyNx(arguments[1:])
+	case "vitest", "jest", "mocha":
+		return classifyNodeTestRunner(arguments[1:])
+	}
+	if !hasAny(arguments, "test", "run", "build", "lint", "e2e", "affected") {
+		return KindNone
+	}
+	joined := strings.ToLower(strings.Join(arguments, " "))
+	if strings.Contains(joined, "build") || strings.Contains(joined, "e2e") || strings.Contains(joined, "affected") {
+		return KindBroad
+	}
+	if strings.Contains(joined, "test") || strings.Contains(joined, "lint") {
+		if hasNodeWorkspaceScope(arguments) {
+			return KindFocused
+		}
+		return KindBroad
+	}
+	return KindNone
+}
+
+// hasNodeWorkspaceScope reports whether arguments carry an explicit
+// workspace/filter flag or a file/path argument that narrows an npm/pnpm/
+// yarn/bun/npx invocation to less than the whole workspace.
+func hasNodeWorkspaceScope(arguments []string) bool {
+	for _, argument := range arguments {
+		lower := strings.ToLower(argument)
+		switch {
+		case lower == "--filter", lower == "-w", lower == "--workspace", lower == "--scope",
+			strings.HasPrefix(lower, "--filter="), strings.HasPrefix(lower, "--workspace="), strings.HasPrefix(lower, "--scope="):
+			return true
+		case strings.Contains(argument, "/"), strings.HasSuffix(argument, ".ts"), strings.HasSuffix(argument, ".js"):
+			return true
+		}
+	}
+	return false
 }
 
 // Units is a stateless CPU-share estimate for argv: the small-machine
@@ -195,11 +332,49 @@ type Lease struct {
 	// running. nil when there is no holder record to refresh (KindNone,
 	// KindFocused, or a Lease that failed before announcing).
 	heartbeat func()
+	// stopHeartbeat, when non-nil, is closed by Release to stop the
+	// self-heartbeat goroutine armHeartbeat started. Review finding (PR
+	// #628, B1): a caller-driven heartbeat loop is easy to forget — the
+	// worker and daemon executors never called one, so a holder aged past
+	// staleAfter and was reaped mid-run, making the 150% cap accounting
+	// blind to it (a reproduced 18+18+9=45 against a 27 cap). A Lease now
+	// heartbeats itself for as long as it is held, so no caller can forget.
+	stopHeartbeat chan struct{}
+}
+
+// leaseHeartbeatInterval is how often armHeartbeat refreshes a held Lease's
+// holder record(s). It must stay well under staleAfter; a var, not a const,
+// so tests can shrink both to observe the effect without a real 30s wait.
+// Production code never assigns it.
+var leaseHeartbeatInterval = 10 * time.Second
+
+// armHeartbeat starts self-heartbeating fn on leaseHeartbeatInterval until
+// Release. Only one heartbeat loop may be armed per Lease.
+func (lease *Lease) armHeartbeat(fn func()) {
+	lease.heartbeat = fn
+	stop := make(chan struct{})
+	lease.stopHeartbeat = stop
+	go func() {
+		ticker := time.NewTicker(leaseHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				fn()
+			}
+		}
+	}()
 }
 
 func (lease *Lease) Release() {
 	if lease == nil {
 		return
+	}
+	if lease.stopHeartbeat != nil {
+		close(lease.stopHeartbeat)
+		lease.stopHeartbeat = nil
 	}
 	for index := len(lease.files) - 1; index >= 0; index-- {
 		_ = unix.Flock(int(lease.files[index].Fd()), unix.LOCK_UN)
@@ -212,9 +387,10 @@ func (lease *Lease) Release() {
 	}
 }
 
-// Heartbeat refreshes this Lease's holder record(s), the same way callers
-// already refresh a long-running command's queue-visibility record on a
-// ~10s cadence. Safe to call on a nil Lease or one with nothing to refresh.
+// Heartbeat refreshes this Lease's holder record(s) immediately, on top of
+// the automatic background heartbeat armHeartbeat already runs. Safe to call
+// on a nil Lease or one with nothing to refresh; callers no longer need to
+// call this on a timer themselves.
 func (lease *Lease) Heartbeat() {
 	if lease == nil || lease.heartbeat == nil {
 		return
@@ -304,8 +480,9 @@ func RegisterForAdmission(projectsRoot string, argv []string, self Participant) 
 	}
 }
 
-// Admit requests to run argv under the founder's admission policy
-// (sneat-dev/wb#621):
+// Admit requests to run argv under the admission policy designed for
+// sneat-dev/wb#621 (lead design, formalizing the founder's messages on the
+// issue):
 //
 //   - KindNone is a no-op: Units 0, nothing to release, no wait.
 //   - KindFocused is admitted immediately with its fixed share
@@ -321,27 +498,23 @@ func RegisterForAdmission(projectsRoot string, argv []string, self Participant) 
 // ticket, when non-nil, must already be registered via RegisterForAdmission
 // against the same argv; when nil, Admit manages its own internally for a
 // caller (worker/daemon executors) that does not render progress lines.
+// Review finding (PR #628, S2): on a small machine every governed kind,
+// focused included, must go through the original budget-sum Acquire and
+// announcement exactly as on origin/main — the small-machine table has no
+// "instant, unqueued" concept. So smallMachine() is checked first; only on
+// a large machine does a focused job additionally get the new instant,
+// never-queued path.
 func Admit(ctx context.Context, projectsRoot string, argv []string, self Participant, ticket *Ticket) (Admission, error) {
 	kind := Classify(argv)
 	budget := Budget()
 	switch {
 	case kind == KindNone:
 		return Admission{Lease: &Lease{}}, nil
-	case kind == KindFocused:
-		share := focusedShare()
-		if smallMachine() {
-			share = clampToCapacity(1, budget)
-		}
-		return Admission{Lease: &Lease{}, Units: share}, nil
 	case smallMachine():
 		units := smallMachineUnits(kind, budget)
-		lease, waited, err := Acquire(ctx, projectsRoot, units, budget)
-		if err == nil {
-			announcement := lease.Announce(self)
-			lease.extraRelease = announcement.Cleanup
-			lease.heartbeat = announcement.Heartbeat
-		}
-		return Admission{Lease: lease, Units: units, Waited: waited}, err
+		return admitLegacy(ctx, projectsRoot, units, budget, self)
+	case kind == KindFocused:
+		return Admission{Lease: &Lease{}, Units: focusedShare()}, nil
 	default:
 		own := ticket
 		if own == nil {
@@ -351,6 +524,25 @@ func Admit(ctx context.Context, projectsRoot string, argv []string, self Partici
 		lease, units, waited, err := admitHeavy(ctx, projectsRoot, self, own)
 		return Admission{Lease: lease, Units: units, Waited: waited}, err
 	}
+}
+
+// admitLegacy acquires from the plain budget-sum pool and announces self,
+// arming the Lease's self-heartbeat (B1) so the holder record never ages
+// out from under a caller that forgets to refresh it. units is clamped to
+// budget first (M4) so a caller-declared want beyond the machine's own
+// budget-sum ceiling is reported as what was actually held, not what was
+// asked for.
+func admitLegacy(ctx context.Context, projectsRoot string, units, budget int, self Participant) (Admission, error) {
+	if units > budget {
+		units = budget
+	}
+	lease, waited, err := Acquire(ctx, projectsRoot, units, budget)
+	if err == nil {
+		announcement := lease.Announce(self)
+		lease.extraRelease = announcement.Cleanup
+		lease.armHeartbeat(announcement.Heartbeat)
+	}
+	return Admission{Lease: lease, Units: units, Waited: waited}, err
 }
 
 // AdmitExplicit is Admit for a caller that declares its own CPU need
@@ -363,14 +555,7 @@ func Admit(ctx context.Context, projectsRoot string, argv []string, self Partici
 // cannot tell a heavy job from a focused one); self is announced for `wb
 // run --queue` visibility exactly as Admit's other branches do.
 func AdmitExplicit(ctx context.Context, projectsRoot string, units int, self Participant) (Admission, error) {
-	budget := Budget()
-	lease, waited, err := Acquire(ctx, projectsRoot, units, budget)
-	if err == nil {
-		announcement := lease.Announce(self)
-		lease.extraRelease = announcement.Cleanup
-		lease.heartbeat = announcement.Heartbeat
-	}
-	return Admission{Lease: lease, Units: units, Waited: waited}, err
+	return admitLegacy(ctx, projectsRoot, units, Budget(), self)
 }
 
 // GovernGoFlags returns the GOFLAGS value a governed "go" command should run
@@ -379,6 +564,53 @@ func AdmitExplicit(ctx context.Context, projectsRoot string, units int, self Par
 // defaulting to the whole machine — unless the caller already pinned -p, in
 // which case the caller's flag wins untouched. argv that does not invoke the
 // go tool, or units <= 0, returns existing unchanged.
+// GovernGOMAXPROCS returns the GOMAXPROCS value a governed command's child
+// should run with: the caller's own already-set value, preserved untouched
+// (review finding, PR #628, S4: the spec says WB "sets GOMAXPROCS... from
+// the allocation," but a caller that pinned its own value first must still
+// win, the same way an explicit -p does for GOFLAGS), or units when the
+// caller set nothing.
+func GovernGOMAXPROCS(existing string, units int) string {
+	if strings.TrimSpace(existing) != "" {
+		return existing
+	}
+	return fmt.Sprint(units)
+}
+
+// EffectiveGOFLAGS returns the GOFLAGS a plain `go` invocation would use:
+// the process environment's own GOFLAGS if set, else the persisted default
+// from `go env -w GOFLAGS=...` (review finding, PR #628, M6 — the process
+// environment alone misses a persisted default, so a caller who pinned
+// -race via `go env -w` rather than an exported variable was silently
+// overridden). Best-effort: an error running `go env` (no toolchain on
+// PATH, e.g.) degrades to "", matching the pre-existing behavior of reading
+// only the process environment.
+func EffectiveGOFLAGS() string {
+	if fromEnv := os.Getenv("GOFLAGS"); fromEnv != "" {
+		return fromEnv
+	}
+	output, err := exec.Command("go", "env", "GOFLAGS").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// LookupEnv returns the value of key in environment (an os.Environ()-shaped
+// slice), or "" if key is not present. Exported so every governed-
+// environment builder (cmd/wb/run.go, cmd/wb/worker.go,
+// internal/daemon/service.go) reads the caller's own environment
+// consistently before deciding what to preserve.
+func LookupEnv(environment []string, key string) string {
+	prefix := key + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
+}
+
 func GovernGoFlags(argv []string, existing string, units int) string {
 	if units <= 0 || len(argv) == 0 || strings.ToLower(filepath.Base(argv[0])) != "go" {
 		return existing

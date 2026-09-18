@@ -204,7 +204,18 @@ func executeWorkerAssignment(command *cobra.Command, client daemonv1connect.Daem
 	go workerHeartbeatLoop(ctx, command.ErrOrStderr(), client, registration, assignment, &progress, cancel, heartbeatErrors, heartbeatDone)
 
 	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(assignment.Argv), Worktree: assignment.WorkingDirectory}
-	admission, err := runqueue.Admit(ctx, projectsRoot, assignment.Argv, self, nil)
+	// Review finding (PR #628, M4): the daemon may hand a worker an
+	// explicit, caller-declared CpuUnits (the trusted raw-execution
+	// fallback); honor it directly via the plain budget-sum pool, the same
+	// way internal/daemon/service.go's own executor does, instead of
+	// reclassifying argv adaptively.
+	var admission runqueue.Admission
+	var err error
+	if explicit := int(assignment.CpuUnits); explicit != 0 {
+		admission, err = runqueue.AdmitExplicit(ctx, projectsRoot, explicit, self)
+	} else {
+		admission, err = runqueue.Admit(ctx, projectsRoot, assignment.Argv, self, nil)
+	}
 	units := admission.Units
 	if err == nil {
 		progress.Store("running")
@@ -331,10 +342,10 @@ func workerPermitsDirectory(roots []string, cwd string) (bool, error) {
 
 func workerChildEnvironment(base []string, argv []string, operationID string, units int) []string {
 	additions := map[string]string{
-		"GOMAXPROCS": fmt.Sprint(units), "NX_PARALLEL": fmt.Sprint(units),
+		"GOMAXPROCS": runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units), "NX_PARALLEL": fmt.Sprint(units),
 		"WB_CPU_UNITS": fmt.Sprint(units), "WB_OPERATION_ID": operationID,
 	}
-	if goFlags := runqueue.GovernGoFlags(argv, os.Getenv("GOFLAGS"), units); goFlags != "" {
+	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
 		additions["GOFLAGS"] = goFlags
 	}
 	return mergeWorkerEnvironment(base, additions)

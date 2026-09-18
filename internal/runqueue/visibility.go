@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -124,12 +125,32 @@ const (
 // Ticket is one caller's registered wait, used for queue visibility and, in
 // the heavy namespace only, for strict FIFO ordering (see admitHeavy). The
 // legacy namespace's Ticket never gates admission itself.
+//
+// Review finding (PR #628, S5): admitHeavy's own loop and a caller's
+// external progress ticker (cmd/wb/run.go) can both call Heartbeat/Forget on
+// the same *Ticket concurrently. mu guards every read and write of path so
+// Forget can never race a concurrent Heartbeat into "recreating" a ticket
+// (Heartbeat always re-checks path under the same lock Forget clears it
+// under, so once cleared it stays cleared).
 type Ticket struct {
+	mu           sync.Mutex
 	projectsRoot string
 	namespace    ticketNamespace
 	path         string
 	createdAt    time.Time
 	self         Participant
+}
+
+// pathLocked returns the ticket's current path under mu, for admitHeavy's
+// own head-of-queue comparisons (same package, but still concurrent with
+// Heartbeat/Forget from another goroutine).
+func (ticket *Ticket) pathLocked() string {
+	if ticket == nil {
+		return ""
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	return ticket.path
 }
 
 type ticketRecord struct {
@@ -150,6 +171,49 @@ func Register(projectsRoot string, self Participant) *Ticket {
 	return registerAt(projectsRoot, namespaceLegacy, ticketDir(projectsRoot), self)
 }
 
+// atomicWriteFile writes data to path by writing it to a hidden sibling
+// temp file in the same directory and renaming it into place (rename is
+// atomic within one directory on every filesystem this package runs on).
+// A reader that lists dir with os.ReadDir at the wrong instant may still
+// observe the temp file, so every directory-listing reader here (
+// readTicketsIn, readHolderRecords) skips names starting with "." — never
+// a real ticket or holder record. Bug found via -race on PR #628's new
+// concurrent-admission tests: registerAt's and Heartbeat's/
+// heartbeatHeavyHolder's plain os.WriteFile truncates a file in place, and
+// a heartbeat loop rewrites the very file readTicketsIn/readHolderRecords
+// list and parse every ~100ms while another heavy job's admission decision
+// is being computed; a reader that opened the file mid-truncate saw
+// invalid JSON, and its json.Unmarshal error silently dropped an otherwise
+// live waiter or holder from the k/room count (reproduced as
+// TestAdmitHeavySimultaneousArrivalsRespectTheCap's three-way case
+// occasionally admitting 9+12+6 instead of 9+9+9).
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temporary.Name()
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Chmod(tempPath, perm); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
+}
+
 // registerAt is Register generalized to any namespace/directory; RegisterHeavy
 // (heavy.go) is its only other caller.
 func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self Participant) *Ticket {
@@ -165,7 +229,7 @@ func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self
 	if err != nil {
 		return ticket
 	}
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
+	if err := atomicWriteFile(path, payload, 0o600); err != nil {
 		return ticket
 	}
 	ticket.path = path
@@ -175,7 +239,12 @@ func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self
 // Forget removes the waiter's ticket. Safe to call more than once and on a
 // Ticket whose registration never succeeded.
 func (ticket *Ticket) Forget() {
-	if ticket == nil || ticket.path == "" {
+	if ticket == nil {
+		return
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	if ticket.path == "" {
 		return
 	}
 	_ = os.Remove(ticket.path)
@@ -191,14 +260,19 @@ func (ticket *Ticket) Forget() {
 // past staleAfter and be reaped as if its process had died, which only
 // affects visibility, never admission.
 func (ticket *Ticket) Heartbeat() {
-	if ticket == nil || ticket.path == "" {
+	if ticket == nil {
+		return
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	if ticket.path == "" {
 		return
 	}
 	payload, err := json.Marshal(ticketRecord{Participant: ticket.self, CreatedAt: ticket.createdAt, UpdatedAt: time.Now().UTC()})
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(ticket.path, payload, 0o600)
+	_ = atomicWriteFile(ticket.path, payload, 0o600)
 }
 
 // Snapshot reports this ticket's current position and the queue depth, plus
@@ -210,7 +284,7 @@ func (ticket *Ticket) Snapshot(budget int) State {
 	if ticket == nil {
 		return State{}
 	}
-	return snapshot(ticket.projectsRoot, ticket.namespace, ticket.path, budget)
+	return snapshot(ticket.projectsRoot, ticket.namespace, ticket.pathLocked(), budget)
 }
 
 // Peek reports legacy-pool queue state without registering a waiter — used
@@ -230,7 +304,7 @@ func readTicketsIn(dir string) []ticketRecord {
 	}
 	tickets := make([]ticketRecord, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -308,7 +382,7 @@ func readHolderRecords(dir string) []Holder {
 	}
 	holders := make([]Holder, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -382,7 +456,7 @@ func (lease *Lease) Announce(self Participant) *Announcement {
 		if err != nil {
 			continue
 		}
-		if err := os.WriteFile(holderPath, payload, 0o600); err != nil {
+		if err := atomicWriteFile(holderPath, payload, 0o600); err != nil {
 			continue
 		}
 		announcement.paths = append(announcement.paths, holderPath)
@@ -403,7 +477,7 @@ func (announcement *Announcement) Heartbeat() {
 		return
 	}
 	for _, path := range announcement.paths {
-		_ = os.WriteFile(path, payload, 0o600)
+		_ = atomicWriteFile(path, payload, 0o600)
 	}
 }
 

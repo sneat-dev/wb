@@ -13,58 +13,67 @@ import (
 )
 
 // This file implements the adaptive heavy-job queue for a large machine
-// (numCPU >= smallMachineThreshold). Founder 2026-09-18 (sneat-dev/wb#621),
-// after watching three agent lanes test concurrently at a one-minute load of
-// 4.86 on an 18-core Mac (86% idle): "Can we make it smarter? If no queue we
-// can start 100%. If something is running and queue has more than 2 items
-// start 2 with 2/3. If all finished and in queue only one item start with
-// 100%. If 3 items in queue start 3 each 50% of cores" — formalized as:
+// (numCPU >= smallMachineThreshold), sneat-dev/wb#621. The founder's own
+// words on the issue, verbatim, 2026-09-18 (everything else below —
+// the k-tiered share rule, the 150%-cap formula, the N/4 floor, the 3-job
+// bound, the backfill-with-aging replacement, the "fixed at start"
+// behavior, and the N<8 rule — is the lead's design, not a founder quote,
+// even where it is written as a rule statement):
 //
-//	"A 'heavy' job is a broad Go/Node test or build, or any coverage or race
-//	run. Share: when a heavy job is admitted, its allocation depends on k,
-//	the number of heavy jobs that will be running or waiting once it is
-//	admitted (itself included). With N = NumCPU: k=1: N (100%); k=2: N*2/3;
-//	k>=3: N/2. Concurrency: at most 3 heavy jobs run at once. A 4th waits in
-//	FIFO order, and when a slot frees it is admitted with the share for the k
-//	at that moment. Allocation is fixed at start."
+//   - "Feels wrong. This is MacBook Pro with m5 max with lots of CPU and
+//     36gb memory"
+//   - "It should not throttle so aggressively on powerful machines."
+//   - "Can we make it smarter? If no queue we can start 100%. If something
+//     is running and queue has more than 2 items start 2 with 2/3. If all
+//     finished and in queue only one item start with 100%. If 3 items in
+//     queue start 3 each 50% of cores"
+//   - "I think that should work as tests also for io ops"
+//   - "Should we allow 2nd runner in parallel with 50% cpu? So 1st 100%
+//     and total 150%"
 //
-// Then, refined once more after considering total oversubscription:
-//
-//	"Should we allow 2nd runner in parallel with 50% cpu? So 1st 100% and
-//	total 150%." "Add a total-allocation cap of 150% of N for heavy jobs,
-//	when N >= 8. A newly admitted heavy job gets
-//	min(share(k), 1.5*N - allocated_heavy) ... If that result is below N/4,
-//	the job waits in FIFO order instead. This subsumes the 3-job slot limit.
-//	Keep the limit only as a defensive bound."
-//
-// Backfill-with-aging (an earlier design for the small-machine budget-sum
-// pool) does not apply here: "The backfill-with-aging item from the brief is
-// replaced by this: FIFO among heavy waiters, and focused jobs never wait
-// behind heavy ones." A focused job (see Kind.IsHeavy, Admit) never touches
-// any of this — it is always admitted immediately and is invisible to k.
-//
-// Allocation is fixed at admission and never revised for a job already
-// running: "A running process's GOMAXPROCS cannot be changed, so a job
-// admitted alone at 100% keeps it. Jobs that arrive later are still admitted
-// by the rule above. That means a burst can briefly oversubscribe the CPU,
-// and that is acceptable: tests here mostly wait on I/O and subprocesses."
+// Lead design, formalizing the founder's messages above into the rule this
+// file implements: a "heavy" job is a broad Go/Node test or build, or any
+// coverage or race run. When a heavy job is admitted, its allocation
+// depends on k, the number of heavy jobs that will be running or waiting
+// once it is admitted (itself included): with N = NumCPU, k=1 gives N
+// (100%), k=2 gives N*2/3, k>=3 gives N/2. The total allocation across
+// concurrently running heavy jobs may not exceed 1.5*N: a newly admitted
+// heavy job actually gets min(share(k), 1.5*N - allocated_heavy), and if
+// that is below N/4, it waits instead, in strict FIFO order among heavy
+// waiters — replacing this design's earlier backfill-with-aging admission
+// for the small-machine budget-sum pool entirely; a focused job (see
+// Kind.IsHeavy, Admit) never touches any of this — it is always admitted
+// immediately and is invisible to k. Allocation is fixed at admission and
+// never revised for a job already running, because a running process's
+// GOMAXPROCS cannot be changed: a job admitted alone at 100% keeps that
+// share even as others are admitted at a smaller one later, so a burst can
+// briefly leave the machine oversubscribed — accepted because these
+// commands mostly wait on I/O and subprocesses, not pure CPU.
 
-// heavyShareFloorDivisor: a computed candidate share below N/4 is not worth
-// admitting — the job keeps waiting instead of running starved. Founder:
-// "If that result is below N/4, the job waits in FIFO order instead."
+// heavyShareFloorDivisor: lead design — a computed candidate share below
+// N/4 is not worth admitting; the job keeps waiting instead of running
+// starved.
 const heavyShareFloorDivisor = 4
 
-// heavyCapNumerator/heavyCapDenominator: the total CPU allocation summed
-// across concurrently running heavy jobs may not exceed 1.5x N. Founder:
-// "Add a total-allocation cap of 150% of N for heavy jobs, when N >= 8."
+// heavyCapNumerator/heavyCapDenominator: lead design — the total CPU
+// allocation summed across concurrently running heavy jobs may not exceed
+// 1.5x N, formalizing the founder's "Should we allow 2nd runner in
+// parallel with 50% cpu? So 1st 100% and total 150%".
 const heavyCapNumerator, heavyCapDenominator = 3, 2
 
-// heavyDefensiveMax bounds concurrently running heavy jobs even if the
-// share/room arithmetic were ever wrong. It is mathematically redundant —
-// the share floor (N/2 once k>=3) and the 1.5N cap already make a 4th
-// concurrent heavy job impossible (4 * N/2 = 2N > 1.5N) — and kept "only as
-// a defensive bound" per the founder, never as the primary gate: "This
-// subsumes the 3-job slot limit. Keep the limit only as a defensive bound."
+// heavyDefensiveMax bounds concurrently running heavy jobs: lead design, a
+// fallback once the 1.5N cap does the real work. The share floor (N/2 once
+// k>=3) and the 1.5N cap do make a 4th concurrent job impossible
+// (4 * N/2 = 2N > 1.5N) whenever the running-holder count both checks read
+// is accurate — but that shared premise is exactly what a bug like PR #628's
+// B1 (a holder aged out and vanished from accounting while still genuinely
+// running) can break: with holders undercounted, the room check alone was
+// fooled into admitting an 18+18+9 against a 27 cap in review. This bound is
+// a second, independent read of the same live state, not a separate signal
+// — it does not protect against B1-class undercounting on its own, but it
+// is still load-bearing, not "mathematically redundant," against any bug
+// that inflates k/room from a different angle than accounting for
+// allocated units.
 const heavyDefensiveMax = 3
 
 // heavyShare is a heavy job's allocation when k heavy jobs (itself included)
@@ -165,7 +174,7 @@ func announceHeavyHolder(projectsRoot string, self Participant, units int, start
 	if err != nil {
 		return "", false
 	}
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
+	if err := atomicWriteFile(path, payload, 0o600); err != nil {
 		return "", false
 	}
 	return path, true
@@ -184,7 +193,7 @@ func heartbeatHeavyHolder(path string, self Participant, units int, startedAt ti
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, payload, 0o600)
+	_ = atomicWriteFile(path, payload, 0o600)
 }
 
 func removeHeavyHolder(path string) {
@@ -200,7 +209,7 @@ func readHeavyHolders(projectsRoot string) []Holder {
 	return readHolderRecords(heavyRunningDir(projectsRoot))
 }
 
-// admitHeavy waits for this heavy job's turn under the founder's adaptive
+// admitHeavy waits for this heavy job's turn under the lead's adaptive
 // policy: strict FIFO among heavy waiters (no backfill), admitted once
 // min(share(k), room) is at least N/heavyShareFloorDivisor, else it keeps
 // waiting. ticket must already be registered via RegisterHeavy; admitHeavy
@@ -215,8 +224,8 @@ func admitHeavy(ctx context.Context, projectsRoot string, self Participant, tick
 			return nil, 0, time.Since(started), ctx.Err()
 		default:
 		}
-		waitingTickets := readTicketsIn(heavyWaitingDir(projectsRoot))
-		if len(waitingTickets) == 0 || waitingTickets[0].path != ticket.path {
+		headTickets := readTicketsIn(heavyWaitingDir(projectsRoot))
+		if len(headTickets) == 0 || headTickets[0].path != ticket.pathLocked() {
 			// Not the head of the heavy FIFO queue yet: strictly wait,
 			// never attempt to jump ahead.
 			if !sleepOrDone(ctx, retryInterval) {
@@ -229,6 +238,19 @@ func admitHeavy(ctx context.Context, projectsRoot string, self Participant, tick
 			return nil, 0, time.Since(started), err
 		}
 		if !locked {
+			if !sleepOrDone(ctx, retryInterval) {
+				return nil, 0, time.Since(started), ctx.Err()
+			}
+			continue
+		}
+		// Review finding (PR #628, M3): re-read the waiting queue under the
+		// same lock the running-holder read below uses, so k and the
+		// head-of-queue check reflect one consistent, atomic snapshot
+		// instead of the pre-lock read above (which another process could
+		// have changed in the meantime).
+		waitingTickets := readTicketsIn(heavyWaitingDir(projectsRoot))
+		if len(waitingTickets) == 0 || waitingTickets[0].path != ticket.pathLocked() {
+			unlockHeavyAdmission(lockFile)
 			if !sleepOrDone(ctx, retryInterval) {
 				return nil, 0, time.Since(started), ctx.Err()
 			}
@@ -251,13 +273,22 @@ func admitHeavy(ctx context.Context, projectsRoot string, self Participant, tick
 			continue
 		}
 		startedAt := time.Now().UTC()
-		holderPath, _ := announceHeavyHolder(projectsRoot, self, share, startedAt)
+		holderPath, ok := announceHeavyHolder(projectsRoot, self, share, startedAt)
+		if !ok {
+			// Review finding (PR #628, M2): never admit a job invisible to
+			// the cap. A failed announce must not hand out a Lease that no
+			// accounting sees — retry the whole decision instead, still
+			// holding our place at the head of the FIFO queue.
+			unlockHeavyAdmission(lockFile)
+			if !sleepOrDone(ctx, retryInterval) {
+				return nil, 0, time.Since(started), ctx.Err()
+			}
+			continue
+		}
 		ticket.Forget()
 		unlockHeavyAdmission(lockFile)
-		lease := &Lease{
-			extraRelease: func() { removeHeavyHolder(holderPath) },
-			heartbeat:    func() { heartbeatHeavyHolder(holderPath, self, share, startedAt) },
-		}
+		lease := &Lease{extraRelease: func() { removeHeavyHolder(holderPath) }}
+		lease.armHeartbeat(func() { heartbeatHeavyHolder(holderPath, self, share, startedAt) })
 		return lease, share, time.Since(started), nil
 	}
 }
