@@ -4330,6 +4330,83 @@
       "notes": "Without publication flags, verified changes remain in isolated operation worktrees for review."
     },
     {
+      "id": "wb.disk",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb disk",
+              "flags": [
+                "--format",
+                "--minimum-available",
+                "--skip-sizes"
+              ],
+              "modes": [
+                "Reports WB-attributable bytes per category \u2014 worktrees, Go build and module caches, the node package store, WB state, and per-task scratch \u2014 against the headroom remaining on the volume holding the projects root.",
+                "Separates what removing a category would actually reclaim from what its trees appear to hold. Git worktrees share objects with their canonical clone and pnpm hard-links store entries into every consumer, so apparent size overstates a reclaim; every category is measured in one accounting walk so content linked into two is counted once.",
+                "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured \u2014 so a partial measurement is never mistaken for a tidy machine.",
+                "--skip-sizes reports roots and filesystem headroom without walking trees, because measuring a multi-gigabyte cache costs minutes of IO and the free-space figure is often the whole answer.",
+                "Reports only. Retiring a worktree remains wb worktree gc, which knows what holds unlanded work."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb disk --help",
+              "contains": [
+                "--skip-sizes",
+                "--minimum-available",
+                "RECLAIM"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "# Coverage and verification",
+              "examples": [
+                "wb disk"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/disk/disk_test.go",
+              "name": "TestCollectFindsWorktreesInTheManagedLayout",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/disk/disk_test.go",
+              "name": "TestFindingsReportLowHeadroomAgainstTheConfiguredFloor",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/disk/disk_test.go",
+              "name": "TestFindingsFlagUnmeasuredRoots",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total \u2014 worktrees held 340 MB fleet-wide while per-task scratch held 46 GB \u2014 so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
+    },
+    {
       "id": "wb.fleet",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
@@ -15277,7 +15354,7 @@
               "modes": [
                 "Dry-run is the default and --apply is required to move a checkout",
                 "--to=local selects the canonical repository .worktrees root; --to=shared resolves to the central store (<root>/.worktrees unless worktrees.root overrides it) and embeds the canonical clone's literal host level",
-            "The relocation receipt records the destination relative to the placement root that produced it, so a later worktrees.root reconfigure does not invalidate it",
+                "The relocation receipt records the destination relative to the placement root that produced it, so a later worktrees.root reconfigure does not invalidate it",
                 "The task, branch, immutable Work Log claim, and checkout contents are preserved",
                 "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
                 "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
