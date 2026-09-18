@@ -274,19 +274,28 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 	if numberErr != nil {
 		return err
 	}
-	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number))
+	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number, ""))
 }
 
 // pullRequestLandResumeCommand rebuilds the exact `wb pr land` invocation
-// that recovers a landing left incomplete by exhausted transient GitHub read
-// retries, carrying forward every option that changes what the command does.
-func pullRequestLandResumeCommand(options PullRequestLandOptions, number string) string {
+// that recovers a landing left incomplete - by exhausted transient GitHub
+// read retries, or by a checks-pending timeout (#584) - carrying forward
+// every option that changes what the command does. timeoutFlag is the
+// --timeout value to print; a caller with no opinion on it (the transient-
+// retry resume, which is not a budget problem) passes "".
+func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeoutFlag string) string {
 	parts := []string{"wb", "pr", "land", options.Repository + "#" + number}
+	if timeoutFlag != "" {
+		parts = append(parts, "--timeout", timeoutFlag)
+	}
 	if options.MergeMethodExplicit && strings.TrimSpace(options.MergeMethod) != "" {
 		parts = append(parts, "--merge-method", options.MergeMethod)
 	}
 	if options.Keep {
 		parts = append(parts, "--keep")
+	}
+	if options.NoAutoMerge {
+		parts = append(parts, "--no-auto-merge")
 	}
 	if options.AllowUnfenced {
 		parts = append(parts, "--allow-unfenced")
@@ -517,9 +526,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	case PullRequestWaitPending:
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksPending
-		result.Reason = waited.Reason
-		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number +
-			" --timeout " + prLandResumeTimeoutFlag(options.Slice)
+		result.Reason = waited.Reason + "; run the resume command in the background - it carries a budget above the foreground harness ceiling"
+		result.SanctionedCommand = pullRequestLandResumeCommand(options, number, prLandResumeTimeoutFlag(options.Slice))
 		// Auto-merge was armed before the wait, so a pending result is not a
 		// stranded change: GitHub lands it when the checks pass. Say so, and
 		// name the one part GitHub cannot do.
@@ -535,7 +543,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksFailed
 		result.Reason = waited.Reason
-		result.SanctionedCommand = "gh pr view " + number + " --repo " + options.Repository + " --web"
+		// #600: point at the failing job directly rather than the PR page,
+		// which names nothing and makes the caller re-derive which check and
+		// which job actually failed.
+		result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
 		// Auto-merge stays armed through a red result. CI is the gate: whoever
 		// pushes a fix is responsible for it, the required checks re-run
 		// against what they pushed, and the merge happens only if they pass.
@@ -738,6 +749,48 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 func manualPullRequestMergeCommand(repository, number, method string) string {
 	return "gh pr merge " + number + " --repo " + repository + " --" + method
+}
+
+// checksFailedSanctionedCommand names the command that shows the actual
+// failure (#600), rather than the PR page, which shows nothing about which
+// check or job failed: the first failing job's own URL when GitHub gave WB
+// one, else a gh command that fetches its log by run ID, else - a
+// third-party check run WB could resolve neither a job link nor a run ID
+// for - the previous PR-page fallback.
+func checksFailedSanctionedCommand(details []CIFailureDetail, repository, number string) string {
+	if len(details) == 0 {
+		return "gh pr view " + number + " --repo " + repository + " --web"
+	}
+	first := details[0]
+	if first.JobURL != "" {
+		return first.JobURL
+	}
+	if runID := runIDFromActionsRunURL(first.RunURL); runID != "" {
+		return "gh run view " + runID + " --repo " + repository + " --log-failed"
+	}
+	return "gh pr view " + number + " --repo " + repository + " --web"
+}
+
+// runIDFromActionsRunURL extracts the run ID from a URL of the shape
+// CIFailureDetail.RunURL is built with (".../actions/runs/<id>"). An
+// unrecognized shape yields "" so the caller falls back rather than
+// building a command around a wrong value.
+func runIDFromActionsRunURL(rawURL string) string {
+	const marker = "/actions/runs/"
+	index := strings.LastIndex(rawURL, marker)
+	if index < 0 {
+		return ""
+	}
+	id := rawURL[index+len(marker):]
+	if id == "" {
+		return ""
+	}
+	for _, digit := range id {
+		if digit < '0' || digit > '9' {
+			return ""
+		}
+	}
+	return id
 }
 
 // recommendedPRLandResumeTimeout is the budget named on a checks-pending

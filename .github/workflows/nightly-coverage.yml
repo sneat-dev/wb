@@ -35,9 +35,10 @@ jobs:
   coverage:
     name: Full merged coverage (main)
     runs-on: ubuntu-latest
-    # Matches go-ci.yml's coverage budget: internal/orchestrate is not
-    # process-isolated, so its single unsharded binary runs for well over 15
-    # minutes and is the wall-clock long pole.
+    # Matches go-ci.yml's coverage budget: internal/orchestrate joined the
+    # sharded package list in #578 (it was over 15 minutes unsharded), and
+    # the raised budget stays regardless so setup and diagnostic upload
+    # remain outside the inner deadline.
     timeout-minutes: 45
     steps:
       - name: Checkout
