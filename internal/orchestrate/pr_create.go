@@ -478,7 +478,13 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, branch, base, title, 
 // where a caller pays that cost, once, for the worktree it actually meant.
 func resolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argument string) (string, error) {
 	if info, statErr := os.Stat(argument); statErr == nil && info.IsDir() {
-		return argument, nil
+		// Absolute: ReadManifest (and the secure directory helpers it uses)
+		// refuse a relative path outright, and "." is the CLI's own default.
+		absolute, absErr := filepath.Abs(argument)
+		if absErr != nil {
+			return "", fmt.Errorf("resolve %s to an absolute path: %w", argument, absErr)
+		}
+		return absolute, nil
 	}
 	entries, err := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: projectsRoot, Task: argument})
 	if err != nil {

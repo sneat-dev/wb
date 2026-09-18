@@ -800,6 +800,38 @@ func TestCreateAddWithLandRefusesLeftoversBeforeCommitting(t *testing.T) {
 	}
 }
 
+func TestCreateResolvesADotWorktreeArgumentToAnAbsolutePath(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "dot-task", "feature/dot", "main", "main.go")
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(worktree); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	// "." is the CLI's own default worktree argument. ReadManifest (and the
+	// secure directory helpers it uses) refuse a relative path outright, so
+	// this proves the manifest's own repository is used rather than falling
+	// through to the repopath-from-canonical-dir guess, which would fail on
+	// this fixture's legacy <org>/<repo> layout (no host segment) exactly the
+	// way it failed against a real, unmigrated canonical clone.
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: ".", ProjectsRoot: fixture.projects,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess || result.Repository != fixture.repository {
+		t.Fatalf("outcome=%s repository=%q reason=%s", result.Outcome, result.Repository, result.Reason)
+	}
+}
+
 func TestCreateLandEndToEndCreatesArmsWaitsAndMerges(t *testing.T) {
 	fixture := newCreateFixture(t)
 	fixture.writeState(t, "files", `[{"filename":"go.sum","status":"modified","patch":"@@ -1,1 +1,1 @@\n-old h1:x=\n+new h1:y=\n"}]`)
