@@ -936,7 +936,7 @@ func TestBusyProcessSelfAncestorGivesCdOutGuidance(t *testing.T) {
 		}
 	}()
 
-	reason := busyProcessReason([]string{root})
+	reason := worktrees.BusyProcessReason([]string{root})
 	if reason == "" {
 		t.Fatal("want a busy-process reason for this process's own cwd")
 	}

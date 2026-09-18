@@ -17,7 +17,6 @@ import (
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/repopath"
-	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -116,6 +115,11 @@ func MigrateFailed(report MigrateReport) bool {
 		if clone.Status == "skipped" || clone.Status == "failed" {
 			return true
 		}
+		for _, relocation := range clone.Relocations {
+			if relocation.Status == "skipped" || relocation.Status == "failed" {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -185,7 +189,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		ObservedAt:    options.Now(),
 		DryRun:        !options.Apply,
 	}
-	if !busyProcessCheckSupported {
+	if !worktrees.BusyProcessCheckSupported {
 		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
 	}
 	if options.Apply {
@@ -512,72 +516,15 @@ func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePath
 		return claim
 	}
 	paths := append([]string{clonePath}, worktreePaths...)
-	if parked := parkedSessionReason(root, paths); parked != "" {
+	if parked := worktrees.ParkedSessionReason(root, paths); parked != "" {
 		return parked
 	}
-	if busyProcessCheckSupported {
-		if busy := busyProcessReason(paths); busy != "" {
+	if worktrees.BusyProcessCheckSupported {
+		if busy := worktrees.BusyProcessReason(paths); busy != "" {
 			return busy
 		}
 	}
 	return ""
-}
-
-// parkedSessionReason reports, across every wbhome-resolved home for root,
-// whether any un-picked-up (parked, not yet resumed) session bundle names a
-// worktree under one of paths — the clone itself or one of its linked
-// worktrees. A parked session's bundle binds a worktree to an exact active
-// Work Log claim and custody record (see session_park_local.go); migrating
-// the clone out from under it before the session resumes would leave that
-// binding pointing at a path that no longer holds what it recorded.
-func parkedSessionReason(root string, paths []string) string {
-	resolution, err := wbhome.Resolve(root)
-	if err != nil {
-		return ""
-	}
-	seen := make(map[string]bool, len(resolution.Read))
-	for _, layout := range resolution.Read {
-		home := filepath.Clean(layout.Home)
-		if home == "" || seen[home] {
-			continue
-		}
-		seen[home] = true
-		storeRoot := filepath.Join(home, sessionpark.SourceDirName)
-		entries, readErr := os.ReadDir(storeRoot)
-		if readErr != nil {
-			continue
-		}
-		store := sessionpark.NewStore(storeRoot)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			state, loadErr := store.Load(entry.Name())
-			if loadErr != nil || state.Status != sessionpark.StatusParked {
-				continue
-			}
-			for _, member := range state.Bundle.Worktrees {
-				for _, path := range paths {
-					if underPath(member.CanonicalDir, path) || underPath(member.WorktreeDir, path) {
-						return fmt.Sprintf("an un-picked-up parked session (%s) references %s", state.Bundle.ParkedSessionID, path)
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// underPath reports whether candidate is path itself or nested under it.
-func underPath(candidate, path string) bool {
-	if candidate == "" || path == "" {
-		return false
-	}
-	candidate, path = filepath.Clean(candidate), filepath.Clean(path)
-	if candidate == path {
-		return true
-	}
-	return strings.HasPrefix(candidate, path+string(filepath.Separator))
 }
 
 func liveClaimReason(root, slug string) string {
@@ -720,6 +667,7 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 			outcome, relocateErr := worktrees.Relocate(ctx, worktrees.RelocateOptions{
 				ProjectsRoot: root, Task: entry.Task, Filter: entry.Repository, To: "shared",
 				Apply: apply, Now: func() time.Time { return now },
+				LeaveActiveTasksInPlace: true,
 			})
 			result, found := findRelocateResult(outcome.Results, matchPath)
 			switch {
@@ -728,18 +676,14 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 			case !found:
 				relocation.Status, relocation.Reason = "skipped", "relocation plan did not include this checkout"
 			case !result.Eligible:
+				// The founder's decision (2026-09-18): a finished task's
+				// checkout is the safe case and is relocated (see Relocate's
+				// claimForRelocation); only an ACTIVE task's checkout, or one
+				// a per-checkout safety check refuses, is left in place here,
+				// and result.Reason already says which and why (e.g. "active
+				// task — relocate after it finishes").
 				relocation.Status = "skipped"
 				relocation.Reason = result.Reason
-				if strings.Contains(result.Reason, "work-log projection is terminal, not active") {
-					// This is not an unlanded, live task migrate failed to move: its
-					// Work Log claim already reached a terminal (finished) lifecycle,
-					// so `wb worktree relocate` refuses it by design -- Relocate only
-					// ever moves an active claim. The checkout itself is leftover from
-					// that finished task, and `wb worktree gc` is what classifies and
-					// clears it, not another relocation attempt.
-					relocation.Reason = "finished-task leftover: this checkout's Work Log claim is " +
-						"already terminal, so relocate does not move it; run `wb worktree gc` to classify and clear it (" + result.Reason + ")"
-				}
 			case result.AlreadyThere:
 				continue
 			case !apply:
@@ -841,7 +785,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		SchemaVersion: 1, ProjectsRoot: root, ObservedAt: options.Now(),
 		DryRun: !options.Apply, Undo: true, ManifestID: options.UndoID,
 	}
-	if !busyProcessCheckSupported {
+	if !worktrees.BusyProcessCheckSupported {
 		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
 	}
 	var lock *migrationLock

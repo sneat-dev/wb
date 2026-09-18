@@ -71,21 +71,28 @@ placement differs from the store-mode placement — calling the existing `wb
 worktree relocate` implementation itself, not a copy of it. Central store mode
 relocates to `{root}/.worktrees/{task}/{host}/{owner}/{repository}`;
 repository-local store mode leaves in-clone checkouts where they are, so
-nothing is relocated for such a clone. A checkout is left in place, with a
-finding, when its task lock is held or its relocation destination already
-exists — the clone it belongs to still migrates. That is different from a
-clone refusal: every clone-refusal condition above (a live Work Log claim on
-the clone or any of its linked worktrees, foremost) still skips the *whole*
-clone, including every one of its checkouts, in every mode — a clone move
-carries its in-clone checkouts with it, so moving it out from under a live
-task would pull the directory out from under a running session. A checkout
-whose Work Log claim has already gone terminal (the task finished and the
-worktree was left behind) is reported `finished-task leftover`, naming `wb
-worktree gc` as the command that classifies and clears it, not another
-relocation attempt. A linked worktree with no WB task identity is repointed
-only (never relocated) and reported `unmanaged`. Pass `--clones-only` to skip
-relocation and get exactly the clone-move-and-repoint behaviour `migrate` had
-before this existed.
+nothing is relocated for such a clone. A checkout whose Work Log claim has
+gone terminal (the task finished) is relocated — no live session depends on
+its path any more, so this is the safe case. A checkout whose claim is still
+active is left in place, with a finding reading "active task — relocate
+after it finishes" (a finding, not a failure) — a live session may still be
+using it. Every relocation candidate, whichever its claim's lifecycle, is
+re-checked immediately before its own move: a Git operation in progress, a
+live process with its working directory inside it, an un-picked-up parked
+session naming it, its task lock held, or its destination already existing
+each leave that one checkout in place with a finding, while its clone and
+every other checkout still migrate. Uncommitted changes and unpushed commits
+are never a reason to leave a checkout behind — the rename preserves them.
+That per-checkout recheck is additional to, never a substitute for, the
+clone-level refusal above: every clone-refusal condition (a live Work Log
+claim on the clone or any of its linked worktrees, foremost) still skips the
+*whole* clone, including every one of its checkouts, in every mode — a clone
+move carries its in-clone checkouts with it, so moving it out from under a
+live task would pull the directory out from under a running session. A
+linked worktree with no WB task identity is repointed only (never relocated)
+and reported `unmanaged`. Pass `--clones-only` to skip relocation and get
+exactly the clone-move-and-repoint behaviour `migrate` had before this
+existed.
 
 `--apply` (migrate or undo) takes a single exclusive lock under `<root>/.wb`
 for the run; a second concurrent `--apply` against the same root fails

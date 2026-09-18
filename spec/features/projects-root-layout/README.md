@@ -243,18 +243,35 @@ default central mode, `<root>/.worktrees/<task>/<host>/<org>/<repo>`. It MUST
 perform that move through the same implementation as `wb worktree relocate`
 (task lock, descriptor-anchored no-replace move, Git repair, registration
 verification, relocation receipt), so the two commands cannot diverge. The dry
-run MUST list each planned relocation with its source and destination. A
-checkout MUST be left in place, with a finding naming the reason, when its
-task lock is held or its relocation destination exists; the clone it belongs
-to is still migrated. Every clone refusal condition in
+run MUST list each planned relocation with its source and destination.
+Uncommitted changes and unpushed commits MUST NOT be a reason to leave a
+checkout behind — the rename preserves them exactly, the same principle
+[`clone-migration-refusals`](#req-clone-migration-refusals) already applies to
+a clone move.
+
+A checkout whose Work Log claim has reached a terminal (sealed, finished-task)
+lifecycle MUST be relocated: the task is done, no live session depends on its
+current path, and this is the safe case, not an unsafe one. A checkout whose
+claim is still active MUST be left in place, with a finding reading "active
+task — relocate after it finishes" (a finding, not a failure) — a live session
+may still be using it. Every relocation candidate, whichever its claim's
+lifecycle, MUST be re-checked immediately before its own move, independently
+of the clone-level refusal check above: a Git operation in progress, a live
+process (on an OS that exposes one) with its working directory inside it, an
+un-picked-up parked session naming it, its task lock held, or its relocation
+destination already existing each leave that one checkout in place, with a
+finding naming the reason, while its clone and every other checkout still
+migrate. Every clone refusal condition in
 [`clone-migration-refusals`](#req-clone-migration-refusals) still skips the
-whole clone, including all of its checkouts, in every mode. A linked worktree
+whole clone, including all of its checkouts, in every mode — this per-checkout
+recheck is additional to that, never a substitute for it. A linked worktree
 with no WB task identity MUST be repointed but never relocated, and MUST be
 listed in the report as unmanaged. In repository-local store mode a checkout
 already at `<canonical>/.worktrees/<task>` MUST NOT be moved, per
 [`store-mode-is-user-policy`](#req-store-mode-is-user-policy). `--clones-only`
 MUST restrict the run to clone moves and worktree repointing, and `wb worktree
-relocate <task>` MUST remain available for moving one task at a time.
+relocate <task>` MUST remain available for moving one task at a time, whether
+its claim is active or terminal.
 
 #### REQ: clone-migration-manifest-and-undo
 
@@ -424,15 +441,18 @@ clone is migrated, and the command exits with the findings code.
 **Requirements:** projects-root-layout#req:migration-relocates-managed-worktrees
 
 **Given** a legacy clone `<root>/dal-go/dalgo` in central store mode, with a
-managed task checkout `t1` at `<root>/dal-go/dalgo/.worktrees/t1`, a managed task
-checkout `t2` at `~/.wb/worktrees/t2/dal-go/dalgo`, and an unmanaged linked
-worktree created with plain `git worktree add`
+**finished** (terminal Work Log claim) task checkout `t1` at
+`<root>/dal-go/dalgo/.worktrees/t1`, a **finished** task checkout `t2` at
+`~/.wb/worktrees/t2/dal-go/dalgo`, an **active** (unsealed claim) task checkout
+`t3` at `<root>/dal-go/dalgo/.worktrees/t3`, and an unmanaged linked worktree
+created with plain `git worktree add`
 **When** `wb layout migrate --apply` runs
 **Then** the clone is at `<root>/github.com/dal-go/dalgo`, `t1` and `t2` are at
 `<root>/.worktrees/<task>/github.com/dal-go/dalgo` with a relocation receipt each,
-the unmanaged worktree is repointed in place and listed as unmanaged, `git
-status` succeeds in all three, and `<root>/github.com/dal-go/dalgo/.worktrees`
-no longer holds a task checkout
+`t3` is left at its pre-migration path with a finding reading "active task —
+relocate after it finishes", the unmanaged worktree is repointed in place and
+listed as unmanaged, `git status` succeeds in all four, and
+`<root>/github.com/dal-go/dalgo/.worktrees` no longer holds `t1` or `t2`
 **When** the same setup runs with `--clones-only`
 **Then** the clone moves and every worktree is repointed, and no checkout is
 relocated.

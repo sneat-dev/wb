@@ -29,6 +29,15 @@ type RelocateOptions struct {
 	To           string // local or shared
 	Apply        bool
 	Now          func() time.Time
+	// LeaveActiveTasksInPlace is set by `wb layout migrate`'s automatic
+	// relocation step only. The founder's decision (2026-09-18): an
+	// explicit `wb worktree relocate <task>` stays available whether the
+	// task's claim is active or terminal — the operator asked for it by
+	// name. migrate's own automatic sweep is different: nobody named this
+	// checkout, so an active task's checkout is left in place with a
+	// finding ("active task — relocate after it finishes") rather than
+	// relocated out from under a session that might still be using it.
+	LeaveActiveTasksInPlace bool
 	// afterWorktreeMoveBeforeReceipt is a test-only crash-window seam. A real
 	// process interruption has the same durable state: an intent exists and Git
 	// has registered the destination, but no completion receipt exists yet.
@@ -63,17 +72,13 @@ type RelocateResult struct {
 	claimHome string `json:"-"`
 }
 
-// activeWorkLogClaimAcrossHomes resolves a checkout's active Work Log claim by
-// trying every home WB resolves for the root, not only the current write
-// home -- matching REQ: clone-migration-refusals, which requires the same
-// breadth for the live-claim refusal (see ListActiveClaimSummaries). A claim
-// recorded under a retired legacy home is still a live task, and Relocate's
-// own eligibility check must recognise it exactly as the refusal check does,
-// or a genuinely active, corroborated claim is misreported as uncorroborated
-// solely because the machine has since adopted a new write home. It returns
-// the home under which the claim was found so callers write any new
-// relocation record to that same home.
-func activeWorkLogClaimAcrossHomes(resolution wbhome.Resolution, worktree string) (workLogClaim, workLogProjection, string, string, error) {
+// resolvedClaimHomes lists every home a checkout's Work Log claim might be
+// recorded under -- the current write home first, then every other home
+// wbhome.Resolve reports (including a retired legacy one), deduplicated. A
+// claim recorded under a retired legacy home is still live (or still
+// terminal) work; matching REQ: clone-migration-refusals, which requires the
+// same breadth for the live-claim refusal (see ListActiveClaimSummaries).
+func resolvedClaimHomes(resolution wbhome.Resolution) []string {
 	homes := make([]string, 0, len(resolution.Read)+1)
 	tried := map[string]bool{}
 	addHome := func(home string) {
@@ -87,18 +92,81 @@ func activeWorkLogClaimAcrossHomes(resolution wbhome.Resolution, worktree string
 	for _, layout := range resolution.Read {
 		addHome(layout.Home)
 	}
+	return homes
+}
+
+// claimForRelocation resolves either an active or a terminal (sealed,
+// finished-task) Work Log claim for a checkout. The founder's decision
+// (2026-09-18): a finished task has no live session and will not be resumed,
+// so relocating its leftover checkout is the safest case, not an unsafe one
+// -- activeWorkLogClaim's Lifecycle=="active" requirement is a limitation of
+// what it corroborates, not a safety reason to refuse a terminal claim.
+// terminal is non-nil exactly when the resolved claim is terminal; callers
+// use that to decide whether to relocate now or to leave an active task's
+// checkout in place until it finishes.
+func claimForRelocation(home, worktree string) (workLogClaim, *workLogTerminalRecord, error) {
+	claim, _, _, activeErr := activeWorkLogClaim(home, worktree)
+	if activeErr == nil {
+		return claim, nil, nil
+	}
+	terminal, terminalErr := readWorkLogTerminalRecord(home, worktree)
+	if terminalErr != nil {
+		return workLogClaim{}, nil, terminalErr
+	}
+	if terminal != nil {
+		return terminal.workLogClaim, terminal, nil
+	}
+	// Neither active nor terminal corroborated (no projection, corrupted
+	// evidence, ...): the active-claim error is the actionable one to report.
+	return workLogClaim{}, nil, activeErr
+}
+
+// claimForRelocationAcrossHomes is claimForRelocation, tried across every
+// home wbhome.Resolve reports, not only the current write home -- matching
+// REQ: clone-migration-refusals, which requires the same breadth for the
+// live-claim refusal (see ListActiveClaimSummaries). A claim recorded under a
+// retired legacy home is still live (or still terminal) work, and a
+// genuinely resolvable claim must not be misreported as uncorroborated
+// solely because the machine has since adopted a new write home. It returns
+// the home under which the claim was found so callers write any new
+// relocation record to that same home.
+func claimForRelocationAcrossHomes(resolution wbhome.Resolution, worktree string) (workLogClaim, *workLogTerminalRecord, string, error) {
 	var lastErr error
-	for _, home := range homes {
-		claim, projection, claimPath, err := activeWorkLogClaim(home, worktree)
+	for _, home := range resolvedClaimHomes(resolution) {
+		claim, terminal, err := claimForRelocation(home, worktree)
 		if err == nil {
-			return claim, projection, claimPath, home, nil
+			return claim, terminal, home, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("no resolved home could corroborate an active Work Log claim")
+		lastErr = fmt.Errorf("no resolved home could corroborate a Work Log claim")
 	}
-	return workLogClaim{}, workLogProjection{}, "", "", lastErr
+	return workLogClaim{}, nil, "", lastErr
+}
+
+// checkoutSafetyRefusal runs the per-checkout safety checks REQ:
+// migration-relocates-managed-worktrees names, immediately before a checkout
+// actually moves as well as at plan time: a Git operation in progress, a live
+// process (on an OS that exposes one) with its working directory inside the
+// checkout, or an un-picked-up parked session naming it. A checkout's task
+// lock (ListResult.Locked) and its destination already existing are checked
+// by relocationEligibility and planRelocation respectively, not here.
+func checkoutSafetyRefusal(ctx context.Context, projectsRoot, worktree string) (string, error) {
+	if reason, err := GitOperationInProgress(ctx, worktree); err != nil {
+		return "", fmt.Errorf("cannot inspect Git state: %w", err)
+	} else if reason != "" {
+		return reason, nil
+	}
+	if BusyProcessCheckSupported {
+		if reason := BusyProcessReason([]string{worktree}); reason != "" {
+			return reason, nil
+		}
+	}
+	if reason := ParkedSessionReason(projectsRoot, []string{worktree}); reason != "" {
+		return reason, nil
+	}
+	return "", nil
 }
 
 type RelocateOutcome struct {
@@ -243,14 +311,25 @@ func findRelocationEntry(entries []ListResult, path string) (ListResult, bool) {
 func planRelocation(ctx context.Context, resolution wbhome.Resolution, options RelocateOptions, entry ListResult) (RelocateResult, error) {
 	result := RelocateResult{Task: entry.Task, Repository: entry.Repository, CanonicalDir: entry.CanonicalDir,
 		WorktreeDir: entry.WorktreeDir, Branch: entry.Branch, HeadSHA: entry.HeadSHA, To: options.To}
-	claim, _, _, claimHome, claimErr := activeWorkLogClaimAcrossHomes(resolution, entry.WorktreeDir)
+	claim, terminal, claimHome, claimErr := claimForRelocationAcrossHomes(resolution, entry.WorktreeDir)
 	if claimErr != nil {
-		result.Reason = "active Work Log claim is not corroborated: " + claimErr.Error()
+		result.Reason = "Work Log claim is not corroborated: " + claimErr.Error()
 		return result, nil
 	}
 	result.ClaimID = claim.ClaimID
 	result.claimHome = claimHome
 	home := claimHome
+	if terminal == nil && options.LeaveActiveTasksInPlace {
+		// The founder's decision (2026-09-18): migrate's automatic sweep
+		// never named this checkout, so an active task's checkout — one a
+		// live session might still be using — stays exactly where it is
+		// until the task finishes. This is a finding, not a failure. An
+		// explicit `wb worktree relocate <task>` (LeaveActiveTasksInPlace
+		// unset) is different: the operator named this checkout, so it
+		// remains available whether the claim is active or terminal.
+		result.Reason = "active task — relocate after it finishes"
+		return result, nil
+	}
 	placement, err := ResolveUserWorktreePlacement(options.ProjectsRoot, entry.CanonicalDir)
 	if err != nil {
 		return result, err
@@ -268,6 +347,12 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 	}
 	result.Destination = destination
 	if eligible, reason := relocationEligibility(entry); !eligible {
+		result.Reason = reason
+		return result, nil
+	}
+	if reason, err := checkoutSafetyRefusal(ctx, options.ProjectsRoot, entry.WorktreeDir); err != nil {
+		return result, err
+	} else if reason != "" {
 		result.Reason = reason
 		return result, nil
 	}
@@ -297,6 +382,11 @@ func planRelocation(ctx context.Context, resolution wbhome.Resolution, options R
 	return result, nil
 }
 
+// relocationEligibility never refuses for uncommitted changes or unpushed
+// commits: the founder's decision (2026-09-18) is that a rename preserves
+// them exactly, the same principle REQ: clone-migration-refusals already
+// applies to a clone move, so dirt or unpushed history is never itself a
+// reason to leave a checkout behind.
 func relocationEligibility(entry ListResult) (bool, string) {
 	switch {
 	case entry.External:
@@ -305,8 +395,6 @@ func relocationEligibility(entry ListResult) (bool, string) {
 		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
 	case entry.OwnerState == "active":
 		return false, "worktree has an active owner; hand off or stop that owner before relocating"
-	case !entry.Clean:
-		return false, "worktree has local changes"
 	default:
 		return true, ""
 	}
@@ -319,15 +407,24 @@ func applyRelocation(ctx context.Context, home string, options RelocateOptions, 
 	if err != nil {
 		return fmt.Errorf("recheck %s before relocation: %w", planned.Repository, err)
 	}
-	if refreshed.Locked || refreshed.OwnerState == "active" || !refreshed.Clean || refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch {
+	if refreshed.Locked || refreshed.OwnerState == "active" || refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch {
 		return fmt.Errorf("relocation safety changed for %s; rerun the plan", planned.Repository)
 	}
-	claim, _, _, err := activeWorkLogClaim(home, refreshed.WorktreeDir)
+	// Every refusal condition is re-checked immediately before the actual
+	// move, not only at plan time -- the interval between planning and
+	// moving is exactly when a Git operation, a busy process, or a parked
+	// session can start, matching refuseClone's own convention.
+	if reason, err := checkoutSafetyRefusal(ctx, options.ProjectsRoot, refreshed.WorktreeDir); err != nil {
+		return fmt.Errorf("recheck checkout safety for %s: %w", planned.Repository, err)
+	} else if reason != "" {
+		return fmt.Errorf("refused immediately before move: %s", reason)
+	}
+	claim, _, err := claimForRelocation(home, refreshed.WorktreeDir)
 	if err != nil {
-		return fmt.Errorf("recheck active Work Log claim for %s: %w", planned.Repository, err)
+		return fmt.Errorf("recheck Work Log claim for %s: %w", planned.Repository, err)
 	}
 	if claim.ClaimID != result.ClaimID {
-		return fmt.Errorf("recheck active Work Log claim for %s: claim identity changed", planned.Repository)
+		return fmt.Errorf("recheck Work Log claim for %s: claim identity changed", planned.Repository)
 	}
 	if _, statErr := os.Lstat(result.Destination); !errors.Is(statErr, os.ErrNotExist) {
 		if statErr == nil {
@@ -383,12 +480,12 @@ func finalizeInterruptedRelocation(home string, options RelocateOptions, entry L
 	if eligible, reason := relocationEligibility(entry); !eligible {
 		return fmt.Errorf("interrupted relocation safety changed for %s: %s", entry.Repository, reason)
 	}
-	claim, _, _, err := activeWorkLogClaim(home, entry.WorktreeDir)
+	claim, _, err := claimForRelocation(home, entry.WorktreeDir)
 	if err != nil {
-		return fmt.Errorf("recheck active Work Log claim for %s: %w", entry.Repository, err)
+		return fmt.Errorf("recheck Work Log claim for %s: %w", entry.Repository, err)
 	}
 	if claim.ClaimID != result.ClaimID {
-		return fmt.Errorf("recheck active Work Log claim for %s: claim identity changed", entry.Repository)
+		return fmt.Errorf("recheck Work Log claim for %s: claim identity changed", entry.Repository)
 	}
 	intent, _, err := pendingRelocationIntent(home, claim, entry.WorktreeDir, entry.Branch, entry.HeadSHA)
 	if err != nil {
@@ -836,9 +933,9 @@ func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destinat
 	if err != nil {
 		return err
 	}
-	claim, _, _, home, err := activeWorkLogClaimAcrossHomes(resolution, destination)
+	claim, _, home, err := claimForRelocationAcrossHomes(resolution, destination)
 	if err != nil {
-		return fmt.Errorf("recheck active Work Log claim before relocation reversal: %w", err)
+		return fmt.Errorf("recheck Work Log claim before relocation reversal: %w", err)
 	}
 	headOutput, err := git(ctx, destination, "rev-parse", "HEAD")
 	if err != nil {
