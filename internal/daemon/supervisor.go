@@ -1,6 +1,9 @@
 package daemon
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Supervisor names what owns a running daemon process's lifecycle: whichever
 // process manager exec'd it and will restart it if it exits.
@@ -38,28 +41,49 @@ func (kind Supervisor) Valid() bool {
 
 // DetectSupervisor observes the environment variables systemd and launchd are
 // documented to set on a process they exec directly, through an injectable
-// seam so no test needs a real systemd or launchd:
+// seam so no test needs a real systemd or launchd. pid and ppid are this
+// process's own — normally os.Getpid() and os.Getppid(), overridden by tests —
+// because a bare environment variable is not enough evidence on its own: both
+// variables are observed to survive into children that inherit their parent's
+// environment without being started by the supervisor at all.
 //
-//   - systemd sets INVOCATION_ID (systemd.exec(5)) on every unit it starts.
-//     When the unit also names SYSTEMD_EXEC_PID (systemd >= 246), that PID is
-//     returned alongside so a reader can name it without shelling out.
+//   - systemd sets INVOCATION_ID (systemd.exec(5)) on every unit it starts, and
+//     since systemd 246 also sets SYSTEMD_EXEC_PID to the exact PID it exec'd.
+//     Confirmed on a live host: a shell or an agent process started *inside* a
+//     systemd-supervised session inherits INVOCATION_ID from its parent without
+//     SYSTEMD_EXEC_PID ever being set for it. Detection therefore requires
+//     SYSTEMD_EXEC_PID to be present *and* equal to this process's own pid;
+//     INVOCATION_ID alone, or a non-matching SYSTEMD_EXEC_PID, reports None.
 //   - launchd sets XPC_SERVICE_NAME to the job label for a job it manages, and
 //     to the literal string "0" for a process it did not launch directly (for
 //     example a login shell) — "0" is therefore treated as absent, not launchd.
+//     launchd is additionally required to be this process's *direct* parent
+//     (ppid == 1, which is launchd on every macOS version this targets) as the
+//     equivalent inheritance guard: a child of a launchd-managed process can
+//     otherwise inherit XPC_SERVICE_NAME from its parent's environment without
+//     having been launched by launchd itself.
 //
-// Neither variable survives an intermediate detached-start hop (wb's own
-// exec.Command launch clears neither, but does not set them either), so a
-// daemon started by `wb daemon start`/`restart` rather than by a supervisor
-// correctly detects SupervisorNone.
-func DetectSupervisor(getenv func(string) string) (kind Supervisor, execPID string) {
+// label is the launchd job label from XPC_SERVICE_NAME (empty for systemd and
+// for None): callers use it to tell wb's own self-managed launchd job from a
+// foreign one, which needs different handoff handling (see cmd/wb's
+// daemonLaunchdLabel).
+func DetectSupervisor(getenv func(string) string, pid, ppid int) (kind Supervisor, execPID string, label string) {
 	if getenv == nil {
-		return SupervisorNone, ""
+		return SupervisorNone, "", ""
 	}
 	if strings.TrimSpace(getenv("INVOCATION_ID")) != "" {
-		return SupervisorSystemd, strings.TrimSpace(getenv("SYSTEMD_EXEC_PID"))
+		if execPIDText := strings.TrimSpace(getenv("SYSTEMD_EXEC_PID")); execPIDText != "" {
+			if parsed, err := strconv.Atoi(execPIDText); err == nil && parsed > 0 && parsed == pid {
+				return SupervisorSystemd, execPIDText, ""
+			}
+		}
+		return SupervisorNone, "", ""
 	}
 	if name := strings.TrimSpace(getenv("XPC_SERVICE_NAME")); name != "" && name != "0" {
-		return SupervisorLaunchd, ""
+		if ppid == 1 {
+			return SupervisorLaunchd, "", name
+		}
+		return SupervisorNone, "", ""
 	}
-	return SupervisorNone, ""
+	return SupervisorNone, "", ""
 }

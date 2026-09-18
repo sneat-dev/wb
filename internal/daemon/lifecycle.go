@@ -114,6 +114,14 @@ type State struct {
 	// restart to (sneat-dev/wb#617, sneat-dev/wb#546).
 	Supervisor        Supervisor `json:"supervisor,omitempty"`
 	SupervisorExecPID string     `json:"supervisor_exec_pid,omitempty"`
+
+	// SupervisorLabel is the supervisor's own identity for the job it started,
+	// when DetectSupervisor could read one — currently only launchd's job
+	// label (from XPC_SERVICE_NAME). It is what lets a reader tell wb's own
+	// self-managed launchd job (cmd/wb's daemonLaunchdLabel, which wb already
+	// knows how to re-bootstrap with a new binary) from a foreign one wb must
+	// hand off to instead of touching directly (sneat-dev/wb#622 review item 1).
+	SupervisorLabel string `json:"supervisor_label,omitempty"`
 }
 
 // ReportedSupervisor is Supervisor normalized for a reader: an empty or

@@ -61,28 +61,6 @@ func TestParseProcStatBootTime(t *testing.T) {
 	}
 }
 
-func TestParseProcStatusPPid(t *testing.T) {
-	status := "Name:\twb\nState:\tS (sleeping)\nTgid:\t42\nPid:\t42\nPPid:\t1\nUid:\t1000\t1000\t1000\t1000\n"
-	ppid, ok := ParseProcStatusPPid(status)
-	if !ok || ppid != 1 {
-		t.Fatalf("PPid = %d, %t; want 1, true", ppid, ok)
-	}
-}
-
-func TestParseProcStatusPPidRejectsUnreadableRecords(t *testing.T) {
-	for name, status := range map[string]string{
-		"missing":      "Name:\twb\nPid:\t42\n",
-		"empty":        "",
-		"not a number": "PPid:\tnotanumber\n",
-		"negative":     "PPid:\t-1\n",
-		"extra fields": "PPid:\t1\textra\n",
-	} {
-		if ppid, ok := ParseProcStatusPPid(status); ok {
-			t.Fatalf("%s: parsed PPid %d, want failure", name, ppid)
-		}
-	}
-}
-
 func TestProcessGenerationMatches(t *testing.T) {
 	recorded := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	cases := []struct {

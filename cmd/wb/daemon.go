@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,9 +12,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,6 +40,103 @@ const (
 	daemonStopTimeout             = 5 * time.Second
 	daemonRestartProgressInterval = 8 * time.Second
 )
+
+// daemonLaunchdLabel is wb's own launch agent label (darwin only). It lives
+// here, not in daemon_process_darwin.go, because platform-independent handoff
+// logic (stopAndReplace) needs to tell wb's own self-managed launchd job —
+// which it already knows how to re-bootstrap with a new binary — from a
+// foreign one it must hand off to instead, on every platform this package
+// builds for (sneat-dev/wb#622 review item 1).
+const daemonLaunchdLabel = "dev.sneat.wb.daemon"
+
+// daemonEnvVarsSuppliedBySupervisors lists the environment variables systemd
+// and launchd are documented to set on a process they exec, so a detached
+// child this build starts itself never inherits stale evidence of a
+// supervision it does not actually have (sneat-dev/wb#622 review item 3).
+var daemonEnvVarsSuppliedBySupervisors = map[string]bool{
+	"INVOCATION_ID":    true,
+	"SYSTEMD_EXEC_PID": true,
+	"JOURNAL_STREAM":   true,
+	"XPC_SERVICE_NAME": true,
+}
+
+// daemonChildEnvironment is the environment a detached daemon child starts
+// with: this process's own environment, minus the variables a supervisor
+// would have set. It is used by every startDaemonProcess that inherits the
+// environment via os/exec (unix and windows); darwin's launchd job gets an
+// explicitly-built environment already and never inherits these by construction.
+// daemonRefuseTestBinary refuses to install a supervisor job for, or launch,
+// an executable that is a Go test binary. A peers-lane test once reached the
+// real startDaemonProcess and overwrote the founder's real
+// ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist with a go-build `wb.test`
+// path, taking the real daemon down (sneat-dev/wb#622). Every
+// startDaemonProcess calls this before doing anything else — before writing a
+// plist or unit, and before launching a process — on every platform.
+// testing.Testing() catches a test binary regardless of its name;
+// the ".test" suffix additionally catches an embedding case where
+// testing.Testing() might not (for example a binary built with `go test -c`
+// and then run outside of `go test`, which testing.Testing() cannot see).
+func daemonRefuseTestBinary(executable string) error {
+	if testing.Testing() || strings.HasSuffix(filepath.Base(executable), ".test") {
+		return fmt.Errorf("refusing to install a supervisor job for, or launch, a Go test binary as the WB daemon (%s); this guard exists because a test previously overwrote a real launchd job and took a real daemon down", executable)
+	}
+	return nil
+}
+
+// daemonSupervisorPresent independently checks whether the named supervisor
+// can still be shown to exist, so a stale recorded supervisor does not refuse
+// `wb daemon start`/`restart` forever (sneat-dev/wb#622 review item 4). It
+// reports what it could confirm, never what it merely failed to disprove: an
+// unreachable check (the wrong platform, the tool missing, a timeout) reports
+// absent, which is the safer default for a check whose only job is to lift an
+// otherwise-permanent refusal.
+//
+// It does not know a systemd unit's name — nothing in this build records
+// one (see State.SupervisorLabel's doc) — so for systemd it can only check
+// that a systemd --user manager is reachable at all, which is enough to
+// confirm the common stale shape (the user's systemd session, or the whole
+// host, is simply gone). For launchd, SupervisorLabel names the exact job, so
+// `launchctl print` can check that job specifically and return its name.
+func daemonSupervisorPresent(supervisor daemon.Supervisor, label string) (present bool, unitName string) {
+	switch supervisor {
+	case daemon.SupervisorSystemd:
+		output, err := exec.Command("systemctl", "--user", "is-system-running").CombinedOutput() //nolint:gosec // fixed argv, no user input.
+		if err == nil {
+			return true, ""
+		}
+		if _, ok := err.(*exec.ExitError); ok {
+			// systemctl answered with a non-"running" state (for example
+			// "degraded"); the user manager itself is still present.
+			trimmed := strings.TrimSpace(string(output))
+			return trimmed != "" && trimmed != "offline", ""
+		}
+		return false, ""
+	case daemon.SupervisorLaunchd:
+		if strings.TrimSpace(label) == "" {
+			return false, ""
+		}
+		target := fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
+		if _, err := exec.Command("launchctl", "print", target).CombinedOutput(); err != nil { //nolint:gosec // fixed argv plus a recorded launchd label, no shell.
+			return false, label
+		}
+		return true, label
+	default:
+		return false, ""
+	}
+}
+
+func daemonChildEnvironment() []string {
+	environ := os.Environ()
+	filtered := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		name, _, found := strings.Cut(entry, "=")
+		if found && daemonEnvVarsSuppliedBySupervisors[name] {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
 
 // daemonHeartbeatInterval is the daemon's maintenance checkpoint: how often it
 // proves its runtime directory still exists, and writes a line saying so. It is
@@ -149,6 +249,9 @@ type daemonPublicState struct {
 	// or "none" — never blank — so a reader never has to guess what an absent
 	// value means.
 	Supervisor daemon.Supervisor `json:"supervisor,omitempty"`
+	// SupervisorLabel is the supervisor's own identity for the job (currently
+	// only a launchd job label). See daemon.State.SupervisorLabel.
+	SupervisorLabel string `json:"supervisor_label,omitempty"`
 }
 
 type daemonPublicQueue struct {
@@ -164,7 +267,7 @@ func publicDaemonState(state daemon.State) daemonPublicState {
 		SchemaVersion: state.SchemaVersion, Status: state.Status, PID: state.PID,
 		Listen: state.Listen, Provenance: state.Provenance, StartedAt: state.StartedAt, UpdatedAt: state.UpdatedAt,
 		WBHome: state.WBHome, StatePath: state.StatePath, StoppedReason: state.StoppedReason,
-		Supervisor: state.ReportedSupervisor(),
+		Supervisor: state.ReportedSupervisor(), SupervisorLabel: state.SupervisorLabel,
 		Queue: daemonPublicQueue{SchemaVersion: state.Queue.SchemaVersion, Generation: state.Queue.Generation,
 			Owner: state.Queue.Owner, HandoffFrom: state.Queue.HandoffFrom, HandoffAt: state.Queue.HandoffAt},
 	}
@@ -175,7 +278,7 @@ type daemonDependencies struct {
 	executable    func() (string, error)
 	start         func(string, []string, string) (int, error)
 	alive         func(int) bool
-	stop          func(int) error
+	stop          func(pid int, supervisor daemon.Supervisor, supervisorLabel string) error
 	sleep         func(time.Duration)
 	version       func() versionInfo
 	token         func() (string, error)
@@ -190,14 +293,32 @@ type daemonDependencies struct {
 	// hubTuning is nil everywhere but the whole-journey end-to-end test; see
 	// the type's documentation.
 	hubTuning *hubTuning
-	// getenv is the seam `daemon serve` reads a supervisor's own evidence
-	// through (INVOCATION_ID, SYSTEMD_EXEC_PID, XPC_SERVICE_NAME), so a test
-	// never needs a real systemd or launchd to exercise supervisor detection.
-	getenv func(string) string
-	// observedParentSupervisor independently observes what actually parents a
-	// running PID, for `wb daemon status` to compare against what that
-	// process recorded about its own start. See internal/daemon.ObservedParentSupervisor.
-	observedParentSupervisor func(int) (daemon.Supervisor, bool)
+	// getenv, getpid, and getppid are the seams `daemon serve` reads a
+	// supervisor's own evidence through (INVOCATION_ID, SYSTEMD_EXEC_PID,
+	// XPC_SERVICE_NAME, and this process's own pid/ppid, which distinguish a
+	// supervisor's own child from a process that merely inherited its
+	// environment), so a test never needs a real systemd or launchd to
+	// exercise supervisor detection.
+	getenv  func(string) string
+	getpid  func() int
+	getppid func() int
+	// observedSupervisor independently observes evidence about a running PID
+	// that this build did not itself write, for `wb daemon status` to compare
+	// against what that process recorded about its own start. See
+	// internal/daemon.ObservedCgroupSupervisor.
+	observedSupervisor func(int) (daemon.Supervisor, bool)
+	// processStartTime observes a process's own start time, so a stale
+	// hard-coded test PID cannot collide with a real, unrelated process this
+	// build did not create — the default reads the real OS the way
+	// daemon.ProcessStartTime already does; a test overrides it instead of
+	// hoping its fake PIDs are never real ones (sneat-dev/wb#622 review: tests
+	// must not depend on the real process table for correctness).
+	processStartTime func(int) (time.Time, bool)
+	// supervisorPresent independently checks whether the recorded supervisor
+	// can still be shown to exist at all, so `wb daemon start`/`restart` do
+	// not refuse forever on a stale record naming a supervisor that is long
+	// gone (sneat-dev/wb#622 review item 4).
+	supervisorPresent func(supervisor daemon.Supervisor, label string) (present bool, unitName string)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -228,8 +349,12 @@ func defaultDaemonDependencies() daemonDependencies {
 			allowed, err := daemon.LoadRawExecutionPolicy(path, root)
 			return allowed, path, err
 		},
-		getenv:                   os.Getenv,
-		observedParentSupervisor: daemon.ObservedParentSupervisor,
+		getenv:             os.Getenv,
+		getpid:             os.Getpid,
+		getppid:            os.Getppid,
+		observedSupervisor: daemon.ObservedCgroupSupervisor,
+		processStartTime:   daemon.ProcessStartTime,
+		supervisorPresent:  daemonSupervisorPresent,
 	}
 }
 
@@ -332,7 +457,7 @@ func reportPinnedLifecycleState(out io.Writer, pinned, resolved string) {
 
 func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
 	var listen, format string
-	var jsonOut bool
+	var jsonOut, forceDetached bool
 	command := &cobra.Command{Use: "start", Short: "Start the local WB daemon, or hand off to the installed WB binary", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -342,13 +467,14 @@ func newDaemonStartCmd(deps daemonDependencies) *cobra.Command {
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon start: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, projectsRoot).StartWithProgress(command.Context(), listen, progress)
+			result, err := newDaemonController(deps, projectsRoot).StartWithProgress(command.Context(), listen, progress, forceDetached)
 			if err != nil {
 				return err
 			}
 			return writeDaemonResult(command.OutOrStdout(), format, result)
 		}}
 	command.Flags().StringVar(&listen, "listen", daemonDefaultListen, "loopback listen address")
+	command.Flags().BoolVar(&forceDetached, "force-detached", false, "start a detached daemon even though the runtime's recorded owner is a systemd or launchd supervisor")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
@@ -387,6 +513,19 @@ func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A systemd Restart=always (or launchd KeepAlive) unit undoes a
+			// plain stop on its own schedule; naming the supervisor's own
+			// stop command is the only way this actually stays stopped.
+			switch result.State.Supervisor {
+			case daemon.SupervisorSystemd:
+				_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: daemon stop: this daemon is recorded as owned by a systemd user service; its Restart=always policy will bring it back — use `systemctl --user stop <the wb-daemon unit>` to actually stop it")
+			case daemon.SupervisorLaunchd:
+				label := result.State.SupervisorLabel
+				if label == "" {
+					label = daemonLaunchdLabel
+				}
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon stop: this daemon is recorded as owned by a launchd agent; its KeepAlive policy will bring it back — use `launchctl bootout gui/%d/%s` to actually stop it\n", os.Getuid(), label)
+			}
 			return writeDaemonResult(command.OutOrStdout(), format, result)
 		}}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -396,7 +535,7 @@ func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
 
 func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
 	var format string
-	var jsonOut, ifRunning bool
+	var jsonOut, ifRunning, forceDetached bool
 	command := &cobra.Command{Use: "restart", Short: "Drain, hand off the durable queue, and start the installed WB daemon", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -406,13 +545,14 @@ func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
 			progress := func(phase string) {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
 			}
-			result, err := newDaemonController(deps, projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress)
+			result, err := newDaemonController(deps, projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress, forceDetached)
 			if err != nil {
 				return err
 			}
 			return writeDaemonResult(command.OutOrStdout(), format, result)
 		}}
 	command.Flags().BoolVar(&ifRunning, "if-running", false, "succeed without starting when no managed daemon is running")
+	command.Flags().BoolVar(&forceDetached, "force-detached", false, "start a detached daemon even though the runtime's recorded owner is a systemd or launchd supervisor")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
@@ -1125,16 +1265,29 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 	// be this home's daemon, and reachability must stay reportable for it.
 	result.ProcessManagerRunning = alive && identity == identityCurrent
 	// The sneat-dev/wb#617 double-owner state is a live daemon of this home
-	// that recorded no supervisor at its own startup, while what actually
-	// parents it right now looks like one. A record this home owns and a
+	// whose recorded supervisor disagrees with what this build can
+	// independently observe about it right now (via cgroup membership, not
+	// parentage — a parent-PID check cannot tell "started by a systemd unit"
+	// from "orphaned and reparented to PID 1", which IS systemd on every host
+	// this matters for; sneat-dev/wb#622 review item 7). Both directions are
+	// reported: recorded none while the cgroup shows a systemd service, and
+	// recorded systemd while it does not. A record this home owns and a
 	// process this home can inspect are both required: a foreign or
 	// unrecorded daemon is reported through Identity instead, not through
 	// this check.
-	if result.ProcessManagerRunning && state.ReportedSupervisor() == daemon.SupervisorNone && controller.deps.observedParentSupervisor != nil {
-		if observed, known := controller.deps.observedParentSupervisor(state.PID); known && observed != daemon.SupervisorNone {
-			result.SupervisorMismatch = fmt.Sprintf(
-				"this daemon recorded supervisor=none at startup, but process %d's actual parent looks like %s; a supervisor unit for this home may exist and be fighting this process for the runtime (sneat-dev/wb#617) — this check only compares the actual parent process and cannot confirm a specific unit's name or failure state",
-				state.PID, observed)
+	if result.ProcessManagerRunning && controller.deps.observedSupervisor != nil {
+		recorded := state.ReportedSupervisor()
+		if observed, known := controller.deps.observedSupervisor(state.PID); known {
+			switch {
+			case recorded == daemon.SupervisorNone && observed == daemon.SupervisorSystemd:
+				result.SupervisorMismatch = fmt.Sprintf(
+					"this daemon recorded supervisor=none at startup, but process %d's cgroup shows systemd service membership; a supervisor unit for this home may exist and be fighting this process for the runtime (sneat-dev/wb#617)",
+					state.PID)
+			case recorded == daemon.SupervisorSystemd && observed != daemon.SupervisorSystemd:
+				result.SupervisorMismatch = fmt.Sprintf(
+					"this daemon recorded supervisor=systemd at startup, but process %d's cgroup shows no systemd service membership; the recorded and observed supervisor disagree",
+					state.PID)
+			}
 		}
 	}
 	result.Hub = controller.hubStatus(ctx, state.Listen)
@@ -1273,10 +1426,10 @@ func daemonHubHealth(ctx context.Context, listen string) (daemonHubStatus, error
 }
 
 func (controller daemonController) Start(ctx context.Context, listen string) (daemonResult, error) {
-	return controller.StartWithProgress(ctx, listen, nil)
+	return controller.StartWithProgress(ctx, listen, nil, false)
 }
 
-func (controller daemonController) StartWithProgress(ctx context.Context, listen string, progress func(string)) (daemonResult, error) {
+func (controller daemonController) StartWithProgress(ctx context.Context, listen string, progress func(string), forceDetached bool) (daemonResult, error) {
 	release, err := controller.lifecycleLock()
 	if err != nil {
 		return daemonResult{}, err
@@ -1307,8 +1460,16 @@ func (controller daemonController) StartWithProgress(ctx context.Context, listen
 		return daemonResult{Action: "start", Managed: true, State: publicDaemonState(state), Identity: identity, IdentityDetail: identityDetail},
 			fmt.Errorf("refusing to replace a lifecycle record that belongs to another WB home: %s", identityDetail)
 	}
-	if found && identity == identityCurrent && alive && state.Status == daemon.StatusReady && state.Listen == listen {
-		if state.Provenance.SameBinary(current) {
+	if found && identity == identityCurrent && alive && state.Status == daemon.StatusReady {
+		if state.Listen != listen {
+			// The daemon IS running, on a different --listen than requested —
+			// never phrased as "if it is not running" (sneat-dev/wb#622
+			// review item 15), and refused/allowed the same way as any other
+			// live-under-a-supervisor case below.
+			if refusal := controller.refuseDetachedStartUnderSupervisor(state, found, true, listen, forceDetached); refusal != "" {
+				return daemonResult{Action: "start", Managed: true, State: publicDaemonState(state), Identity: identity, IdentityDetail: identityDetail}, errors.New(refusal)
+			}
+		} else if state.Provenance.SameBinary(current) {
 			result := daemonResult{Action: "start", Managed: true, ProcessManagerRunning: true, ProvenanceMatches: true, State: publicDaemonState(state), AlreadyRunning: true, Identity: identity, IdentityDetail: identityDetail, ReadyVerified: true, ReportedState: string(state.Status)}
 			if healthErr := controller.deps.health(ctx, state.Listen); healthErr == nil {
 				result.Reachable = true
@@ -1319,42 +1480,84 @@ func (controller daemonController) StartWithProgress(ctx context.Context, listen
 				result.DirectTransportError = healthErr.Error()
 			}
 			return result, nil
+		} else {
+			// A live daemon of a different binary is an executable-handoff
+			// path: when it is supervised, the supervisor restarts it with
+			// the new binary rather than this process starting a detached
+			// replacement behind the supervisor's back (sneat-dev/wb#617).
+			return controller.stopAndReplace(ctx, state, listen, current, "start", progress)
 		}
-		// A live daemon of a different binary is an executable-handoff path:
-		// when it is supervised, the supervisor restarts it with the new
-		// binary rather than this process starting a detached replacement
-		// behind the supervisor's back (sneat-dev/wb#617).
-		return controller.stopAndReplace(ctx, state, listen, current, "start", progress)
 	}
 	// Nothing alive to hand off from. A runtime this build's own records show
 	// as owned by a supervisor must be started through that supervisor, not by
 	// a detached process this command would spawn itself.
-	if refusal := refuseDetachedStartUnderSupervisor(state, found); refusal != "" {
+	if refusal := controller.refuseDetachedStartUnderSupervisor(state, found, false, listen, forceDetached); refusal != "" {
 		return daemonResult{Action: "start", Managed: found, State: publicDaemonState(state)}, errors.New(refusal)
 	}
 	return controller.launch(ctx, optionalDaemonState(state, found), listen, current, "start", found)
 }
 
 // refuseDetachedStartUnderSupervisor names the remedy for the runtime's last
-// recorded supervisor, or "" when nothing recorded one. Ownership is read from
-// the last recorded state rather than from a currently-alive process: exactly
-// the case this exists for is a supervised daemon that is not alive right now
-// (crashed, or between the drain and the supervisor's own restart), where
-// starting a detached replacement would still leave two owners racing the
-// runtime once the supervisor catches up.
-func refuseDetachedStartUnderSupervisor(state daemon.State, found bool) string {
-	if !found {
+// recorded supervisor, or "" to let the detached start proceed. Ownership is
+// read from the last recorded state rather than from a currently-alive
+// process: the common case this exists for is a supervised daemon that is not
+// alive right now (crashed, or between the drain and the supervisor's own
+// restart), where starting a detached replacement would still leave two
+// owners racing the runtime once the supervisor catches up.
+//
+// A stale record must not lock an operator out of `wb daemon start` forever
+// (sneat-dev/wb#622 review item 4): before refusing, it asks
+// deps.supervisorPresent whether the recorded supervisor can still be shown
+// to exist at all, and does not refuse when it cannot. forceDetached is the
+// explicit escape hatch for the cases that check cannot resolve either way.
+func (controller daemonController) refuseDetachedStartUnderSupervisor(state daemon.State, found, alive bool, requestedListen string, forceDetached bool) string {
+	if !found || forceDetached {
 		return ""
 	}
-	switch state.ReportedSupervisor() {
+	supervisor := state.ReportedSupervisor()
+	if supervisor == daemon.SupervisorNone {
+		return ""
+	}
+	if supervisor == daemon.SupervisorLaunchd && state.SupervisorLabel == daemonLaunchdLabel {
+		// wb's own self-managed launchd job: `wb daemon start` IS how this
+		// gets (re)started from cold on a mac (bootstrap+kickstart), so there
+		// is no separate supervisor to defer to (sneat-dev/wb#622 review item
+		// 1's shape, applied to the refusal path too — without this, a
+		// crashed mac daemon could never be started by `wb daemon start`
+		// again).
+		return ""
+	}
+	present, unitName := true, ""
+	if controller.deps.supervisorPresent != nil {
+		present, unitName = controller.deps.supervisorPresent(supervisor, state.SupervisorLabel)
+	}
+	if !present {
+		return ""
+	}
+	situation := fmt.Sprintf("this runtime's last recorded owner (as of %s)", state.UpdatedAt.UTC().Format(time.RFC3339))
+	if alive {
+		situation = fmt.Sprintf("this runtime is already running (pid %d, listening on %s rather than the requested %s), and its recorded owner", state.PID, state.Listen, requestedListen)
+	}
+	switch supervisor {
 	case daemon.SupervisorSystemd:
+		name := unitName
+		if strings.TrimSpace(name) == "" {
+			name = "<the wb-daemon unit>"
+		}
 		return fmt.Sprintf(
-			"refusing to start a detached daemon: this runtime's last recorded owner (as of %s) is a systemd user service; restart it through that supervisor instead of `wb daemon start` — e.g. `systemctl --user restart <the wb-daemon unit>`, or `systemctl --user start <the wb-daemon unit>` if it is not running",
-			state.UpdatedAt.UTC().Format(time.RFC3339))
+			"refusing to start a detached daemon: %s is a systemd user service; restart it through that supervisor instead of `wb daemon start` — e.g. `systemctl --user restart %s` — or pass --force-detached to override",
+			situation, name)
 	case daemon.SupervisorLaunchd:
+		label := unitName
+		if strings.TrimSpace(label) == "" {
+			label = state.SupervisorLabel
+		}
+		if strings.TrimSpace(label) == "" {
+			label = daemonLaunchdLabel
+		}
 		return fmt.Sprintf(
-			"refusing to start a detached daemon: this runtime's last recorded owner (as of %s) is a launchd agent; restart it through that supervisor instead of `wb daemon start` — e.g. `launchctl kickstart -k gui/$(id -u)/dev.sneat.wb.daemon`",
-			state.UpdatedAt.UTC().Format(time.RFC3339))
+			"refusing to start a detached daemon: %s is a launchd agent; restart it through that supervisor instead of `wb daemon start` — e.g. `launchctl kickstart -k gui/%d/%s` — or pass --force-detached to override",
+			situation, os.Getuid(), label)
 	default:
 		return ""
 	}
@@ -1368,10 +1571,10 @@ func optionalDaemonState(state daemon.State, found bool) *daemon.State {
 }
 
 func (controller daemonController) Restart(ctx context.Context, ifRunning bool) (daemonResult, error) {
-	return controller.RestartWithProgress(ctx, ifRunning, nil)
+	return controller.RestartWithProgress(ctx, ifRunning, nil, false)
 }
 
-func (controller daemonController) RestartWithProgress(ctx context.Context, ifRunning bool, progress func(string)) (daemonResult, error) {
+func (controller daemonController) RestartWithProgress(ctx context.Context, ifRunning bool, progress func(string), forceDetached bool) (daemonResult, error) {
 	release, err := controller.lifecycleLock()
 	if err != nil {
 		return daemonResult{}, err
@@ -1388,7 +1591,7 @@ func (controller daemonController) RestartWithProgress(ctx context.Context, ifRu
 		// Nothing alive to hand off from. A runtime this build's own records
 		// show as owned by a supervisor must be started through that
 		// supervisor, not by a detached process this command would spawn.
-		if refusal := refuseDetachedStartUnderSupervisor(state, found); refusal != "" {
+		if refusal := controller.refuseDetachedStartUnderSupervisor(state, found, false, daemonListenOrDefault(state.Listen), forceDetached); refusal != "" {
 			return daemonResult{Action: "restart", Managed: found, State: publicDaemonState(state)}, errors.New(refusal)
 		}
 		current, err := controller.provenance()
@@ -1416,9 +1619,44 @@ func (controller daemonController) RestartWithProgress(ctx context.Context, ifRu
 // after-update hook (which shells out to `wb daemon restart --if-running`),
 // and Start's executable-handoff branch — calls this one function, so the
 // hand-to-supervisor rule cannot drift between them (sneat-dev/wb#617).
+//
+// wb's own self-managed launchd job (state.SupervisorLabel ==
+// daemonLaunchdLabel) is deliberately NOT treated as "supervised" here: it is
+// wb's own re-bootstrap-and-kickstart cycle (cmd/wb/daemon_process_darwin.go)
+// that already correctly restarts it with a new binary, and there is no
+// separate external supervisor to hand off to (sneat-dev/wb#622 review item
+// 1 — every mac daemon's own launchd job otherwise satisfied Supervisor ==
+// launchd, which made every mac restart, including the self-update hook,
+// bootout the daemon's own job and then wait forever for a replacement
+// nothing would ever start).
 func (controller daemonController) stopAndReplace(ctx context.Context, state daemon.State, listen string, current daemon.Provenance, action string, progress func(string)) (daemonResult, error) {
 	supervisor := state.ReportedSupervisor()
-	supervised := supervisor != daemon.SupervisorNone
+	supervised := supervisor == daemon.SupervisorSystemd ||
+		(supervisor == daemon.SupervisorLaunchd && state.SupervisorLabel != daemonLaunchdLabel)
+	if supervised {
+		// A caller with a different wb binary than the one actually running —
+		// a worktree build, or an older or newer installed CLI, reached
+		// through an implicit `Start` call such as `wb dashboard --local` or
+		// `daemon_rpc.go`'s daemonOperationClient — must not restart a
+		// production supervised hub on the strength of "my own binary
+		// differs from its recorded provenance" alone: that is equally true
+		// of an unrelated invocation. It is only safe to proceed when the
+		// *installed* executable this record names has itself become our own
+		// binary — the shape a genuine self-update produces, since it
+		// replaces that same path in place (sneat-dev/wb#622 review item 6).
+		installedNow, readErr := os.ReadFile(state.Provenance.Executable)
+		installedSHA := ""
+		if readErr == nil {
+			digest := sha256.Sum256(installedNow)
+			installedSHA = hex.EncodeToString(digest[:])
+		}
+		if readErr != nil || installedSHA != current.SHA256 {
+			return daemonResult{Action: action, Managed: true, State: publicDaemonState(state), ReportedState: string(state.Status)},
+				fmt.Errorf(
+					"refusing to touch the supervised daemon on %s: its recorded executable %s is not this build (this build is %s); leaving it running — if this is a genuine self-update, the installed executable at that path should already have this build's content",
+					state.Listen, state.Provenance.Executable, current.Executable)
+		}
+	}
 	var stopErr error
 	controller.restartPhase(progress, fmt.Sprintf("draining daemon pid %d", state.PID), func() { _, stopErr = controller.stop(ctx, state) })
 	if stopErr != nil {
@@ -1456,15 +1694,36 @@ var daemonSupervisorPollInterval = 200 * time.Millisecond
 // for evidence that the supervisor's own replacement process is up and is
 // running the executable this handoff is targeting: Ready, alive, the same
 // binary, an unrecycled process generation, and its own health endpoint
-// answering as that exact process. It never starts a process itself; a
-// supervisor that does not come back within the bound is reported as a
-// distinct, actionable timeout instead (sneat-dev/wb#617 item 3).
+// answering as that exact process. It never starts a process itself.
+//
+// A ready, alive replacement running a DIFFERENT binary than expected fails
+// fast with a precise message rather than waiting out the full bound doing
+// nothing useful — it is evidence that something else (a racing restart, or a
+// third, unrelated build) already won, not that the supervisor is merely
+// slow (sneat-dev/wb#622 review item 6). A supervisor that does not come back
+// at all within the bound is reported as a distinct, actionable timeout
+// (sneat-dev/wb#617 item 3). The context is watched throughout, so a caller
+// that cancels does not have to wait out the bound either.
 func (controller daemonController) waitForSupervisorReplacement(ctx context.Context, supervisor daemon.Supervisor, current daemon.Provenance, action string) (daemonResult, error) {
 	deadline := controller.deps.now().Add(daemonSupervisorRestartTimeout)
+	processStartTime := controller.deps.processStartTime
+	if processStartTime == nil {
+		processStartTime = daemon.ProcessStartTime
+	}
 	for {
+		select {
+		case <-ctx.Done():
+			return daemonResult{}, ctx.Err()
+		default:
+		}
 		state, found, err := controller.store.Load()
-		if err == nil && found && state.Status == daemon.StatusReady && state.PID > 0 && controller.deps.alive(state.PID) && state.Provenance.SameBinary(current) {
-			observed, observedKnown := daemon.ProcessStartTime(state.PID)
+		if err == nil && found && state.Status == daemon.StatusReady && state.PID > 0 && controller.deps.alive(state.PID) {
+			if !state.Provenance.SameBinary(current) {
+				return daemonResult{}, fmt.Errorf(
+					"the %s supervisor brought back a different executable than this handoff targeted (recorded %s, this build %s); not adopting it — check what the supervisor unit is actually running",
+					supervisor, state.Provenance.Executable, current.Executable)
+			}
+			observed, observedKnown := processStartTime(state.PID)
 			if match, known := state.ProcessGenerationMatches(observed, observedKnown); !known || match {
 				if controller.ownedHealth(ctx, state.Listen, state.PID, state.Queue.Generation) == nil {
 					location, _ := resolveDaemonLocation(controller.root)
@@ -1556,8 +1815,12 @@ func (controller daemonController) withCurrentProvenance(result daemonResult) (d
 }
 
 func (controller daemonController) stop(_ context.Context, state daemon.State) (daemonResult, error) {
+	processStartTime := controller.deps.processStartTime
+	if processStartTime == nil {
+		processStartTime = daemon.ProcessStartTime
+	}
 	if state.PID > 0 && controller.deps.alive(state.PID) {
-		observed, observedKnown := daemon.ProcessStartTime(state.PID)
+		observed, observedKnown := processStartTime(state.PID)
 		if match, known := state.ProcessGenerationMatches(observed, observedKnown); known && !match {
 			// The PID is someone else's now. Signalling it would signal an
 			// unrelated process, which is the harm the recorded start time
@@ -1575,27 +1838,61 @@ func (controller daemonController) stop(_ context.Context, state daemon.State) (
 		return daemonResult{}, err
 	}
 	if !controller.deps.alive(state.PID) {
-		state.MarkStopped(controller.deps.now())
-		if err := controller.store.Save(state); err != nil {
+		stopped, err := controller.markStoppedIfUnchanged(state, state.PID, state.OwnerToken)
+		if err != nil {
 			return daemonResult{}, err
 		}
-		return daemonResult{Action: "stop", Managed: true, State: publicDaemonState(state)}, nil
+		return daemonResult{Action: "stop", Managed: true, State: publicDaemonState(stopped)}, nil
 	}
-	if err := controller.deps.stop(state.PID); err != nil {
+	if err := controller.deps.stop(state.PID, state.ReportedSupervisor(), state.SupervisorLabel); err != nil {
 		return daemonResult{}, fmt.Errorf("request daemon drain for pid %d: %w", state.PID, err)
 	}
 	deadline := controller.deps.now().Add(daemonStopTimeout)
 	for controller.deps.now().Before(deadline) {
 		if !controller.deps.alive(state.PID) {
-			state.MarkStopped(controller.deps.now())
-			if err := controller.store.Save(state); err != nil {
+			stopped, err := controller.markStoppedIfUnchanged(state, state.PID, state.OwnerToken)
+			if err != nil {
 				return daemonResult{}, err
 			}
-			return daemonResult{Action: "stop", Managed: true, State: publicDaemonState(state)}, nil
+			return daemonResult{Action: "stop", Managed: true, State: publicDaemonState(stopped)}, nil
 		}
 		controller.deps.sleep(50 * time.Millisecond)
 	}
 	return daemonResult{}, fmt.Errorf("daemon pid %d did not stop within %s; it remains draining to preserve durable queue ownership", state.PID, daemonStopTimeout)
+}
+
+// markStoppedIfUnchanged writes MarkStopped only if the durable record still
+// names the exact PID and owner token expected — under stateLock, so the
+// check-then-write is atomic with any other writer. A supervisor can bring a
+// replacement up fast enough to have already overwritten the record with its
+// own Starting/Ready generation by the time this process confirms the OLD
+// pid is dead; without this guard, this stale write would clobber that
+// replacement's record with a Stopped one bearing the old PID
+// (sneat-dev/wb#622 review minor: stop()'s final MarkStopped save). When the
+// record has already moved on, it is returned unchanged rather than
+// overwritten.
+func (controller daemonController) markStoppedIfUnchanged(expected daemon.State, expectedPID int, expectedOwnerToken string) (daemon.State, error) {
+	release, err := controller.stateLock()
+	if err != nil {
+		return daemon.State{}, err
+	}
+	defer release()
+	current, found, err := controller.store.Load()
+	if err != nil {
+		return daemon.State{}, err
+	}
+	if !found || current.PID != expectedPID || current.OwnerToken != expectedOwnerToken {
+		// Something else already replaced this record; leave it alone.
+		if found {
+			return current, nil
+		}
+		return expected, nil
+	}
+	current.MarkStopped(controller.deps.now())
+	if err := controller.store.Save(current); err != nil {
+		return daemon.State{}, err
+	}
+	return current, nil
 }
 
 func (controller daemonController) launch(ctx context.Context, previous *daemon.State, listen string, provenance daemon.Provenance, action string, handoff bool) (daemonResult, error) {
@@ -1737,18 +2034,25 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_ = listener.Close()
 		return errors.New("managed daemon startup ownership was superseded")
 	}
-	// Supervisor detection reads this process's own environment: only the
-	// process a supervisor actually exec'd sees the variables it sets, so this
-	// must run in the child, not be inferred later by a reader in a different
-	// process (sneat-dev/wb#617).
-	supervisorKind, supervisorExecPID := daemon.DetectSupervisor(deps.getenv)
+	// Supervisor detection reads this process's own environment (and its own
+	// pid/ppid): only the process a supervisor actually exec'd sees the
+	// variables it sets, so this must run in the child, not be inferred later
+	// by a reader in a different process (sneat-dev/wb#617).
+	getpid, getppid := deps.getpid, deps.getppid
+	if getpid == nil {
+		getpid = os.Getpid
+	}
+	if getppid == nil {
+		getppid = os.Getppid
+	}
+	supervisorKind, supervisorExecPID, supervisorLabel := daemon.DetectSupervisor(deps.getenv, getpid(), getppid())
 	if !managedStart {
 		state = daemon.NewStartingAt(optionalDaemonState(state, found), address, provenance, ownerToken, location.Home, location.StatePath, deps.now())
-		state.Supervisor, state.SupervisorExecPID = supervisorKind, supervisorExecPID
+		state.Supervisor, state.SupervisorExecPID, state.SupervisorLabel = supervisorKind, supervisorExecPID, supervisorLabel
 		state.MarkReadyWithProcess(os.Getpid(), daemonProcessStartedAt(os.Getpid()), deps.now())
 	} else {
 		state.WBHome, state.StatePath = location.Home, location.StatePath
-		state.Supervisor, state.SupervisorExecPID = supervisorKind, supervisorExecPID
+		state.Supervisor, state.SupervisorExecPID, state.SupervisorLabel = supervisorKind, supervisorExecPID, supervisorLabel
 		state.MarkStartingPID(os.Getpid(), deps.now())
 	}
 	if err := store.Save(state); err != nil {

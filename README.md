@@ -2487,18 +2487,27 @@ The canonical systemd user unit:
 # ~/.config/systemd/user/wb-daemon.service
 [Unit]
 Description=WB daemon
-
-[Service]
-ExecStart=%h/go/bin/wb daemon serve --listen 127.0.0.1:8766
-Restart=always
-RestartSec=5s
 # Without a start-limit interval, a daemon that keeps failing to bind (for
 # example because something else already holds the port) restarts forever
-# every 5s. StartLimitIntervalSec bounds that: after StartLimitBurst failures
-# inside the interval, systemd stops restarting it and the unit is left
-# `failed`, which is itself the signal that something is wrong.
+# every 5s. StartLimitIntervalSec/StartLimitBurst bound that: after
+# StartLimitBurst failures inside the interval, systemd stops restarting it
+# and the unit is left `failed`, which is itself the signal that something is
+# wrong. Both belong here in [Unit], not in [Service]: systemd (from 230
+# onward, including every version this targets) reads unit-level start-rate
+# limiting from [Unit] and ignores it in [Service].
 StartLimitIntervalSec=300
 StartLimitBurst=12
+
+[Service]
+# --projects-root names the input the operator chose, exactly like the
+# launchd plist's WB_PROJECTS_ROOT below: the daemon still resolves its own
+# runtime directory from it at startup, so a later WB_HOME/root move cannot
+# leave this unit pointing at an abandoned directory. Set it explicitly if
+# `%h/projects` (the default this example assumes) is not where you run wb
+# from; an explicit WB_HOME can go in Environment= the same way.
+ExecStart=%h/go/bin/wb --projects-root %h/projects daemon serve --listen 127.0.0.1:8766
+Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=default.target
@@ -2510,7 +2519,11 @@ systemctl --user status wb-daemon.service
 systemctl --user restart wb-daemon.service   # hands the daemon a new executable
 ```
 
-The equivalent launchd agent on macOS:
+The equivalent launchd agent on macOS — this is the *shape* `wb daemon
+start`/`wb daemon restart` themselves already write and re-bootstrap
+(`cmd/wb/daemon_process_darwin.go`'s `launchdPlistBytes`), not a separate
+file to install by hand: a Mac developer never writes this plist directly,
+because those commands do it for them on every start and handoff.
 
 ```xml
 <!-- ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist -->
@@ -2520,16 +2533,24 @@ The equivalent launchd agent on macOS:
   <key>ProgramArguments</key>
   <array>
     <string>/Users/YOU/go/bin/wb</string>
+    <string>--projects-root</string>
+    <string>/Users/YOU/projects</string>
     <string>daemon</string>
     <string>serve</string>
     <string>--listen</string>
     <string>127.0.0.1:8766</string>
+    <string>--managed-start</string>
   </array>
+  <!-- Only present when WB_PROJECTS_ROOT is set in the environment that ran
+       `wb daemon start`/`restart`; it is the same operator-chosen input as
+       --projects-root above, not a path resolved at install time. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>WB_PROJECTS_ROOT</key><string>/Users/YOU/projects</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>/Users/YOU/.wb/runtime/daemon.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/.wb/runtime/daemon.log</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
 </dict></plist>
 ```
 
@@ -2538,20 +2559,25 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sneat.wb.daemon.plis
 launchctl kickstart -k gui/$(id -u)/dev.sneat.wb.daemon   # hands the daemon a new executable
 ```
 
-`wb daemon start`/`wb daemon restart` already write and re-bootstrap this
-exact plist on macOS (`KeepAlive` is launchd's own `Restart=always`), so a Mac
-developer never installs it by hand; the unit above is the shape they
-produce. No equivalent installer writes the systemd unit yet — install it by
-hand as shown, with `ExecStart` naming the same `wb` binary `wb daemon
-start` would use.
+No equivalent installer writes the systemd unit yet — install it by hand as
+shown, with `ExecStart` naming the same `wb` binary `wb daemon start` would
+use.
 
 **Known limit:** `wb daemon status`'s double-owner check (the shape of #617 —
 a live, unsupervised daemon fighting a supervisor for the same runtime) does
 not query systemd or launchd for a specific unit's existence or failure
 state; naming and reaching that unit portably has no general implementation
 here. On Linux it instead compares the daemon's self-recorded supervisor
-against its actual parent process (`/proc/<pid>/status`'s `PPid`); on macOS
-and Windows this comparison is not implemented and is reported as unknown.
+against its own current cgroup membership (`/proc/<pid>/cgroup`: a `.service`
+component means a systemd unit, never a parent-PID check — PID 1 *is*
+systemd on these hosts, so a parent-PID check cannot tell a real unit from an
+orphaned process merely reparented to it); on macOS and Windows this
+comparison is not implemented and is reported as unknown. `wb daemon
+start`/`restart` also cannot name a systemd unit by itself (nothing here
+records one) when checking whether a recorded supervisor still exists before
+refusing a detached start — that check can only confirm a systemd user
+manager is reachable at all, not a specific unit; `--force-detached` is the
+explicit override for the cases it cannot resolve.
 
 ## Bench hub
 

@@ -59,7 +59,7 @@ func TestDaemonStopDoesNotSignalARecycledPID(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	signalled := false
-	deps.stop = func(int) error { signalled = true; return nil }
+	deps.stop = func(int, daemon.Supervisor, string) error { signalled = true; return nil }
 	deps.alive = func(pid int) bool { return pid == os.Getpid() }
 	controller := newDaemonController(deps, root)
 	current, err := controller.provenance()

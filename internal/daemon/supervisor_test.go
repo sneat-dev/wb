@@ -2,27 +2,41 @@ package daemon
 
 import "testing"
 
+func detectWith(env map[string]string, pid, ppid int) (Supervisor, string, string) {
+	return DetectSupervisor(func(name string) string { return env[name] }, pid, ppid)
+}
+
 func TestDetectSupervisorSystemd(t *testing.T) {
-	env := map[string]string{"INVOCATION_ID": "abc123", "SYSTEMD_EXEC_PID": "4242"}
-	kind, execPID := DetectSupervisor(func(name string) string { return env[name] })
-	if kind != SupervisorSystemd || execPID != "4242" {
-		t.Fatalf("detect = %s, %q; want systemd, 4242", kind, execPID)
+	kind, execPID, label := detectWith(map[string]string{"INVOCATION_ID": "abc123", "SYSTEMD_EXEC_PID": "4242"}, 4242, 1)
+	if kind != SupervisorSystemd || execPID != "4242" || label != "" {
+		t.Fatalf("detect = %s, %q, %q; want systemd, 4242, \"\"", kind, execPID, label)
 	}
 }
 
-func TestDetectSupervisorSystemdWithoutExecPID(t *testing.T) {
-	env := map[string]string{"INVOCATION_ID": "abc123"}
-	kind, execPID := DetectSupervisor(func(name string) string { return env[name] })
-	if kind != SupervisorSystemd || execPID != "" {
-		t.Fatalf("detect = %s, %q; want systemd, \"\"", kind, execPID)
+// Confirmed on a live host: a shell or agent process started inside a
+// systemd-supervised session inherits INVOCATION_ID without SYSTEMD_EXEC_PID
+// ever being set for it. That must not be mistaken for systemd supervision of
+// THIS process (sneat-dev/wb#622 review item 3).
+func TestDetectSupervisorInheritedInvocationIDWithoutExecPIDIsNone(t *testing.T) {
+	kind, execPID, _ := detectWith(map[string]string{"INVOCATION_ID": "abc123"}, 4242, 1)
+	if kind != SupervisorNone || execPID != "" {
+		t.Fatalf("detect = %s, %q; want none, \"\"", kind, execPID)
+	}
+}
+
+// A SYSTEMD_EXEC_PID that names a different process is the same inheritance
+// shape as a missing one: the variable belongs to some other, unrelated unit.
+func TestDetectSupervisorInheritedInvocationIDWithMismatchedExecPIDIsNone(t *testing.T) {
+	kind, execPID, _ := detectWith(map[string]string{"INVOCATION_ID": "abc123", "SYSTEMD_EXEC_PID": "999"}, 4242, 1)
+	if kind != SupervisorNone || execPID != "" {
+		t.Fatalf("detect = %s, %q; want none, \"\"", kind, execPID)
 	}
 }
 
 func TestDetectSupervisorLaunchd(t *testing.T) {
-	env := map[string]string{"XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}
-	kind, execPID := DetectSupervisor(func(name string) string { return env[name] })
-	if kind != SupervisorLaunchd || execPID != "" {
-		t.Fatalf("detect = %s, %q; want launchd, \"\"", kind, execPID)
+	kind, execPID, label := detectWith(map[string]string{"XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}, 4242, 1)
+	if kind != SupervisorLaunchd || execPID != "" || label != "dev.sneat.wb.daemon" {
+		t.Fatalf("detect = %s, %q, %q; want launchd, \"\", dev.sneat.wb.daemon", kind, execPID, label)
 	}
 }
 
@@ -30,24 +44,33 @@ func TestDetectSupervisorLaunchd(t *testing.T) {
 // launch directly (a login shell, for example); that must not be mistaken for
 // a managed job.
 func TestDetectSupervisorLaunchdZeroIsNotSupervised(t *testing.T) {
-	env := map[string]string{"XPC_SERVICE_NAME": "0"}
-	kind, _ := DetectSupervisor(func(name string) string { return env[name] })
+	kind, _, _ := detectWith(map[string]string{"XPC_SERVICE_NAME": "0"}, 4242, 1)
 	if kind != SupervisorNone {
 		t.Fatalf("detect = %s; want none", kind)
 	}
 }
 
+// A process whose parent is not launchd (ppid != 1) but whose environment
+// still carries XPC_SERVICE_NAME is a child that inherited the variable, not
+// one launchd itself started.
+func TestDetectSupervisorLaunchdRequiresLaunchdParent(t *testing.T) {
+	kind, _, label := detectWith(map[string]string{"XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}, 4242, 4241)
+	if kind != SupervisorNone || label != "" {
+		t.Fatalf("detect = %s, %q; want none, \"\"", kind, label)
+	}
+}
+
 func TestDetectSupervisorNone(t *testing.T) {
-	kind, execPID := DetectSupervisor(func(string) string { return "" })
-	if kind != SupervisorNone || execPID != "" {
-		t.Fatalf("detect = %s, %q; want none, \"\"", kind, execPID)
+	kind, execPID, label := detectWith(nil, 4242, 1)
+	if kind != SupervisorNone || execPID != "" || label != "" {
+		t.Fatalf("detect = %s, %q, %q; want none, \"\", \"\"", kind, execPID, label)
 	}
 }
 
 func TestDetectSupervisorNilGetenv(t *testing.T) {
-	kind, execPID := DetectSupervisor(nil)
-	if kind != SupervisorNone || execPID != "" {
-		t.Fatalf("detect = %s, %q; want none, \"\"", kind, execPID)
+	kind, execPID, label := DetectSupervisor(nil, 4242, 1)
+	if kind != SupervisorNone || execPID != "" || label != "" {
+		t.Fatalf("detect = %s, %q, %q; want none, \"\", \"\"", kind, execPID, label)
 	}
 }
 
@@ -55,8 +78,7 @@ func TestDetectSupervisorNilGetenv(t *testing.T) {
 // a process cannot be started by two supervisors, and systemd is the one that
 // actually spawns the process, so its own evidence wins.
 func TestDetectSupervisorPrefersSystemdWhenBothSet(t *testing.T) {
-	env := map[string]string{"INVOCATION_ID": "abc", "XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}
-	kind, _ := DetectSupervisor(func(name string) string { return env[name] })
+	kind, _, _ := detectWith(map[string]string{"INVOCATION_ID": "abc", "SYSTEMD_EXEC_PID": "4242", "XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}, 4242, 1)
 	if kind != SupervisorSystemd {
 		t.Fatalf("detect = %s; want systemd", kind)
 	}
