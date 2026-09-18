@@ -67,6 +67,24 @@ func TestPeerAwareBearerResolverIsUnaffectedByANonPeerCredential(t *testing.T) {
 	}
 }
 
+// TestPeerAwareBearerResolverRefusesAPeerScopedCredentialWithNoTrustDocument
+// is S2(a)'s fail-closed guard: a peer-scoped credential with no trust
+// document at all is an impossible state under a correctly operating Invite
+// (which writes the credential and the trust document in one transaction —
+// see PeerAdminService.Backend), so it must be refused rather than treated
+// like an ordinary, unaffected non-peer credential. Contrast with
+// TestPeerAwareBearerResolverIsUnaffectedByANonPeerCredential, whose
+// credential carries the enrollment scopes instead.
+func TestPeerAwareBearerResolverRefusesAPeerScopedCredentialWithNoTrustDocument(t *testing.T) {
+	ghost := Machine{ID: "machine_ghost", Name: "ghost", IdentityID: "local", Scopes: clonePeerScopes()}
+	inner := coverageMachineResolver{machine: ghost}
+	trust := fakePeerTrustResolver{records: map[string]PeerRecord{}}
+	resolver := NewPeerAwareBearerResolver(inner, trust)
+	if _, err := resolver.ResolveMachineBearer(peerBearerRequest()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("peer-scoped credential with no trust document resolved = %v, want ErrUnauthorized", err)
+	}
+}
+
 // TestPeerAwareBearerResolverPropagatesInnerFailure proves a resolution
 // failure from the wrapped resolver is never masked by the peer check.
 func TestPeerAwareBearerResolverPropagatesInnerFailure(t *testing.T) {
@@ -119,7 +137,7 @@ func TestPeerAwareBearerResolverIntegratesWithRealCredentialResolution(t *testin
 	pepper := []byte(testPeerAdminPepper)
 	credentials, resolver, _ := NewMachineStores(backend)
 	trust, stats := NewPeerStores(backend)
-	admin := &PeerAdminService{Credentials: credentials, Index: NewMachineIndex(backend), Trust: trust, Stats: stats, Pepper: pepper, HubMachineName: "vm1"}
+	admin := &PeerAdminService{Credentials: credentials, Index: NewMachineIndex(backend), Trust: trust, Stats: stats, Backend: backend, Pepper: pepper, HubMachineName: "vm1"}
 	invited, err := admin.Invite(ctx, "laptop", false)
 	if err != nil {
 		t.Fatal(err)

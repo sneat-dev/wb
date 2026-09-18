@@ -177,7 +177,18 @@ func (resolver peerAwareBearerResolver) ResolveMachineBearer(request *http.Reque
 	if err != nil {
 		return Machine{}, ErrUnauthorized
 	}
-	if found && record.Trust == PeerTrustBlocked {
+	if !found {
+		if isPeerScopes(machine.Scopes) {
+			// A peer-scoped credential with no trust document is an
+			// impossible, fail-closed state under a correctly operating
+			// Invite (which writes both inside one transaction — see
+			// PeerAdminService.Backend). Refuse rather than pass it through
+			// as an ordinary, untracked credential.
+			return Machine{}, ErrUnauthorized
+		}
+		return machine, nil
+	}
+	if record.Trust == PeerTrustBlocked {
 		return Machine{}, ErrUnauthorized
 	}
 	return machine, nil

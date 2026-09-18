@@ -103,8 +103,18 @@ func TestPeersConnectProbeRefusesABlockedPeer(t *testing.T) {
 // one of them resolves through the same bearer — while an unrelated
 // enrollment credential with no peer trust record is unaffected on the same
 // routes.
+//
+// The blocked test credential carries every scope any of the four routes
+// checks (peer:session for the probe, the enrollment scopes for poll/ack/
+// snapshot) — a combination Invite and Enroll never actually mint together
+// (validScopes only ever admits one of the two sets), but exactly what this
+// test needs: with every route's own scope check satisfied, a 401 on all
+// four can only come from the block check itself, not from an unrelated
+// scope mismatch a peer-scoped-only credential would already have hit on
+// poll/ack/snapshot regardless of trust.
 func TestBlockedPeerRefusedOnEveryAuthenticatedRoute(t *testing.T) {
-	blockedPeer := Machine{ID: "machine_1", Name: "laptop", IdentityID: "local", Scopes: clonePeerScopes()}
+	fullScopes := append(append([]MachineScope{}, cloneEnrollmentScopes()...), clonePeerScopes()...)
+	blockedPeer := Machine{ID: "machine_1", Name: "laptop", IdentityID: "local", Scopes: fullScopes}
 	trust := fakePeerTrustResolver{records: map[string]PeerRecord{"machine_1": {MachineID: "machine_1", Trust: PeerTrustBlocked}}}
 	blockedResolver := NewPeerAwareBearerResolver(coverageMachineResolver{machine: blockedPeer}, trust)
 	blockedHandler := NewHandler(HandlerOptions{

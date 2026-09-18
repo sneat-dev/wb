@@ -141,6 +141,44 @@ func TestPeerStoresReportBackendFailures(t *testing.T) {
 	_ = stats
 }
 
+// TestPeerStoresReportSetAndUpdateTrustBackendFailures covers the Set-side
+// backend-error branches CreatePeer/UpdateTrust/CreateStats each have,
+// beyond the Get-side ones TestPeerStoresReportBackendFailures already
+// covers, plus UpdateTrust's own transactional Get failure.
+func TestPeerStoresReportSetAndUpdateTrustBackendFailures(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	setFailBackend := newFirestoreMemoryBackend()
+	setFailBackend.failSet = failOnCollection(peerTrustCollection)
+	trustSetFail, _ := NewPeerStores(setFailBackend)
+	if err := trustSetFail.CreatePeer(ctx, PeerRecord{MachineID: "machine_1", Name: "laptop", IdentityID: "local", Trust: PeerTrustActive, CreatedAt: now, TrustChangedAt: now}); err == nil {
+		t.Fatal("CreatePeer must surface a transactional Set failure")
+	}
+
+	getFailBackend := newFirestoreMemoryBackend()
+	trustOK, _ := NewPeerStores(getFailBackend)
+	if err := trustOK.CreatePeer(ctx, PeerRecord{MachineID: "machine_1", Name: "laptop", IdentityID: "local", Trust: PeerTrustActive, CreatedAt: now, TrustChangedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	getFailBackend.failGet = failOnCollection(peerTrustCollection)
+	if _, err := trustOK.UpdateTrust(ctx, "machine_1", func(*PeerRecord) {}); err == nil {
+		t.Fatal("UpdateTrust must surface a transactional Get failure")
+	}
+	getFailBackend.failGet = nil
+	getFailBackend.failSet = failOnCollection(peerTrustCollection)
+	if _, err := trustOK.UpdateTrust(ctx, "machine_1", func(*PeerRecord) {}); err == nil {
+		t.Fatal("UpdateTrust must surface a transactional Set failure")
+	}
+
+	statsSetFailBackend := newFirestoreMemoryBackend()
+	statsSetFailBackend.failSet = failOnCollection(peerStatsCollection)
+	_, statsSetFail := NewPeerStores(statsSetFailBackend)
+	if err := statsSetFail.CreateStats(ctx, "machine_1"); err == nil {
+		t.Fatal("CreateStats must surface a transactional Set failure")
+	}
+}
+
 func TestPeerStoresReportUnconfiguredBackend(t *testing.T) {
 	ctx := context.Background()
 	var trust PeerTrustStore = peerTrustStore{}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,7 +19,7 @@ func newTestPeerAdminService(backend *firestoreMemoryBackend) *PeerAdminService 
 	_ = resolver
 	return &PeerAdminService{
 		Credentials: credentials, Index: index, Trust: trust, Stats: stats,
-		Pepper: []byte(testPeerAdminPepper), HubMachineName: "vm1",
+		Backend: backend, Pepper: []byte(testPeerAdminPepper), HubMachineName: "vm1",
 	}
 }
 
@@ -144,6 +146,24 @@ func TestInviteRefusesTheMemoryEngine(t *testing.T) {
 	}
 }
 
+// TestInviteValidatesNameAndReservesConnect is M4: invite names follow the
+// same rules as machinesnapshot.ValidateIdentity, and "connect" — the exact
+// path segment PeersConnectPath and composeWorkbenchAPI treat specially —
+// is reserved case-insensitively so a peer can never become permanently
+// unreachable by name through GET /v0/workbench/peers/{id}.
+func TestInviteValidatesNameAndReservesConnect(t *testing.T) {
+	service := newTestPeerAdminService(newFirestoreMemoryBackend())
+	if _, err := service.Invite(context.Background(), "connect", false); err == nil {
+		t.Fatal("\"connect\" must be reserved and refused as a peer name")
+	}
+	if _, err := service.Invite(context.Background(), "CONNECT", false); err == nil {
+		t.Fatal("\"connect\" must be reserved case-insensitively")
+	}
+	if _, err := service.Invite(context.Background(), "bad name with spaces", false); err == nil {
+		t.Fatal("an identity ValidateIdentity rejects must be refused")
+	}
+}
+
 func TestInviteRejectsAnEmptyName(t *testing.T) {
 	service := newTestPeerAdminService(newFirestoreMemoryBackend())
 	if _, err := service.Invite(context.Background(), "   ", false); err == nil {
@@ -206,6 +226,160 @@ func TestBlockUnblockAndDisconnectResolveByNameOrID(t *testing.T) {
 	var unavailable PeerAdminService
 	if _, err := unavailable.Block(ctx, "laptop"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Block with no trust store = %v, want ErrUnavailable", err)
+	}
+}
+
+// TestConcurrentInviteOfTheSameNameHasExactlyOneWinner is S2(b): Invite
+// writes the credential, trust and statistics documents in one UpdateAtomic
+// transaction specifically so two concurrent invites of the same name never
+// both succeed. firestoreMemoryBackend's UpdateAtomic now holds its lock for
+// the whole callback (see firestore_memory_test.go), so this test exercises
+// genuine mutual exclusion, not just sequential calls that happen not to
+// race.
+func TestConcurrentInviteOfTheSameNameHasExactlyOneWinner(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	service := newTestPeerAdminService(backend)
+
+	const attempts = 8
+	results := make([]PeerInviteResult, attempts)
+	errs := make([]error, attempts)
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = service.Invite(ctx, "laptop", false)
+		}(i)
+	}
+	wg.Wait()
+
+	wins, tokens := 0, map[string]bool{}
+	for i := 0; i < attempts; i++ {
+		if errs[i] == nil {
+			wins++
+			tokens[results[i].Token] = true
+			continue
+		}
+		if !strings.Contains(errs[i].Error(), "already a peer") {
+			t.Fatalf("attempt %d failed with an unexpected error: %v", i, errs[i])
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent invite of the same name had %d winners, want exactly 1", wins)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("winner token set = %v, want exactly one token", tokens)
+	}
+
+	// The winner's token must still resolve: a loser's mint (which happens
+	// before the transaction, and is never persisted when the transaction's
+	// re-check refuses it) must not have revoked the winner's credential.
+	trust, _ := NewPeerStores(backend)
+	record, found, err := trust.FindPeerByName(ctx, "laptop")
+	if err != nil || !found {
+		t.Fatalf("FindPeerByName after the race = %+v, %t, %v", record, found, err)
+	}
+	var winnerToken string
+	for token := range tokens {
+		winnerToken = token
+	}
+	_, resolver, _ := NewMachineStores(backend)
+	digest, err := DigestMachineToken(winnerToken, []byte(testPeerAdminPepper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveMachineCredential(ctx, digest); err != nil {
+		t.Fatalf("winner's token no longer resolves after the race: %v", err)
+	}
+}
+
+// TestMachineIndexHasCredential covers machineIndexStore.HasCredential's
+// found/not-found/backend-error/unconfigured branches directly.
+func TestMachineIndexHasCredential(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	index := NewMachineIndex(backend)
+	if has, err := index.HasCredential(ctx, "machine_absent"); err != nil || has {
+		t.Fatalf("HasCredential(absent) = %t, %v, want false, nil", has, err)
+	}
+	credentials, _, _ := NewMachineStores(backend)
+	if _, err := credentials.RotateMachineCredential(ctx, MachineCredentialBinding{
+		IdentityID: "local", MachineName: "studio-mac", IssuedAt: time.Now().UTC(), Scopes: cloneEnrollmentScopes(),
+	}, MachineTokenDigest{0x02}); err != nil {
+		t.Fatal(err)
+	}
+	machineID := MachineID("local", "studio-mac")
+	if has, err := index.HasCredential(ctx, machineID); err != nil || !has {
+		t.Fatalf("HasCredential(present) = %t, %v, want true, nil", has, err)
+	}
+
+	backend.failGet = failOnCollection(machineEnrollmentCollection)
+	if _, err := index.HasCredential(ctx, machineID); err == nil {
+		t.Fatal("HasCredential must surface a backend Get failure")
+	}
+
+	var unavailable MachineIndex = machineIndexStore{}
+	if _, err := unavailable.HasCredential(ctx, "machine_1"); !errors.Is(err, errMachineCredentialUnavailable) {
+		t.Fatalf("HasCredential with no backend = %v, want errMachineCredentialUnavailable", err)
+	}
+}
+
+// TestPeerAdminServiceNowUsesInjectedClock covers the now() helper directly.
+func TestPeerAdminServiceNowUsesInjectedClock(t *testing.T) {
+	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	service := PeerAdminService{Now: func() time.Time { return fixed }}
+	if got := service.now(); !got.Equal(fixed) {
+		t.Fatalf("now() = %v, want %v", got, fixed)
+	}
+	if got := (&PeerAdminService{}).now(); got.IsZero() {
+		t.Fatal("now() with no injected clock must still return a real time")
+	}
+}
+
+// TestInviteSurfacesPeerExistsCheckFailure covers Invite's one
+// pre-transaction error branch directly (the transaction's own re-checks,
+// including the non-peer-credential collision, are covered by
+// TestInviteRefusesANameHeldByANonPeerCredential,
+// TestConcurrentInviteOfTheSameNameHasExactlyOneWinner, and the store-level
+// backend-failure tests in peer_store_test.go). Invite deliberately has no
+// second pre-check against Index.HasCredential — see the doc comment on the
+// pre-check in peer_admin.go for why a second, differently-timed collection
+// read there would itself be a race.
+func TestInviteSurfacesPeerExistsCheckFailure(t *testing.T) {
+	backend := newFirestoreMemoryBackend()
+	backend.failGet = failOnCollection(peerTrustCollection)
+	service := newTestPeerAdminService(backend)
+	if _, err := service.Invite(context.Background(), "laptop", false); err == nil {
+		t.Fatal("Invite must surface a peerExists (Trust.GetPeer) failure")
+	}
+}
+
+// TestResolvePeerBranches covers resolvePeer's guard, unavailable, and
+// backend-failure branches directly, beyond the name/ID/unknown-peer paths
+// TestBlockUnblockAndDisconnectResolveByNameOrID already covers.
+func TestResolvePeerBranches(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	service := newTestPeerAdminService(backend)
+	if _, err := service.resolvePeer(ctx, ""); err == nil {
+		t.Fatal("resolvePeer must reject an empty name/ID")
+	}
+	var noTrust PeerAdminService
+	if _, err := noTrust.resolvePeer(ctx, "laptop"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("resolvePeer with no Trust store = %v, want ErrUnavailable", err)
+	}
+	if _, err := service.Invite(ctx, "laptop", false); err != nil {
+		t.Fatal(err)
+	}
+	backend.failGet = failOnCollection(peerTrustCollection)
+	if _, err := service.resolvePeer(ctx, "machine_x"); err == nil {
+		t.Fatal("resolvePeer must surface a GetPeer failure")
+	}
+	backend.failGet = nil
+	backend.failQuery = failQueryOnCollection(peerTrustCollection)
+	if _, err := service.resolvePeer(ctx, "laptop"); err == nil {
+		t.Fatal("resolvePeer must surface a FindPeerByName (Query) failure")
 	}
 }
 
