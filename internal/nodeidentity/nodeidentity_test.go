@@ -212,16 +212,20 @@ func TestLoadFileReportsAWritePermissionFailure(t *testing.T) {
 	}
 }
 
-// TestPathAndLoadPropagateAnUnresolvableProjectsRoot proves Path and Load
-// surface wbhome's own resolution error rather than swallowing it.
-func TestPathAndLoadPropagateAnUnresolvableProjectsRoot(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("WB_PROJECTS_ROOT", "")
-	if _, err := Path(""); err == nil {
-		t.Fatal("expected Path to propagate an unresolvable projects root")
+// TestLoadPropagatesAnUnresolvableProjectsRoot proves Load surfaces a
+// resolution failure under the projects root rather than swallowing it. The
+// fault is a projects root that is itself a regular file — a condition that
+// fails identically on every OS — rather than clearing HOME: on Windows,
+// os.UserHomeDir resolves from USERPROFILE, not HOME, so clearing only HOME
+// silently stops exercising this path there.
+func TestLoadPropagatesAnUnresolvableProjectsRoot(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := Load("", nil); err == nil {
-		t.Fatal("expected Load to propagate an unresolvable projects root")
+	if _, err := Load(blocker, nil); err == nil {
+		t.Fatal("expected Load to fail when the projects root is a regular file")
 	}
 }
 

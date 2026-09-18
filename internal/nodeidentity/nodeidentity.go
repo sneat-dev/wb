@@ -36,7 +36,17 @@ func Path(projectsRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, filepath.FromSlash(relativePath)), nil
+	return PathFromHome(home), nil
+}
+
+// PathFromHome returns the node ID file's location for a WB home directory
+// that is already resolved (internal/wbhome.Root's return value), for a
+// caller that resolved it once already and must not resolve the same
+// projects root a second time through a second, independent call — see
+// cmd/wb's daemon serve, which reuses its own already-resolved home this way
+// rather than calling Load(projectsRoot, nil) directly.
+func PathFromHome(home string) string {
+	return filepath.Join(home, filepath.FromSlash(relativePath))
 }
 
 // Load resolves the node ID for a projects root, creating it (and its
@@ -70,34 +80,64 @@ func LoadFile(path string, random io.Reader) (string, error) {
 		return "", fmt.Errorf("generate node ID: %w", err)
 	}
 	id := hex.EncodeToString(raw)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create node identity directory: %w", err)
 	}
-	// Create-exclusive: two racing first-starts (a daemon and a concurrent
-	// `wb peers join`) must not overwrite one another's generated ID. The
-	// loser reads back the winner's file instead.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tempPath, err := writeNodeIDTempFile(dir, id)
 	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(tempPath) }()
+	// Publish atomically and exclusively with a hard link: two racing
+	// first-starts (a daemon and a concurrent `wb peers join`) must not
+	// overwrite one another's generated ID, and a crash between opening and
+	// writing the destination file must never leave a partially written
+	// node-id in place (an O_CREATE|O_EXCL write directly to path could).
+	// link(2) fails with EEXIST if path already exists, whether that is a
+	// completed publish from a winning racer or a stale plain file, so
+	// exactly one writer's ID is ever published and every loser reads the
+	// winner's file back instead.
+	if err := os.Link(tempPath, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return readNodeID(path)
 		}
-		return "", fmt.Errorf("create node identity file: %w", err)
+		return "", fmt.Errorf("publish node identity file: %w", err)
+	}
+	return id, nil
+}
+
+// writeNodeIDTempFile writes id to a private, fsynced temporary file in dir
+// (the node-id file's own directory, so the later os.Link stays on one
+// filesystem) and returns its path. The caller publishes it with os.Link and
+// always removes the temp name afterward, whether or not the link won the
+// race.
+func writeNodeIDTempFile(dir, id string) (string, error) {
+	file, err := os.CreateTemp(dir, ".node-id-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create node identity temp file: %w", err)
+	}
+	path := file.Name()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("protect node identity temp file: %w", err)
 	}
 	if _, err := io.WriteString(file, id+"\n"); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return "", fmt.Errorf("write node identity file: %w", err)
+		return "", fmt.Errorf("write node identity temp file: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return "", fmt.Errorf("sync node identity file: %w", err)
+		return "", fmt.Errorf("sync node identity temp file: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
-		return "", fmt.Errorf("close node identity file: %w", err)
+		return "", fmt.Errorf("close node identity temp file: %w", err)
 	}
-	return id, nil
+	return path, nil
 }
 
 func readNodeID(path string) (string, error) {
@@ -106,11 +146,14 @@ func readNodeID(path string) (string, error) {
 		return "", err
 	}
 	id := strings.TrimSpace(string(raw))
+	if id == "" {
+		return "", fmt.Errorf("node identity file %s is empty; delete it to generate a new one", path)
+	}
 	if len(id) != byteLength*2 {
-		return "", fmt.Errorf("node identity file %s does not hold a %d-byte hex ID", path, byteLength)
+		return "", fmt.Errorf("node identity file %s does not hold a %d-byte hex ID; delete it to generate a new one", path, byteLength)
 	}
 	if _, err := hex.DecodeString(id); err != nil {
-		return "", fmt.Errorf("node identity file %s is not valid hex: %w", path, err)
+		return "", fmt.Errorf("node identity file %s is not valid hex; delete it to generate a new one: %w", path, err)
 	}
 	return id, nil
 }
