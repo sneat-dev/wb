@@ -215,6 +215,22 @@ Git operation, a parked session, or a shell inside the clone. Uncommitted
 changes MUST NOT be a refusal reason, because a rename preserves them. The
 remaining clones MUST still be migrated.
 
+#### REQ: clone-migration-include-active-tasks
+
+An operator MUST be able to lift the live-claim refusal, and only that one.
+`--include-task <task>` (repeatable) lifts it for the named tasks, and
+`--include-active-tasks` lifts it for every task. A task name that matches no
+live Work Log claim in any resolved home MUST fail the run with a usage error
+before anything moves, so a typo cannot silently include nothing. Every other
+refusal condition still applies to an included clone: a busy process, a parked
+session naming it, a Git operation in progress, and the checks at the moment of
+the move. When a clone moves under an included claim, WB MUST record that
+claim's relocation intent and receipt, so land, guard and cleanup resolve the
+task's checkout at its new path. An included active task's checkout inside the
+clone moves with the clone and is repointed; it is not relocated to the store,
+because relocation remains limited to finished tasks. The dry run MUST mark
+each clone that is planned only because of an inclusion, naming the task.
+
 #### REQ: clone-migration-repoints-worktrees
 
 After moving a clone, every linked worktree registered with it MUST resolve in
@@ -223,7 +239,9 @@ outside it, which stay where they are. WB MUST repoint them with Git's own
 repair, then verify that the clone's worktree list has no missing or prunable
 entry and that every worktree's common directory is the clone's new `.git`; a
 clone that fails verification MUST be reported as failed, not done. WB MUST
-regenerate the `.worktree.md` marker of the clone and of each linked worktree,
+regenerate the `.worktree.md` marker of the clone and of each linked worktree —
+and again for a checkout after it is relocated, so the marker names its final
+path —
 and MUST update the WB records that locate an active task's canonical clone or
 checkout so guard, inventory, land and cleanup work at the new path: for each
 moved worktree that carries an active Work Log claim, WB records a relocation
@@ -460,6 +478,23 @@ finishes"
 **When** the same setup runs with `--clones-only`
 **Then** clone A moves and every worktree is repointed, and no checkout is
 relocated.
+
+### AC: migrate-includes-named-active-tasks
+
+**Requirements:** projects-root-layout#req:clone-migration-include-active-tasks
+
+**Given** two legacy clones, each held by a live claim with no process inside
+it: `acme/one` held by task `t-one` through a worktree in a legacy home, and
+`acme/two` held by task `t-two` through a worktree inside the clone
+**When** `wb layout migrate --include-task t-one --apply` runs
+**Then** `acme/one` moves, its worktree is repointed in place, a relocation
+receipt is recorded for `t-one`, and the claim-authority check `land` uses
+passes at the new path; `acme/two` is still skipped for its live claim
+**When** `wb layout migrate --include-task no-such-task` runs
+**Then** it exits with the usage code and nothing moves
+**When** `wb layout migrate --include-active-tasks --apply` runs while a
+process has its working directory inside `acme/two`'s worktree
+**Then** `acme/two` is skipped, naming that process.
 
 ### AC: migrate-is-reversible
 
