@@ -476,6 +476,16 @@ func daemonOutputFormat(format string, jsonOut bool) (string, error) {
 	return format, nil
 }
 
+// formatOptionalTime renders a zero time as "never", the way an operator
+// reading `wb daemon status` before the first sweep has run expects, rather
+// than a misleading 0001-01-01 timestamp.
+func formatOptionalTime(at time.Time) string {
+	if at.IsZero() {
+		return "never"
+	}
+	return at.Format(time.RFC3339)
+}
+
 func writeDaemonResult(out io.Writer, format string, result daemonResult) error {
 	if format == "json" {
 		return writeJSONTo(out, result)
@@ -532,6 +542,10 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 	}
 	if err == nil && result.Hub.LastEventAcknowledged != nil {
 		_, err = fmt.Fprintf(out, ", hub_last_event_acknowledged=%q", result.Hub.LastEventAcknowledged.ID)
+	}
+	if err == nil && result.Hub.WebhookRedelivery != nil {
+		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_sweep=%s, hub_webhook_redelivered=%d, hub_webhook_abandoned=%d",
+			formatOptionalTime(result.Hub.WebhookRedelivery.LastSweepAt), result.Hub.WebhookRedelivery.Redelivered, result.Hub.WebhookRedelivery.Abandoned)
 	}
 	if err == nil {
 		_, err = fmt.Fprintln(out)
