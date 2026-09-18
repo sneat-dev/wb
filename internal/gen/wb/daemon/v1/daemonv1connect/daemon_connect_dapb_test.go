@@ -192,9 +192,18 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 
-	// The ten subtests below all call through this one shared client and its
-	// interceptor concurrently (each is its own t.Parallel() subtest), so the
-	// counter it closes over must be atomic, not a plain int.
+	// The ten subtests below are deliberately NOT t.Parallel(): the
+	// assertions after the loop (service call counts, the interceptor
+	// count) read state the subtests populate, and that only works because
+	// each t.Run call blocks until its subtest returns. Making a subtest
+	// parallel makes t.Run return as soon as it calls t.Parallel(), before
+	// its body has actually run -- the trailing assertions would then race
+	// the subtests themselves and, under -count=1, always read zeros (this
+	// exact failure mode shipped once, from an earlier, purely
+	// thread-safety-focused pass over this file, and was caught by a full
+	// `go test ./...` run, not by -race). intercepted is still atomic
+	// because that costs nothing and stays correct if this test is ever
+	// restructured to make the subtests independent.
 	var intercepted atomic.Int64
 	interceptor := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -211,7 +220,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("GetDaemonInfo", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.GetDaemonInfo(ctx, connect.NewRequest(&v1.GetDaemonInfoRequest{}))
 		if err != nil {
 			t.Fatalf("GetDaemonInfo error: %v", err)
@@ -225,7 +233,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("SubmitOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.SubmitOperation(ctx, connect.NewRequest(&v1.SubmitOperationRequest{
 			IdempotencyKey:   "dapb-idem",
 			WorkingDirectory: "/dapb/dir",
@@ -247,7 +254,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("GetOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.GetOperation(ctx, connect.NewRequest(&v1.GetOperationRequest{OperationId: "dapb-op-1"}))
 		if err != nil {
 			t.Fatalf("GetOperation error: %v", err)
@@ -257,7 +263,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("WaitOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.WaitOperation(ctx, connect.NewRequest(&v1.WaitOperationRequest{
 			OperationId:      "dapb-op-2",
 			AfterCursor:      "dapb-cursor",
@@ -272,7 +277,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("CancelOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.CancelOperation(ctx, connect.NewRequest(&v1.CancelOperationRequest{OperationId: "dapb-op-3"}))
 		if err != nil {
 			t.Fatalf("CancelOperation error: %v", err)
@@ -282,7 +286,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("RegisterWorker", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.RegisterWorker(ctx, connect.NewRequest(&v1.RegisterWorkerRequest{
 			WorkerId:        "dapb-w",
 			Build:           "dapb-build-2",
@@ -307,7 +310,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("LeaseOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.LeaseOperation(ctx, connect.NewRequest(&v1.LeaseOperationRequest{
 			WorkerId:         "dapb-w2",
 			WorkerGeneration: "dapb-wg",
@@ -334,7 +336,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("HeartbeatOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.HeartbeatOperation(ctx, connect.NewRequest(&v1.HeartbeatOperationRequest{
 			WorkerId:         "dapb-w3",
 			WorkerGeneration: "dapb-wg3",
@@ -356,7 +357,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("CompleteOperation", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.CompleteOperation(ctx, connect.NewRequest(&v1.CompleteOperationRequest{
 			WorkerId:         "dapb-w4",
 			WorkerGeneration: "dapb-wg4",
@@ -383,7 +383,6 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("DisconnectWorker", func(t *testing.T) {
-		t.Parallel()
 		resp, err := client.DisconnectWorker(ctx, connect.NewRequest(&v1.DisconnectWorkerRequest{
 			WorkerId:         "dapb-w5",
 			WorkerGeneration: "dapb-gen",
