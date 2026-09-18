@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -783,6 +784,313 @@ func TestDaemonStatusSkipsSupervisorMismatchWhenTheSeamIsNil(t *testing.T) {
 	}
 }
 
+// The sneat-dev/wb#617 detector this feature exists for: a specific systemd
+// unit exists and is failing to keep the daemon up, while the process
+// actually answering the port recorded no supervisor at all — confirmed
+// live: an orphaned `daemon serve` (a session scope, not the unit's own
+// cgroup) served the port while wb-daemon.service sat ActiveState=failed
+// with NRestarts=4468 (sneat-dev/wb#622 review item 2). The cgroup-based
+// seam agrees (recorded none, observed none) — the systemd-unit detector is
+// what catches this, not the cgroup fallback.
+func TestDaemonStatusFlagsAFailedSystemdUnitEvenWithoutACgroupMismatch(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.now())
+	state.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 901 }
+	deps.observedSupervisor = func(int) (daemon.Supervisor, bool) { return daemon.SupervisorNone, true }
+	deps.systemdUnitName = func() string { return "wb-daemon.service" }
+	deps.systemdUnitState = func(unit string) (daemon.SystemdUnitState, bool) {
+		if unit != "wb-daemon.service" {
+			t.Fatalf("systemdUnitState probed unexpected unit %q", unit)
+		}
+		return daemon.SystemdUnitState{ActiveState: "failed", NRestarts: 4468}, true
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SupervisorMismatch == "" {
+		t.Fatal("expected the failed systemd unit to be flagged")
+	}
+	for _, want := range []string{"wb-daemon.service", "failed", "4468"} {
+		if !strings.Contains(result.SupervisorMismatch, want) {
+			t.Fatalf("mismatch %q does not mention %q", result.SupervisorMismatch, want)
+		}
+	}
+}
+
+// A unit that is merely activating for the first time (no restarts yet), or
+// healthy and active, is not evidence of anything wrong.
+func TestDaemonStatusDoesNotFlagAHealthySystemdUnit(t *testing.T) {
+	root := daemonTestRoot(t)
+	for name, unitState := range map[string]daemon.SystemdUnitState{
+		"active":                   {ActiveState: "active"},
+		"activating, no restarts":  {ActiveState: "activating", NRestarts: 0},
+		"inactive (never started)": {ActiveState: "inactive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := daemonTestDependencies(t, root)
+			state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.now())
+			state.MarkReadyWithProcess(901, deps.now(), deps.now())
+			if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
+				t.Fatal(err)
+			}
+			deps.alive = func(pid int) bool { return pid == 901 }
+			deps.observedSupervisor = func(int) (daemon.Supervisor, bool) { return daemon.SupervisorNone, true }
+			deps.systemdUnitName = func() string { return "wb-daemon.service" }
+			deps.systemdUnitState = func(string) (daemon.SystemdUnitState, bool) { return unitState, true }
+
+			result, err := newDaemonController(deps, root).Status(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.SupervisorMismatch != "" {
+				t.Fatalf("unexpected mismatch: %q", result.SupervisorMismatch)
+			}
+		})
+	}
+}
+
+// The systemd-unit detector only applies when the RECORDED supervisor is
+// none: a daemon that already recorded supervisor=systemd is not the shape
+// this detector exists for (the cgroup-based fallback covers that
+// direction), and probing an unrelated unit's state would be meaningless.
+func TestDaemonStatusSystemdUnitDetectorOnlyAppliesWhenRecordedIsNone(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.now())
+	state.Supervisor = daemon.SupervisorSystemd
+	state.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 901 }
+	deps.observedSupervisor = func(int) (daemon.Supervisor, bool) { return daemon.SupervisorSystemd, true }
+	called := false
+	deps.systemdUnitName = func() string { return "wb-daemon.service" }
+	deps.systemdUnitState = func(string) (daemon.SystemdUnitState, bool) {
+		called = true
+		return daemon.SystemdUnitState{ActiveState: "failed", NRestarts: 1}, true
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("systemdUnitState must only be consulted when the recorded supervisor is none")
+	}
+	if result.SupervisorMismatch != "" {
+		t.Fatalf("unexpected mismatch: %q", result.SupervisorMismatch)
+	}
+}
+
+// Nil systemdUnitState/systemdUnitName seams (a test double that never set
+// them, or a platform with no implementation) must not panic status, and
+// must fall back to the cgroup-based check.
+func TestDaemonStatusFallsBackToCgroupWhenSystemdUnitSeamsAreNil(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	deps.systemdUnitState = nil
+	deps.systemdUnitName = nil
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.now())
+	state.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 901 }
+	deps.observedSupervisor = func(int) (daemon.Supervisor, bool) { return daemon.SupervisorSystemd, true }
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SupervisorMismatch == "" {
+		t.Fatal("expected the cgroup-based fallback to still flag the mismatch")
+	}
+}
+
+// daemonObservedSystemdUnitState is exercised through its own runSystemctl
+// seam with fake output, including systemctl being entirely absent — never
+// a real systemd user manager.
+func TestDaemonObservedSystemdUnitStateParsesFakeOutput(t *testing.T) {
+	previous := runSystemctl
+	t.Cleanup(func() { runSystemctl = previous })
+	var capturedArgs []string
+	runSystemctl = func(args ...string) ([]byte, error) {
+		capturedArgs = args
+		return []byte("ActiveState=failed\nResult=exit-code\nNRestarts=4468\n"), nil
+	}
+	state, known := daemonObservedSystemdUnitState("wb-daemon.service")
+	if !known {
+		t.Fatal("known = false, want true")
+	}
+	if state.ActiveState != "failed" || state.NRestarts != 4468 {
+		t.Fatalf("state = %#v", state)
+	}
+	if len(capturedArgs) == 0 || capturedArgs[len(capturedArgs)-1] != "wb-daemon.service" {
+		t.Fatalf("systemctl args = %v, want the unit name last", capturedArgs)
+	}
+}
+
+func TestDaemonObservedSystemdUnitStateWhenSystemctlIsAbsent(t *testing.T) {
+	previous := runSystemctl
+	t.Cleanup(func() { runSystemctl = previous })
+	runSystemctl = func(args ...string) ([]byte, error) {
+		return nil, errors.New(`exec: "systemctl": executable file not found in $PATH`)
+	}
+	if _, known := daemonObservedSystemdUnitState("wb-daemon.service"); known {
+		t.Fatal("systemctl being absent must report unknown, not a healthy unit")
+	}
+}
+
+func TestDaemonObservedSystemdUnitStateRejectsAnEmptyUnitName(t *testing.T) {
+	if _, known := daemonObservedSystemdUnitState("   "); known {
+		t.Fatal("an empty unit name must report unknown")
+	}
+}
+
+// The unit name comes from config (an environment variable override — this
+// build has no other daemon configuration file) if one is set, and from
+// daemonDefaultSystemdUnit otherwise (sneat-dev/wb#622 review item 2).
+func TestDaemonSystemdUnitNameDefaultsAndReadsAConfiguredOverride(t *testing.T) {
+	if got := daemonSystemdUnitName(func(string) string { return "" }); got != daemonDefaultSystemdUnit {
+		t.Fatalf("default unit name = %q, want %q", got, daemonDefaultSystemdUnit)
+	}
+	if got := daemonSystemdUnitName(func(name string) string {
+		if name == "WB_DAEMON_SYSTEMD_UNIT" {
+			return "my-custom-wb.service"
+		}
+		return ""
+	}); got != "my-custom-wb.service" {
+		t.Fatalf("configured unit name = %q", got)
+	}
+	if got := daemonSystemdUnitName(nil); got != daemonDefaultSystemdUnit {
+		t.Fatalf("nil getenv = %q, want default", got)
+	}
+}
+
+// daemonSupervisorPresent's systemd branch matches only the known
+// `is-system-running` states; anything else — an unrecognized state, or
+// systemctl being entirely absent — counts as not present
+// (sneat-dev/wb#622 review item 5).
+func TestDaemonSupervisorPresentSystemdOnlyMatchesKnownIsSystemRunningStates(t *testing.T) {
+	previous := runSystemctl
+	t.Cleanup(func() { runSystemctl = previous })
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"running", "running\n", true},
+		{"degraded", "degraded\n", true},
+		{"starting", "starting\n", true},
+		{"initializing", "initializing\n", true},
+		{"maintenance", "maintenance\n", true},
+		{"stopping", "stopping\n", true},
+		{"offline", "offline\n", false},
+		{"empty (systemctl absent or unreachable)", "", false},
+		{"an unrecognized state", "some-unrecognized-state\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runSystemctl = func(args ...string) ([]byte, error) { return []byte(tc.output), nil }
+			present, _ := daemonSupervisorPresent(daemon.SupervisorSystemd, "")
+			if present != tc.want {
+				t.Fatalf("present(%q) = %t, want %t", tc.output, present, tc.want)
+			}
+		})
+	}
+}
+
+func TestDaemonSupervisorPresentSystemdWhenSystemctlIsAbsent(t *testing.T) {
+	previous := runSystemctl
+	t.Cleanup(func() { runSystemctl = previous })
+	runSystemctl = func(args ...string) ([]byte, error) {
+		return nil, errors.New(`exec: "systemctl": executable file not found in $PATH`)
+	}
+	present, _ := daemonSupervisorPresent(daemon.SupervisorSystemd, "")
+	if present {
+		t.Fatal("systemctl being absent must report not present")
+	}
+}
+
+// wb's own self-managed launchd job's executable-handoff path (a live
+// process running a different binary) must go through the ordinary launch
+// path — wb's own bootstrap+kickstart cycle IS its restart mechanism —
+// never through waitForSupervisorReplacement, which would wait for a
+// foreign supervisor that does not exist (sneat-dev/wb#622 review item 3).
+func TestStartAndRestartHandoffUnderWBsOwnLaunchdJobTakeTheLaunchPathNotTheSupervisorWait(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		run  func(controller daemonController) (daemonResult, error)
+	}{
+		{"start", func(controller daemonController) (daemonResult, error) {
+			return controller.Start(context.Background(), daemonDefaultListen)
+		}},
+		{"restart", func(controller daemonController) (daemonResult, error) {
+			return controller.Restart(context.Background(), false)
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := daemonTestRoot(t)
+			deps := daemonTestDependencies(t, root)
+
+			// A PID far outside the 900-series counter daemonTestDependencies'
+			// own default start/alive fakes use, so the old (about to be
+			// stopped) process and the new (about to be launched) one can
+			// never coincide on the same synthetic PID.
+			const oldPID = 5000
+			old := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, daemon.SupervisorLaunchd, deps.now())
+			old.SupervisorLabel = daemonLaunchdLabel
+			old.MarkReadyWithProcess(oldPID, deps.now(), deps.now())
+			controller := newDaemonController(deps, root)
+			if err := controller.store.Save(old); err != nil {
+				t.Fatal(err)
+			}
+
+			oldAlive := true
+			originalAlive := deps.alive
+			deps.alive = func(pid int) bool {
+				if pid == oldPID {
+					return oldAlive
+				}
+				return originalAlive(pid)
+			}
+			originalStop := deps.stop
+			deps.stop = func(pid int, supervisor daemon.Supervisor, label string) error {
+				if pid == oldPID {
+					oldAlive = false
+				}
+				return originalStop(pid, supervisor, label)
+			}
+			launched := false
+			originalStart := deps.start
+			deps.start = func(executable string, args []string, logPath string) (int, error) {
+				launched = true
+				return originalStart(executable, args, logPath)
+			}
+			controller.deps = deps
+
+			result, err := scenario.run(controller)
+			if err != nil {
+				t.Fatalf("%s under wb's own launchd job: %v", scenario.name, err)
+			}
+			if !launched {
+				t.Fatalf("%s under wb's own launchd job must take the launch path, not wait for a foreign supervisor that does not exist", scenario.name)
+			}
+			if !result.ProcessManagerRunning {
+				t.Fatalf("%s result = %#v", scenario.name, result)
+			}
+		})
+	}
+}
+
 // The whole point: an executable-handoff branch of Start must also hand off
 // to a live supervisor rather than launch a detached replacement.
 func TestDaemonStartHandsOffAVersionMismatchToASupervisorInsteadOfLaunching(t *testing.T) {
@@ -884,13 +1192,26 @@ func TestDaemonStartDoesNotTouchASupervisedDaemonForAnUnrelatedBinary(t *testing
 	}
 	controller.deps = deps
 
+	// An implicit Start (exactly the shape `wb dashboard --local` and
+	// daemon_rpc.go's daemonOperationClient reach) must not fail outright
+	// merely because THIS invocation's own binary differs from a healthy
+	// running supervised daemon's — that would break every such caller for a
+	// production daemon it never asked to manage the lifecycle of
+	// (sneat-dev/wb#622 review item 9). It gets the live daemon back, with
+	// the mismatch reported as a warning, not an error.
 	result, err := controller.Start(context.Background(), daemonDefaultListen)
-	if err == nil {
-		t.Fatal("an unrelated binary's implicit Start must report the mismatch, not succeed silently")
+	if err != nil {
+		t.Fatalf("an unrelated binary's implicit Start must succeed against a live supervised daemon: %v", err)
 	}
-	for _, want := range []string{"refusing to touch", "not this build", "leaving it running"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("mismatch error %q does not mention %q", err.Error(), want)
+	if result.ProvenanceMatches {
+		t.Fatal("provenance must be reported as not matching")
+	}
+	if !result.ProcessManagerRunning {
+		t.Fatal("the live supervised daemon must still be reported as running")
+	}
+	for _, want := range []string{"does not match", "leaving it running"} {
+		if !strings.Contains(result.Warning, want) {
+			t.Fatalf("warning %q does not mention %q", result.Warning, want)
 		}
 	}
 	if result.State.Status != daemon.StatusReady || result.State.PID != 901 {
@@ -989,4 +1310,183 @@ func TestDaemonRefuseTestBinarySuffixRuleAloneWouldCatchIt(t *testing.T) {
 		t.Fatal("a real install path unexpectedly matched the .test suffix rule")
 	}
 	// expected: a real install path never matches the suffix rule.
+}
+
+// wb's own self-managed launchd job's Stop() already boots the job out
+// completely — unlike a foreign job's KeepAlive, nothing is left to bring it
+// back — so the launchd remedy hint printed after `wb daemon stop` is false
+// on every Mac stop of wb's own daemon (sneat-dev/wb#622 review item 1). A
+// genuinely foreign launchd label still gets the real remedy, and an
+// old/legacy record with no recorded label predates any foreign-job concept
+// (so it is almost certainly wb's own too) and is treated the same way.
+func TestDaemonStopHintNamesTheRealRemedyOnlyForAForeignLaunchdLabel(t *testing.T) {
+	cases := []struct {
+		name     string
+		label    string
+		wantHint bool
+	}{
+		{"wb's own launchd job prints no false hint", daemonLaunchdLabel, false},
+		{"a legacy record with no recorded label is treated as wb's own", "", false},
+		{"a foreign launchd label prints the real remedy", "com.example.foreign-wb-supervisor", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := daemonTestRoot(t)
+			deps := daemonTestDependencies(t, root)
+			now := deps.now()
+			state := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, daemon.SupervisorLaunchd, now)
+			state.SupervisorLabel = tc.label
+			state.MarkReadyWithProcess(901, now, now)
+			controller := newDaemonController(deps, root)
+			if err := controller.store.Save(state); err != nil {
+				t.Fatal(err)
+			}
+			// deps.stop MUST flip aliveness: daemonTestDependencies' now()
+			// is a fixed clock and its sleep is a no-op, so stop()'s poll
+			// loop (daemon.go's deadline := controller.deps.now().Add(...))
+			// never advances on its own — a stop fake that does not mark the
+			// process dead spins forever instead of failing fast.
+			alive := true
+			deps.alive = func(pid int) bool { return pid == 901 && alive }
+			deps.stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
+
+			previousRoot := projectsRoot
+			projectsRoot = root
+			t.Cleanup(func() { projectsRoot = previousRoot })
+			command := newDaemonStopCmd(deps)
+			var stdout, stderr bytes.Buffer
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			if err := command.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			hasHint := strings.Contains(stderr.String(), "launchctl bootout")
+			if hasHint != tc.wantHint {
+				t.Fatalf("hint present = %t, want %t; stderr=%q", hasHint, tc.wantHint, stderr.String())
+			}
+		})
+	}
+}
+
+// The systemd stop hint is unconditional: nothing in this build installs or
+// manages its own systemd unit the way it does its own launchd job, so there
+// is no "wb's own unit" exemption to make for it.
+func TestDaemonStopHintNamesTheSystemdRemedyUnconditionally(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	now := deps.now()
+	state := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, daemon.SupervisorSystemd, now)
+	state.MarkReadyWithProcess(901, now, now)
+	controller := newDaemonController(deps, root)
+	if err := controller.store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	// See TestDaemonStopHintNamesTheRealRemedyOnlyForAForeignLaunchdLabel for
+	// why deps.stop must flip aliveness rather than being a bare no-op.
+	alive := true
+	deps.alive = func(pid int) bool { return pid == 901 && alive }
+	deps.stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
+
+	previousRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousRoot })
+	command := newDaemonStopCmd(deps)
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "systemctl --user stop") {
+		t.Fatalf("expected the systemd hint, got %q", stderr.String())
+	}
+}
+
+// markStoppedIfUnchanged is the CAS write stop() uses so a concurrent
+// replacement (a racing supervisor restart, or another goroutine's own
+// stop-then-launch) that already wrote a NEW record for a NEW PID/OwnerToken
+// between the caller's read and this write is never clobbered
+// (sneat-dev/wb#622 review item 11).
+func TestMarkStoppedIfUnchangedDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+
+	original := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner-token-1", deps.now())
+	original.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := controller.store.Save(original); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the race: something else already wrote a NEW ready record (a
+	// different PID and owner token) before this call runs.
+	replacement := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner-token-2", deps.now())
+	replacement.MarkReadyWithProcess(902, deps.now(), deps.now())
+	if err := controller.store.Save(replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := controller.markStoppedIfUnchanged(original, 901, "owner-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PID != 902 || result.Status != daemon.StatusReady {
+		t.Fatalf("markStoppedIfUnchanged clobbered a concurrent replacement: %#v", result)
+	}
+	stillThere, found, loadErr := controller.store.Load()
+	if loadErr != nil || !found || stillThere.PID != 902 || stillThere.Status != daemon.StatusReady {
+		t.Fatalf("the concurrent replacement's own record was disturbed: %#v, %t, %v", stillThere, found, loadErr)
+	}
+}
+
+// The matching case: nothing raced it, so the expected PID/OwnerToken are
+// still current, and the write proceeds normally.
+func TestMarkStoppedIfUnchangedWritesWhenNothingRaced(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+
+	original := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner-token-1", deps.now())
+	original.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := controller.store.Save(original); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := controller.markStoppedIfUnchanged(original, 901, "owner-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != daemon.StatusStopped {
+		t.Fatalf("markStoppedIfUnchanged = %#v, want Stopped", result)
+	}
+	stillThere, found, loadErr := controller.store.Load()
+	if loadErr != nil || !found || stillThere.Status != daemon.StatusStopped {
+		t.Fatalf("the record was not persisted as stopped: %#v, %t, %v", stillThere, found, loadErr)
+	}
+}
+
+// found=false (the record vanished entirely between the caller's read and
+// this call — for example a concurrent `wb daemon recover` reclaiming it)
+// also leaves nothing to overwrite: it returns the caller's own expected
+// state as a best-effort answer rather than fabricating a stopped record for
+// a state this store no longer holds.
+func TestMarkStoppedIfUnchangedWhenTheRecordIsGone(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	controller := newDaemonController(deps, root)
+
+	expected := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner-token-1", deps.now())
+	expected.MarkReadyWithProcess(901, deps.now(), deps.now())
+	// Deliberately never saved: the store holds nothing at all.
+
+	result, err := controller.markStoppedIfUnchanged(expected, 901, "owner-token-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PID != expected.PID {
+		t.Fatalf("markStoppedIfUnchanged = %#v, want the caller's own expected state back", result)
+	}
+	if _, found, loadErr := controller.store.Load(); loadErr != nil || found {
+		t.Fatalf("a stopped record must not be fabricated for a state the store no longer holds: found=%t err=%v", found, loadErr)
+	}
 }

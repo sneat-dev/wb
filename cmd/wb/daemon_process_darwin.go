@@ -24,7 +24,25 @@ import (
 // through, so a test can fake launchd's own responses instead of reaching a
 // real launch agent (sneat-dev/wb#622 review: a darwin test with real stop
 // semantics, faked at the launchctl seam).
+//
+// Its DEFAULT implementation is guarded by daemonRefuseTestBinary, generally
+// — not just at startDaemonProcess's own explicit call — so every caller
+// that reaches a real, unfaked launchctl invocation (stopDaemonProcess,
+// daemonProcessAlive, launchdPID's status probe) is covered uniformly
+// (sneat-dev/wb#622 review item 7): before this, only startDaemonProcess
+// guarded itself explicitly, so a test that forgot to fake runLaunchctl
+// before reaching any OTHER caller could still have touched a real launch
+// agent. A test that overrides runLaunchctl entirely (as every existing
+// darwin process test does) never reaches this guard at all — it is only the
+// real, unfaked exec.Command path that refuses.
 var runLaunchctl = func(args ...string) ([]byte, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = os.Args[0]
+	}
+	if guardErr := daemonRefuseTestBinary(executable); guardErr != nil {
+		return nil, guardErr
+	}
 	return exec.Command("launchctl", args...).CombinedOutput()
 }
 

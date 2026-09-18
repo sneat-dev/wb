@@ -152,3 +152,28 @@ func TestStopDaemonProcessReportsAFailedForeignKickstart(t *testing.T) {
 		t.Fatalf("failed foreign kickstart = %v", err)
 	}
 }
+
+// The DEFAULT (unfaked) runLaunchctl refuses under a go test binary before
+// ever touching a real launch agent — not just at startDaemonProcess's own
+// explicit guard, but generally, for every caller that reaches it: a print
+// (status probe), a kickstart, or a bootout (sneat-dev/wb#622 review item 7).
+// This deliberately does NOT call fakeLaunchctl: the whole point is to prove
+// the guard fires on the real default closure.
+func TestRunLaunchctlDefaultGuardsAgainstATestBinaryGenerally(t *testing.T) {
+	if _, err := runLaunchctl("print", "gui/0/dev.sneat.wb.daemon"); err == nil {
+		t.Fatal("expected the unfaked runLaunchctl to refuse under a go test binary")
+	} else if !strings.Contains(err.Error(), "Go test binary") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// stopDaemonProcess itself is guarded the same way, through the exact same
+// mechanism (runLaunchctl's default), for a caller that reaches it without
+// having faked runLaunchctl first.
+func TestStopDaemonProcessGuardsAgainstATestBinaryWithoutFakingRunLaunchctl(t *testing.T) {
+	if err := stopDaemonProcess(4242, daemon.SupervisorLaunchd, "com.example.foreign-wb-supervisor"); err == nil {
+		t.Fatal("expected stopDaemonProcess to refuse a real launchctl call under a go test binary")
+	} else if !strings.Contains(err.Error(), "Go test binary") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

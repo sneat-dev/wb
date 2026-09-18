@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/strongo/cli-helpers/selfupdate"
@@ -415,5 +416,59 @@ func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr = %q, want %q", stderr.String(), want)
 		}
+	}
+}
+
+// selfUpdateDaemonHandoffTimeout must always track the daemon package's
+// CURRENT bounds and leave headroom over both of them — the previous fixed
+// 15s constant could cut a supervised wait off partway through, killing the
+// child before it could ever report its own timeout and leaving a
+// misleading "could not run" warning instead (sneat-dev/wb#622 review item
+// 11; the bug that motivated this function existing at all).
+func TestSelfUpdateDaemonHandoffTimeoutTracksCurrentBoundsWithHeadroom(t *testing.T) {
+	previousSupervisor := daemonSupervisorRestartTimeout
+	t.Cleanup(func() { daemonSupervisorRestartTimeout = previousSupervisor })
+
+	daemonSupervisorRestartTimeout = 45 * time.Second
+	want := daemonStopTimeout + daemonSupervisorRestartTimeout + selfUpdateDaemonHandoffMargin
+	if got := selfUpdateDaemonHandoffTimeout(); got != want {
+		t.Fatalf("selfUpdateDaemonHandoffTimeout() = %s, want %s", got, want)
+	}
+	if got := selfUpdateDaemonHandoffTimeout(); got <= daemonStopTimeout+daemonSupervisorRestartTimeout {
+		t.Fatalf("timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", got, daemonStopTimeout, daemonSupervisorRestartTimeout)
+	}
+
+	daemonSupervisorRestartTimeout = 5 * time.Second
+	shrunk := selfUpdateDaemonHandoffTimeout()
+	if shrunk >= want {
+		t.Fatalf("timeout did not track a shrunk supervisor bound: %s, want less than %s", shrunk, want)
+	}
+	if shrunk <= daemonStopTimeout+daemonSupervisorRestartTimeout {
+		t.Fatalf("shrunk timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", shrunk, daemonStopTimeout, daemonSupervisorRestartTimeout)
+	}
+}
+
+// A verified update that made no change (ActionAlreadyCurrent), or one whose
+// post-swap version probe already flagged a problem (PostSwapWarning), must
+// never attempt a daemon restart at all — there is nothing to hand a new
+// binary to in the first case, and the second is already reporting its own
+// distinct warning.
+func TestRestartDaemonAfterSelfUpdateSkipsWhenAlreadyCurrentOrPostSwapWarned(t *testing.T) {
+	command := &cobra.Command{Use: "self-update"}
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+
+	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
+		Outcome: selfupdate.Outcome{Action: selfupdate.ActionAlreadyCurrent},
+	})
+	if stderr.Len() != 0 {
+		t.Fatalf("already-current must not attempt a restart: %q", stderr.String())
+	}
+
+	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
+		Outcome: selfupdate.Outcome{Action: selfupdate.ActionUpdated, PostSwapWarning: errors.New("post-swap probe did not confirm the expected version")},
+	})
+	if stderr.Len() != 0 {
+		t.Fatalf("a post-swap warning must not also attempt a restart: %q", stderr.String())
 	}
 }

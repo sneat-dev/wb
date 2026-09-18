@@ -61,7 +61,12 @@ func (kind Supervisor) Valid() bool {
 //     (ppid == 1, which is launchd on every macOS version this targets) as the
 //     equivalent inheritance guard: a child of a launchd-managed process can
 //     otherwise inherit XPC_SERVICE_NAME from its parent's environment without
-//     having been launched by launchd itself.
+//     having been launched by launchd itself. A label prefixed "application."
+//     is also treated as absent regardless of parentage: that is macOS's own
+//     label for an ordinary foreground GUI application (an IDE, a terminal
+//     app), not a launch agent — a `daemon serve` run from an IDE's
+//     integrated terminal must never be mistaken for one wb should try to
+//     kickstart or refuse under (sneat-dev/wb#622 review item 6).
 //
 // label is the launchd job label from XPC_SERVICE_NAME (empty for systemd and
 // for None): callers use it to tell wb's own self-managed launchd job from a
@@ -80,6 +85,18 @@ func DetectSupervisor(getenv func(string) string, pid, ppid int) (kind Superviso
 		return SupervisorNone, "", ""
 	}
 	if name := strings.TrimSpace(getenv("XPC_SERVICE_NAME")); name != "" && name != "0" {
+		// A label with an "application." prefix is macOS's own label for an
+		// ordinary foreground GUI application (an IDE, a terminal app), not a
+		// launchd job wb should ever treat as a supervisor to defer to or
+		// kickstart: a `daemon serve` run in a debugger's integrated terminal,
+		// or an IDE's own child process tree, inherits this from the IDE
+		// itself, not from being installed as a launch agent
+		// (sneat-dev/wb#622 review item 6). Reporting it as a supervisor would
+		// have wb's own restart/refusal logic try to "kickstart" or refuse
+		// under a job it has no business touching.
+		if strings.HasPrefix(name, "application.") {
+			return SupervisorNone, "", ""
+		}
 		if ppid == 1 {
 			return SupervisorLaunchd, "", name
 		}

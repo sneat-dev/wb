@@ -9,4 +9,4 @@ package daemon
 // is no cgroup concept, or a supervised daemon path, on Windows.
 // `known=false` tells a caller to report this as "unknown" rather than as an
 // observed absence of a supervisor.
-func ObservedCgroupSupervisor(int) (Supervisor, bool) { return "", false }
+func ObservedCgroupSupervisor(int, string) (Supervisor, bool) { return "", false }
