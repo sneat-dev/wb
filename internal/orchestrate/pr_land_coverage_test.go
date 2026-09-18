@@ -302,38 +302,80 @@ func TestOrchCovPullRequestLandResumeCommandCarriesEveryOption(t *testing.T) {
 		Reason:      `has "quotes"`, Subject: "the subject",
 		ApprovedBy: "reviewer@example.test",
 	}
-	got := pullRequestLandResumeCommand(options, "7")
+	got := pullRequestLandResumeCommand(options, "7", "")
 	want := `wb pr land acme/app#7 --merge-method squash --keep --allow-unfenced ` +
-		`--keep-commits aaa111,bbb222 --reason "has \"quotes\"" --subject "the subject" ` +
-		`--approved-by "reviewer@example.test"`
+		`--keep-commits aaa111,bbb222 --reason 'has "quotes"' --subject 'the subject' ` +
+		`--approved-by 'reviewer@example.test'`
 	if got != want {
 		t.Fatalf("resume command =\n%s\nwant\n%s", got, want)
 	}
-	bare := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7")
+	bare := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7", "")
 	if bare != "wb pr land acme/app#7" {
 		t.Fatalf("bare resume command = %q", bare)
+	}
+	// #584: the checks-pending resume additionally carries a --timeout floor,
+	// printed first so the budget is the first thing a caller sees.
+	withTimeout := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7", "45m")
+	if withTimeout != "wb pr land acme/app#7 --timeout 45m" {
+		t.Fatalf("timeout-carrying resume command = %q", withTimeout)
 	}
 }
 
 func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyExhaustedReads(t *testing.T) {
 	t.Parallel()
-	if got := withPullRequestLandResumeGuidance(nil, PullRequestLandOptions{}); got != nil {
+	if got := withPullRequestLandResumeGuidance(nil, PullRequestLandOptions{}, PullRequestLandResult{}); got != nil {
 		t.Fatalf("nil error became %v", got)
 	}
 	plain := errors.New("an authoritative refusal")
-	if got := withPullRequestLandResumeGuidance(plain, PullRequestLandOptions{}); !errors.Is(got, plain) {
+	if got := withPullRequestLandResumeGuidance(plain, PullRequestLandOptions{}, PullRequestLandResult{}); !errors.Is(got, plain) {
 		t.Fatalf("authoritative error was rewritten to %v", got)
 	}
 	exhausted := fmt.Errorf("%w: gh api failed after 3 attempts", githubobserver.ErrTransientRetriesExhausted)
-	got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{Repository: "acme/app", PullRequest: "acme/app#7", Keep: true})
+	got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{Repository: "acme/app", PullRequest: "acme/app#7", Keep: true}, PullRequestLandResult{})
 	if !errors.Is(got, githubobserver.ErrTransientRetriesExhausted) ||
 		!strings.Contains(got.Error(), "resumable: wb pr land acme/app#7 --keep") {
 		t.Fatalf("exhausted transient error = %v", got)
 	}
 	// An unaddressable selector cannot name a resume command, so the error is
 	// returned unchanged rather than decorated with a guess.
-	if got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{}); strings.Contains(got.Error(), "resumable") {
+	if got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{}, PullRequestLandResult{}); strings.Contains(got.Error(), "resumable") {
 		t.Fatalf("unaddressable selector gained resume guidance: %v", got)
+	}
+}
+
+// TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesReviewText
+// proves round 4's second half of B4: a transient GitHub read failure that
+// happens BEFORE the identity form's comment is ever posted — in
+// ReadPullRequest, pullRequestChangedFiles, or lane acquisition — leaves
+// result.ReviewCommentURL empty, so the earlier fix (swap in the posted
+// URL) never triggers. The review's own literal text — which can contain a
+// backtick or "$(...)" — must still never appear in the printed resume
+// command; a placeholder takes its place instead.
+func TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesReviewText(t *testing.T) {
+	t.Parallel()
+	exhausted := fmt.Errorf("%w: gh api failed after 3 attempts", githubobserver.ErrTransientRetriesExhausted)
+	options := PullRequestLandOptions{
+		Repository:    "acme/app",
+		PullRequest:   "acme/app#7",
+		ApprovedBy:    "opus@codex@run-42",
+		ReviewComment: "looks good, do not run `rm -rf $HOME` or $(whoami) please",
+	}
+	// result.ReviewCommentURL is empty: the comment was never posted.
+	got := withPullRequestLandResumeGuidance(exhausted, options, PullRequestLandResult{})
+	if got == nil {
+		t.Fatal("expected a wrapped error")
+	}
+	message := got.Error()
+	for _, fragment := range []string{"looks good", "rm -rf", "whoami", "$HOME", "$(whoami)"} {
+		if strings.Contains(message, fragment) {
+			t.Fatalf("resume guidance echoed the review text (%q): %q", fragment, message)
+		}
+	}
+	if strings.ContainsRune(message, '`') || strings.ContainsRune(message, '$') {
+		t.Fatalf("resume guidance contains an unquoted backtick or $: %q", message)
+	}
+	if !strings.Contains(message, reviewCommentFilePlaceholder) {
+		t.Fatalf("resume guidance = %q, want the review-comment-file placeholder", message)
 	}
 }
 
@@ -612,5 +654,42 @@ func TestOrchCovPreflightLandingCleanupRefusesAnUnreadableInventory(t *testing.T
 	}, view, "7", true)
 	if refusal == nil || refusal.code != "cleanup-unverifiable" {
 		t.Fatalf("unreadable inventory refusal = %+v", refusal)
+	}
+}
+
+func TestOrchCovChecksFailedSanctionedCommandBuildsAGHCommandFromAnActionsJobURL(t *testing.T) {
+	t.Parallel()
+	got := checksFailedSanctionedCommand([]CIFailureDetail{
+		{Check: "CI", JobURL: "https://github.com/acme/app/actions/runs/123/job/456"},
+	}, "acme/app", "7")
+	want := "gh run view 123 --job 456 --repo acme/app --log-failed"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
+	}
+}
+
+func TestOrchCovChecksFailedSanctionedCommandNeverEmitsAProviderURL(t *testing.T) {
+	t.Parallel()
+	// A commit status's Link is the provider-controlled TargetURL, which is
+	// not necessarily a GitHub Actions job URL (#584 round 3, minor 8). The
+	// sanctioned command must never be a bare URL.
+	got := checksFailedSanctionedCommand([]CIFailureDetail{
+		{Check: "sonar", JobURL: "https://sonar.example.test/dashboard?id=acme_app"},
+	}, "acme/app", "7")
+	want := "gh pr view 7 --repo acme/app --web"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "http") {
+		t.Fatalf("checksFailedSanctionedCommand must never be a bare URL: %q", got)
+	}
+}
+
+func TestOrchCovChecksFailedSanctionedCommandFallsBackWhenThereAreNoDetails(t *testing.T) {
+	t.Parallel()
+	got := checksFailedSanctionedCommand(nil, "acme/app", "7")
+	want := "gh pr view 7 --repo acme/app --web"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
 	}
 }

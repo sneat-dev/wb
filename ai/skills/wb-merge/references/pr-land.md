@@ -14,8 +14,13 @@ the worktree never ran.
 # A green dependency bump. Its worktree is retired; nothing is left behind.
 wb pr land sneat-co/sneat-go#1041
 
-# A reviewed change.
+# A reviewed change (a review file or a comment URL — unchanged).
 wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
+
+# A reviewed change where the review is declared inline: WB posts the review
+# text as a PR comment naming the reviewer and the exact head it reviewed.
+wb pr land sneat-co/sneat-go#1041 --approved-by opus@codex@run-42 \
+  --review-comment "the diff is scoped to go.mod/go.sum only"
 
 # Machine-readable envelope for an agent.
 wb pr land sneat-co/sneat-go#1041 --format json
@@ -110,8 +115,133 @@ A **mechanical bump** — a diff touching only `go.mod`, `go.sum`, `package.json
 dependency fields, `pnpm-lock.yaml`, `pnpm-workspace.yaml` — lands on its batch
 verification with no review ledger entry.
 
-Anything else needs `--approved-by <review-file-or-comment-url>`, which is
-recorded on the receipt and in the aggregated commit body.
+Anything else needs `--approved-by <value>`, which is recorded on the receipt
+and in the aggregated commit body. The value is one of:
+
+- an existing **review file path** or a pull-request **comment URL** —
+  unchanged, back-compatible;
+- a **reviewer identity** `{model}[@{harness}[@{session}]]` (e.g.
+  `opus@codex@run-42`), which needs a non-empty `--review-comment <text>` or
+  `--review-comment-file <path>`. WB posts that text as a PR comment whose
+  header names the reviewer and the exact head SHA it reviewed, and records
+  the reviewer, the reviewed head, a digest of the review text, and the
+  posted comment's URL on the receipt. Any part of the identity you omit is
+  filled from the environment when it can be (`$CLAUDE_CODE_SESSION_ID`
+  gives harness `claude-code` plus that session); anything still
+  undeterminable is recorded as `unknown`, never guessed. `self_review: true`
+  is recorded — not refused — only when the reviewer's model, harness *and*
+  session all match the invoking session's own identity.
+
+A value shaped unambiguously like `{model}@{harness}[@{session}]` — at most
+three non-empty `@`-separated segments, no `/` anywhere, and no `.` in the
+harness segment unless it names a known runtime (`claude-code`, `codex`,
+`copilot`, `gemini`, …) or `unknown` — is always the identity shape. This is
+deliberately narrow (round 3): an email address, an `@handle`, or a path
+segment that happens to contain `@` (e.g. `/tmp/user@example.com/x.md`) is
+**not** the identity shape even though it contains `@`, and stays the
+pre-#604 free-form approval string. A bare word with no `@` (e.g. a single
+model name) is only recognized as the identity shape when a review comment
+accompanies it via `--review-comment` or `--review-comment-file`; without
+one it stays free-form, so existing callers that pass an arbitrary label are
+unaffected.
+
+The identity form's comment is posted **once**, only after landing's own
+preflight has passed (never on a preflight refusal such as
+`cleanup-blocked-dirty`). Once it is posted, every resume/sanctioned command
+WB then prints carries `--approved-by <the posted comment URL>` in place of
+the original identity/comment text. The review text itself never appears in
+a resume command on **any** path, including one where a transient GitHub
+read failure exhausts its retries before the comment is ever posted (round
+4): a file-backed review carries its file's path instead, and an inline
+review with no file gets a placeholder (`--review-comment-file
+<review.md>`) that the accompanying message explains — never the review's
+own literal text, which may contain a backtick or `$(...)` that would run on
+copy-paste (issue #619's B4).
+
+**The approval never bypasses the mechanical classifier.** The diff is still
+classified from its own content whether or not `--approved-by` is given; a
+mechanical bump needs no approval and none of the above runs for it.
+
+### Binding a review to the commit it reviewed (`Reviewed-Head:`)
+
+A review — file, comment URL, or the identity form's posted comment — binds
+to whatever commit it names with a machine-readable line:
+
+```
+Reviewed-Head: <full 40-character SHA>
+```
+
+- The **identity form** always writes this line itself, in the comment WB
+  posts, naming the exact head it reviewed.
+- A **review file** binds to whatever `Reviewed-Head: <sha>` line appears
+  anywhere in the file — write one when hand-authoring a review file you
+  intend to reuse if the branch advances safely.
+- A **comment URL** binds only when it points at a GitHub PR/issue comment
+  (`...#issuecomment-<id>`); WB fetches that comment's body and parses the
+  same line out of it. Any other URL shape names no head.
+
+**When a review names a head, landing is gated on it** (issue #586): if the
+pull request's current head is not that commit, and does not descend from it
+solely through WB/GitHub update-branch merges, `wb pr land` refuses with
+`review-stale` — distinct from `head-moved`, which only protects one
+invocation's own observation-to-merge gap. This is what makes a review stale
+across *separate* invocations: someone reviews head A, someone else pushes a
+foreign commit, and a later `wb pr land` run — even with the same
+`--approved-by` file or URL — is refused, because the binding is re-read from
+the review artifact itself each time, not just from what this invocation
+happened to observe.
+
+Each update-branch hop in between is proved, not assumed: its target-side
+parent must be an ancestor of the current remote target, and its tree must
+exactly match `git merge-tree --write-tree`. A foreign push, a "fix lint"
+commit, or a force-push in between fails that proof and is refused. **WB
+never disarms auto-merge**, so a `review-stale` refusal with auto-merge
+armed says so explicitly: the pull request can still merge on green without
+you.
+
+**Round 3 (issue #619's blockers): this check runs before auto-merge is ever
+armed**, not after, whenever the review names a head different from the one
+currently observed — arming first and only checking staleness afterward
+would let an already-armed auto-merge land a foreign head GitHub itself
+happened to merge before the staleness check ran. The wait loop still
+rechecks after `checks-pending` resolves, for a push that lands during the
+wait itself. And when GitHub's own auto-merge is what lands the pull request
+(`mergedByGitHub`), WB verifies the merged head equals the reviewed head, or
+is a proven update-branch descendant of it — never assumes it, since
+GitHub's own merge is not gated on WB's staleness check at all. On a mismatch
+it never claims `review_bound: true`; it records `review_bound: false` and an
+explanatory finding instead.
+
+**"Provably stale" is not the same as "unverifiable."** Proving the
+update-branch chain needs a real local checkout of the branch to walk; when
+none exists anywhere WB can find (no worktree, no canonical clone), the check
+cannot run at all. That case never refuses as `review-stale` — it downgrades
+to an honest `review_bound: false` finding and the landing proceeds. A
+transient GitHub read failure while proving a hop gets the same treatment,
+never a false refusal.
+
+**When a review names no head at all — founder decision 2026-09-18, "warn,
+still land"** — `wb pr land` does not refuse. It lands, and records an
+informational finding `review-unbound` (in text and JSON) saying the review
+does not name the commit it reviewed and suggesting `Reviewed-Head: <sha>`
+be added. `reviewed_head` is `omitempty` on the receipt: it appears only
+when a review named a head at all, and is omitted — not present as an
+empty string — both when the review was unbound and when no review
+applied in the first place (e.g. a mechanical bump).
+`review_bound` is tri-state (round 3, minor 7): omitted entirely on a
+landing no review ever applied to (e.g. a mechanical bump), and otherwise
+`true` or `false`.
+
+A `Reviewed-Head:` line must be exactly 40 hex characters (compared
+case-insensitively); a shorter or malformed value refuses with
+`review-head-malformed` rather than being treated as permanently stale. A
+review comment URL must also point at the exact repository and pull request
+being landed — a URL for a different repository or a different PR number
+refuses with `review-comment-cross-repo` — so a copy-pasted URL from the
+wrong pull request can never be silently accepted as this one's review.
+
+`--approved-by ci` still refuses unconditionally — implementing it is
+tracked as a follow-up, [issue #619](https://github.com/sneat-dev/wb/issues/619).
 
 The classification is made **from the diff's content**, never from filenames and
 never from the title, author or labels:
@@ -140,7 +270,11 @@ file is not mechanical, and is refused until a review is recorded.
 
 | Refusal code | What it means | Sanctioned next step |
 | --- | --- | --- |
-| `unapproved-patch-set` | the diff is not a mechanical bump | `wb pr land … --approved-by <review-file-or-comment-url>` |
+| `unapproved-patch-set` | the diff is not a mechanical bump | `wb pr land … --approved-by <review-file-or-comment-url-or-reviewer-identity>` |
+| `review-comment-empty` | a reviewer-identity `--approved-by` with no (or empty) review text | add `--review-comment "<the review>"` or `--review-comment-file <path>` |
+| `review-stale` | the head is not the one named by the review's `Reviewed-Head:` line, and does not descend from it solely through update-branch merges | review the current head, then rerun `wb pr land …` with a fresh `--approved-by` (or comment) naming it |
+| `review-head-malformed` | a `Reviewed-Head:` line is present but is not exactly 40 hex characters | fix the review artifact's `Reviewed-Head:` line, or omit it to land unbound |
+| `review-comment-cross-repo` | the `--approved-by` comment URL names a different repository or pull request than the one being landed | pass the comment URL for this repository/pull request |
 | `draft-pull-request` | landing a draft would bypass the review it is waiting for | `gh pr ready <n> --repo <repo>` |
 | `pull-request-not-open` | already merged, or closed | `wb worktree gc --apply` when it is merged; open it in the browser otherwise |
 | `not-mergeable` | GitHub reports a conflict | `wb worktree merge <task> --route auto` |
@@ -150,7 +284,8 @@ file is not mechanical, and is refused until a review is recorded.
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `update-branch-conflict` | the candidate is behind and updating it conflicts; auto-merge stays armed | resolve the conflict on the branch, push, rerun `wb pr land …` |
-| `checks-pending` / `checks-failed` | exit 1, not a refusal: the work is not ready | fix the failure, or rerun to keep waiting |
+| `checks-pending` | exit 1, not a refusal: the work is not ready | run the printed resume command in the background, not in the foreground - it carries a `--timeout` budget (at least 45 minutes) above the harness's ~10-minute foreground ceiling, and every flag the original invocation used (`--no-auto-merge`, `--allow-unfenced`, `--approved-by`, `--keep-commits`/`--reason`) |
+| `checks-failed` | exit 1, not a refusal: a check is red | the finding names the failing check(s) and their first error line; the sanctioned command opens the failing job (or its log) directly, not the PR page |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |
 | `cleanup-blocked-live-link` | a worktree still holds a live local dependency link | `wb deps propagate local … --undo`, or land with `--keep` |
 
@@ -169,6 +304,15 @@ Both of those are checked **before** the merge, while refusing is still free.
 Discovering afterwards that the checkout cannot be retired leaves the landing
 done and the tidy-up impossible — which is the shape that produced sixty
 abandoned checkouts.
+
+## Closed issues (#615)
+
+`wb pr land` always reports which issues the landing closes, read from
+GitHub's own `closingIssuesReferences` — never guessed from the branch name
+or title: `closes: #591, #614` in the receipt's evidence, or the
+informational finding `no linked issue` when there are none. This is never a
+refusal. See `pr-create.md` for `--closes`, which is what actually links an
+issue in the first place — always pass it when the task names one.
 
 ## What it records
 

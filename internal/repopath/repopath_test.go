@@ -120,7 +120,10 @@ func TestIsForgeHostAcceptsLiteralHostnamesOnly(t *testing.T) {
 		"github.c0m":             false,
 		"github.com:":            false,
 		"github.com:0x1":         false,
+		"github.com:123456":      false,
 		"github.com:8443:8443":   false,
+		"a..b":                   false,
+		"gіthub.com":             false, // Cyrillic "і" lookalike, not ASCII.
 		"git_hub.com":            false,
 		"github.com/app":         false,
 		" github.com":            false,
@@ -132,6 +135,20 @@ func TestIsForgeHostAcceptsLiteralHostnamesOnly(t *testing.T) {
 		if got := IsForgeHost(host); got != want {
 			t.Errorf("IsForgeHost(%q) = %t, want %t", host, got, want)
 		}
+	}
+}
+
+// TestIsForgeHostRejectsNameOverTwoHundredFiftyThreeCharacters covers the
+// length guard on its own: a hostname built from otherwise-valid labels but
+// past the 253-character DNS limit must still be refused.
+func TestIsForgeHostRejectsNameOverTwoHundredFiftyThreeCharacters(t *testing.T) {
+	label := strings.Repeat("a", 50)
+	overlong := strings.Join([]string{label, label, label, label, label, "com"}, ".")
+	if len(overlong) <= 253 {
+		t.Fatalf("fixture host is %d characters, want > 253", len(overlong))
+	}
+	if IsForgeHost(overlong) {
+		t.Fatalf("IsForgeHost(%d-character host) = true, want false", len(overlong))
 	}
 }
 

@@ -186,9 +186,41 @@ and neither source nor canonical checkout changes.
 ### AC: combined-command-walks-the-whole-journey
 
 Given a conflict-free source and a test GitHub adapter, when bare `merge` runs,
-then it prepares, validates, lands, verifies the exact remote target, performs
-the requested canonical synchronization and cleanup, and terminates without a
+then it prepares, validates unless the pull-request route defers to
+authoritative CI, lands, verifies the exact remote target, performs the
+requested canonical synchronization and cleanup, and terminates without a
 manual Git or GitHub step.
+
+### AC: pr-route-defers-local-validation-to-authoritative-ci
+
+Given a call that resolves the pull-request route and a target whose
+required-check policy was read authoritatively, is non-empty, and is fenced by
+a server-enforced strict up-to-date policy, local candidate validation does
+not run: the receipt records a `validation_deferral` naming the route, the
+exact candidate SHA, and the reason, and `validation.status` is `skipped`.
+Every validation site in the call, and the publish/landing guard that follows
+them, honor this single per-call route decision — a route this call resolves
+as `pr` cannot authorize a publish under a route a later call resolves as
+`direct`. An unfenced policy, an unreadable policy (including a conservative
+`auto` fallback to the pull-request route), or zero required checks each keep
+validation local. `--validate-locally` and `--allow-unfenced` each force local
+validation for THIS call regardless of route or any deferral recorded by an
+earlier call: a stale deferral is re-validated locally, never silently
+accepted, before that call publishes or merges. A standalone
+`wb worktree merge prepare` (no later `land` call of its own to resolve the
+route) validates locally by default for the same reason — dependent agents
+consume its exact candidate SHA directly — unless this call itself passes
+`--route pr`. A deferred candidate's wait never re-judges its required
+checks: CI's required checks, as GitHub branch protection evaluates them,
+are the gate, exactly as for any other candidate, including when a required
+check is a single aggregate or path-scoped gate check. A required check that
+GitHub itself counts as satisfied while never actually running (`skipped` or
+`neutral`) still lands — GitHub branch protection judged the head landable —
+but the candidate/PR phase records a non-blocking
+`deferred-validation-check-skipped` finding naming it, on both the text
+output and the receipt/JSON; it never refuses and never waits longer because
+of it, and it is never evaluated again on the later post-target phase. Pass
+`--validate-locally` to force a real local run instead of deferring.
 
 ### AC: dependent-agent-can-use-phase-one-without-waiting
 

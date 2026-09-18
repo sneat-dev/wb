@@ -208,6 +208,9 @@ func TestOrchCovGitHubActionsRunAndJobAcceptsOnlyActionsJobLinks(t *testing.T) {
 		{input: "https://github.com/acme/app/actions/runs//job/2"},
 		{input: "https://github.com/acme/app/actions/runs/1/job/"},
 		{input: "https://github.com/acme/app/checks/1"},
+		{input: "https://github.com/acme/app/actions/runs/1;curl%20x/job/2"},
+		{input: "https://github.com/acme/app/actions/runs/1/job/2%60id%60"},
+		{input: "https://github.com/acme/app/actions/runs/abc/job/2"},
 		{input: "://missing-protocol"},
 	} {
 		runID, jobID, ok := githubActionsRunAndJob(test.input)
@@ -252,6 +255,12 @@ func TestOrchCovCheckRunBucketNamesEveryConclusion(t *testing.T) {
 	}{
 		{status: "queued", conclusion: "", want: "pending"},
 		{status: "completed", conclusion: "success", want: "pass"},
+		// Minor 11 regression (sneat-dev/wb#591 round 3 red-team follow-up):
+		// round 2 moved "neutral" into the "skipping" bucket alongside
+		// "skipped" (finding X2), which altered `wb ci wait` JSON output and
+		// graduation's validateCIWait as an unintended global side effect.
+		// Round 3 removed the strict deferral gate X2 existed for, so
+		// "neutral" buckets as "pass" again, exactly as before round 2.
 		{status: "completed", conclusion: "neutral", want: "pass"},
 		{status: "completed", conclusion: "skipped", want: "skipping"},
 		{status: "completed", conclusion: "cancelled", want: "cancel"},

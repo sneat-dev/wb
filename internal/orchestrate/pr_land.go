@@ -50,6 +50,10 @@ const (
 	// already owns the (repository, target) landing lane. See
 	// internal/landinglane and LaneGuardRequest.
 	LandRefusalLandingLaneHeld = "landing-lane-held"
+	// LandRefusalReviewCommentEmpty reports that the identity form of
+	// --approved-by was given with no --review-comment/--review-comment-file
+	// text, or an empty one (#604).
+	LandRefusalReviewCommentEmpty = "review-comment-empty"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
@@ -70,11 +74,19 @@ type PullRequestLandOptions struct {
 	// Keep retains the task's worktrees and claims. Cleanup is the default
 	// precisely because the opt-in form was never passed.
 	Keep bool
-	// ApprovedBy records the review that authorized a non-mechanical change: a
-	// review file path or a pull-request comment URL. The durable review ledger
-	// is a later phase; until it exists this value is recorded verbatim on the
-	// receipt so the approval is at least attributable.
+	// ApprovedBy records the review that authorized a non-mechanical change.
+	// It is one of: an existing file path or a pull-request comment URL
+	// (unchanged, back-compatible); the literal "ci"; or a reviewer identity
+	// `{model}[@{harness}[@{session}]]`, which requires ReviewComment or
+	// ReviewCommentFile and causes WB to post the review as a PR comment and
+	// bind it to the exact head it reviewed (#604, #586).
 	ApprovedBy string
+	// ReviewComment is the review text for the identity form of ApprovedBy.
+	// Mutually exclusive with ReviewCommentFile; the caller validates that.
+	ReviewComment string
+	// ReviewCommentFile is a path to the review text for the identity form
+	// of ApprovedBy.
+	ReviewCommentFile string
 	// MergeMethod is merge by default: preserve commits and the reviewed PR boundary.
 	MergeMethod string
 	// MergeMethodExplicit distinguishes an operator-selected method from the merge
@@ -181,6 +193,31 @@ type PullRequestLandResult struct {
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	NonManifest  []string `json:"non_manifest_files,omitempty"`
 	ApprovedBy   string   `json:"approved_by,omitempty"`
+	// Reviewer, ReviewedHeadSHA, ReviewDigest, ReviewCommentURL, and
+	// SelfReview are the #604/#586 receipt fields: the full reviewer
+	// identity triple, the exact head it reviewed, a digest of the review
+	// text, the posted comment's URL (identity form only), and whether the
+	// reviewer identity fully matches this session's own (see
+	// currentSessionIdentity).
+	Reviewer         string `json:"reviewer,omitempty"`
+	ReviewedHeadSHA  string `json:"reviewed_head,omitempty"`
+	ReviewDigest     string `json:"review_digest,omitempty"`
+	ReviewCommentURL string `json:"review_comment_url,omitempty"`
+	SelfReview       bool   `json:"self_review,omitempty"`
+	// ReviewBound is nil (omitted from JSON) when no review applied at all
+	// (a mechanical landing, round 3 minor 7). Once a review did apply, it
+	// is a pointer to false when the recorded review named no commit to
+	// bind to, or when the binding could not be verified (#586's
+	// warn-still-land design, founder-decided 2026-09-18) — the landing
+	// proceeds either way, this is never a refusal — but Evidence["review"]
+	// carries the informational finding so the gap is visible rather than
+	// silent. It is a pointer to true only once the binding is positively
+	// confirmed.
+	ReviewBound *bool `json:"review_bound,omitempty"`
+	// Closes lists the issues GitHub's own closingIssuesReferences reports
+	// this landing closes (#615). Empty is reported as the informational
+	// "no linked issue" finding in Evidence["closes"], never a refusal.
+	Closes []int `json:"closes,omitempty"`
 
 	Checks *PullRequestWaitResult `json:"checks,omitempty"`
 
@@ -252,7 +289,7 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 		// githubobserver); only exhausting every in-process retry reaches
 		// here, and the exact resume command replaces the raw "start over"
 		// an agent would otherwise have to guess at.
-		err = withPullRequestLandResumeGuidance(err, options)
+		err = withPullRequestLandResumeGuidance(err, options, result)
 		// Every outcome leaves exactly one event, including the error paths:
 		// a verb that only records its successes produces a log in which
 		// nothing ever goes wrong.
@@ -266,7 +303,7 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 // in-process retry for a transient GitHub read failure was exhausted. Any
 // other error (an authoritative GitHub failure, a refusal, a validation
 // error) is returned unchanged.
-func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions) error {
+func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions, result PullRequestLandResult) error {
 	if err == nil || !errors.Is(err, githubobserver.ErrTransientRetriesExhausted) {
 		return err
 	}
@@ -274,19 +311,78 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 	if numberErr != nil {
 		return err
 	}
-	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number))
+	// Round 3, B4: if this attempt already posted the identity form's
+	// review comment before hitting the exhausted-retries error, the
+	// resume command must carry the posted comment's URL, never the
+	// identity and review text again — copy-running it must not post a
+	// second comment re-approving whatever head is current when it runs.
+	if strings.TrimSpace(result.ReviewCommentURL) != "" {
+		options.ApprovedBy = result.ReviewCommentURL
+		options.ReviewComment = ""
+		options.ReviewCommentFile = ""
+	}
+	note := ""
+	// Round 4, B4 (second half): the comment can fail to post at all — the
+	// transient failure that lands here can happen anywhere before it, in
+	// ReadPullRequest, pullRequestChangedFiles, or lane acquisition — and
+	// in that case result.ReviewCommentURL is empty above, so this attempt
+	// never swapped ApprovedBy for a URL. options.ReviewComment (the raw
+	// review text) must still never be echoed into a shell command: it can
+	// contain a backtick or "$(...)" that would run on copy-paste, and
+	// pullRequestLandResumeCommand refuses to print it. When the review
+	// came from a file, that file's path is carried instead (safe: it is a
+	// path, not the review's own content); when it came from literal
+	// --review-comment text, the printed command gets a placeholder and
+	// this note explains why.
+	if strings.TrimSpace(result.ReviewCommentURL) == "" &&
+		strings.TrimSpace(options.ReviewCommentFile) == "" &&
+		strings.TrimSpace(options.ReviewComment) != "" {
+		note = "; the review text was never posted and is not echoed into this command (it may contain shell metacharacters) — replace " +
+			reviewCommentFilePlaceholder + " with the real review file, or rerun with --review-comment \"<the review>\""
+	}
+	return fmt.Errorf("%w; resumable: %s%s", err, pullRequestLandResumeCommand(options, number, ""), note)
+}
+
+// reviewCommentFilePlaceholder stands in for a review's literal text in a
+// printed resume command, when there is no file path to carry instead — see
+// withPullRequestLandResumeGuidance and pullRequestLandResumeCommand.
+const reviewCommentFilePlaceholder = "--review-comment-file <review.md>"
+
+// shellSingleQuote wraps a free-text argument in POSIX single quotes so a
+// shell that copy-runs a printed command treats it as one literal argument.
+// Single quotes are the only shell metacharacter this cannot itself quote,
+// so each embedded "'" is closed, escaped, and reopened: `'\”`. Unlike
+// strconv.Quote (Go's double-quote syntax), this leaves nothing — not a
+// backtick, not "$", not "$(...)" — for the shell to expand.
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // pullRequestLandResumeCommand rebuilds the exact `wb pr land` invocation
-// that recovers a landing left incomplete by exhausted transient GitHub read
-// retries, carrying forward every option that changes what the command does.
-func pullRequestLandResumeCommand(options PullRequestLandOptions, number string) string {
+// that recovers a landing left incomplete - by exhausted transient GitHub
+// read retries, or by a checks-pending timeout (#584) - carrying forward
+// every option that changes what the command does. timeoutFlag is the
+// --timeout value to print; a caller with no opinion on it (the transient-
+// retry resume, which is not a budget problem) passes "".
+//
+// It never echoes options.ReviewComment: that field is the review's own
+// literal text, which may contain a backtick or "$(...)" that would run on
+// copy-paste. A file-backed review carries its path instead (safe: paths
+// are not review content); an inline review with no file gets a placeholder
+// (see reviewCommentFilePlaceholder), and the caller explains why.
+func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeoutFlag string) string {
 	parts := []string{"wb", "pr", "land", options.Repository + "#" + number}
+	if timeoutFlag != "" {
+		parts = append(parts, "--timeout", timeoutFlag)
+	}
 	if options.MergeMethodExplicit && strings.TrimSpace(options.MergeMethod) != "" {
 		parts = append(parts, "--merge-method", options.MergeMethod)
 	}
 	if options.Keep {
 		parts = append(parts, "--keep")
+	}
+	if options.NoAutoMerge {
+		parts = append(parts, "--no-auto-merge")
 	}
 	if options.AllowUnfenced {
 		parts = append(parts, "--allow-unfenced")
@@ -295,13 +391,18 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number string)
 		parts = append(parts, "--keep-commits", strings.Join(options.KeepCommits, ","))
 	}
 	if strings.TrimSpace(options.Reason) != "" {
-		parts = append(parts, "--reason", strconv.Quote(options.Reason))
+		parts = append(parts, "--reason", shellSingleQuote(options.Reason))
 	}
 	if strings.TrimSpace(options.Subject) != "" {
-		parts = append(parts, "--subject", strconv.Quote(options.Subject))
+		parts = append(parts, "--subject", shellSingleQuote(options.Subject))
 	}
 	if strings.TrimSpace(options.ApprovedBy) != "" {
-		parts = append(parts, "--approved-by", strconv.Quote(options.ApprovedBy))
+		parts = append(parts, "--approved-by", shellSingleQuote(options.ApprovedBy))
+	}
+	if strings.TrimSpace(options.ReviewCommentFile) != "" {
+		parts = append(parts, "--review-comment-file", shellSingleQuote(options.ReviewCommentFile))
+	} else if strings.TrimSpace(options.ReviewComment) != "" {
+		parts = append(parts, reviewCommentFilePlaceholder)
 	}
 	return strings.Join(parts, " ")
 }
@@ -433,13 +534,94 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
-	if !result.Mechanical && result.ApprovedBy == "" {
-		return mergeRefusal(result, landRefusal{
-			code: LandRefusalUnapprovedPatch,
-			reason: "this change is not a mechanical dependency bump (" + verdict.Summary() +
-				"), so it needs a recorded review approval before it can land",
-			command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url>",
-		}), nil
+	// reviewedHead is the head this landing binds any review to (#586): the
+	// exact head observed before any update-branch cycle runs. A review
+	// supplied for a different head — whether the identity form (posted
+	// against this head) or a back-compat file/URL (assumed to describe
+	// this head, since nothing else names one) — is stale the moment the
+	// head advances by anything other than WB's own update-branch merges.
+	reviewedHead := result.HeadSHA
+	hasReviewComment := strings.TrimSpace(options.ReviewComment) != "" || strings.TrimSpace(options.ReviewCommentFile) != ""
+	// pendingIdentity/pendingComment (round 3, B4) defer actually POSTING the
+	// identity form's review comment until after the preflight cleanup check
+	// passes, and it happens exactly once per invocation: classification
+	// only validates and resolves what it can without side effects, so a
+	// preflight refusal right after never leaves a comment posted for a
+	// landing that did not happen, and nothing downstream can re-run this
+	// switch and post a second one.
+	var pendingIdentity *ReviewerIdentity
+	var pendingComment string
+	if !result.Mechanical {
+		kind := classifyApprovedBy(result.ApprovedBy, hasReviewComment)
+		switch kind {
+		case approvalKindEmpty:
+			return mergeRefusal(result, landRefusal{
+				code: LandRefusalUnapprovedPatch,
+				reason: "this change is not a mechanical dependency bump (" + verdict.Summary() +
+					"), so it needs a recorded review approval before it can land",
+				command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url>",
+			}), nil
+		case approvalKindCI:
+			return mergeRefusal(result, landRefusal{
+				code:    LandRefusalUnapprovedPatch,
+				reason:  "--approved-by ci is not implemented yet; follow-up: https://github.com/sneat-dev/wb/issues/619",
+				command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url-or-reviewer-identity>",
+			}), nil
+		case approvalKindIdentity:
+			identity := FinalizeReviewerIdentity(FillReviewerIdentityFromEnvironment(ParseReviewerIdentity(result.ApprovedBy)))
+			comment, commentErr := readReviewCommentText(options.ReviewComment, options.ReviewCommentFile)
+			if commentErr != nil {
+				return result, commentErr
+			}
+			if comment == "" {
+				return mergeRefusal(result, landRefusal{
+					code:   LandRefusalReviewCommentEmpty,
+					reason: "--approved-by " + result.ApprovedBy + " is a reviewer identity and needs a non-empty --review-comment or --review-comment-file",
+					command: "wb pr land " + options.Repository + "#" + number + " --approved-by " + result.ApprovedBy +
+						" --review-comment \"<the review>\"",
+				}), nil
+			}
+			pendingIdentity = &identity
+			pendingComment = comment
+		case approvalKindFile, approvalKindURL:
+			// #586 (founder-decided 2026-09-18: warn, still land): a file or
+			// comment review binds to whatever commit its own
+			// "Reviewed-Head: <sha>" line names — read now, from the review
+			// artifact itself, so a foreign push that happened between when
+			// the review was written and this invocation is still caught.
+			// A review that names no head is never refused for it; it lands,
+			// with the gap surfaced as the "review-unbound" finding. A
+			// malformed line, or (URL kind) a comment naming a different
+			// repository or pull request, IS refused (round 3, minors 1/2):
+			// those are cases where the review artifact plainly asserts
+			// something that does not check out, never silently downgraded
+			// to "unbound".
+			named, namedErr := namedReviewedHead(ctx, result.ApprovedBy, kind, options.Repository, number)
+			if namedErr != nil {
+				if errors.Is(namedErr, errReviewedHeadCrossRepository) {
+					return mergeRefusal(result, landRefusal{
+						code: LandRefusalReviewCommentCrossRepo,
+						reason: "the review comment URL " + result.ApprovedBy +
+							" names a different repository or pull/issue than " + options.Repository + "#" + number,
+						command: "wb pr land " + options.Repository + "#" + number + " --approved-by <a comment URL on this pull request>",
+					}), nil
+				}
+				return mergeRefusal(result, landRefusal{
+					code: LandRefusalReviewHeadMalformed,
+					reason: "the review named by --approved-by " + result.ApprovedBy +
+						" has a \"Reviewed-Head:\" line that is not a full 40-character SHA",
+					command: "wb pr land " + options.Repository + "#" + number + " --approved-by " + result.ApprovedBy,
+				}), nil
+			}
+			if named != "" {
+				reviewedHead = named
+				result.ReviewedHeadSHA = named
+				result.ReviewBound = boolPtr(true)
+			} else {
+				result.ReviewBound = boolPtr(false)
+				result.Evidence["review"] = "review-unbound: the review does not name the commit it reviewed; add \"Reviewed-Head: <sha>\""
+			}
+		}
 	}
 
 	// Pre-flight the cleanup now, while refusing is still free, and BEFORE
@@ -457,6 +639,61 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return mergeRefusal(result, *refusal), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
+
+	// The identity form's review comment is posted here — after the
+	// preflight passes, before anything is armed — and exactly once (round
+	// 3, B4). Posting any earlier risked a comment for a landing that then
+	// refused on the preflight; posting is also the point at which
+	// result.ApprovedBy (and options.ApprovedBy, mutated below so every
+	// resume command built from here on reflects it) switches from the
+	// identity+comment form to the posted comment's URL. WB's own
+	// resume/sanctioned commands from here on use only that URL and never
+	// again echo the review text — both because a second run must not post
+	// a second comment re-approving whatever head is current by then, and
+	// because a review comment is never echoed into a shell command at
+	// all (round 4): it may contain "$" or a backtick, which would
+	// shell-substitute if a sanctioned command carrying it were copy-run.
+	// See pullRequestLandResumeCommand.
+	if pendingIdentity != nil {
+		commentURL, postErr := postReviewComment(ctx, options.Repository, number, *pendingIdentity, reviewedHead, pendingComment)
+		if postErr != nil {
+			return result, postErr
+		}
+		result.Reviewer = pendingIdentity.String()
+		result.ReviewedHeadSHA = reviewedHead
+		result.ReviewBound = boolPtr(true)
+		result.ReviewDigest = ReviewDigest(pendingComment)
+		result.ReviewCommentURL = commentURL
+		result.SelfReview = pendingIdentity.SelfReview(currentSessionIdentity())
+		result.ApprovedBy = commentURL
+		result.Evidence["reviewer"] = pendingIdentity.String()
+		result.Evidence["review_comment_url"] = commentURL
+		if result.SelfReview {
+			result.Evidence["self_review"] = "true"
+		}
+		options.ApprovedBy = commentURL
+		options.ReviewComment = ""
+		options.ReviewCommentFile = ""
+	}
+
+	// #586/round 3 (B3): a named review must be checked BEFORE auto-merge is
+	// armed, not after — once armed, GitHub can merge on green at any time
+	// this process does not control, so a staleness check that runs only
+	// after arming can lose the race to GitHub's own merge. reviewedHead
+	// still equals view.Head.SHA here for the identity form (it was just
+	// posted against this exact head) and for a mechanical/no-review
+	// landing (reviewedHead == "" or unset); it can differ for a back-compat
+	// file/URL review naming an older head, which is exactly the case this
+	// guards. autoMergeArmed is always false here — arming has not happened
+	// yet — so the refusal never claims an armed state it has not reached.
+	if !result.Mechanical && reviewedHead != "" && reviewedHead != view.Head.SHA {
+		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, false, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		} else if note != "" {
+			result.ReviewBound = boolPtr(false)
+			result.Evidence["review"] = "review-unverified: " + note
+		}
+	}
 
 	// The commit message is settled before arming too, because when GitHub
 	// performs the merge it uses the message it was armed with. It is also read
@@ -495,10 +732,14 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// result can see what it landed against even when the attempt did not
 	// finish landing.
 	result.HeadSHA = view.Head.SHA
+	// local_sync is copied to the typed LocalSync field and removed from the
+	// evidence map so it does not also leak as a stray evidence.local_sync
+	// key into `wb pr land --json`.
+	result.LocalSync = result.Evidence["local_sync"]
+	delete(result.Evidence, "local_sync")
 	if err != nil {
 		return result, err
 	}
-	result.LocalSync = result.Evidence["local_sync"]
 	if updateRefusal != nil {
 		return mergeRefusal(result, *updateRefusal), nil
 	}
@@ -513,8 +754,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	case PullRequestWaitPending:
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksPending
-		result.Reason = waited.Reason
-		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number
+		result.Reason = waited.Reason + "; run the resume command in the background - it carries a budget above the foreground harness ceiling"
+		result.SanctionedCommand = pullRequestLandResumeCommand(options, number, prLandResumeTimeoutFlag(options.Slice))
 		// Auto-merge was armed before the wait, so a pending result is not a
 		// stranded change: GitHub lands it when the checks pass. Say so, and
 		// name the one part GitHub cannot do.
@@ -530,7 +771,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksFailed
 		result.Reason = waited.Reason
-		result.SanctionedCommand = "gh pr view " + number + " --repo " + options.Repository + " --web"
+		// #600: point at the failing job directly rather than the PR page,
+		// which names nothing and makes the caller re-derive which check and
+		// which job actually failed.
+		result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
 		// Auto-merge stays armed through a red result. CI is the gate: whoever
 		// pushes a fix is responsible for it, the required checks re-run
 		// against what they pushed, and the merge happens only if they pass.
@@ -546,6 +790,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// checks were not the problem.
 			result.RefusalCode = LandRefusalUnfencedTarget
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number + " --allow-unfenced"
+		} else if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+			// #600: name each failing check and its first error line rather
+			// than leaving the caller to hand-roll the same log scraping WB
+			// already did while observing the checks.
+			result.Reason += "; " + summary
 		}
 		return withSavings(result), nil
 	}
@@ -555,6 +804,33 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		if waited.PolicyAuthorityUnavailable != "" {
 			result.Evidence["required_check_policy"] = "unavailable: " + waited.PolicyAuthorityUnavailable
 		}
+	}
+
+	// #586: a review — identity, file, or URL — authorizes landing exactly
+	// the head it was recorded against. WB's own update-branch merges are
+	// the one exception (proved by reviewedHeadStillCurrent); a foreign
+	// push, a fix commit, or a force-push in between is not. This is the
+	// post-wait half of the check (round 3, B3): the pre-arm check above
+	// already covers everything up to the moment auto-merge was armed; this
+	// one catches a foreign push that landed DURING the wait, while
+	// !mergedByGitHub still means this process, not GitHub's armed
+	// auto-merge, performs the merge write below — so refusing here still
+	// prevents it.
+	if !result.Mechanical && !mergedByGitHub && reviewedHead != "" {
+		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		} else if note != "" {
+			result.ReviewBound = boolPtr(false)
+			result.Evidence["review"] = "review-unverified: " + note
+		}
+	}
+	// mergedByGitHub means GitHub's armed auto-merge already landed the
+	// current head before this process's own check could run — the merge
+	// cannot be undone, so this is never a refusal (round 3, B3's third
+	// bullet). recordMergedByGitHubReviewBinding verifies the merge is
+	// provably covered before letting the receipt claim it is.
+	if !result.Mechanical && mergedByGitHub && reviewedHead != "" {
+		recordMergedByGitHubReviewBinding(ctx, options, view, reviewedHead, &result)
 	}
 
 	head := view.Head.SHA
@@ -611,7 +887,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			}
 			result.Reason = "the rewritten branch's own checks are not green: " + reobserved.Reason
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number +
-				" --keep-commits " + strings.Join(options.KeepCommits, ",") + " --reason " + strconv.Quote(options.Reason)
+				" --keep-commits " + strings.Join(options.KeepCommits, ",") + " --reason " + shellSingleQuote(options.Reason)
 			return withSavings(result), nil
 		}
 	}
@@ -722,12 +998,75 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
 	}
 
+	// #615: report the issues this landing closes, from GitHub's own
+	// closingIssuesReferences — an informational finding, never a refusal,
+	// including when there are none.
+	if issues, closesErr := closingIssuesReferences(ctx, options.Repository, number); closesErr == nil {
+		result.Closes = issues
+		result.Evidence["closes"] = formatClosesFinding(issues)
+	} else {
+		result.Evidence["closes_error"] = closesErr.Error()
+	}
+
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
 }
 
 func manualPullRequestMergeCommand(repository, number, method string) string {
 	return "gh pr merge " + number + " --repo " + repository + " --" + method
+}
+
+// checksFailedSanctionedCommand names the command that shows the actual
+// failure (#600), rather than the PR page, which shows nothing about which
+// check or job failed. SanctionedCommand must be a runnable command, never a
+// bare URL: a check run's Link is a GitHub Actions job URL, but a commit
+// status's Link is the provider-controlled TargetURL, which is not
+// necessarily one, and is never safe to print as "the command" (#584 round
+// 3, minor 8). So this only ever returns a gh invocation, built from a
+// GitHub Actions run/job URL when the first failing check's Link parses as
+// one, else the previous PR-page fallback.
+func checksFailedSanctionedCommand(details []CIFailureDetail, repository, number string) string {
+	if len(details) > 0 {
+		if runID, jobID, ok := githubActionsRunAndJob(details[0].JobURL); ok {
+			return "gh run view " + runID + " --job " + jobID + " --repo " + repository + " --log-failed"
+		}
+	}
+	return "gh pr view " + number + " --repo " + repository + " --web"
+}
+
+// recommendedPRLandResumeTimeout is the budget named on a checks-pending
+// resume (#584). Measured CI wall-clock on this fleet ranges 3-11 minutes for
+// sneat-co/sneat-go and around 8 minutes for sneat-dev/wb, so the identical
+// invocation this refusal used to print - no --timeout, which defaults to
+// defaultCIWaitSlice (8 minutes) - could time out again about as often as it
+// succeeds. 45 minutes clears the measured range with headroom. Foreground
+// calls must still respect the harness's own ~10 minute ceiling; a caller
+// that needs 45 minutes backgrounds the resume rather than waiting on it.
+const recommendedPRLandResumeTimeout = 45 * time.Minute
+
+// prLandResumeTimeoutFlag names the --timeout value a checks-pending resume
+// should carry: the budget already in effect when it is at least the
+// recommended floor, or the recommended floor itself when the effective
+// budget was smaller (the common case, since defaultCIWaitSlice undercuts
+// it). Re-running the identical invocation that just timed out, with no
+// --timeout at all, cannot converge.
+func prLandResumeTimeoutFlag(inEffect time.Duration) string {
+	timeout := inEffect
+	if timeout < recommendedPRLandResumeTimeout {
+		timeout = recommendedPRLandResumeTimeout
+	}
+	return formatPRLandTimeoutFlag(timeout)
+}
+
+// formatPRLandTimeoutFlag renders a duration as a --timeout value a caller
+// would actually type. time.Duration.String() renders 45*time.Minute as
+// "45m0s"; whole minutes render as "<N>m" instead, and anything else falls
+// back to the standard rendering.
+func formatPRLandTimeoutFlag(d time.Duration) string {
+	if d > 0 && d%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
 }
 
 // pullRequestLandWaitSlice selects the next bounded slice from a user-facing
@@ -788,6 +1127,13 @@ type landRefusal struct {
 	code    string
 	reason  string
 	command string
+}
+
+// boolPtr is PullRequestLandResult.ReviewBound's constructor: a pointer so
+// the receipt can distinguish "no review applied" (nil, omitted from JSON)
+// from a review that applied but is not (yet, or provably) bound (false).
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func mergeRefusal(result PullRequestLandResult, refusal landRefusal) PullRequestLandResult {

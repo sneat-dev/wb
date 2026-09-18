@@ -14,13 +14,17 @@ go_lint:
 go_test:
   shards: 4
   packages:
-    # This package is safe to split by top-level test. cmd/wb and
-    # internal/orchestrate contain real-clock and process-global journeys and
-    # stay in the single unsharded job to avoid multiplying their setup cost.
-    #
-    # Adding internal/orchestrate here was tried while raising coverage and
-    # reverted: its shards all pass, but `wb coverage` then fails after every
-    # job succeeds, in the profile-merge/report step, and the failure is masked
-    # by commandError preferring command output over the underlying error. That
-    # needs its own investigation before this list can grow.
+    # These packages are safe to split by top-level test. cmd/wb contains
+    # real-clock and process-global journeys and stays in the single
+    # unsharded job to avoid multiplying its setup cost.
     - ./internal/worktrees
+    # internal/orchestrate is over 15 minutes of the unsharded job by
+    # itself, the single largest remaining win in coverage-job latency
+    # (#578). Adding it here was tried once before and reverted because
+    # `wb coverage` failed in the profile-merge/report step after every
+    # shard succeeded, and commandError preferring command output over the
+    # underlying error masked the real cause; that was fixed by #575
+    # (a5f3ea091e19). This re-enables it on that basis; the sharded
+    # `wb coverage` run itself is unverified here and is proved (or not) by
+    # this change's own CI coverage job.
+    - ./internal/orchestrate

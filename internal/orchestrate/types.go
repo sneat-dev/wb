@@ -136,8 +136,18 @@ type AppliedFileReporter[T any] interface {
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
 type RemoteCheck struct {
-	Name       string `json:"name" yaml:"name"`
-	Bucket     string `json:"bucket" yaml:"bucket"`
+	Name   string `json:"name" yaml:"name"`
+	Bucket string `json:"bucket" yaml:"bucket"`
+	// Conclusion is the raw GitHub check-run/workflow-run conclusion (e.g.
+	// "success", "skipped", "neutral", "failure"), kept alongside Bucket so a
+	// strict deferral-satisfaction check (sneat-dev/wb#591 red-team finding
+	// X2) can tell an actually-executed pass ("success") apart from a check
+	// that never ran ("skipped" or "neutral") even though checkRunBucket
+	// buckets both "success" and "neutral" the same, as an ordinary "pass"
+	// (only "skipped" gets its own "skipping" bucket) for the overall
+	// pass/fail loop. Empty for a commit-status-derived check, which has no
+	// conclusion.
+	Conclusion string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
 	Link       string `json:"link,omitempty" yaml:"link,omitempty"`
 	AppID      int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 	CheckRunID int64  `json:"check_run_id,omitempty" yaml:"check_run_id,omitempty"`

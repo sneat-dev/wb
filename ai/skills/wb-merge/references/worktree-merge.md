@@ -36,11 +36,38 @@ only stdout payload, while stage transitions, check observations, elapsed time,
 and the next bounded poll stay visible on stderr. `--non-interactive` alone
 keeps terminal-only progress disabled.
 
-Prepare validates the candidate first. When every configured candidate check
-passes, the receipt says the target baseline was not needed. When a candidate
-check fails, WB validates the exact target snapshot and permits only equivalent
-pre-existing failures. Repositories may declare safe process-isolated Go test
-packages in `.wb/quality.yaml`; merge validation consumes that tracked policy.
+Prepare validates the candidate first — unless this call resolves the
+pull-request route and the target's required-check policy is authoritative,
+non-empty, and fenced by a server-enforced strict up-to-date policy, in which
+case local validation is deferred to that CI instead of running twice (once
+locally, once again in CI): the receipt records a `validation_deferral`
+(route, exact candidate SHA, reason) and `validation.status` is `skipped`.
+`land`/`resume` resolve the route once per call and reuse that same decision
+for every validation site in the call and for the publish/landing guard that
+follows them, so a route resolved as `pr` and deferred can never be published
+on a route a later call resolves as `direct` — pass `--route direct` (or let
+an unprotected target resolve `auto` to `direct`) to force it. `--validate-locally`
+and `--allow-unfenced` both restore the old unconditional local-validation
+behavior for one call — a stale deferral recorded by an earlier call is
+re-validated locally, never silently accepted, before that call publishes or
+merges. A standalone `wb worktree merge prepare` (no later `land` call of its
+own to resolve the route) validates locally by default for the same reason —
+dependent agents consume its exact candidate SHA directly — unless this call
+itself passes `--route pr`. A deferred candidate's wait never re-judges its
+required checks: CI's required checks, as GitHub branch protection evaluates
+them, are the gate, exactly as for any other candidate. A required check that
+GitHub itself counts as satisfied while never actually running ("skipped" or
+"neutral") still lands — GitHub branch protection judged the head landable —
+but the candidate/PR phase records a non-blocking `deferred-validation-check-skipped`
+finding naming it, in both the text output and the receipt/JSON; it never
+refuses and never waits longer because of it, and it is never evaluated again
+on the later post-target phase. Pass `--validate-locally` to force a real
+local run instead of deferring. When every configured candidate check passes,
+the receipt says the target baseline was not needed.
+When a candidate check fails, WB validates the exact target snapshot and
+permits only equivalent pre-existing failures. Repositories may declare safe
+process-isolated Go test packages in `.wb/quality.yaml`; merge validation
+consumes that tracked policy.
 
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA

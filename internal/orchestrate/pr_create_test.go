@@ -131,10 +131,12 @@ draft=false
 if [ -f "$S/draft" ]; then draft=$(cat "$S/draft"); fi
 head=$(git --git-dir="$WB_CREATE_REMOTE" rev-parse "refs/heads/$WB_CREATE_BRANCH" 2>/dev/null)
 case "$*" in
-  'pr list --repo acme/app --head '*' --state open --json url,baseRefName --jq '*)
+  'pr list --repo acme/app --head '*' --state open --json url,baseRefName,body --jq '*)
     if [ -f "$S/existing-pr" ]; then cat "$S/existing-pr"; fi ;;
   'pr create --repo acme/app '*)
     printf 'https://github.com/acme/app/pull/%s\n' "$number" ;;
+  'pr edit https://github.com/acme/app/pull/'*' --repo acme/app --body '*)
+    printf '%s\n' "$*" >>"$S/pr-edit-calls" ;;
   'api repos/acme/app/pulls/'*'/files?per_page=100 --include'|'api repos/acme/app/pulls/'*'/files?per_page=100')
     cat "$S/files" ;;
   'api repos/acme/app/pulls/'*'/commits?per_page=100 --include'|'api repos/acme/app/pulls/'*'/commits?per_page=100')
@@ -326,6 +328,65 @@ func TestCreateAdoptsAnExistingOpenPullRequestWithoutCreatingASecondOne(t *testi
 	}
 }
 
+// TestCreateClosesAppliesToAnAdoptedPullRequestIdempotently proves round 3
+// minor 6: before this fix, --closes on an already-open (adopted) pull
+// request silently did nothing, because the body it computed was only ever
+// passed to `gh pr create`, never to an adoption. It also proves the fix is
+// idempotent (a second run against a body that already carries the line
+// makes no edit) and that duplicate issue numbers collapse to one line.
+func TestCreateClosesAppliesToAnAdoptedPullRequestIdempotently(t *testing.T) {
+	fixture := newCreateFixture(t)
+	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\tmain\tsome body\n")
+	worktree := fixture.createWorktree(t, "adopt-closes-task", "feature/adopt-closes", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, Closes: []int{42, 7, 42},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess || !result.Adopted {
+		t.Fatalf("outcome=%s adopted=%v reason=%s", result.Outcome, result.Adopted, result.Reason)
+	}
+	edits, readErr := os.ReadFile(filepath.Join(fixture.state, "pr-edit-calls"))
+	if readErr != nil {
+		t.Fatalf("gh pr edit was never called: %v", readErr)
+	}
+	edited := string(edits)
+	if strings.Count(edited, "gh pr edit") != 1 && strings.Count(edited, "pr edit") != 1 {
+		t.Fatalf("pr edit calls = %q, want exactly one edit call", edited)
+	}
+	if strings.Count(edited, "Closes #42") != 1 {
+		t.Fatalf("edited body = %q, want a single deduped Closes #42 line", edited)
+	}
+	if !strings.Contains(edited, "Closes #7") {
+		t.Fatalf("edited body = %q, want a Closes #7 line", edited)
+	}
+	if !strings.Contains(edited, "some body") {
+		t.Fatalf("edited body = %q, want the original adopted body preserved", edited)
+	}
+
+	// Re-adopting the same pull request, now that its body (per the log
+	// above) already carries both Closes lines, must make no further edit.
+	fixture.writeState(t, "existing-pr",
+		"https://github.com/acme/app/pull/9\tmain\tCloses #42\nCloses #7\n\nsome body\n")
+	if err := os.Remove(filepath.Join(fixture.state, "pr-edit-calls")); err != nil {
+		t.Fatal(err)
+	}
+	worktree2 := fixture.createWorktree(t, "adopt-closes-again-task", "feature/adopt-closes-again", "main", "main2.go")
+	result2, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree2, ProjectsRoot: fixture.projects, Closes: []int{42, 7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result2.Outcome != CreateSuccess || !result2.Adopted {
+		t.Fatalf("outcome=%s adopted=%v reason=%s", result2.Outcome, result2.Adopted, result2.Reason)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.state, "pr-edit-calls")); statErr == nil {
+		t.Fatal("re-running --closes against a body that already carries both lines must make no edit")
+	}
+}
+
 func TestCreateTitleFromASingleCommit(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "single-task", "feature/single", "main", "main.go")
@@ -429,6 +490,28 @@ func TestCreateBodyFlagIsLiteralAndWinsOverCommitBody(t *testing.T) {
 	}
 }
 
+// #615: --closes writes one "Closes #N" line per issue at the top of the
+// body, ahead of whatever body (literal, file, or commit-derived) would
+// otherwise be sent.
+func TestCreateClosesWritesOneLinePerIssueAtTheTopOfTheBody(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "closes-task", "feature/closes", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		Body: "literal body text", Closes: []int{591, 614},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess {
+		t.Fatalf("outcome=%s reason=%s", result.Outcome, result.Reason)
+	}
+	log := fixture.ghLog(t)
+	if !strings.Contains(log, "Closes #591\nCloses #614\n\nliteral body text") {
+		t.Fatalf("gh log = %q, missing the closes-prefixed body", log)
+	}
+}
+
 func TestCreateBindsTheTaskToThePullRequestDurably(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "bind-task", "feature/bind", "main", "main.go")
@@ -498,6 +581,52 @@ func TestCreateAutoMergeRefusesANonMechanicalChangeWithoutApproval(t *testing.T)
 	}
 	if result.PullRequest == 0 {
 		t.Fatal("the pull request must still exist even though auto-merge was refused")
+	}
+}
+
+// Round 3, MAJOR fix: --auto-merge must route --approved-by through the
+// same classifier `wb pr land` uses. "ci" is not implemented anywhere and
+// must never arm.
+func TestCreateAutoMergeRefusesApprovedByCI(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "ci-task", "feature/ci-approval", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, AutoMerge: true, ApprovedBy: "ci",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalUnapprovedPatch {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.AutoMergeArmed {
+		t.Fatal("auto-merge must not be armed by --approved-by ci")
+	}
+	if !strings.Contains(result.Reason, "619") {
+		t.Fatalf("reason = %q, want it to point at the follow-up issue", result.Reason)
+	}
+}
+
+// Round 3, MAJOR fix: --auto-merge alone never posts the identity form's
+// review comment (only --land does), so a reviewer-identity --approved-by
+// must be refused, not silently armed with nothing recorded anywhere.
+func TestCreateAutoMergeRefusesReviewerIdentityWithoutLand(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "identity-task", "feature/identity-approval", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, AutoMerge: true, ApprovedBy: "opus@codex@run-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalIdentityNeedsLand {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.AutoMergeArmed {
+		t.Fatal("auto-merge must not be armed by an unposted reviewer identity")
+	}
+	if !strings.Contains(result.SanctionedCommand, "--land") {
+		t.Fatalf("SanctionedCommand = %q, want it to point at --land", result.SanctionedCommand)
 	}
 }
 

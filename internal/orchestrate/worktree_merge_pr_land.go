@@ -30,6 +30,49 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 	return receipt, "", err
 }
 
+// recordDeferredValidationCheckSkippedFinding is round 3's non-blocking
+// replacement for round 2's strict required-check gating (sneat-dev/wb#591
+// red-team follow-up, findings B1/B2). It runs only here, on the
+// candidate/PR phase's own wait result — never on waitForWorktreeMergeChecks'
+// post-target phase, which does not call it — and only when receipt's local
+// validation was deferred to CI. It never refuses a landing and never
+// lengthens a wait: it only records, for a human or a later audit, which
+// required check(s) concluded "skipped" or "neutral" instead of actually
+// running on the head GitHub itself judged landable.
+//
+// The caller only ever invokes this once the wait has actually resolved to
+// something worth recording (round 4, minor 1): a landing whose checks are
+// still pending or have failed is resumed in a later slice, and each resume
+// re-observes the same wait's checks from scratch — calling this on every
+// slice used to append one finding per resume, letting the same skip get
+// recorded again and again for a landing that had not actually landed yet.
+// It also replaces any existing finding with this code rather than
+// appending a second one, so a receipt only ever carries one.
+func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, waited PullRequestWaitResult) {
+	if receipt.ValidationDeferral == nil {
+		return
+	}
+	skipped := skippedOrNeutralRequiredChecks(waited.Checks, waited.RequiredChecks)
+	if len(skipped) == 0 {
+		return
+	}
+	finding := WorktreeMergeFinding{
+		Code: WorktreeMergeFindingDeferredValidationCheckSkipped,
+		Message: fmt.Sprintf(
+			"candidate validation was deferred to CI, and required check(s) %s concluded skipped or neutral instead of actually running; GitHub branch protection judged the head landable anyway",
+			strings.Join(skipped, ", "),
+		),
+		Checks: skipped,
+	}
+	for i, existing := range receipt.Findings {
+		if existing.Code == WorktreeMergeFindingDeferredValidationCheckSkipped {
+			receipt.Findings[i] = finding
+			return
+		}
+	}
+	receipt.Findings = append(receipt.Findings, finding)
+}
+
 func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, string, error) {
 	// The shared engine (awaitLandablePullRequest / mergeOrAdoptAutoMerge)
 	// path-builds every GraphQL/REST call it issues from this identity
@@ -101,6 +144,20 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			fmt.Errorf("%s; resume with wb worktree merge resume %s", updateRefusal.reason, receipt.ReceiptPath))
 	}
 	receipt.Checks = waited
+	// Round 3 (sneat-dev/wb#591 red-team follow-up): a deferred candidate's
+	// required checks are never re-judged here — GitHub branch protection's
+	// own evaluation is the gate, exactly as for any other candidate. This
+	// only records a non-blocking finding, on the candidate/PR phase this
+	// wait itself observed, never on the later post-target phase (see
+	// waitForWorktreeMergeChecks in worktree_merge.go, which does not call
+	// this helper).
+	// Round 4, minor 1: only record once the wait actually resolved to a
+	// landing — passed, or GitHub merged it anyway — never while it is
+	// still pending or has failed, so a later resume slice does not record
+	// the same finding again for a landing that has not landed yet.
+	if waited.Status == PullRequestWaitPassed || mergedByGitHub {
+		recordDeferredValidationCheckSkippedFinding(&receipt, waited)
+	}
 	if waited.Status != PullRequestWaitPassed && !mergedByGitHub {
 		status := WorktreeMergeChecksFailed
 		reason := fmt.Errorf("exact-head checks failed: %s", waited.Reason)
@@ -111,9 +168,23 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			if autoMergeArmed {
 				note = "; auto-merge is armed, so this lands without WB once checks pass"
 			}
-			reason = fmt.Errorf("exact-head checks remain pending: %s%s; resume with wb worktree merge resume %s", waited.Reason, note, receipt.ReceiptPath)
+			// #584 round 3: unlike `wb pr land`, this wait's slice is
+			// hard-capped at 8 minutes regardless of --timeout (see the
+			// `slice` clamp above) - and --timeout here also feeds git and
+			// validation timeouts, so printing a larger one would be
+			// inaccurate advice, not a bigger budget. Say plainly that each
+			// resume only advances by one more capped slice.
+			reason = fmt.Errorf("exact-head checks remain pending: %s%s; resume in the background with wb worktree merge resume %s (each resume observes one more slice, capped at 8m)",
+				waited.Reason, note, receipt.ReceiptPath)
 		case !options.AllowUnfenced && strings.Contains(waited.Reason, "strict up-to-date fence"):
 			reason = fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", waited.Reason, receipt.ReceiptPath)
+		default:
+			// #600: name each failing check and its first error line rather
+			// than leaving the caller to hand-roll the same log scraping WB
+			// already did while observing the checks.
+			if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+				reason = fmt.Errorf("exact-head checks failed: %s; %s", waited.Reason, summary)
+			}
 		}
 		return failWorktreeMergePRLand(receipt, status, reason)
 	}
@@ -231,6 +302,17 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 	if receipt == nil {
 		return fmt.Errorf("worktree-merge PR-land hook called with no receipt")
 	}
+	// Minor 3 (review round on #614): the engine hands this hook whatever
+	// head it itself last observed as "previous" - it must be exactly the
+	// head this receipt already holds as its candidate. If it is not, this
+	// call was never about advancing OUR recorded candidate at all (a stale
+	// hook closure, a receipt reused across an unrelated retry, and so on),
+	// and adopting "updated" as this receipt's own advance would silently
+	// substitute a head this receipt never held. Refuse rather than adopt.
+	if previous != receipt.Candidate.SHA {
+		return fmt.Errorf("update-branch hook called with previous head %s but the receipt holds candidate %s; refusing to adopt an advance from a head this receipt did not hold",
+			shortMergeRevision(previous), shortMergeRevision(receipt.Candidate.SHA))
+	}
 	parents, err := pullRequestCommitParents(ctx, receipt.Repository, updated)
 	if err != nil {
 		return fmt.Errorf("read update-branch merge commit parents: %w", err)
@@ -238,6 +320,30 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 	newTarget, targetErr := updateBranchMergeTargetParent(parents, previous)
 	if targetErr != nil {
 		return fmt.Errorf("update-branch merge commit %s: %w", updated, targetErr)
+	}
+	// Red-team finding M3: the GitHub commits API told us updated's parents
+	// look right, but that alone does not prove updated is an ordinary merge
+	// of our recorded candidate and a target-side ancestor - the same proof
+	// adoptServerUpdatedWorktreeMergeHead requires before trusting a resumed
+	// receipt's stale head. Reuse it here so a crafted force-push cannot be
+	// recorded as a trusted advance merely because its two parents happen to
+	// match the shape this function checks for. Any failure to positively
+	// verify is a refusal, not a silent adoption.
+	proved, proofErr := verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated)
+	if proofErr != nil {
+		// Minor 5 (review round on #614): a transient GitHub read failure
+		// while computing the proof (here, only commitTreeSHA's fallback
+		// read can produce one - see verifyUpdateBranchMergeProof) is not a
+		// verdict that the merge is unproven; it is a blip WB never
+		// observed. Surface it unflattened so the caller's own
+		// IsTransientReadFailure check (worktree_merge_pr_land.go's
+		// landWorktreeMergePullRequest) classifies this as ChecksPending
+		// and retryable, never Conflict.
+		return fmt.Errorf("verify update-branch merge commit %s: %w", shortMergeRevision(updated), proofErr)
+	}
+	if !proved {
+		return fmt.Errorf("update-branch merge commit %s does not prove an ordinary merge of candidate %s and target %s; refusing to adopt it as an advance",
+			shortMergeRevision(updated), shortMergeRevision(previous), receipt.Target)
 	}
 	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
 		RecordedAt:           time.Now().UTC(),
@@ -278,6 +384,113 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 	default:
 		return "", fmt.Errorf("has unexpected parents %v for previous head %s", parents, previous)
 	}
+}
+
+// verifyUpdateBranchMergeProof proves that headSHA is an ordinary merge of
+// candidateSHA (its first parent) and targetParent (its second parent):
+// that targetParent is an ancestor of the repository's current remote
+// target, and that headSHA's tree exactly matches the tree
+// `git merge-tree --write-tree` would produce for those two parents.
+//
+// Minor 4 (review round on #614): this proof runs on exactly two call
+// sites, both in this file - M3 (adoptWorktreeMergeUpdateBranchAdvance,
+// trusting a live update-branch merge before persisting it) and M-A
+// (adoptServerUpdatedWorktreeMergeHead, trusting a resumed receipt's stale
+// head) - never on the plain `wb pr land` route's own update-branch success
+// path (pr_land_engine.go's non-headUpdated branch, which only calls
+// syncLocalWorktreeAfterUpdateBranch). That is deliberate, not a gap: the
+// plain route never persists a receipt that later code trusts for
+// merge-provenance decisions (an absorbed-source-PR walk, a target-SHA
+// advance) the way a worktree-merge receipt does - fastForwardWorktreeToUpdatedHead
+// is a best-effort local sync only, and a wrong or missing fast-forward
+// there is never treated as authoritative by anything downstream. So a
+// crafted force-push landing a head that merely LOOKS like an update-branch
+// merge (right parent shape, wrong content) cannot be adopted as a trusted
+// advance by either of the two paths that DO trust one.
+//
+// It returns an error only for a transient GitHub read failure it cannot
+// tell apart from a genuine mismatch without retrying (see Minor 5 below);
+// every other kind of "could not prove it" - an unreadable repository, a
+// missing worktree, a real mismatch - returns (false, nil), and callers do
+// not need to distinguish those from each other: all of them mean "do not
+// trust this as an advance" on their own.
+//
+// Red-team finding M4: GitHub commonly deletes a pull request's branch the
+// moment it merges. Fetching by branch NAME then fails outright, even though
+// headSHA itself may already be reachable locally (a plain `wb pr land`
+// fast-forwarded this very worktree to it earlier) or readable from GitHub's
+// commit API by its exact SHA. Only fetch the branch when headSHA is not
+// already local, and fall back to reading its tree from the commits API
+// (commitTreeSHA) rather than failing "not proved" merely because the branch
+// name no longer resolves.
+//
+// Minor 5 (review round on #614): that commitTreeSHA fallback is the one
+// GitHub API read in this function (every other step is local git or a
+// plain `git fetch`). A transient failure there - a 502/503/504, a
+// secondary rate limit, or a signal-killed `gh` attempt, exhausted after
+// every in-process retry - is not a verdict that the merge is unproven; it
+// is a blip WB never observed. That case alone returns (false, err) with err
+// satisfying IsTransientReadFailure, so a caller can tell "ask again" apart
+// from "refuse" instead of both collapsing into the same false.
+func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+	worktree = strings.TrimSpace(worktree)
+	if worktree == "" {
+		return false, nil
+	}
+	headLocal := commitExistsLocally(ctx, worktree, headSHA)
+	if !headLocal && strings.TrimSpace(branch) != "" {
+		// Best effort: bring headSHA's object in reach locally by branch name.
+		// It was produced server-side by GitHub and this worktree has not
+		// necessarily fetched it yet. A failure here (deleted branch) is not
+		// fatal - the tree can still be read from GitHub's commit API below.
+		if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
+			"+refs/heads/"+branch+":refs/remotes/origin/"+branch); err == nil {
+			headLocal = commitExistsLocally(ctx, worktree, headSHA)
+		}
+	}
+	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, worktree, target)
+	if fetchErr != nil {
+		return false, nil
+	}
+	targetAncestor, ancestorErr := isMergeAncestor(ctx, worktree, targetParent, remoteTarget)
+	if ancestorErr != nil || !targetAncestor {
+		return false, nil
+	}
+	writtenTree, treeErr := runGit(ctx, worktree, "merge-tree", "--write-tree", candidateSHA, targetParent)
+	if treeErr != nil {
+		return false, nil
+	}
+	var headTree string
+	if headLocal {
+		tree, headTreeErr := runGit(ctx, worktree, "show", "-s", "--format=%T", headSHA)
+		if headTreeErr != nil {
+			return false, nil
+		}
+		headTree = tree
+	} else {
+		tree, treeErr := commitTreeSHA(ctx, repository, headSHA)
+		if treeErr != nil {
+			if IsTransientReadFailure(treeErr) {
+				return false, treeErr
+			}
+			return false, nil
+		}
+		headTree = tree
+	}
+	return strings.TrimSpace(writtenTree) == strings.TrimSpace(headTree), nil
+}
+
+// commitExistsLocally reports whether sha's commit object is already
+// reachable in worktree's object database, without attempting any network
+// fetch. Used to skip a branch-name fetch (which fails once GitHub deletes
+// the branch on merge - M4) when the object is already present.
+func commitExistsLocally(ctx context.Context, worktree, sha string) bool {
+	sha = strings.TrimSpace(sha)
+	if sha == "" {
+		return false
+	}
+	_, err := runGit(ctx, worktree, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
 
 // adoptServerUpdatedWorktreeMergeHead closes red-team finding M5 for the one
@@ -326,27 +539,16 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, receipt *WorktreeM
 	if strings.TrimSpace(receipt.Candidate.Worktree) == "" {
 		return false, nil
 	}
-	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-	if fetchErr != nil {
-		return false, nil
-	}
-	targetAncestor, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, parents[1], remoteTarget)
-	if ancestorErr != nil || !targetAncestor {
-		return false, nil
-	}
-	if _, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "fetch", "--no-tags", "origin",
-		"+refs/heads/"+receipt.Candidate.Branch+":refs/remotes/origin/"+receipt.Candidate.Branch); err != nil {
-		return false, nil
-	}
-	writtenTree, treeErr := runGit(ctx, receipt.Candidate.Worktree, "merge-tree", "--write-tree", receipt.Candidate.SHA, parents[1])
-	if treeErr != nil {
-		return false, nil
-	}
-	headTree, headTreeErr := runGit(ctx, receipt.Candidate.Worktree, "show", "-s", "--format=%T", view.Head.SHA)
-	if headTreeErr != nil {
-		return false, nil
-	}
-	if strings.TrimSpace(writtenTree) != strings.TrimSpace(headTree) {
+	// This resume path is deliberately best-effort end to end (see the
+	// function doc above): the transient-vs-definitive distinction
+	// verifyUpdateBranchMergeProof's error return exists for is Minor 5's
+	// concern for the LIVE landing hook (adoptWorktreeMergeUpdateBranchAdvance),
+	// which must not turn a retryable blip into a hard Conflict. Here, any
+	// failure - transient or not - already falls through to "leave it for
+	// the ordinary drift/conflict handling to judge", so the error is
+	// intentionally discarded rather than given special treatment.
+	proved, _ := verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA)
+	if !proved {
 		// Not an ordinary merge of our candidate and the target: leave it
 		// for the ordinary drift/conflict handling to judge.
 		return false, nil

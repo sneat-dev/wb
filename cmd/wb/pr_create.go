@@ -1,21 +1,24 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
 func newPRCreateCmd() *cobra.Command {
-	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message string
+	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile string
 	var draft, autoMerge, allowUnfenced, commitStaged, commitAll, land, keep bool
 	var timeout time.Duration
-	var add []string
+	var add, closes []string
 	command := &cobra.Command{
 		Use:   "create [<worktree|task>]",
 		Short: "Push a worktree's branch and open or adopt its pull request",
@@ -139,9 +142,34 @@ wb pr create --format json`,
 			if (commitStaged || commitAll || len(add) > 0) && strings.TrimSpace(message) == "" {
 				return usageError("--commit-staged/--commit-all/--add require -m/--message")
 			}
+			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
+				return usageError("--review-comment and --review-comment-file are mutually exclusive")
+			}
+			// Round 3, MAJOR fix: without --land, nothing in this command
+			// ever reads --review-comment/--review-comment-file - --land is
+			// the only path that posts the identity form's review comment.
+			// Accepting either flag here and silently dropping it is worse
+			// than refusing: the caller would believe a review was recorded
+			// when --auto-merge alone armed with nothing but the identity
+			// string itself.
+			if !land && (command.Flags().Changed("review-comment") || command.Flags().Changed("review-comment-file")) {
+				return usageError("--review-comment/--review-comment-file are only meaningful with --land; " +
+					"--auto-merge alone never posts the review comment, so it would be silently ignored")
+			}
+			closesIssues, closesErr := parseIssueNumbers(splitCommaSeparated(closes))
+			if closesErr != nil {
+				return usageError(closesErr.Error())
+			}
 			worktreeArg := ""
 			if len(args) > 0 {
 				worktreeArg = args[0]
+			}
+			// #615: never add issue numbers to the body silently — print
+			// whatever the task's own original prompt names as a suggestion,
+			// leaving --closes as the only thing that acts on it.
+			if suggested := suggestedClosesFromWorktreePrompt(command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
+					formatSuggestedIssues(suggested))
 			}
 			var landOptions *orchestrate.PullRequestLandOptions
 			if land {
@@ -151,6 +179,8 @@ wb pr create --format json`,
 					ProjectsRoot:      projectsRoot,
 					Keep:              keep,
 					ApprovedBy:        approvedBy,
+					ReviewComment:     reviewComment,
+					ReviewCommentFile: reviewCommentFile,
 					MergeMethod:       mergeMethod,
 					AllowUnfenced:     allowUnfenced,
 					Slice:             timeout,
@@ -168,7 +198,7 @@ wb pr create --format json`,
 			result, createErr := orchestrate.CreatePullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
 				Worktree: worktreeArg, ProjectsRoot: projectsRoot,
 				Title: title, Body: body, BodyFile: bodyFile, Draft: draft, Base: base,
-				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message,
+				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message, Closes: closesIssues,
 				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod, Lane: lane,
 				Land: land, LandOptions: landOptions,
 				LinkPreflight: refuseLinkedRepositoryWorktrees,
@@ -223,7 +253,10 @@ wb pr create --format json`,
 	command.Flags().BoolVar(&land, "land", false, "land the pull request in-process through wb pr land once it is created or adopted")
 	command.Flags().BoolVar(&keep, "keep", false, "with --land: retain the task's worktree and claim instead of retiring them")
 	command.Flags().DurationVar(&timeout, "timeout", defaultCIWaitSlice, "with --land: total foreground wait budget")
-	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorizes --auto-merge/--land on a non-mechanical change: a review file or a comment URL")
+	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorizes --auto-merge/--land on a non-mechanical change: a review file, a comment URL, or (with --land) a reviewer identity {model}[@{harness}[@{session}]] plus --review-comment/--review-comment-file")
+	command.Flags().StringVar(&reviewComment, "review-comment", "", "with --land: the review text for a reviewer-identity --approved-by; mutually exclusive with --review-comment-file")
+	command.Flags().StringVar(&reviewCommentFile, "review-comment-file", "", "with --land: path to the review text for a reviewer-identity --approved-by; mutually exclusive with --review-comment")
+	command.Flags().StringSliceVar(&closes, "closes", nil, "issue number(s) this pull request closes (repeatable, or comma-separated); writes one 'Closes #N' line per issue at the top of the body")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "with --auto-merge/--land: arm on a target with no server-enforced strict up-to-date policy")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "with --auto-merge/--land: merge (default), squash, or rebase")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -284,4 +317,61 @@ func printPullRequestCreate(command *cobra.Command, result orchestrate.PullReque
 		}
 	}
 	return nil
+}
+
+// parseIssueNumbers converts --closes's comma-separated/repeated values into
+// issue numbers, refusing anything that is not a positive integer by name
+// rather than silently dropping it.
+func parseIssueNumbers(values []string) ([]int, error) {
+	issues := make([]int, 0, len(values))
+	// Round 3, minor 6: dedupe here, in first-seen order, so
+	// "--closes 5,5,6" (or two "--closes 5" repeats) never writes "Closes
+	// #5" twice at the top of the body.
+	seen := map[int]bool{}
+	for _, value := range values {
+		number, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || number <= 0 {
+			return nil, fmt.Errorf("--closes %q is not a positive issue number", value)
+		}
+		if seen[number] {
+			continue
+		}
+		seen[number] = true
+		issues = append(issues, number)
+	}
+	return issues, nil
+}
+
+// suggestedClosesFromWorktreePrompt reads the worktree's own original
+// prompt (Work Log) and returns whatever issue numbers it names (#615). Any
+// failure to resolve the worktree or load its Work Log is silent here: this
+// is a courtesy suggestion, never a requirement, and must not turn into a
+// usage error for a worktree that simply has no recorded prompt.
+func suggestedClosesFromWorktreePrompt(ctx context.Context, worktreeArg string) []int {
+	worktree, err := orchestrate.ResolvePullRequestCreateWorktree(ctx, projectsRoot, worktreeArgOrCurrent(worktreeArg))
+	if err != nil {
+		return nil
+	}
+	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{
+		ProjectsRoot: projectsRoot, Worktree: worktree, IncludePromptBodies: true,
+	})
+	if err != nil || view.OriginalPrompt == nil {
+		return nil
+	}
+	return orchestrate.SuggestClosesFromPrompt(view.OriginalPrompt.Body)
+}
+
+func worktreeArgOrCurrent(worktreeArg string) string {
+	if strings.TrimSpace(worktreeArg) == "" {
+		return "."
+	}
+	return worktreeArg
+}
+
+func formatSuggestedIssues(issues []int) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, fmt.Sprintf("#%d", issue))
+	}
+	return strings.Join(parts, ", ")
 }

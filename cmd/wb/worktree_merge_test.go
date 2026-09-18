@@ -191,6 +191,64 @@ func TestLandAliasSharesWorktreeLandContract(t *testing.T) {
 	}
 }
 
+// TestWorktreeLandAndRootLandAcceptProjectsRoot pins #502: `wb worktree land`
+// and its root alias `wb land` must consume --projects-root rather than
+// reject it, since runCombinedWorktreeMerge threads the package-level
+// projectsRoot into orchestrate.WorktreeMergeLandOptions, which in turn
+// guards every source with worktrees.Guard(ProjectsRoot: ...).
+//
+// The proof is root-DEPENDENT, not merely "some orchestrator error came
+// back" (a missing source worktree fails identically no matter what
+// --projects-root names, which would equally pass if the flag were silently
+// ignored). Instead this places a real linked worktree at
+// <root>/.worktrees/task1/bad repo - a shape worktrees.Guard's managed-layout
+// resolution rejects only because "bad repo" (a space is not a safe
+// repository segment) fails inside the managed-worktree-path check, which is
+// built entirely from the passed --projects-root. The resulting error names
+// that exact <root>/.worktrees path, so a caller can see the flag was the
+// one actually used.
+func TestWorktreeLandAndRootLandAcceptProjectsRoot(t *testing.T) {
+	for _, args := range [][]string{
+		{"worktree", "land"},
+		{"land"},
+	} {
+		t.Run(strings.Join(args, "-"), func(t *testing.T) {
+			root := t.TempDir()
+			base := filepath.Join(root, "base")
+			writeCLIWorktreeFile(t, filepath.Join(base, "initial.txt"), "initial\n")
+			runCLIWorktreeGit(t, base, "init", "-b", "main")
+			runCLIWorktreeGit(t, base, "config", "user.name", "WB Test")
+			runCLIWorktreeGit(t, base, "config", "user.email", "wb@example.test")
+			runCLIWorktreeGit(t, base, "add", "-A")
+			runCLIWorktreeGit(t, base, "commit", "-m", "initial")
+
+			worktreePath := filepath.Join(root, ".worktrees", "task1", "bad repo")
+			if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runCLIWorktreeGit(t, base, "worktree", "add", worktreePath, "-b", "feature/x")
+
+			var stdout, stderr bytes.Buffer
+			command := newRootCmd()
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			cliArgs := append(append([]string{"--projects-root", root, "--non-interactive"}, args...), worktreePath, "--target", "main")
+			command.SetArgs(cliArgs)
+			err := command.Execute()
+			if err == nil {
+				t.Fatal("expected an error naming the given --projects-root's managed-worktree layout")
+			}
+			if strings.Contains(err.Error(), "is not supported by") {
+				t.Fatalf("--projects-root was rejected instead of consumed: %v", err)
+			}
+			wantWorktreesRoot := filepath.Join(root, ".worktrees")
+			if !strings.Contains(err.Error(), wantWorktreesRoot) {
+				t.Fatalf("error = %v, want it to name the given --projects-root's worktrees root %q", err, wantWorktreesRoot)
+			}
+		})
+	}
+}
+
 func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -649,4 +707,27 @@ func runCLIWorktreeGit(t *testing.T, directory string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+// TestWorktreeMergePrepareForcesLocalValidationExceptExplicitPRRoute is
+// Minor 13's regression test (sneat-dev/wb#591 round 3 red-team follow-up):
+// a standalone `wb worktree merge prepare` must validate locally by default
+// (auto, or an explicit --route direct), since dependent agents consume its
+// candidate SHA directly and may need it validated before any land call
+// ever runs. Only an explicit --route pr (this call itself intends to land
+// through the pull-request route) may still defer.
+func TestWorktreeMergePrepareForcesLocalValidationExceptExplicitPRRoute(t *testing.T) {
+	for _, test := range []struct {
+		route string
+		want  bool
+	}{
+		{route: "auto", want: true},
+		{route: "", want: true},
+		{route: "direct", want: true},
+		{route: "pr", want: false},
+	} {
+		if got := worktreeMergePrepareForcesLocalValidation(test.route); got != test.want {
+			t.Errorf("worktreeMergePrepareForcesLocalValidation(%q) = %t, want %t", test.route, got, test.want)
+		}
+	}
 }

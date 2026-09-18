@@ -308,6 +308,87 @@ func TestLandTreatsABudgetShorterThanOnePollAsSpent(t *testing.T) {
 	}
 }
 
+// TestLandChecksPendingResumeCarriesATimeoutFloor pins #584: re-running the
+// printed resume command with no --timeout at all gets another bite of the
+// same short-lived default and cannot converge. With auto-merge disabled
+// (so the plain resume command is printed, rather than the auto-merge-armed
+// "GitHub lands it" alternative) a budget below the recommended floor must
+// have the resume command carry that floor instead of the budget that just
+// ran out.
+func TestLandChecksPendingResumeCarriesATimeoutFloor(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	options := landOptions(fixture)
+	options.CheckPollInterval = time.Minute
+	options.Slice = 30 * time.Second
+	options.NoAutoMerge = true
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("a short budget must end pending, not in an error: %v", err)
+	}
+	if result.RefusalCode != LandRefusalChecksPending {
+		t.Fatalf("refusal = %s, want %s: %s", result.RefusalCode, LandRefusalChecksPending, result.Reason)
+	}
+	// --keep (this fixture's default) and --no-auto-merge (set by this test)
+	// are both carried through: resuming without them would silently revert
+	// behavior the original invocation explicitly chose.
+	want := "wb pr land " + options.Repository + "#" + "7" + " --timeout 45m --keep --no-auto-merge"
+	if result.SanctionedCommand != want {
+		t.Fatalf("checks-pending resume command = %q, want %q", result.SanctionedCommand, want)
+	}
+	if !strings.Contains(result.Reason, "run the resume command in the background") {
+		t.Fatalf("reason must say to run the resume command in the background: %q", result.Reason)
+	}
+}
+
+// TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted pins #584: the
+// resume command must reproduce every flag that changed this invocation's
+// behavior - --timeout, --no-auto-merge, --allow-unfenced, --approved-by,
+// --keep-commits/--reason - with free-text values POSIX single-quoted
+// (round 4: shellSingleQuote, not strconv.Quote, is this function's
+// convention for --reason/--subject/--approved-by) so a review string
+// containing a space, a double quote, a backtick, or "$" cannot break the
+// printed command, be misread as a second flag, or shell-expand on
+// copy-paste.
+func TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted(t *testing.T) {
+	t.Parallel()
+	got := pullRequestLandResumeCommand(PullRequestLandOptions{
+		Repository:    "acme/app",
+		NoAutoMerge:   true,
+		AllowUnfenced: true,
+		ApprovedBy:    `review with a space and a ' quote`,
+		KeepCommits:   []string{"abc123", "def456"},
+		Reason:        "kept for audit",
+	}, "9", "45m")
+	want := `wb pr land acme/app#9 --timeout 45m --no-auto-merge --allow-unfenced --keep-commits abc123,def456 --reason 'kept for audit' --approved-by 'review with a space and a '\'' quote'`
+	if got != want {
+		t.Fatalf("pullRequestLandResumeCommand = %q, want %q", got, want)
+	}
+}
+
+// TestPRLandResumeTimeoutFlagNamesAConvergingBudget pins #584: the
+// checks-pending resume command must carry --timeout with a budget that can
+// actually succeed, never the caller's own just-exhausted budget verbatim
+// when that budget was too small to converge.
+func TestPRLandResumeTimeoutFlagNamesAConvergingBudget(t *testing.T) {
+	tests := []struct {
+		name     string
+		inEffect time.Duration
+		want     string
+	}{
+		{"below the floor uses the recommended floor", 8 * time.Minute, "45m"},
+		{"at the floor is kept", 45 * time.Minute, "45m"},
+		{"above the floor is carried through", 90 * time.Minute, "90m"},
+		{"a non-whole-minute duration falls back to the standard rendering", 90*time.Minute + 30*time.Second, "1h30m30s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prLandResumeTimeoutFlag(tt.inEffect); got != tt.want {
+				t.Errorf("prLandResumeTimeoutFlag(%s) = %q, want %q", tt.inEffect, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestTargetMovedClassification pins which wait failures mean the target
 // moved, and which update failures mean the head moved.
 func TestTargetMovedClassification(t *testing.T) {

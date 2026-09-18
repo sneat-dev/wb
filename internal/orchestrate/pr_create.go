@@ -38,6 +38,12 @@ const (
 	CreateRefusalLeftoverBeforeLanding = "leftover-before-landing"
 	CreateRefusalInvalidPath           = "invalid-add-path"
 	CreateRefusalBaseMismatch          = "base-mismatch"
+	// CreateRefusalIdentityNeedsLand reports the reviewer-identity form of
+	// --approved-by given to --auto-merge without --land (round 3, MAJOR
+	// fix for #604's `pr create` gap): --auto-merge alone never posts the
+	// review comment the identity form requires, so accepting it silently
+	// would arm auto-merge on an unrecorded "review".
+	CreateRefusalIdentityNeedsLand = "identity-review-needs-land"
 )
 
 // CreateOutcome is the envelope outcome, mapped onto WB's exit-code contract
@@ -65,6 +71,11 @@ type PullRequestCreateOptions struct {
 	// Base overrides the pull request's target branch. Empty uses the
 	// worktree's own recorded base.
 	Base string
+	// Closes lists issue numbers this pull request closes; one "Closes #N"
+	// line per issue is written at the top of the body (#615). Never
+	// populated from the task's prompt automatically — see
+	// SuggestClosesFromPrompt, which the caller decides whether to act on.
+	Closes []int
 
 	// AutoMerge arms GitHub auto-merge immediately after the pull request is
 	// created or adopted, under the same authority `wb pr land` requires to
@@ -351,7 +362,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	}
 
 	url, adopted, err := openOrAdoptPullRequest(ctx, worktree, repository, branch, base, title, body, options.Draft,
-		Options{Timeout: options.Timeout, Retry: options.Retry})
+		Options{Timeout: options.Timeout, Retry: options.Retry}, options.Closes)
 	if err != nil {
 		var mismatch *pullRequestBaseMismatchError
 		if errors.As(err, &mismatch) {
@@ -499,12 +510,40 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 		result.Evidence["not_mechanical_because"] = verdict.Summary()
 	}
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
-	if !result.Mechanical && result.ApprovedBy == "" {
-		return mergeCreateRefusal(result, createRefusal{
-			code:    CreateRefusalUnapprovedPatch,
-			reason:  fmt.Sprintf("pull request %s#%s exists but is not a mechanical change, so --auto-merge needs a recorded review", repository, number),
-			command: "wb pr create --auto-merge --approved-by <review-file-or-comment-url>",
-		}), nil
+	// Round 3, MAJOR fix: route --approved-by through the same classifier
+	// `wb pr land` uses, rather than accepting any non-empty string. Without
+	// this, `wb pr create --auto-merge --approved-by ci` armed on the
+	// literal "ci" (not implemented anywhere), and the reviewer-identity
+	// form (which needs a posted comment `--land` implements but bare
+	// --auto-merge never runs) armed with no review recorded anywhere.
+	// hasReviewComment is always false here: --review-comment/
+	// --review-comment-file are refused at the CLI layer for --auto-merge
+	// without --land (cmd/wb/pr_create.go), since they would otherwise be
+	// silently ignored by this path.
+	if !result.Mechanical {
+		switch classifyApprovedBy(result.ApprovedBy, false) {
+		case approvalKindEmpty:
+			return mergeCreateRefusal(result, createRefusal{
+				code:    CreateRefusalUnapprovedPatch,
+				reason:  fmt.Sprintf("pull request %s#%s exists but is not a mechanical change, so --auto-merge needs a recorded review", repository, number),
+				command: "wb pr create --auto-merge --approved-by <review-file-or-comment-url>",
+			}), nil
+		case approvalKindCI:
+			return mergeCreateRefusal(result, createRefusal{
+				code:    CreateRefusalUnapprovedPatch,
+				reason:  "--approved-by ci is not implemented yet; follow-up: https://github.com/sneat-dev/wb/issues/619",
+				command: "wb pr create --auto-merge --approved-by <review-file-or-comment-url>",
+			}), nil
+		case approvalKindIdentity:
+			return mergeCreateRefusal(result, createRefusal{
+				code: CreateRefusalIdentityNeedsLand,
+				reason: "the reviewer-identity form of --approved-by needs --land to post the review comment; " +
+					"--auto-merge alone never posts it, so it would arm with no review recorded anywhere",
+				command: "wb pr create --land --approved-by " + result.ApprovedBy + " --review-comment \"<the review>\"",
+			}), nil
+		case approvalKindFile, approvalKindURL:
+			// Unchanged: passed through verbatim, exactly as before this fix.
+		}
 	}
 	if options.LinkPreflight != nil {
 		if err := options.LinkPreflight(repository); err != nil {
@@ -591,14 +630,30 @@ func (mismatch *pullRequestBaseMismatchError) Error() string {
 // openOrAdoptPullRequest opens or adopts one branch's pull request, pinned to
 // repository with `--repo` on every `gh pr list`/`gh pr create` call so the
 // worktree's own cwd-inferred repository is never silently substituted.
-func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, base, title, body string, draft bool, options Options) (url string, adopted bool, err error) {
+func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, base, title, body string, draft bool, options Options, closesIssues []int) (url string, adopted bool, err error) {
+	// Round 3, minor 6: the body field is read here too, only so an
+	// adopted (already-open) pull request's --closes lines can be applied
+	// to it below — the "body" this function otherwise takes as a
+	// parameter is used solely by the create calls further down, and was
+	// never previously applied to a pull request that already existed.
 	existing, listErr := githubRead(ctx, worktree, "pr", "list", "--repo", repository, "--head", branch,
-		"--state", "open", "--json", "url,baseRefName", "--jq", ".[0] | (.url + \"\\t\" + .baseRefName)")
+		"--state", "open", "--json", "url,baseRefName,body", "--jq", ".[0] | (.url + \"\\t\" + .baseRefName + \"\\t\" + (.body // \"\"))")
 	if listErr == nil {
 		if trimmed := strings.TrimSpace(existing); trimmed != "" {
-			if url, gotBase, found := strings.Cut(trimmed, "\t"); found {
+			parts := strings.SplitN(trimmed, "\t", 3)
+			if len(parts) >= 2 {
+				url, gotBase := parts[0], parts[1]
+				currentBody := ""
+				if len(parts) == 3 {
+					currentBody = parts[2]
+				}
 				if gotBase != base {
 					return "", false, &pullRequestBaseMismatchError{url: url, wantBase: base, gotBase: gotBase}
+				}
+				if len(closesIssues) > 0 {
+					if editErr := applyClosesToAdoptedPullRequest(ctx, worktree, repository, url, currentBody, closesIssues, options); editErr != nil {
+						return "", false, editErr
+					}
 				}
 				return url, true, nil
 			}
@@ -635,6 +690,14 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 // as a task name against the fleet's worktree inventory. Resolution never
 // runs a network fetch: the guard and the base-branch fetch that follow are
 // where a caller pays that cost, once, for the worktree it actually meant.
+// ResolvePullRequestCreateWorktree exports resolvePullRequestCreateWorktree
+// for cmd/wb's best-effort #615 prompt-suggestion lookup, which needs the
+// same worktree-path-or-task-name resolution `wb pr create` itself uses but
+// runs before CreatePullRequest is called.
+func ResolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argument string) (string, error) {
+	return resolvePullRequestCreateWorktree(ctx, projectsRoot, argument)
+}
+
 func resolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argument string) (string, error) {
 	if info, statErr := os.Stat(argument); statErr == nil && info.IsDir() {
 		// Absolute: ReadManifest (and the secure directory helpers it uses)
@@ -742,6 +805,14 @@ func pullRequestCreateTitle(subjects []string) string {
 // substitutes for a body: overriding what the pull request is called says
 // nothing about what it contains.
 func pullRequestCreateBody(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
+	body, err := pullRequestCreateBodyWithoutCloses(options, worktree, subjects)
+	if err != nil {
+		return "", err
+	}
+	return withClosesPrefix(body, options.Closes), nil
+}
+
+func pullRequestCreateBodyWithoutCloses(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
 	if body := strings.TrimSpace(options.Body); body != "" {
 		return options.Body, nil
 	}
