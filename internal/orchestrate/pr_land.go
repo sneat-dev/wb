@@ -139,6 +139,13 @@ type PullRequestLandOptions struct {
 	CheckoutUpdated func(context.Context, CheckoutUpdate)
 	// mergeAttempted is a test seam recording that the merge write was issued.
 	beforeMerge func()
+	// headUpdated is called by the shared awaitLandablePullRequest engine
+	// after every successful update-branch and re-read, with the previous
+	// and the updated head SHA. A non-nil error aborts the wait and is
+	// returned to the caller unchanged. `wb pr land` leaves it nil; the
+	// worktree-merge PR route uses it to persist the receipt's advanced
+	// target/candidate before fast-forwarding the local candidate worktree.
+	headUpdated func(previous, updated string) error
 }
 
 // PullRequestLandResult is the receipt, and the JSON envelope.
@@ -472,166 +479,29 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 
-	// Arm auto-merge BEFORE waiting, not after.
-	//
-	// Everything below can end without landing: the budget runs out, the host
-	// dies, the session is killed. Arming first means none of those strand a
-	// complete change — GitHub merges it when the required checks pass, whether
-	// or not WB is still here. Arming last would protect only the one ending
-	// that already reported itself.
-	//
-	// Every guard this verb enforces has run by this point, and arming is
-	// skipped where it would bypass one (see autoMergeBypassesAGuard). The
-	// arming is pinned to the head observed here, so a push that lands between
-	// this read and the mutation is not armed unseen. Later pushes ARE covered:
-	// CI is the gate, so they merge on their own required checks — for a
-	// mechanical bump that means with no review, which is the design, not an
-	// oversight.
-	if !options.NoAutoMerge {
-		reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Started, options.Repository+"#"+number, 0, 0)
-		if bypassed := autoMergeBypassesAGuard(ctx, options, view.Base.Ref); bypassed != "" {
-			result.Evidence["auto_merge"] = "not armed: " + bypassed
-			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "skipped: "+bypassed, 0, 0)
-		} else if armReason := enablePullRequestAutoMerge(ctx, options.Repository, number, options.MergeMethod, view.Head.SHA, subject, body); armReason != "" {
-			// Not fatal: failing to arm the safety net is not a reason to
-			// refuse the landing this call came to do.
-			result.Evidence["auto_merge"] = "not armed: " + armReason
-			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Failed, armReason, 0, 0)
-		} else {
-			result.AutoMergeArmed = true
-			result.Evidence["auto_merge"] = "armed before waiting"
-			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "armed", 0, 0)
-		}
+	// Arm auto-merge before waiting and then wait, bringing the candidate up
+	// to date whenever the target moves under it — the shared engine both
+	// this verb and the worktree-merge PR route drive. See
+	// awaitLandablePullRequest for why arming happens first and why this is
+	// a loop rather than one check before one wait.
+	var (
+		waited         PullRequestWaitResult
+		mergedByGitHub bool
+		updateRefusal  *landRefusal
+	)
+	view, waited, result.AutoMergeArmed, mergedByGitHub, updateRefusal, err = awaitLandablePullRequest(ctx, options, view, number, subject, body, result.Evidence)
+	// Record the exact head this attempt last observed on every path - the
+	// refusal and error returns below included - so a caller reading the
+	// result can see what it landed against even when the attempt did not
+	// finish landing.
+	result.HeadSHA = view.Head.SHA
+	if err != nil {
+		return result, err
 	}
-
-	// Then wait, bringing the candidate up to date whenever the target moves
-	// under it. The target advancing mid-wait is the normal case on a busy
-	// repository, and it is why this is a loop rather than one check before one
-	// wait: a candidate can be green and behind at the same moment.
-	//
-	// Every iteration re-reads and re-waits on the NEW head, so the checks that
-	// authorize the merge are always the checks for the commit being merged.
-	// --keep-commits never updates: its rebuild already lands onto the base,
-	// and GitHub's merge commit is not something it can replay.
-	updates := !options.NoUpdateBranch && len(options.KeepCommits) == 0
-	pollInterval := options.CheckPollInterval
-	if pollInterval <= 0 {
-		pollInterval = DefaultCheckPollInterval
+	result.LocalSync = result.Evidence["local_sync"]
+	if updateRefusal != nil {
+		return mergeRefusal(result, *updateRefusal), nil
 	}
-	deadline := waitDeadline(options)
-	mergedByGitHub := false
-	var waited PullRequestWaitResult
-	var waitOptions PullRequestWaitOptions
-	for {
-		remaining := time.Until(deadline)
-		if options.Now != nil {
-			remaining = deadline.Sub(options.Now())
-		}
-		// A budget no longer than one poll cannot observe anything; it is spent,
-		// and spent is pending, not an error.
-		if remaining <= pollInterval {
-			waited = pendingCommitWaitResult(PullRequestWaitResult{
-				Status: PullRequestWaitPending, Repository: options.Repository, PullRequest: number,
-				Target: view.Base.Ref, Head: view.Head.SHA,
-				Reason: "landing wait budget elapsed before checks settled",
-			})
-			break
-		}
-
-		if updates {
-			behind, reason := candidateIsBehindTarget(ctx, options.Repository, view.Base.Ref, view.Head.SHA)
-			if reason != "" && !isTransientReadReason(reason) {
-				return result, fmt.Errorf("determine whether %s#%s is behind %s: %s", options.Repository, number, view.Base.Ref, reason)
-			}
-			if behind {
-				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, shortMergeRevision(view.Head.SHA), 0, 0)
-				updatedHead, updateReason := updatePullRequestBranch(ctx, options.Repository, number, view.Head.SHA, options.OperationProgress)
-				if updateReason != "" {
-					if updateBranchConflict(updateReason) {
-						// A conflict is the author's to resolve. Auto-merge
-						// stays armed: once they resolve and push, CI runs
-						// against the resolution and merges it if it passes.
-						return mergeRefusal(result, landRefusal{
-							code:    LandRefusalUpdateConflict,
-							reason:  "candidate is behind " + view.Base.Ref + " and updating it conflicts; resolving that is a judgement WB does not make for you: " + updateReason,
-							command: "resolve the conflict on " + view.Head.Ref + ", push, then: wb pr land " + options.Repository + "#" + number,
-						}), nil
-					}
-					if !updateBranchHeadMoved(updateReason) {
-						return result, fmt.Errorf("update %s#%s onto %s: %s", options.Repository, number, view.Base.Ref, updateReason)
-					}
-					// Someone pushed between the read and the update: the
-					// compare-and-swap did its job. Re-read and go round.
-				}
-				view, err = ReadPullRequest(ctx, options.Repository, number)
-				if err != nil {
-					return result, err
-				}
-				result.HeadSHA = view.Head.SHA
-				result.Evidence["head"] = shortMergeRevision(view.Head.SHA)
-				if updateReason != "" {
-					continue
-				}
-				result.Evidence["updated_onto_target"] = shortMergeRevision(updatedHead)
-				if syncNote := syncLocalWorktreeAfterUpdateBranch(ctx, options, view.Head.Ref, updatedHead); syncNote != "" {
-					result.LocalSync = syncNote
-					reportPullRequestLandProgress(options.OperationProgress, "sync_worktree", progress.Completed, syncNote, 0, 0)
-				}
-				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Completed, shortMergeRevision(view.Head.SHA), 0, 0)
-				continue
-			}
-		}
-
-		waitOptions = PullRequestWaitOptions{
-			Repository:        options.Repository,
-			PullRequest:       number,
-			Target:            view.Base.Ref,
-			Head:              view.Head.SHA,
-			AllowUnfenced:     options.AllowUnfenced,
-			Slice:             remaining,
-			CheckPollInterval: options.CheckPollInterval,
-			Progress:          options.Progress,
-			OperationProgress: options.OperationProgress,
-		}
-		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
-		// This wait can run the remaining budget in one call: keep the lane's
-		// heartbeat fresh throughout so it never goes stale out from under
-		// this still-live session. See startLandingLaneHeartbeat.
-		stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID, 0)
-		observed, waitErr := waitForPullRequestLandChecks(ctx, waitOptions)
-		stopLaneHeartbeat()
-		if waitErr != nil {
-			return result, waitErr
-		}
-		waited = observed
-		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
-		if waited.Status == PullRequestWaitPassed {
-			break
-		}
-
-		// With auto-merge armed, GitHub normally merges within seconds of the
-		// checks going green — usually before the confirming observation — and
-		// the wait then sees the target move past the head and reports failure.
-		// That is the success path, not a red check: find out before judging.
-		if result.AutoMergeArmed {
-			if merged, readErr := ReadPullRequest(ctx, options.Repository, number); readErr == nil && merged.Merged {
-				mergedByGitHub = true
-				break
-			}
-		}
-
-		// The wait reports a target that moved under the head as a failure.
-		// When updating is allowed that is not a verdict on the work: bring it
-		// up to date and wait again.
-		if updates && waited.Status == PullRequestWaitFailed && targetMovedUnderHead(waited.Reason) {
-			if behind, reason := candidateIsBehindTarget(ctx, options.Repository, view.Base.Ref, view.Head.SHA); reason == "" && behind {
-				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, "target advanced during the wait", 0, 0)
-				continue
-			}
-		}
-		break
-	}
-
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	if mergedByGitHub {
@@ -716,8 +586,17 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// is different content in a different order, and merging it on the
 		// strength of a receipt for something else is exactly the substitution
 		// the head-SHA lease exists to prevent. Wait for its own.
-		rewritten := waitOptions
-		rewritten.Head = keptHead
+		rewritten := PullRequestWaitOptions{
+			Repository:        options.Repository,
+			PullRequest:       number,
+			Target:            view.Base.Ref,
+			AllowUnfenced:     options.AllowUnfenced,
+			Slice:             remainingWaitBudget(options, waitDeadline(options)),
+			CheckPollInterval: options.CheckPollInterval,
+			Progress:          options.Progress,
+			OperationProgress: options.OperationProgress,
+			Head:              keptHead,
+		}
 		reobserved, waitErr := waitForPullRequestLandChecks(ctx, rewritten)
 		if waitErr != nil {
 			return result, waitErr
@@ -737,28 +616,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}
 	}
 
-	if options.beforeMerge != nil {
-		options.beforeMerge()
-	}
 	result.ManualEquivalent[3] = manualPullRequestMergeCommand(options.Repository, number, mergeMethod)
-	if !mergedByGitHub {
-		reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
-		merge, refusal, mergeErr := mergePullRequest(ctx, options.Repository, number, head, mergeMethod, subject, body)
-		if mergeErr != nil {
-			return result, mergeErr
-		}
-		if refusal != nil {
-			// Armed auto-merge can win the race to the same green head; a
-			// refusal then means GitHub merged it, which is a landing.
-			merged, readErr := ReadPullRequest(ctx, options.Repository, number)
-			if !result.AutoMergeArmed || readErr != nil || !merged.Merged {
-				return mergeRefusal(result, *refusal), nil
-			}
-			result.Evidence["merged_by"] = "github auto-merge"
-		} else {
-			result.MergeSHA = merge
-			reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Completed, shortMergeRevision(merge), 0, 0)
-		}
+	mergeSHA, mergeCallRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, options, number, head, mergeMethod, subject, body, result.AutoMergeArmed, mergedByGitHub, result.Evidence)
+	if mergeErr != nil {
+		return result, mergeErr
+	}
+	if mergeCallRefusal != nil {
+		return mergeRefusal(result, *mergeCallRefusal), nil
+	}
+	if mergeSHA != "" {
+		result.MergeSHA = mergeSHA
 	}
 
 	// Assert the observable effect rather than the exit status of the call that

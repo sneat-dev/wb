@@ -110,15 +110,33 @@ func updateBranchConflict(reason string) bool {
 // budget rather than restarting it: a target that keeps advancing must not be
 // able to extend one landing indefinitely.
 func waitDeadline(options PullRequestLandOptions) time.Time {
-	now := time.Now
-	if options.Now != nil {
-		now = options.Now
-	}
 	budget := options.Slice
 	if budget <= 0 {
 		budget = MaxForegroundCheckWaitSlice
 	}
-	return now().Add(budget)
+	return landOptionsNow(options)().Add(budget)
+}
+
+// landOptionsNow is options.Now when set, or the real wall clock otherwise.
+// Every remaining-budget computation over a PullRequestLandOptions must go
+// through this - not a bare time.Until/time.Since, which always reads the
+// real clock - so a caller-supplied options.Now (a test's fake clock) stays
+// authoritative for every remaining-budget computation the whole landing
+// makes, not only the first one.
+func landOptionsNow(options PullRequestLandOptions) func() time.Time {
+	if options.Now != nil {
+		return options.Now
+	}
+	return time.Now
+}
+
+// remainingWaitBudget is the wall-clock time left until deadline, measured
+// against options.Now when the caller set one. It is the shared way both
+// awaitLandablePullRequest's own poll loop and a caller re-waiting on a
+// rewritten head (see landKeepingCommits's re-wait in pr_land.go) compute
+// how much of the landing's total check-wait budget remains.
+func remainingWaitBudget(options PullRequestLandOptions, deadline time.Time) time.Duration {
+	return deadline.Sub(landOptionsNow(options)())
 }
 
 // updateBranchHeadMoved reports a compare-and-swap miss: the branch moved

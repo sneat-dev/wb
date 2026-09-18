@@ -75,81 +75,52 @@ func orchCovUnrelatedSHA(t *testing.T) string {
 	return sha
 }
 
-func TestOrchCovMergeExactPullRequestPicksTheAllowedMethod(t *testing.T) {
+// TestOrchCovRepositoryPullRequestMergeMethodPicksTheAllowedMethod covers the
+// method-selection half of the retired mergeExactPullRequest, now
+// repositoryPullRequestMergeMethod: the PR-land engine (mergePullRequest, via
+// mergeOrAdoptAutoMerge) is exercised by pr_land_test.go / pr_land_coverage_test.go.
+func TestOrchCovRepositoryPullRequestMergeMethodPicksTheAllowedMethod(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		settings string
 		want     string
 	}{
-		{name: "merge", settings: `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`, want: "--merge"},
-		{name: "squash", settings: `{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`, want: "--squash"},
-		{name: "rebase", settings: `{"allow_merge_commit":false,"allow_squash_merge":false,"allow_rebase_merge":true}`, want: "--rebase"},
+		{name: "merge", settings: `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}`, want: "merge"},
+		{name: "squash", settings: `{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true}`, want: "squash"},
+		{name: "rebase", settings: `{"allow_merge_commit":false,"allow_squash_merge":false,"allow_rebase_merge":true}`, want: "rebase"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			receipt := orchCovExactMergeReceipt(t)
-			_, argsPath := orchCovMergeGH(t, test.settings,
-				`{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"`+receipt.Candidate.SHA+`","baseRefName":"main","mergeCommit":{"oid":"fedcba9876543210fedcba9876543210fedcba98"}}`)
-
-			landing, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
+			orchCovMergeGH(t, test.settings, `{}`)
+			method, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if landing != "fedcba9876543210fedcba9876543210fedcba98" {
-				t.Fatalf("landing = %q", landing)
-			}
-			recorded, err := os.ReadFile(argsPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(recorded), test.want) ||
-				!strings.Contains(string(recorded), "--match-head-commit "+receipt.Candidate.SHA) ||
-				!strings.Contains(string(recorded), receipt.PullRequest) {
-				t.Fatalf("merge arguments = %q, want method %s", recorded, test.want)
+			if method != test.want {
+				t.Fatalf("method = %q, want %q", method, test.want)
 			}
 		})
 	}
 }
 
-func TestOrchCovMergeExactPullRequestRefusesEveryUnusableRoute(t *testing.T) {
+func TestOrchCovRepositoryPullRequestMergeMethodRefusesEveryUnusableRoute(t *testing.T) {
 	t.Run("no supported method", func(t *testing.T) {
-		receipt := orchCovExactMergeReceipt(t)
 		orchCovMergeGH(t, `{"allow_merge_commit":false,"allow_squash_merge":false,"allow_rebase_merge":false}`, `{}`)
-		_, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
+		_, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")
 		if err == nil || !strings.Contains(err.Error(), "no supported pull-request merge method") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("undecodable settings", func(t *testing.T) {
-		receipt := orchCovExactMergeReceipt(t)
 		orchCovMergeGH(t, "not json", `{}`)
-		_, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
+		_, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")
 		if err == nil || !strings.Contains(err.Error(), "decode repository merge methods") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("unreadable settings", func(t *testing.T) {
-		receipt := orchCovExactMergeReceipt(t)
 		orchCovInstallGH(t, orchCovNotFound)
-		_, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
+		_, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")
 		if err == nil || !strings.Contains(err.Error(), "read repository merge methods") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-	t.Run("merge command failed", func(t *testing.T) {
-		receipt := orchCovExactMergeReceipt(t)
-		state, _ := orchCovMergeGH(t, `{"allow_merge_commit":true}`, `{}`)
-		state.answer(t, "merge-exit", "1")
-		_, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
-		if err == nil || !strings.Contains(err.Error(), "merge exact pull-request head") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-	t.Run("pull request did not report merged", func(t *testing.T) {
-		receipt := orchCovExactMergeReceipt(t)
-		orchCovMergeGH(t, `{"allow_merge_commit":true}`,
-			`{"state":"OPEN","mergedAt":"","headRefOid":"`+receipt.Candidate.SHA+`","baseRefName":"main","mergeCommit":{"oid":""}}`)
-		_, err := mergeExactPullRequest(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute})
-		if err == nil || !strings.Contains(err.Error(), "did not report a merged server result") {
 			t.Fatalf("error = %v", err)
 		}
 	})
