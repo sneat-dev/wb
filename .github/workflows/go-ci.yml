@@ -19,6 +19,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  go-scope:
+    name: Decide Go validation scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.changes.outputs.required }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      # A pull request that only touches spec/ changes nothing Go builds,
+      # embeds or reads in tests (ai/, docs/ and the READMEs are all read by
+      # cmd/wb tests, so they stay in scope). Only pull requests are scoped:
+      # main, tag and manual runs always validate.
+      - uses: dorny/paths-filter@v4
+        id: changes
+        with:
+          filters: |
+            required:
+              - '!spec/**'
+
   windows-scope:
     name: Decide native Windows coverage
     runs-on: ubuntu-latest
@@ -103,8 +123,10 @@ jobs:
 
   source:
     name: Check formatting and dependencies
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -129,8 +151,10 @@ jobs:
 
   static:
     name: Build and vet
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -148,8 +172,10 @@ jobs:
 
   lint:
     name: Lint (golangci-lint)
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -171,8 +197,10 @@ jobs:
 
   coverage:
     name: Tests and coverage (8 shards)
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -219,8 +247,10 @@ jobs:
 
   race:
     name: Race tests
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -249,9 +279,10 @@ jobs:
 
   windows:
     name: Native Windows compile and test
-    needs: [windows-scope, validation-reuse]
+    needs: [windows-scope, validation-reuse, go-scope]
     if: >-
       needs.windows-scope.outputs.required == 'true' &&
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: windows-latest
     timeout-minutes: 8
@@ -285,7 +316,7 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, source, static, lint, coverage, race, windows]
+    needs: [release-eligibility, validation-reuse, go-scope, source, static, lint, coverage, race, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -294,6 +325,9 @@ jobs:
           ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
           REUSE_RESULT: ${{ needs.validation-reuse.outputs.reuse }}
           REUSE_JOB_RESULT: ${{ needs.validation-reuse.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          GO_SCOPE_RESULT: ${{ needs.go-scope.result }}
+          GO_REQUIRED: ${{ needs.go-scope.outputs.required }}
           SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -306,7 +340,15 @@ jobs:
             echo "Validation reuse decision concluded: $REUSE_JOB_RESULT" >&2
             exit 1
           fi
-          if [ "$REUSE_RESULT" = "true" ]; then
+          if [ "$GO_SCOPE_RESULT" != "success" ]; then
+            echo "Go validation scope decision concluded: $GO_SCOPE_RESULT" >&2
+            exit 1
+          fi
+          spec_only=false
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$GO_REQUIRED" != "true" ]; then
+            spec_only=true
+          fi
+          if [ "$REUSE_RESULT" = "true" ] || [ "$spec_only" = "true" ]; then
             expected=skipped
           else
             expected=success
@@ -330,6 +372,8 @@ jobs:
           fi
           if [ "$REUSE_RESULT" = "true" ]; then
             echo "Reused exact trusted pull-request validation."
+          elif [ "$spec_only" = "true" ]; then
+            echo "Only spec/ changed; Go validation was not required."
           else
             echo "All required checks passed. This job only combines their results."
           fi
