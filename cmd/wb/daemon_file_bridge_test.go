@@ -144,10 +144,7 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 	if !strings.Contains(firstErr.Error(), "wbfb-") || !strings.Contains(firstErr.Error(), "retry the exact command") {
 		t.Fatalf("lost-submit recovery guidance = %v", firstErr)
 	}
-	operationEntries, err := os.ReadDir(filepath.Join(root, ".wb", "runtime", "daemon", "operations"))
-	if err != nil || len(operationEntries) != 1 {
-		t.Fatalf("old daemon operation count = %d, %v", len(operationEntries), err)
-	}
+	operationEntries := waitForDaemonOperations(t, root, 1)
 	wantOperationID := strings.TrimSuffix(operationEntries[0].Name(), ".json")
 	stop1()
 
@@ -167,10 +164,7 @@ func TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation(t *
 	if recovered.Msg.OperationId != wantOperationID {
 		t.Fatalf("recovered operation = %q, want %q", recovered.Msg.OperationId, wantOperationID)
 	}
-	entries, err := os.ReadDir(filepath.Join(root, ".wb", "runtime", "daemon", "operations"))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("durable operation count = %d, %v", len(entries), err)
-	}
+	waitForDaemonOperations(t, root, 1)
 }
 
 func TestDaemonFileBridgeIdenticalSubmitReusesUnresolvedEnvelope(t *testing.T) {
@@ -640,6 +634,45 @@ func registerTestBridgeWorker(t *testing.T, ctx context.Context, client daemonv1
 		t.Fatal(err)
 	}
 	return response.Msg.Registration
+}
+
+// waitForDaemonOperations polls the durable operations directory until it holds
+// exactly want records.
+//
+// The submit that creates the first record is deliberately failed by a short
+// client timeout, and that timeout bounds the client, not the bridge's write.
+// Reading the directory once, immediately, asserts that the bridge won a race
+// the test never arranged for it to win.
+//
+// The arithmetic is the whole defect. The bridge polls for requests every
+// daemonFileBridgePoll (250ms) and the client gives up after 600ms, so the
+// bridge gets exactly two chances to notice the request before the test looks.
+// Lose both to scheduler jitter on a loaded runner and no operation record is
+// ever written, which is the observed "old daemon operation count = 0" on a
+// pull request that touched none of this code. Waiting here keeps the first
+// bridge alive for eight more chances; stop1 is still ahead of us.
+//
+// Not reproduced locally: this machine's bridge picked the request up on the
+// first tick in 16 runs, including under eight busy loops at GOMAXPROCS=1. The
+// fix is argued from the interval arithmetic above, not from a local failure.
+//
+// The deadline matches waitForBridgeRequest, which already solved the same
+// problem for the request directory a few hundred lines below.
+func waitForDaemonOperations(t *testing.T, root string, want int) []os.DirEntry {
+	t.Helper()
+	operations := filepath.Join(root, ".wb", "runtime", "daemon", "operations")
+	deadline := time.Now().Add(2 * time.Second)
+	var entries []os.DirEntry
+	var err error
+	for time.Now().Before(deadline) {
+		entries, err = os.ReadDir(operations)
+		if err == nil && len(entries) == want {
+			return entries
+		}
+		time.Sleep(daemonFileBridgePoll)
+	}
+	t.Fatalf("daemon operation count = %d, want %d: %v", len(entries), want, err)
+	return nil
 }
 
 func waitForBridgeRequest(t *testing.T, root string) {
