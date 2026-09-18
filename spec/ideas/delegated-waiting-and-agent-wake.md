@@ -52,17 +52,42 @@ This audit is the main finding of the idea, and it substantially changes the
 proposal that prompted it. WB already owns most of the machinery a "durable
 watch" design would introduce:
 
-| Capability | Where it already lives |
-|---|---|
-| Bounded, authoritative CI observation | `internal/orchestrate/ciwait.go`, `wb ci wait` |
-| Signed webhook ingest, HMAC verification, installation binding | `hub/`, `cmd/wb/daemon_hub_webhook.go` |
-| Durable event queue with cursor, dedupe, retry, supersession | `internal/repositoryevents`, `internal/runqueue` |
-| Durable session wake with receipt + ACK | `internal/sessionmessenger`, `sessioncourier`, `sessionmove` |
-| Durable operation lifecycle: submit/get/wait/cancel | `cmd/wb/daemon_operation.go` |
-| Park/resume of a whole session aggregate | `spec/features/park-and-resume-agent-sessions` |
+| Capability | Where it already lives | Load-bearing? |
+|---|---|---|
+| Bounded, authoritative CI observation | `internal/orchestrate/ciwait.go`, `wb ci wait` | yes |
+| **Wait for checks, then merge** | **`wb pr land`** | **yes — see below** |
+| Multi-PR fleet inventory with mergeability, conflict and checks | `wb fleet prs`, `internal/prinventory` | yes |
+| Blocking wait on a dispatched agent run, incl. over SSH | `wb agent await` | yes |
+| Durable operation lifecycle: submit/get/wait/cancel | `cmd/wb/daemon_operation.go` | yes |
+| Signed webhook ingest, HMAC verification, installation binding | `hub/`, `cmd/wb/daemon_hub_webhook.go` | yes, but see contract limit |
+| Repository-lifecycle event queue | `internal/repositoryevents` | **no — two reasons only** |
+| Session-move follow-up messaging | `internal/sessionmessenger` | **no — not a wake primitive** |
 
-A durable-watch programme is therefore mostly **wiring existing parts**, not new
-architecture. Two consequences follow, one encouraging and one constraining.
+An earlier draft of this table claimed more than the code supports. Adversarial
+review falsified three rows, and the corrections matter more than the original
+claim did:
+
+- **`internal/sessionmessenger` cannot wake a session.** It delivers to a live
+  tmux successor of a *completed session move*, and only from that successor's
+  live predecessor process: `LoadSuccessorAddress` requires a durable completed
+  handoff receipt, `validateSource` requires exact identity equality with the
+  recorded predecessor, and the receiving side refuses unless the target is live
+  with exactly one matching pane. A detached waiter is none of those things. WB
+  has **no** mechanism to wake an arbitrary agent session. The only wake this
+  idea can rely on is the harness noticing that a background command exited —
+  which is outside WB and unverifiable by it.
+- **`internal/repositoryevents` cannot carry pull-request or check state.**
+  `repositoryevent.Reason` admits exactly `default_branch_updated` and
+  `repository_renamed`; anything else is rejected as an unsupported reason, and
+  the only shipped processor syncs repositories. Adding a PR trigger is a
+  `ContractVersion` change to the shared multi-tenant App — which the privacy
+  section below argues against on its own terms.
+- **`internal/runqueue` is not an event queue.** It is CPU-lease admission for
+  heavy commands. Citing it here was padding.
+
+What survives is still substantial, but it changes the conclusion: the missing
+piece is **not** a durable watch programme. It is a small gap around commands
+that already exist.
 
 ### Measured: the existing wait verb is real, and agents route around it
 
@@ -137,14 +162,21 @@ Its own documentation makes the stance explicit:
 > and terminating. […] This command never starts a detached watcher or
 > background loop.
 
-That is not an oversight to correct. A long-lived watcher's "green" can go stale
-between observation and use, which is exactly what `wb ci wait`'s terminal
-reread exists to prevent. A new verb that holds a merge verdict open for hours
-would reintroduce the hazard that design removed.
+That constraint is real but **narrow**, and an earlier draft over-generalised it
+into a repository-wide principle. It is not one. `wb agent await` waits an hour
+by default and zero means unbounded; `wb daemon operation wait --timeout`
+defaults to no limit at all. WB has no objection to long waits.
 
-The correct shape is therefore a **bounded, terminating, resumable** wait —
-longer slices and more conditions than `wb ci wait`, but the same contract:
-pending is a first-class result carrying exact resume arguments.
+What `wb ci wait` actually protects is *merge evidence going stale between
+observation and use*, which is why it ends with a terminal reread. That applies
+to evidence, not to observation. A report-only waiter holds no verdict and can
+safely run long.
+
+The nine-minute cap has a second, more practical cause, stated in the code:
+`MaxForegroundCheckWaitSlice` "keeps a single agent-tool call under the common
+ten-minute harness ceiling". That ceiling binds **foreground** tool calls. A
+harness *background* job is not a foreground tool call, so it is not bound by
+it — which is precisely the room this idea occupies.
 
 ## The critical question: is waking the agent even the goal?
 
@@ -173,10 +205,31 @@ So the value ordering is:
 A design that treats every state change as a wake candidate inverts this. The
 wake path is the exception path, not the main line.
 
-This does **not** license autonomous merging. `rule:one-landing-owner-per-target`
-and landing review evidence still bind; the pre-authorisation must be explicit
-and carry the agent's review artifact. "No wake" means WB executes a decision the
-agent already made and recorded — never one WB inferred.
+This does **not** license autonomous merging, and an earlier draft was wrong to
+assert that the existing guards would simply hold. Review established two
+concrete holes, **both of which already exist today and are not created by this
+idea**:
+
+- The landing lane resolves its owner from the *calling process's* session
+  (`landingLaneOwner` → `session.ResolveForProcess`) and `acquireLandingLane` is
+  "a deliberate no-op" when that yields an empty session ID. A background
+  landing process that has been reparented away from its harness therefore lands
+  with no lane at all — the exact enforcement that
+  `rule:one-landing-owner-per-target` relies on. Worse, when the walk *does*
+  succeed, every waiter spawned by one agent inherits the same session ID, and
+  same-session acquisition is a refresh rather than a conflict, so N concurrent
+  landings are admitted under one lane.
+- `--approved-by` is never validated. It is checked only for non-emptiness and
+  is then interpolated into the commit message. It is not bound to a head SHA,
+  so a deferred landing can merge a head that arrived after the review was
+  written, under that review's name. It also bypasses the mechanical classifier
+  outright, making it a blanket token rather than a scoped one.
+
+Neither is a reason to withhold `wb pr land`, which agents already run
+interactively and which is unaffected in the foreground. Both are reasons that
+a **detached, land-later** waiter must not be built until a head-bound approval
+token and a lane identity a non-session process can present exist. They are
+filed as their own hardening work, not as a tax on the observation verb.
 
 ## Proposed direction
 
@@ -190,9 +243,27 @@ wb wait pr sneat-dev/wb#581 --until checks-settled
 wb wait pr wb#544 wb#575 ext-contracts#69 calendarius#73 --until changed
 ```
 
-Naming: `wait`, not `await`. WB already spells this concept `wait` twice
-(`wb ci wait`, `wb daemon operation wait`), and the CLI convention is `wait`
-(`kubectl wait --for=…`, `docker wait`). `await` is retained as a hidden alias.
+Naming: `wait`, not `await`. The CLI convention is `wait` (`kubectl wait
+--for=…`, `docker wait`).
+
+An earlier draft said `await` was free. It is not: **`wb agent await` already
+exists** as a first-class leaf that blocks until a dispatched agent run is
+terminal, with `--wait-timeout` defaulting to one hour. So `await` is taken, with
+established semantics, and must not be quietly repurposed as an alias for a
+different verb.
+
+WB therefore spells waiting **three** ways today — `wb ci wait`,
+`wb agent await`, `wb daemon operation wait` — with three different bounding
+contracts (9 minutes hard, 1 hour default, unbounded default). There is no
+existing "wait convention" to be consistent with; there is a scattering to be
+consolidated. Adding a fourth top-level spelling *beside* the other three would
+make this worse, which is why the verb-first home below must **absorb** them
+rather than sit next to them.
+
+Object naming: the argument after `wait` names a **thing**, not a domain. "CI"
+is not a thing one can point at; a pull request, a workflow run, an agent run
+and an operation are. `wb ci wait`'s real object is one exact commit's checks,
+so its verb-first spelling is `wb wait checks`, not `wb wait ci`.
 
 Word order is **verb first**: `wb wait <kind>`, not `wb <kind> wait`. The thing
 being waited for is the argument; waiting is the act. Verb-first also gives the
@@ -208,12 +279,18 @@ Not CI-only. The verb takes a **target kind**, so the same contract extends to
 the long-running operations WB already tracks:
 
 ```text
-wb wait pr        <repo#number...>     pull-request state          (new)
-wb wait ci        --repo --target --head   exact-head check policy (existing wb ci wait)
-wb wait operation <operation-id...>    durable daemon operations   (existing wb daemon operation wait)
-wb wait run       <run-id...>          agent runs                  (later)
-wb wait test      <...>                long-running local suites   (later)
+wb wait pr        <owner/repo#n...>       pull-request state      (new)
+wb wait checks    --repo --target --head  exact-head check policy (absorbs wb ci wait)
+wb wait agent     <agent-id>              dispatched agent runs   (absorbs wb agent await)
+wb wait operation <operation-id>          durable operations      (absorbs wb daemon operation wait)
 ```
+
+Deliberately **not** a target kind: a local command. `wb wait run --
+./script.sh` would duplicate `wb run -- <command>`, which already exists, and
+there is nothing to delegate — waiting on a process you just launched in the
+foreground is what a shell does. The kinds that earn a verb are the ones whose
+process the caller does **not** own: remote checks, a dispatched agent, a daemon
+operation.
 
 `wb ci wait` keeps its exact current semantics and stays the authoritative
 merge-evidence path; `wb wait` is the agent-facing waiting verb and must not
@@ -226,12 +303,28 @@ with exact resume arguments, exactly as `wb ci wait` does today. The harness
 runs it as a background command; on exit the harness wakes the agent. No daemon
 is required, no process outlives its slice, and a lost wake costs one re-invocation.
 
-### Multi-target, first-change semantics
+### Multi-target, all-terminal semantics
 
-One waiter for N targets. It returns when any target reaches a reportable state,
-reporting every change observed in that same check — so a burst of four PRs
-turning green is one wake, not four. This is the cheapest available form of the
-coalescing the prompt asks for, and it needs no event bus.
+One waiter for N targets, returning when **every** target is terminal or the
+slice ends, reporting all of their states together.
+
+An earlier draft proposed returning on the first change. Review showed that is a
+starvation machine, not coalescing: targets finish minutes apart, so N targets
+produce N wakes, each re-invocation restarting observation of the remainder from
+cold — and a noisy target under `--until changed` returns every poll, so the
+quiet target that actually needed attention is never reached.
+
+**The GitHub API budget is the real cost here and the earlier draft never priced
+it.** Each observation of one PR costs roughly 4-6 REST calls: check runs,
+commit statuses, `actions/runs?head_sha=`, PR base verification, plus branch
+protection and branch rules on a cache miss. Seven targets polled every 30s is
+on the order of 800-1000 calls per hour against a 5000/hour authenticated
+budget, replacing an ad-hoc loop that cost one call per minute per PR.
+`DefaultCheckPollInterval` exists precisely to leave "room for other WB
+operations sharing the authenticated GitHub user budget". A waiting verb that
+multiplies that budget by five to save model turns has moved the cost, not
+removed it. Default poll intervals must be chosen against the API budget, not
+against responsiveness.
 
 ## Non-goals
 
@@ -242,28 +335,77 @@ coalescing the prompt asks for, and it needs no event bus.
 - No autonomous merge that the agent did not pre-authorise with review evidence.
 - `wb wait` is not merge evidence; `wb ci wait` remains that.
 
-### Already close: `wb pr land` waits and then lands
+### The actual defect: `wb pr land` is built for a 45-minute wait and defaults to 8
 
-`wb pr land --timeout` already "uses bounded resumable CI observation slices
-internally" and lands when checks pass, so the motivating scenario is nearer to
-solved than it looked. Its default budget is eight minutes and each internal
-slice is capped at nine, but the total budget is the caller's.
+This is the finding the whole idea turns on, and it is much smaller than a
+watch programme.
 
-That narrows what is genuinely missing to four things:
+`wb pr land` already *is* the wait-then-merge verb. It chains bounded resumable
+slices until its total budget is spent and then merges. Its own code says how
+long that is expected to take:
 
-1. **Observation without action.** `wb pr land` lands. There is no way to ask
-   "tell me when this changes" without authorising a merge.
-2. **More than one target per process.** One landing call watches one PR.
-3. **Conditions other than checks.** Review submitted, changes requested, a new
-   comment, a conflict appearing — none are waitable today.
-4. **A reference an agent already has.** See the measurement above.
+> This wait can run the full slice budget (**routinely 30-60 minutes for this
+> fleet**) in one call: keep the lane's heartbeat fresh throughout so it never
+> goes stale out from under this still-live session.
+
+It keeps a lane heartbeat alive for exactly that duration. And yet `--timeout`
+defaults to **eight minutes**.
+
+The eight-minute default is not a mistake in the foreground: it is the same
+harness tool-call ceiling that bounds `wb ci wait`. The mistake is what happens
+next. On expiry the command returns `checks-pending` with
+
+```text
+SanctionedCommand = "wb pr land <repository>#<number>"
+```
+
+— the identical invocation, with no `--timeout`. So the sanctioned resume is
+another eight minutes against CI that the code itself expects to take forty-five.
+An agent following WB's own guidance is placed in a loop that cannot terminate,
+which is a sufficient explanation for the measured fallback to `gh` polling.
+
+Backgrounded, `wb pr land <ref> --timeout 45m` has no harness ceiling and
+already does the whole job. Nothing prevents it today. Nothing suggests it
+either.
+
+**So the deterministic half of the motivating scenario needs no new code.** It
+needs the pending refusal to hand back a resume command that can actually
+succeed, and documentation that says to background it.
+
+That narrows what is genuinely missing to three things:
+
+1. **Observation without authorising a merge.** `wb pr land` lands. There is no
+   way to ask "tell me when this changes" without granting it permission to
+   merge. This is the one real gap.
+2. **More than one target per process.** One landing call watches one PR;
+   `wb fleet prs` snapshots many but does not wait.
+3. **A reference an agent already has.** See the measurement above.
+
+Conditions beyond checks — review submitted, changes requested, a comment, a
+conflict appearing — are worth having but are not what the motivating scenario
+needed, and should not delay the first three.
 
 ## Open Questions
 
-- Should the pre-authorised "complete it without waking me" path
-  (`--then land --approved-by <file>`) ship as part of this, or as a separate
-  idea once `wb wait` has real usage? It carries the most value and the most
-  risk.
-- Does the durable `wb watch` layer earn its complexity once `wb wait` exists,
-  given that a bounded waiter plus harness re-invocation already survives
-  everything except the harness itself dying?
+- Does a durable `wb watch` layer earn its complexity at all, now that the
+  audit shows WB cannot wake an arbitrary session and the App event contract
+  cannot carry pull-request state? Its only advantage over a backgrounded
+  bounded waiter is surviving the harness itself dying — and if the harness is
+  dead there is nothing to wake.
+- Should `wb wait pr` take a per-`(repository, number)` advisory lock so a
+  second waiter for the same target attaches or refuses instead of duplicating?
+  The idea's own triggering observation was one agent launching two pollers for
+  one PR, and nothing proposed here prevents that. WB already has the pattern in
+  `internal/landinglane` and `internal/runqueue`.
+- What poll interval survives contact with the GitHub API budget for a realistic
+  seven-target wait? See the budget arithmetic above; this needs measuring, not
+  choosing.
+
+## Follow-up work this idea identified but does not do
+
+- `wb pr land`'s `checks-pending` refusal returns a resume command with no
+  `--timeout`, so the sanctioned retry is another eight minutes against a wait
+  the code expects to take forty-five.
+- The landing lane no-ops for a process with no resolvable session, and treats
+  same-session re-acquisition as a refresh.
+- `--approved-by` accepts any non-empty string and is not bound to a head SHA.
