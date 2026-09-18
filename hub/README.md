@@ -99,19 +99,38 @@ In webhook mode the poller is not started at all, even with a token file:
 the App reports every default-branch push and rename, and the daemon pulls
 only the repository an event names. `token_file` is optional in this mode.
 
-GitHub does **not** keep or automatically retry a delivery that failed —
-if the tunnel is down or the daemon is unreachable, every push in that
-window is lost unless something asks GitHub for it afterwards. The daemon
-does that itself: on start, and then hourly, it lists the App's webhook
-deliveries of the last 72 hours through the App API, redelivers every one
-whose latest attempt failed, and retries a delivery whose redelivery also
-fails up to three times before narrating it abandoned and never touching it
-again. Redelivered events arrive at the normal webhook route and
+GitHub **keeps** the record of a failed delivery — the App's **Advanced**
+tab always lists it and lets you redeliver it by hand — it just never
+**retries** one automatically. If the tunnel is down or the daemon is
+unreachable, every push in that window stays undelivered until something
+asks GitHub for it. The daemon does that itself: on start, and then hourly,
+it lists the App's webhook deliveries of the last 72 hours through the App
+API and redelivers every one whose latest attempt failed. A delivery whose
+redelivery also fails is retried up to three times, spaced at least an hour
+apart, before being narrated abandoned and never touched again — except
+while there is no evidence the operator's own endpoint is reachable at all
+(nothing in the window has succeeded more recently than that delivery's
+last attempt), in which case the daemon keeps asking GitHub to redeliver it
+every hour forever without spending one of those three attempts, so an
+outage longer than three hours cannot exhaust the budget on its own. The
+Advanced tab's manual redeliver is the recourse once a delivery has been
+abandoned. Redelivered events arrive at the normal webhook route and
 deduplicate by delivery ID exactly like any other delivery, so nothing else
-needs to know a redelivery happened. Each redelivery and each abandonment is
-narrated as `redeliver`; a sweep that could not reach GitHub is narrated as
-one failed line and retried, with backoff, on the next tick — it never
-crashes the daemon.
+needs to know a redelivery happened.
+
+Each redelivery and each abandonment is narrated as `redeliver`. A sweep
+that could not reach GitHub is narrated as one failed line and retried
+after a backoff that starts at the sweep's own hourly interval and doubles
+up to six hours — honoring a `Retry-After` or `X-RateLimit-Reset` GitHub
+sends on a 403 or 429 instead, when it does — never crashing the daemon.
+
+If two hubs are configured against the same GitHub App (for example a
+primary and a standby, or two machines sharing one App during a migration),
+both sweep independently and both may redeliver the same failed GUID. That
+is harmless — GitHub's redeliver is idempotent per attempt id and the
+resulting event still deduplicates by delivery ID at the webhook route —
+but it does mean each hub's own attempt counter only reflects what that
+hub itself asked for, not a shared budget across both.
 
 The connect, setup and OAuth-callback routes under
 `/v0/workbench/github/installations/` answer `503

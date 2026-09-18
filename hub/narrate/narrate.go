@@ -8,7 +8,7 @@
 //
 //	14:02:11 push            github.com/sneat-dev/wb          default branch main -> 3f1c2a9; queued for laptop
 //	14:06:30 poll            github.com/sneat-dev/wb          no change
-//	15:00:00 redeliver       push repository:987               redelivered (attempt 1 of 3)
+//	15:00:00 redeliver       push github.com                  redelivered (attempt 1 of 3)
 //
 // Columns are local time, the event name as GitHub names it ("poll" for the
 // poller, "redeliver" for the missed-webhook recovery sweep), the

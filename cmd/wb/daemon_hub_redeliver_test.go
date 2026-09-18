@@ -32,13 +32,16 @@ func generateRealTestAppPrivateKeyPEM() string {
 
 // fakeAppDeliveriesServer serves just enough of GET /app/hook/deliveries and
 // POST /app/hook/deliveries/{id}/attempts for a wiring test: one failed
-// delivery, redelivered once.
+// delivery, redelivered once. A second, already-successful delivery is
+// included as the reachability evidence the sweep now requires (S1) before
+// it will spend a counted attempt on the failing one.
 func fakeAppDeliveriesServer(t *testing.T, deliveredAt time.Time) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/app/hook/deliveries", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(writer, `[{"id":1,"guid":"wiring-guid","delivered_at":%q,"redelivery":false,"status_code":500,"event":"push","repository_id":987}]`, deliveredAt.UTC().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(writer, `[{"id":2,"guid":"wiring-evidence","delivered_at":%q,"redelivery":false,"status_code":200,"event":"push"},{"id":1,"guid":"wiring-guid","delivered_at":%q,"redelivery":false,"status_code":500,"event":"push"}]`,
+			deliveredAt.Add(1*time.Minute).UTC().Format(time.RFC3339), deliveredAt.UTC().Format(time.RFC3339))
 	})
 	mux.HandleFunc("/app/hook/deliveries/1/attempts", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusAccepted)
@@ -78,8 +81,8 @@ func TestMountHubWiresAndRunsTheRedeliverySweep(t *testing.T) {
 	if health.WebhookRedelivery == nil || health.WebhookRedelivery.Redelivered != 1 || health.WebhookRedelivery.Abandoned != 0 {
 		t.Fatalf("health.WebhookRedelivery = %+v", health.WebhookRedelivery)
 	}
-	if !health.WebhookRedelivery.LastSweepAt.Equal(now) {
-		t.Fatalf("health.WebhookRedelivery.LastSweepAt = %s, want %s", health.WebhookRedelivery.LastSweepAt, now)
+	if health.WebhookRedelivery.LastSweepAt == nil || !health.WebhookRedelivery.LastSweepAt.Equal(now) {
+		t.Fatalf("health.WebhookRedelivery.LastSweepAt = %v, want %s", health.WebhookRedelivery.LastSweepAt, now)
 	}
 }
 
@@ -117,12 +120,19 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 	deps := daemonTestDependencies(t, root)
 	deps.hubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
 	at := time.Date(2026, 9, 18, 14, 0, 0, 0, time.UTC)
+	failedAt := at.Add(-time.Hour)
 	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) {
-		return daemonHubStatus{WebhookRedelivery: &daemonHubRedeliverySweep{LastSweepAt: at, Redelivered: 2, Abandoned: 1}}, nil
+		return daemonHubStatus{WebhookRedelivery: &daemonHubRedeliverySweep{
+			LastSweepAt: &at, Redelivered: 2, Abandoned: 1,
+			LastFailureAt: &failedAt, LastFailureClass: "rate_limited",
+		}}, nil
 	}
 
 	status := newDaemonController(deps, root).hubStatus(context.Background(), "127.0.0.1:8765")
-	if status.WebhookRedelivery == nil || status.WebhookRedelivery.Redelivered != 2 || status.WebhookRedelivery.Abandoned != 1 || !status.WebhookRedelivery.LastSweepAt.Equal(at) {
+	if status.WebhookRedelivery == nil || status.WebhookRedelivery.Redelivered != 2 || status.WebhookRedelivery.Abandoned != 1 ||
+		status.WebhookRedelivery.LastSweepAt == nil || !status.WebhookRedelivery.LastSweepAt.Equal(at) ||
+		status.WebhookRedelivery.LastFailureAt == nil || !status.WebhookRedelivery.LastFailureAt.Equal(failedAt) ||
+		status.WebhookRedelivery.LastFailureClass != "rate_limited" {
 		t.Fatalf("hub status = %+v", status.WebhookRedelivery)
 	}
 
@@ -130,7 +140,10 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 	if err := writeDaemonResult(&out, "text", daemonResult{Action: "status", Hub: status}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"hub_webhook_redelivered=2", "hub_webhook_abandoned=1", "hub_webhook_redelivery_last_sweep=" + at.Format(time.RFC3339)} {
+	for _, want := range []string{
+		"hub_webhook_redelivered=2", "hub_webhook_abandoned=1", "hub_webhook_redelivery_last_sweep=" + at.Format(time.RFC3339),
+		"hub_webhook_redelivery_last_failure=" + failedAt.Format(time.RFC3339), "hub_webhook_redelivery_last_failure_class=rate_limited",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("status text %q does not contain %q", out.String(), want)
 		}

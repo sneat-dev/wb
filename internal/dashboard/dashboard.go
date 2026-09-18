@@ -76,11 +76,19 @@ type HubHealth struct {
 }
 
 // HubRedeliverySweep is the missed-webhook recovery sweep's last completed
-// pass, as /api/v1/health reports it.
+// pass, as /api/v1/health reports it. LastSweepAt and LastFailureAt are
+// pointers so JSON omits them before anything has happened yet, rather than
+// rendering the zero time; a non-pointer time.Time's zero value is not what
+// encoding/json's omitempty treats as empty.
 type HubRedeliverySweep struct {
-	LastSweepAt time.Time `json:"last_sweep_at,omitempty"`
-	Redelivered int       `json:"redelivered"`
-	Abandoned   int       `json:"abandoned"`
+	LastSweepAt *time.Time `json:"last_sweep_at,omitempty"`
+	Redelivered int        `json:"redelivered"`
+	Abandoned   int        `json:"abandoned"`
+	// LastFailureAt and LastFailureClass are sticky: they report the most
+	// recent failure even after a later sweep succeeds, so an operator can
+	// tell "this has failed before" from a snapshot taken well afterward.
+	LastFailureAt    *time.Time `json:"last_failure_at,omitempty"`
+	LastFailureClass string     `json:"last_failure_class,omitempty"`
 }
 
 // HubDeliveryMarker names one repository event and when the hub handled it.

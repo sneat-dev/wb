@@ -77,11 +77,42 @@ func TestRedeliveredWebhookDeduplicatesThroughTheRealHandler(t *testing.T) {
 		t.Fatalf("redelivered narration = %q", console.String())
 	}
 
+	// A "repository" webhook (rename/transfer) derives its event ID with a
+	// different suffix (":renamed" instead of ":default"); a redelivery of
+	// one of those must dedup exactly the same way.
+	renamePayload := `{"action":"renamed","installation":{"id":123},"repository":{"id":987,"full_name":"acme/renamed-app","default_branch":"main"},"changes":{"repository":{"name":{"from":"app"}}}}`
+	renameMAC := hmac.New(sha256.New, secret)
+	_, _ = renameMAC.Write([]byte(renamePayload))
+	renameSignature := "sha256=" + hex.EncodeToString(renameMAC.Sum(nil))
+	sendRename := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, WebhookPath, strings.NewReader(renamePayload))
+		request.Header.Set("X-GitHub-Event", "repository")
+		request.Header.Set("X-GitHub-Delivery", "delivery-redelivered-rename-guid")
+		request.Header.Set("X-Hub-Signature-256", renameSignature)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	firstRename := sendRename()
+	if firstRename.Code != http.StatusAccepted {
+		t.Fatalf("first rename delivery status = %d body=%s", firstRename.Code, firstRename.Body.String())
+	}
+	secondRename := sendRename()
+	if secondRename.Code != http.StatusAccepted {
+		t.Fatalf("redelivered rename status = %d body=%s", secondRename.Code, secondRename.Body.String())
+	}
+	if !strings.Contains(console.String(), "duplicate delivery delivery-redelivered-rename-guid:renamed") {
+		t.Fatalf("redelivered rename narration = %q", console.String())
+	}
+
 	response, err := service.Poll(context.Background(), Machine{ID: "machine-a", Name: "laptop", IdentityID: "uid-a", Scopes: []MachineScope{ScopeEventsPoll}}, "", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Events) != 1 {
-		t.Fatalf("queued events = %d, want exactly 1 despite two deliveries", len(response.Events))
+	// One default-branch-updated event from the push above, plus one
+	// repository-renamed event from the rename above — never four, which is
+	// what no dedup at all would have produced.
+	if len(response.Events) != 2 {
+		t.Fatalf("queued events = %d, want exactly 2 despite four deliveries (two pairs of duplicates)", len(response.Events))
 	}
 }

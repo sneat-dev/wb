@@ -443,11 +443,21 @@ installation IDs.
 On start and then hourly, a hub in webhook mode MUST do the following:
 
 1. List the App's webhook deliveries of the last 72 hours through the GitHub
-   App API.
+   App API. This window is a hard bound: nothing widens it.
 2. Select the deliveries whose latest attempt failed, and redeliver each one.
-3. Record each redelivery attempt. A delivery is retried again on later
-   sweeps while its latest attempt still fails, up to 3 attempts, and is then
-   narrated as abandoned.
+3. Record each redelivery attempt, spaced at least one sweep interval apart
+   per delivery, so a crash-loop restart cannot ask GitHub for the same
+   delivery faster than the sweep's own cadence.
+4. Count an attempt against the 3-attempt limit only when the same listing
+   shows evidence the operator's endpoint is currently reachable: some other
+   delivery, any GUID, that succeeded more recently than this delivery's own
+   last attempt (or, for a delivery never attempted before, any success at
+   all within the window). Without that evidence the hub still redelivers —
+   the delivery may succeed even though nothing else recently has — but does
+   not spend an attempt on it, so an outage longer than 3 sweep intervals
+   cannot exhaust the budget by itself. A delivery is retried again on later
+   sweeps while its latest attempt still fails, up to 3 counted attempts, and
+   is then narrated as abandoned.
 
 Redelivered events deduplicate by delivery ID as usual. Each redelivery is
 narrated.

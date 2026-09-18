@@ -112,11 +112,14 @@ type daemonHubStatus struct {
 }
 
 // daemonHubRedeliverySweep reports the missed-webhook recovery sweep's last
-// completed pass in `wb daemon status`.
+// completed pass in `wb daemon status`. LastSweepAt and LastFailureAt are
+// pointers so JSON omits them before anything has happened yet.
 type daemonHubRedeliverySweep struct {
-	LastSweepAt time.Time `json:"last_sweep_at,omitempty"`
-	Redelivered int       `json:"redelivered"`
-	Abandoned   int       `json:"abandoned"`
+	LastSweepAt      *time.Time `json:"last_sweep_at,omitempty"`
+	Redelivered      int        `json:"redelivered"`
+	Abandoned        int        `json:"abandoned"`
+	LastFailureAt    *time.Time `json:"last_failure_at,omitempty"`
+	LastFailureClass string     `json:"last_failure_class,omitempty"`
 }
 
 // daemonHubEventMarker names the last repository event the hub received or
@@ -476,11 +479,11 @@ func daemonOutputFormat(format string, jsonOut bool) (string, error) {
 	return format, nil
 }
 
-// formatOptionalTime renders a zero time as "never", the way an operator
-// reading `wb daemon status` before the first sweep has run expects, rather
-// than a misleading 0001-01-01 timestamp.
-func formatOptionalTime(at time.Time) string {
-	if at.IsZero() {
+// formatOptionalTime renders a nil or zero time as "never", the way an
+// operator reading `wb daemon status` before the first sweep has run
+// expects, rather than a misleading 0001-01-01 timestamp.
+func formatOptionalTime(at *time.Time) string {
+	if at == nil || at.IsZero() {
 		return "never"
 	}
 	return at.Format(time.RFC3339)
@@ -546,6 +549,10 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 	if err == nil && result.Hub.WebhookRedelivery != nil {
 		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_sweep=%s, hub_webhook_redelivered=%d, hub_webhook_abandoned=%d",
 			formatOptionalTime(result.Hub.WebhookRedelivery.LastSweepAt), result.Hub.WebhookRedelivery.Redelivered, result.Hub.WebhookRedelivery.Abandoned)
+	}
+	if err == nil && result.Hub.WebhookRedelivery != nil && result.Hub.WebhookRedelivery.LastFailureAt != nil {
+		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_failure=%s, hub_webhook_redelivery_last_failure_class=%s",
+			formatOptionalTime(result.Hub.WebhookRedelivery.LastFailureAt), result.Hub.WebhookRedelivery.LastFailureClass)
 	}
 	if err == nil {
 		_, err = fmt.Fprintln(out)
@@ -1220,9 +1227,11 @@ func (controller daemonController) hubStatus(ctx context.Context, listen string)
 	status.LastEventAcknowledged = live.LastEventAcknowledged
 	if live.WebhookRedelivery != nil {
 		status.WebhookRedelivery = &daemonHubRedeliverySweep{
-			LastSweepAt: live.WebhookRedelivery.LastSweepAt,
-			Redelivered: live.WebhookRedelivery.Redelivered,
-			Abandoned:   live.WebhookRedelivery.Abandoned,
+			LastSweepAt:      live.WebhookRedelivery.LastSweepAt,
+			Redelivered:      live.WebhookRedelivery.Redelivered,
+			Abandoned:        live.WebhookRedelivery.Abandoned,
+			LastFailureAt:    live.WebhookRedelivery.LastFailureAt,
+			LastFailureClass: live.WebhookRedelivery.LastFailureClass,
 		}
 	}
 	return status

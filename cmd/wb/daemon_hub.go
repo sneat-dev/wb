@@ -99,7 +99,10 @@ func (mount *hubMount) health(ctx context.Context) dashboard.HubHealth {
 	}
 	if sweeper := mount.Webhook.Sweeper(); sweeper != nil {
 		status := sweeper.Status()
-		value.WebhookRedelivery = &dashboard.HubRedeliverySweep{LastSweepAt: status.LastSweepAt, Redelivered: status.Redelivered, Abandoned: status.Abandoned}
+		value.WebhookRedelivery = &dashboard.HubRedeliverySweep{
+			LastSweepAt: status.LastSweepAt, Redelivered: status.Redelivered, Abandoned: status.Abandoned,
+			LastFailureAt: status.LastFailureAt, LastFailureClass: status.LastFailureClass,
+		}
 	}
 	if mount.status == nil {
 		return value
