@@ -107,7 +107,14 @@ func TestRemoteStateWorktreeReadModelFiltersAuthorizedMachines(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			filtered, err := model.Worktrees(context.Background(), viewer, test.filter)
+			// Each subtest gets its own readSnapshotStore, sharing the same
+			// (read-only, never mutated) records slice as the outer store: all
+			// seven run in parallel with each other, and ListLatest counts
+			// calls on its receiver, so racing them over one shared store
+			// raced that counter under -race.
+			perTestModel := model
+			perTestModel.Store = &readSnapshotStore{records: store.records}
+			filtered, err := perTestModel.Worktrees(context.Background(), viewer, test.filter)
 			if err != nil {
 				t.Fatal(err)
 			}

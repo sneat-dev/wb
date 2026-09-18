@@ -97,18 +97,23 @@ func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
 		t.Fatalf("read-model limit = %d, want 9", public.ReadModel.(*dqCovReadModel).limit)
 	}
 
-	private := Service{ReadModel: &dqCovReadModel{visibility: VisibilityPrivate}}
+	// Each call below builds its own Service/dqCovReadModel rather than
+	// closing over one shared instance: the anonymous and member subtests
+	// for the same case, and every other case, all run in parallel with
+	// each other, and dqCovReadModel.LatestMerges writes its receiver's
+	// limit field, so a shared instance raced under -race.
+	newPrivate := func() Service { return Service{ReadModel: &dqCovReadModel{visibility: VisibilityPrivate}} }
 	for name, call := range map[string]func(Viewer) error{
 		"series": func(viewer Viewer) error {
-			_, err := private.Series(ctx, viewer, ScopeRepository, "id", "metric")
+			_, err := newPrivate().Series(ctx, viewer, ScopeRepository, "id", "metric")
 			return err
 		},
 		"leaderboard": func(viewer Viewer) error {
-			_, err := private.Leaderboard(ctx, viewer, "metric")
+			_, err := newPrivate().Leaderboard(ctx, viewer, "metric")
 			return err
 		},
 		"latest merges": func(viewer Viewer) error {
-			_, err := private.LatestMerges(ctx, viewer, 5)
+			_, err := newPrivate().LatestMerges(ctx, viewer, 5)
 			return err
 		},
 	} {
