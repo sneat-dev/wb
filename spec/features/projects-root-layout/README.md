@@ -240,9 +240,9 @@ unified layout: by default, for every in-scope clone at the host level (moved
 by this run or earlier), it MUST also relocate each WB-managed task checkout
 whose placement differs from the one the user's store mode assigns — in the
 default central mode, `<root>/.worktrees/<task>/<host>/<org>/<repo>`. It MUST
-perform that move through the same implementation as `wb worktree relocate`
-(task lock, descriptor-anchored no-replace move, Git repair, registration
-verification, relocation receipt), so the two commands cannot diverge. The dry
+perform that move one checkout at a time, by its exact path, using the same
+no-replace move, Git repair, registration verification and relocation receipt
+primitives as `wb worktree relocate`, whose own behaviour is unchanged. The dry
 run MUST list each planned relocation with its source and destination.
 Uncommitted changes and unpushed commits MUST NOT be a reason to leave a
 checkout behind — the rename preserves them exactly, the same principle
@@ -440,21 +440,25 @@ clone is migrated, and the command exits with the findings code.
 
 **Requirements:** projects-root-layout#req:migration-relocates-managed-worktrees
 
-**Given** a legacy clone `<root>/dal-go/dalgo` in central store mode, with a
-**finished** (terminal Work Log claim) task checkout `t1` at
-`<root>/dal-go/dalgo/.worktrees/t1`, a **finished** task checkout `t2` at
-`~/.wb/worktrees/t2/dal-go/dalgo`, an **active** (unsealed claim) task checkout
-`t3` at `<root>/dal-go/dalgo/.worktrees/t3`, and an unmanaged linked worktree
-created with plain `git worktree add`
+**Given** two clones in central store mode: clone A, a legacy clone
+`<root>/dal-go/dalgo`, holding a **finished** (terminal Work Log claim) task
+checkout `t1` at `<root>/dal-go/dalgo/.worktrees/t1`, a **finished** task
+checkout `t2` recorded in a legacy `~/.wb`-style home at
+`~/.wb/worktrees/t2/dal-go/dalgo`, and an unmanaged linked worktree created
+with plain `git worktree add`; and clone B, already at
+`<root>/github.com/dal-go/dalgo2sql`, holding an **active** (unsealed claim)
+task checkout `t3` at `<root>/github.com/dal-go/dalgo2sql/.worktrees/t3`
 **When** `wb layout migrate --apply` runs
-**Then** the clone is at `<root>/github.com/dal-go/dalgo`, `t1` and `t2` are at
-`<root>/.worktrees/<task>/github.com/dal-go/dalgo` with a relocation receipt each,
-`t3` is left at its pre-migration path with a finding reading "active task —
-relocate after it finishes", the unmanaged worktree is repointed in place and
-listed as unmanaged, `git status` succeeds in all four, and
-`<root>/github.com/dal-go/dalgo/.worktrees` no longer holds `t1` or `t2`
+**Then** clone A is at `<root>/github.com/dal-go/dalgo`, `t1` and `t2` are each
+relocated to `<root>/.worktrees/<task>/github.com/dal-go/dalgo` with a
+relocation receipt, the unmanaged worktree is repointed in place and listed as
+unmanaged, `git status` succeeds in clone A and its relocated and unmanaged
+worktrees, and `<root>/github.com/dal-go/dalgo/.worktrees` no longer holds `t1`
+or `t2`; clone B does not move (it is already host-level) and `t3` is left at
+its pre-migration path with a finding reading "active task — relocate after it
+finishes"
 **When** the same setup runs with `--clones-only`
-**Then** the clone moves and every worktree is repointed, and no checkout is
+**Then** clone A moves and every worktree is repointed, and no checkout is
 relocated.
 
 ### AC: migrate-is-reversible

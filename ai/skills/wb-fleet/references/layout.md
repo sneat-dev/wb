@@ -67,8 +67,10 @@ whenever any clone is skipped or fails.
 
 After moving clones (and for every clone already at the host level, moved
 this run or earlier), `migrate` relocates each managed task checkout whose
-placement differs from the store-mode placement — calling the existing `wb
-worktree relocate` implementation itself, not a copy of it. Central store mode
+placement differs from the store-mode placement — one checkout at a time, by
+its exact path, using the same no-replace move, Git repair, registration
+verification and relocation receipt primitives as `wb worktree relocate`,
+whose own behaviour is unchanged. Central store mode
 relocates to `{root}/.worktrees/{task}/{host}/{owner}/{repository}`;
 repository-local store mode leaves in-clone checkouts where they are, so
 nothing is relocated for such a clone. A checkout whose Work Log claim has

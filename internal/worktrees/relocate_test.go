@@ -118,16 +118,12 @@ func TestRelocateFinalizesIntentAfterMoveCrashWindow(t *testing.T) {
 	}
 }
 
-func TestRelocateRefusesExternalButNeverDirtyWorktrees(t *testing.T) {
+func TestRelocateRefusesExternalAndDirtyWorktrees(t *testing.T) {
 	if eligible, reason := relocationEligibility(ListResult{External: true, Clean: true}); eligible || reason == "" {
 		t.Fatalf("external relocation eligibility = %t, %q", eligible, reason)
 	}
-	// The founder's decision (2026-09-18): uncommitted changes and unpushed
-	// commits are preserved by the rename and are never a reason to refuse
-	// a relocation, the same principle REQ: clone-migration-refusals already
-	// applies to a clone move.
-	if eligible, reason := relocationEligibility(ListResult{Clean: false}); !eligible || reason != "" {
-		t.Fatalf("dirty relocation eligibility = %t, %q, want eligible with no refusal", eligible, reason)
+	if eligible, reason := relocationEligibility(ListResult{Clean: false}); eligible || reason == "" {
+		t.Fatalf("dirty relocation eligibility = %t, %q", eligible, reason)
 	}
 }
 
@@ -209,8 +205,11 @@ func TestReverseRelocationRestoresClaimResolution(t *testing.T) {
 // inside a specific checkout must refuse relocating that checkout, naming
 // the PID and command, even though the checkout's Work Log claim is
 // terminal (the safe, finished-task case) and would otherwise be relocated.
-// Linux-only: /proc has no equivalent on other kernels, which is exactly
-// what BusyProcessCheckSupported signals.
+// This exercises RelocateCheckout directly -- the primitive `wb layout
+// migrate` uses per checkout, not Relocate (`wb worktree relocate`), which
+// this founder decision does not change. Linux-only: /proc has no
+// equivalent on other kernels, which is exactly what BusyProcessCheckSupported
+// signals.
 func TestRelocateRefusesABusyCheckout(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("busy-process detection only runs on linux")
@@ -250,11 +249,20 @@ func TestRelocateRefusesABusyCheckout(t *testing.T) {
 		_, _ = cmd.Process.Wait()
 	}()
 
-	plan, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: fixture.projectsRoot, Task: "busy-relocate", To: "local"})
-	if err != nil || len(plan.Results) != 1 {
-		t.Fatalf("relocate plan = %#v, err=%v", plan, err)
+	placement, err := ResolveUserWorktreePlacement(fixture.projectsRoot, fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
 	}
-	result := plan.Results[0]
+	destination, err := placement.Path("busy-relocate-moved", "acme/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RelocateCheckout(context.Background(), RelocateCheckoutOptions{
+		ProjectsRoot: fixture.projectsRoot, CanonicalDir: fixture.canonical, Source: worktree, Destination: destination, To: "shared",
+	})
+	if err != nil {
+		t.Fatalf("relocate checkout plan: %v", err)
+	}
 	if result.Eligible {
 		t.Fatalf("busy checkout must not be eligible for relocation: %#v", result)
 	}

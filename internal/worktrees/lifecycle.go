@@ -1528,12 +1528,7 @@ func listClaimedRegistryWorktrees(
 			if known[path] {
 				continue
 			}
-			// claimForRelocation accepts a terminal (finished-task) claim as
-			// well as an active one: a checkout Git still registers is a real
-			// managed checkout regardless of whether its task has finished,
-			// and treating a finished task's leftover as invisible here is
-			// exactly the gap that made it unreachable for relocation.
-			claim, _, claimErr := claimForRelocation(home, path)
+			claim, _, _, claimErr := activeWorkLogClaim(home, path)
 			if claimErr != nil {
 				// Most Git worktrees are not WB-managed. A real local manifest
 				// makes a claim failure material evidence rather than absence.
@@ -1577,7 +1572,7 @@ func listClaimedRegistryWorktrees(
 	// a time. This retains the normal per-canonical serialization while not
 	// treating the currently configured shared root as an ownership oracle.
 	for _, pendingEntry := range pending {
-		claim, _, err := claimForRelocation(home, pendingEntry.path)
+		claim, _, _, err := activeWorkLogClaim(home, pendingEntry.path)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, fmt.Sprintf("re-read managed registry claim: %v", err)))
 			continue

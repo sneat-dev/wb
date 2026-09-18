@@ -944,3 +944,62 @@ func TestBusyProcessSelfAncestorGivesCdOutGuidance(t *testing.T) {
 		t.Fatalf("reason = %q, want self-ancestor cd-out guidance", reason)
 	}
 }
+
+// TestMigrateLeavesFinishedCheckoutInPlaceWhenCloneIsRefused covers Fix #2 of
+// the founder's 2026-09-18 redesign: only checkouts of clones that were NOT
+// refused are relocation candidates. A clone with a Git operation in
+// progress (a rebase, here) is refused whole at the clone level
+// (refuseClone) before relocateClones ever runs, so a finished checkout
+// inside it -- normally the safe, relocate-on-sight case -- must be left
+// exactly where it is, with no relocation recorded for it at all.
+func TestMigrateLeavesFinishedCheckoutInPlaceWhenCloneIsRefused(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "rebasing-finished", "acme/rebasing-finished")
+	// worktrees.Create fetches and verifies against the clone's real origin,
+	// so the origin must stay reachable until after the claim exists.
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "rebasing-finished.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	created, err := worktrees.Create(context.Background(), []string{"acme/rebasing-finished"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t1", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create t1: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("create t1 returned %d results", len(created))
+	}
+	nested := created[0].WorktreeDir
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/rebasing-finished.git")
+
+	if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: root, Worktree: nested, Result: "success", Apply: true,
+	}); err != nil {
+		t.Fatalf("finalize t1: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(canonical, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !MigrateFailed(report) {
+		t.Fatal("a run with a refused clone must be reported as failed")
+	}
+	clone, found := findMigrateClone(report, "acme/rebasing-finished")
+	if !found || clone.Status != "skipped" || !strings.Contains(strings.ToLower(clone.Reason), "rebase") {
+		t.Fatalf("clone = %+v, want skipped naming the rebase", clone)
+	}
+	if len(clone.Relocations) != 0 {
+		t.Fatalf("a refused clone must record no relocations at all: %+v", clone.Relocations)
+	}
+	if _, err := os.Stat(nested); err != nil {
+		t.Fatalf("the finished checkout must be left exactly in place: %v", err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("the refused clone must be left exactly in place: %v", err)
+	}
+}
