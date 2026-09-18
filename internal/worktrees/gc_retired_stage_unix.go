@@ -30,7 +30,7 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 	for index := range artifacts {
 		artifact := &artifacts[index]
 		if artifact.Kind != lifecycleArtifactKindStage || artifact.State != "quarantined" ||
-			artifact.Disposition != "empty_unscoped_local_retired_stage" || !artifact.Eligible || artifact.Applied {
+			artifact.Disposition != dispositionEmptyUnscopedLocalRetiredStage || !artifact.Eligible || artifact.Applied {
 			continue
 		}
 		rootPath := filepath.Clean(artifact.WorktreesRoot)
@@ -56,7 +56,7 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 			fd, openErr := unix.Openat(int(root.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 			if errors.Is(openErr, unix.ENOENT) {
 				artifact.Applied = true
-				artifact.Disposition = "retired_empty_unscoped_local_stage"
+				artifact.Disposition = dispositionRetiredEmptyUnscopedLocalStage
 				artifact.Reason = "empty retired canonical-local stage was already absent at apply"
 				return
 			}
@@ -140,7 +140,7 @@ func retireEmptyUnscopedLocalStagesWithHooks(artifacts []LifecycleArtifact, afte
 				return
 			}
 			artifact.Applied = true
-			artifact.Disposition = "retired_empty_unscoped_local_stage"
+			artifact.Disposition = dispositionRetiredEmptyUnscopedLocalStage
 			artifact.Reason = "descriptor-verified empty retired canonical-local stage removed by gc --apply"
 		}()
 	}

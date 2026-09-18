@@ -550,6 +550,22 @@ func summarizeGC(outcome *GCOutcome) {
 		}
 	}
 	outcome.Totals["purged_artefacts"] = len(outcome.Purged)
+	// A repository-root stage has no task namespace, so it is swept by
+	// retireEmptyUnscopedLocalStages under --apply rather than by the
+	// task-scoped purge that feeds purged_artefacts. Counting it separately is
+	// what lets a dry run state the work instead of printing a row per stage
+	// above a footer reading "0 terminal artefacts purged" — which is true of
+	// the other counter and reads as "gc will not touch these".
+	for _, artifact := range outcome.Artifacts {
+		switch artifact.Disposition {
+		case dispositionRetiredEmptyUnscopedLocalStage:
+			outcome.Totals["retired_root_stages"]++
+		case dispositionEmptyUnscopedLocalRetiredStage:
+			if artifact.Eligible {
+				outcome.Totals["eligible_root_stages"]++
+			}
+		}
+	}
 	for _, shell := range outcome.Shells {
 		if shell.Applied {
 			outcome.Totals["retired_shells"]++

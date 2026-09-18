@@ -218,8 +218,15 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 	}
 	shells := outcome.Totals["retired_shells"]
 	shellLabel := "empty shells retired"
+	rootStages := outcome.Totals["retired_root_stages"]
+	rootStageLabel := "repository-root stages purged"
 	if !outcome.Apply {
 		shells, shellLabel = outcome.Totals["eligible_shells"], "empty shells to retire"
+		// Future tense for the same reason the shells use it: these stages are
+		// removed by --apply, so a dry run that reported them in the past tense
+		// would claim work it has not done, and one that omitted them entirely
+		// would print a row per stage with no figure to act on.
+		rootStages, rootStageLabel = outcome.Totals["eligible_root_stages"], "repository-root stages to purge"
 	}
 	for _, shell := range outcome.Shells {
 		if shell.Error == "" {
@@ -230,9 +237,9 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 		}
 	}
 	_, err := fmt.Fprintf(out,
-		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d %s; %s %s apparent / %s unshared\n",
+		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d %s, %d %s; %s %s apparent / %s unshared\n",
 		outcome.Totals["retired"], outcome.Totals["eligible"], outcome.Totals["refused"],
-		outcome.Totals["purged_artefacts"], shells, shellLabel, label,
+		outcome.Totals["purged_artefacts"], rootStages, rootStageLabel, shells, shellLabel, label,
 		diskusage.Human(usage.ApparentBytes), diskusage.Human(usage.UnsharedBytes))
 	return err
 }
