@@ -29,11 +29,45 @@ type ActiveClaimSummary struct {
 // Git repositories. Path enumeration keeps this read-only command compatible
 // with agent sandboxes; symlinked parent entries are rejected, then claims and
 // terminals are read through no-follow directory descriptors.
+//
+// It reads every home wbhome.Resolve reports for projectsRoot, not only the
+// write home: a claim recorded under a retired legacy home (for example
+// $HOME/.wb before the projects-root layout existed) still names a live task,
+// and a caller deciding whether a repository is safe to touch must see it.
 func ListActiveClaimSummaries(projectsRoot, filter string) ([]ActiveClaimSummary, error) {
-	home, err := wbhome.Root(projectsRoot)
+	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool, len(resolution.Read))
+	result := make([]ActiveClaimSummary, 0)
+	for _, layout := range resolution.Read {
+		home := filepath.Clean(layout.Home)
+		if home == "" || seen[home] {
+			continue
+		}
+		seen[home] = true
+		claims, err := listActiveClaimSummariesInHome(home, filter)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, claims...)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Repository != result[j].Repository {
+			return result[i].Repository < result[j].Repository
+		}
+		if result[i].Task != result[j].Task {
+			return result[i].Task < result[j].Task
+		}
+		return result[i].Branch < result[j].Branch
+	})
+	return result, nil
+}
+
+// listActiveClaimSummariesInHome is ListActiveClaimSummaries for exactly one
+// resolved home.
+func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, error) {
 	worklogsRoot := filepath.Join(home, "worklogs")
 	efforts, err := os.ReadDir(worklogsRoot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -142,15 +176,6 @@ func ListActiveClaimSummaries(projectsRoot, filter string) ([]ActiveClaimSummary
 		}
 		_ = runsDir.Close()
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Repository != result[j].Repository {
-			return result[i].Repository < result[j].Repository
-		}
-		if result[i].Task != result[j].Task {
-			return result[i].Task < result[j].Task
-		}
-		return result[i].Branch < result[j].Branch
-	})
 	return result, nil
 }
 

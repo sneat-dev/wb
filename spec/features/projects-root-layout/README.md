@@ -158,6 +158,106 @@ shared root — using their actual on-disk placement, without requiring that the
 be moved first. Inventory MUST report placement alongside task identity so an
 operator can see which layout each checkout uses.
 
+### Clone migration
+
+An operator adopting WB on an existing set of checkouts — or a machine laid out
+before the host level existed — has canonical clones at the legacy
+`<root>/<org>/<repo>` placement. WB reads that placement in place, but the
+unified layout is only reached by moving the clones, and a clone cannot be moved
+safely by hand: every linked worktree records the clone's absolute `.git` path.
+The move is one-way by design; there is no mode that keeps the legacy placement
+as a supported target.
+
+#### REQ: clone-migration-verb
+
+`wb layout migrate [owner/repo...]` MUST move each canonical clone found at the
+legacy `<root>/<org>/<repo>` placement to `<root>/<host>/<org>/<repo>`, taking
+`<host>` from the clone's `origin` remote URL. With no arguments it MUST cover
+every legacy clone under the root; with arguments, only the named repositories.
+It MUST be a dry run by default, printing the planned source and destination of
+every clone and every linked worktree it would repoint, and MUST act only with
+`--apply`. A clone already at the host level MUST be re-verified — its worktree
+registry has no missing or prunable entry and every registered worktree's
+common directory resolves to its `.git` — before being reported as done and
+left untouched; one whose registration is broken (a directory rename outside
+WB, or an earlier migration interrupted before repair) MUST be repaired and
+reported `repaired`, or reported `failed` naming what is still wrong, never
+silently reported done. This is how an interrupted or partial migration is
+completed by running the same command again. The move MUST be a
+same-filesystem rename that refuses to replace an existing destination; a
+cross-device move MUST be refused, never degraded to a copy. An unborn `HEAD`
+(a freshly initialized repository with no commit yet) MUST NOT be a refusal
+reason, because a rename is exactly as safe for it as for any other worktree.
+
+#### REQ: clone-migration-refusals
+
+A clone MUST be skipped, with a finding naming the reason, and the command MUST
+exit with the findings code when any of these hold: it has no usable `origin`;
+the `origin` owner/repository differs from its path; the `origin` host is not a
+valid directory name; the destination already exists; a Git operation is in
+progress, or cannot be inspected (an index lock, or a merge, rebase,
+cherry-pick or revert state); a live Work Log claim holds the clone or any of
+its linked worktrees — checked across every home WB resolves for the root, not
+only its current write home, since a claim recorded under a retired legacy
+home is still a live task; or an un-picked-up parked session (one saved by `wb
+session park` and not yet resumed) names the clone or one of its linked
+worktrees as a member worktree. On an OS that exposes live process working
+directories (Linux, via `/proc`), a clone MUST also be skipped when a
+readable process's current working directory is inside the clone or one of
+its linked worktrees, naming the PID and the command in the reason; a process
+whose working directory cannot be read (another user's, or one that has since
+exited) is not evidence and MUST NOT cause a refusal. On an OS with no such
+mechanism, this check MUST be skipped and the run MUST say so once. Every
+refusal condition MUST be re-checked immediately before each clone's move, not
+only when the whole run was planned, since the interval between planning and
+moving is exactly when another agent on a shared machine can start a claim, a
+Git operation, a parked session, or a shell inside the clone. Uncommitted
+changes MUST NOT be a refusal reason, because a rename preserves them. The
+remaining clones MUST still be migrated.
+
+#### REQ: clone-migration-repoints-worktrees
+
+After moving a clone, every linked worktree registered with it MUST resolve in
+both directions — worktrees inside the clone, which move with it, and worktrees
+outside it, which stay where they are. WB MUST repoint them with Git's own
+repair, then verify that the clone's worktree list has no missing or prunable
+entry and that every worktree's common directory is the clone's new `.git`; a
+clone that fails verification MUST be reported as failed, not done. WB MUST
+regenerate the `.worktree.md` marker of the clone and of each linked worktree,
+and MUST update the WB records that locate an active task's canonical clone or
+checkout so guard, inventory, land and cleanup work at the new path: for each
+moved worktree that carries an active Work Log claim, WB records a relocation
+intent before the move and a completion receipt after it is verified — the
+same append-only relocation-receipt journal `wb worktree relocate` and a
+repository transfer use — so a claim's immutable, frozen `Worktree` path
+resolves through that journal to its current location. Append-only historical
+records (claims, receipts) MUST NOT be rewritten. Migration MUST NOT move a
+checkout out of the clone: relocating checkouts to the central store remains
+[`relocation-targets-store`](#req-relocation-targets-store).
+
+#### REQ: clone-migration-manifest-and-undo
+
+Before the first move, `--apply` MUST write a manifest of every planned clone —
+source, destination, HEAD commit and linked worktree paths — under
+`<root>/.wb/layout-migrations/<id>/`, and MUST append each clone's outcome as it
+completes. `wb layout migrate --undo <id>` MUST reverse the moves that manifest
+records as done, with the same repair and verification, appending each
+clone's reversal outcome to the manifest as it completes, and re-running every
+refusal check against the clone's current location immediately before each
+move back. A legacy owner directory, and a host-level owner or host directory
+a reversed move leaves empty, MUST be removed only when empty; one that still
+holds anything, including its own `.git`, MUST be kept and reported by path
+and reason — every kept owner directory, not only the ones a run happens to
+mention elsewhere. `--undo <id>` MUST treat `<id>` as exactly one path segment
+and MUST reject anything else (empty, `.`, `..`, or containing a path
+separator) before it is used to build any filesystem path. `--apply` (migrate
+or undo) MUST take a single exclusive lock under `<root>/.wb` for the run's
+duration; a second concurrent `--apply` against the same root MUST fail
+immediately with a message naming the conflict, rather than blocking or
+interleaving its moves with the first run's. The command MUST invalidate WB's
+cached repository-path index, and MUST report when a running daemon has to be
+restarted to pick up the new paths.
+
 ## Acceptance Criteria
 
 ### AC: one-root-no-second-knob
@@ -263,6 +363,53 @@ destination that remains correct after a later reconfigure of the store root.
 **Then** each checkout is found and operated on at its actual placement without
 being moved first, and inventory output reports each checkout's placement
 alongside its task identity.
+
+### AC: migrate-plans-then-moves-and-repoints
+
+**Requirements:** projects-root-layout#req:clone-migration-verb,
+projects-root-layout#req:clone-migration-repoints-worktrees
+
+**Given** a legacy clone at `<root>/dal-go/dalgo` whose `origin` is
+`github.com/dal-go/dalgo`, with one linked worktree at
+`<root>/dal-go/dalgo/.worktrees/t1` and another at
+`<root>/worktrees/t2/dal-go/dalgo`, and uncommitted changes in the clone
+**When** `wb layout migrate` runs without `--apply`
+**Then** nothing on disk changes, and the plan names the destination
+`<root>/github.com/dal-go/dalgo` and both worktrees
+**When** `wb layout migrate --apply` runs
+**Then** the clone is at `<root>/github.com/dal-go/dalgo` with its uncommitted
+changes intact; `git status` succeeds in the clone and in both worktrees;
+`git worktree list` shows no missing or prunable entry; every `.worktree.md`
+names the new canonical path; `<root>/dal-go` no longer exists; `wb layout
+audit` exits 0; and running `wb layout migrate --apply` again reports the clone
+as done and changes nothing.
+
+### AC: migrate-skips-unsafe-clones
+
+**Requirements:** projects-root-layout#req:clone-migration-refusals
+
+**Given** five legacy clones — one whose `origin` owner differs from its path,
+one whose destination already exists, one with a rebase in progress, one with
+a live Work Log claim on a linked worktree, and one with a live process whose
+working directory is inside it — plus one clean legacy clone
+**When** `wb layout migrate --apply` runs
+**Then** each of the five is left in place with a finding naming its reason
+(the busy clone's reason naming the process's PID and command), the clean
+clone is migrated, and the command exits with the findings code.
+
+### AC: migrate-is-reversible
+
+**Requirements:** projects-root-layout#req:clone-migration-manifest-and-undo
+
+**Given** a completed `wb layout migrate --apply` whose manifest id is `<id>`
+**When** `wb layout migrate --undo <id>` runs
+**Then** every clone the manifest records as done is back at its legacy path,
+`git status` succeeds in each clone and each of its linked worktrees, the
+manifest records the reversal as each clone completes, and any host-level
+owner or host directory the reversal leaves empty is removed
+**When** `wb layout migrate --undo` is given anything other than a single safe
+path segment (empty, `.`, `..`, or a value containing a path separator)
+**Then** the command rejects it before touching the filesystem.
 
 ## Open Questions
 

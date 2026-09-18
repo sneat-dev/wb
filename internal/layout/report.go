@@ -48,6 +48,43 @@ func (report CleanReport) Markdown() string {
 	return out.String()
 }
 
+// Markdown renders a migration plan or result.
+func (report MigrateReport) Markdown() string {
+	var out strings.Builder
+	if report.Undo {
+		out.WriteString("# WB layout migrate --undo\n\n")
+		fmt.Fprintf(&out, "- Manifest: `%s`\n", report.ManifestID)
+	} else {
+		out.WriteString("# WB layout migrate\n\n")
+	}
+	fmt.Fprintf(&out, "- Projects root: `%s`\n", report.ProjectsRoot)
+	if report.DryRun {
+		out.WriteString("- Mode: `dry-run` (pass `--apply` to move)\n")
+	} else {
+		out.WriteString("- Mode: `apply`\n")
+	}
+	if report.ManifestPath != "" && !report.Undo {
+		fmt.Fprintf(&out, "- Manifest: `%s`\n", report.ManifestPath)
+	}
+	if report.DaemonRestartRequired {
+		out.WriteString("- A running wb daemon must be restarted to see the moved paths.\n")
+	}
+	out.WriteString("\n")
+	if len(report.Clones) == 0 {
+		out.WriteString("No legacy clones found under the projects root.\n")
+		return out.String()
+	}
+	out.WriteString("| Repository | Source | Destination | Status | Reason |\n|---|---|---|---|---|\n")
+	for _, clone := range report.Clones {
+		fmt.Fprintf(&out, "| `%s` | `%s` | `%s` | `%s` | %s |\n",
+			clone.Repository, clone.Source, dash(clone.Destination), clone.Status, escape(clone.Reason))
+		for _, worktree := range clone.Worktrees {
+			fmt.Fprintf(&out, "|  | `%s` | `%s` |  |  |\n", worktree.Source, worktree.Destination)
+		}
+	}
+	return out.String()
+}
+
 func dash(value string) string {
 	if value == "" {
 		return "—"

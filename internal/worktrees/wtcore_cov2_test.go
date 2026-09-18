@@ -248,6 +248,15 @@ func TestWTCoreCovCreateWorktreeAtPlacementRefusesBadInputs(t *testing.T) {
 // active-claim walk skips unrecognised entries, fails closed on unsafe
 // structures, and sorts multiple live claims deterministically.
 func TestWTCoreCovActiveClaimSummariesStructuralFailures(t *testing.T) {
+	// ListActiveClaimSummaries reads every wbhome-resolved home, including the
+	// retired legacy $HOME/.wb (see BLOCKING #1 in the projects-root-layout
+	// migrate review): isolate HOME so "empty home" below observes an
+	// actually empty home, not this machine's real fleet claims.
+	userHome, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
 	projectsRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

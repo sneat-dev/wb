@@ -10,6 +10,8 @@ read: `{projects-root}/github.com/dal-go/dalgo` is
 wb layout audit --format json
 wb layout clean
 wb layout clean --apply
+wb layout migrate
+wb layout migrate --apply
 ```
 
 `audit` reports, for every clone it inspects, the remote URL its path
@@ -33,6 +35,53 @@ by default, an existing canonical copy. Pass `--apply` to delete; default is
 dry-run. Use `--allow-missing-canonical` only when removing the sole local copy
 is intentional. A legacy `{owner}/{repository}` first level is never treated as
 a removable top-level clone.
+
+`migrate [owner/repo...]` moves each legacy `{owner}/{repository}` clone under
+the root to its host-level `{host}/{owner}/{repository}` placement, taking
+`{host}` from the clone's `origin` remote, and repoints every linked worktree
+Git has registered against it — one inside the clone (which moves with it) and
+one anywhere else (which is repointed in place) alike. Dry-run by default; pass
+`--apply` to move. With no arguments every legacy clone under the root is
+covered; name `owner/repository` arguments to migrate only those. A clone
+already at the host level is re-verified — its worktree registration must have
+no missing or prunable entry — before being reported `already_done` and left
+untouched; a stranded one found broken (a manual rename, or an earlier
+migration interrupted before repair) is repaired and reported `repaired`, or
+`failed` naming what is still wrong. This is how an interrupted or repeated
+`--apply` finishes the job.
+
+A clone is `skipped`, with a reason, when it has no usable origin, its origin
+owner/repository differs from its path, its origin host is not a valid
+directory name, its destination already exists, a Git operation (merge,
+rebase, cherry-pick, revert, or a held index lock) is in progress or cannot be
+inspected, a live Work Log claim holds it or a linked worktree (checked across
+every home WB resolves, including a retired legacy one), an un-picked-up
+`wb session park` bundle names it or a linked worktree as a member, or (Linux
+only; skipped elsewhere, noted once in the report) a live process has its
+working directory inside it or a linked worktree, named by PID and command.
+Every refusal is re-checked immediately before that clone's actual move, not
+only when the run was planned. Uncommitted changes are never a refusal
+reason — the rename preserves them, and neither is an unborn `HEAD` (a
+repository with no commit yet). The command exits with the findings code
+whenever any clone is skipped or fails.
+
+`--apply` (migrate or undo) takes a single exclusive lock under `<root>/.wb`
+for the run; a second concurrent `--apply` against the same root fails
+immediately naming the conflict instead of interleaving moves. `--apply`
+writes a manifest under `<root>/.wb/layout-migrations/<id>/` before its first
+move, appending each clone's outcome as it completes; `--undo <id>` reverses
+every clone that manifest records done, with the same repair, verification
+and refusal re-checks, appending each reversal as it completes and removing
+any host-level owner or host directory a reversal leaves empty. `<id>` must be
+a single path segment — `.`, `..`, empty, or anything containing a path
+separator is rejected before touching the filesystem. It also invalidates
+WB's cached repository-path index and reports when a running daemon must be
+restarted to see the moved paths.
+
+```sh
+wb layout migrate --apply
+wb layout migrate --undo 20260918T120000Z-ab12cd34
+```
 
 Fleet rollups include layout counts automatically:
 
