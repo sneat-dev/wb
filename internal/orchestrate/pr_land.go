@@ -114,6 +114,24 @@ type PullRequestLandOptions struct {
 	// Stream names the stream this landing belongs to, when it belongs to one.
 	Stream string
 	Now    func() time.Time
+	// NoUpdateBranch keeps the historical behaviour of refusing a candidate
+	// that is behind the target instead of bringing it up to date. The default
+	// updates, because a target with a strict up-to-date policy puts every
+	// candidate behind whenever anything else lands, and refusing then costs a
+	// manual merge plus a full fresh CI cycle.
+	NoUpdateBranch bool
+	// NoAutoMerge keeps the historical behaviour of returning checks-pending
+	// when the wait budget runs out. The default arms GitHub auto-merge
+	// instead, so a complete change is not left stranded on whoever remembers
+	// it next.
+	//
+	// The arming is deliberately not withdrawn when checks fail. CI is the
+	// gate: whoever pushes a fix is responsible for it, the required checks
+	// re-run against exactly what they pushed, and the merge happens only if
+	// those pass. A review that must not be skippable belongs in the workflow,
+	// where it runs on every push and nobody can decline to re-request it —
+	// not in an approval recorded once against a head that no longer exists.
+	NoAutoMerge bool
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -133,7 +151,12 @@ type PullRequestLandResult struct {
 	// fired. A refusal an agent cannot resolve becomes a hand-written
 	// workaround, which is how the cleanup path was bypassed in the first place.
 	SanctionedCommand string `json:"sanctioned_command,omitempty"`
-	Reason            string `json:"reason,omitempty"`
+	// AutoMergeArmed records that this invocation handed the merge to GitHub
+	// rather than performing it. The change still lands; WB did not watch it
+	// happen, so no landing receipt exists for it and the worktree is still
+	// the caller's to retire.
+	AutoMergeArmed bool   `json:"auto_merge_armed,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 
 	Repository  string `json:"repository"`
 	PullRequest int    `json:"pull_request"`
@@ -408,30 +431,128 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}), nil
 	}
 
-	// Wait for the checks the target's own policy requires, on this exact head.
-	waitOptions := PullRequestWaitOptions{
-		Repository:        options.Repository,
-		PullRequest:       number,
-		Target:            view.Base.Ref,
-		Head:              view.Head.SHA,
-		AllowUnfenced:     options.AllowUnfenced,
-		Slice:             options.Slice,
-		CheckPollInterval: options.CheckPollInterval,
-		Progress:          options.Progress,
-		OperationProgress: options.OperationProgress,
+	// Arm auto-merge BEFORE waiting, not after.
+	//
+	// Everything below can end without landing: the budget runs out, the host
+	// dies, the session is killed. Arming first means none of those strand a
+	// complete change — GitHub merges it when the required checks pass, whether
+	// or not WB is still here. Arming last would protect only the one ending
+	// that already reported itself.
+	//
+	// This grants nothing the call did not already hold. The same approval,
+	// lane and server-enforced required checks that authorize merging now are
+	// what authorize merging in ten minutes unattended.
+	if !options.NoAutoMerge {
+		reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Started, options.Repository+"#"+number, 0, 0)
+		if bypassed := autoMergeBypassesAGuard(ctx, options, view.Base.Ref); bypassed != "" {
+			result.Evidence["auto_merge"] = "not armed: " + bypassed
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "skipped: "+bypassed, 0, 0)
+		} else if armReason := enablePullRequestAutoMerge(ctx, options.Repository, number, options.MergeMethod); armReason != "" {
+			// Not fatal: failing to arm the safety net is not a reason to
+			// refuse the landing this call came to do.
+			result.Evidence["auto_merge"] = "not armed: " + armReason
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Failed, armReason, 0, 0)
+		} else {
+			result.AutoMergeArmed = true
+			result.Evidence["auto_merge"] = "armed before waiting"
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "armed", 0, 0)
+		}
 	}
-	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
-	// This wait can run the full slice budget (routinely 30-60 minutes for
-	// this fleet) in one call: keep the lane's heartbeat fresh throughout so
-	// it never goes stale out from under this still-live session. See
-	// startLandingLaneHeartbeat.
-	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID, 0)
-	waited, err := waitForPullRequestLandChecks(ctx, waitOptions)
-	stopLaneHeartbeat()
-	if err != nil {
-		return result, err
+
+	// Then wait, bringing the candidate up to date whenever the target moves
+	// under it. The target advancing mid-wait is the normal case on a busy
+	// repository, and it is why this is a loop rather than one check before one
+	// wait: a candidate can be green and behind at the same moment.
+	//
+	// Every iteration re-reads and re-waits on the NEW head, so the checks that
+	// authorize the merge are always the checks for the commit being merged.
+	deadline := waitDeadline(options)
+	var waited PullRequestWaitResult
+	var waitOptions PullRequestWaitOptions
+	for attempt := 0; ; attempt++ {
+		if !options.NoUpdateBranch {
+			behind, reason := candidateIsBehindTarget(ctx, options.Repository, view.Base.Ref, view.Head.SHA)
+			if reason != "" && !isTransientReadReason(reason) {
+				return result, fmt.Errorf("determine whether %s#%s is behind %s: %s", options.Repository, number, view.Base.Ref, reason)
+			}
+			if behind {
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, shortMergeRevision(view.Head.SHA), 0, 0)
+				updatedHead, updateReason := updatePullRequestBranch(ctx, options.Repository, number, view.Head.SHA, options.OperationProgress)
+				if updateReason != "" {
+					if updateBranchConflict(updateReason) {
+						// A conflict is the author's to resolve. Auto-merge
+						// stays armed: once they resolve and push, CI runs
+						// against the resolution and merges it if it passes.
+						return mergeRefusal(result, landRefusal{
+							code:    LandRefusalUpdateConflict,
+							reason:  "candidate is behind " + view.Base.Ref + " and updating it conflicts; resolving that is a judgement WB does not make for you: " + updateReason,
+							command: "resolve the conflict on " + view.Head.Ref + ", push, then: wb pr land " + options.Repository + "#" + number,
+						}), nil
+					}
+					return result, fmt.Errorf("update %s#%s onto %s: %s", options.Repository, number, view.Base.Ref, updateReason)
+				}
+				view, err = ReadPullRequest(ctx, options.Repository, number)
+				if err != nil {
+					return result, err
+				}
+				result.HeadSHA = view.Head.SHA
+				result.Evidence["head"] = shortMergeRevision(view.Head.SHA)
+				result.Evidence["updated_onto_target"] = shortMergeRevision(updatedHead)
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Completed, shortMergeRevision(view.Head.SHA), 0, 0)
+			}
+		}
+
+		remaining := time.Until(deadline)
+		if options.Now != nil {
+			remaining = deadline.Sub(options.Now())
+		}
+		if remaining <= 0 {
+			waited = pendingCommitWaitResult(PullRequestWaitResult{
+				Status: PullRequestWaitPending, Repository: options.Repository, PullRequest: number,
+				Target: view.Base.Ref, Head: view.Head.SHA,
+				Reason: "landing wait budget elapsed before checks settled",
+			})
+			break
+		}
+
+		waitOptions = PullRequestWaitOptions{
+			Repository:        options.Repository,
+			PullRequest:       number,
+			Target:            view.Base.Ref,
+			Head:              view.Head.SHA,
+			AllowUnfenced:     options.AllowUnfenced,
+			Slice:             remaining,
+			CheckPollInterval: options.CheckPollInterval,
+			Progress:          options.Progress,
+			OperationProgress: options.OperationProgress,
+		}
+		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
+		// This wait can run the remaining budget in one call: keep the lane's
+		// heartbeat fresh throughout so it never goes stale out from under
+		// this still-live session. See startLandingLaneHeartbeat.
+		stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID, 0)
+		observed, waitErr := waitForPullRequestLandChecks(ctx, waitOptions)
+		stopLaneHeartbeat()
+		if waitErr != nil {
+			return result, waitErr
+		}
+		waited = observed
+		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
+
+		// Green is not enough on a strict target: the target may have advanced
+		// while these checks ran, which puts a green candidate behind again.
+		// Going round once more updates it and re-observes, rather than
+		// refusing work that is finished.
+		if waited.Status == PullRequestWaitPassed && !options.NoUpdateBranch {
+			behind, reason := candidateIsBehindTarget(ctx, options.Repository, view.Base.Ref, view.Head.SHA)
+			if reason == "" && behind {
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, "target advanced during the wait", 0, 0)
+				continue
+			}
+		}
+		break
 	}
-	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
+
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	switch waited.Status {
@@ -441,12 +562,28 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.RefusalCode = LandRefusalChecksPending
 		result.Reason = waited.Reason
 		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number
+		// Auto-merge was armed before the wait, so a pending result is not a
+		// stranded change: GitHub lands it when the checks pass. Say so, and
+		// name the one part GitHub cannot do.
+		if result.AutoMergeArmed {
+			result.Reason = waited.Reason + "; auto-merge is armed, so this lands without WB once checks pass"
+			result.SanctionedCommand = "wb worktree cleanup <task> --apply  (after it merges)"
+		}
 		return withSavings(result), nil
 	default:
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksFailed
 		result.Reason = waited.Reason
 		result.SanctionedCommand = "gh pr view " + number + " --repo " + options.Repository + " --web"
+		// Auto-merge stays armed through a red result. CI is the gate: whoever
+		// pushes a fix is responsible for it, the required checks re-run
+		// against what they pushed, and the merge happens only if they pass.
+		// A review that must not be skippable belongs in the workflow, where
+		// it runs on every push, rather than in an approval recorded once
+		// against a head that no longer exists.
+		if result.AutoMergeArmed {
+			result.Reason = waited.Reason + "; auto-merge stays armed, so a pushed fix lands once the required checks pass"
+		}
 		if strings.Contains(waited.Reason, "strict up-to-date fence") {
 			// This is a policy gap, not a red check: say which, and name the
 			// widening rather than leaving the operator to guess that green

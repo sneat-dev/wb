@@ -6612,6 +6612,8 @@
                 "--keep-commits",
                 "--lane-reason",
                 "--merge-method",
+                "--no-auto-merge",
+                "--no-update-branch",
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
@@ -6634,6 +6636,8 @@
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
                 "Source commits are paired with the commits that landed them by git patch-id --stable over the base's new commits, never by the scratch worktree's SHAs, which exist nowhere after a rebase merge",
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
+                "Auto-merge is armed before any wait, so the pull request lands even if the invoking process, session or host dies; a failed check refuses the invocation but never disarms, because CI is the gate and a pushed fix lands once the required checks pass. --no-auto-merge opts out",
+                "A candidate behind the target is brought up to date through GitHub update-branch with the observed head as expected_head_sha, then its checks are waited on again inside one --timeout budget, repeating when the target moves mid-wait; a conflicting update refuses with update-branch-conflict, and --no-update-branch refuses a behind candidate instead",
                 "Exit 0 landed, 1 the work is not ready, 2 a guard refused; --format json emits the envelope with refusal_code, sanctioned_command, evidence and the saved-call figures"
               ]
             }
@@ -6651,7 +6655,10 @@
                 "--keep-commits",
                 "--reason",
                 "made from the diff",
-                "gh api"
+                "gh api",
+                "AUTO-MERGE IS ARMED FIRST",
+                "BEHIND IS NOT A REFUSAL",
+                "--no-update-branch"
               ]
             }
           ],

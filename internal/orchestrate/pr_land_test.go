@@ -164,7 +164,7 @@ case "$*" in
     fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
-    printf '{"number":7,"state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
+    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
       "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
@@ -185,7 +185,8 @@ case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
     printf '%s\n' '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}' ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
-    printf '%s\n' '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}' ;;
+    if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
+    printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
   'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" ;;
@@ -229,6 +230,39 @@ case "$*" in
     printf 'true' >"$S/merged"
     printf 'closed' >"$S/pr-state"
     printf '{"sha":"%s","merged":true,"message":"Pull Request successfully merged"}\n' "$requested" ;;
+  'api graphql'*)
+    # Auto-merge is armed and withdrawn through GraphQL. The fixture records
+    # that it was asked, so a test can assert arming without a real GitHub.
+    case "$*" in
+      *enablePullRequestAutoMerge*)
+        if [ -f "$S/auto-merge-unavailable" ]; then
+          printf '{"errors":[{"message":"Pull request Auto merge is not allowed for this repository"}]}\n' >&2
+          exit 1
+        fi
+        printf 'armed' >"$S/auto-merge"
+        printf '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-09-18T00:00:00Z"}}}}}\n' ;;
+      *) echo "unexpected graphql: $*" >&2; exit 2 ;;
+    esac ;;
+  'api --method PUT repos/acme/app/pulls/7/update-branch'*)
+    if [ -f "$S/update-conflict" ]; then
+      printf '{"message":"merge conflict between base and head"}\n' >&2; exit 1
+    fi
+    expected=""
+    for arg in "$@"; do
+      case "$arg" in expected_head_sha=*) expected="${arg#expected_head_sha=}" ;; esac
+    done
+    if [ "$expected" != "$(cat "$S/head")" ]; then
+      printf '{"message":"expected head sha didn'"'"'t match current head ref"}\n' >&2; exit 1
+    fi
+    # Move the branch onto main, exactly as GitHub would, and publish the new
+    # head so the verb re-reads a different SHA.
+    git --git-dir="$WB_LAND_REMOTE" fetch . refs/heads/main >/dev/null 2>&1 || true
+    merged=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$(cat "$S/head")^{tree}")" \
+      -p "$(cat "$S/head")" -p "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" -m "Merge main into feature")
+    git --git-dir="$WB_LAND_REMOTE" update-ref "refs/heads/$(cat "$S/head-ref" 2>/dev/null || echo feature)" "$merged"
+    printf '%s' "$merged" >"$S/head"
+    printf 'updated' >"$S/update-branch"
+    printf '{"message":"Updating pull request branch.","url":"https://api.github.com/repos/acme/app/pulls/7"}\n' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `

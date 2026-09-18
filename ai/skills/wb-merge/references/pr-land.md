@@ -24,6 +24,26 @@ wb pr land sneat-co/sneat-go#1041 --format json
 Exit codes: `0` landed · `1` the work is not ready (checks red or pending, or
 the landing could not be verified) · `2` a guard refused.
 
+## Auto-merge is armed first; behind is not a refusal
+
+Before waiting on anything, `wb pr land` arms GitHub auto-merge, so the pull
+request lands even if the process, session or host dies while checks run. CI is
+the gate: a red check ends the invocation with exit 1 but **auto-merge stays
+armed**, so whoever pushes the fix gets it landed when the required checks pass.
+Anything that must hold — an AI review, say — belongs in the CI workflow.
+
+On a target that requires branches to be up to date, a candidate behind the
+target is updated through GitHub's update-branch (observed head as
+compare-and-swap) and its checks are waited on again, all inside one `--timeout`
+budget — repeated if the target moves mid-wait. So after another PR lands, rerun
+`wb pr land`; do not merge main by hand.
+
+Auto-merge is **not** armed when doing so would skip one of this verb's guards:
+with `--keep-commits` (WB merges a rebuilt branch), or on a target without a
+strict up-to-date policy unless `--allow-unfenced` is explicit. `--no-auto-merge`
+and `--no-update-branch` opt out. A pending result with auto-merge armed lands
+without WB; retire the worktree afterwards with `wb worktree cleanup <task> --apply`.
+
 ## Cleanup is the default
 
 The task's worktree is removed and its claim released as part of landing.
@@ -120,6 +140,7 @@ file is not mechanical, and is refused until a review is recorded.
 | `keep-commits-without-reason` | `--keep-commits` with no justification | add `--reason "<why these commits stand alone>"` |
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
+| `update-branch-conflict` | the candidate is behind and updating it conflicts; auto-merge stays armed | resolve the conflict on the branch, push, rerun `wb pr land …` |
 | `checks-pending` / `checks-failed` | exit 1, not a refusal: the work is not ready | fix the failure, or rerun to keep waiting |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |
 | `cleanup-blocked-live-link` | a worktree still holds a live local dependency link | `wb deps propagate local … --undo`, or land with `--keep` |
