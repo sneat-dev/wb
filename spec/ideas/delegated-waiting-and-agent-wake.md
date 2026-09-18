@@ -194,13 +194,25 @@ Naming: `wait`, not `await`. WB already spells this concept `wait` twice
 (`wb ci wait`, `wb daemon operation wait`), and the CLI convention is `wait`
 (`kubectl wait --for=…`, `docker wait`). `await` is retained as a hidden alias.
 
+Word order is **verb first**: `wb wait <kind>`, not `wb <kind> wait`. The thing
+being waited for is the argument; waiting is the act. Verb-first also gives the
+capability one discoverable home — `wb wait --help` enumerates everything WB can
+wait for, which no amount of `wb ci wait` / `wb daemon operation wait` ever
+will, because nothing lists them together. The two existing spellings become the
+older form of `wb wait ci` and `wb wait operation`; they keep working, and the
+help names the verb-first spelling as current. This is a surface migration, not
+a behaviour change: `wb wait ci` must reach the identical implementation, so
+merge evidence produced either way is the same evidence.
+
 Not CI-only. The verb takes a **target kind**, so the same contract extends to
 the long-running operations WB already tracks:
 
 ```text
-wb wait pr        <repo#number...>     pull-request state
-wb wait operation <operation-id...>    durable daemon operations
-wb wait run       <run-id...>          agent runs
+wb wait pr        <repo#number...>     pull-request state          (new)
+wb wait ci        --repo --target --head   exact-head check policy (existing wb ci wait)
+wb wait operation <operation-id...>    durable daemon operations   (existing wb daemon operation wait)
+wb wait run       <run-id...>          agent runs                  (later)
+wb wait test      <...>                long-running local suites   (later)
 ```
 
 `wb ci wait` keeps its exact current semantics and stays the authoritative
