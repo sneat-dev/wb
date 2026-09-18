@@ -123,10 +123,26 @@ Every wait is bounded and terminating. Pending is a first-class result: it
 exits 1 carrying exact resume arguments for the targets that are still
 pending, so the next invocation observes only what is left.
 
+The argument after ` + "`wait`" + ` names a thing, not a domain: a pull request, an
+exact commit's checks, an agent run, an operation.
+
+Three of these are the verb-first spelling of commands WB already had. They run
+the identical implementation, not a copy, so a receipt produced either way is
+the same receipt:
+
+  wb wait checks     is  wb ci wait
+  wb wait agent      is  wb agent await
+  wb wait operation  is  wb daemon operation wait
+
+The older spellings keep working.
+
 These commands report. They never merge, publish, or change a target. Use
 ` + "`wb pr land`" + ` to wait for checks and then land a pull request.`,
 	}
 	command.AddCommand(newWaitPRCmd())
+	command.AddCommand(newWaitChecksCmd())
+	command.AddCommand(newWaitAgentCmd())
+	command.AddCommand(newWaitOperationCmd())
 	command.AddCommand(newWaitListCmd())
 	return command
 }
@@ -730,5 +746,43 @@ wb wait list --json`,
 	command.Flags().BoolVar(&prune, "prune", false, "remove records whose waiting process is gone")
 	addJSONFormatFlags(command, &jsonOut)
 	setDiscoveryTerms(command, "wait list outstanding waiting pending stale session visible stopped quiet")
+	return command
+}
+
+// The three commands below are the verb-first spelling of waits WB already had,
+// scattered under `ci`, `agent` and `daemon operation`. Nothing listed them
+// together, which is part of why the measured adoption of `wb ci wait` was what
+// it was: an agent cannot choose a verb it never sees.
+//
+// Each builds from the SAME constructor as the original, so the two spellings
+// are one implementation and cannot drift. A command belongs to one parent, so
+// the constructor is called again here rather than the instance being shared.
+
+// newWaitChecksCmd is `wb ci wait` under the verb. The object is an exact
+// commit's checks — "ci" names a domain, not a thing a caller can point at.
+// This remains the authoritative merge-evidence waiter; `wb wait pr` does not.
+func newWaitChecksCmd() *cobra.Command {
+	command := newCIWaitCmd()
+	command.Use = strings.Replace(command.Use, "wait ", "checks ", 1)
+	command.Short = "Wait one bounded slice for checks on an exact head (was: wb ci wait)"
+	command.Aliases = append(command.Aliases, "ci")
+	return command
+}
+
+// newWaitAgentCmd is `wb agent await` under the verb. `await` is kept as an
+// alias here because that is the spelling agents already know.
+func newWaitAgentCmd() *cobra.Command {
+	command := newAgentAwaitCmd()
+	command.Use = strings.Replace(command.Use, "await ", "agent ", 1)
+	command.Short = "Block until a dispatched agent run is terminal (was: wb agent await)"
+	command.Aliases = append(command.Aliases, "await")
+	return command
+}
+
+// newWaitOperationCmd is `wb daemon operation wait` under the verb.
+func newWaitOperationCmd() *cobra.Command {
+	command := newDaemonOperationWaitCmd(defaultDaemonDependencies())
+	command.Use = strings.Replace(command.Use, "wait ", "operation ", 1)
+	command.Short = "Wait for a durable operation to reach a terminal state (was: wb daemon operation wait)"
 	return command
 }
