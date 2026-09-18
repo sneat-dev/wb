@@ -10780,6 +10780,93 @@
       "notes": "The JSON form is intended for provenance checks and automation."
     },
     {
+      "id": "wb.wait.list",
+      "feature_refs": [
+        "spec/ideas/delegated-waiting-and-agent-wake.md"
+      ],
+      "since": "unreleased",
+      "notes": "A delegated wait that nobody can see is the same as no wait: a session that correctly delegated its waiting goes quiet, and a quiet session is indistinguishable from a crashed one. This lists what WB is waiting for on this machine so the two can be told apart. It stores no events, delivers nothing, and wakes nobody.",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb wait list",
+              "flags": [
+                "--format",
+                "--json",
+                "--prune"
+              ],
+              "modes": [
+                "Lists every outstanding wait recorded on this machine, newest first, with its targets, condition, owning WB session and start time",
+                "Reports a wait whose process is gone as stale rather than hiding it, because a waiter that died without clearing its record is the case most worth seeing",
+                "Never deletes while listing; --prune removes only the records whose process is gone"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb wait list --help",
+              "contains": [
+                "quiet session",
+                "stale",
+                "Listing never deletes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "# WB merge",
+              "examples": [
+                "wb wait list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitListTellsAQuietSessionApartFromAStoppedOne",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitListReportsAStaleWaiterInJSON",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/waitregistry/registry_test.go",
+              "name": "TestRegisterMakesTheWaitVisibleAndReleaseRemovesIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/waitregistry/registry_test.go",
+              "name": "TestListReportsADeadWaiterRatherThanHidingIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/waitregistry/registry_test.go",
+              "name": "TestListNeverDeletesAndPruneRemovesOnlyStale",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      }
+    },
+    {
       "id": "wb.wait.pr",
       "feature_refs": [
         "spec/ideas/delegated-waiting-and-agent-wake.md"

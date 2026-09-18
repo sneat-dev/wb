@@ -13,6 +13,8 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/waitregistry"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // waitTestRun drives one bounded slice with an injected observer, so the
@@ -416,5 +418,53 @@ func TestWaitPRPrintsWhyABlockedHeadCannotMerge(t *testing.T) {
 	}
 	if !strings.Contains(got, "cannot merge until something produces it") {
 		t.Errorf("output did not explain the block: %q", got)
+	}
+}
+
+func TestWaitListTellsAQuietSessionApartFromAStoppedOne(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", home)
+	previous := waitregistry.Alive
+	waitregistry.Alive = func(int) bool { return true }
+	t.Cleanup(func() { waitregistry.Alive = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"wait", "list"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no outstanding waits") {
+		t.Errorf("empty registry did not say so: %q", stdout.String())
+	}
+}
+
+func TestWaitListReportsAStaleWaiterInJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", home)
+	root, err := wbhome.EnsureRoot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := waitregistry.Register(root, waitregistry.Record{
+		ID: "x", PID: 4242, Kind: "pr", Targets: []string{"acme/app#9"},
+		Until: "checks-settled", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previous := waitregistry.Alive
+	waitregistry.Alive = func(int) bool { return false }
+	t.Cleanup(func() { waitregistry.Alive = previous })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"wait", "list", "--json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	var payload struct {
+		Waits []waitregistry.Record `json:"waits"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("output = %q: %v", stdout.String(), err)
+	}
+	if len(payload.Waits) != 1 || !payload.Waits[0].Stale {
+		t.Fatalf("a dead waiter was not surfaced: %+v", payload.Waits)
 	}
 }

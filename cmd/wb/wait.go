@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,9 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/waitregistry"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Waiting is delegated to WB so an agent does not have to hold "check this
@@ -123,6 +127,7 @@ These commands report. They never merge, publish, or change a target. Use
 ` + "`wb pr land`" + ` to wait for checks and then land a pull request.`,
 	}
 	command.AddCommand(newWaitPRCmd())
+	command.AddCommand(newWaitListCmd())
 	return command
 }
 
@@ -188,6 +193,11 @@ wb wait pr sneat-dev/wb#581 --slice 8m --json`,
 			if err != nil {
 				return usageError(err.Error())
 			}
+			// A delegated wait that nobody can see is the same as no wait: the
+			// session goes quiet and looks stopped. Record it before waiting,
+			// and clear it however this call ends.
+			release := registerWait("pr", targets, string(condition), slice)
+			defer release()
 			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
 			progress := newLiveProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(fmt.Sprintf("wait pr: %d target(s) until %s", len(targets), condition))
@@ -622,4 +632,103 @@ func printWaitOutput(command *cobra.Command, output waitOutput) error {
 	}
 	_, err := fmt.Fprintf(out, "resume: %s\n", strings.Join(quoted, " "))
 	return err
+}
+
+// registerWait records an outstanding wait and returns its release. Every
+// failure here is non-fatal by design: losing visibility of a wait must never
+// stop the wait, which is the thing the caller actually asked for.
+func registerWait(kind string, targets []waitReference, until string, slice time.Duration) func() {
+	home, err := wbhome.EnsureRoot(projectsRoot)
+	if err != nil {
+		return func() {}
+	}
+	selectors := make([]string, 0, len(targets))
+	for _, target := range targets {
+		selectors = append(selectors, target.Selector)
+	}
+	record := waitregistry.Record{
+		ID:         fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
+		PID:        os.Getpid(),
+		Kind:       kind,
+		Targets:    selectors,
+		Until:      until,
+		StartedAt:  time.Now().UTC(),
+		Deadline:   time.Now().UTC().Add(slice),
+		ResumeArgs: append([]string{"wb", "wait", kind}, append(selectors, "--until", until)...),
+	}
+	if identity, ok := worktrees.RegisteredIdentity(); ok {
+		record.WBSessionID = identity.WBSessionID
+	}
+	release, err := waitregistry.Register(home, record)
+	if err != nil {
+		return func() {}
+	}
+	return release
+}
+
+func newWaitListCmd() *cobra.Command {
+	var jsonOut bool
+	var prune bool
+	command := &cobra.Command{
+		Use:   "list",
+		Short: "Show what WB is currently waiting for on this machine",
+		Long: `List every outstanding wait recorded on this machine.
+
+This exists so a quiet session can be told apart from a stopped one. An agent
+that has correctly delegated its waiting produces no output until the wait ends;
+without this, that is indistinguishable from a crash.
+
+A wait whose process is gone is reported as stale rather than hidden, because a
+waiter that died is the thing most worth knowing about. Listing never deletes;
+pass --prune to remove stale records.`,
+		Example: `wb wait list
+wb wait list --json`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			home, err := wbhome.EnsureRoot(projectsRoot)
+			if err != nil {
+				return err
+			}
+			if prune {
+				removed, pruneErr := waitregistry.Prune(home)
+				if pruneErr != nil {
+					return pruneErr
+				}
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "pruned %d stale wait(s)\n", removed); err != nil {
+					return err
+				}
+				return nil
+			}
+			records, err := waitregistry.List(home)
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(map[string]any{"schema_version": 1, "waits": records})
+			}
+			if len(records) == 0 {
+				_, err := fmt.Fprintln(command.OutOrStdout(), "no outstanding waits")
+				return err
+			}
+			for _, record := range records {
+				state := "waiting"
+				if record.Stale {
+					state = "stale"
+				}
+				line := fmt.Sprintf("%s %s %s until %s for %s since %s",
+					state, record.Kind, strings.Join(record.Targets, " "), record.Until,
+					record.WBSessionID, record.StartedAt.Format(time.RFC3339))
+				if _, err := fmt.Fprintln(command.OutOrStdout(), line); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&prune, "prune", false, "remove records whose waiting process is gone")
+	addJSONFormatFlags(command, &jsonOut)
+	setDiscoveryTerms(command, "wait list outstanding waiting pending stale session visible stopped quiet")
+	return command
 }

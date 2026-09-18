@@ -36,6 +36,16 @@ When a head is red, the output carries the failing file and line, or a bounded
 log excerpt when GitHub annotated nothing — so a failure does not cost a second
 round of downloading logs.
 
+A delegated wait goes quiet by design, which makes a waiting session look like
+a stopped one. Ask what is outstanding:
+
+```sh
+wb wait list
+```
+
+A waiter whose process died is reported as `stale` rather than hidden — that is
+the case worth seeing, because nothing is watching for that event any more.
+
 `wb wait` only reports. It never merges, and it is not merge evidence.
 
 ### Which waiting verb
