@@ -82,7 +82,6 @@ func TestSDCovDecodeMessageReceiptBranches(t *testing.T) {
 }
 
 func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
-	t.Parallel()
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
 	receiptRaw, err := sessionmove.EncodeMessageReceipt(receipt)
@@ -161,7 +160,6 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("receipt for another message", func(t *testing.T) {
-		t.Parallel()
 		other := receipt
 		other.MessageID = "message-other"
 		otherRaw, err := sessionmove.EncodeMessageReceipt(other)

@@ -76,7 +76,6 @@ func peerRowByName(t *testing.T, report PeerReport, name string) PeerRow {
 }
 
 func TestInspectPeersJudgesEveryPublishedRequirementAgainstTheLockedVersion(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{
 		"package.json":   peerTargetPackageJSON,
 		"pnpm-lock.yaml": peerTargetPnpmLock,
@@ -139,7 +138,6 @@ func TestInspectPeersJudgesEveryPublishedRequirementAgainstTheLockedVersion(t *t
 // An unevaluated row must never be reported as a pass. This is the failure
 // mode that makes a guessing tool worse than no tool.
 func TestPeersFailedIgnoresUnevaluatedButTheReportRefusesToCallItAPass(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{
 		"package.json":   peerTargetPackageJSON,
 		"pnpm-lock.yaml": peerTargetPnpmLock,
@@ -165,7 +163,6 @@ func TestPeersFailedIgnoresUnevaluatedButTheReportRefusesToCallItAPass(t *testin
 }
 
 func TestInspectPeersReportsACleanTargetAsReusable(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{
 		"package.json":   peerTargetPackageJSON,
 		"pnpm-lock.yaml": peerTargetPnpmLock,
@@ -188,7 +185,6 @@ func TestInspectPeersReportsACleanTargetAsReusable(t *testing.T) {
 // "Requires nothing of its host" is a legitimate — and maximally reusable —
 // answer, not an error or an empty screen.
 func TestInspectPeersSaysSoWhenAPackageDeclaresNoPeers(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{"package.json": peerTargetPackageJSON})
 
 	report, err := InspectPeers(context.Background(), peerOptions(t, root, PublishedPeerSet{Version: "2.1.0"}))
@@ -206,7 +202,6 @@ func TestInspectPeersSaysSoWhenAPackageDeclaresNoPeers(t *testing.T) {
 // Without a lockfile there is no installed version, only a declared range. WB
 // says which it used rather than presenting a range as an installed version.
 func TestInspectPeersLabelsADeclaredSpecifierWithNoLockfileEvidence(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{"package.json": peerTargetPackageJSON})
 
 	report, err := InspectPeers(context.Background(), peerOptions(t, root, PublishedPeerSet{
@@ -227,7 +222,6 @@ func TestInspectPeersLabelsADeclaredSpecifierWithNoLockfileEvidence(t *testing.T
 }
 
 func TestInspectPeersRefusesIncompleteInput(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{"package.json": peerTargetPackageJSON})
 
 	if _, err := InspectPeers(context.Background(), PeerOptions{Against: root}); err == nil || !strings.Contains(err.Error(), "package name") {
@@ -247,7 +241,6 @@ func TestInspectPeersRefusesIncompleteInput(t *testing.T) {
 }
 
 func TestInspectPeersSurfacesARegistryFailure(t *testing.T) {
-	t.Parallel()
 	root := newPeerTargetCheckout(t, map[string]string{"package.json": peerTargetPackageJSON})
 	want := errors.New("404 Not Found")
 

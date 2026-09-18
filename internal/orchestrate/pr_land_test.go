@@ -671,7 +671,6 @@ func TestLandRequiresExplicitSquashForKeepCommits(t *testing.T) {
 		{name: "explicit rebase", method: "rebase", explicit: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
 			options := landOptions(fixture)
 			options.MergeMethod = testCase.method
 			options.MergeMethodExplicit = testCase.explicit

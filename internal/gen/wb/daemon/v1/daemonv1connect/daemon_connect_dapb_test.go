@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -191,10 +192,13 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 
-	var intercepted int
+	// The ten subtests below all call through this one shared client and its
+	// interceptor concurrently (each is its own t.Parallel() subtest), so the
+	// counter it closes over must be atomic, not a plain int.
+	var intercepted atomic.Int64
 	interceptor := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			intercepted++
+			intercepted.Add(1)
 			return next(ctx, req)
 		}
 	})
@@ -399,8 +403,8 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 			t.Errorf("service call count for %s = %d, want 1", rpc, got)
 		}
 	}
-	if intercepted != 10 {
-		t.Errorf("unary interceptor ran %d times, want 10", intercepted)
+	if got := intercepted.Load(); got != 10 {
+		t.Errorf("unary interceptor ran %d times, want 10", got)
 	}
 }
 

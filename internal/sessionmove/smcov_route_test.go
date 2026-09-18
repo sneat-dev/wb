@@ -293,9 +293,7 @@ func TestSmCovRouteLoadRouteUnderLockAuthority(t *testing.T) {
 }
 
 func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
-	t.Parallel()
 	t.Run("nil lock", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := store.SaveSuccessorAddressUnderLock(nil, request.HandoffID, digest, validReceipt(request, digest)); err == nil || !strings.Contains(err.Error(), "exact admitted execution authority") {
 			t.Fatalf("SaveSuccessorAddressUnderLock(nil) error = %v", err)
@@ -303,7 +301,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("receipt does not bind request", func(t *testing.T) {
-		t.Parallel()
 		store, digest, lock, _ := smCovRouteReadyForSuccessor(t, validRequest())
 		request := validRequest()
 		unbound := validReceipt(request, digest)
@@ -317,7 +314,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("corrupt durable receipt", func(t *testing.T) {
-		t.Parallel()
 		store, digest, lock, _ := smCovRouteReadyForSuccessor(t, validRequest())
 		request := validRequest()
 		path := filepath.Join(store.Root, request.HandoffID, receiptFileName)
@@ -333,7 +329,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("no durable receipt", func(t *testing.T) {
-		t.Parallel()
 		request := validRequest()
 		store, digest := smCovRouteAdmit(t, request)
 		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
@@ -347,7 +342,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("supplied receipt differs", func(t *testing.T) {
-		t.Parallel()
 		store, digest, lock, receipt := smCovRouteReadyForSuccessor(t, validRequest())
 		request := validRequest()
 		different := receipt
@@ -361,7 +355,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("no durable route", func(t *testing.T) {
-		t.Parallel()
 		request := validRequest()
 		store, digest := smCovRouteAdmit(t, request)
 		lock := smCovRouteOpenLock(t, store, request, digest)
@@ -374,7 +367,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("successors entry is a regular file", func(t *testing.T) {
-		t.Parallel()
 		store, digest, lock, receipt := smCovRouteReadyForSuccessor(t, validRequest())
 		request := validRequest()
 		if err := os.WriteFile(filepath.Join(store.Root, successorAddressesDirName), []byte("not a directory"), 0o600); err != nil {
@@ -386,7 +378,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("derived address fails validation", func(t *testing.T) {
-		t.Parallel()
 		request := validRequest()
 		request.SourceRuntime = "first line\nsecond line"
 		store, digest, lock, receipt := smCovRouteReadyForSuccessor(t, request)
@@ -397,7 +388,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("address exceeds the durable bound", func(t *testing.T) {
-		t.Parallel()
 		request := validRequest()
 		request.SourceRuntime = strings.Repeat("r", maxSuccessorAddressBytes+1)
 		store, digest, lock, receipt := smCovRouteReadyForSuccessor(t, request)
@@ -411,7 +401,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("tampered published address", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, address, _ := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(store, request)
 		tampered := address
@@ -432,7 +421,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("published address is a symlink", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, _, raw := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(store, request)
 		if err := os.Remove(path); err != nil {
@@ -451,7 +439,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 	})
 
 	t.Run("happy publication and replay", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, address, _ := smCovRoutePublishSuccessor(t, validRequest())
 		if address.SuccessorWBSessionID != request.SuccessorWBSessionID || !reflect.DeepEqual(address.Route, validRoute(request, digest)) {
 			t.Fatalf("published successor address = %#v", address)
@@ -468,7 +455,6 @@ func TestSmCovRouteSaveSuccessorAddressUnderLockRejections(t *testing.T) {
 }
 
 func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
-	t.Parallel()
 	store, request, _, _, address, raw := smCovRoutePublishSuccessor(t, validRequest())
 
 	t.Run("invalid successor id", func(t *testing.T) {
@@ -490,7 +476,6 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing successors directory", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, _, _, _, _ := smCovRoutePublishSuccessor(t, validRequest())
 		if err := os.RemoveAll(filepath.Join(fresh.Root, successorAddressesDirName)); err != nil {
 			t.Fatal(err)
@@ -501,7 +486,6 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing address file", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, _, _, _, _ := smCovRoutePublishSuccessor(t, validRequest())
 		if err := os.Remove(smCovRouteAddressPath(fresh, freshRequest)); err != nil {
 			t.Fatal(err)
@@ -512,7 +496,6 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("undecodable address file", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, _, _, _, _ := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(fresh, freshRequest)
 		if err := os.Remove(path); err != nil {
@@ -558,7 +541,6 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("address digest does not match admitted request", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, _, _, _, _ := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(fresh, freshRequest)
 		forged := address
@@ -598,7 +580,6 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 }
 
 func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
-	t.Parallel()
 	t.Run("nil lock", func(t *testing.T) {
 		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
@@ -637,7 +618,6 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("lock is for another handoff", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, _, _, _ := smCovRoutePublishSuccessor(t, validRequest())
 		other := validRequest()
 		other.HandoffID = "handoff-other"
@@ -656,7 +636,6 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("tampered address bytes", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, address, _ := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(store, request)
 		tampered := address
@@ -677,7 +656,6 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("address names another handoff", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, address, _ := smCovRoutePublishSuccessor(t, validRequest())
 		path := smCovRouteAddressPath(store, request)
 		tampered := address
@@ -699,7 +677,6 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("happy path", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, address, _ := smCovRoutePublishSuccessor(t, validRequest())
 		loaded, err := store.LoadSuccessorAddressUnderLock(lock, request.HandoffID, digest)
 		if err != nil || !reflect.DeepEqual(loaded, address) {
@@ -709,7 +686,6 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 }
 
 func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
-	t.Parallel()
 	store, request, digest, _, address, raw := smCovRoutePublishSuccessor(t, validRequest())
 
 	openHandoff := func(t *testing.T, s Store, handoffID string) *os.File {
@@ -744,7 +720,6 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	})
 
 	t.Run("no durable receipt", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, freshDigest, _, _, freshRaw := smCovRoutePublishSuccessor(t, validRequest())
 		if err := os.Remove(filepath.Join(fresh.Root, freshRequest.HandoffID, receiptFileName)); err != nil {
 			t.Fatal(err)
@@ -755,7 +730,6 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	})
 
 	t.Run("corrupt durable receipt", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, freshDigest, _, _, freshRaw := smCovRoutePublishSuccessor(t, validRequest())
 		path := filepath.Join(fresh.Root, freshRequest.HandoffID, receiptFileName)
 		if err := os.Remove(path); err != nil {
@@ -770,7 +744,6 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	})
 
 	t.Run("no durable route", func(t *testing.T) {
-		t.Parallel()
 		fresh, freshRequest, freshDigest, _, _, freshRaw := smCovRoutePublishSuccessor(t, validRequest())
 		if err := os.Remove(filepath.Join(fresh.Root, freshRequest.HandoffID, routeFileName)); err != nil {
 			t.Fatal(err)
@@ -968,7 +941,6 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 }
 
 func TestSmCovRouteDecodeAndValidateSuccessorAddress(t *testing.T) {
-	t.Parallel()
 	request, _, address := smCovRouteBaseAddress(t)
 
 	t.Run("malformed JSON", func(t *testing.T) {
@@ -1005,7 +977,6 @@ func TestSmCovRouteDecodeAndValidateSuccessorAddress(t *testing.T) {
 }
 
 func TestSmCovRouteValidateSuccessorAddressBranches(t *testing.T) {
-	t.Parallel()
 	request, _, base := smCovRouteBaseAddress(t)
 	if err := validateSuccessorAddress(base, request.SuccessorWBSessionID); err != nil {
 		t.Fatalf("valid successor address rejected: %v", err)

@@ -10,7 +10,6 @@ import (
 )
 
 func TestWtLogCovRelocateValidation(t *testing.T) {
-	t.Parallel()
 	if _, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: t.TempDir(), Task: "../escape", To: "local"}); err == nil {
 		t.Fatal("unsafe task was accepted")
 	}
@@ -79,14 +78,12 @@ func wtLogCovWriteRelocationFile(t *testing.T, run *os.File, name string, record
 }
 
 func TestWtLogCovOpenRelocationJournalFailures(t *testing.T) {
-	t.Parallel()
 	claim, source, destination := wtLogCovRelocationClaim(t)
 	base := workLogRelocationIntent{Version: 1, Type: workLogRelocationIntentType, OperationID: "op-1",
 		ClaimID: claim.ClaimID, Task: claim.Task, Repository: claim.Repository, Branch: claim.Branch,
 		HeadSHA: "head", Source: source, Destination: destination, To: "local", At: time.Now().UTC()}
 
 	t.Run("filename mismatch", func(t *testing.T) {
-		t.Parallel()
 		home := t.TempDir()
 		run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
 		if err != nil {
@@ -100,7 +97,6 @@ func TestWtLogCovOpenRelocationJournalFailures(t *testing.T) {
 	})
 
 	t.Run("invalid record", func(t *testing.T) {
-		t.Parallel()
 		home := t.TempDir()
 		run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
 		if err != nil {
@@ -116,7 +112,6 @@ func TestWtLogCovOpenRelocationJournalFailures(t *testing.T) {
 	})
 
 	t.Run("orphan receipt", func(t *testing.T) {
-		t.Parallel()
 		home := t.TempDir()
 		run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
 		if err != nil {
@@ -132,7 +127,6 @@ func TestWtLogCovOpenRelocationJournalFailures(t *testing.T) {
 	})
 
 	t.Run("unrelated and invalid json skipped", func(t *testing.T) {
-		t.Parallel()
 		home := t.TempDir()
 		run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
 		if err != nil {
@@ -158,7 +152,6 @@ func TestWtLogCovOpenRelocationJournalFailures(t *testing.T) {
 }
 
 func TestWtLogCovRelocationResolutionBranches(t *testing.T) {
-	t.Parallel()
 	claim, source, destination := wtLogCovRelocationClaim(t)
 	home := t.TempDir()
 	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
@@ -262,7 +255,6 @@ func TestWtLogCovCorroborateRepositoryRelocation(t *testing.T) {
 }
 
 func TestWtLogCovRelocateRepositoryValidation(t *testing.T) {
-	t.Parallel()
 	cases := map[string]RepositoryRelocateOptions{
 		"identical":    {SourceRepository: "acme/app", DestinationRepository: "acme/app", RemoteURL: "https://github.com/acme/app.git", DefaultBranch: "main"},
 		"bad source":   {SourceRepository: "nope", DestinationRepository: "acme/dest", RemoteURL: "https://github.com/acme/dest.git", DefaultBranch: "main"},
@@ -348,7 +340,6 @@ func TestWtLogCovRemoteDefaultHead(t *testing.T) {
 }
 
 func TestWtLogCovDisposableDestinationReason(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	remote := filepath.Join(root, "remotes", "newco", "renamed.git")
 	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {

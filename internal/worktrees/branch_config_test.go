@@ -74,7 +74,6 @@ func TestBranchNamingPrecedenceReadsTargetBaseObject(t *testing.T) {
 }
 
 func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testing.T) {
-	t.Parallel()
 	projectsRoot := t.TempDir()
 	create, err := normalizeCreateOptions(CreateOptions{
 		ProjectsRoot: projectsRoot,

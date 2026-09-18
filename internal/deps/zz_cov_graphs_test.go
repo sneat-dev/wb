@@ -116,7 +116,6 @@ func TestDepsCovGraphsBuildGraphRejectsInvalidOptions(t *testing.T) {
 }
 
 func TestDepsCovGraphsDiscoverNpmFleetGraphInvalidSlugArchivedAndPathFallback(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	seedNpmGraphRepository(t, fixture, githubDir, "apps", map[string]string{
@@ -1060,7 +1059,6 @@ func TestDepsCovGraphsGraphFromFleetTieBreakers(t *testing.T) {
 }
 
 func TestDepsCovGraphsRepositoryOrderAndCyclePaths(t *testing.T) {
-	t.Parallel()
 	graph := Graph{
 		Repositories: []GraphRepository{{Slug: "acme/unrelated"}},
 		Requirements: []GraphRequirement{internalRequirement("acme/provider", "acme/consumer")},

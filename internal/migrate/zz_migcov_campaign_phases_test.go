@@ -156,7 +156,6 @@ func TestMigCovUpdateRepositoryManifestsAndChangeIndex(t *testing.T) {
 }
 
 func TestMigCovFinalizeRepositoryManifestsRecordsPublishableUpdates(t *testing.T) {
-	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "app")
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ../dep\n")
@@ -577,7 +576,6 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 }
 
 func TestMigCovCampaignRegisteredWorktreesSkipsNonRepositories(t *testing.T) {
-	t.Parallel()
 	if worktrees, err := campaignRegisteredWorktrees(filepath.Join(t.TempDir(), "absent"), "wb/migrate/x"); err != nil || worktrees != nil {
 		t.Fatalf("campaignRegisteredWorktrees(absent) = %v, %v", worktrees, err)
 	}

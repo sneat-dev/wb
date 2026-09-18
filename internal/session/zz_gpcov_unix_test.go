@@ -311,7 +311,6 @@ func TestGpCovParentPIDReportsTheRealAncestorAndRefusesRoot(t *testing.T) {
 }
 
 func TestGpCovFindHarnessAncestorNamesAKnownHarnessAncestor(t *testing.T) {
-	t.Parallel()
 	harnessPID, childPID := gpCovHarnessNamedProcess(t, "cursor-agent")
 	pid, runtime := findHarnessAncestor(childPID)
 	if pid != harnessPID || runtime != "cursor-agent" {
@@ -321,7 +320,6 @@ func TestGpCovFindHarnessAncestorNamesAKnownHarnessAncestor(t *testing.T) {
 }
 
 func TestGpCovFindHarnessAncestorWalksPastANonHarnessParent(t *testing.T) {
-	t.Parallel()
 	namedPID, childPID := gpCovHarnessNamedProcess(t, "gpcovsh")
 	pid, runtime := findHarnessAncestor(childPID)
 	if pid == namedPID {

@@ -965,7 +965,6 @@ func TestCreateRefusesLatePublishedWorktreeSubstitutionBeforeRepair(t *testing.T
 }
 
 func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
-	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1010,7 +1009,6 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 }
 
 func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
-	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1040,7 +1038,6 @@ func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
 }
 
 func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
-	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1064,7 +1061,6 @@ func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
 }
 
 func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		retiredName string
@@ -1087,7 +1083,6 @@ func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			operationRoot := t.TempDir()
 			if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
 				operationRoot = resolved
@@ -1118,7 +1113,6 @@ func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 }
 
 func TestSecureStagePoolSkipsReplacementAndDoesNotCapExhaustedEntries(t *testing.T) {
-	t.Parallel()
 	operationRoot := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
 		operationRoot = resolved
@@ -1157,7 +1151,6 @@ func TestSecureStagePoolSkipsReplacementAndDoesNotCapExhaustedEntries(t *testing
 }
 
 func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
-	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1193,7 +1186,6 @@ func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
 }
 
 func TestOperationLockClaimNeverMutatesHardLinkedRetirement(t *testing.T) {
-	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved

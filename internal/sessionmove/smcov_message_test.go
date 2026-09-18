@@ -340,9 +340,7 @@ func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
 }
 
 func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
-	t.Parallel()
 	t.Run("empty payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, nil, fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "must be non-empty") {
@@ -351,7 +349,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("oversized payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		huge := bytes.Repeat([]byte("x"), maxMessageBytes+1)
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, huge, fixture.message.SentAt)
@@ -361,7 +358,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("malformed JSON payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, []byte("{not json"), fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "parse session message") {
@@ -370,7 +366,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("non-canonical JSON payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, fixture.messageRaw); err != nil {
@@ -386,7 +381,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lineage mismatch", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		mutated := fixture.message
 		mutated.HandoffID = "handoff-999"
@@ -400,7 +394,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("no durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, false, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "requires a durable completed handoff receipt") {
@@ -409,7 +402,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("corrupt durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		fixture.smCovMsgCorruptHandoffReceipt(t)
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt)
@@ -419,7 +411,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("zero recorded at", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, time.Time{})
 		if err == nil || !strings.Contains(err.Error(), "recorded_at is required") {
@@ -428,7 +419,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("outgoing recorded at must equal sent at", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt.Add(time.Second))
 		if err == nil || !strings.Contains(err.Error(), "must equal its caller-owned sent_at") {
@@ -437,7 +427,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("incoming accepts any non-zero recorded at", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		recordedAt := fixture.message.SentAt.Add(3 * time.Second)
 		state, err := fixture.store.AdmitIncomingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, recordedAt)
@@ -450,7 +439,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("conflicting exact bytes for same message ID", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("first admission: %v", err)
@@ -467,7 +455,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lock held for a different handoff", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, "handoff-999", fixture.digest, fixture.messageRaw, fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "execution lock is for handoff") {
@@ -476,7 +463,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("unsupported direction", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.admitMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, MessageDirection("sideways"), fixture.messageRaw, fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "unsupported") {
@@ -485,7 +471,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("existing payload with wrong mode refuses admission", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		path := filepath.Join(fixture.smCovMsgEntryDir(MessageDirectionOutgoing, fixture.message.MessageID), messagePayloadFileName)
 		smCovMsgWrite(t, path, fixture.messageRaw, 0o644)
@@ -496,7 +481,6 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("existing mismatched paste intent refuses admission", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		intent := fixture.smCovMsgDefaultIntent()
 		intent.MessageDigest = DigestBytes([]byte("some other payload"))
@@ -509,9 +493,7 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 }
 
 func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
-	t.Parallel()
 	t.Run("invalid message id", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.LoadIncomingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, ""); err == nil || !strings.Contains(err.Error(), "message_id") {
 			t.Fatalf("invalid message id error = %v", err)
@@ -519,7 +501,6 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("no durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, false, false, time.Time{})
 		_, err := fixture.store.LoadOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "requires a durable completed handoff receipt") {
@@ -528,7 +509,6 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("corrupt durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		fixture.smCovMsgCorruptHandoffReceipt(t)
 		_, err := fixture.store.LoadOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
@@ -538,7 +518,6 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lock held for a different handoff", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.LoadOutgoingMessageUnderLock(fixture.lock, "handoff-999", fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "execution lock is for handoff") {
@@ -547,7 +526,6 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("missing message directory", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.LoadOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "open message") {
@@ -556,7 +534,6 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("loads admitted outgoing message", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("admit: %v", err)
@@ -572,13 +549,11 @@ func TestSmCovMsgLoadMessageUnderLockErrors(t *testing.T) {
 }
 
 func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
-	t.Parallel()
 	outboxDir := func(fixture smCovMsgFixture) string {
 		return fixture.smCovMsgEntryDir(MessageDirectionOutgoing, fixture.message.MessageID)
 	}
 
 	t.Run("invalid message id", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, ""); err == nil || !strings.Contains(err.Error(), "message_id") {
 			t.Fatalf("invalid message id error = %v", err)
@@ -586,7 +561,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("no durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, false, false, time.Time{})
 		_, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "requires a durable completed handoff receipt") {
@@ -595,7 +569,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("corrupt durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		fixture.smCovMsgCorruptHandoffReceipt(t)
 		_, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
@@ -605,7 +578,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lock held for a different handoff", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, "handoff-999", fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "execution lock is for handoff") {
@@ -614,7 +586,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("missing message directory", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
 		if err == nil || !strings.Contains(err.Error(), "open message") {
@@ -623,7 +594,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("missing payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if err := os.MkdirAll(outboxDir(fixture), 0o700); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
@@ -635,7 +605,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("malformed payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		smCovMsgWrite(t, filepath.Join(outboxDir(fixture), messagePayloadFileName), []byte("{not json"), 0o600)
 		_, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
@@ -645,7 +614,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("non-canonical payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, fixture.messageRaw); err != nil {
@@ -658,7 +626,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("payload message id mismatch", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		otherID := "message-999"
 		smCovMsgWrite(t, filepath.Join(fixture.smCovMsgEntryDir(MessageDirectionOutgoing, otherID), messagePayloadFileName), fixture.messageRaw, 0o600)
@@ -668,7 +635,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("payload lineage mismatch", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		mutated := fixture.message
 		mutated.HandoffID = "handoff-999"
@@ -683,7 +649,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable existing record", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		smCovMsgWrite(t, filepath.Join(outboxDir(fixture), messagePayloadFileName), fixture.messageRaw, 0o600)
 		smCovMsgWrite(t, filepath.Join(outboxDir(fixture), messageRecordFileName), []byte("{}\n"), 0o644)
@@ -694,7 +659,6 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("repairs the missing record", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		smCovMsgWrite(t, filepath.Join(outboxDir(fixture), messagePayloadFileName), fixture.messageRaw, 0o600)
 		state, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID)
@@ -711,11 +675,9 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 }
 
 func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
-	t.Parallel()
 	baseRecordedAt := time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC)
 
 	t.Run("no durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, false, false, time.Time{})
 		intent := MessagePasteIntent{
 			SchemaVersion: MessagePasteIntentSchemaVersion, MessageID: fixture.message.MessageID,
@@ -730,7 +692,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("corrupt durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		fixture.smCovMsgCorruptHandoffReceipt(t)
 		_, _, err := fixture.store.SaveIncomingPasteIntentUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.smCovMsgDefaultIntent())
@@ -740,7 +701,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lock held for a different handoff", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		_, _, err := fixture.store.SaveIncomingPasteIntentUnderLock(fixture.lock, "handoff-999", fixture.digest, fixture.smCovMsgDefaultIntent())
 		if err == nil || !strings.Contains(err.Error(), "execution lock is for handoff") {
@@ -749,7 +709,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("missing inbox entry", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		_, _, err := fixture.store.SaveIncomingPasteIntentUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.smCovMsgDefaultIntent())
 		if err == nil || !strings.Contains(err.Error(), "open message") {
@@ -758,7 +717,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable inbox record", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		if err := os.Remove(filepath.Join(fixture.smCovMsgEntryDir(MessageDirectionIncoming, fixture.message.MessageID), messageRecordFileName)); err != nil {
 			t.Fatalf("remove record: %v", err)
@@ -781,7 +739,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	}
 	for _, test := range invalid {
 		t.Run("invalid intent "+test.name, func(t *testing.T) {
-			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 			intent := fixture.smCovMsgDefaultIntent()
 			test.mutate(&intent)
@@ -802,7 +759,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	}
 	for _, test := range mismatched {
 		t.Run("intent mismatch "+test.name, func(t *testing.T) {
-			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 			intent := fixture.smCovMsgDefaultIntent()
 			test.mutate(&intent)
@@ -814,7 +770,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	}
 
 	t.Run("publishes then replays identical intent", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		intent := fixture.smCovMsgDefaultIntent()
 		stored, replay, err := fixture.store.SaveIncomingPasteIntentUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, intent)
@@ -836,7 +791,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("different intent for the same message conflicts", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		intent := fixture.smCovMsgDefaultIntent()
 		fixture.smCovMsgSaveIntent(t, intent)
@@ -848,7 +802,6 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("tampered durable intent blocks a new save", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		smCovMsgWrite(t, filepath.Join(fixture.smCovMsgEntryDir(MessageDirectionIncoming, fixture.message.MessageID), messageIntentFileName), []byte("{not json"), 0o600)
 		_, _, err := fixture.store.SaveIncomingPasteIntentUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.smCovMsgDefaultIntent())
@@ -859,11 +812,9 @@ func TestSmCovMsgSaveIncomingPasteIntentUnderLockErrors(t *testing.T) {
 }
 
 func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
-	t.Parallel()
 	baseRecordedAt := time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC)
 
 	t.Run("no durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, false, false, time.Time{})
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
 		_, _, err := fixture.store.SaveOutgoingMessageReceiptUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, receipt)
@@ -873,7 +824,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("corrupt durable handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		fixture.smCovMsgCorruptHandoffReceipt(t)
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
@@ -884,7 +834,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("lock held for a different handoff", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
 		_, _, err := fixture.store.SaveOutgoingMessageReceiptUnderLock(fixture.lock, "handoff-999", fixture.digest, receipt)
@@ -894,7 +843,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("missing message entry", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
 		_, _, err := fixture.store.SaveOutgoingMessageReceiptUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, receipt)
@@ -904,7 +852,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable message record", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("admit: %v", err)
@@ -920,7 +867,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("receipt does not match message", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("admit: %v", err)
@@ -933,7 +879,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("incoming receipt without durable paste intent", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
 		_, _, err := fixture.store.SaveIncomingMessageReceiptUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, receipt)
@@ -958,7 +903,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	}
 	for _, test := range incomingMismatch {
 		t.Run("incoming receipt mismatch "+test.name, func(t *testing.T) {
-			t.Parallel()
 			fixture := smCovMsgNewFixture(t, true, true, baseRecordedAt)
 			intent := fixture.smCovMsgDefaultIntent()
 			test.intent(&intent)
@@ -972,7 +916,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	}
 
 	t.Run("replays an identical outgoing receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("admit: %v", err)
@@ -989,7 +932,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 	})
 
 	t.Run("different outgoing receipt conflicts", func(t *testing.T) {
-		t.Parallel()
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		if _, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.messageRaw, fixture.message.SentAt); err != nil {
 			t.Fatalf("admit: %v", err)
@@ -1007,7 +949,6 @@ func TestSmCovMsgSaveMessageReceiptUnderLockErrors(t *testing.T) {
 }
 
 func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
-	t.Parallel()
 	baseRecordedAt := time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC)
 
 	type smCovMsgLoadedFixture struct {
@@ -1034,7 +975,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	}
 
 	t.Run("payload read error", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		if err := os.Remove(filepath.Join(fixture.entry, messagePayloadFileName)); err != nil {
 			t.Fatalf("remove payload: %v", err)
@@ -1046,7 +986,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("undecodable payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messagePayloadFileName), []byte("{not json"), 0o600)
 		_, err := loadMessageStateAt(fixture.directory, fixture.request, MessageDirectionIncoming, fixture.message.MessageID, authority(fixture))
@@ -1056,7 +995,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("payload message id mismatch", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		_, err := loadMessageStateAt(fixture.directory, fixture.request, MessageDirectionIncoming, "message-999", authority(fixture))
 		if !errors.Is(err, ErrHandoffConflict) {
@@ -1065,7 +1003,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("payload lineage mismatch", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		mutated := fixture.message
 		mutated.HandoffID = "handoff-999"
@@ -1080,7 +1017,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("missing record", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		if err := os.Remove(filepath.Join(fixture.entry, messageRecordFileName)); err != nil {
 			t.Fatalf("remove record: %v", err)
@@ -1092,7 +1028,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("malformed record", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messageRecordFileName), []byte("{not json"), 0o600)
 		_, err := loadMessageStateAt(fixture.directory, fixture.request, MessageDirectionIncoming, fixture.message.MessageID, authority(fixture))
@@ -1102,7 +1037,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("record does not match payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		forged := MessageRecord{
 			SchemaVersion: MessageRecordSchemaVersion, Direction: MessageDirectionIncoming,
@@ -1116,7 +1050,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("malformed paste intent", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messageIntentFileName), []byte("{not json"), 0o600)
 		_, err := loadMessageStateAt(fixture.directory, fixture.request, MessageDirectionIncoming, fixture.message.MessageID, authority(fixture))
@@ -1126,7 +1059,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("paste intent does not match message", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		intent := fixture.smCovMsgDefaultIntent()
 		intent.MessageDigest = DigestBytes([]byte("some other payload"))
@@ -1137,7 +1069,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable paste intent", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		path := filepath.Join(fixture.entry, messageIntentFileName)
 		smCovMsgWrite(t, path, smCovMsgMarshal(t, fixture.smCovMsgDefaultIntent()), 0o600)
@@ -1151,7 +1082,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("malformed receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messageReceiptFileName), []byte("{not json"), 0o600)
 		_, err := loadMessageStateAt(fixture.directory, fixture.request, MessageDirectionIncoming, fixture.message.MessageID, authority(fixture))
@@ -1161,7 +1091,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("receipt without handoff authority", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		receiptRaw, err := EncodeMessageReceipt(validMessageReceipt(fixture.message, fixture.messageDigest))
 		if err != nil {
@@ -1175,7 +1104,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("incoming receipt does not match record and intent", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		intent := fixture.smCovMsgDefaultIntent()
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messageIntentFileName), smCovMsgMarshal(t, intent), 0o600)
@@ -1193,7 +1121,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("receipt does not match payload", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		receipt := validMessageReceipt(fixture.message, fixture.messageDigest)
 		receipt.MessageDigest = DigestBytes([]byte("forged payload"))
@@ -1208,7 +1135,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		path := filepath.Join(fixture.entry, messageReceiptFileName)
 		receiptRaw, err := EncodeMessageReceipt(validMessageReceipt(fixture.message, fixture.messageDigest))
@@ -1226,7 +1152,6 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 	})
 
 	t.Run("loads incoming message with intent and receipt", func(t *testing.T) {
-		t.Parallel()
 		fixture := openEntry(t, baseRecordedAt)
 		intent := fixture.smCovMsgDefaultIntent()
 		smCovMsgWrite(t, filepath.Join(fixture.entry, messageIntentFileName), smCovMsgMarshal(t, intent), 0o600)
@@ -1427,7 +1352,6 @@ func TestSmCovMsgValidatePasteIntentBranches(t *testing.T) {
 }
 
 func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
-	t.Parallel()
 	fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 	handoff, err := os.Open(fixture.smCovMsgHandoffPath())
 	if err != nil {

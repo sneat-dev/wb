@@ -46,7 +46,6 @@ func TestLandlockInstallPinsCallerThroughImmediateExecBoundary(t *testing.T) {
 // registered cleanups and the coverage flush the same way a hard kill would.
 // This process is disposable — nothing downstream depends on either.
 func TestLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
-	t.Parallel()
 	if os.Getenv("WB_LANDLOCK_RETAINED_ROOT_CHILD") == "1" {
 		testLandlockCapabilityUsesRetainedRootAfterPathSwap(t)
 		return
@@ -111,7 +110,6 @@ func testLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
 // git_capability_darwin.go); this pins the Landlock side of the same
 // guarantee.
 func TestLandlockCapabilityAllowsDevNullWrite(t *testing.T) {
-	t.Parallel()
 	if os.Getenv("WB_LANDLOCK_DEVNULL_CHILD") == "1" {
 		testLandlockCapabilityAllowsDevNullWrite(t)
 		return

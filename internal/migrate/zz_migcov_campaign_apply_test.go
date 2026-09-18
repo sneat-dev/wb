@@ -238,7 +238,6 @@ func TestMigCovSeedCycleComponentReportsUnreadableWorktree(t *testing.T) {
 }
 
 func TestMigCovCampaignRegisteredWorktreesReportsUnresolvableGitDirectory(t *testing.T) {
-	t.Parallel()
 	githubDir := t.TempDir()
 	canonical := filepath.Join(githubDir, "acme", "looping")
 	if err := os.MkdirAll(canonical, 0o755); err != nil {

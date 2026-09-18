@@ -345,7 +345,6 @@ func TestWTCoreCovReadAdoptedWorktreePointerRejectsMalformedRecords(t *testing.T
 // TestWTCoreCovOrphanedClaimInputValidation asserts every refusal the
 // orphaned-abort entry point makes before it touches any state.
 func TestWTCoreCovOrphanedClaimInputValidation(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	for _, testCase := range []struct {
 		name    string
@@ -364,7 +363,6 @@ func TestWTCoreCovOrphanedClaimInputValidation(t *testing.T) {
 		{name: "missing task", options: AbortOptions{ClaimID: strings.Repeat("a", 64), Actor: "tester", Reason: "gone", ProjectsRoot: t.TempDir()}, wantErr: "task is required"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
 			if _, err := abortOrphanedClaim(ctx, testCase.options); err == nil {
 				t.Fatal("invalid input was accepted")
 			} else if !strings.Contains(err.Error(), testCase.wantErr) {

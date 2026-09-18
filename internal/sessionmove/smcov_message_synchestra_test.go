@@ -62,7 +62,6 @@ func smCovSynchDispatchPath(store Store, request Request, messageID string) stri
 }
 
 func TestSmCovMessageSynchestraDispatchPublishesExactReplayableIdentity(t *testing.T) {
-	t.Parallel()
 	store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 	defer func() { _ = lock.Close() }()
 	identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -103,7 +102,6 @@ func TestSmCovMessageSynchestraDispatchPublishesExactReplayableIdentity(t *testi
 }
 
 func TestSmCovMessageSynchestraDispatchRequiresExactExecutionAuthority(t *testing.T) {
-	t.Parallel()
 	store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 	defer func() { _ = lock.Close() }()
 	identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -123,9 +121,7 @@ func TestSmCovMessageSynchestraDispatchRequiresExactExecutionAuthority(t *testin
 }
 
 func TestSmCovMessageSynchestraDispatchRequiresDurableRouteReceiptAndMessage(t *testing.T) {
-	t.Parallel()
 	t.Run("route missing", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, false, true, true)
 		defer func() { _ = lock.Close() }()
 		identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -138,7 +134,6 @@ func TestSmCovMessageSynchestraDispatchRequiresDurableRouteReceiptAndMessage(t *
 	})
 
 	t.Run("handoff receipt missing", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, false, false)
 		defer func() { _ = lock.Close() }()
 		identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -151,7 +146,6 @@ func TestSmCovMessageSynchestraDispatchRequiresDurableRouteReceiptAndMessage(t *
 	})
 
 	t.Run("outgoing message missing", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, false)
 		defer func() { _ = lock.Close() }()
 		identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -165,7 +159,6 @@ func TestSmCovMessageSynchestraDispatchRequiresDurableRouteReceiptAndMessage(t *
 }
 
 func TestSmCovMessageSynchestraDispatchRefusesIdentityDrift(t *testing.T) {
-	t.Parallel()
 	store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 	defer func() { _ = lock.Close() }()
 	messageDigest := DigestBytes(raw)
@@ -207,9 +200,7 @@ func TestSmCovMessageSynchestraDispatchRefusesIdentityDrift(t *testing.T) {
 }
 
 func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
-	t.Parallel()
 	t.Run("undecodable dispatch", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		if _, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)); err != nil {
@@ -226,7 +217,6 @@ func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
 	})
 
 	t.Run("schema-valid but unbound dispatch", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		if _, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)); err != nil {
@@ -250,7 +240,6 @@ func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
 	})
 
 	t.Run("symlink", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		if _, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)); err != nil {
@@ -270,7 +259,6 @@ func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
 	})
 
 	t.Run("hardlink", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		if _, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)); err != nil {
@@ -286,7 +274,6 @@ func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
 	})
 
 	t.Run("corrupt handoff receipt", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)
@@ -302,7 +289,6 @@ func TestSmCovMessageSynchestraDispatchReadsRejectCorruptState(t *testing.T) {
 	})
 
 	t.Run("corrupt outgoing message record", func(t *testing.T) {
-		t.Parallel()
 		store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
 		defer func() { _ = lock.Close() }()
 		identity := smCovSynchIdentity(request, digest, DigestBytes(raw), message.MessageID)

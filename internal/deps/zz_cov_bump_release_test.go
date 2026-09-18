@@ -823,7 +823,6 @@ func TestDepsCovBumpReleaseRequirementsContainAndSortedObservations(t *testing.T
 // shared wave helper relies on, the no-registry refusal, and the command
 // description each ecosystem reports as release evidence.
 func TestDepsCovBumpReleaseRegistryDispatchers(t *testing.T) {
-	t.Parallel()
 	if _, err := latestReleaseVersion(context.Background(), "example.com/x", BumpOptions{NoRegistry: true}); err == nil || !strings.Contains(err.Error(), "registry lookup is disabled") {
 		t.Fatalf("no-registry version error = %v", err)
 	}

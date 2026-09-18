@@ -115,7 +115,6 @@ func TestWTCoreCovCreatePublicationErrorUnwrap(t *testing.T) {
 // exported opener creates the named operation directory but never fabricates a
 // missing parent hierarchy.
 func TestWTCoreCovOpenOperationLockDirectoryRefusesMissingPath(t *testing.T) {
-	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +156,6 @@ func TestWTCoreCovOpenOperationLockDirectoryRefusesMissingPath(t *testing.T) {
 // asserts the exported verifier fails closed before reading any Work Log when
 // the supplied expectations are empty, malformed, or duplicated.
 func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t *testing.T) {
-	t.Parallel()
 	projectsRoot := t.TempDir()
 	if err := ValidateRemovedTerminalWorkLogs(projectsRoot, nil); err == nil {
 		t.Fatal("an empty expectation set was accepted")
@@ -176,7 +174,6 @@ func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t
 		"empty commit":   {Task: "task", Repository: "acme/app", Worktree: "/checkout", Branch: "wb/task"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			if err := ValidateRemovedTerminalWorkLogs(projectsRoot, []TerminalWorkLogExpectation{invalid}); err == nil {
 				t.Fatal("an incomplete expectation was accepted")
 			} else if !strings.Contains(err.Error(), "invalid terminal Work Log expectation") {

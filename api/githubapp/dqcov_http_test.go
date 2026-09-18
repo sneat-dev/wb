@@ -295,7 +295,6 @@ func TestDQCovHandlerMapsUnconfiguredAndFailingControlPlane(t *testing.T) {
 }
 
 func TestDQCovEventsHandlerResolvesCursorAndRejectsBadFilters(t *testing.T) {
-	t.Parallel()
 	source := &dqCovEventSource{live: dqCovClosedEvents()}
 	handler := NewHandler(HandlerOptions{Service: Service{Events: source}})
 	cases := []struct {
@@ -311,7 +310,6 @@ func TestDQCovEventsHandlerResolvesCursorAndRejectsBadFilters(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			source.liveFilter = EventFilter{}
 			source.replayCalls = 0
 			request := httptest.NewRequest(http.MethodGet, test.target, nil)
@@ -334,7 +332,6 @@ func TestDQCovEventsHandlerResolvesCursorAndRejectsBadFilters(t *testing.T) {
 		APIPrefix + "/events?since=yesterday",
 	} {
 		t.Run(target, func(t *testing.T) {
-			t.Parallel()
 			source.replayCalls = 0
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))

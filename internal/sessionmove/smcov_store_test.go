@@ -99,7 +99,6 @@ func smCovUnder(store Store, handoffID string, names ...string) string {
 }
 
 func TestSmCovStoreHappyLifecycleCoversEveryExportedPath(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequestWithInlineHandover("inline handover document\n")
 	raw, digest := smCovAdmit(t, store, request)
@@ -300,7 +299,6 @@ func TestSmCovStoreAdmitRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreAdmitReplayRefusesCorruptDurableReceipt(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	raw, digest := smCovAdmit(t, store, request)
@@ -379,7 +377,6 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseMissingState(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAndAppendEventRefuseCorruptRequest(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -396,7 +393,6 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseCorruptRequest(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAndAppendEventRefuseWrongDigest(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -416,7 +412,6 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseWrongDigest(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAtRejectsInvalidAndConflictingReceipts(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -474,7 +469,6 @@ func TestSmCovStoreSaveReceiptAtRejectsInvalidAndConflictingReceipts(t *testing.
 }
 
 func TestSmCovStoreAppendEventRejectsInvalidPhaseAndTime(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -781,7 +775,6 @@ func TestSmCovStoreRetainHandoffUnderLockRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
-	t.Parallel()
 	at := smCovEventTime(1)
 
 	t.Run("append completed with corrupt receipt", func(t *testing.T) {
@@ -807,7 +800,6 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("load with corrupt receipt", func(t *testing.T) {
-		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -821,7 +813,6 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("load receipt with widened mode", func(t *testing.T) {
-		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -840,7 +831,6 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("save receipt over a directory", func(t *testing.T) {
-		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -886,7 +876,6 @@ func TestSmCovStoreLoadRequestAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreLoadReceiptAtRefusals(t *testing.T) {
-	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -917,7 +906,6 @@ func TestSmCovStoreLoadReceiptAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreValidateReceiptForRequestFieldMismatches(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -967,7 +955,6 @@ func TestSmCovStoreValidateReceiptForRequestFieldMismatches(t *testing.T) {
 }
 
 func TestSmCovStoreValidateReceiptForRequestHarnessPolicy(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	request.SourceModel = "gpt-5"
 	raw, err := EncodeRequest(request)

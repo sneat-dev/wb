@@ -150,7 +150,6 @@ func campaignLockPath(t *testing.T, githubDir, migrationID string) string {
 }
 
 func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
-	t.Parallel()
 	repositories := []*campaignRepository{
 		{repository: "github.com/acme/first"},
 		{repository: "github.com/acme/second"},

@@ -276,7 +276,6 @@ func TestWorkLogClaimPrefersLiveCreatingSessionOverCallerValue(t *testing.T) {
 }
 
 func TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile(t *testing.T) {
-	t.Parallel()
 	worktree := t.TempDir()
 	worktree, err := filepath.EvalSymlinks(worktree)
 	if err != nil {

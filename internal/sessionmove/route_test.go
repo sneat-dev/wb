@@ -14,7 +14,6 @@ import (
 )
 
 func TestSaveSuccessorAddressUnderLockPublishesExactReplayableIndex(t *testing.T) {
-	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 		t.Fatal(err)
@@ -64,7 +63,6 @@ func TestSaveSuccessorAddressUnderLockPublishesExactReplayableIndex(t *testing.T
 }
 
 func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T) {
-	t.Parallel()
 	fixture := func(t *testing.T) (Store, Request, SuccessorAddress, []byte) {
 		t.Helper()
 		store, request, digest, _ := admittedRouteRequest(t, false)
@@ -128,7 +126,6 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			store, request, _, raw := fixture(t)
 			path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
 			if err := os.Remove(path); err != nil {
@@ -142,7 +139,6 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 	}
 
 	t.Run("mismatched contents", func(t *testing.T) {
-		t.Parallel()
 		store, request, address, _ := fixture(t)
 		path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
 		if err := os.Remove(path); err != nil {
@@ -162,7 +158,6 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 	})
 
 	t.Run("self-consistent forged pointer", func(t *testing.T) {
-		t.Parallel()
 		store, request, address, _ := fixture(t)
 		path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
 		if err := os.Remove(path); err != nil {
@@ -192,7 +187,6 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 	})
 
 	t.Run("store root symlink", func(t *testing.T) {
-		t.Parallel()
 		store, request, _, _ := fixture(t)
 		alias := filepath.Join(t.TempDir(), "handoffs-link")
 		if err := os.Symlink(store.Root, alias); err != nil {
@@ -204,7 +198,6 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 	})
 
 	t.Run("index directory symlink", func(t *testing.T) {
-		t.Parallel()
 		store, request, _, _ := fixture(t)
 		wrapper := filepath.Join(t.TempDir(), DirName)
 		if err := os.Mkdir(wrapper, 0o700); err != nil {
@@ -220,14 +213,12 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 }
 
 func TestSaveSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.T) {
-	t.Parallel()
 	for _, swapRoot := range []bool{false, true} {
 		name := "handoff"
 		if swapRoot {
 			name = "root"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			store, request, digest, raw := admittedRouteRequest(t, false)
 			if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 				t.Fatal(err)
@@ -275,14 +266,12 @@ func TestSaveSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.
 }
 
 func TestLoadSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.T) {
-	t.Parallel()
 	for _, swapRoot := range []bool{false, true} {
 		name := "handoff"
 		if swapRoot {
 			name = "root"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			store, request, digest, raw := admittedRouteRequest(t, false)
 			if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 				t.Fatal(err)

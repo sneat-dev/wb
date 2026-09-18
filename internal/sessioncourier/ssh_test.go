@@ -43,7 +43,6 @@ func (f *fakeCommandRunner) Run(ctx context.Context, executable string, args []s
 }
 
 func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{
@@ -77,7 +76,6 @@ func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
 }
 
 func TestSSHDelivererPassesConfiguredUserAsFixedArgv(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "178.104.41.143", User: "ai"}, runner)
@@ -91,7 +89,6 @@ func TestSSHDelivererPassesConfiguredUserAsFixedArgv(t *testing.T) {
 }
 
 func TestSSHDelivererUsesFixedRemoteWBCommandByDefault(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target-alias"}, runner)
@@ -104,7 +101,6 @@ func TestSSHDelivererUsesFixedRemoteWBCommandByDefault(t *testing.T) {
 }
 
 func TestSSHDelivererAcceptsCrossHarnessSuccessorIdentity(t *testing.T) {
-	t.Parallel()
 	request, _ := courierTestRequest(t)
 	request.RequestedHarness = "claude-code"
 	raw, err := sessionmove.EncodeRequest(request)
@@ -123,7 +119,6 @@ func TestSSHDelivererAcceptsCrossHarnessSuccessorIdentity(t *testing.T) {
 }
 
 func TestSSHDelivererAcceptsCompletedReceiptOnlyReplay(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	response := validCourierResult(request, raw)
 	response.Worktree = nil
@@ -158,7 +153,6 @@ func TestSSHDelivererRefusesNoncanonicalRequestBeforeSSH(t *testing.T) {
 }
 
 func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	tests := map[string]struct {
 		response func() []byte

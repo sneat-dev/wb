@@ -49,7 +49,6 @@ func (r *scriptedCommandRunner) Run(_ context.Context, executable string, args [
 }
 
 func TestSynchestraDelivererInvokesAndPollsFixedHandlerWithExactBytes(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	dispatchID := "dsp_handoff_123"
@@ -125,7 +124,6 @@ func TestSynchestraDelivererRequiresDurableDispatchRecorderBeforeFreshInvocation
 }
 
 func TestSynchestraDelivererResumesExactPersistedDispatchWithoutReinvoking(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	dispatchID := "dsp_existing"
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
@@ -154,7 +152,6 @@ func TestSynchestraDelivererResumesExactPersistedDispatchWithoutReinvoking(t *te
 }
 
 func TestSynchestraDelivererRejectsMalformedTypedOutputFields(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	valid := encodeSynchestraInvocationOutput(t, request, raw, "dsp_typed", "completed",
@@ -206,7 +203,6 @@ func TestSynchestraDelivererRejectsMalformedTypedOutputFields(t *testing.T) {
 }
 
 func TestSynchestraDelivererRejectsArtifactTamperingWithoutAcceptingReceipt(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	valid := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)
@@ -240,7 +236,6 @@ func TestSynchestraDelivererRejectsArtifactTamperingWithoutAcceptingReceipt(t *t
 }
 
 func TestSynchestraDelivererRejectsFailedCancelledAndAmbiguousTerminalResults(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	artifact := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)
@@ -315,7 +310,6 @@ func TestSynchestraDelivererRejectsFailedCancelledAndAmbiguousTerminalResults(t 
 }
 
 func TestSynchestraDelivererOmitsUntrustedFailureDetails(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	output := encodeSynchestraInvocationOutput(t, request, raw, "dsp_failed", "completed",

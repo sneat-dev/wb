@@ -123,7 +123,6 @@ func TestSDCovSleepWithContextBranches(t *testing.T) {
 }
 
 func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	completed := func(dispatchID string) []byte {
 		return encodeSynchestraInvocationOutput(t, request, raw, dispatchID, "completed",
@@ -150,7 +149,6 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("durable recorder failure", func(t *testing.T) {
-		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{stdout: completed("dsp_save")}}}
 		deliverer := newTestSynchestraDeliverer(t, sessionmove.SynchestraConfig{Runner: "hetzner-vm1"}, SynchestraOptions{
 			SaveDispatch: func(sessionmove.SynchestraDispatch) error { return errors.New("disk full") },
@@ -539,7 +537,6 @@ func TestSDCovValidateSynchestraResumeIdentityBranches(t *testing.T) {
 }
 
 func TestSDCovSynchestraTerminalReceiptBranches(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	artifact := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)
@@ -557,7 +554,6 @@ func TestSDCovSynchestraTerminalReceiptBranches(t *testing.T) {
 		}
 	})
 	t.Run("skips unfinished attempts", func(t *testing.T) {
-		t.Parallel()
 		output := sdCovSynchestraInvocationOutput(t, request, raw, "dsp_terminal", "completed", artifact)
 		output.Attempts = append([]synchestraAttemptOutput{{
 			ProtocolVersion: synchestraDispatchProtocolVersion, ID: "att_1", DispatchID: "dsp_terminal",
@@ -583,7 +579,6 @@ func TestSDCovSynchestraTerminalReceiptBranches(t *testing.T) {
 		}
 	})
 	t.Run("receipt does not match request", func(t *testing.T) {
-		t.Parallel()
 		result := validCourierResult(request, raw)
 		result.Digest = sessionmove.DigestBytes([]byte("other request bytes"))
 		badArtifact := encodeSynchestraReceiptArtifact(t, request, raw, encodeCourierResult(t, result))
@@ -605,7 +600,6 @@ func sdCovReceiptArtifactRef(t *testing.T, artifact synchestraReceiptArtifact) s
 }
 
 func TestSDCovDecodeSynchestraReceiptArtifactBranches(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	valid := synchestraReceiptArtifact{

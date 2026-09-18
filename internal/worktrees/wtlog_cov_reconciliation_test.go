@@ -126,7 +126,6 @@ func TestWtLogCovReconciliationEventAndProjection(t *testing.T) {
 }
 
 func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	claim, _ := wtLogCovReconciliationClaim(t.TempDir())
 	record := branchReconciliationRecord{Version: 1, EventID: "event-1", ClaimID: claim.ClaimID,

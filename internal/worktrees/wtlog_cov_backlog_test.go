@@ -160,7 +160,6 @@ func TestWtLogCovLifecycleBacklogIdentityAndPaths(t *testing.T) {
 }
 
 func TestWtLogCovOpenLifecycleBacklogDirectory(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	if _, err := openLifecycleBacklogDirectory(home, false); err == nil {
 		t.Fatal("absent backlog directory was opened")
@@ -186,7 +185,6 @@ func TestWtLogCovOpenLifecycleBacklogDirectory(t *testing.T) {
 }
 
 func TestWtLogCovPersistLifecycleBacklog(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	if err := persistLifecycleBacklog(home, nil, lifecycleStageSealed); err == nil {
 		t.Fatal("nil backlog record was accepted")

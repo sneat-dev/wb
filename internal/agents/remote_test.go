@@ -201,7 +201,6 @@ session_move:
 }
 
 func TestLoadRemoteTargetsReportsUnconfiguredAndUnusableState(t *testing.T) {
-	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
 	if _, err := LoadRemoteTargets(missing); err == nil {
 		t.Fatal("an absent configuration must be reported")

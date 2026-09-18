@@ -400,7 +400,6 @@ exit 30
 }
 
 func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	options := Options{Timeout: time.Minute}
 	if _, err := changedFiles(context.Background(), dir, options); err == nil {
@@ -412,7 +411,6 @@ func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
 }
 
 func TestOrchCovChangedFilesNamesEveryModifiedPath(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	writeEngineFile(t, filepath.Join(dir, "kept.txt"), "contents\n")

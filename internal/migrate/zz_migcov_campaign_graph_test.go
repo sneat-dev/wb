@@ -150,7 +150,6 @@ func TestMigCovPopulateGoModPathsResolvesThroughAModuleProxy(t *testing.T) {
 }
 
 func TestMigCovPlanCampaignRejectsUnusableRootsAndTargets(t *testing.T) {
-	t.Parallel()
 	spec := Spec{
 		Format: MigrationFormatV1, ID: "plan",
 		Steps: []Step{{Kind: "text.replace", From: "github.com/acme/app/old", To: "github.com/acme/app/new"}},
@@ -223,7 +222,6 @@ func TestMigCovPlanCampaignRejectsUnusableRootsAndTargets(t *testing.T) {
 }
 
 func TestMigCovPlanCampaignRejectsConflictingRefsInOneRepository(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	appDir := filepath.Join(root, "app")
 	migCovWriteGoMod(t, appDir, "module github.com/acme/app\n\ngo 1.24\n\nrequire (\n\tgithub.com/acme/multi v0.0.0\n\tgithub.com/acme/multi/sub v0.0.0\n)\n\nreplace github.com/acme/multi => ../multi\n\nreplace github.com/acme/multi/sub => ../multi/sub\n")

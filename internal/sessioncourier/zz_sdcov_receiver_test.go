@@ -42,7 +42,6 @@ func TestSDCovValidateReceiverRequestBranches(t *testing.T) {
 }
 
 func TestSDCovDecodeReceiverResultTrailingGarbage(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	encoded := encodeCourierResult(t, validCourierResult(request, raw))
 	encoded = append(encoded, []byte(" {")...)
@@ -52,7 +51,6 @@ func TestSDCovDecodeReceiverResultTrailingGarbage(t *testing.T) {
 }
 
 func TestSDCovValidateReceiverResultFieldBranches(t *testing.T) {
-	t.Parallel()
 	request, raw := courierTestRequest(t)
 	tests := map[string]struct {
 		mutate func(*sessionreceive.Result)
@@ -88,7 +86,6 @@ func TestSDCovValidateReceiverResultFieldBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			result := validCourierResult(request, raw)
 			test.mutate(&result)
 			runner := &fakeCommandRunner{response: encodeCourierResult(t, result)}

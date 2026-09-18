@@ -161,7 +161,6 @@ func TestSmCovTypesRequestValidationRejectsEachInvalidField(t *testing.T) {
 }
 
 func TestSmCovTypesReceiptValidationRejectsEachInvalidField(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {

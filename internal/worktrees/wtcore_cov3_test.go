@@ -368,7 +368,6 @@ func TestWTCoreCovEmptyTaskNamespacesSelectsAndReports(t *testing.T) {
 // apply path honors eligibility, reports a namespace that stopped being empty,
 // and retires a genuinely empty one.
 func TestWTCoreCovRetireEmptyTaskNamespacesAppliesOnlyWhatItCanProve(t *testing.T) {
-	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -419,7 +418,6 @@ func TestWTCoreCovRetireEmptyTaskNamespacesAppliesOnlyWhatItCanProve(t *testing.
 // exact directory it holds, refuses a directory it cannot search, and refuses a
 // path that does not exist when asked.
 func TestWTCoreCovResidueHelpersStayAnchored(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

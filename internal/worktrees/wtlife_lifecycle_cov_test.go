@@ -330,7 +330,6 @@ func TestWtLifeCovRequireJSONEOFClassifiesTrailingContent(t *testing.T) {
 }
 
 func TestWtLifeCovActiveWorkLogClaimAtPathFindsActiveClaim(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -363,7 +362,6 @@ func TestWtLifeCovActiveWorkLogClaimAtPathFindsActiveClaim(t *testing.T) {
 }
 
 func TestWtLifeCovActiveWorkLogClaimAtPathClassifiesCorruption(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -450,7 +448,6 @@ func wtLifeCovCleanupTaskHandle(t *testing.T, root, taskDir string) *cleanupTask
 }
 
 func TestWtLifeCovPrepareAndArchiveCleanupLifecycleArtifacts(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")
@@ -492,7 +489,6 @@ func TestWtLifeCovPrepareAndArchiveCleanupLifecycleArtifacts(t *testing.T) {
 }
 
 func TestWtLifeCovPrepareCleanupLifecycleArtifactsRejectsUnsafeEntries(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")
@@ -544,7 +540,6 @@ func TestWtLifeCovPrepareCleanupLifecycleArtifactsRejectsUnsafeEntries(t *testin
 }
 
 func TestWtLifeCovArchiveCleanupLifecycleArtifactsReportsFailures(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")

@@ -494,7 +494,6 @@ func TestWtLogCovAtomicReadWriteHelpers(t *testing.T) {
 }
 
 func TestWtLogCovOpenWorkLogRunAndOutbox(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	if _, _, err := openWorkLogRun(home, "../bad", "run", true); err == nil {
 		t.Fatal("unsafe effort was accepted")
@@ -530,7 +529,6 @@ func TestWtLogCovOpenWorkLogRunAndOutbox(t *testing.T) {
 }
 
 func TestWtLogCovLockClaimSerializes(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	runDir, _, err := openWorkLogRun(home, "effort", "run", true)
 	if err != nil {
@@ -550,7 +548,6 @@ func TestWtLogCovLockClaimSerializes(t *testing.T) {
 }
 
 func TestWtLogCovRemoveWorkLogProjection(t *testing.T) {
-	t.Parallel()
 	worktree := t.TempDir()
 	if err := removeWorkLogProjection(worktree); err != nil {
 		t.Fatalf("removing an absent projection: %v", err)
@@ -574,7 +571,6 @@ func TestWtLogCovRemoveWorkLogProjection(t *testing.T) {
 }
 
 func TestWtLogCovReadWorkLogProjectionRoundTrip(t *testing.T) {
-	t.Parallel()
 	worktree := t.TempDir()
 	if _, err := readWorkLogProjection(worktree); !os.IsNotExist(err) {
 		t.Fatalf("missing projection error = %v", err)
@@ -764,7 +760,6 @@ func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
 }
 
 func TestWtLogCovOpenRelocationJournalAndPendingIntent(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	sourceDir := t.TempDir()
 	claim := workLogClaim{Version: 1, EffortID: "effort", RunID: "run", ClaimID: strings.Repeat("a", 64),

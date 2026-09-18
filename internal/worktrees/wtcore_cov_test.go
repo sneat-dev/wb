@@ -321,7 +321,6 @@ func TestWTCoreCovPatchIDHelpers(t *testing.T) {
 // TestWTCoreCovEnsureManifestFillsOnlyAMissingRecord asserts idempotence: the
 // first call writes the manifest, the second leaves the immutable record alone.
 func TestWTCoreCovEnsureManifestFillsOnlyAMissingRecord(t *testing.T) {
-	t.Parallel()
 	worktree := newJournalWorktree(t)
 	manifest := newCreatedManifest("wtcore-ensure")
 	if err := EnsureManifest(worktree, manifest); err != nil {
@@ -382,7 +381,6 @@ func TestWTCoreCovHeartbeatScopedToCurrentDirectory(t *testing.T) {
 // TestWTCoreCovHeartbeatAtRejectsCorruptRecord asserts a malformed heartbeat
 // reads as "unknown" rather than as some earlier or fabricated time.
 func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
-	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if err := EnsureManifest(worktree, newCreatedManifest("wtcore-corrupt")); err != nil {
 		t.Fatalf("write manifest: %v", err)
@@ -405,7 +403,6 @@ func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
 // porcelain answer is used, including the rename target and a path that no
 // longer exists on disk.
 func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("one\n"), 0o644); err != nil {
@@ -469,7 +466,6 @@ func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
 // always returns the zero time. Covering it would require a source change, so
 // only the honest negative behaviour is asserted here; see the report.
 func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
-	t.Parallel()
 	if got := newestWorkLogEventTime(t.TempDir()); !got.IsZero() {
 		t.Fatalf("non-worktree work log signal = %v, want zero", got)
 	}

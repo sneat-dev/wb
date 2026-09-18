@@ -135,7 +135,6 @@ func migCovIsolateGitIdentity(t *testing.T) {
 }
 
 func TestMigCovCampaignRegisteredWorktreesReportsUnreadableOwner(t *testing.T) {
-	t.Parallel()
 	githubDir := t.TempDir()
 	owner := filepath.Join(githubDir, "acme")
 	if err := os.MkdirAll(owner, 0o755); err != nil {

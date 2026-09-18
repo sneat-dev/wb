@@ -57,7 +57,6 @@ func TestMigCovNormalizeCampaignOptionsRejectsInvalidInput(t *testing.T) {
 }
 
 func TestMigCovRunCampaignRejectsInvalidSpecAndMissingDirectory(t *testing.T) {
-	t.Parallel()
 	if _, err := RunCampaign(Spec{}, t.TempDir(), CampaignOptions{GitHubDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "missing id") {
 		t.Fatalf("RunCampaign(invalid spec) = %v", err)
 	}
@@ -83,7 +82,6 @@ func TestMigCovRunCampaignRefusesAConcurrentlyHeldLock(t *testing.T) {
 }
 
 func TestMigCovRunCampaignReportsPlanFailureAndReturnsPlanOnlyReport(t *testing.T) {
-	t.Parallel()
 	sourceRoot := t.TempDir()
 	githubDir := t.TempDir()
 	spec := migCovTextReplaceSpec("plan-only")
@@ -119,7 +117,6 @@ func TestMigCovRunCampaignReportsPlanFailureAndReturnsPlanOnlyReport(t *testing.
 }
 
 func TestMigCovCampaignDiscoveryRootSelectsOnlyAValidatedResumeWorktree(t *testing.T) {
-	t.Parallel()
 	githubDir := t.TempDir()
 	sourceRoot := t.TempDir()
 	migCovWriteGoMod(t, sourceRoot, "module github.com/acme/repo\n\ngo 1.24\n")
@@ -291,7 +288,6 @@ func TestMigCovCampaignPureHelpers(t *testing.T) {
 }
 
 func TestMigCovRunRepositoriesParallelPropagatesTheFirstError(t *testing.T) {
-	t.Parallel()
 	first := &campaignRepository{repository: "github.com/acme/first"}
 	second := &campaignRepository{repository: "github.com/acme/second"}
 	repos := []*campaignRepository{first, second}

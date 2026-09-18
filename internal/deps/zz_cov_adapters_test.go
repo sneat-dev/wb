@@ -580,7 +580,6 @@ func TestDepsCovAdaptersGoManifestsReportsWalkAndManifestErrors(t *testing.T) {
 }
 
 func TestDepsCovAdaptersRequiredGoVersionParsesRequirements(t *testing.T) {
-	t.Parallel()
 	version, found, err := requiredGoVersion("go.mod", []byte("module example.com/app\n\ngo 1.24\n\nrequire example.com/model v0.2.0\n"), "example.com/model")
 	if err != nil || !found || version != "v0.2.0" {
 		t.Fatalf("requiredGoVersion = (%q, %v, %v)", version, found, err)

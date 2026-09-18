@@ -111,7 +111,6 @@ exit "${WB_TEST_EXIT:-0}"
 	mustWrite(t, prePush, withUserSections)
 
 	t.Run("success preserves arguments and order", func(t *testing.T) {
-		t.Parallel()
 		mustWrite(t, toolLog, "")
 		command := exec.Command(prePush, "origin", "ssh://example.invalid/repo with spaces")
 		command.Env = hookEnvironment(map[string]string{"WB_EXECUTABLE": fakeWB, "WB_TEST_EXIT": "0"})
@@ -128,7 +127,6 @@ exit "${WB_TEST_EXIT:-0}"
 	})
 
 	t.Run("failure preserves status and skips user post section", func(t *testing.T) {
-		t.Parallel()
 		mustWrite(t, toolLog, "")
 		command := exec.Command(prePush, "origin")
 		command.Env = hookEnvironment(map[string]string{"WB_EXECUTABLE": fakeWB, "WB_TEST_EXIT": "17"})

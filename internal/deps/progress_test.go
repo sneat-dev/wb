@@ -61,7 +61,6 @@ func TestRunBumpReportsDiscoveryAndPlanningProgress(t *testing.T) {
 }
 
 func TestAnalyzeDriftReportsRepositoryProgress(t *testing.T) {
-	t.Parallel()
 	var events []progress.Event
 	_, err := AnalyzeDrift(context.Background(), []Repository{{Slug: "example/missing"}}, DriftOptions{
 		Parallel: 1,

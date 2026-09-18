@@ -14,7 +14,6 @@ import (
 // distinguishes a modified tracked file, an untracked file, a symlink, and a
 // file deleted from disk, and that the receipt accounts for each of them.
 func TestWTCoreCovDirtyCaptureClassifiesEveryPath(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 
@@ -87,7 +86,6 @@ func TestWTCoreCovDirtyCaptureClassifiesEveryPath(t *testing.T) {
 // TestWTCoreCovDirtyCaptureRejectsOversizePath asserts the per-file retention
 // bound is enforced before any bytes are read.
 func TestWTCoreCovDirtyCaptureRejectsOversizePath(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 	if err := os.WriteFile(filepath.Join(repository, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
@@ -115,7 +113,6 @@ func TestWTCoreCovDirtyCaptureRejectsOversizePath(t *testing.T) {
 // TestWTCoreCovDirtyCaptureRejectsUnsafePaths asserts every rejected path shape
 // in dirtyCapturePath is refused and the accepted one is returned unchanged.
 func TestWTCoreCovDirtyCaptureRejectsUnsafePaths(t *testing.T) {
-	t.Parallel()
 	for _, unsafe := range []string{"", ".", "..", "/absolute", "../escape", "a/../b", "./b"} {
 		if _, err := dirtyCapturePath(unsafe); err == nil {
 			t.Fatalf("unsafe dirty path %q was accepted", unsafe)
@@ -176,7 +173,6 @@ func TestWTCoreCovDirtyCaptureMatchesRequiresADigest(t *testing.T) {
 // two pre-publication refusals: bytes that moved after evidence was captured,
 // and a worktree with no private Work Log claim to write into.
 func TestWTCoreCovCaptureAndPersistRefusesChangedBytesAndMissingClaim(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 	if err := os.WriteFile(filepath.Join(repository, "seed.txt"), []byte("seed\n"), 0o644); err != nil {

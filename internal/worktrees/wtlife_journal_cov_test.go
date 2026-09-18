@@ -77,7 +77,6 @@ func TestWtLifeCovRepositoryRootForResolvesOwningCheckout(t *testing.T) {
 }
 
 func TestWtLifeCovCheckAdmissionClassifiesEveryMissingRecord(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 
 	absent := CheckAdmission(worktree, AdmissionWarn)
@@ -155,7 +154,6 @@ func TestWtLifeCovValidateManifestRejectsEveryDocumentedCorruption(t *testing.T)
 }
 
 func TestWtLifeCovWriteManifestRefusesUnsafeDestinations(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if err := WriteManifest(worktree, Manifest{}); err == nil {
 		t.Fatal("WriteManifest accepted an invalid manifest")
@@ -174,7 +172,6 @@ func TestWtLifeCovWriteManifestRefusesUnsafeDestinations(t *testing.T) {
 }
 
 func TestWtLifeCovReadManifestClassifiesCorruption(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if _, err := ReadManifest(worktree); err != errManifestNotFound {
 		t.Fatalf("absent manifest error = %v, want errManifestNotFound", err)
@@ -207,7 +204,6 @@ func TestWtLifeCovReadManifestClassifiesCorruption(t *testing.T) {
 }
 
 func TestWtLifeCovReadAndWriteManifestRejectUnsafeJournalComponents(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	wtLifeCovWriteFile(t, filepath.Join(worktree, journalRootDirectory), "not a directory\n")
 
@@ -223,7 +219,6 @@ func TestWtLifeCovReadAndWriteManifestRejectUnsafeJournalComponents(t *testing.T
 }
 
 func TestWtLifeCovEnsureManifestIsIdempotentOnly(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if err := EnsureManifest(worktree, wtLifeCovValidManifest("feature.one")); err != nil {
 		t.Fatalf("first EnsureManifest: %v", err)
@@ -241,7 +236,6 @@ func TestWtLifeCovEnsureManifestIsIdempotentOnly(t *testing.T) {
 }
 
 func TestWtLifeCovEnsurePromptOnlyRecordsTheFirstInstruction(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	header := PromptHeader{Source: PromptSourceAgent}
 	if err := EnsurePrompt(worktree, header, nil); err == nil {
@@ -337,7 +331,6 @@ func TestWtLifeCovWriteCreationJournalReportsOwnerAndPromptFailures(t *testing.T
 }
 
 func TestWtLifeCovReconstructManifestReportsUnusableCheckouts(t *testing.T) {
-	t.Parallel()
 	if _, err := ReconstructManifest(context.Background(), t.TempDir()); err == nil ||
 		!strings.Contains(err.Error(), "reconstruct manifest") {
 		t.Fatalf("non-repository reconstruction error = %v", err)
@@ -406,7 +399,6 @@ func TestWtLifeCovReconstructManifestRejectsUnderivableEffort(t *testing.T) {
 }
 
 func TestWtLifeCovPreviewReconstructedManifestNeverWrites(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	previewed, err := PreviewReconstructedManifest(context.Background(), worktree)
 	if err != nil {
@@ -433,7 +425,6 @@ func TestWtLifeCovPreviewReconstructedManifestNeverWrites(t *testing.T) {
 }
 
 func TestWtLifeCovPreviewReportsPersistedManifestUnchanged(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	manifest := wtLifeCovValidManifest("feature.one")
 	if err := WriteManifest(worktree, manifest); err != nil {
@@ -513,7 +504,6 @@ func TestWtLifeCovReconstructBaseFallsBackAndGivesUp(t *testing.T) {
 }
 
 func TestWtLifeCovAppendPromptRejectsMalformedRequests(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if _, err := AppendPrompt(worktree, PromptHeader{Source: PromptSourceAgent}, nil); err == nil ||
 		!strings.Contains(err.Error(), "cannot be empty") {
@@ -536,7 +526,6 @@ func TestWtLifeCovAppendPromptRejectsMalformedRequests(t *testing.T) {
 }
 
 func TestWtLifeCovAppendPromptLocksAndOrdersTheSequence(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	first, err := AppendPrompt(worktree, PromptHeader{Source: PromptSourceHarness, Runtime: "codex"}, []byte("first line\nsecond line\n"))
 	if err != nil {
@@ -579,7 +568,6 @@ func TestWtLifeCovAppendPromptLocksAndOrdersTheSequence(t *testing.T) {
 }
 
 func TestWtLifeCovAppendPromptReportsUnreadableSequence(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	prompts := filepath.Join(worktree, journalRootDirectory, journalLocalDirectory, promptsDirectory)
 	if err := os.MkdirAll(prompts, 0o700); err != nil {
@@ -593,7 +581,6 @@ func TestWtLifeCovAppendPromptReportsUnreadableSequence(t *testing.T) {
 }
 
 func TestWtLifeCovListPromptsClassifiesSequenceCorruption(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	missing, err := ListPrompts(worktree)
 	if err != nil || missing != nil {
@@ -702,7 +689,6 @@ func TestWtLifeCovPromptSlugDerivesSafeHint(t *testing.T) {
 }
 
 func TestWtLifeCovValidEffortPathAndAncestry(t *testing.T) {
-	t.Parallel()
 	for _, valid := range []string{"feature", "feature.one", "a.b.c-d"} {
 		if !ValidEffortPath(valid) {
 			t.Fatalf("ValidEffortPath(%q) = false", valid)
@@ -728,7 +714,6 @@ func TestWtLifeCovValidEffortPathAndAncestry(t *testing.T) {
 }
 
 func TestWtLifeCovCheckAdmissionOffShortCircuits(t *testing.T) {
-	t.Parallel()
 	admission := CheckAdmission(t.TempDir(), AdmissionOff)
 	if !admission.Admitted || admission.Reason != "" || admission.Remedy != "" {
 		t.Fatalf("AdmissionOff admission = %+v", admission)
@@ -736,7 +721,6 @@ func TestWtLifeCovCheckAdmissionOffShortCircuits(t *testing.T) {
 }
 
 func TestWtLifeCovJournalDirectoryClassifiesMissingComponents(t *testing.T) {
-	t.Parallel()
 	if _, err := ReadManifest(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("ReadManifest accepted a missing worktree")
 	}
@@ -758,7 +742,6 @@ func TestWtLifeCovJournalDirectoryClassifiesMissingComponents(t *testing.T) {
 }
 
 func TestWtLifeCovEnsureJournalExcludeReportsUnusableGitInfo(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	info := filepath.Join(worktree, ".git", "info")
 	if err := os.RemoveAll(info); err != nil {
@@ -811,7 +794,6 @@ func TestWtLifeCovWriteCreationJournalWithoutPrompt(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructManifestReportsUnusableJournal(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	wtLifeCovWriteFile(t, filepath.Join(worktree, journalRootDirectory), "not a directory\n")
 	if _, err := ReconstructManifest(context.Background(), worktree); err == nil {

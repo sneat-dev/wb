@@ -386,7 +386,6 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 }
 
 func TestWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
-	t.Parallel()
 	entry := ListResult{Task: "plain-task", Branch: "wb/plain-task", WorktreeDir: t.TempDir()}
 	if err := ValidateDependencyDeltas(context.Background(), SupersessionReceipt{Version: 1}, entry); err != nil {
 		t.Fatalf("generic receipt should not require dependency proof: %v", err)

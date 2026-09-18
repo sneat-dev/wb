@@ -122,7 +122,6 @@ func TestInstallationTokenSourceRejectsInvalidConfigurationAndDelivery(t *testin
 }
 
 func TestInstallationTokenSourceRejectsInvalidPrivateKeys(t *testing.T) {
-	t.Parallel()
 	source := validInstallationTokenSource(t)
 	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -141,7 +140,6 @@ func TestInstallationTokenSourceRejectsInvalidPrivateKeys(t *testing.T) {
 		"RSA too small": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(tinyRSAPrivateKey())}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			source.PrivateKeyPEM = key
 			_, tokenErr := source.Token(context.Background(), WebhookDelivery{Payload: []byte(`{"installation":{"id":1}}`)})
 			if tokenErr == nil {

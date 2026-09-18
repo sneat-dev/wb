@@ -46,7 +46,6 @@ func TestTaskScopedLocalLayoutSkipsUnrelatedRepositories(t *testing.T) {
 }
 
 func TestTaskScopedLocalLayoutSkipsUnscopedLifecycleStages(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	stage := filepath.Join(root, ".wb-retired-stage-0123456789abcdef0123456789abcdef")
 	if err := os.Mkdir(stage, 0o755); err != nil {

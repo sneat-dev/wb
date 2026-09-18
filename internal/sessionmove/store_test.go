@@ -207,7 +207,6 @@ func TestExpectedTargetWorkLogReferenceIsDeterministicAndPreservesRun(t *testing
 }
 
 func TestNoncanonicalExactRequestDigestBindsTargetReferenceAndReceipt(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	canonical, err := EncodeRequest(request)
 	if err != nil {
@@ -244,7 +243,6 @@ func TestNoncanonicalExactRequestDigestBindsTargetReferenceAndReceipt(t *testing
 }
 
 func TestRequestAndReceiptRequireStrictWorkLogReferences(t *testing.T) {
-	t.Parallel()
 	for _, value := range []string{"", "worklog:effort/run/not-a-claim"} {
 		request := validRequest()
 		request.WorkLogReference = value
@@ -284,7 +282,6 @@ func TestRequestAndReceiptRequireStrictWorkLogReferences(t *testing.T) {
 }
 
 func TestSaveReceiptRequiresDeterministicTargetWorkLogReference(t *testing.T) {
-	t.Parallel()
 	store := NewStore(filepath.Join(t.TempDir(), DirName))
 	request := validRequest()
 	raw, err := EncodeRequest(request)
@@ -306,7 +303,6 @@ func TestSaveReceiptRequiresDeterministicTargetWorkLogReference(t *testing.T) {
 }
 
 func TestSaveAndLoadReceiptBindLaunchPolicy(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	request.SourceModel = "gpt-5"
 	raw, err := EncodeRequest(request)
@@ -373,7 +369,6 @@ func TestSaveAndLoadReceiptBindLaunchPolicy(t *testing.T) {
 }
 
 func TestReceiptStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -445,7 +440,6 @@ func TestReceiptStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 }
 
 func TestSaveReceiptUnderLockRequiresAndRetainsExactAuthority(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -484,7 +478,6 @@ func TestSaveReceiptUnderLockRequiresAndRetainsExactAuthority(t *testing.T) {
 }
 
 func TestReadmitUnderLockReturnsExactReceiptWithoutPathMutation(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -587,7 +580,6 @@ func TestReadmitUnderLockRefusesPathSwapsWithoutMutatingDecoy(t *testing.T) {
 }
 
 func TestSaveReceiptUnderLockRefusesHandoffPathSwap(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -659,7 +651,6 @@ func TestAppendAndLoadUnderLockUseExactAggregate(t *testing.T) {
 }
 
 func TestCompletedPhaseRequiresExactDurableReceiptOnAppendAndLoad(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -847,7 +838,6 @@ func TestAppendAndLoadUnderLockRefuseHandoffPathSwap(t *testing.T) {
 }
 
 func TestInterruptedHardLinkPublicationsRepairExactPendingSibling(t *testing.T) {
-	t.Parallel()
 	const pendingName = ".pending-00000000000000000000000000000000"
 	request := validRequest()
 	raw, err := EncodeRequest(request)
@@ -875,7 +865,6 @@ func TestInterruptedHardLinkPublicationsRepairExactPendingSibling(t *testing.T) 
 	})
 
 	t.Run("receipt", func(t *testing.T) {
-		t.Parallel()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, err := store.Admit(raw, digest); err != nil {
 			t.Fatal(err)
@@ -972,7 +961,6 @@ func TestAppendEventEnforcesEncodedSizeBoundaryBeforePublication(t *testing.T) {
 }
 
 func TestAdmitReplayReturnsExistingReceiptAndRejectsConflictingBytes(t *testing.T) {
-	t.Parallel()
 	root := filepath.Join(t.TempDir(), DirName)
 	store := NewStore(root)
 	request := validRequest()
@@ -1154,7 +1142,6 @@ func TestHandoffEventsAreAppendOnlyAndOrdered(t *testing.T) {
 }
 
 func TestVersionedProtocolTypesRejectNewerSchemas(t *testing.T) {
-	t.Parallel()
 	request := validRequest()
 	request.SchemaVersion = RequestSchemaVersion + 1
 	requestRaw, err := marshalJSON(request)

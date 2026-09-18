@@ -77,7 +77,6 @@ func depsCovDriftGoDependency(dependency string, selected, declared VersionEvide
 // and that asking for more workers than repositories is clamped rather than
 // spawning idle goroutines.
 func TestDepsCovDriftAnalyzeDriftDefaultsAndOversubscribedParallelism(t *testing.T) {
-	t.Parallel()
 	checkout := depsCovDriftGoRepository(t, map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n",
 	})
@@ -111,7 +110,6 @@ func TestDepsCovDriftAnalyzeDriftDefaultsAndOversubscribedParallelism(t *testing
 // checkout (an error row that fails the gate), and a repository with no slug
 // at all (silently dropped rather than reported as an unnamed repository).
 func TestDepsCovDriftAnalyzeDriftReportsSkippedAndErroredRepositories(t *testing.T) {
-	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "not-cloned")
 	report, err := AnalyzeDrift(context.Background(), []Repository{
 		{Slug: "acme/beta", Path: ""},
@@ -144,7 +142,6 @@ func TestDepsCovDriftAnalyzeDriftReportsSkippedAndErroredRepositories(t *testing
 	}
 
 	t.Run("repository without a slug is not reported", func(t *testing.T) {
-		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod": "module example.com/anon\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n",
 		})
@@ -226,7 +223,6 @@ func TestDepsCovDriftSummarizeDriftCountsEveryClassification(t *testing.T) {
 // selector drops non-matching rows, and that offline groups record why latest
 // was not queried.
 func TestDepsCovDriftClassifyDriftGroupsDeclaredAndUnknownFallbacks(t *testing.T) {
-	t.Parallel()
 	at := driftObservedAt()
 	repositories := []DriftRepository{
 		{Repository: "acme/broken", Status: "error", Dependencies: []DriftDependency{
@@ -277,7 +273,6 @@ func TestDepsCovDriftClassifyDriftGroupsDeclaredAndUnknownFallbacks(t *testing.T
 // a group whose observations lag the published latest is classified
 // behind_latest with the offending repositories named.
 func TestDepsCovDriftClassifyDriftGroupsUnavailableAndBehindLatest(t *testing.T) {
-	t.Parallel()
 	at := driftObservedAt()
 	unavailable := classifyDriftGroups([]DriftRepository{
 		{Repository: "acme/app", Status: "ok", Dependencies: []DriftDependency{
@@ -374,7 +369,6 @@ func TestDepsCovDriftMatchesAnyGlobSemantics(t *testing.T) {
 // locked/selected versions, the Go "specifier WB cannot read is never behind"
 // rule, and npm's evaluated-range judgement.
 func TestDepsCovDriftObservationLagsLatestMatrix(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name                            string
 		ecosystem                       Ecosystem
@@ -392,7 +386,6 @@ func TestDepsCovDriftObservationLagsLatestMatrix(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			if got := observationLagsLatest(test.ecosystem, test.version, test.kind, test.declared, test.latest); got != test.want {
 				t.Fatalf("observationLagsLatest(%s, %q, %q, %q, %q) = %v, want %v",
 					test.ecosystem, test.version, test.kind, test.declared, test.latest, got, test.want)

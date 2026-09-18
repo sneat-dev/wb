@@ -487,7 +487,6 @@ func TestUserStoreConfigurationValidationRejectsUnsupportedAndConflictingModes(t
 		{name: "mode and root together", contents: "version: 1\nworktrees:\n  store: repository-local\n  root: " + fixture.base + "\n", want: "store"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			mustWriteBranchConfig(t, fixture.userConfig, test.contents)
 			_, err := ResolveWorktreePlacement(context.Background(), fixture.projectsRoot, canonical, base)
 			if err == nil {

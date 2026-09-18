@@ -106,7 +106,6 @@ func TestWtLifeCovPrepareWorktreeDestinationRefusesUnsafeOwnerAndRepository(t *t
 }
 
 func TestWtLifeCovPrepareOperationRootClassifiesUnsafeHome(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	called := false
 	root, err := prepareOperationRoot(home, "task-one", func() { called = true })
@@ -143,7 +142,6 @@ func TestWtLifeCovPrepareOperationRootClassifiesUnsafeHome(t *testing.T) {
 }
 
 func TestWtLifeCovPrepareOperationRootAtClassifiesUnsafeRoot(t *testing.T) {
-	t.Parallel()
 	worktreesRoot := t.TempDir()
 	root, err := prepareOperationRootAt(worktreesRoot, "task-one")
 	if err != nil {
@@ -263,7 +261,6 @@ func TestWtLifeCovDuplicateDirectoryDescriptorRejectsUnusableInput(t *testing.T)
 }
 
 func TestWtLifeCovOpenAbsoluteDirectoryNoFollowClassifiesPaths(t *testing.T) {
-	t.Parallel()
 	if _, err := openAbsoluteDirectoryNoFollow("relative/path", false); err == nil ||
 		!strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("relative path error = %v", err)

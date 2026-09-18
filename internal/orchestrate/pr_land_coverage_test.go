@@ -382,7 +382,6 @@ func TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesRevi
 }
 
 func TestOrchCovLandPullRequestRejectsUnusableOptions(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		options PullRequestLandOptions
@@ -394,7 +393,6 @@ func TestOrchCovLandPullRequestRejectsUnusableOptions(t *testing.T) {
 		{name: "subject without squash", options: PullRequestLandOptions{Repository: "acme/app", PullRequest: "7", Subject: "a subject"}, wantIn: "--subject requires --merge-method squash"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			if _, err := LandPullRequest(context.Background(), test.options); err == nil || !strings.Contains(err.Error(), test.wantIn) {
 				t.Fatalf("error = %v, want %q", err, test.wantIn)
 			}

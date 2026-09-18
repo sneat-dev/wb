@@ -10,7 +10,6 @@ import (
 )
 
 func TestOpenNoFollowRejectsSymlink(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	if err := os.Mkdir(target, 0o700); err != nil {
@@ -28,7 +27,6 @@ func TestOpenNoFollowRejectsSymlink(t *testing.T) {
 }
 
 func TestOpenNoFollowCreatesMissingFile(t *testing.T) {
-	t.Parallel()
 	path := filepath.Join(t.TempDir(), "created.lock")
 	fd, err := Open(path, O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -47,7 +45,6 @@ func TestOpenNoFollowCreatesMissingFile(t *testing.T) {
 }
 
 func TestOpenNoFollowTransfersSingleHandleOwnership(t *testing.T) {
-	t.Parallel()
 	path := filepath.Join(t.TempDir(), "owned.lock")
 	fd, err := Open(path, O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -75,7 +72,6 @@ func TestOpenNoFollowTransfersSingleHandleOwnership(t *testing.T) {
 }
 
 func TestFstatIdentityMatchesFstatat(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "identity.lock")
 	if err := os.WriteFile(path, []byte("lock"), 0o600); err != nil {

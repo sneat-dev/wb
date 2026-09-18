@@ -37,7 +37,6 @@ func tailCovStubFlock(t *testing.T, err error) (restore func()) {
 // reported (rather than silently dropping the event), and that a later Append
 // succeeds once locking works again.
 func TestTailCovAppendReportsLockFailure(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
 

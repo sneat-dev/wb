@@ -557,7 +557,6 @@ func TestGpCovLookupExactRejectsMalformedRecords(t *testing.T) {
 }
 
 func TestGpCovIsRuntimeProcessRefusesProcessesThatAreNotTheDeclaredRuntime(t *testing.T) {
-	t.Parallel()
 	if IsRuntimeProcess(os.Getpid(), "codex") {
 		t.Fatal("this test binary was mistaken for the Codex app-server")
 	}

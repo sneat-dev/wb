@@ -91,7 +91,6 @@ func TestCreateDeniedWritablePathFailsBeforeAnyMutation(t *testing.T) {
 // had just opened O_RDONLY, which a sandbox refuses — surfacing as
 // "inspect existing work-log run before mutation: operation not permitted".
 func TestOpenPrivateChildReadPathPerformsNoMetadataWrite(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	run, runPath, err := openWorkLogRun(home, "effort", "run", true)
 	if err != nil {

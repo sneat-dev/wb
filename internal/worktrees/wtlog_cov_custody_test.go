@@ -58,7 +58,6 @@ func TestWtLogCovValidExternalAttempt(t *testing.T) {
 }
 
 func TestWtLogCovExternalTargetRuntimeModel(t *testing.T) {
-	t.Parallel()
 	request := sessionmove.Request{SourceRuntime: "codex", SourceModel: "gpt-5", RequestedHarness: "codex"}
 	if runtime, model := externalTargetRuntimeModel(request); runtime != "codex" || model != "gpt-5" {
 		t.Fatalf("same harness = %q/%q", runtime, model)
@@ -229,7 +228,6 @@ func TestWtLogCovRequestHandoverBytes(t *testing.T) {
 }
 
 func TestWtLogCovReadBoundedRelativeRegular(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o700); err != nil {
 		t.Fatal(err)
