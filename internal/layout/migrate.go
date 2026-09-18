@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,11 @@ type MigrateClone struct {
 	// Head is the clone's own HEAD at plan time, carried through to the
 	// undo manifest. It is not part of the report's public JSON shape.
 	Head string `json:"-"`
+	// keptOwner is set when this clone's move left its legacy owner
+	// directory in place because it still holds something; migrateApply
+	// collects these into MigrateReport.KeptOwners, deduplicated by path.
+	keptOwnerPath   string
+	keptOwnerReason string
 }
 
 // MigrateReport is the result of one wb layout migrate run.
@@ -68,6 +74,19 @@ type MigrateReport struct {
 	ManifestPath          string         `json:"manifest_path,omitempty"`
 	DaemonRestartRequired bool           `json:"daemon_restart_required,omitempty"`
 	Clones                []MigrateClone `json:"clones"`
+	// KeptOwners lists every legacy owner directory a migration left in
+	// place because it still holds something, with why.
+	KeptOwners []MigrateKeptOwner `json:"kept_owners,omitempty"`
+	// Notes carries run-level observations that are not per-clone, such as
+	// the busy-process check being unsupported on this OS.
+	Notes []string `json:"notes,omitempty"`
+}
+
+// MigrateKeptOwner is one legacy owner directory a migration did not remove,
+// with the reason it was kept.
+type MigrateKeptOwner struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 // MigrateFailed reports whether a migrate run left any clone refused or
@@ -134,6 +153,16 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		ObservedAt:    options.Now(),
 		DryRun:        !options.Apply,
 	}
+	if !busyProcessCheckSupported {
+		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
+	}
+	if options.Apply {
+		lock, lockErr := acquireMigrationLock(root)
+		if lockErr != nil {
+			return MigrateReport{}, lockErr
+		}
+		defer lock.release()
+	}
 	wanted := repositorySet(options.Repositories)
 	owners, _ := repopath.Owners(root)
 
@@ -150,7 +179,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			continue
 		}
 		for _, entry := range repositories {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			if !entry.IsDir() {
 				continue
 			}
 			path := filepath.Join(owner.Path, entry.Name())
@@ -191,7 +220,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			continue
 		}
 		for _, entry := range repositories {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			if !entry.IsDir() {
 				continue
 			}
 			path := filepath.Join(owner.Path, entry.Name())
@@ -256,8 +285,33 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 
 	report.Clones = append(report.Clones, planned...)
 	sort.Slice(report.Clones, func(i, j int) bool { return report.Clones[i].Repository < report.Clones[j].Repository })
+	report.KeptOwners = collectKeptOwners(planned)
 	report.DaemonRestartRequired = daemonRunning(root)
 	return report, nil
+}
+
+// collectKeptOwners gathers every non-empty kept-owner path/reason recorded
+// on clones, deduplicated by path: more than one clone under the same legacy
+// owner directory can each observe it non-empty and report the same path.
+func collectKeptOwners(clones []MigrateClone) []MigrateKeptOwner {
+	var kept []MigrateKeptOwner
+	seen := make(map[string]bool)
+	for _, clone := range clones {
+		if clone.keptOwnerPath == "" || seen[clone.keptOwnerPath] {
+			continue
+		}
+		seen[clone.keptOwnerPath] = true
+		kept = append(kept, MigrateKeptOwner{Path: clone.keptOwnerPath, Reason: clone.keptOwnerReason})
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].Path < kept[j].Path })
+	return kept
+}
+
+// busyProcessUnsupportedNote is the single run-level note migrateApply and
+// migrateUndo add when the busy-process check cannot run on this OS, so the
+// report says so once instead of silently skipping the check.
+func busyProcessUnsupportedNote() string {
+	return "busy-process check skipped: not supported on " + runtime.GOOS
 }
 
 // planLegacyClone evaluates one legacy clone for the refusal reasons the
@@ -289,21 +343,13 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Reason = "destination already exists: " + destination
 		return clone
 	}
-	if reason, err := worktrees.GitOperationInProgress(ctx, path); err != nil {
-		clone.Status = "skipped"
-		clone.Reason = "cannot inspect Git state: " + err.Error()
-		return clone
-	} else if reason != "" {
-		clone.Status = "skipped"
-		clone.Reason = reason
-		return clone
-	}
 	plan, err := worktrees.PlanCloneMove(ctx, path, destination)
 	if err != nil {
 		clone.Status = "skipped"
 		clone.Reason = "cannot enumerate linked worktrees: " + err.Error()
 		return clone
 	}
+	var worktreePaths []string
 	for _, worktree := range plan.Worktrees {
 		if worktree.Source == path {
 			// The clone's own entry in its worktree registry; already
@@ -312,32 +358,48 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 			continue
 		}
 		clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
-		if reason, err := worktrees.GitOperationInProgress(ctx, worktree.Source); err != nil {
-			clone.Status = "skipped"
-			clone.Reason = "linked worktree " + worktree.Source + ": cannot inspect Git state: " + err.Error()
-			return clone
-		} else if reason != "" {
-			clone.Status = "skipped"
-			clone.Reason = "linked worktree " + worktree.Source + ": " + reason
-			return clone
-		}
+		worktreePaths = append(worktreePaths, worktree.Source)
 	}
-	if claim := liveClaimReason(root, slug); claim != "" {
+	if reason := refuseClone(ctx, root, slug, path, worktreePaths); reason != "" {
 		clone.Status = "skipped"
-		clone.Reason = claim
-		return clone
-	}
-	paths := []string{path}
-	for _, worktree := range clone.Worktrees {
-		paths = append(paths, worktree.Source)
-	}
-	if parked := parkedSessionReason(root, paths); parked != "" {
-		clone.Status = "skipped"
-		clone.Reason = parked
+		clone.Reason = reason
 		return clone
 	}
 	clone.Status = "planned"
 	return clone
+}
+
+// refuseClone runs every refusal check the Feature names against clonePath
+// and its linked worktreePaths, in the same order planLegacyClone applies at
+// plan time. applyOneClone and migrateUndo call this again immediately
+// before a clone actually moves, so a condition that changed between
+// planning and execution is caught instead of assumed still true.
+func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string) string {
+	if reason, err := worktrees.GitOperationInProgress(ctx, clonePath); err != nil {
+		return "cannot inspect Git state: " + err.Error()
+	} else if reason != "" {
+		return reason
+	}
+	for _, worktree := range worktreePaths {
+		if reason, err := worktrees.GitOperationInProgress(ctx, worktree); err != nil {
+			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error()
+		} else if reason != "" {
+			return "linked worktree " + worktree + ": " + reason
+		}
+	}
+	if claim := liveClaimReason(root, slug); claim != "" {
+		return claim
+	}
+	paths := append([]string{clonePath}, worktreePaths...)
+	if parked := parkedSessionReason(root, paths); parked != "" {
+		return parked
+	}
+	if busyProcessCheckSupported {
+		if busy := busyProcessReason(paths); busy != "" {
+			return busy
+		}
+	}
+	return ""
 }
 
 // parkedSessionReason reports, across every wbhome-resolved home for root,
@@ -422,6 +484,20 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 		clone.Reason = "cannot re-verify linked worktrees immediately before move: " + err.Error()
 		return
 	}
+	var worktreePaths []string
+	for _, worktree := range plan.Worktrees {
+		if worktree.Source != clone.Source {
+			worktreePaths = append(worktreePaths, worktree.Source)
+		}
+	}
+	// Re-run every refusal check immediately before moving, not only at plan
+	// time: a claim, a Git operation, or a parked session can all appear in
+	// the time between planning the whole run and reaching this one clone.
+	if reason := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths); reason != "" {
+		clone.Status = "skipped"
+		clone.Reason = "refused immediately before move: " + reason
+		return
+	}
 	pending, intentErr := worktrees.RecordCloneMoveRelocationIntents(root, plan.Worktrees, now)
 	if intentErr != nil {
 		clone.Status = "failed"
@@ -454,7 +530,9 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	for _, worktree := range clone.Worktrees {
 		regenerateMarkers(root, worktree.Destination)
 	}
-	removeEmptyLegacyOwner(filepath.Dir(clone.Source))
+	if removed, reason := removeEmptyLegacyOwner(filepath.Dir(clone.Source)); !removed && reason != "" {
+		clone.keptOwnerPath, clone.keptOwnerReason = filepath.Dir(clone.Source), reason
+	}
 	clone.Status = "done"
 }
 
@@ -471,18 +549,47 @@ func regenerateMarkers(root, path string) {
 // migration. A directory that still holds anything — another clone this run
 // did not touch, stray files, or its own `.git` because the owner directory
 // is itself a checkout — is kept untouched; emptiness is the only test.
-func removeEmptyLegacyOwner(ownerPath string) {
+// removed is true only when the directory was actually removed; reason
+// explains why it was kept (or why it could not be inspected or removed), for
+// the caller to report — the Feature requires every kept legacy owner
+// directory to be named, not silently left out of the report.
+func removeEmptyLegacyOwner(ownerPath string) (removed bool, reason string) {
 	entries, err := os.ReadDir(ownerPath)
-	if err != nil || len(entries) > 0 {
-		return
+	if err != nil {
+		return false, "cannot inspect legacy owner directory: " + err.Error()
 	}
-	_ = os.Remove(ownerPath)
+	if len(entries) > 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return false, "not empty; still holds " + strings.Join(names, ", ")
+	}
+	if err := os.Remove(ownerPath); err != nil {
+		return false, "could not remove empty legacy owner directory: " + err.Error()
+	}
+	return true, ""
 }
 
 func migrateUndo(ctx context.Context, root string, options MigrateOptions) (MigrateReport, error) {
+	if err := validateMigrationID(options.UndoID); err != nil {
+		return MigrateReport{}, err
+	}
 	report := MigrateReport{
 		SchemaVersion: 1, ProjectsRoot: root, ObservedAt: options.Now(),
 		DryRun: !options.Apply, Undo: true, ManifestID: options.UndoID,
+	}
+	if !busyProcessCheckSupported {
+		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
+	}
+	var lock *migrationLock
+	if options.Apply {
+		acquired, lockErr := acquireMigrationLock(root)
+		if lockErr != nil {
+			return MigrateReport{}, lockErr
+		}
+		lock = acquired
+		defer lock.release()
 	}
 	manifestPath := filepath.Join(root, ".wb", migrationsDirName, options.UndoID, "manifest.json")
 	report.ManifestPath = manifestPath
@@ -490,6 +597,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 	if err != nil {
 		return MigrateReport{}, fmt.Errorf("read migration manifest %s: %w", options.UndoID, err)
 	}
+	var keptOwners []MigrateKeptOwner
 	for index := range manifest.Clones {
 		entry := manifest.Clones[index]
 		clone := MigrateClone{Repository: entry.Repository, Source: entry.Destination, Destination: entry.Source}
@@ -507,31 +615,113 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 			report.Clones = append(report.Clones, clone)
 			continue
 		}
+		// Re-run every refusal check immediately before moving back, against
+		// the clone's CURRENT (host-level) location, not only at plan time —
+		// the same hazard applyOneClone guards against for the forward move.
+		var currentWorktreePaths []string
+		for _, worktree := range entry.Worktrees {
+			currentWorktreePaths = append(currentWorktreePaths, worktree.Destination)
+		}
+		if reason := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths); reason != "" {
+			clone.Status = "skipped"
+			clone.Reason = "refused immediately before move back: " + reason
+			report.Clones = append(report.Clones, clone)
+			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
+				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
+			}
+			continue
+		}
 		if _, err := worktrees.ApplyCloneMove(ctx, entry.Destination, entry.Source); err != nil {
 			clone.Status = "failed"
 			clone.Reason = err.Error()
 			report.Clones = append(report.Clones, clone)
+			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
+				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
+			}
 			continue
 		}
 		regenerateMarkers(root, entry.Source)
 		for _, worktree := range entry.Worktrees {
 			regenerateMarkers(root, worktree.Source)
 		}
-		removeEmptyLegacyOwner(filepath.Dir(entry.Destination))
+		// The forward move created <root>/<host>/<org> (and possibly
+		// <root>/<host> itself, its first clone). Reversing the last clone
+		// under either must remove them, mirroring the legacy owner-directory
+		// cleanup the forward move performs, or they are left behind forever.
+		hostOrgDir := filepath.Dir(entry.Destination)
+		hostDir := filepath.Dir(hostOrgDir)
+		if removed, reason := removeEmptyLegacyOwner(hostOrgDir); !removed && reason != "" {
+			keptOwners = appendKeptOwner(keptOwners, hostOrgDir, reason)
+		} else if removed {
+			if removedHost, hostReason := removeEmptyLegacyOwner(hostDir); !removedHost && hostReason != "" {
+				keptOwners = appendKeptOwner(keptOwners, hostDir, hostReason)
+			}
+		}
 		clone.Status = "reversed"
 		report.Clones = append(report.Clones, clone)
 		now := options.Now()
 		manifest.Clones[index].Reversed = true
 		manifest.Clones[index].ReversedAt = &now
+		// Persist this clone's outcome as it completes, atomically, exactly
+		// as the forward apply does: an interrupted undo run must leave a
+		// manifest that already reflects every clone it finished, not only
+		// what a final write at the very end would have captured.
+		if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+			report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
+			return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
+		}
 	}
 	if options.Apply {
-		if err := writeManifest(manifestPath, manifest); err != nil {
-			return report, err
-		}
 		invalidateLocalIndex(root)
 	}
+	report.KeptOwners = keptOwners
 	report.DaemonRestartRequired = daemonRunning(root)
 	return report, nil
+}
+
+// appendKeptOwner records a kept host-level directory undo left in place,
+// deduplicating against anything already collected.
+func appendKeptOwner(kept []MigrateKeptOwner, path, reason string) []MigrateKeptOwner {
+	for _, existing := range kept {
+		if existing.Path == path {
+			return kept
+		}
+	}
+	return append(kept, MigrateKeptOwner{Path: path, Reason: reason})
+}
+
+// manifestUnprocessedClones reports every manifest entry from index onward as
+// not yet processed, for the report a manifest-write failure returns midway
+// through undo.
+func manifestUnprocessedClones(manifest *migrationManifest, index int) []MigrateClone {
+	var clones []MigrateClone
+	for _, entry := range manifest.Clones[index:] {
+		clone := MigrateClone{Repository: entry.Repository, Source: entry.Destination, Destination: entry.Source, Status: "skipped", Reason: "not reached before the manifest write failure"}
+		clones = append(clones, clone)
+	}
+	return clones
+}
+
+// validateMigrationID rejects anything that is not exactly one safe path
+// segment: undo interpolates this value directly into a filesystem path
+// under <root>/.wb/layout-migrations/, so an id containing a path separator
+// or a "." / ".." segment must never reach that join.
+func validateMigrationID(id string) error {
+	if id == "" {
+		return fmt.Errorf("migration id is required")
+	}
+	if id == "." || id == ".." {
+		return fmt.Errorf("invalid migration id %q", id)
+	}
+	if strings.ContainsAny(id, "/\\") {
+		return fmt.Errorf("invalid migration id %q: must be a single path segment", id)
+	}
+	if clean := filepath.Clean(id); clean != id {
+		return fmt.Errorf("invalid migration id %q", id)
+	}
+	return nil
 }
 
 type repoFilter map[string]bool

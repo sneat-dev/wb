@@ -201,9 +201,19 @@ its linked worktrees — checked across every home WB resolves for the root, not
 only its current write home, since a claim recorded under a retired legacy
 home is still a live task; or an un-picked-up parked session (one saved by `wb
 session park` and not yet resumed) names the clone or one of its linked
-worktrees as a member worktree. Uncommitted changes MUST NOT be a refusal
-reason, because a rename preserves them. The remaining clones MUST still be
-migrated.
+worktrees as a member worktree. On an OS that exposes live process working
+directories (Linux, via `/proc`), a clone MUST also be skipped when a
+readable process's current working directory is inside the clone or one of
+its linked worktrees, naming the PID and the command in the reason; a process
+whose working directory cannot be read (another user's, or one that has since
+exited) is not evidence and MUST NOT cause a refusal. On an OS with no such
+mechanism, this check MUST be skipped and the run MUST say so once. Every
+refusal condition MUST be re-checked immediately before each clone's move, not
+only when the whole run was planned, since the interval between planning and
+moving is exactly when another agent on a shared machine can start a claim, a
+Git operation, a parked session, or a shell inside the clone. Uncommitted
+changes MUST NOT be a refusal reason, because a rename preserves them. The
+remaining clones MUST still be migrated.
 
 #### REQ: clone-migration-repoints-worktrees
 
@@ -231,11 +241,22 @@ Before the first move, `--apply` MUST write a manifest of every planned clone �
 source, destination, HEAD commit and linked worktree paths — under
 `<root>/.wb/layout-migrations/<id>/`, and MUST append each clone's outcome as it
 completes. `wb layout migrate --undo <id>` MUST reverse the moves that manifest
-records as done, with the same repair and verification. A legacy owner
-directory MUST be removed only when the migration leaves it empty; one that
-still holds anything, including its own `.git`, MUST be kept and reported. The
-command MUST invalidate WB's cached repository-path index, and MUST report when
-a running daemon has to be restarted to pick up the new paths.
+records as done, with the same repair and verification, appending each
+clone's reversal outcome to the manifest as it completes, and re-running every
+refusal check against the clone's current location immediately before each
+move back. A legacy owner directory, and a host-level owner or host directory
+a reversed move leaves empty, MUST be removed only when empty; one that still
+holds anything, including its own `.git`, MUST be kept and reported by path
+and reason — every kept owner directory, not only the ones a run happens to
+mention elsewhere. `--undo <id>` MUST treat `<id>` as exactly one path segment
+and MUST reject anything else (empty, `.`, `..`, or containing a path
+separator) before it is used to build any filesystem path. `--apply` (migrate
+or undo) MUST take a single exclusive lock under `<root>/.wb` for the run's
+duration; a second concurrent `--apply` against the same root MUST fail
+immediately with a message naming the conflict, rather than blocking or
+interleaving its moves with the first run's. The command MUST invalidate WB's
+cached repository-path index, and MUST report when a running daemon has to be
+restarted to pick up the new paths.
 
 ## Acceptance Criteria
 
@@ -367,12 +388,14 @@ as done and changes nothing.
 
 **Requirements:** projects-root-layout#req:clone-migration-refusals
 
-**Given** four legacy clones — one whose `origin` owner differs from its path,
-one whose destination already exists, one with a rebase in progress, and one
-with a live Work Log claim on a linked worktree — plus one clean legacy clone
+**Given** five legacy clones — one whose `origin` owner differs from its path,
+one whose destination already exists, one with a rebase in progress, one with
+a live Work Log claim on a linked worktree, and one with a live process whose
+working directory is inside it — plus one clean legacy clone
 **When** `wb layout migrate --apply` runs
-**Then** each of the four is left in place with a finding naming its reason, the
-clean clone is migrated, and the command exits with the findings code.
+**Then** each of the five is left in place with a finding naming its reason
+(the busy clone's reason naming the process's PID and command), the clean
+clone is migrated, and the command exits with the findings code.
 
 ### AC: migrate-is-reversible
 
@@ -381,8 +404,12 @@ clean clone is migrated, and the command exits with the findings code.
 **Given** a completed `wb layout migrate --apply` whose manifest id is `<id>`
 **When** `wb layout migrate --undo <id>` runs
 **Then** every clone the manifest records as done is back at its legacy path,
-`git status` succeeds in each clone and each of its linked worktrees, and the
-manifest records the reversal.
+`git status` succeeds in each clone and each of its linked worktrees, the
+manifest records the reversal as each clone completes, and any host-level
+owner or host directory the reversal leaves empty is removed
+**When** `wb layout migrate --undo` is given anything other than a single safe
+path segment (empty, `.`, `..`, or a value containing a path separator)
+**Then** the command rejects it before touching the filesystem.
 
 ## Open Questions
 

@@ -3,7 +3,9 @@ package layout
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -497,5 +499,190 @@ func TestMigrateRepairsAStrandedAlreadyAtDestinationClone(t *testing.T) {
 	}
 	if MigrateFailed(again) {
 		t.Fatal("a repaired-then-verified clone must not be reported as a finding")
+	}
+}
+
+// TestMigrateUndoRejectsPathTraversalID covers the `--undo <id>` path-segment
+// validation: an id must never be interpolated into the manifest path
+// unchecked, or a value like "../../etc" could make undo reach outside
+// <root>/.wb/layout-migrations/ entirely.
+func TestMigrateUndoRejectsPathTraversalID(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// An empty UndoID is not exercised here: Migrate treats it as "not an
+	// undo" and dispatches to migrateApply instead, so validateMigrationID
+	// never sees it through this entry point.
+	for _, id := range []string{"../../etc", "..", ".", "a/b", "a\\b"} {
+		if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: id, Apply: true}); err == nil {
+			t.Fatalf("undo id %q must be rejected", id)
+		}
+		if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: id}); err == nil {
+			t.Fatalf("dry-run undo id %q must be rejected", id)
+		}
+	}
+}
+
+// TestMigrateUndoReportsKeptHostOwnerDirectory covers MINOR #9's undo-side
+// reporting requirement: when reversing one of several clones that share a
+// host-level owner directory, the directory that is intentionally left in
+// place (because a sibling clone still lives there) must be named in
+// MigrateReport.KeptOwners, not silently skipped.
+func TestMigrateUndoReportsKeptHostOwnerDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	_ = initRemoteClone(t, root, "acme", "one", "acme/one")
+	_ = initRemoteClone(t, root, "acme", "two", "acme/two")
+
+	// Apply each repository in its own run, so each gets its own manifest and
+	// undo can reverse exactly one of them: migrateUndo reverses every
+	// completed entry in the manifest it is given, with no repository filter
+	// of its own.
+	appliedOne, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/one"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone, found := findMigrateClone(appliedOne, "acme/one"); !found || clone.Status != "done" {
+		t.Fatalf("acme/one = %+v, want done", clone)
+	}
+	appliedTwo, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/two"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone, found := findMigrateClone(appliedTwo, "acme/two"); !found || clone.Status != "done" {
+		t.Fatalf("acme/two = %+v, want done", clone)
+	}
+	hostOrgDir := filepath.Join(root, "github.com", "acme")
+	if _, err := os.Stat(hostOrgDir); err != nil {
+		t.Fatalf("host owner directory must still hold both clones: %v", err)
+	}
+
+	undone, err := Migrate(context.Background(), root, MigrateOptions{UndoID: appliedOne.ManifestID, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(undone, "acme/one")
+	if !found || clone.Status != "reversed" {
+		t.Fatalf("acme/one undo = %+v, want reversed", clone)
+	}
+	if _, err := os.Stat(hostOrgDir); err != nil {
+		t.Fatalf("host owner directory must be kept while acme/two still lives there: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(hostOrgDir, "two")); err != nil {
+		t.Fatalf("acme/two must still be at the host level: %v", err)
+	}
+	found = false
+	for _, kept := range undone.KeptOwners {
+		if kept.Path == hostOrgDir {
+			found = true
+			if kept.Reason == "" {
+				t.Fatal("kept owner must carry a reason")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("kept owners = %+v, want %s reported", undone.KeptOwners, hostOrgDir)
+	}
+}
+
+// TestMigrateBusyProcessRefusesAClone covers SERIOUS #4's third bullet: a
+// live process whose current working directory sits inside a clone (or one
+// of its linked worktrees) must refuse the move, naming the PID and command,
+// even though neither a Git-operation marker nor a Work Log claim would ever
+// observe a bare shell sitting there. Linux-only: /proc has no equivalent on
+// other kernels, which is exactly what busyProcessCheckSupported signals.
+func TestMigrateBusyProcessRefusesAClone(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("busy-process detection only runs on linux")
+	}
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "busy", "acme/busy")
+
+	cmd := exec.Command("sleep", "60")
+	cmd.Dir = canonical
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/busy"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/busy")
+	if !found || clone.Status != "skipped" {
+		t.Fatalf("acme/busy = %+v, want skipped", clone)
+	}
+	if !strings.Contains(clone.Reason, "process") || !strings.Contains(clone.Reason, "working directory") {
+		t.Fatalf("acme/busy reason = %q, want it to name the busy process", clone.Reason)
+	}
+}
+
+// TestMigrateApplyRejectsAConcurrentRun covers SERIOUS #4's lock requirement:
+// a second concurrent `--apply` (migrate or undo) against the same root must
+// fail immediately with a clear message rather than blocking or interleaving
+// its moves with the first run's.
+func TestMigrateApplyRejectsAConcurrentRun(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	lock, err := acquireMigrationLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+
+	if _, err := Migrate(context.Background(), root, MigrateOptions{Apply: true}); err == nil {
+		t.Fatal("a concurrent --apply must fail while the lock is held")
+	} else if !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("error = %v, want it to name a concurrent run", err)
+	}
+}
+
+// TestMigrateIncludesDotNamedClones covers MINOR #9's second bullet: a clone
+// directory named with a leading dot (such as the "acme/.github" convention
+// GitHub uses for an org's default community-health repository) must be
+// discovered and migrated exactly like any other clone, at both the
+// legacy-candidate scan and the host-level already-done scan — not silently
+// excluded by a directory-listing filter that treats a leading dot as
+// "hidden".
+func TestMigrateIncludesDotNamedClones(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	_ = initRemoteClone(t, root, "acme", ".github", "acme/.github")
+
+	dry, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/.github"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(dry, "acme/.github")
+	if !found || clone.Status != "planned" {
+		t.Fatalf("dot-named clone dry run = %+v, want planned", clone)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/.github"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(applied, "acme/.github")
+	if !found || clone.Status != "done" {
+		t.Fatalf("dot-named clone apply = %+v, want done", clone)
+	}
+	destination := filepath.Join(root, "github.com", "acme", ".github")
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("dot-named clone must have moved to the host level: %v", err)
+	}
+
+	// Re-running now must find it at the host level via the already-done
+	// scan, which also must not filter it out for its leading dot.
+	again, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/.github"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(again, "acme/.github")
+	if !found || clone.Status != "already_done" {
+		t.Fatalf("dot-named clone re-scan = %+v, want already_done", clone)
 	}
 }

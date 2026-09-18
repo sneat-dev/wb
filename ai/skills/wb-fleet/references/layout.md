@@ -55,17 +55,28 @@ owner/repository differs from its path, its origin host is not a valid
 directory name, its destination already exists, a Git operation (merge,
 rebase, cherry-pick, revert, or a held index lock) is in progress or cannot be
 inspected, a live Work Log claim holds it or a linked worktree (checked across
-every home WB resolves, including a retired legacy one), or an un-picked-up
-`wb session park` bundle names it or a linked worktree as a member. Uncommitted
-changes are never a refusal reason — the rename preserves them, and neither is
-an unborn `HEAD` (a repository with no commit yet). The command exits with the
-findings code whenever any clone is skipped or fails.
+every home WB resolves, including a retired legacy one), an un-picked-up
+`wb session park` bundle names it or a linked worktree as a member, or (Linux
+only; skipped elsewhere, noted once in the report) a live process has its
+working directory inside it or a linked worktree, named by PID and command.
+Every refusal is re-checked immediately before that clone's actual move, not
+only when the run was planned. Uncommitted changes are never a refusal
+reason — the rename preserves them, and neither is an unborn `HEAD` (a
+repository with no commit yet). The command exits with the findings code
+whenever any clone is skipped or fails.
 
-`--apply` writes a manifest under `<root>/.wb/layout-migrations/<id>/` before
-its first move; `--undo <id>` reverses every clone that manifest records done,
-with the same repair and verification. It also invalidates WB's cached
-repository-path index and reports when a running daemon must be restarted to
-see the moved paths.
+`--apply` (migrate or undo) takes a single exclusive lock under `<root>/.wb`
+for the run; a second concurrent `--apply` against the same root fails
+immediately naming the conflict instead of interleaving moves. `--apply`
+writes a manifest under `<root>/.wb/layout-migrations/<id>/` before its first
+move, appending each clone's outcome as it completes; `--undo <id>` reverses
+every clone that manifest records done, with the same repair, verification
+and refusal re-checks, appending each reversal as it completes and removing
+any host-level owner or host directory a reversal leaves empty. `<id>` must be
+a single path segment — `.`, `..`, empty, or anything containing a path
+separator is rejected before touching the filesystem. It also invalidates
+WB's cached repository-path index and reports when a running daemon must be
+restarted to see the moved paths.
 
 ```sh
 wb layout migrate --apply
