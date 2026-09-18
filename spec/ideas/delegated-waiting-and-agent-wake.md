@@ -485,6 +485,22 @@ state true and queryable, not to own the operator's attention.
 - Does a durable `wb watch` layer earn its complexity *beyond* the observability
   requirement above, now that the audit shows WB cannot wake an arbitrary
   session and the App event contract cannot carry pull-request state?
+
+## Superseded in part
+
+The finding that WB cannot initiate contact with a session was too strong. It
+was drawn from `internal/sessionmessenger`, which is genuinely only a
+predecessor-to-successor handoff channel, plus a documentation review that
+missed Claude Code's **channels** (`claude --channels plugin:<server>`): an MCP
+server that pushes events into a live session, whose messages are treated as
+messages from the user.
+
+So the conclusion "for unattended work, acting beats notifying" still holds for
+a session that is **gone**, and no longer holds for one that is **alive**. The
+successor idea is [[daemon-as-coordinator]], which also records why that channel
+must never carry provider text: a message delivered as the founder, built from
+a pull request title an attacker wrote, is prompt injection with the founder's
+authority.
 - Should `wb wait pr` take a per-`(repository, number)` advisory lock so a
   second waiter for the same target attaches or refuses instead of duplicating?
   The idea's own triggering observation was one agent launching two pollers for
