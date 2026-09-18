@@ -1,0 +1,24 @@
+version: "2"
+
+# paralleltest checks for consistent, correct use of t.Parallel(). It runs
+# with ignore-missing so it does not force every one of the thousands of
+# already-intentionally-serial tests in this repository (env/cwd mutation,
+# package-seam reassignment, real subprocess fixtures) to carry an individual
+# nolint annotation -- that would be a diff explosion unrelated to catching
+# real mistakes. The actual regression guard for "new tests default to
+# parallel" is internal/quality's TestParallelBaselineDoesNotRegress, which
+# compares against a frozen baseline of tests that were already serial when
+# the sweep in sneat-dev/wb#623 landed (see internal/quality/testdata).
+#
+# paralleltest still catches real mistakes even with ignore-missing: a
+# subtest added to an already-parallel table test that forgets its own
+# t.Parallel(), or a loop variable a pre-1.22-style capture shadows
+# needlessly.
+linters:
+  default: standard
+  enable:
+    - paralleltest
+  settings:
+    paralleltest:
+      ignore-missing: true
+      ignore-missing-subtests: false
