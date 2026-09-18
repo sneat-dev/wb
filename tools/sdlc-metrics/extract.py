@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -32,27 +33,82 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 # --------------------------------------------------------------------------
 # Price table (USD per million tokens). EDIT HERE as pricing changes.
-# Keyed by a coarse model family; matched by substring against the raw
-# model string found in transcripts (e.g. "claude-sonnet-5" -> "sonnet").
-# Source: publicly posted list prices at time of writing; re-check before
-# trusting absolute dollar figures, they are for relative comparison.
+#
+# B3 fix: priced by MODEL-ID PREFIX, most specific first (e.g.
+# "claude-fable-5-1" before "claude-fable-5"), falling back to a coarse
+# family bucket only for a model string that matches no known prefix.
+# Cache write: 1.25x input for the 5-minute ephemeral cache, 2x input for
+# the 1-hour one. Cache read: 0.1x input, except Fable 5.1 which is priced
+# at a flat $0.25/MTok (0.025x its $10 input rate).
+#
+# Source: publicly posted list prices as of the date below; re-check before
+# trusting absolute dollar figures -- PRICES AS OF 2026-09-18.
 # --------------------------------------------------------------------------
-# cache_write_5m / cache_write_1h are separate because the two ephemeral
-# cache lifetimes are priced differently (1h costs more to write, both read
-# at the same discounted `cache_read` rate). `cache_write` is kept as an
-# equal-to-5m fallback for any code path that hasn't been updated to the
-# split fields.
+PRICE_TABLE_AS_OF = "2026-09-18"
+
+
+def _rates(input_usd: float, output_usd: float, cache_read_usd: Optional[float] = None) -> dict:
+    """Derive the full per-MTok rate dict from input/output list prices,
+    using the standard cache-write multipliers (1.25x / 2x input) and the
+    standard 0.1x cache-read discount unless an explicit override is given
+    (Fable 5.1's flat $0.25/MTok cache read)."""
+    cache_write_5m = round(input_usd * 1.25, 6)
+    cache_write_1h = round(input_usd * 2.00, 6)
+    cache_read = cache_read_usd if cache_read_usd is not None else round(input_usd * 0.10, 6)
+    return {
+        "input": input_usd,
+        "output": output_usd,
+        "cache_write_5m": cache_write_5m,
+        "cache_write_1h": cache_write_1h,
+        "cache_write": cache_write_5m,  # equal-to-5m fallback for old callers
+        "cache_read": cache_read,
+    }
+
+
+# Most-specific-prefix-first model pricing. Matched against the lower-cased
+# raw `message.model` string with str.startswith(); LEGACY_PRICE_PREFIXES
+# below are labelled "legacy, verify" wherever they are surfaced.
+PRICE_TABLE_BY_PREFIX: list = [
+    ("claude-opus-5", _rates(5.00, 25.00)),
+    ("claude-sonnet-5", _rates(2.00, 10.00)),
+    ("claude-haiku-4-5", _rates(1.00, 5.00)),
+    ("claude-fable-5-1", _rates(10.00, 50.00, cache_read_usd=0.25)),
+    ("claude-fable-5", _rates(10.00, 50.00)),
+    # older generations -- kept as an explicit fallback so an old transcript
+    # still prices sanely; labelled "legacy, verify" wherever surfaced.
+    ("claude-sonnet-4", _rates(3.00, 15.00)),
+    ("claude-opus-4", _rates(15.00, 75.00)),
+]
+LEGACY_PRICE_PREFIXES = {"claude-sonnet-4", "claude-opus-4"}
+
+# Coarse family fallback (current-generation rates), used only when a model
+# string matches no PRICE_TABLE_BY_PREFIX entry at all -- e.g. a genuinely
+# unknown or future model name. model_family() (below) does the coarse
+# opus/sonnet/haiku/fable/other bucketing used here and for reporting.
 PRICE_TABLE_USD_PER_MTOK = {
-    "opus":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_write_5m": 18.75, "cache_write_1h": 30.00, "cache_read": 1.50},
-    "sonnet": {"input": 3.00,  "output": 15.00, "cache_write": 3.75,  "cache_write_5m": 3.75,  "cache_write_1h": 6.00,  "cache_read": 0.30},
-    "haiku":  {"input": 1.00,  "output": 5.00,  "cache_write": 1.25,  "cache_write_5m": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
-    "fable":  {"input": 1.00,  "output": 5.00,  "cache_write": 1.25,  "cache_write_5m": 1.25,  "cache_write_1h": 2.00,  "cache_read": 0.10},
+    "opus": _rates(5.00, 25.00),
+    "sonnet": _rates(2.00, 10.00),
+    "haiku": _rates(1.00, 5.00),
+    "fable": _rates(10.00, 50.00),
 }
 DEFAULT_FAMILY = "sonnet"  # fallback price bucket for an unrecognised model string
+
+
+def price_rates_for_model(model: Optional[str]) -> dict:
+    """The rate dict to use for ONE message's own model string (B3/M3):
+    longest-matching PRICE_TABLE_BY_PREFIX entry first, else the coarse
+    family fallback, else the DEFAULT_FAMILY rates for no/unknown model."""
+    if model:
+        m = model.lower()
+        for prefix, rates in sorted(PRICE_TABLE_BY_PREFIX, key=lambda kv: -len(kv[0])):
+            if m.startswith(prefix):
+                return rates
+    fam = model_family(model)
+    return PRICE_TABLE_USD_PER_MTOK.get(fam, PRICE_TABLE_USD_PER_MTOK[DEFAULT_FAMILY])
 
 # Optional local price-table override, e.g. ~/.config/sdlc-metrics/prices.json
 # ({"sonnet": {"input": ..., ...}, ...}) or a path given with --price-config.
@@ -76,8 +132,19 @@ def load_price_overrides(path: Optional[Path]) -> None:
             except Exception as e:
                 eprint(f"warn: could not read price overrides at {p}: {e}")
                 return
-            for fam, rates in overrides.items():
-                PRICE_TABLE_USD_PER_MTOK.setdefault(fam, {}).update(rates)
+            for key, rates in overrides.items():
+                if key in PRICE_TABLE_USD_PER_MTOK:
+                    # a coarse family override, e.g. {"sonnet": {...}}
+                    PRICE_TABLE_USD_PER_MTOK[key].update(rates)
+                    continue
+                # a model-id-prefix override/addition, e.g.
+                # {"claude-sonnet-5-2": {...}}
+                for i, (prefix, existing) in enumerate(PRICE_TABLE_BY_PREFIX):
+                    if prefix == key:
+                        existing.update(rates)
+                        break
+                else:
+                    PRICE_TABLE_BY_PREFIX.append((key, dict(rates)))
             eprint(f"price overrides loaded from {p}")
             return
 
@@ -85,13 +152,37 @@ STALL_THRESHOLD_SECONDS = 5 * 60
 CHARS_PER_TOKEN_ESTIMATE = 4.0  # rough, English-text heuristic; see README
 
 CPU_HEAVY_PATTERNS = [
-    # NOT anchored to the start of the command: a CPU-heavy call wrapped as
-    # `wb run -- go test ./...` has `go test` after the `--`, and that is
-    # exactly the case wb_run coverage needs to detect as wrapped.
+    # kept for any caller that still wants a raw-string check; the
+    # token-aware is_cpu_heavy_tokens() below is what process_transcript
+    # actually uses so a quoted/heredoc mention of "go test" is never
+    # mistaken for a real invocation (minor #1).
     re.compile(r"\bgo\s+(test|build|vet)\b"),
     re.compile(r"\bgolangci-lint\b"),
     re.compile(r"\b(npm|pnpm|bun|bunx|yarn)\s+(run\s+)?(build|test)\b"),
 ]
+
+# CPU-heavy detection at the TOKEN level (M2, minor #1): a shlex token is
+# never split across a quote boundary, so "go" immediately followed by the
+# token "test" can only mean a real `go test` invocation, never a mention
+# inside a quoted string or heredoc body.
+_NODEISH_TOOLS = ("npm", "pnpm", "bun", "bunx", "yarn")
+
+
+def is_cpu_heavy_tokens(tokens: list) -> bool:
+    n = len(tokens)
+    for i, t in enumerate(tokens):
+        if t == "go" and i + 1 < n and tokens[i + 1] in ("test", "build", "vet"):
+            return True
+        if t == "golangci-lint":
+            return True
+        if t in _NODEISH_TOOLS:
+            rest = tokens[i + 1:i + 3]
+            if rest[:1] == ["run"]:
+                rest = rest[1:2]
+            if rest[:1] and rest[0] in ("build", "test"):
+                return True
+    return False
+
 
 LOOP_PATTERNS = [
     re.compile(r"^(until|while)\b.*\bsleep\b"),
@@ -110,6 +201,23 @@ QUOTED_RE = [re.compile(r'"[^"]*"'), re.compile(r"'[^']*'")]
 SUBVERB_TOOLS = {"wb", "git", "gh", "go", "npm", "pnpm", "bun", "bunx", "yarn"}
 CLI_KNOWLEDGE_TOOLS = {"specscore", "codegrapher"}
 
+# B4: a leading verb (the LEADING command word of a stripped segment) is
+# only ever surfaced verbatim in metrics.json/SUMMARY.md if it is a known
+# dev-tool name. Anything else -- including a word that leaked out of a
+# quoted string despite the shlex-based tokenising below, or a genuinely
+# unknown/adversarial command -- becomes the generic "<other>" label.
+KNOWN_COMMAND_ALLOWLIST = {
+    "git", "gh", "go", "wb", "specscore", "codegrapher", "grep", "rg", "find",
+    "cat", "sed", "ls", "python3", "python", "node", "pnpm", "npm", "bun",
+    "bunx", "yarn", "make", "jq", "curl", "wget", "echo", "mkdir", "rm", "cp",
+    "mv", "touch", "chmod", "diff", "tail", "head", "wc", "xargs", "tar",
+    "docker", "kubectl", "pip", "pip3", "golangci-lint", "printf", "true",
+    "false", "test", "sort", "uniq", "awk", "tr", "basename", "dirname",
+    "which", "pwd", "date", "sleep", "kill", "less", "more", "gzip", "gunzip",
+    "tee", "ssh", "scp", "rsync", "eslint", "prettier", "tsc", "cargo",
+    "rustc", "brew", "codegrapher", "gofmt", "goimports",
+}
+
 # --- SpecScore/CodeGrapher adoption classifiers -----------------------------
 # These only ever return a short class label. The pattern/path text that was
 # classified is discarded immediately after use; it is never written out.
@@ -122,6 +230,16 @@ SYMBOL_LIKE_PATTERNS = [
 ]
 REGEX_METACHAR_RE = re.compile(r"[.*+?\[\]{}()|^$\\]")
 
+# minor #2: tighten "symbol-like" so it means identifier-shaped, not a file
+# name -- "README.md" or "main.go" otherwise matches the ".Foo" member-
+# access pattern above (the extension looks like a member) and gets
+# misclassified as a code-structure lookup.
+FILENAME_LIKE_RE = re.compile(
+    r"^[\w-]+\.(go|ts|tsx|js|jsx|py|java|rb|rs|c|cc|cpp|h|hpp|cs|kt|swift|"
+    r"md|txt|json|ya?ml|toml|cfg|ini|log|csv|sh|env)$",
+    re.IGNORECASE,
+)
+
 
 def classify_grep_pattern(pattern: str) -> str:
     """Classify a grep/rg/Grep-tool pattern as 'symbol-like' (looks like a
@@ -131,6 +249,8 @@ def classify_grep_pattern(pattern: str) -> str:
     never be logged by the caller."""
     p = (pattern or "").strip()
     if not p:
+        return "text"
+    if FILENAME_LIKE_RE.match(p):
         return "text"
     for pat in SYMBOL_LIKE_PATTERNS:
         if pat.search(p):
@@ -167,40 +287,85 @@ def looks_like_source_file(path: str) -> bool:
     return bool(SOURCE_EXT_RE.search(path or ""))
 
 
+# flags that take a following value argument, for grep/rg -- without this a
+# flag's VALUE (e.g. the "go" in `rg -t go X`) is mistaken for the pattern
+# (minor #2).
+_GREP_FLAGS_WITH_ARG = {
+    "-t", "--type", "-T", "--type-not", "-g", "--glob", "-m", "--max-count",
+    "-A", "--after-context", "-B", "--before-context", "-C", "--context",
+    "-e", "--regexp", "-f", "--file", "--include", "--exclude",
+    "--iglob", "--max-depth", "-M", "--max-columns",
+}
+
+
 def extract_bash_grep_pattern(cmd: str) -> Optional[str]:
     """Best-effort extraction of the search pattern from a grep/rg/git-grep
     Bash invocation, for classification only -- never returned to a caller
-    that might log it verbatim."""
-    m = re.match(r"^(?:git\s+grep|rg|grep)\b(.*)$", cmd.strip())
-    if not m:
+    that might log it verbatim. Quote-safe (shlex-tokenised) and skips a
+    flag's value argument (e.g. `rg -t go X` -> "X", not "go")."""
+    toks = tokenize_command(cmd)
+    if toks is None:
+        toks = cmd.strip().split()
+    if not toks:
         return None
-    rest = m.group(1)
-    # drop flag tokens (-n, -r, --include=..., etc.) to find the first
-    # positional argument, which is the pattern in the common invocations
-    # this heuristic targets
-    toks = rest.split()
-    for t in toks:
-        if t.startswith("-"):
+    if toks[0] == "git" and len(toks) > 1 and toks[1] == "grep":
+        i = 2
+    elif toks[0] in ("rg", "grep"):
+        i = 1
+    else:
+        return None
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            i += 1
+            continue
+        if t in _GREP_FLAGS_WITH_ARG:
+            i += 2
+            continue
+        if t.startswith("-") and t != "-":
+            i += 1
             continue
         return t.strip("'\"")
     return None
 
 
 def extract_bash_read_path(cmd: str) -> Optional[str]:
-    """Best-effort path argument for cat/head/tail/sed -n <path> reads."""
-    m = re.match(r"^(cat|head|tail)\b(.*)$", cmd.strip())
-    if m:
-        toks = [t for t in m.group(2).split() if not t.startswith("-")]
-        return toks[0] if toks else None
-    m = re.match(r"^sed\s+-n\b(.*)$", cmd.strip())
-    if m:
-        toks = [t for t in m.group(1).split() if not t.startswith("-") and not re.match(r"^[\d,$p]+$", t)]
-        return toks[-1] if toks else None
+    """Best-effort path argument for cat/head/tail/sed -n <path> reads.
+    Quote-safe (shlex-tokenised)."""
+    toks = tokenize_command(cmd)
+    if toks is None:
+        toks = cmd.strip().split()
+    if not toks:
+        return None
+    if toks[0] in ("cat", "head", "tail"):
+        rest = [t for t in toks[1:] if not t.startswith("-")]
+        return rest[0] if rest else None
+    if toks[0] == "sed" and len(toks) > 1 and toks[1] == "-n":
+        rest = [t for t in toks[2:] if not t.startswith("-") and not re.match(r"^[\d,$p]+$", t)]
+        return rest[-1] if rest else None
     return None
 
 
 def eprint(*a: Any, **kw: Any) -> None:
     print(*a, file=sys.stderr, **kw)
+
+
+# M4: every path this pass writes into metrics.json/SUMMARY.md (repo
+# checkout paths, WB state dirs, "unavailable" reasons that mention a
+# scanned path, ...) is rendered relative to home ("~/...") instead of the
+# raw OS username -- never /home/<user>/... or /Users/<user>/... verbatim.
+_HOME_PATH_RE = re.compile(r"/(?:home|Users)/[^/\s]+/")
+
+
+def scrub_home_path(s: Any) -> Any:
+    """Render an absolute path (or any string that may contain one) with
+    its home-directory prefix replaced by "~/" (M4). Non-strings pass
+    through unchanged; a list/tuple of paths is scrubbed element-wise."""
+    if isinstance(s, (list, tuple)):
+        return [scrub_home_path(x) for x in s]
+    if not isinstance(s, str):
+        return s
+    return _HOME_PATH_RE.sub("~/", s)
 
 
 # --------------------------------------------------------------------------
@@ -238,23 +403,117 @@ def in_window(dt: Optional[datetime], since: datetime, until: datetime) -> bool:
     return since <= dt <= until
 
 
-def reduce_command(cmd: str) -> str:
-    """Reduce a shell command line to verb + flags, paths collapsed.
-
-    Privacy: no literal path segments, no quoted string arguments, no other
-    free text -- only the leading verb and flag tokens survive.
-    """
-    cmd = cmd.strip()
-    cmd = PATH_RE.sub("<path>", cmd)
-    cmd = LONG_FLAG_VALUE_RE.sub(r"\1<val>", cmd)
-    for pat in QUOTED_RE:
-        cmd = pat.sub("<str>", cmd)
-    tokens = cmd.split()
-    return " ".join(tokens[:6])  # verb + first few flags only
+HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
 
 
-def command_tokens(cmd: str) -> list:
-    return cmd.strip().split()
+def strip_heredocs(cmd: str) -> str:
+    """Remove heredoc BODIES (the lines between a `<<[-]DELIM` marker and the
+    line containing just DELIM) before any tokenising or classification --
+    their contents are never inspected for verb/pattern extraction (B4).
+    The marker line itself (and the closing delimiter line) are kept so the
+    surrounding command structure is still visible."""
+    if "<<" not in cmd:
+        return cmd
+    lines = cmd.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = HEREDOC_START_RE.search(line)
+        if m:
+            delim = m.group(1)
+            i += 1
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1
+            if i < len(lines):
+                out.append(lines[i])  # keep the closing delimiter line
+                i += 1
+            continue
+        i += 1
+    return "\n".join(out)
+
+
+def tokenize_command(cmd: str) -> Optional[list]:
+    """Quote-safe shell tokenisation (B4): shlex with punctuation_chars so
+    control operators (&&, ||, ;, |, &) come back as their own tokens and a
+    quoted string -- including one that starts a VAR='...' assignment --
+    stays a single token, never split into bare words. Returns None (callers
+    must emit "<unparsed>") if the command cannot be tokenised at all, e.g.
+    unbalanced quotes."""
+    try:
+        lex = shlex.shlex(strip_heredocs(cmd), posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex)
+    except ValueError:
+        return None
+
+
+_SHELL_OPERATORS = {"&&", "||", ";", "|", "&"}
+_CLAUSE_OPERATORS = {"&&", "||", ";"}
+_NOISE_PREFIX_HEADS = {"cd", "timeout", "env", "nice", "sudo"}
+
+
+def split_command_segments(cmd: str, operators: Optional[set] = None) -> list:
+    """Split a command line into its top-level segments (default: on &&,
+    ||, ;, |, & -- M2), quote-safe. Returns a list of token lists; [] if the
+    command could not be tokenised."""
+    toks = tokenize_command(cmd)
+    if toks is None:
+        return []
+    ops = operators if operators is not None else _SHELL_OPERATORS
+    segments, current = [], []
+    for t in toks:
+        if t in ops:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(t)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def strip_segment_prefix(tokens: list) -> list:
+    """Drop leading `cd <dir>`, `timeout [flags] N`, `env [VAR=..]* [-i]`,
+    `nice [-n N]`, `sudo`, and VAR=value assignment tokens from one segment,
+    to find the real command it runs (M2: a leading `cd X &&` must not break
+    classification of the command that follows)."""
+    toks = list(tokens)
+    changed = True
+    while toks and changed:
+        changed = False
+        while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
+            toks = toks[1:]
+            changed = True
+        if not toks:
+            break
+        head = toks[0]
+        if head == "cd":
+            toks = toks[2:] if len(toks) > 1 else []
+            changed = True
+        elif head == "timeout":
+            toks = toks[1:]
+            while toks and toks[0].startswith("-"):
+                toks = toks[1:]
+            if toks:
+                toks = toks[1:]  # the duration argument
+            changed = True
+        elif head == "env":
+            toks = toks[1:]
+            while toks and (ENV_ASSIGNMENT_RE.match(toks[0]) or toks[0].startswith("-")):
+                toks = toks[1:]
+            changed = True
+        elif head == "nice":
+            toks = toks[1:]
+            while toks and toks[0].startswith("-"):
+                toks = toks[1:]
+            changed = True
+        elif head == "sudo":
+            toks = toks[1:]
+            changed = True
+    return toks
 
 
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -274,29 +533,22 @@ def _sanitize_verb(tok: str) -> str:
     return "<other>"
 
 
-def leading_verb_and_subverb(cmd: str) -> tuple:
-    """Return (verb, verb_subverb) for a shell command's first pipeline
-    segment, e.g. 'wb pr land --json' -> ('wb', 'wb pr land'). Both parts
-    are sanitized so a path or an assignment's value can never appear."""
-    first_segment = re.split(r"[|;&]", cmd.strip(), maxsplit=1)[0].strip()
-    toks = first_segment.split()
+def classify_segment_tokens(toks: list) -> tuple:
+    """(verb, subverb) for one already-split, prefix-stripped segment's
+    tokens. B4: the LEADING verb is only ever surfaced if it is on
+    KNOWN_COMMAND_ALLOWLIST -- any other bare word (including one that
+    leaked out of a mis-parsed quoted string) becomes "<other>", never the
+    word itself."""
     if not toks:
         return "(empty)", "(empty)"
-    # skip any number of leading VAR=value assignments (env-prefixed
-    # commands, e.g. "GOFLAGS=-p=2 go test ./...") to find the real verb
-    lead = 0
-    while lead < len(toks) - 1 and ENV_ASSIGNMENT_RE.match(toks[lead]):
-        lead += 1
-    if lead > 0:
-        toks = toks[lead:]
-    verb = toks[0]
-    if ENV_ASSIGNMENT_RE.match(verb):
-        # the whole segment was assignments with no trailing command
+    raw_verb = toks[0]
+    if ENV_ASSIGNMENT_RE.match(raw_verb):
         return "<assignment>", "<assignment>"
-    # strip a leading sudo/env wrapper, best-effort
-    if verb in ("sudo", "env") and len(toks) > 1:
-        toks = toks[1:]
-        verb = toks[0] if toks else verb
+    verb = _sanitize_verb(raw_verb)
+    if verb in ("<other>", "<assignment>", "(empty)"):
+        return verb, verb
+    if verb.lower() not in KNOWN_COMMAND_ALLOWLIST:
+        return "<other>", "<other>"
     if verb in SUBVERB_TOOLS and len(toks) > 1:
         sub = _sanitize_verb(toks[1])
         third = _sanitize_verb(toks[2]) if len(toks) > 2 else None
@@ -316,16 +568,44 @@ def leading_verb_and_subverb(cmd: str) -> tuple:
         if verb == "wb":
             return verb, f"{verb} {sub}"
         return verb, f"{verb} {sub}"
-    return _sanitize_verb(verb), _sanitize_verb(verb)
+    return verb, verb
 
 
-def classify_bash_verb(cmd: str) -> str:
-    """Backward-compatible coarse classification used for the top-level
-    tool_patterns.bash_by_verb table."""
-    verb, subverb = leading_verb_and_subverb(cmd)
-    c = cmd.strip()
+def iter_command_segments(cmd: str):
+    """Yield (verb, subverb, joined_segment_str) for EVERY meaningful,
+    prefix-stripped segment of a command line, split on &&/||/;/|/& (M2):
+    `cd x && go test ./...` classifies its second segment as `go test`,
+    not `other:cd`. An unparsable command yields a single ("<unparsed>",
+    "<unparsed>", "") segment."""
+    toks = tokenize_command(cmd)
+    if toks is None:
+        yield "<unparsed>", "<unparsed>", ""
+        return
+    for seg in split_command_segments(cmd):
+        stripped = strip_segment_prefix(seg)
+        if not stripped:
+            continue
+        verb, subverb = classify_segment_tokens(stripped)
+        yield verb, subverb, " ".join(stripped)
+
+
+def leading_verb_and_subverb(cmd: str) -> tuple:
+    """(verb, subverb) for a shell command's FIRST meaningful segment, after
+    splitting on &&/||/;/|/& and dropping cd/timeout/env/nice/sudo/VAR=
+    prefixes. Kept for callers that only care about one representative
+    segment; iter_command_segments() classifies every segment (M2)."""
+    for verb, subverb, _ in iter_command_segments(cmd):
+        return verb, subverb
+    return "(empty)", "(empty)"
+
+
+def _classify_bash_verb_segment(verb: str, subverb: str, seg_str: str) -> str:
+    """Coarse classification for one already-split, already-classified
+    (verb, subverb) segment. Shared by classify_bash_verb() (first segment
+    only, kept for backward compatibility) and process_transcript's
+    per-segment loop (M2)."""
     if verb == "go" and "test" in subverb:
-        return "go test -run" if "-run" in c else "go test (full)"
+        return "go test -run" if "-run" in seg_str else "go test (full)"
     if subverb in ("wb pr land",):
         return "wb pr land"
     if subverb == "wb wait":
@@ -336,19 +616,57 @@ def classify_bash_verb(cmd: str) -> str:
         return "gh run list"
     if verb == "gh":
         return "gh api" if subverb == "gh api" else "gh (other)"
-    if any(p.search(c) for p in LOOP_PATTERNS):
+    if any(p.search(seg_str) for p in LOOP_PATTERNS):
         return "sleep/poll-loop"
     if verb == "git":
         return "git"
-    return f"other:{verb}"
+    if verb in ("<other>", "<assignment>", "(empty)", "<unparsed>"):
+        return verb
+    return f"other:{verb}" if verb.lower() in KNOWN_COMMAND_ALLOWLIST else "<other>"
+
+
+def classify_bash_verb(cmd: str) -> str:
+    """Backward-compatible coarse classification used for the top-level
+    tool_patterns.bash_by_verb table (first segment only)."""
+    for verb, subverb, seg_str in iter_command_segments(cmd):
+        return _classify_bash_verb_segment(verb, subverb, seg_str)
+    return _classify_bash_verb_segment("(empty)", "(empty)", "")
 
 
 def is_cpu_heavy(cmd: str) -> bool:
-    return any(p.search(cmd.strip()) for p in CPU_HEAVY_PATTERNS)
+    """Token-aware CPU-heavy check (minor #1): a quoted mention of "go test"
+    can never match, only a real, unquoted invocation."""
+    toks = tokenize_command(cmd)
+    if toks is None:
+        return any(p.search(cmd.strip()) for p in CPU_HEAVY_PATTERNS)
+    return is_cpu_heavy_tokens(toks)
 
 
 def is_wb_run_wrapped(cmd: str) -> bool:
     return bool(re.search(r"\bwb\s+run\b", cmd))
+
+
+def cpu_heavy_clauses(cmd: str) -> list:
+    """Yield (effective_text, wrapped_by_wb_run) for each top-level CLAUSE
+    (split on &&/||/; only -- a `|` pipe stays part of the same clause, so
+    `wb run -- cmd | tee log` is still recognised as wrapped). Minor #1:
+    `wb run` wraps only the clause it prefixes, not siblings joined by &&."""
+    out = []
+    for clause in split_command_segments(cmd, operators=_CLAUSE_OPERATORS):
+        stripped = strip_segment_prefix(clause)
+        if not stripped:
+            continue
+        wrapped = False
+        effective = stripped
+        if stripped[0] == "wb" and len(stripped) > 1 and stripped[1] == "run":
+            wrapped = True
+            if "--" in stripped:
+                idx = stripped.index("--")
+                effective = stripped[idx + 1:]
+            else:
+                effective = stripped[2:]
+        out.append((" ".join(effective), wrapped))
+    return out
 
 
 def is_hand_rolled_loop(cmd: str) -> bool:
@@ -362,6 +680,26 @@ def has_bounded_pipe(cmd: str) -> Optional[bool]:
         return None
     segments = [s.strip() for s in cmd.split("|")]
     return any(re.match(r"^(tail|head)\b", s) for s in segments[1:])
+
+
+def reduce_command(cmd: str) -> str:
+    """Reduce a shell command line to verb + flags, paths collapsed.
+
+    Privacy: heredoc bodies are stripped, no literal path segments, no
+    quoted string arguments, no other free text -- only the leading verb
+    and flag tokens survive.
+    """
+    cmd = strip_heredocs(cmd).strip()
+    cmd = PATH_RE.sub("<path>", cmd)
+    cmd = LONG_FLAG_VALUE_RE.sub(r"\1<val>", cmd)
+    for pat in QUOTED_RE:
+        cmd = pat.sub("<str>", cmd)
+    tokens = cmd.split()
+    return " ".join(tokens[:6])  # verb + first few flags only
+
+
+def command_tokens(cmd: str) -> list:
+    return cmd.strip().split()
 
 
 def input_signature(tool_name: str, tool_input: dict) -> str:
@@ -379,6 +717,20 @@ def input_signature(tool_name: str, tool_input: dict) -> str:
     return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+_ID_SHAPED_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+
+
+def resume_target_label(to: Any) -> str:
+    """Minor #8: SendMessage's `to` field can be an opaque agent id, or a
+    free-text agent NAME the dispatcher chose (may echo task/PII-adjacent
+    words) -- never store either verbatim, only a coarse kind guess
+    ("id" vs "name") plus a short hash."""
+    s = str(to or "")
+    kind = "id" if _ID_SHAPED_RE.match(s) else "name"
+    digest = hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()[:10]
+    return f"{kind}:{digest}"
+
+
 # --------------------------------------------------------------------------
 # Usage accumulator
 # --------------------------------------------------------------------------
@@ -391,50 +743,69 @@ class UsageBucket:
     cache_write_1h_tokens: int = 0
     cache_read_tokens: int = 0
     messages: int = 0
+    cost_usd_accum: float = 0.0  # priced at add() time, per-message's own model (B3/M3)
 
     @property
     def cache_write_tokens(self) -> int:
         return self.cache_write_5m_tokens + self.cache_write_1h_tokens
 
-    def add(self, usage: dict) -> None:
-        """Add one API response's usage. Cache-write tokens are split into
-        the 5-minute and 1-hour ephemeral buckets (different price) when
-        `cache_creation` is present; otherwise the whole
-        `cache_creation_input_tokens` figure is assumed 1h, since that is
-        what this harness's orchestrator writes (see README)."""
-        self.input_tokens += int(usage.get("input_tokens") or 0)
-        self.output_tokens += int(usage.get("output_tokens") or 0)
-        self.cache_read_tokens += int(usage.get("cache_read_input_tokens") or 0)
+    def add(self, usage: dict, model: Optional[str] = None) -> None:
+        """Add one API response's usage, priced by `model` -- the message's
+        OWN model string (B3/M3: never a coarse family-only price, and
+        never a declared-but-possibly-"inherit" subagent model).
+
+        B1 fix: `usage.iterations`, when present and non-empty, is already
+        the full per-sub-request breakdown that the top-level usage figure
+        aggregates -- summing both double-counts every token (14,657 of
+        19,143 real records carry exactly one iterations[type=message]
+        entry equal to the top-level usage). When iterations are present,
+        sum ONLY the iterations (each priced at its own model if it names
+        one, else `model`); otherwise use the top-level usage.
+        """
+        self.messages += 1
+        iterations = [it for it in (usage.get("iterations") or []) if isinstance(it, dict)]
+        if iterations:
+            for it in iterations:
+                self._add_raw(it, it.get("model") or model)
+        else:
+            self._add_raw(usage, model)
+
+    def _add_raw(self, usage: dict, model: Optional[str]) -> None:
+        """Add one usage object's raw token fields (never its `iterations`,
+        which add() has already resolved) and price it by `model`."""
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
         cc = usage.get("cache_creation")
         if isinstance(cc, dict):
-            self.cache_write_5m_tokens += int(cc.get("ephemeral_5m_input_tokens") or 0)
-            self.cache_write_1h_tokens += int(cc.get("ephemeral_1h_input_tokens") or 0)
+            cache_write_5m = int(cc.get("ephemeral_5m_input_tokens") or 0)
+            cache_write_1h = int(cc.get("ephemeral_1h_input_tokens") or 0)
         else:
-            self.cache_write_1h_tokens += int(usage.get("cache_creation_input_tokens") or 0)
-        self.messages += 1
-        # advisor/server-side usage.iterations, where present, carry their
-        # own token counts for sub-requests folded into one message; add
-        # them too so a multi-iteration response isn't undercounted.
-        for it in usage.get("iterations") or []:
-            if not isinstance(it, dict):
-                continue
-            self.input_tokens += int(it.get("input_tokens") or 0)
-            self.output_tokens += int(it.get("output_tokens") or 0)
-            self.cache_read_tokens += int(it.get("cache_read_input_tokens") or 0)
-            it_cc = it.get("cache_creation")
-            if isinstance(it_cc, dict):
-                self.cache_write_5m_tokens += int(it_cc.get("ephemeral_5m_input_tokens") or 0)
-                self.cache_write_1h_tokens += int(it_cc.get("ephemeral_1h_input_tokens") or 0)
+            # a usage object without the 5m/1h split is assumed 1h, since
+            # that is what this harness's orchestrator writes (see README)
+            cache_write_5m = 0
+            cache_write_1h = int(usage.get("cache_creation_input_tokens") or 0)
 
-    def cost_usd(self, family: str) -> float:
-        p = PRICE_TABLE_USD_PER_MTOK.get(family, PRICE_TABLE_USD_PER_MTOK[DEFAULT_FAMILY])
-        return (
-            self.input_tokens * p["input"]
-            + self.output_tokens * p["output"]
-            + self.cache_write_5m_tokens * p.get("cache_write_5m", p.get("cache_write", 0))
-            + self.cache_write_1h_tokens * p.get("cache_write_1h", p.get("cache_write", 0))
-            + self.cache_read_tokens * p["cache_read"]
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.cache_read_tokens += cache_read_tokens
+        self.cache_write_5m_tokens += cache_write_5m
+        self.cache_write_1h_tokens += cache_write_1h
+
+        rates = price_rates_for_model(model)
+        self.cost_usd_accum += (
+            input_tokens * rates["input"]
+            + output_tokens * rates["output"]
+            + cache_write_5m * rates.get("cache_write_5m", rates.get("cache_write", 0))
+            + cache_write_1h * rates.get("cache_write_1h", rates.get("cache_write", 0))
+            + cache_read_tokens * rates["cache_read"]
         ) / 1_000_000.0
+
+    def cost_usd(self, family: Optional[str] = None) -> float:
+        """The accumulated cost, priced per-message at add() time. `family`
+        is accepted only for backward compatibility with older call sites
+        and is otherwise ignored -- see add()/M3."""
+        return self.cost_usd_accum
 
     def as_dict(self, family: Optional[str] = None) -> dict:
         d = {
@@ -445,35 +816,23 @@ class UsageBucket:
             "cache_write_1h_tokens": self.cache_write_1h_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "messages": self.messages,
+            "estimated_usd": round(self.cost_usd_accum, 4),
         }
-        if family is not None:
-            d["estimated_usd"] = round(self.cost_usd(family), 4)
         return d
 
 
 def merge_bucket(dst: UsageBucket, src: UsageBucket) -> None:
+    """Merge src's raw tokens AND its already-computed cost into dst,
+    without re-pricing -- src's tokens may span more than one message's own
+    model, so only the per-message-priced cost it already accumulated is
+    trustworthy (B3/M3)."""
     dst.input_tokens += src.input_tokens
     dst.output_tokens += src.output_tokens
     dst.cache_write_5m_tokens += src.cache_write_5m_tokens
     dst.cache_write_1h_tokens += src.cache_write_1h_tokens
     dst.cache_read_tokens += src.cache_read_tokens
     dst.messages += src.messages
-
-
-def _bucket_as_usage_dict(b: "UsageBucket") -> dict:
-    """Re-shape an already-aggregated UsageBucket as a single raw `usage`
-    object, so it can be fed back into another UsageBucket.add() (used to
-    roll a session's or agent's totals into a day/model/role bucket without
-    losing the 5m/1h cache-write split)."""
-    return {
-        "input_tokens": b.input_tokens,
-        "output_tokens": b.output_tokens,
-        "cache_read_input_tokens": b.cache_read_tokens,
-        "cache_creation": {
-            "ephemeral_5m_input_tokens": b.cache_write_5m_tokens,
-            "ephemeral_1h_input_tokens": b.cache_write_1h_tokens,
-        },
-    }
+    dst.cost_usd_accum += src.cost_usd_accum
 
 
 # --------------------------------------------------------------------------
@@ -549,14 +908,15 @@ class AdoptionAgg:
     counter here is keyed by (role, model family) plus a short label --
     never by the raw pattern or path that was classified."""
     direct_cli_calls: Counter = field(default_factory=Counter)        # (role, family, tool, subcommand) -> count
-    direct_cli_result_sizes: dict = field(default_factory=lambda: defaultdict(SizeStats))  # (role, family, tool) -> SizeStats
+    # result size per (role, family, tool, subcommand) -- minor #2 (report
+    # 9d): result size broken out per subcommand, not just per tool.
+    direct_cli_result_sizes: dict = field(default_factory=lambda: defaultdict(SizeStats))
     skill_invocations: Counter = field(default_factory=Counter)       # (role, family, tool) -> count
     mcp_calls: Counter = field(default_factory=Counter)                # (role, family, tool_name) -> count
 
     grep_pattern_classes: Counter = field(default_factory=Counter)     # (role, family, class) -> count
     grep_pattern_result_sizes: dict = field(default_factory=lambda: defaultdict(SizeStats))  # (role,family,class)->SizeStats
     grep_to_read_chains: Counter = field(default_factory=Counter)      # (role, family) -> chain count
-    grep_to_read_calls_saved: Counter = field(default_factory=Counter)  # (role, family) -> calls saved estimate
 
     spec_path_classes: Counter = field(default_factory=Counter)        # (role, family, class) -> count
     spec_path_result_sizes: dict = field(default_factory=lambda: defaultdict(SizeStats))  # (role,family,class)->SizeStats
@@ -565,8 +925,8 @@ class AdoptionAgg:
     def record_direct_cli(self, role: str, family: str, tool: str, subcommand: str) -> None:
         self.direct_cli_calls[(role, family, tool, subcommand)] += 1
 
-    def record_direct_cli_result(self, role: str, family: str, tool: str, chars: int) -> None:
-        self.direct_cli_result_sizes[(role, family, tool)].add(chars)
+    def record_direct_cli_result(self, role: str, family: str, tool_subcommand: tuple, chars: int) -> None:
+        self.direct_cli_result_sizes[(role, family) + tuple(tool_subcommand)].add(chars)
 
     def record_skill(self, role: str, family: str, tool: str) -> None:
         self.skill_invocations[(role, family, tool)] += 1
@@ -655,6 +1015,40 @@ def iter_jsonl(path: str) -> Iterator[dict]:
 WAITING_RE = re.compile(r"waiting for (a )?notification", re.IGNORECASE)
 AUTOBG_TIMEOUT_RE = re.compile(r"(timed out|exceeded).{0,40}(foreground|timeout).{0,40}background|"
                                 r"running in the background|moved to background", re.IGNORECASE)
+# a real `<task-notification>` wrapper (background command / subagent
+# completion), as delivered by the harness -- confirmed against real
+# transcripts, e.g. '<task-notification>\n<task-id>...'
+TASK_NOTIFICATION_RE = re.compile(r"<task-notification>", re.IGNORECASE)
+
+
+def classify_stall_gap(rec: dict, msg: dict, pending_tool_ids: set, prev_text: str = "") -> str:
+    """M1: classify what closed a >5-minute gap between two records (of
+    ANY type -- assistant or user), instead of only ever looking at
+    consecutive assistant-to-assistant turns:
+
+    - "tool_running": the gap-closing record is a tool_result for a
+      tool_use that was already open before the gap started (a long-running
+      Bash call, etc.) -- or any tool_result, as a weaker signal.
+    - "waiting_notification": the gap-closing record carries a real
+      `<task-notification>` wrapper (background command / subagent done),
+      or the turn BEFORE the gap said it was waiting for one.
+    - "idle_until_resume": anything else -- most commonly a fresh user turn
+      (e.g. via SendMessage) arriving after the agent went idle at the end
+      of a turn.
+    """
+    content = msg.get("content")
+    text = extract_text(content)
+    if TASK_NOTIFICATION_RE.search(text or "") or WAITING_RE.search(prev_text or ""):
+        return "waiting_notification"
+    if rec.get("type") == "user":
+        blocks = content if isinstance(content, list) else []
+        tool_result_ids = {
+            b.get("tool_use_id") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        }
+        if tool_result_ids:
+            return "tool_running"
+    return "idle_until_resume"
 
 
 def extract_text(content: Any) -> str:
@@ -733,6 +1127,34 @@ class SessionStats:
     piped_unbounded: int = 0
 
 
+def _merge_usage_max(dst: Optional[dict], src: dict) -> dict:
+    """Per-field MAX merge of two `usage` objects seen for the SAME
+    requestId across several streamed JSONL lines (B2): real transcripts
+    show the same requestId's usage growing line to line as the response
+    streams in (e.g. output_tokens 11 then 114), so the correct total is
+    the max per field, not the first line (undercounts) and not a naive
+    sum (double-counts)."""
+    if dst is None:
+        return dict(src)
+    out = dict(dst)
+    for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        out[k] = max(int(dst.get(k) or 0), int(src.get(k) or 0))
+    dst_cc = dst.get("cache_creation") if isinstance(dst.get("cache_creation"), dict) else {}
+    src_cc = src.get("cache_creation") if isinstance(src.get("cache_creation"), dict) else {}
+    if dst_cc or src_cc:
+        out["cache_creation"] = {
+            "ephemeral_5m_input_tokens": max(int(dst_cc.get("ephemeral_5m_input_tokens") or 0),
+                                              int(src_cc.get("ephemeral_5m_input_tokens") or 0)),
+            "ephemeral_1h_input_tokens": max(int(dst_cc.get("ephemeral_1h_input_tokens") or 0),
+                                              int(src_cc.get("ephemeral_1h_input_tokens") or 0)),
+        }
+    if src.get("iterations"):
+        out["iterations"] = src["iterations"]
+    elif "iterations" not in out and dst.get("iterations"):
+        out["iterations"] = dst["iterations"]
+    return out
+
+
 def process_transcript(path: str, since: datetime, until: datetime, role: str,
                         session_id: str, tool_agg: ToolCallAgg,
                         bash_verb_totals: Counter, bash_subverb_totals: Counter,
@@ -746,16 +1168,21 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
     tagged with `role` ("main" or "subagent") for the tool-call breakdown."""
     st = SessionStats(session_id=session_id)
     pending_tool_use: dict = {}  # tool_use_id -> (timestamp, name, input, adoption_meta)
+    pending_tool_ids: set = set()  # tool_use ids not yet closed by a tool_result (M1)
     touched = False
     session_bash_order: list = []
-    prev_ts: Optional[datetime] = None
-    prev_text = ""
+    gap_prev_ts: Optional[datetime] = None  # last activity of ANY record type, for M1 gap classification
+    gap_prev_text = ""
     cur_family = default_model_family
-    symbol_lookup_ttl = 0  # calls remaining in which a Read "consumes" a pending symbol-like grep
+    symbol_lookup_ttl = 0  # tool_use calls remaining in which a Read "consumes" a pending symbol-like grep
     # One API response is often split across several JSONL lines (one per
-    # content block), each repeating the SAME usage object. Count usage only
-    # once per (requestId, falling back to message.id).
-    seen_request_ids: set = set()
+    # content block), each repeating (and, per B2, sometimes GROWING) the
+    # same requestId's usage. Buffer per requestId and flush once at EOF,
+    # taking the per-field max rather than the first-seen (B2) or a naive
+    # sum of every line (B1's double-count via `iterations`, resolved
+    # inside UsageBucket.add()).
+    request_buffer: dict = {}  # requestId (or synthetic key) -> {"usage", "ts", "model"}
+    noid_counter = 0
     compactions_via_boundary = 0
     compactions_via_summary_flag = 0
 
@@ -785,6 +1212,11 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
             if ts is None or not in_window(ts, since, until):
                 continue
             touched = True
+            if gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
+                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+                loop_events.append(("stall", role, session_id, kind))
+            gap_prev_ts = ts
+            gap_prev_text = extract_text(msg.get("content"))
             model = msg.get("model")
             if model:
                 cur_family = model_family(model)
@@ -792,32 +1224,25 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                 compactions_via_summary_flag += 1
             usage = msg.get("usage") or {}
             request_id = rec.get("requestId") or msg.get("id")
-            already_counted = request_id is not None and request_id in seen_request_ids
-            if usage and not already_counted:
-                if request_id is not None:
-                    seen_request_ids.add(request_id)
-                st.day_usage[day_key(ts)].add(usage)
-                st.model_usage[cur_family].add(usage)
-                ctx = (int(usage.get("input_tokens") or 0)
-                       + int(usage.get("cache_read_input_tokens") or 0)
-                       + int(usage.get("cache_creation_input_tokens") or 0))
-                st.ctx_series.append(ctx)
-                if st.first_turn_ctx is None:
-                    st.first_turn_ctx = ctx
-                st.last_turn_ctx = ctx
+            if usage:
+                key = request_id if request_id is not None else f"__noid__{noid_counter}"
+                if request_id is None:
+                    noid_counter += 1
+                prev_entry = request_buffer.get(key)
+                merged_usage = _merge_usage_max(prev_entry["usage"] if prev_entry else None, usage)
+                resolved_model = model or (prev_entry["model"] if prev_entry else None)
+                request_buffer[key] = {"usage": merged_usage, "ts": ts, "model": resolved_model}
 
-            text = extract_text(msg.get("content"))
-            if ts and prev_ts and (ts - prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-                loop_events.append(("stall", role, session_id))
-            if AUTOBG_TIMEOUT_RE.search(text or ""):
+            if AUTOBG_TIMEOUT_RE.search(gap_prev_text or ""):
                 st.autobg_timeout_count += 1
                 autobg_timeout_total.append(1)
-            prev_ts, prev_text = ts, text
 
             for block in msg.get("content") or []:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_use":
+                    if symbol_lookup_ttl > 0:
+                        symbol_lookup_ttl -= 1
                     name = block.get("name") or "?"
                     tinput = block.get("input") or {}
                     st.tool_use_counts[name] += 1
@@ -825,20 +1250,31 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                     adoption_meta = None  # (kind, class_label) to resolve against the tool_result size
 
                     if name == "Bash":
-                        cmd = tinput.get("command") or ""
-                        verb, subverb = leading_verb_and_subverb(cmd)
-                        coarse = classify_bash_verb(cmd)
-                        st.bash_verbs[coarse] += 1
-                        bash_verb_totals[coarse] += 1
-                        bash_subverb_totals[subverb] += 1
-                        session_bash_order.append(coarse)
+                        cmd = strip_heredocs(tinput.get("command") or "")
+                        segments = list(iter_command_segments(cmd))
+                        # M2: classify EVERY segment of a `a && b && c` chain,
+                        # not just the first -- `cd x && go test ./...` must
+                        # not count as `other:cd`.
+                        for verb, subverb, seg_str in segments:
+                            coarse = _classify_bash_verb_segment(verb, subverb, seg_str)
+                            st.bash_verbs[coarse] += 1
+                            bash_verb_totals[coarse] += 1
+                            bash_subverb_totals[subverb] += 1
+                            session_bash_order.append(coarse)
 
-                        if is_cpu_heavy(cmd):
-                            st.cpu_heavy_total += 1
-                            cpu_heavy_counter["total"] += 1
-                            if not is_wb_run_wrapped(cmd):
-                                st.cpu_heavy_unwrapped += 1
-                                cpu_heavy_counter["unwrapped"] += 1
+                        # CPU-heavy / wb-run-wrapping at CLAUSE granularity
+                        # (minor #1): `wb run` wraps only the clause it
+                        # prefixes, and a quoted mention never matches
+                        # (is_cpu_heavy is token-aware).
+                        for effective_text, wrapped in cpu_heavy_clauses(cmd):
+                            if is_cpu_heavy(effective_text):
+                                st.cpu_heavy_total += 1
+                                cpu_heavy_counter["total"] += 1
+                                cpu_heavy_counter[f"total_{role}"] += 1
+                                if not wrapped:
+                                    st.cpu_heavy_unwrapped += 1
+                                    cpu_heavy_counter["unwrapped"] += 1
+                                    cpu_heavy_counter[f"unwrapped_{role}"] += 1
 
                         if is_hand_rolled_loop(cmd):
                             loop_events.append(("loop", role, session_id, ts))
@@ -856,34 +1292,40 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             autobg_total.append(1)
 
                         if adoption_agg is not None:
-                            raw_verb = (cmd.strip().split() or [""])[0]
-                            if raw_verb in CLI_KNOWLEDGE_TOOLS:
-                                sub = _sanitize_verb((cmd.strip().split() + [""])[1])
-                                adoption_agg.record_direct_cli(role, cur_family, raw_verb, sub)
-                                adoption_meta = ("direct_cli", raw_verb)
-                                symbol_lookup_ttl = 0  # a real CLI query resolves any pending lookup
-                            elif re.match(r"^(git\s+grep|rg|grep)\b", cmd.strip()):
-                                pattern = extract_bash_grep_pattern(cmd)
-                                cls = classify_grep_pattern(pattern or "")
-                                adoption_agg.record_grep_pattern(role, cur_family, cls)
-                                adoption_meta = ("grep", cls)
-                                if cls == "symbol-like":
-                                    symbol_lookup_ttl = 3
-                                if "spec/" in cmd:
+                            # M2: run the specscore/codegrapher/grep/spec-path
+                            # classifiers over every segment too; the LAST
+                            # segment that produces a classification is kept
+                            # as this tool_use's adoption_meta so the single
+                            # tool_result size is attributed once, not
+                            # multiply, across segments.
+                            for verb, subverb, seg_str in segments:
+                                if verb in CLI_KNOWLEDGE_TOOLS:
+                                    seg_toks = seg_str.split(None, 1)
+                                    sub = _sanitize_verb(seg_toks[1].split()[0]) if len(seg_toks) > 1 and seg_toks[1].split() else "(empty)"
+                                    adoption_agg.record_direct_cli(role, cur_family, verb, sub)
+                                    adoption_meta = ("direct_cli", (verb, sub))
+                                    symbol_lookup_ttl = 0  # a real CLI query resolves any pending lookup
+                                elif verb in ("rg", "grep") or subverb == "git grep":
+                                    pattern = extract_bash_grep_pattern(seg_str)
+                                    cls = classify_grep_pattern(pattern or "")
+                                    adoption_agg.record_grep_pattern(role, cur_family, cls)
+                                    adoption_meta = ("grep", cls)
+                                    if cls == "symbol-like":
+                                        symbol_lookup_ttl = 3
+                                    if "spec/" in seg_str:
+                                        adoption_agg.spec_hunt_via_git_or_grep[(role, cur_family)] += 1
+                                elif subverb == "git log" and "spec/" in seg_str:
                                     adoption_agg.spec_hunt_via_git_or_grep[(role, cur_family)] += 1
-                            elif subverb == "git log" and "spec/" in cmd:
-                                adoption_agg.spec_hunt_via_git_or_grep[(role, cur_family)] += 1
-                            else:
-                                read_path = extract_bash_read_path(cmd)
-                                if read_path:
-                                    spec_cls = classify_spec_path(read_path)
-                                    if spec_cls:
-                                        adoption_agg.record_spec_path(role, cur_family, spec_cls)
-                                        adoption_meta = ("spec_path", spec_cls)
-                                    elif looks_like_source_file(read_path) and symbol_lookup_ttl > 0:
-                                        adoption_agg.grep_to_read_chains[(role, cur_family)] += 1
-                                        adoption_agg.grep_to_read_calls_saved[(role, cur_family)] += 1
-                                        symbol_lookup_ttl = 0
+                                else:
+                                    read_path = extract_bash_read_path(seg_str)
+                                    if read_path:
+                                        spec_cls = classify_spec_path(read_path)
+                                        if spec_cls:
+                                            adoption_agg.record_spec_path(role, cur_family, spec_cls)
+                                            adoption_meta = ("spec_path", spec_cls)
+                                        elif looks_like_source_file(read_path) and symbol_lookup_ttl > 0:
+                                            adoption_agg.grep_to_read_chains[(role, cur_family)] += 1
+                                            symbol_lookup_ttl = 0
 
                     if name == "Grep" and adoption_agg is not None:
                         pattern = tinput.get("pattern")
@@ -905,11 +1347,7 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             adoption_meta = ("spec_path", spec_cls)
                         elif looks_like_source_file(file_path) and symbol_lookup_ttl > 0:
                             adoption_agg.grep_to_read_chains[(role, cur_family)] += 1
-                            adoption_agg.grep_to_read_calls_saved[(role, cur_family)] += 1
                             symbol_lookup_ttl = 0
-
-                    if symbol_lookup_ttl > 0 and name not in ("Bash", "Grep", "Read"):
-                        symbol_lookup_ttl -= 1
 
                     if name == "Skill" and adoption_agg is not None:
                         skill_name = str(tinput.get("skill") or "")
@@ -921,7 +1359,9 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                     if name.startswith("mcp__codegrapher") and adoption_agg is not None:
                         adoption_agg.record_mcp(role, cur_family, name)
 
-                    pending_tool_use[block.get("id")] = (ts, name, tinput, adoption_meta)
+                    tid = block.get("id")
+                    pending_tool_use[tid] = (ts, name, tinput, adoption_meta)
+                    pending_tool_ids.add(tid)
 
                     if name == "Agent":
                         st.dispatch_count += 1
@@ -929,9 +1369,15 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                     if name == "SendMessage":
                         if tinput.get("to"):
                             st.resume_count += 1
-                            resume_targets[str(tinput.get("to"))[:40]] += 1
+                            resume_targets[resume_target_label(tinput.get("to"))] += 1
 
         else:  # user message: tool_result timing, error/denial, size
+            if ts and gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
+                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+                loop_events.append(("stall", role, session_id, kind))
+            if ts:
+                gap_prev_ts = ts
+                gap_prev_text = extract_text(msg.get("content"))
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
@@ -941,6 +1387,8 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                     entry = pending_tool_use.get(tid)
                     if not entry:
                         continue
+                    del pending_tool_use[tid]
+                    pending_tool_ids.discard(tid)
                     start, name, tinput, adoption_meta = entry
                     is_error = bool(block.get("is_error"))
                     size = result_content_len(block.get("content"))
@@ -965,6 +1413,22 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                         cmd = tinput.get("command") or ""
                         if is_hand_rolled_loop(cmd):
                             loop_events.append(("loop_duration", role, session_id, dur))
+
+    # Flush the per-requestId usage buffer once, priced by each request's
+    # own model (B1/B2/B3/M3); dict insertion order approximates the
+    # chronological order the requests first appeared in.
+    for entry in request_buffer.values():
+        entry_ts, entry_usage, entry_model = entry["ts"], entry["usage"], entry["model"]
+        st.day_usage[day_key(entry_ts)].add(entry_usage, model=entry_model)
+        fam = model_family(entry_model) if entry_model else cur_family
+        st.model_usage[fam].add(entry_usage, model=entry_model)
+        ctx = (int(entry_usage.get("input_tokens") or 0)
+               + int(entry_usage.get("cache_read_input_tokens") or 0)
+               + int(entry_usage.get("cache_creation_input_tokens") or 0))
+        st.ctx_series.append(ctx)
+        if st.first_turn_ctx is None:
+            st.first_turn_ctx = ctx
+        st.last_turn_ctx = ctx
 
     if session_bash_order:
         seq_miner.feed_session(session_bash_order)
@@ -993,12 +1457,20 @@ class AgentStats:
     first_ts: Optional[datetime] = None
     last_ts: Optional[datetime] = None
     usage: UsageBucket = field(default_factory=UsageBucket)
+    day_usage: dict = field(default_factory=lambda: defaultdict(UsageBucket))  # minor #3
     tool_uses: int = 0
-    stalls: int = 0
-    stall_ending_waiting: int = 0
+    stalls_by_kind: Counter = field(default_factory=Counter)  # M1: tool_running/idle_until_resume/waiting_notification
     dispatch_tool_use_id: Optional[str] = None
     agent_type: Optional[str] = None
     description_present: bool = False
+
+    @property
+    def stalls(self) -> int:
+        return sum(self.stalls_by_kind.values())
+
+    @property
+    def stall_ending_waiting(self) -> int:
+        return self.stalls_by_kind.get("waiting_notification", 0)
 
 
 def read_agent_meta(path: str) -> dict:
@@ -1020,55 +1492,113 @@ def process_agent_transcript(path: str, since: datetime, until: datetime, source
     meta = read_agent_meta(path)
     a.dispatch_tool_use_id = meta.get("toolUseId")
     models = Counter()
-    prev_ts: Optional[datetime] = None
-    prev_text = ""
     touched = False
-    seen_request_ids: set = set()
+    gap_prev_ts: Optional[datetime] = None  # M1: gap since the last record of ANY type
+    gap_prev_text = ""
+    pending_tool_ids: set = set()
+    pending_tool_use: dict = {}  # tool_use_id -> timestamp, so a tool_result can close it
+    request_buffer: dict = {}  # requestId (or synthetic key) -> {"usage", "ts", "model"} -- B1/B2
+    noid_counter = 0
 
     for rec in iter_jsonl(path):
         ts = parse_ts(rec.get("timestamp"))
-        if rec.get("type") != "assistant":
+        rtype = rec.get("type")
+        if rtype not in ("assistant", "user"):
             continue
         msg = rec.get("message") or {}
-        model = msg.get("model")
-        if model:
-            models[model] += 1
-        usage = msg.get("usage") or {}
-        request_id = rec.get("requestId") or msg.get("id")
-        already_counted = request_id is not None and request_id in seen_request_ids
-        if ts and in_window(ts, since, until):
+
+        if rtype == "assistant":
+            if ts is None or not in_window(ts, since, until):
+                continue
             touched = True
-            if usage and not already_counted:
-                if request_id is not None:
-                    seen_request_ids.add(request_id)
-                a.usage.add(usage)
+            if gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
+                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+                a.stalls_by_kind[kind] += 1
+            gap_prev_ts = ts
+            gap_prev_text = extract_text(msg.get("content"))
+            model = msg.get("model")
+            if model:
+                models[model] += 1
+            usage = msg.get("usage") or {}
+            request_id = rec.get("requestId") or msg.get("id")
+            if usage:
+                key = request_id if request_id is not None else f"__noid__{noid_counter}"
+                if request_id is None:
+                    noid_counter += 1
+                prev_entry = request_buffer.get(key)
+                merged_usage = _merge_usage_max(prev_entry["usage"] if prev_entry else None, usage)
+                resolved_model = model or (prev_entry["model"] if prev_entry else None)
+                request_buffer[key] = {"usage": merged_usage, "ts": ts, "model": resolved_model}
             if a.first_ts is None or ts < a.first_ts:
                 a.first_ts = ts
             if a.last_ts is None or ts > a.last_ts:
                 a.last_ts = ts
-        for block in msg.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                a.tool_uses += 1
-        text = extract_text(msg.get("content"))
-        if ts and prev_ts and (ts - prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-            a.stalls += 1
-            if WAITING_RE.search(prev_text or ""):
-                a.stall_ending_waiting += 1
-        if ts:
-            prev_ts, prev_text = ts, text
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    a.tool_uses += 1
+                    tid = block.get("id")
+                    pending_tool_use[tid] = ts
+                    pending_tool_ids.add(tid)
+        else:  # user: closes pending tool_use ids, and may itself be a
+               # task-notification or a fresh resume that ends a stall gap
+            if ts and gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
+                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+                a.stalls_by_kind[kind] += 1
+            if ts:
+                gap_prev_ts = ts
+                gap_prev_text = extract_text(msg.get("content"))
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tid = block.get("tool_use_id")
+                        pending_tool_use.pop(tid, None)
+                        pending_tool_ids.discard(tid)
 
     if not touched:
         return None
-    # meta.json's declared model is authoritative when present (it is what
-    # the dispatcher asked for); the transcript's majority-vote model is the
-    # fallback for older transcripts with no meta.json sidecar.
-    if meta.get("model"):
-        a.model = str(meta["model"])
+
+    # Flush the per-requestId usage buffer once, priced by each request's
+    # own model and booked on the day it actually happened (minor #3), not
+    # unconditionally under the agent's first day.
+    for entry in request_buffer.values():
+        entry_ts, entry_usage, entry_model = entry["ts"], entry["usage"], entry["model"]
+        a.usage.add(entry_usage, model=entry_model)
+        a.day_usage[day_key(entry_ts)].add(entry_usage, model=entry_model)
+
+    # meta.json's declared model is authoritative when present AND not the
+    # generic "inherit" placeholder (M3: "inherit" or missing means the
+    # transcript's own majority-vote observed model is the real label, so
+    # the agent groups/prices correctly instead of falling into "other").
+    declared = meta.get("model")
+    if declared and str(declared).strip().lower() not in ("inherit", ""):
+        a.model = str(declared)
     elif models:
         a.model = models.most_common(1)[0][0]
     a.agent_type = meta.get("agentType")
     a.description_present = bool(meta.get("description"))
     return a
+
+
+def _looks_like_transcript(path: str) -> bool:
+    """Minor #6: the `/tmp/.../tasks/*.output` glob also matches plain
+    background-Bash stdout files (not JSONL transcripts at all -- about
+    1,160 of them on real data). Include a file only if its first non-empty
+    line parses as JSON and has a `sessionId` or `type` key."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    return False
+                return isinstance(obj, dict) and ("sessionId" in obj or "type" in obj)
+    except OSError:
+        return False
+    return False  # an empty file is not a transcript
 
 
 def discover_subagent_files(home: Path) -> Iterable[tuple]:
@@ -1090,6 +1620,8 @@ def discover_subagent_files(home: Path) -> Iterable[tuple]:
         agent_id = os.path.basename(p).replace(".output", "")
         if agent_id in seen_ids:
             continue
+        if not _looks_like_transcript(p):
+            continue
         seen_ids.add(agent_id)
         yield p, "tmp_task_output"
 
@@ -1104,23 +1636,29 @@ def discover_main_sessions(home: Path) -> list:
 # --------------------------------------------------------------------------
 
 def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
-                         raw_dir: Optional[Path] = None) -> dict:
+                         raw_dir: Optional[Path] = None, home: Optional[Path] = None,
+                         offline: bool = False) -> dict:
     """Scan one or more WB state directories (a fleet may have used
     `~/.wb` and later `~/projects/.wb`, or both at once) and merge them,
     de-duplicating events seen under more than one root by (type, claim_id,
     run_id)."""
     existing_dirs = [d for d in wb_state_dirs if d.exists()]
     if not existing_dirs:
-        return {"unavailable": f"no WB state dir found among {[str(d) for d in wb_state_dirs]}"}
+        return {"unavailable": f"no WB state dir found among {scrub_home_path([str(d) for d in wb_state_dirs])}"}
 
     out = {
-        "state_dirs_scanned": [str(d) for d in existing_dirs],
+        "state_dirs_scanned": scrub_home_path([str(d) for d in existing_dirs]),
         "claimed": 0, "sealed": 0,
         "disposition": Counter(),
         "landing_durations_s": [],
     }
 
-    claims: dict = {}
+    # minor #7: collect ALL claims across BOTH state dirs in one pass first,
+    # then match seals against the complete set -- a worktree's claim and
+    # its seal can land in different homes (~/.wb vs ~/projects/.wb) if the
+    # fleet switched roots mid-flight, and processing directory-by-directory
+    # could miss a cross-home match depending on scan order.
+    all_events: list = []  # (dedupe_key, type, record)
     seen_events: set = set()
     for wb_state_dir in existing_dirs:
         files = sorted(glob.glob(str(wb_state_dir / "worklogs" / "*" / "outbox" / "*.json")))
@@ -1134,19 +1672,27 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
             if dedupe_key in seen_events:
                 continue
             seen_events.add(dedupe_key)
+            all_events.append((t, d))
+
+    claims: dict = {}
+    for t, d in all_events:
+        if t == "worktree.claimed":
+            out["claimed"] += 1
             ts = parse_ts(d.get("at"))
-            if t == "worktree.claimed":
-                out["claimed"] += 1
-                if ts:
-                    claims[d.get("claim_id")] = ts
-            elif t == "worktree.sealed":
-                if ts and not in_window(ts, since, until):
-                    continue
-                out["sealed"] += 1
-                out["disposition"][d.get("disposition") or "unknown"] += 1
-                claimed_at = claims.get(d.get("claim_id"))
-                if claimed_at and ts:
-                    out["landing_durations_s"].append((ts - claimed_at).total_seconds())
+            if ts:
+                claims[d.get("claim_id")] = ts
+
+    for t, d in all_events:
+        if t != "worktree.sealed":
+            continue
+        ts = parse_ts(d.get("at"))
+        if ts and not in_window(ts, since, until):
+            continue
+        out["sealed"] += 1
+        out["disposition"][d.get("disposition") or "unknown"] += 1
+        claimed_at = claims.get(d.get("claim_id"))
+        if claimed_at and ts:
+            out["landing_durations_s"].append((ts - claimed_at).total_seconds())
 
     out["disposition"] = dict(out["disposition"])
     if out["landing_durations_s"]:
@@ -1156,24 +1702,48 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
         )
     del out["landing_durations_s"]
 
+    # minor #10: with --offline, replay the wait-snapshot files this pass
+    # already cached under raw/waits/ on an earlier live run, rather than
+    # re-scanning the live (and likely since-changed) waits/ directories.
     wait_kinds = Counter()
     any_waits_dir = False
-    for wb_state_dir in existing_dirs:
-        waits_dir = wb_state_dir / "waits"
-        if not waits_dir.exists():
-            continue
-        any_waits_dir = True
-        for fp in sorted(glob.glob(str(waits_dir / "*.json"))):
-            try:
-                d = json.loads(Path(fp).read_text(encoding="utf-8"))
-            except Exception:
+    if offline:
+        if raw_dir:
+            cached_waits_dir = raw_dir / "waits"
+            wait_files = sorted(glob.glob(str(cached_waits_dir / "*.json")))
+            any_waits_dir = bool(wait_files)
+            for fp in wait_files:
+                try:
+                    d = json.loads(Path(fp).read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                wait_kinds[d.get("kind") or "unknown"] += 1
+    else:
+        for wb_state_dir in existing_dirs:
+            waits_dir = wb_state_dir / "waits"
+            if not waits_dir.exists():
                 continue
-            wait_kinds[d.get("kind") or "unknown"] += 1
+            any_waits_dir = True
+            for fp in sorted(glob.glob(str(waits_dir / "*.json"))):
+                try:
+                    d = json.loads(Path(fp).read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                wait_kinds[d.get("kind") or "unknown"] += 1
+                if raw_dir:
+                    dest_dir = raw_dir / "waits"
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        dest = dest_dir / (hashlib.sha1(fp.encode()).hexdigest()[:16] + ".json")
+                        dest.write_bytes(Path(fp).read_bytes())
+                    except Exception:
+                        pass
     if any_waits_dir:
         out["open_wait_snapshots_by_kind"] = dict(wait_kinds)
         out["open_wait_note"] = (
             "counts files present on disk at extraction time, not all waits started "
             "within the window; wb keeps no durable wait-history log"
+            + (" (replayed from raw/ cache: --offline)" if offline else "")
         )
     else:
         out["open_wait_snapshots_by_kind"] = "unavailable: no waits dir found under any scanned state dir"
@@ -1181,25 +1751,34 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
     out["admission_queue"] = "unavailable: wb run admission/queue history is not persisted to disk"
     out["refusal_codes"] = "unavailable: worklog events carry disposition, not a structured refusal-code taxonomy"
 
-    out["hook_events"] = process_hook_events(Path.home() / ".local" / "state" / "wb" / "hook-events.jsonl",
+    # minor #4: hook events live under the SCANNED --home, not necessarily
+    # the process's own $HOME (they can differ, e.g. under --home in tests
+    # or when scanning another user's state).
+    effective_home = home if home is not None else Path.home()
+    out["hook_events"] = process_hook_events(effective_home / ".local" / "state" / "wb" / "hook-events.jsonl",
                                               since, until)
-    out["surviving_run_events"] = process_surviving_run_events(home_projects_root(existing_dirs),
-                                                                 since, until, raw_dir)
+    out["surviving_run_events"] = process_surviving_run_events(home_projects_root(existing_dirs, effective_home),
+                                                                 since, until, raw_dir, offline=offline)
     return out
 
 
-def home_projects_root(existing_wb_state_dirs: list) -> Path:
+def home_projects_root(existing_wb_state_dirs: list, home: Optional[Path] = None) -> Path:
     """Best-effort projects root to search for surviving worktree run-event
-    files: the parent of whichever scanned .wb dir looks like <home>/projects/.wb."""
+    files: the parent of whichever scanned .wb dir looks like
+    <home>/projects/.wb. Minor #5: when only <home>/.wb exists (no
+    <home>/projects/.wb), worktrees still live under <home>/projects/
+    .worktrees/ -- falling back to .wb's own parent (<home> itself) glob-
+    misses every worktree, so the fallback is <home>/projects explicitly."""
     for d in existing_wb_state_dirs:
         if d.name == ".wb" and d.parent.name == "projects":
             return d.parent
-    return existing_wb_state_dirs[0].parent if existing_wb_state_dirs else Path.home() / "projects"
+    base = home if home is not None else Path.home()
+    return base / "projects"
 
 
 def process_hook_events(path: Path, since: datetime, until: datetime) -> dict:
     if not path.exists():
-        return {"unavailable": f"hook-events log not found at {path}"}
+        return {"unavailable": f"hook-events log not found at {scrub_home_path(str(path))}"}
     total = 0
     in_window_count = 0
     by_outcome = Counter()
@@ -1218,18 +1797,29 @@ def process_hook_events(path: Path, since: datetime, until: datetime) -> dict:
 
 
 def process_surviving_run_events(projects_root: Path, since: datetime, until: datetime,
-                                  raw_dir: Optional[Path]) -> dict:
+                                  raw_dir: Optional[Path], offline: bool = False) -> dict:
     """`wb run` command-mode receipts live at <worktree>/.wb/local/run/events.jsonl
     and are deleted with the worktree, so only whatever worktrees still exist
-    at extraction time can be read. This is a lower bound, not a full count."""
-    # worktree layout is <task>/<host>/<owner>/<repo>/.wb/local/run/events.jsonl
-    # (e.g. .worktrees/my-task/github.com/sneat-dev/wb/.wb/...); glob
-    # recursively rather than hard-coding the segment count, which has
-    # changed before (see the wb layout-migrations log).
-    files = sorted(glob.glob(str(projects_root / ".worktrees" / "**" / ".wb" / "local" / "run" / "events.jsonl"),
-                              recursive=True))
-    if not files:
-        return {"unavailable": f"no surviving <worktree>/.wb/local/run/events.jsonl files under {projects_root}/.worktrees"}
+    at extraction time can be read. This is a lower bound, not a full count.
+
+    Minor #10: with --offline, replay the copies this pass already cached
+    under raw/wb_run_events/ on an earlier live run, instead of re-globbing
+    (and finding nothing, since worktrees are commonly gone by the next run)."""
+    if offline:
+        if not raw_dir:
+            return {"unavailable": "--offline given but no raw/ cache directory to replay from"}
+        files = sorted(glob.glob(str(raw_dir / "wb_run_events" / "*.jsonl")))
+        if not files:
+            return {"unavailable": f"--offline given but no cached raw/wb_run_events/ files under {scrub_home_path(str(raw_dir))}"}
+    else:
+        # worktree layout is <task>/<host>/<owner>/<repo>/.wb/local/run/events.jsonl
+        # (e.g. .worktrees/my-task/github.com/sneat-dev/wb/.wb/...); glob
+        # recursively rather than hard-coding the segment count, which has
+        # changed before (see the wb layout-migrations log).
+        files = sorted(glob.glob(str(projects_root / ".worktrees" / "**" / ".wb" / "local" / "run" / "events.jsonl"),
+                                  recursive=True))
+        if not files:
+            return {"unavailable": f"no surviving <worktree>/.wb/local/run/events.jsonl files under {scrub_home_path(str(projects_root))}/.worktrees"}
     total = 0
     in_window_count = 0
     by_state = Counter()
@@ -1247,7 +1837,7 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
             qw = rec.get("queue_wait_ms")
             if isinstance(qw, (int, float)):
                 queue_waits_ms.append(qw)
-        if raw_dir:
+        if raw_dir and not offline:
             dest_dir = raw_dir / "wb_run_events"
             dest_dir.mkdir(parents=True, exist_ok=True)
             try:
@@ -1263,7 +1853,7 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
         "by_kind_in_window": dict(by_kind.most_common(20)),
         "queue_wait_ms_median": statistics.median(queue_waits_ms) if queue_waits_ms else None,
         "note": "lower bound only: events for any worktree already cleaned up before this "
-                "extraction ran are gone",
+                "extraction ran are gone" + (" (replayed from raw/ cache: --offline)" if offline else ""),
     }
 
 
@@ -1271,8 +1861,47 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
 # GitHub pass
 # --------------------------------------------------------------------------
 
+def _sanitize_pr_fields(pr: dict) -> dict:
+    """M4: `raw/pulls.json` previously stored the FULL PR object, including
+    the PR body (may contain anything the author wrote). Cache only the
+    fields this pass actually reads: number and the three lifecycle
+    timestamps."""
+    if not isinstance(pr, dict):
+        return pr
+    return {
+        "number": pr.get("number"),
+        "created_at": pr.get("created_at"),
+        "merged_at": pr.get("merged_at"),
+        "closed_at": pr.get("closed_at"),
+        "state": pr.get("state"),
+    }
+
+
+def _sanitize_run_fields(run: dict) -> dict:
+    """M4: `raw/actions_runs.json` previously stored the full run object,
+    including `head_commit.author` (a real name + email). Cache only run
+    id, name, event, conclusion, the three timestamps and head_sha."""
+    if not isinstance(run, dict):
+        return run
+    if "workflow_runs" in run:
+        return {"workflow_runs": [_sanitize_run_fields(r) for r in run.get("workflow_runs") or []]}
+    if "id" in run and "conclusion" in run:
+        return {
+            "id": run.get("id"),
+            "name": run.get("name"),
+            "event": run.get("event"),
+            "conclusion": run.get("conclusion"),
+            "created_at": run.get("created_at"),
+            "run_started_at": run.get("run_started_at"),
+            "updated_at": run.get("updated_at"),
+            "head_sha": run.get("head_sha"),
+        }
+    return run
+
+
 def gh_api_paginated(endpoint: str, params: Optional[dict] = None, cache_path: Optional[Path] = None,
-                      offline: bool = False) -> list:
+                      offline: bool = False,
+                      sanitize: Optional[Callable[[dict], dict]] = None) -> list:
     if offline:
         if cache_path and cache_path.exists():
             return json.loads(cache_path.read_text(encoding="utf-8"))
@@ -1308,6 +1937,8 @@ def gh_api_paginated(endpoint: str, params: Optional[dict] = None, cache_path: O
         else:
             items.append(obj)
         idx = end
+    if sanitize is not None:
+        items = [sanitize(it) for it in items]
     if cache_path:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(items), encoding="utf-8")
@@ -1320,7 +1951,7 @@ def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, o
         prs = gh_api_paginated(
             f"repos/{repo}/pulls",
             params={"state": "all", "sort": "created", "direction": "desc", "per_page": "100"},
-            cache_path=raw_dir / "pulls.json", offline=offline,
+            cache_path=raw_dir / "pulls.json", offline=offline, sanitize=_sanitize_pr_fields,
         )
     except Exception as e:
         return {"unavailable": f"gh api pulls failed: {e}"}
@@ -1360,10 +1991,15 @@ def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, o
     }
 
     try:
+        # minor #9: filter server-side to the window via `created=` instead
+        # of paginating the whole run history and discarding out-of-window
+        # runs client-side (GitHub Actions' list-runs endpoint supports a
+        # `created` range filter; the PR list endpoint below does not, so
+        # that one still trims client-side after a bounded lookback).
         runs = gh_api_paginated(
             f"repos/{repo}/actions/runs",
-            params={"per_page": "100"},
-            cache_path=raw_dir / "actions_runs.json", offline=offline,
+            params={"per_page": "100", "created": f"{since.date()}..{until.date()}"},
+            cache_path=raw_dir / "actions_runs.json", offline=offline, sanitize=_sanitize_run_fields,
         )
     except Exception as e:
         result["actions"] = {"unavailable": f"gh api actions/runs failed: {e}"}
@@ -1434,7 +2070,7 @@ def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, o
 
 def process_git_log(repo_path: Path, since: datetime, until: datetime) -> dict:
     if not repo_path.exists():
-        return {"unavailable": f"repo not found at {repo_path}"}
+        return {"unavailable": f"repo not found at {scrub_home_path(str(repo_path))}"}
     since_s = since.strftime("%Y-%m-%d %H:%M:%S")
     until_s = until.strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -1447,9 +2083,9 @@ def process_git_log(repo_path: Path, since: datetime, until: datetime) -> dict:
             capture_output=True, text=True, timeout=60,
         )
     except Exception as e:
-        return {"unavailable": f"git log failed: {e}"}
+        return {"unavailable": f"git log failed: {scrub_home_path(str(e))}"}
     if total.returncode != 0:
-        return {"unavailable": f"git log exit {total.returncode}: {total.stderr[:200]}"}
+        return {"unavailable": f"git log exit {total.returncode}: {scrub_home_path(total.stderr[:200])}"}
     commit_lines = [l for l in total.stdout.splitlines() if l.strip()]
     merge_lines = [l for l in merges.stdout.splitlines() if l.strip()]
     pr_refs = len(re.findall(r"#\d+", total.stdout))
@@ -1471,10 +2107,10 @@ def process_codex_sessions(home: Path, since: datetime, until: datetime) -> dict
     into the Claude Code token tables above."""
     root = home / ".codex" / "sessions"
     if not root.exists():
-        return {"unavailable": f"no Codex sessions dir at {root}"}
+        return {"unavailable": f"no Codex sessions dir at {scrub_home_path(str(root))}"}
     files = sorted(glob.glob(str(root / "*" / "*" / "*" / "rollout-*.jsonl")))
     if not files:
-        return {"unavailable": f"no rollout-*.jsonl files under {root}"}
+        return {"unavailable": f"no rollout-*.jsonl files under {scrub_home_path(str(root))}"}
 
     sessions_touched = 0
     input_tokens = 0
@@ -1587,6 +2223,11 @@ def build_bash_section(bash_verb_totals: Counter, bash_subverb_totals: Counter,
     if total:
         wb_run_coverage = round(1 - (unwrapped / total), 3)
 
+    def role_coverage(role: str) -> Optional[float]:
+        t = cpu_heavy_counter.get(f"total_{role}", 0)
+        u = cpu_heavy_counter.get(f"unwrapped_{role}", 0)
+        return round(1 - (u / t), 3) if t else None
+
     return {
         "by_verb": dict(bash_verb_totals),
         "by_subverb": dict(bash_subverb_totals.most_common(40)),
@@ -1600,6 +2241,21 @@ def build_bash_section(bash_verb_totals: Counter, bash_subverb_totals: Counter,
             "total": total,
             "not_wrapped_in_wb_run": unwrapped,
             "wb_run_coverage": wb_run_coverage,
+            # minor #1: main vs subagent split; "wb run" wraps only the
+            # clause it prefixes (cpu_heavy_clauses), not siblings in the
+            # same `&&` chain.
+            "by_role": {
+                "main": {
+                    "total": cpu_heavy_counter.get("total_main", 0),
+                    "not_wrapped_in_wb_run": cpu_heavy_counter.get("unwrapped_main", 0),
+                    "wb_run_coverage": role_coverage("main"),
+                },
+                "subagent": {
+                    "total": cpu_heavy_counter.get("total_subagent", 0),
+                    "not_wrapped_in_wb_run": cpu_heavy_counter.get("unwrapped_subagent", 0),
+                    "wb_run_coverage": role_coverage("subagent"),
+                },
+            },
         },
         "hand_rolled_loops": {
             "count": loop_count,
@@ -1612,6 +2268,25 @@ def build_bash_section(bash_verb_totals: Counter, bash_subverb_totals: Counter,
         },
         "top_multi_call_sequences": seq_miner.top(10),
     }
+
+
+def build_stalls_section(loop_events: list) -> dict:
+    """M1: stalls classified by kind (tool_running / idle_until_resume /
+    waiting_notification), reported separately for the main loop AND for
+    subagents -- both were previously collapsed into a single noisy
+    >5-minute-gap count, and main-loop stalls were dropped entirely."""
+    by_role_kind: Counter = Counter()
+    for e in loop_events:
+        if e[0] != "stall":
+            continue
+        _, role, _session_id, kind = e
+        by_role_kind[(role, kind)] += 1
+    out = {}
+    for role in ("main", "subagent"):
+        kinds = {k: by_role_kind.get((role, k), 0)
+                 for k in ("tool_running", "idle_until_resume", "waiting_notification")}
+        out[role] = {"total": sum(kinds.values()), "by_kind": kinds}
+    return out
 
 
 def build_adoption_section(adoption_agg: AdoptionAgg, codegrapher_status: dict) -> dict:
@@ -1641,8 +2316,9 @@ def build_adoption_section(adoption_agg: AdoptionAgg, codegrapher_status: dict) 
         direct_cli.setdefault(role, {}).setdefault(family, {}).setdefault(tool, {}).setdefault(
             "subcommands", {})[subcommand] = count
     direct_cli_sizes = {}
-    for (role, family, tool), stats in adoption_agg.direct_cli_result_sizes.items():
-        direct_cli_sizes.setdefault(role, {}).setdefault(family, {}).setdefault(tool, {})["result_size"] = stats.summary()
+    for (role, family, tool, subcommand), stats in adoption_agg.direct_cli_result_sizes.items():
+        direct_cli_sizes.setdefault(role, {}).setdefault(family, {}).setdefault(tool, {}).setdefault(
+            "result_size_by_subcommand", {})[subcommand] = stats.summary()
 
     return {
         "direct_use": {
@@ -1655,7 +2331,6 @@ def build_adoption_section(adoption_agg: AdoptionAgg, codegrapher_status: dict) 
             "code_structure_grep_by_role_model_class": by_role_model(adoption_agg.grep_pattern_classes, "class"),
             "code_structure_grep_result_sizes": sizes_by_role_model(adoption_agg.grep_pattern_result_sizes, "class"),
             "grep_to_read_chains_by_role_model": by_role_model(adoption_agg.grep_to_read_chains),
-            "calls_plausibly_saved_by_role_model": by_role_model(adoption_agg.grep_to_read_calls_saved),
             "spec_lookup_by_role_model_class": by_role_model(adoption_agg.spec_path_classes, "class"),
             "spec_lookup_result_sizes": sizes_by_role_model(adoption_agg.spec_path_result_sizes, "class"),
             "spec_hunt_via_git_or_grep_by_role_model": by_role_model(adoption_agg.spec_hunt_via_git_or_grep),
@@ -1675,18 +2350,18 @@ def check_codegrapher_status(repo_path: Path) -> dict:
     a historical one -- it reflects whether an index exists right now, not
     whether it existed during the measured window."""
     if not repo_path.exists():
-        return {"unavailable": f"repo not found at {repo_path}"}
+        return {"unavailable": f"repo not found at {scrub_home_path(str(repo_path))}"}
     try:
         proc = subprocess.run(["codegrapher", "status"], cwd=str(repo_path),
                                capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
         return {"unavailable": "codegrapher CLI not found on PATH"}
     except Exception as e:
-        return {"unavailable": f"codegrapher status failed: {e}"}
+        return {"unavailable": f"codegrapher status failed: {scrub_home_path(str(e))}"}
     out = (proc.stdout or "") + (proc.stderr or "")
     indexed = "not initialized" not in out.lower() and proc.returncode == 0
     return {
-        "checked_repo": str(repo_path),
+        "checked_repo": scrub_home_path(str(repo_path)),
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "indexed_now": indexed,
         "scope_note": "only the --git-repo-path repository was checked; per-repo status for "
@@ -1744,7 +2419,7 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             fams_seen = list(st.model_usage.keys())
             for day, bucket in st.day_usage.items():
                 fam_key = fams_seen[0] if len(fams_seen) == 1 else "mixed"
-                global_day_usage[(day, fam_key, "main")].add(_bucket_as_usage_dict(bucket))
+                merge_bucket(global_day_usage[(day, fam_key, "main")], bucket)
 
     agents = []
     for p, source in discover_subagent_files(home):
@@ -1754,7 +2429,10 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             continue
         agents.append(a)
         fam = model_family(a.model)
-        global_day_usage[(day_key(a.first_ts), fam, "subagent")].add(_bucket_as_usage_dict(a.usage))
+        # minor #3: book each day's usage under the day it actually
+        # happened, not unconditionally under the agent's first day.
+        for day, bucket in a.day_usage.items():
+            merge_bucket(global_day_usage[(day, fam, "subagent")], bucket)
         # second pass over the same file for tool-call / Bash stats, tagged role="subagent"
         process_transcript(p, since, until, "subagent", agent_id, tool_agg,
                             bash_verb_totals, bash_subverb_totals, long_bash,
@@ -1792,19 +2470,22 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             })
 
     agents_by_model = Counter(model_family(a.model) for a in agents)
-    stall_total = sum(a.stalls for a in agents)
-    stall_waiting_total = sum(a.stall_ending_waiting for a in agents)
     agent_durations = [
         (a.last_ts - a.first_ts).total_seconds() for a in agents if a.first_ts and a.last_ts
     ]
 
-    wb_stats = process_wb_worklogs(wb_state_dirs, since, until, raw_dir)
+    wb_stats = process_wb_worklogs(wb_state_dirs, since, until, raw_dir, home=home, offline=offline)
     gh_stats = process_github(repo, since, until, raw_dir, offline)
     git_stats = process_git_log(git_repo_path, since, until)
     tools_section = build_tools_section(tool_agg)
     bash_section = build_bash_section(bash_verb_totals, bash_subverb_totals, long_bash,
                                        autobg_total, autobg_timeout_total, cpu_heavy_counter,
                                        loop_events, pipe_counter, seq_miner)
+    # M1: stalls classified as tool_running / idle_until_resume /
+    # waiting_notification, for BOTH the main loop (previously collected
+    # but dropped) and subagents (previously a single noisy >5min-gap
+    # count where the "waiting" figure was always 0).
+    stalls_section = build_stalls_section(loop_events)
     codegrapher_status = check_codegrapher_status(git_repo_path)
     adoption_section = build_adoption_section(adoption_agg, codegrapher_status)
     codex_stats = process_codex_sessions(home, since, until)
@@ -1876,11 +2557,6 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
                    "this pass does not fetch to keep it lightweight and metrics-only",
     })
     unavailable.append({
-        "metric": "wb run admission/queue history",
-        "reason": "not persisted to disk by wb; only the live queue state exists, which this "
-                   "extractor does not query (it may itself contend for the same CPU budget)",
-    })
-    unavailable.append({
         "metric": "Bash/tool wall-clock duration when no matching tool_result timestamp exists",
         "reason": "duration is approximated as (tool_result timestamp - tool_use timestamp); "
                    "calls whose tool_use was never followed by a tool_result in-window "
@@ -1917,11 +2593,28 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
                    "state (a live snapshot, not historical); enumerating every touched repo's "
                    "index status is out of scope for this pass",
     })
+    # minor #2 (report 9d): result size per subcommand IS reported now
+    # (adoption.direct_use.cli_result_sizes_by_role_model_tool ->
+    # result_size_by_subcommand); these two remain out of scope.
+    unavailable.append({
+        "metric": "specscore/codegrapher CLI exit code per direct call",
+        "reason": "direct_cli detection classifies a Bash invocation by its verb/subcommand "
+                   "only; the tool_result block for a Bash call does not carry the process "
+                   "exit code, only stdout/stderr content and an is_error flag, so a per-call "
+                   "exit code cannot be attributed without parsing command output",
+    })
+    unavailable.append({
+        "metric": "adoption stats per session (not just per role/model)",
+        "reason": "AdoptionAgg aggregates directly to (role, model family, ...) keys across "
+                   "the whole window; adding session_id to every key would multiply the size "
+                   "of every adoption counter/SizeStats and was not done for this pass",
+    })
     if isinstance(codex_stats, dict) and "unavailable" in codex_stats:
         unavailable.append({"metric": "Codex CLI token usage", "reason": codex_stats["unavailable"]})
 
     metrics = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "repo": repo,
         "window": {"since": since.isoformat(), "until": until.isoformat()},
         "inputs": {
             "main_session_files": len(main_files),
@@ -1934,6 +2627,8 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             "main_loop_by_model": tokens_main_by_model,
             "subagent_by_model": tokens_subagent_by_model,
             "estimated_total_usd": round(total_cost, 2),
+            "price_table_as_of": PRICE_TABLE_AS_OF,
+            "legacy_price_prefixes": sorted(LEGACY_PRICE_PREFIXES),
         },
         "orchestrator": {
             "sessions": len(sessions),
@@ -1941,6 +2636,8 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             "turns_per_session_median": statistics.median([s.turns for s in sessions]) if sessions else None,
             "compactions_total": compactions_total,
             "context_growth_by_session": ctx_growth,
+            # M1: main-loop stalls were collected but silently dropped before.
+            "stalls": stalls_section["main"],
         },
         "subagents": {
             "count_by_model": dict(agents_by_model),
@@ -1950,8 +2647,10 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             "wall_clock_hours_sum": round(sum(agent_durations) / 3600.0, 2) if agent_durations else None,
             "wall_clock_hours_median": round(statistics.median(agent_durations) / 3600.0, 2) if agent_durations else None,
             "tool_uses_median": statistics.median([a.tool_uses for a in agents]) if agents else None,
-            "stalls_over_5min": stall_total,
-            "stalls_ending_in_waiting_for_notification_text": stall_waiting_total,
+            # M1: replaces the old single noisy >5min-gap count (and the
+            # always-0 "ending in waiting" figure) with a real breakdown of
+            # what actually closed each gap.
+            "stalls": stalls_section["subagent"],
         },
         "tool_patterns": {
             "bash_by_verb": dict(bash_verb_totals),
@@ -2030,6 +2729,8 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
         ratios = [c["growth_ratio"] for c in o["context_growth_by_session"]]
         lines.append(f"- context growth ratio (last-turn / first-turn context tokens), median: "
                       f"{statistics.median(ratios):.2f}x over {len(ratios)} sessions with >=2 measured turns")
+    ost = o["stalls"]
+    lines.append(f"- main-loop stalls (>5min gap): {ost['total']} -- by kind: {ost['by_kind']}")
     lines.append("")
 
     lines.append("## Subagents")
@@ -2039,9 +2740,8 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
     lines.append(f"- dispatches by subagent type: {s['dispatches_by_subagent_type']}")
     lines.append(f"- resumes via SendMessage: {s['resume_events_total']}")
     lines.append(f"- wall-clock hours (sum / median): {s['wall_clock_hours_sum']} / {s['wall_clock_hours_median']}")
-    lines.append(f"- stalls (>5min gap while open): {s['stalls_over_5min']}, of which "
-                  f"{s['stalls_ending_in_waiting_for_notification_text']} ended a turn with "
-                  f'"waiting for notification" text')
+    sst = s["stalls"]
+    lines.append(f"- stalls (>5min gap): {sst['total']} -- by kind: {sst['by_kind']}")
     lines.append("")
 
     lines.append("## Tool calls (all tools)")
@@ -2106,8 +2806,8 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
     mo = ad["missed_opportunities"]
     lines.append("Probable substitutes (generic tools used where a CLI query might answer directly):")
     lines.append(f"- code-structure grep by class: {mo['code_structure_grep_by_role_model_class']}")
-    lines.append(f"- grep-to-read chains detected: {mo['grep_to_read_chains_by_role_model']}, "
-                  f"calls plausibly saved: {mo['calls_plausibly_saved_by_role_model']}")
+    lines.append(f"- grep-to-read chains detected (each a probable CodeGrapher-substitutable "
+                  f"pair): {mo['grep_to_read_chains_by_role_model']}")
     lines.append(f"- spec-path lookups by class: {mo['spec_lookup_by_role_model_class']}")
     lines.append(f"- spec hunts via git log/grep: {mo['spec_hunt_via_git_or_grep_by_role_model']}")
     lines.append("")
@@ -2130,7 +2830,7 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
                       f"output={cx['output_tokens']:,}, reasoning_output={cx['reasoning_output_tokens']:,}")
     lines.append("")
 
-    lines.append("## Pipeline and CI (sneat-dev/wb)")
+    lines.append(f"## Pipeline and CI ({metrics.get('repo', '?')})")
     lines.append("")
     p = metrics["pipeline_and_ci"]
     if "unavailable" in p:
@@ -2178,7 +2878,7 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
                           f"(lower bound; by state: {rev.get('by_state_in_window')})")
     lines.append("")
 
-    lines.append("## git log (sneat-dev/wb)")
+    lines.append(f"## git log ({metrics.get('repo', '?')})")
     lines.append("")
     g = metrics["git_log"]
     if "unavailable" in g:
@@ -2193,6 +2893,17 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
+
+def path_is_inside_git_repo(path: Path) -> bool:
+    """Minor #10: refuse an --out path inside a git repo (a `.git` dir or
+    worktree `.git` file anywhere from `path` up to the filesystem root) --
+    this pack must never be committed."""
+    p = path.resolve()
+    for candidate in [p, *p.parents]:
+        if (candidate / ".git").exists():
+            return True
+    return False
+
 
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2221,6 +2932,11 @@ def main(argv: Optional[list] = None) -> int:
     since = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc)
     until = (datetime.fromisoformat(args.until) + timedelta(days=1) - timedelta(seconds=1)).replace(tzinfo=timezone.utc)
     out_dir = Path(args.out)
+    if path_is_inside_git_repo(out_dir):
+        eprint(f"error: --out {args.out} is inside a git repository; point it at a scratch "
+               f"or reports directory outside any repo (e.g. ~/.wb/reports/<name>/) -- this "
+               f"pack must never be committed")
+        return 2
     git_repo_path = Path(args.git_repo_path) if args.git_repo_path else home / "projects" / args.repo
     if args.wb_state_dir:
         wb_state_dirs = [Path(p) for p in args.wb_state_dir]

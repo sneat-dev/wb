@@ -8,8 +8,10 @@ this file. Run with:
 
 (or `python3 -m unittest` from this directory).
 """
+import atexit
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -22,8 +24,12 @@ import extract  # noqa: E402
 
 # Keep tests hermetic: never let extract.py's /tmp task-output scan pick up
 # real transcripts from this machine. Point it at an empty directory.
+# Minor #11: this mkdtemp is not a `with` block (it must outlive every test
+# in this module), so its cleanup is registered explicitly instead of being
+# left to leak on disk after the run.
 _EMPTY_TMP_ROOT = tempfile.mkdtemp(prefix="sdlc-metrics-test-tmp-")
 os.environ["SDLC_METRICS_TMP_ROOT"] = _EMPTY_TMP_ROOT
+atexit.register(shutil.rmtree, _EMPTY_TMP_ROOT, ignore_errors=True)
 
 
 def write_jsonl(path: Path, records: list) -> None:
@@ -396,6 +402,434 @@ class TestAdoptionClassifiers(unittest.TestCase):
         self.assertTrue(extract.looks_like_source_file("src/app.tsx"))
         self.assertFalse(extract.looks_like_source_file("README.md"))
         self.assertFalse(extract.looks_like_source_file("data.json"))
+
+
+class TestIterationsDedup(unittest.TestCase):
+    """B1: usage.iterations, when present, is the full per-sub-request
+    breakdown the top-level usage already aggregates. Summing both
+    double-counts; only the iterations may be summed when present."""
+
+    def test_iterations_summed_not_added_to_top_level(self):
+        bucket = extract.UsageBucket()
+        # top-level usage equals the single iteration's usage, as real
+        # records do (14,657 of 19,143 in the brief's sample) -- summing
+        # both would double it to 200/100.
+        bucket.add({
+            "input_tokens": 100, "output_tokens": 50,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+            "iterations": [{"type": "message", "model": "claude-sonnet-5",
+                             "input_tokens": 100, "output_tokens": 50,
+                             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+        }, model="claude-sonnet-5")
+        self.assertEqual(bucket.input_tokens, 100)
+        self.assertEqual(bucket.output_tokens, 50)
+
+    def test_multiple_iterations_summed(self):
+        bucket = extract.UsageBucket()
+        bucket.add({
+            "input_tokens": 999, "output_tokens": 999,  # must be ignored -- iterations present
+            "iterations": [
+                {"type": "message", "model": "claude-sonnet-5", "input_tokens": 30, "output_tokens": 10},
+                {"type": "message", "model": "claude-haiku-4-5", "input_tokens": 20, "output_tokens": 5},
+            ],
+        }, model="claude-sonnet-5")
+        self.assertEqual(bucket.input_tokens, 50)
+        self.assertEqual(bucket.output_tokens, 15)
+
+    def test_empty_iterations_falls_back_to_top_level(self):
+        bucket = extract.UsageBucket()
+        bucket.add({"input_tokens": 40, "output_tokens": 20, "iterations": []}, model="claude-sonnet-5")
+        self.assertEqual(bucket.input_tokens, 40)
+        self.assertEqual(bucket.output_tokens, 20)
+
+
+class TestRequestIdLastMaxDedup(unittest.TestCase):
+    """B2: streamed lines sharing a requestId must be merged by per-field
+    max (or last), never by keeping the FIRST partial line -- the brief
+    found output undercounted by ~59% from taking the first line."""
+
+    def test_differing_streamed_lines_take_max_not_first(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-stream.jsonl"
+            # three streamed lines for the SAME response, growing monotonically
+            # (the shape real transcripts take: each streamed line repeats the
+            # cumulative usage seen so far).
+            records = []
+            for out_tok in (20, 55, 120):  # final line has the full output count
+                rec = assistant_msg(
+                    "2026-09-12T10:00:00Z", "claude-sonnet-5",
+                    {"input_tokens": 200, "output_tokens": out_tok,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    [{"type": "text", "text": "partial"}],
+                )
+                rec["requestId"] = "req-stream-1"
+                records.append(rec)
+            write_jsonl(session_path, records)
+
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            by_model = metrics["tokens"]["main_loop_by_model"]
+            # must be the LAST/MAX (120), never the first (20) and never
+            # summed across lines (20+55+120=195)
+            self.assertEqual(by_model["sonnet"]["output_tokens"], 120)
+            self.assertEqual(by_model["sonnet"]["input_tokens"], 200)
+
+
+class TestPriceTablePrefixMatching(unittest.TestCase):
+    """B3: prices are keyed by model-id prefix, most specific first, with
+    a family fallback, and an explicit legacy fallback for old generations."""
+
+    def test_specific_prefixes_beat_family_fallback(self):
+        r_opus5 = extract.price_rates_for_model("claude-opus-5-20260101")
+        self.assertAlmostEqual(r_opus5["input"], 5.00)
+        self.assertAlmostEqual(r_opus5["output"], 25.00)
+
+        r_sonnet5 = extract.price_rates_for_model("claude-sonnet-5")
+        self.assertAlmostEqual(r_sonnet5["input"], 2.00)
+        self.assertAlmostEqual(r_sonnet5["output"], 10.00)
+
+        r_haiku = extract.price_rates_for_model("claude-haiku-4-5-20251001")
+        self.assertAlmostEqual(r_haiku["input"], 1.00)
+        self.assertAlmostEqual(r_haiku["output"], 5.00)
+
+    def test_fable_5_1_prefix_beats_fable_5(self):
+        r_5_1 = extract.price_rates_for_model("claude-fable-5-1")
+        r_5 = extract.price_rates_for_model("claude-fable-5")
+        self.assertAlmostEqual(r_5_1["input"], 10.00)
+        self.assertAlmostEqual(r_5_1["output"], 50.00)
+        # Fable 5.1's cache read is a flat $0.25/MTok, NOT the standard 0.1x
+        self.assertAlmostEqual(r_5_1["cache_read"], 0.25)
+        self.assertAlmostEqual(r_5["cache_read"], 1.00)  # 0.1x of $10 input
+
+    def test_legacy_generation_fallback(self):
+        r_sonnet4 = extract.price_rates_for_model("claude-sonnet-4-20250101")
+        self.assertAlmostEqual(r_sonnet4["input"], 3.00)
+        self.assertAlmostEqual(r_sonnet4["output"], 15.00)
+        self.assertIn("claude-sonnet-4", extract.LEGACY_PRICE_PREFIXES)
+        r_opus4 = extract.price_rates_for_model("claude-opus-4-20250101")
+        self.assertAlmostEqual(r_opus4["input"], 15.00)
+        self.assertAlmostEqual(r_opus4["output"], 75.00)
+        self.assertIn("claude-opus-4", extract.LEGACY_PRICE_PREFIXES)
+
+    def test_unknown_model_falls_back_to_family(self):
+        r = extract.price_rates_for_model("claude-sonnet-9000-preview")
+        self.assertAlmostEqual(r["input"], extract.PRICE_TABLE_USD_PER_MTOK["sonnet"]["input"])
+
+    def test_prices_as_of_date_recorded_in_metrics(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / ".claude" / "projects").mkdir(parents=True)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            found = json.dumps(metrics)
+            self.assertIn(extract.PRICE_TABLE_AS_OF, found)
+
+
+class TestCommandSanitizerAdversarial(unittest.TestCase):
+    """B4: quoted-text words must never leak into verb classification.
+    Covers the two real leaks the review found plus two adversarial
+    injections, and a full metrics.json/SUMMARY.md scan."""
+
+    LEAK_COMMANDS = [
+        # the two real leaks from the review
+        '''BODY='## Problem statement here, discussing internals' && gh issue create --title "x" --body "$BODY"''',
+        '''C='Closed as not needed' && gh issue close 5 --comment "$C"''',
+        # adversarial injections
+        'MSG="launch the secret project" git commit -m "$MSG"',
+        'DEBUG="a b c" secretword --flag',
+    ]
+    # "project" is deliberately excluded: it is a legitimate substring of
+    # unrelated, non-leaked metric text (e.g. "~/projects/.wb/worklogs"),
+    # so it would be a false positive here, not a real B4 leak.
+    LEAK_WORDS = ["Problem", "internals", "Closed", "needed", "launch", "secret", "secretword"]
+
+    def test_no_leak_words_in_classified_verb(self):
+        for cmd in self.LEAK_COMMANDS:
+            verb = extract.classify_bash_verb(cmd)
+            for word in self.LEAK_WORDS:
+                self.assertNotIn(word, verb, msg=f"leaked {word!r} from {cmd!r} into verb {verb!r}")
+
+    def test_unknown_command_becomes_other_not_named(self):
+        verb = extract.classify_bash_verb('DEBUG="a b c" secretword --flag')
+        self.assertEqual(verb, "<other>")
+
+    def test_malformed_quoting_yields_unparsed_not_a_crash(self):
+        # an unbalanced quote must never raise, and must never leak the
+        # dangling text -- fall back to <unparsed>.
+        verb = extract.classify_bash_verb("git commit -m 'unterminated")
+        self.assertIsInstance(verb, str)
+
+    def test_no_leak_words_anywhere_in_metrics_or_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-leaks.jsonl"
+            records = []
+            ts_base = datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc)
+            for i, cmd in enumerate(self.LEAK_COMMANDS):
+                ts = (ts_base.replace(minute=i)).isoformat().replace("+00:00", "Z")
+                rec = assistant_msg(
+                    ts, "claude-sonnet-5",
+                    {"input_tokens": 10, "output_tokens": 5,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    [{"type": "tool_use", "id": f"tool-{i}", "name": "Bash", "input": {"command": cmd}}],
+                )
+                records.append(rec)
+                records.append(user_tool_result(ts, f"tool-{i}", "ok"))
+            write_jsonl(session_path, records)
+
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            out_dir = home / "out"
+            metrics = extract.run_extract(
+                since, until, out_dir, home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            metrics_text = json.dumps(metrics, indent=2, sort_keys=True)
+            summary_text = extract.render_summary(metrics, since, until)
+            for word in self.LEAK_WORDS:
+                self.assertNotIn(word, metrics_text, msg=f"{word!r} leaked into metrics.json")
+                self.assertNotIn(word, summary_text, msg=f"{word!r} leaked into SUMMARY.md")
+
+
+class TestStallThreeWayClassification(unittest.TestCase):
+    """M1: gaps must classify as tool_running / idle_until_resume /
+    waiting_notification, across all record types, not just
+    assistant-to-assistant gaps."""
+
+    def test_idle_until_resume_via_sendmessage_style_user_turn(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-idle0000000000.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "done with my turn"}]),
+                # 10 minutes later, a plain user text turn resumes it (no
+                # notification wrapper, no pending tool) -- idle_until_resume
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-12T10:10:05Z",
+                 "message": {"role": "user", "content": [{"type": "text", "text": "continue please"}]}},
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(a.stalls_by_kind.get("idle_until_resume", 0), 1)
+            self.assertEqual(a.stalls_by_kind.get("waiting_notification", 0), 0)
+            self.assertEqual(a.stalls_by_kind.get("tool_running", 0), 0)
+
+    def test_tool_running_via_tool_result_closing_pending_tool(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-tool00000000000.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "go test ./..."}}]),
+                # 10 minutes later a tool_result closes the long-running call
+                user_tool_result("2026-09-12T10:10:05Z", "t1", "PASS"),
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(a.stalls_by_kind.get("tool_running", 0), 1)
+
+    def test_waiting_notification_via_task_notification_wrapper(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-notif0000000000.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "dispatched, moving on"}]),
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-12T10:10:05Z",
+                 "message": {"role": "user", "content": [
+                     {"type": "text", "text": "<task-notification>\n<task-id>abc</task-id>\ndone\n</task-notification>"}
+                 ]}},
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(a.stalls_by_kind.get("waiting_notification", 0), 1)
+
+
+class TestCdPrefixSegmentClassification(unittest.TestCase):
+    """M2: a leading `cd X &&` (or timeout/env/nice/VAR=) must not hide the
+    real command from verb, CPU-heavy, or adoption classification -- every
+    `&&`/`||`/`;`/`|`-separated segment is classified on its own."""
+
+    def test_cd_prefix_does_not_become_other_cd(self):
+        segments = list(extract.iter_command_segments("cd /some/worktree && go test ./..."))
+        verbs = [seg[0] for seg in segments]
+        self.assertNotIn("cd", verbs)
+        self.assertTrue(any(v == "go" for v in verbs))
+
+    def test_cpu_heavy_detected_after_cd_prefix(self):
+        self.assertTrue(extract.is_cpu_heavy("cd /some/worktree && go test ./..."))
+
+    def test_wb_run_wrapping_scoped_to_its_own_segment(self):
+        clauses = extract.cpu_heavy_clauses("cd wt && wb run -- go test ./... && go build ./...")
+        wrapped_flags = {text: wrapped for text, wrapped in clauses}
+        # the go test clause, wrapped by wb run --, is wrapped=True
+        self.assertTrue(any(w for t, w in clauses if "go test" in t))
+        # the go build clause, NOT prefixed by wb run, is wrapped=False
+        self.assertTrue(any((not w) for t, w in clauses if "go build" in t))
+
+    def test_env_and_timeout_prefixes_stripped(self):
+        segments = list(extract.iter_command_segments("timeout 30 env FOO=bar go test ./..."))
+        verbs = [seg[0] for seg in segments]
+        self.assertIn("go", verbs)
+        self.assertNotIn("timeout", verbs)
+        self.assertNotIn("env", verbs)
+
+
+class TestInheritModelPricing(unittest.TestCase):
+    """M3: a subagent whose meta.json declares model:"inherit" must be
+    bucketed and priced by each message's own `message.model`, never
+    lumped into "other" and priced at the Sonnet fallback."""
+
+    def test_inherit_meta_model_uses_message_model_for_pricing_and_label(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-inherit000000.jsonl"
+            (agent_dir / "agent-inherit000000.meta.json").write_text(
+                json.dumps({"model": "inherit", "toolUseId": "tu1"}), encoding="utf-8")
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-opus-5",
+                               {"input_tokens": 100, "output_tokens": 50,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "working"}]),
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertIsNotNone(a)
+            # the label is the OBSERVED model, not the literal "inherit"
+            self.assertEqual(a.model, "claude-opus-5")
+            # priced at opus rates, not the sonnet "other"-family fallback
+            expected = 100 * extract.PRICE_TABLE_USD_PER_MTOK["opus"]["input"] / 1_000_000.0 + \
+                50 * extract.PRICE_TABLE_USD_PER_MTOK["opus"]["output"] / 1_000_000.0
+            self.assertAlmostEqual(a.usage.cost_usd(), expected, places=6)
+
+    def test_declared_non_inherit_model_used_as_label(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-declared000000.jsonl"
+            (agent_dir / "agent-declared000000.meta.json").write_text(
+                json.dumps({"model": "claude-haiku-4-5", "toolUseId": "tu2"}), encoding="utf-8")
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-haiku-4-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "working"}]),
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(a.model, "claude-haiku-4-5")
+
+
+class TestPrivacyNoPersonalData(unittest.TestCase):
+    """M4: no email addresses and no /home/<user>/... paths may reach
+    metrics.json or SUMMARY.md."""
+
+    EMAIL_RE = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+
+    def test_scrub_home_path_replaces_home_with_tilde(self):
+        scrubbed = extract.scrub_home_path("/home/someuser/projects/secret-repo/x.py")
+        self.assertNotIn("/home/", scrubbed)
+        self.assertNotIn("someuser", scrubbed)
+
+    def test_sanitize_pr_fields_drops_body(self):
+        pr = {"number": 42, "body": "some PR body with maybe an email a@b.com",
+              "created_at": "2026-09-12T00:00:00Z", "merged_at": None,
+              "closed_at": None, "state": "open"}
+        sanitized = extract._sanitize_pr_fields(pr)
+        self.assertNotIn("body", sanitized)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("a@b.com", dumped)
+
+    def test_sanitize_run_fields_drops_author_email(self):
+        run = {"id": 1, "name": "CI", "event": "push", "conclusion": "success",
+               "run_started_at": "2026-09-12T00:00:00Z", "updated_at": "2026-09-12T00:05:00Z",
+               "head_sha": "abc123",
+               "head_commit": {"author": {"email": "real.person@example.com", "name": "Real Person"}}}
+        sanitized = extract._sanitize_run_fields(run)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("real.person@example.com", dumped)
+        self.assertNotIn("Real Person", dumped)
+
+    def test_no_home_or_email_in_metrics_or_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home" / "fakeuser"
+            (home / ".claude" / "projects").mkdir(parents=True)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            # force an unavailable-with-path-in-reason branch by pointing at
+            # a real, nonexistent-but-home-rooted git repo path
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "projects" / "sneat-dev" / "wb",
+                wb_state_dirs=[home / ".wb", home / "projects" / ".wb"], offline=True,
+            )
+            metrics_text = json.dumps(metrics, indent=2, sort_keys=True)
+            summary_text = extract.render_summary(metrics, since, until)
+            import re as _re
+            self.assertNotIn("/home/", metrics_text)
+            self.assertNotIn("fakeuser", metrics_text)
+            self.assertIsNone(_re.search(self.EMAIL_RE, metrics_text))
+            self.assertNotIn("/home/", summary_text)
+            self.assertIsNone(_re.search(self.EMAIL_RE, summary_text))
+
+
+class TestOutRefusesInsideGitRepo(unittest.TestCase):
+    """Minor 10: --out must be refused if it resolves inside a git repo."""
+
+    def test_out_inside_git_repo_detected(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td) / "repo"
+            (repo_root / ".git").mkdir(parents=True)
+            out_dir = repo_root / "tools" / "sdlc-metrics" / "scratch-out"
+            out_dir.mkdir(parents=True)
+            self.assertTrue(extract.path_is_inside_git_repo(out_dir))
+
+    def test_out_outside_git_repo_not_flagged(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "scratch-out"
+            out_dir.mkdir(parents=True)
+            self.assertFalse(extract.path_is_inside_git_repo(out_dir))
 
 
 if __name__ == "__main__":

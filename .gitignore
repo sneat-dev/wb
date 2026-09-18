@@ -36,3 +36,7 @@ test-results/
 # Local coverage measurement output: `wb coverage --report-dir` and --coverage-profile.
 /coverage-diagnostics/
 /profile.cov
+
+# Python bytecode caches (tools/sdlc-metrics and any other Python tooling).
+__pycache__/
+*.pyc

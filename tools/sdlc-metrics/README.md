@@ -31,12 +31,15 @@ Flags:
 | `--home` | `$HOME` | directory to scan under (`<home>/.claude`, `<home>/projects/.wb`) |
 | `--repo` | `sneat-dev/wb` | `owner/repo` for GitHub PR and Actions data |
 | `--git-repo-path` | `<home>/projects/<repo>` | local clone for `git log` counts |
-| `--wb-state-dir` | `<home>/projects/.wb` | WB state directory (`worklogs/`, `waits/`) |
+| `--wb-state-dir` | both `<home>/.wb` and `<home>/projects/.wb` | WB state directory (`worklogs/`, `waits/`); repeatable, replaces the default pair when given |
+| `--price-config` | `$SDLC_METRICS_PRICE_CONFIG` or `~/.config/sdlc-metrics/prices.json` if present | JSON file of per-model price overrides (see "Tokens and cost") |
 | `--offline` | off | reuse cached `raw/*.json` instead of calling `gh` |
 
 Nothing here is machine-specific: every path defaults from `$HOME` /
-`--home`, and can be overridden with a flag or an `SDLC_METRICS_*`
-environment variable of the same name (see `--help`).
+`--home`. Most flags can also be set with an `SDLC_METRICS_*` environment
+variable of the same name (`--home`, `--repo`, `--git-repo-path`,
+`--price-config`; see `--help`) — `--wb-state-dir` and `--offline` do not
+have environment-variable equivalents and must be passed as flags.
 
 **Reports belong outside this repository.** Never commit the output of a run;
 point `--out` at a scratch or reports directory (for example
@@ -65,19 +68,29 @@ point `--out` at a scratch or reports directory (for example
 
 ## Metric definitions
 
-- **Tokens and cost** (`tokens`): summed straight from each assistant
-  message's `usage` object, split by day, model family (`opus` / `sonnet` /
-  `haiku` / `fable` / `other`, matched by substring against the raw model
-  string) and role (`main` loop vs. `subagent`). `estimated_usd` multiplies
-  by `PRICE_TABLE_USD_PER_MTOK` at the top of `extract.py` — edit that table
-  when prices change; it is a hand-maintained estimate, not billing-accurate.
+- **Tokens and cost** (`tokens`): priced per message, from each assistant
+  message's own `usage` object (or, when present, the sum of its
+  `usage.iterations` — never both), then split by day, model family
+  (`opus` / `sonnet` / `haiku` / `fable` / `other`, matched by substring
+  against the raw model string) and role (`main` loop vs. `subagent`) for
+  reporting. `estimated_usd` looks up `PRICE_TABLE_BY_PREFIX` at the top of
+  `extract.py` by the message's own model-id prefix (most specific first,
+  e.g. `claude-fable-5-1` before `claude-fable-5`), falling back to a coarse
+  family bucket, and to a labeled "legacy, verify" rate for an older
+  generation (Sonnet 4.x, Opus 4.x) it doesn't recognize. Edit that table
+  when prices change; `metrics.json` records the `"prices as of"` date the
+  table was built from. It is a hand-maintained estimate, not
+  billing-accurate. Override any rate with `--price-config <file.json>`.
 - **Orchestrator** (`orchestrator`): turns = count of `turn_duration` system
   events in the main-loop transcript; context size per turn = `input_tokens +
   cache_read_input_tokens + cache_creation_input_tokens` on each assistant
   message (a proxy for context-window occupancy, not the true window size);
   `context_growth_by_session` compares the first and last measured turn per
   session (`growth_ratio`) as the quadratic-cost signal; compactions counted
-  via `isCompactSummary`.
+  via `message.isCompactSummary` (the compacted summary message) and via a
+  `system` record with `subtype: compact_boundary` (the marker the harness
+  writes when a compaction occurs) — both are counted, since either can be
+  present without the other.
 - **Subagents** (`subagents`): one `AgentStats` per discovered agent
   transcript. Duration = last usage timestamp minus first, within the window.
   Dispatch = an `Agent` tool_use in a main-loop (or parent-agent) transcript;
@@ -97,10 +110,15 @@ point `--out` at a scratch or reports directory (for example
   raw input is never written out, only a 16-hex-character digest.
 - **Bash, in depth** (`bash`): `by_subverb` groups `wb`, `git`, `gh` and `go`
   commands by their first one-to-three tokens (e.g. `wb pr land`, `git push`,
-  `gh run list`, `go test`). CPU-heavy commands are `go test|build|vet`,
-  `golangci-lint`, and `npm|pnpm|bun(x)|yarn (run )?build|test`; `wb run`
-  coverage is the share of those NOT preceded by `wb run` in the same command
-  string. A hand-rolled loop is `until`/`while` combined with `sleep`, a bare
+  `gh run list`, `go test`). A command line is split on `&&`/`||`/`;`/`|`
+  into clauses first, and each clause is classified on its own (so a leading
+  `cd dir &&` no longer hides the real command). CPU-heavy commands are
+  `go test|build|vet`, `golangci-lint`, and `npm|pnpm|bun(x)|yarn (run
+  )?build|test`; `wb run` coverage is the share of CPU-heavy clauses that
+  ARE prefixed by `wb run --` within that same clause (each clause is
+  checked for its own wrapping, not the whole command line), reported split
+  by `main` vs. `subagent` role. A hand-rolled loop is `until`/`while`
+  combined with `sleep`, a bare
   `kill -0` watch, or a `gh run list` / `gh api ...runs` / `gh pr checks`
   poll. Pipe truncation checks whether any pipeline segment after the first
   starts with `tail` or `head`. Multi-call sequences are 2–4-gram windows
@@ -188,7 +206,32 @@ Command lines are reduced to their leading verb and first few flags
 `--flag=value` becomes `--flag=<val>`, and every quoted string is replaced
 with `<str>` before anything is counted. Repeated-call detection hashes that
 reduced string (or a sorted-key JSON shape for non-Bash tools) to a 16-hex
-digest — the input itself is never written to the pack. Session and agent
+digest — the input itself is never written to the pack.
+
+Any filesystem path that reaches `metrics.json` or `SUMMARY.md` (error
+messages, checked-repo paths, WB state-dir paths) has its `$HOME` prefix
+replaced with `~` first, so it never carries the machine's username.
+
+**`<out>/raw/` is local-only and must not be shared or committed.** It caches
+the GitHub API responses this run fetched, trimmed to the fields the
+extractor actually reads (PR number and lifecycle timestamps/state for
+`pulls.json`; run id, name, event, conclusion, timestamps and `head_sha` for
+`actions_runs.json` — never the full PR body or a commit author's email).
+That trimming keeps casual disclosure out, but `raw/` is still a cache of
+GitHub data scoped to one run, not a publishable artifact: treat the whole
+`<out>/` directory, including `raw/`, as private to the person who ran the
+extractor, the same as `metrics.json` and `SUMMARY.md`.
+
+Verb/subverb classification (the "top verbs" and `by_subverb` counts) uses a
+separate, stricter path: the command is first tokenised with `shlex.split`
+(falling back to `<unparsed>` if it can't be lexed), heredoc bodies and
+quoted-string arguments are stripped before any word is inspected, and only
+a verb on a fixed allowlist of known commands (`git`, `gh`, `go`, `wb`,
+`specscore`, `codegrapher`, `grep`, `rg`, `find`, `cat`, `sed`, `ls`,
+`python3`, `node`, `pnpm`, `npm`, `bun`, `make`, `jq`, `curl`, ...) is ever
+reported by name; anything else is bucketed as `<other>`. This is what keeps
+words from inside a quoted commit message or `BODY='...'`/`C='...'` argument
+(e.g. `git commit -m "..."`) out of the verb counts. Session and agent
 IDs may appear (they are opaque identifiers, not personal data).
 
 ## Tests
