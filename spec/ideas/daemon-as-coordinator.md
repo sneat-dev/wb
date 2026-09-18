@@ -351,8 +351,40 @@ keeps the founder the highest authority in the loop.
 
 ## Proposed direction
 
-A WB channel server, registered per session, delivering **typed events from a
-closed vocabulary**:
+**MVP (founder-agreed 2026-09-18): one flow, "your PR has an outcome → your
+session wakes".** It replaces the channel server below as the first step,
+because the transport is herdr (verified: `herdr agent prompt` woke an idle
+session in about a second) and needs no harness flag.
+
+1. **Registration happens at creation, against the task.** `wb pr create`
+   (sneat-dev/wb#601, landed) records the task→PR binding. Nothing registers a
+   pane or a session up front.
+2. **Session and pane are resolved at delivery.** task → the session holding
+   the task's claim now → its herdr pane (`$HERDR_PANE_ID`,
+   `$CLAUDE_CODE_SESSION_ID` are both in a session's environment; `herdr agent
+   list` maps pane → session id → status). This survives compaction, resume,
+   `/move` and `/park`→`/pickup`: the wake reaches whoever owns the work now.
+3. **Delivery is guarded:** the pane must still host the same session id
+   (a reused pane gets nothing); the session must be `idle` (never mid-turn;
+   `working`/`blocked` hold until the next tick); no live owner ⇒ record only —
+   `wb pr land`/`pr create --auto-merge` (#598) armed auto-merge, so the PR
+   lands without anyone.
+4. **Watching:** the daemon polls only registered PRs, reusing the existing
+   check verdict (renamed-required-check aware); webhooks are an accelerator
+   later.
+5. **Message:** fixed templates only, e.g. `[wb daemon] sneat-dev/wb#598:
+   checks failed: Lint (golangci-lint). Next: …` — identifiers and sanitised
+   check names, never titles, bodies or log text. A `[wb daemon]` message is a
+   notification, never an approval (stated in the skills).
+6. **Visibility:** subscriptions appear in `wb wait list` / `wb session list`;
+   the wake itself is a visible `❯` message in the transcript.
+
+Later, on the same machinery: retire the worktree when GitHub merges an armed
+PR with no live owner (the daemon holds the task binding), and the typed
+vocabulary below.
+
+The longer-term shape — a WB channel server, registered per session,
+delivering **typed events from a closed vocabulary**:
 
 ```text
 lane.conflict        binding    another session owns (repository, target)
@@ -386,5 +418,6 @@ No provider prose. Details are fetched, never pushed.
   disabled protection.
 - Does the binding set need an override, for when the founder wants a session to
   proceed anyway?
-- Should delivery be per-session or per-effort? A session dies; an effort does
-  not.
+- ~~Should delivery be per-session or per-effort?~~ Decided 2026-09-18:
+  register against the task at `wb pr create`, resolve the session and pane at
+  delivery.
