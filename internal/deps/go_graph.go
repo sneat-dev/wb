@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"golang.org/x/mod/modfile"
 )
 
@@ -108,7 +109,12 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 					}
 					canonical := repository.Path
 					if canonical == "" {
-						canonical = filepath.Join(options.GitHubDir, owner, name)
+						resolved, resolveErr := orchestrate.CanonicalClonePath(options.GitHubDir, repository)
+						if resolveErr != nil {
+							errorsByRepository[index] = resolveErr
+							return
+						}
+						canonical = resolved
 					}
 					resolvedBase, ensureErr := orchestrate.EnsureCanonical(ctx, repository, canonical, options)
 					if ensureErr != nil {
@@ -263,7 +269,10 @@ func resolveDuplicateCloneModuleDeclaration(ctx context.Context, declarations []
 		if !ok || owner == "" || name == "" {
 			continue
 		}
-		canonicalPath := filepath.Join(options.GitHubDir, owner, name)
+		canonicalPath, pathErr := worktrees.CanonicalRepositoryPath(options.GitHubDir, declaration.Repository)
+		if pathErr != nil {
+			continue
+		}
 		slug, err := remoteOriginSlug(ctx, canonicalPath, options)
 		if err != nil {
 			continue

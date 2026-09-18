@@ -1042,7 +1042,7 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 	}
 	result := LogVerbResult{
 		Worktree: root, Verb: "archive", Projection: &projection,
-		Notes: []string{"dry-run; pass --apply to move .wb/local into WB_HOME/worklogs"},
+		Notes: []string{"dry-run; pass --apply to copy .wb/local into <root>/.wb/worklogs"},
 	}
 	if !options.Apply {
 		return result, nil

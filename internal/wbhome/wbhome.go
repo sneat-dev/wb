@@ -24,10 +24,42 @@ import (
 // and the checkout store independent knobs.
 const EnvOverride = "WB_PROJECTS_ROOT"
 
+// EnvHomeRetired names the environment variable that used to select WB's state
+// directory. It is retired: no resolver, store or daemon path derives from it,
+// and a managed hook shim that still pins it changes nothing. It is a named
+// constant only so the diagnostic that reports the ignored value — see
+// IgnoredHomeEnvDiagnostic — cannot drift from the variable it is talking
+// about.
+const EnvHomeRetired = "WB_HOME"
+
 // EnvMigrationCompat is written only by a managed hook installed by an earlier
 // release. It has no effect on path derivation any more; the constant remains
 // until the hook shims stop emitting it.
 const EnvMigrationCompat = "WB_HOME_MIGRATION_COMPAT"
+
+// IgnoredHomeEnvDiagnostic reports the retired WB_HOME variable to a human. It
+// returns "" when WB_HOME is unset, empty or blank, and otherwise a one-line
+// message naming the variable, the value it ignored, and the state directory
+// the selected root actually uses. projectsRoot is the root the invocation
+// selected — the --projects-root flag value — or "" to fall back to
+// WB_PROJECTS_ROOT and then the default root.
+//
+// The ignored value never influences the state directory, so an unresolvable or
+// nonsensical value is still reportable rather than an error: callers print the
+// diagnostic and continue. The error return exists only for a projects root
+// WB cannot resolve at all, which the command itself is about to fail on.
+func IgnoredHomeEnvDiagnostic(projectsRoot string) (string, error) {
+	value := strings.TrimSpace(os.Getenv(EnvHomeRetired))
+	if value == "" {
+		return "", nil
+	}
+	home, err := Root(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s=%s is ignored: %s no longer selects WB's state directory; using %s",
+		EnvHomeRetired, value, EnvHomeRetired, home), nil
+}
 
 // Layout is one supported on-disk WB location set. Home is the private
 // coordination state directory (claims, locks, Work Logs, reports) and

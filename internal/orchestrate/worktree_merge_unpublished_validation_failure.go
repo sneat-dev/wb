@@ -98,7 +98,11 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded interrupted candidate: %w", proofErr)
 		}
 		candidateCleanupBacklog = proof.Path
-		gitRoot = filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
+		resolvedRoot, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
+		if canonicalErr != nil {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, canonicalErr
+		}
+		gitRoot = resolvedRoot
 	} else {
 		guard, guardErr := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: options.ProjectsRoot, Base: receipt.Target})
 		if guardErr != nil {

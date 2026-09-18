@@ -127,8 +127,10 @@ func TestCwWtWorktreeCreateDerivesRepositoryFromOrigin(t *testing.T) {
 	// The origin path ends in acme/app.git so the derived slug is acme/app and
 	// the canonical clone lives exactly where create resolves it.
 	clone := filepath.Join(projects, "acme", "app")
-	cwCovCloneWithOrigin(t, seed, "acme/app", clone)
+	remote := cwCovCloneWithOrigin(t, seed, "acme/app", clone)
+	cwCovPointOriginAtForge(t, clone, remote, "github.com", "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	cwWtWriteFile(t, prompt, "derived repository prompt\n")
 
@@ -141,7 +143,7 @@ func TestCwWtWorktreeCreateDerivesRepositoryFromOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create deriving its repository: %v", err)
 	}
-	if !strings.Contains(stdout, filepath.Join(clone, ".worktrees", "cw-wt-derived")) {
+	if !strings.Contains(stdout, filepath.Join(projects, ".worktrees", "cw-wt-derived", "github.com", "acme", "app")) {
 		t.Fatalf("derived create stdout = %q", stdout)
 	}
 }

@@ -174,7 +174,14 @@ func markerCheckouts(ctx context.Context, fleet bool, args []string) ([]string, 
 		if filterFlag != "" && !strings.Contains(repository.Slug(), filterFlag) {
 			continue
 		}
-		canonical := filepath.Join(projectsRoot, repository.Org, repository.Name)
+		// Use the path discovery actually found. A canonical clone may live at
+		// the literal host level (<root>/<host>/<org>/<repo>) or at the legacy
+		// two-level placement, so rebuilding a flat path here would silently
+		// skip every host-level clone.
+		canonical := repository.Path
+		if canonical == "" {
+			continue
+		}
 		for _, path := range append([]string{canonical}, registeredWorktrees(ctx, canonical)...) {
 			// Dedupe on the resolved path. Git reports physical paths, so the
 			// canonical clone comes back from `git worktree list` in a
@@ -305,8 +312,12 @@ func markCreatedCheckouts(command *cobra.Command, base string, results []worktre
 	seen := map[string]bool{}
 	for _, result := range results {
 		paths := []string{result.WorktreeDir}
-		if owner, repository, found := strings.Cut(result.Repository, "/"); found {
-			paths = append(paths, filepath.Join(projectsRoot, owner, repository))
+		// The canonical clone's real path, exactly as create resolved and
+		// reported it: rebuilding a flat <root>/<owner>/<repository> here would
+		// skip every host-level clone and leave its .worktree.md unwritten,
+		// which is the marker AGENTS.md tells every agent to read first.
+		if result.CanonicalDir != "" {
+			paths = append(paths, result.CanonicalDir)
 		}
 		for _, path := range paths {
 			if path == "" || seen[path] {
@@ -338,7 +349,12 @@ func refreshSyncedCheckoutMarkers(results []fleetsync.Result, projectsRoot strin
 		if result.Status == fleetsync.Failed || result.Repo.Org == "" || result.Repo.Name == "" {
 			continue
 		}
-		path := filepath.Join(projectsRoot, result.Repo.Org, result.Repo.Name)
+		// The clone's real path, as discovery found it: see the fleet-marker
+		// loop above for why a rebuilt flat path would skip host-level clones.
+		path := result.Repo.Path
+		if path == "" {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
 			continue
 		}

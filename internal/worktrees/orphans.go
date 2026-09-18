@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -227,34 +226,25 @@ func discoverCanonicalClones(projectsRoot string) ([]canonicalClone, []string) {
 	var clones []canonicalClone
 	var unscanned []string
 
-	owners, err := os.ReadDir(projectsRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, []string{fmt.Sprintf("%s: %v", projectsRoot, err)}
-	}
+	owners, unreadable := canonicalOwnerDirectories(projectsRoot)
+	unscanned = append(unscanned, unreadable...)
 	for _, owner := range owners {
-		if !owner.IsDir() || strings.HasPrefix(owner.Name(), ".") {
-			continue
-		}
-		ownerPath := filepath.Join(projectsRoot, owner.Name())
-		repositories, err := os.ReadDir(ownerPath)
+		repositories, err := os.ReadDir(owner.Path)
 		if err != nil {
-			unscanned = append(unscanned, fmt.Sprintf("%s: %v", ownerPath, err))
+			unscanned = append(unscanned, fmt.Sprintf("%s: %v", owner.Path, err))
 			continue
 		}
 		for _, repository := range repositories {
 			if !repository.IsDir() {
 				continue
 			}
-			path := filepath.Join(ownerPath, repository.Name())
+			path := filepath.Join(owner.Path, repository.Name())
 			if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
 				continue
 			}
 			clones = append(clones, canonicalClone{
 				path:       path,
-				repository: owner.Name() + "/" + repository.Name(),
+				repository: owner.Name + "/" + repository.Name(),
 			})
 		}
 	}

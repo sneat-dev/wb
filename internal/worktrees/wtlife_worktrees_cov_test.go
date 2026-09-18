@@ -41,7 +41,7 @@ func TestWtLifeCovPrepareWorktreeDestinationPlansDirectAndOwnedLayouts(t *testin
 		t.Fatal(err)
 	}
 	if _, _, err := prepareWorktreeDestination(operationRoot, operationDirectory, "", "linked-repo"); err == nil ||
-		!strings.Contains(err.Error(), "inspect secure worktree destination") {
+		!strings.Contains(err.Error(), "refusing symlinked worktree destination") {
 		t.Fatalf("symlinked direct destination error = %v", err)
 	}
 

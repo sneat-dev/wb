@@ -250,11 +250,17 @@ func openJournalDirectory(worktree string, create bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Only the WB-owned directory is tightened. The repository's own .wb holds
-	// tracked policy files whose mode belongs to the repository, not to WB.
-	if err := unix.Fchmod(localFD, 0o700); err != nil {
-		_ = unix.Close(localFD)
-		return nil, err
+	// Only the WB-owned directory is tightened, and only when this call
+	// created it: fchmod is a metadata write, and the read path opened the
+	// descriptor O_RDONLY, so a sandbox that denies writes outside the
+	// workspace would report a read as a denied write. The repository's own
+	// .wb holds tracked policy files whose mode belongs to the repository, not
+	// to WB either way.
+	if create {
+		if err := unix.Fchmod(localFD, 0o700); err != nil {
+			_ = unix.Close(localFD)
+			return nil, err
+		}
 	}
 	directory := os.NewFile(uintptr(localFD), "wb-journal")
 	if directory == nil {
@@ -298,9 +304,13 @@ func openJournalSubdirectory(worktree, name string, create bool) (*os.File, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Fchmod(fd, 0o700); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+	// Creating path only, for the same reason as openJournalDirectory: the read
+	// path's descriptor is O_RDONLY and fchmod on it is a metadata write.
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	directory := os.NewFile(uintptr(fd), "wb-journal-"+name)
 	if directory == nil {

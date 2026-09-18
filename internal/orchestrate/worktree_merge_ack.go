@@ -2226,7 +2226,10 @@ func inspectMissingWorktreeMergeCleanup(ctx context.Context, projectsRoot string
 			return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("inspect receipted cleanup worktree %s: %w", asset.Worktree, statErr)
 		}
 	}
-	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, canonicalErr
+	}
 	currentTarget, err := fetchExactMergeTarget(ctx, canonical, receipt.Target)
 	if err != nil {
 		return WorktreeMergeMissingCleanupAcknowledgement{}, err
@@ -2361,7 +2364,10 @@ func validateMissingCleanupAcknowledgement(ctx context.Context, projectsRoot str
 	if err != nil {
 		return ack, err
 	}
-	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return ack, canonicalErr
+	}
 	containsAcknowledgedTarget, ancestorErr := isMergeAncestor(ctx, canonical, ack.CurrentTargetSHA, observed.CurrentTargetSHA)
 	if ancestorErr != nil || !containsAcknowledgedTarget {
 		if ancestorErr == nil {

@@ -13,7 +13,7 @@ func TestCreateLocalPlacementRejectsUnsafeRoot(t *testing.T) {
 	for _, kind := range []string{"symlink", "tracked"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture := newGitFixture(t)
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			configureFixtureRepositoryLocalWorktrees(t)
 			root := filepath.Join(fixture.canonical, ".worktrees")
 			var protected string
 			if kind == "symlink" {
@@ -83,7 +83,7 @@ func TestCleanupResumesRemovedCheckoutAfterSharedRootChanges(t *testing.T) {
 
 func TestFilteredLocalCleanupPreservesActiveSiblingCoordination(t *testing.T) {
 	fixture := newGitFixture(t)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configureFixtureRepositoryLocalWorktrees(t)
 	storage := addRepositoryToFixture(t, fixture, "storage")
 	created, heads := prepareMergedTaskInRepositories(t, fixture, "local-sibling", "app", "storage")
 	var sibling CreateResult

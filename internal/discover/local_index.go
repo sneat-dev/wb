@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 const LocalIndexSchemaVersion = 1
@@ -46,9 +48,11 @@ type persistedLocalIndex struct {
 }
 
 type localSourceSnapshot struct {
-	root          string
-	organizations []os.DirEntry
-	fingerprint   string
+	root string
+	// owners are the {owner} directories the root holds, already read through
+	// a literal forge host level where one is present.
+	owners      []repopath.Owner
+	fingerprint string
 }
 
 // ScanLocalIndexed reuses a persisted canonical-clone inventory only for a
@@ -85,7 +89,7 @@ func ScanLocalIndexed(projectsRoot string, options LocalIndexOptions) (LocalInde
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		result.Diagnostics = append(result.Diagnostics, "read local fleet index: "+readErr.Error())
 	}
-	repositories, err := scanLocalOrganizations(snapshot.root, snapshot.organizations)
+	repositories, err := scanLocalOrganizations(snapshot.owners)
 	if err != nil {
 		return LocalIndexResult{}, err
 	}
@@ -115,26 +119,33 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
+	if _, err := os.ReadDir(root); err != nil {
 		return localSourceSnapshot{}, err
 	}
-	organizations := make([]os.DirEntry, 0, len(entries))
+	owners, _ := repopath.Owners(root)
 	parts := []string{root, fileInfoFingerprint(rootInfo)}
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		info, infoErr := entry.Info()
+	seenHosts := make(map[string]bool, len(owners))
+	for _, owner := range owners {
+		info, infoErr := os.Stat(owner.Path)
 		if infoErr != nil {
 			continue
 		}
-		organizations = append(organizations, entry)
-		parts = append(parts, entry.Name()+"\x00"+fileInfoFingerprint(info))
+		parts = append(parts, filepath.ToSlash(owner.Relative())+"\x00"+fileInfoFingerprint(info))
+		// A literal forge level is one directory holding every organization on
+		// that forge, so fingerprint the host directory itself too: adding or
+		// removing a host must invalidate the cache even when no organization
+		// directory changed.
+		if owner.Host == "" || seenHosts[owner.Host] {
+			continue
+		}
+		seenHosts[owner.Host] = true
+		if hostInfo, hostErr := os.Stat(filepath.Join(root, owner.Host)); hostErr == nil {
+			parts = append(parts, owner.Host+"\x00"+fileInfoFingerprint(hostInfo))
+		}
 	}
 	sort.Strings(parts[2:])
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return localSourceSnapshot{root: filepath.Clean(root), organizations: organizations, fingerprint: hex.EncodeToString(digest[:])}, nil
+	return localSourceSnapshot{root: filepath.Clean(root), owners: owners, fingerprint: hex.EncodeToString(digest[:])}, nil
 }
 
 func fileInfoFingerprint(info os.FileInfo) string {
@@ -143,11 +154,15 @@ func fileInfoFingerprint(info os.FileInfo) string {
 		strconv.FormatUint(uint64(info.Mode()), 10)
 }
 
-func scanLocalOrganizations(root string, organizations []os.DirEntry) ([]Repo, error) {
+// scanLocalOrganizations reads one repository per canonical clone below each
+// owner directory the snapshot found — at <root>/{host}/{owner}/{repo} or at
+// the legacy <root>/{owner}/{repo}. It deliberately walks the owner PATH rather
+// than re-deriving it from the projects root, so both shapes are read exactly
+// where they were found.
+func scanLocalOrganizations(owners []repopath.Owner) ([]Repo, error) {
 	var repositories []Repo
-	for _, organization := range organizations {
-		organizationPath := filepath.Join(root, organization.Name())
-		entries, err := os.ReadDir(organizationPath)
+	for _, owner := range owners {
+		entries, err := os.ReadDir(owner.Path)
 		if err != nil {
 			continue
 		}
@@ -155,12 +170,12 @@ func scanLocalOrganizations(root string, organizations []os.DirEntry) ([]Repo, e
 			if !entry.IsDir() {
 				continue
 			}
-			repositoryPath := filepath.Join(organizationPath, entry.Name())
+			repositoryPath := filepath.Join(owner.Path, entry.Name())
 			gitDirectory, statErr := os.Stat(filepath.Join(repositoryPath, ".git"))
 			if statErr != nil || !gitDirectory.IsDir() {
 				continue
 			}
-			repositories = append(repositories, Repo{Org: organization.Name(), Name: entry.Name(), Path: repositoryPath})
+			repositories = append(repositories, Repo{Org: owner.Name, Name: entry.Name(), Host: owner.Host, Path: repositoryPath})
 		}
 	}
 	sort.Slice(repositories, func(i, j int) bool { return repositories[i].Slug() < repositories[j].Slug() })
@@ -212,12 +227,36 @@ func cloneRepos(repositories []Repo) []Repo {
 	return append([]Repo(nil), repositories...)
 }
 
+// validCachedRepositoryPlacement reports whether a cached repository's Path is
+// a canonical clone placement for its own coordinate under root: the
+// literal-host <root>/{host}/{org}/{repo} or the legacy
+// <root>/{org}/{repo}. Both must be accepted, or every read of an index
+// written against a host-level fleet would be rejected and re-scanned forever.
+func validCachedRepositoryPlacement(root string, repository Repo) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(repository.Path))
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	switch len(parts) {
+	case 2:
+		// The legacy flat placement carries no host, so a cached entry that
+		// claims one describes a different layout and must be re-scanned.
+		return repository.Host == "" && parts[0] == repository.Org && parts[1] == repository.Name
+	case 3:
+		return repopath.IsForgeHost(parts[0]) && parts[0] == repository.Host &&
+			parts[1] == repository.Org && parts[2] == repository.Name
+	default:
+		return false
+	}
+}
+
 func validCachedRepos(root string, repositories []Repo) bool {
 	seen := make(map[string]struct{}, len(repositories))
 	for _, repository := range repositories {
 		if repository.Org == "" || repository.Name == "" || repository.Org == "." || repository.Org == ".." || repository.Name == "." || repository.Name == ".." ||
 			filepath.Base(repository.Org) != repository.Org || filepath.Base(repository.Name) != repository.Name ||
-			filepath.Clean(repository.Path) != filepath.Join(root, repository.Org, repository.Name) ||
+			!validCachedRepositoryPlacement(root, repository) ||
 			repository.CloneURL != "" || repository.Archived || repository.IsFork || repository.Local || repository.Remote {
 			return false
 		}

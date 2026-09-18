@@ -133,8 +133,12 @@ func TestCwWtWorktreeCreateSucceedsInProcess(t *testing.T) {
 	seed := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")
-	cwCovCloneWithOrigin(t, seed, "app", clone)
+	remote := cwCovCloneWithOrigin(t, seed, "app", clone)
+	// The clone stays at the legacy two-level path, but its origin names a
+	// forge: the central store must still embed that literal host.
+	cwCovPointOriginAtForge(t, clone, remote, "github.com", "acme/app")
 	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	cwWtWriteFile(t, prompt, "the exact task request\n")
 
@@ -144,7 +148,10 @@ func TestCwWtWorktreeCreateSucceedsInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worktree create: %v", err)
 	}
-	wantDir := filepath.Join(clone, ".worktrees", "cw-wt-task")
+	// No store mode is configured, so the default central store applies: the
+	// task is the first level below <projects>/.worktrees, followed by the
+	// literal host the canonical clone's origin names.
+	wantDir := filepath.Join(projects, ".worktrees", "cw-wt-task", "github.com", "acme", "app")
 	if !strings.Contains(stdout, wantDir) {
 		t.Fatalf("create stdout = %q, want it to name %s", stdout, wantDir)
 	}

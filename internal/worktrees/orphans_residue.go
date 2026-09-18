@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // Orphan enumeration reads Git's own worktree registry, which is the only
@@ -48,7 +50,7 @@ func residueSweep(projectsRoot string, roots map[string]string, registered map[s
 			continue
 		}
 		if layout == LayoutLocal {
-			owner, repository, coordinatesErr := canonicalCoordinates(projectsRoot, filepath.Dir(root))
+			_, owner, repository, coordinatesErr := canonicalCoordinates(projectsRoot, filepath.Dir(root))
 			if coordinatesErr != nil {
 				continue
 			}
@@ -73,14 +75,13 @@ func residueSweep(projectsRoot string, roots map[string]string, registered map[s
 			if err != nil {
 				continue
 			}
-			for _, owner := range owners {
-				if !owner.IsDir() || strings.HasPrefix(owner.Name(), ".") {
-					continue
-				}
-				ownerPath := filepath.Join(taskPath, owner.Name())
-				repositories, err := os.ReadDir(ownerPath)
-				if err != nil {
-					continue
+			// sweepOwner reports every {repository} below one {org} directory.
+			// slugPrefix carries the literal host level of the central store so
+			// the residue's repository identity matches its on-disk address.
+			sweepOwner := func(slugPrefix, ownerName, ownerPath string) {
+				repositories, readErr := os.ReadDir(ownerPath)
+				if readErr != nil {
+					return
 				}
 				for _, repository := range repositories {
 					if !repository.IsDir() || strings.HasPrefix(repository.Name(), ".") {
@@ -88,13 +89,38 @@ func residueSweep(projectsRoot string, roots map[string]string, registered map[s
 					}
 					candidate := inspectResidue(
 						projectsRoot, root, layout, task.Name(),
-						owner.Name()+"/"+repository.Name(),
+						slugPrefix+ownerName+"/"+repository.Name(),
 						filepath.Join(ownerPath, repository.Name()),
 						registered,
 					)
 					if candidate != nil {
 						found = append(found, *candidate)
 					}
+				}
+			}
+			for _, owner := range owners {
+				if !owner.IsDir() || strings.HasPrefix(owner.Name(), ".") {
+					continue
+				}
+				ownerPath := filepath.Join(taskPath, owner.Name())
+				// The central store interposes the literal host level:
+				// <task>/<host>/<org>/<repository>. A first-level entry that is
+				// a literal forge hostname is read through to its org
+				// directories; any other first-level entry is the legacy {org}
+				// level itself.
+				if !repopath.IsForgeHost(owner.Name()) {
+					sweepOwner("", owner.Name(), ownerPath)
+					continue
+				}
+				organizations, organizationErr := os.ReadDir(ownerPath)
+				if organizationErr != nil {
+					continue
+				}
+				for _, organization := range organizations {
+					if !organization.IsDir() || strings.HasPrefix(organization.Name(), ".") {
+						continue
+					}
+					sweepOwner(owner.Name()+"/", organization.Name(), filepath.Join(ownerPath, organization.Name()))
 				}
 			}
 		}
@@ -114,7 +140,10 @@ func inspectResidue(projectsRoot, root, layout, task, repository, path string, r
 	if err == nil && registered[filepath.Clean(resolved)] {
 		return nil
 	}
-	canonical := filepath.Join(projectsRoot, repository)
+	canonical, canonicalErr := CanonicalRepositoryPath(projectsRoot, repository)
+	if canonicalErr != nil {
+		canonical = filepath.Join(projectsRoot, repository)
+	}
 	canonicalExists := false
 	if info, statErr := os.Stat(filepath.Join(canonical, ".git")); statErr == nil && info.IsDir() {
 		canonicalExists = true

@@ -202,7 +202,7 @@ func TestWTCoreCovCreateWorktreeAtPlacementRefusesBadInputs(t *testing.T) {
 	ctx := context.Background()
 	fixture := newGitFixture(t)
 	base := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
-	placement, err := ResolveWorktreePlacement(ctx, fixture.canonical, base)
+	placement, err := ResolveWorktreePlacement(ctx, fixture.projectsRoot, fixture.canonical, base)
 	if err != nil {
 		t.Fatal(err)
 	}

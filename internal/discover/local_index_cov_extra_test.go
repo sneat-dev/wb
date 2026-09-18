@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 	"time"
 )
 
@@ -157,12 +159,9 @@ func TestScanLocalOrganizationsReturnsOnlyCanonicalClones(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: ../widgets/.git/worktrees/widgets-feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	owners, _ := repopath.Owners(root)
 
-	repositories, err := scanLocalOrganizations(root, entries)
+	repositories, err := scanLocalOrganizations(owners)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,15 +173,12 @@ func TestScanLocalOrganizationsReturnsOnlyCanonicalClones(t *testing.T) {
 func TestScanLocalOrganizationsToleratesAVanishedOrganization(t *testing.T) {
 	root := t.TempDir()
 	mustIndexedRepository(t, root, "acme", "widgets")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	owners, _ := repopath.Owners(root)
 	if err := os.RemoveAll(filepath.Join(root, "acme")); err != nil {
 		t.Fatal(err)
 	}
 
-	repositories, err := scanLocalOrganizations(root, entries)
+	repositories, err := scanLocalOrganizations(owners)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +208,8 @@ func TestSnapshotLocalSourceIgnoresNonOrganizationEntries(t *testing.T) {
 	if first.root != root {
 		t.Fatalf("snapshot root = %q, want %q", first.root, root)
 	}
-	if len(first.organizations) != 1 || first.organizations[0].Name() != "acme" {
-		t.Fatalf("snapshot organizations = %#v, want only acme", first.organizations)
+	if len(first.owners) != 1 || first.owners[0].Name != "acme" {
+		t.Fatalf("snapshot owners = %#v, want only acme", first.owners)
 	}
 	if err := os.WriteFile(loose, []byte("a much longer payload"), 0o644); err != nil {
 		t.Fatal(err)
@@ -236,8 +232,8 @@ func TestSnapshotLocalSourceIgnoresNonOrganizationEntries(t *testing.T) {
 	if third.fingerprint == second.fingerprint {
 		t.Fatalf("a new organization did not change the fingerprint: %s", third.fingerprint)
 	}
-	if len(third.organizations) != 2 {
-		t.Fatalf("snapshot organizations = %#v, want acme and beta", third.organizations)
+	if len(third.owners) != 2 {
+		t.Fatalf("snapshot owners = %#v, want acme and beta", third.owners)
 	}
 }
 

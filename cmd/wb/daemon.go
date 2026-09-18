@@ -1239,7 +1239,7 @@ func (controller daemonController) Start(ctx context.Context, listen string) (da
 	// the legacy socket is the only evidence that the first one is alive.
 	if legacy := detectLegacyDaemon(controller.root, controller.deps.alive); legacy.present() {
 		return daemonResult{Action: "start", LegacyRuntime: &legacy}, fmt.Errorf(
-			"refusing to start a daemon while a daemon still serves the legacy runtime directory: %s; stop that daemon first (wb daemon stop, with the WB_HOME it was started under) rather than letting it keep serving an abandoned home",
+			"refusing to start a daemon while a daemon still serves the legacy runtime directory: %s; stop that daemon first (wb daemon stop, with the --projects-root it was started under) rather than letting it keep serving an abandoned home",
 			legacy.describe())
 	}
 	state, found, err := controller.store.Load()

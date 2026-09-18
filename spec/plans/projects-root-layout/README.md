@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Executing
+status: Blocked
 ---
 # Plan: Projects Root Layout: implementation and migration
 
-**Status:** Executing
+**Status:** Blocked
 **Source Feature:** projects-root-layout
 **Date:** 2026-09-16
 **Owner:** trakhimenok
@@ -79,7 +79,7 @@ write-home fallback so no command can silently adopt it. Tests must prove that a
 **Id:** task-2
 **Verifies:** projects-root-layout#ac:clone-path-inverts-to-url
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Extend `canonicalRepositoryPath` and `splitRepository` to derive
 `<root>/<host>/<org>/<repo>`, taking the host from the repository's `origin`
@@ -94,7 +94,7 @@ is not a valid hostname as a layout finding rather than treating it as a forge.
 **Id:** task-3
 **Verifies:** projects-root-layout#ac:central-store-is-default, projects-root-layout#ac:repo-local-mode-selected
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Add a store mode to the machine-local worktrees configuration. The default mode
 places a checkout at `<root>/.worktrees/<task>/<host>/<org>/<repo>`; the
@@ -107,7 +107,7 @@ branch and Work Log identity untouched across a mode change.
 **Id:** task-4
 **Verifies:** projects-root-layout#ac:wb-home-ignored-with-diagnostic
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Remove `WB_HOME` as a selector for the state directory. When it is set to a
 non-empty value, emit a diagnostic naming the variable, the value ignored, and
@@ -120,7 +120,7 @@ warning rather than a silent ignore, because 361 repositories currently pin
 **Id:** task-5
 **Verifies:** projects-root-layout#ac:denied-write-names-the-path-and-remedy
 **Depends-On:** task-1, task-3
-**Status:** planning
+**Status:** complete
 
 Preflight the declared writable set — `<root>/.wb`, `<root>/.worktrees`,
 `<canonical>/.git` and the platform temporary area — and fail with a
@@ -137,7 +137,7 @@ permitted`.
 **Id:** task-6
 **Verifies:** projects-root-layout#ac:relocate-targets-the-store
 **Depends-On:** task-1, task-2, task-3
-**Status:** planning
+**Status:** complete
 
 Point `wb worktree relocate --to=shared` at `<root>/.worktrees` and make its
 destination resolution understand the host level. Record the destination in the
@@ -151,7 +151,7 @@ behaviour is unchanged.
 **Id:** task-7
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable
 **Depends-On:** task-1, task-2, task-3, task-6
-**Status:** planning
+**Status:** complete
 
 Revise `authoritative-write-home`, `local-default-and-user-shared-root`,
 `migration-layout-compatibility` and `legacy-mixed-inventory` in
@@ -168,7 +168,13 @@ each checkout's placement alongside its task identity.
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
 **Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7
-**Status:** planning
+**Status:** blocked
+
+**Blocked by:** the operator deferred this one-off machine migration until the
+active agent sessions that depend on the current checkout paths have been shut
+down. Running it now would move canonical clones and task checkouts out from
+under live sessions. Tasks 1-7 and 9 land the behaviour and the dry-runnable
+plan; this task is the only one that touches this machine.
 
 One-off migration of the operator's machine, since there are no external
 operators to keep compatible. Capture a manifest of every canonical clone and
@@ -187,7 +193,7 @@ migration must be dry-runnable.
 **Id:** task-9
 **Verifies:** projects-root-layout#ac:one-root-no-second-knob, projects-root-layout#ac:clone-path-inverts-to-url
 **Depends-On:** task-1, task-2, task-3
-**Status:** planning
+**Status:** complete
 
 Document the root schema, the two store modes and the writable-path contract,
 including the fact that the root is the sandbox workspace root expected by the
