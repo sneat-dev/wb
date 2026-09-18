@@ -120,7 +120,7 @@ warning rather than a silent ignore, because 361 repositories currently pin
 **Id:** task-5
 **Verifies:** projects-root-layout#ac:denied-write-names-the-path-and-remedy
 **Depends-On:** task-1, task-3
-**Status:** planning
+**Status:** complete
 
 Preflight the declared writable set — `<root>/.wb`, `<root>/.worktrees`,
 `<canonical>/.git` and the platform temporary area — and fail with a
@@ -137,7 +137,7 @@ permitted`.
 **Id:** task-6
 **Verifies:** projects-root-layout#ac:relocate-targets-the-store
 **Depends-On:** task-1, task-2, task-3
-**Status:** planning
+**Status:** complete
 
 Point `wb worktree relocate --to=shared` at `<root>/.worktrees` and make its
 destination resolution understand the host level. Record the destination in the

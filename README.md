@@ -118,7 +118,7 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 
 ### `wb worktree` — isolated feature branches
 
-Keep canonical clones at `<projects-root>/<owner>/<repository>` clean when
+Keep canonical clones at `<projects-root>/<host>/<org>/<repository>` clean when
 possible, but never mutate one to make it eligible for creation. WB leaves its
 currently checked-out branch, index, and working tree untouched while it
 creates every feature branch in its managed worktree location:
@@ -186,6 +186,30 @@ or re-selects an existing checkout. WB adds a local
 Git exclude for the untracked `.worktrees/` directory so Git status stays
 clean; scanners and build tools that do not honor Git excludes must still avoid
 that directory deliberately.
+#### Writable paths
+
+The projects root is the sandbox workspace root the common agent harnesses
+expect: a harness that grants write access to `<root>` already grants WB
+everything it needs, because state and — in central mode — the checkout store
+are direct children of it. WB declares that set, preflights it before its first
+mutation, and fails with a diagnostic naming the unwritable path and its role
+rather than reporting a bare `operation not permitted`:
+
+- `<root>/.wb` — private state: claims, locks, Work Logs, reports;
+- `<root>/.worktrees` — central-mode checkouts. Declared only when central mode
+  is selected, because repository-local mode keeps each checkout inside its own
+  canonical clone;
+- `<canonical>/.git` — Git writes `gitdir`, `commondir`, `HEAD`, `index`,
+  `logs`, `refs`, `ORIG_HEAD` and `COMMIT_EDITMSG` there when it registers,
+  repairs or removes a linked checkout, even though WB otherwise only reads the
+  clone;
+- the platform temporary area.
+
+The diagnostic offers three remedies: widen the sandbox workspace to `<root>`,
+add the named path as an allowed writable root, or select repository-local
+store mode. Reading never requires write permission: no read path issues a
+metadata write on a descriptor it opened read-only.
+
 Existing branches and worktrees are rejected unless `--resume` is explicit.
 
 Resume recovers the registered branch and active Work Log claim before reading
@@ -586,7 +610,7 @@ Reconciles `~/projects/{org}/{repo}` with GitHub:
 - archived, missing → nothing
 
 `wb sync` is currently the only WB creator for canonical
-`<projects-root>/<owner>/<repository>` clones. A deterministic read-only audit
+`<projects-root>/<host>/<org>/<repository>` clones. A deterministic read-only audit
 and admission guard for top-level/misowned clones is planned, not implemented;
 WB cannot intercept an arbitrary external `git clone`, so agents must not
 clone directly below `<projects-root>/<repository>`.
@@ -967,8 +991,9 @@ linked-worktree debt outside managed tasks.
 
 ### `wb layout` — clone placement under projects-root
 
-Canonical clones live at `{projects-root}/{owner}/{repository}` with a real
-`.git` directory. Audit is read-only; clean is dry-run unless `--apply`.
+Canonical clones live at `{projects-root}/{host}/{org}/{repository}` — the first
+level is the literal forge hostname — with a real `.git` directory. Audit is
+read-only; clean is dry-run unless `--apply`.
 
 ```sh
 wb layout audit

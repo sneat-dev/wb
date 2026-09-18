@@ -1,0 +1,128 @@
+package worktrees
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+
+	"github.com/sneat-dev/wb/internal/pathguard"
+)
+
+// TestCreateDeniedWritablePathFailsBeforeAnyMutation is the proof for
+// projects-root-layout#ac:denied-write-names-the-path-and-remedy on the command
+// the operator actually runs: a sandbox that grants write access to the
+// canonical clone but not to the projects root must produce the actionable
+// diagnostic, not a bare "operation not permitted" — and must produce it
+// before the first mutation, whichever declared path is the unwritable one.
+func TestCreateDeniedWritablePathFailsBeforeAnyMutation(t *testing.T) {
+	fixture := newGitFixture(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	state := filepath.Join(fixture.projectsRoot, ".wb")
+	store := filepath.Join(fixture.projectsRoot, ".worktrees")
+	canonicalGit := filepath.Join(fixture.canonical, ".git")
+
+	for _, testCase := range []struct {
+		name   string
+		denied []string
+		want   []string
+	}{
+		{
+			name:   "state and central store",
+			denied: []string{state, store},
+			want:   []string{state, store, "private state", "central checkout store"},
+		},
+		{
+			// The canonical Git registration is declared by the same preflight,
+			// so denying only it must also refuse before the task hierarchy and
+			// the Work Log reservation are created.
+			name:   "canonical git registration",
+			denied: []string{canonicalGit},
+			want:   []string{canonicalGit, "Git registration"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			denied := make(map[string]bool, len(testCase.denied))
+			for _, path := range testCase.denied {
+				denied[path] = true
+			}
+			_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "denied-write",
+				WorkLog:      WorkLogOptions{Model: "unknown"},
+				writableProbe: func(path string) error {
+					if denied[path] {
+						return &os.PathError{Op: "open", Path: path, Err: syscall.EPERM}
+					}
+					return nil
+				},
+			})
+			var denial *pathguard.Error
+			if !errors.As(err, &denial) {
+				t.Fatalf("create = %v, want the declared-writable-path diagnostic", err)
+			}
+			message := denial.Error()
+			for _, want := range append(testCase.want, fixture.projectsRoot, "repository-local") {
+				if !strings.Contains(message, want) {
+					t.Fatalf("diagnostic %q does not mention %q", message, want)
+				}
+			}
+			if strings.TrimSpace(message) == syscall.EPERM.Error() || !strings.Contains(message, "write") {
+				t.Fatalf("diagnostic reads as a bare errno: %q", message)
+			}
+			// Nothing durable may exist afterwards, including the operation
+			// hierarchy and the reserved Work Log that creation would otherwise
+			// have written before a late refusal.
+			for _, path := range []string{state, store} {
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("%s exists after the refusal (stat err = %v); the preflight must run before the first mutation", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+// TestOpenPrivateChildReadPathPerformsNoMetadataWrite covers the second half of
+// projects-root-layout#req:actionable-permission-error: a read must never be
+// reported as a denied write. The read path used to fchmod the descriptor it
+// had just opened O_RDONLY, which a sandbox refuses — surfacing as
+// "inspect existing work-log run before mutation: operation not permitted".
+func TestOpenPrivateChildReadPathPerformsNoMetadataWrite(t *testing.T) {
+	home := t.TempDir()
+	run, runPath, err := openWorkLogRun(home, "effort", "run", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	created, err := openPrivateChild(run, "claims", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := created.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	childPath := filepath.Join(runPath, "claims")
+	// A directory an earlier release left behind with a wider mode. Reopening
+	// it for reading must leave that mode alone: changing it is a metadata
+	// write on a read-only descriptor.
+	if err := os.Chmod(childPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openPrivateChild(run, "claims", false)
+	if err != nil {
+		t.Fatalf("read path = %v, want the reopened directory", err)
+	}
+	if closeErr := opened.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	info, err := os.Stat(childPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("read path rewrote the directory mode to %v; reading must not write metadata", info.Mode().Perm())
+	}
+}

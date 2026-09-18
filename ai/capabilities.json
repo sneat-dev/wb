@@ -15276,7 +15276,8 @@
               ],
               "modes": [
                 "Dry-run is the default and --apply is required to move a checkout",
-                "--to=local selects the canonical repository .worktrees root; --to=shared requires the current user-configured worktrees.root",
+                "--to=local selects the canonical repository .worktrees root; --to=shared resolves to the central store (<root>/.worktrees unless worktrees.root overrides it) and embeds the canonical clone's literal host level",
+            "The relocation receipt records the destination relative to the placement root that produced it, so a later worktrees.root reconfigure does not invalidate it",
                 "The task, branch, immutable Work Log claim, and checkout contents are preserved",
                 "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
                 "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
@@ -15329,6 +15330,11 @@
               "path": "internal/worktrees/relocate_test.go",
               "name": "TestRelocateRefusesExternalAndDirtyWorktrees",
               "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/relocate_store_test.go",
+              "name": "TestRelocateSharedTargetsTheCentralStore",
+              "kind": "integration"
             }
           ],
           "limitation": null

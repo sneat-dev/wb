@@ -84,6 +84,15 @@ repository policy cannot select either, and an attempt to do so is rejected.
 Existing linked worktrees remain
 discoverable during migration.
 
+The projects root is the sandbox workspace root the common harnesses grant, so
+`<root>/.wb` and `<root>/.worktrees` are writable whenever the harness grants
+the root. WB declares that set — state, the central store when it has one, each
+canonical clone's `.git`, and the platform temporary area — and preflights it
+before its first mutation. When one is unwritable, creation fails with the path,
+its role and three remedies (widen the workspace to the root, allow that path as
+a writable root, or select repository-local mode) instead of a bare
+`operation not permitted`.
+
 ## Validation
 
 During implementation, format changed files and run focused named tests plus

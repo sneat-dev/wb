@@ -21,20 +21,29 @@ import (
 // as missing, clones a duplicate beside the real one, or writes a marker into a
 // directory nobody has.
 var flatCanonicalJoinAllowlist = map[string]string{
-	"internal/streams/paths.go|filepath.FromSlash(repository)":                      "documented fallback for a bare name or an unresolvable/ambiguous coordinate; the resolver is tried first",
-	"internal/worktrees/lifecycle.go|filepath.FromSlash(slug)":                      "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed slug",
-	"internal/worktrees/orphans_residue.go|filepath.Join(projectsRoot, repository)": "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed coordinate",
+	"internal/streams/paths.go|filepath.FromSlash(repository)":                                    "documented fallback for a bare name or an unresolvable/ambiguous coordinate; the resolver is tried first",
+	"internal/worktrees/lifecycle.go|filepath.FromSlash(slug)":                                    "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed slug",
+	"internal/worktrees/orphans_residue.go|filepath.Join(projectsRoot, repository)":               "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed coordinate",
+	"internal/layout/layout.go|isCanonicalGitDir(filepath.Join(root, address.Org, address.Repo))": "deliberate legacy-existence probe: the caller has already established that the address carries no host level",
 }
 
 // rootishArguments matches the identifiers that mean "the projects root".
 var rootishArguments = regexp.MustCompile(`^(root|.*ProjectsRoot|.*GitHubDir|projectsRoot|githubDir|projectsDir|projects)$`)
 
 // coordinateArguments matches the identifiers that name one repository level.
-var coordinateArguments = regexp.MustCompile(`^(owner|Owner|org|Org|name|Name|repo|Repo|repository|Repository|parts\[0\]|parts\[1\])$`)
+// Qualified selectors are included on purpose: a flat join is just as flat when
+// the owner and repository arrive as fields of a parsed reference
+// (filepath.Join(root, source.Owner, source.Repo, ...)) as when they arrive as
+// locals, and the first version of this guard could not see that shape.
+var coordinateArguments = regexp.MustCompile(`^(owner|Owner|org|Org|name|Name|repo|Repo|repository|Repository|parts\[0\]|parts\[1\]|\w+\.(Owner|Org|Repo|Repository|Name))$`)
 
 // slugSplittingCalls matches a coordinate being turned into path segments
 // directly rather than through the resolver.
 var slugSplittingCalls = regexp.MustCompile(`FromSlash\((repository|slug|repo|tracked|claim\.Repository|record\.Repository|receipt\.Repository|entry\.Repository|options\.ExactRepository|options\.Repository)\)`)
+
+// hostArgument matches the host level in a join, which is what makes a
+// canonical derivation host-aware rather than flat.
+var hostArgument = regexp.MustCompile(`^\w+\.Host$`)
 
 // ownerLevelArguments matches an identifier that holds one owner level. Joining
 // a projects root onto an owner level is how the missing-clone path used to be
@@ -158,6 +167,14 @@ func flatCanonicalJoinReason(line string) string {
 		return "joins a projects root onto a bare owner level instead of the resolved clone"
 	}
 	if len(arguments) >= 3 {
+		// A join that names the host level explicitly is the resolver's own
+		// host-aware derivation, not a flat one. The defect this guard exists
+		// for is the join that stops at owner/repository.
+		for _, argument := range arguments[1:] {
+			if hostArgument.MatchString(argument) {
+				return ""
+			}
+		}
 		coordinates := 0
 		for _, argument := range arguments[1:] {
 			if coordinateArguments.MatchString(argument) {
@@ -165,7 +182,7 @@ func flatCanonicalJoinReason(line string) string {
 			}
 		}
 		if coordinates >= 2 {
-			return "joins a projects root onto an owner/name pair"
+			return "joins a projects root onto an owner/name pair without the host level"
 		}
 	}
 	return ""

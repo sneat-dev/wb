@@ -2006,9 +2006,15 @@ func openWorkLogProjectionDirectory(worktree string, create bool) (*os.File, err
 	if err != nil {
 		return nil, fmt.Errorf("open work-log projection directory: %w", err)
 	}
-	if err := unix.Fchmod(fd, 0o700); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+	// Harden the mode only on the creating path. fchmod is a metadata write,
+	// and the read path opened this descriptor O_RDONLY: under a sandbox that
+	// denies writes outside the workspace it fails with EPERM, which reports a
+	// read as a denied write. Reading must never require write permission.
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	directory := os.NewFile(uintptr(fd), "wb-worklog-projection")
 	if directory == nil {
@@ -2875,7 +2881,7 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	}
 	if intent == nil {
 		intent, _, err = appendRelocationIntentForRepository(home, claim, expected.Source, expected.Destination, expected.To, expected.HeadSHA,
-			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, time.Now().UTC())
+			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, relocationPlacementRecord{}, time.Now().UTC())
 		if err != nil {
 			return false, fmt.Errorf("append legacy checkout attestation intent: %w", err)
 		}
@@ -3311,9 +3317,18 @@ func openPrivateChild(parent *os.File, name string, create bool) (*os.File, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Fchmod(fd, 0o700); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+	// Harden the mode only on the creating path. The read path opens the
+	// descriptor O_RDONLY, and fchmod is a metadata write on that descriptor:
+	// under a sandbox that denies writes outside the workspace it fails with
+	// EPERM, which surfaced as "inspect existing work-log run before mutation:
+	// operation not permitted" — a read reported as a denied write. Nothing is
+	// lost by not re-tightening a directory an earlier release already
+	// created, and reading must never require write permission.
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	file := os.NewFile(uintptr(fd), "wb-worklog-"+name)
 	if file == nil {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/repopath"
 	"gopkg.in/yaml.v3"
 )
 
@@ -183,7 +184,16 @@ func (s Source) Locate(repoRoot string, searchRoots []string) (string, error) {
 	case SourceFleet:
 		var tried []string
 		for _, root := range searchRoots {
-			candidate := filepath.Join(root, s.Owner, s.Repo, filepath.FromSlash(s.Path))
+			// A canonical clone lives at <root>/<host>/<org>/<repo> on a
+			// host-level fleet and at <root>/<org>/<repo> before the host level
+			// existed. Locate reports which placement this root actually holds
+			// instead of assuming the flat one, so a fleet policy reference
+			// resolves below its forge rather than at a path that never existed.
+			address, locateErr := repopath.Locate(root, s.Owner, s.Repo)
+			if locateErr != nil {
+				return "", locateErr
+			}
+			candidate := filepath.Join(address.Path(root), filepath.FromSlash(s.Path))
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
 			}

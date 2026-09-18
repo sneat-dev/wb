@@ -93,13 +93,18 @@ immutable Work Log claim. The default is a dry run. Pass --apply only after
 reviewing the exact source and destination paths.
 
 --to=local moves a managed checkout to <canonical>/.worktrees/<task>.
---to=shared moves it to the configured user worktrees.root; it refuses when no
-shared root is configured. Changing that configuration never moves or hides an
-existing checkout. WB inventories every managed layout through the Git worktree
-registry and active claims, then rechecks the clean state, ownership lock,
-branch/head, source, and destination under the task lock immediately before
-the descriptor-anchored no-replace move. Git registration is repaired and
-verified before an append-only relocation receipt is recorded.
+--to=shared moves it to the central checkout store — <root>/.worktrees when no
+worktrees.root is configured, which is the default — and refuses when the
+machine-local store mode is repository-local, because that mode has no shared
+root to move into. The destination embeds the canonical clone's literal host
+level. Changing the store configuration never moves or hides an existing
+checkout; the relocation receipt records the destination relative to the root
+that produced it, so it still names the checkout after a later reconfigure.
+WB inventories every managed layout through the Git worktree registry and
+active claims, then rechecks the clean state, ownership lock, branch/head,
+source, and destination under the task lock immediately before the
+descriptor-anchored no-replace move. Git registration is repaired and verified
+before an append-only relocation receipt is recorded.
 
 Adopted external worktrees are reported but are never moved by this command.
 Use --filter to select repositories within a coordinated task. --format=json

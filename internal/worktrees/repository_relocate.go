@@ -214,7 +214,7 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 			continue
 		}
 		intent, _, intentErr := appendRelocationIntentForRepository(home, *entry.claim, entry.source, entry.destination, "repository", entry.head,
-			options.SourceRepository, options.DestinationRepository, options.RemoteURL, options.Now().UTC())
+			options.SourceRepository, options.DestinationRepository, options.RemoteURL, relocationPlacementRecord{}, options.Now().UTC())
 		if intentErr != nil {
 			return result, fmt.Errorf("record repository relocation intent for %s: %w", entry.source, intentErr)
 		}

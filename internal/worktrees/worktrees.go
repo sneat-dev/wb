@@ -20,6 +20,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/pathguard"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -146,6 +147,12 @@ type CreateOptions struct {
 	// a child reauthorizes the same pair. It proves the child, rather than a
 	// stale lexical check, is the final authority for Git.
 	afterCanonicalGitAuthorization func()
+	// writableProbe replaces the real filesystem writability probe the
+	// declared-writable-path preflight runs before its first mutation. It is
+	// unexported so production callers cannot weaken the check; a test injects
+	// a denying probe to reproduce a sandbox that grants write access to the
+	// canonical clone only, without needing a real sandbox.
+	writableProbe pathguard.Probe
 }
 
 // CreateResult identifies the isolated checkout prepared for one repository.
@@ -477,6 +484,33 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
+	// Declare and preflight the whole writable set before the first mutation. A
+	// sandboxed harness typically grants write access to one workspace root and
+	// nothing else, so a create whose state, store or canonical Git registration
+	// lives outside it would otherwise fail with a bare "operation not
+	// permitted" from whichever syscall happened to lose first — no path, no
+	// role, no remedy. This must run before prepareOperationRoot below, which
+	// creates the task hierarchy and reserves the Work Log: a refusal that
+	// leaves durable state behind is not a preflight.
+	//
+	// The store requirement is declared only when the selected mode has a store
+	// root: repository-local mode keeps checkouts inside their canonical clone,
+	// so the clone's own Git registration is what has to be writable. The
+	// canonical clone paths are read-only derivations, so resolving them here
+	// costs nothing the loop below would not have done anyway.
+	requirements := pathguard.Requirements(home, storePolicy.CentralRoot)
+	canonicalPaths := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		_, _, canonical, pathErr := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		canonicalPaths = append(canonicalPaths, canonical)
+		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
+	}
+	if err := pathguard.Check(resolution.Root, requirements, normalized.writableProbe); err != nil {
+		return nil, err
+	}
 	workLogPrepared := false
 	// prepareWorkLogOptions only validates and snapshots the caller's exact
 	// prompt bytes into memory; it never touches WB_HOME. That keeps the
@@ -555,11 +589,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			plans[index].canonical.close()
 		}
 	}()
-	for _, repository := range repositories {
-		_, _, canonical, err := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
-		if err != nil {
-			return nil, err
-		}
+	for index, repository := range repositories {
+		canonical := canonicalPaths[index]
 		canonicalHandle, err := openCanonicalRepository(canonical)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
