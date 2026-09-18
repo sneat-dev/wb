@@ -7,11 +7,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // This file covers sneat-dev/wb#627: --workflow/--check filters on
 // `wb ci wait` / `wb wait checks`. Fixtures reuse the same fake-`gh`
 // convention as cmd/wb/ci_wait_test.go.
+
+// ciWaitFastFailSlice is a short foreground slice for a test whose PASSING
+// path needs two real observations (terminal plus a stable reread) but whose
+// failure mode, on a regressed filter, is "polls forever instead of noticing
+// the pre-fix bug" (sneat-dev/wb#627 minor 2, red-team round 3 on PR #629):
+// two of this file's tests took the full 5-minute ciWaitSliceBudget to fail
+// on pre-fix code, which reaches the 10-minute foreground ceiling when run
+// together. A short slice makes a regression fail in about two seconds
+// instead.
+const ciWaitFastFailSlice = 2 * time.Second
 
 // ciWaitTwoWorkflowScript is a direct-target (no --pr) fixture on acme/app
 // whose target branch requires two check contexts, "build" (produced by the
@@ -534,7 +545,7 @@ exit 30
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
 		"ci", "wait", "--repo", "acme/racecheck", "--target", "main", "--head", ciWaitHead,
-		"--check", "build", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+		"--check", "build", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
 	}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
@@ -585,7 +596,7 @@ exit 30
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
 		"ci", "wait", "--repo", "acme/approval", "--target", "main", "--head", ciWaitHead,
-		"--check", "build", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+		"--check", "build", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
 	}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
@@ -751,6 +762,351 @@ exit 30
 	}
 	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:deploy [staging]" {
 		t.Fatalf("[ should be a literal character, matching only the exact name: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitAllWorkflowNamesMustMatchBeforePass covers M1 (red-team round 3
+// on PR #629): with several --workflow names, a pass requires every one of
+// them to have produced at least one observed check, not merely one. "CI"
+// has finished; "Release" — which this repo only starts via workflow_run
+// after CI, so it does not exist in the Actions-runs receipt at all yet — has
+// never appeared. The filtered wait must stay pending, naming "Release".
+func TestCIWaitAllWorkflowNamesMustMatchBeforePass(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/multiworkflow/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/multiworkflow/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":9001,"name":"CI","workflow_id":1,"event":"push","status":"completed","conclusion":"success","check_suite_id":501,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":501}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/multiworkflow", "--target", "main", "--head", ciWaitHead,
+		"--workflow", "CI", "--workflow", "Release", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("CI finishing must not pass the wait while Release has never appeared: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.Status != "pending" {
+		t.Fatalf("an unmatched --workflow name should stay pending, not fail: %+v", output)
+	}
+	if !strings.Contains(output.Reason, "Release") || strings.Contains(output.Reason, "\"CI\"") {
+		t.Fatalf("reason should name the unmatched workflow (Release), not the matched one: %q", output.Reason)
+	}
+}
+
+// TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen covers M2(a) (red-team round
+// 3 on PR #629): --check "deploy*" matches "deploy-docs" in the Docs run,
+// which has finished. A second, unrelated Prod run is a concurrency-group
+// wait with no job registered at all yet (jobless). The filtered wait must
+// stay pending until Prod either registers a matching job or otherwise
+// resolves — it must not pass just because a different run's job already
+// matched the glob.
+func TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/globruns/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/globruns/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"deploy-docs","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":601}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":2,"workflow_runs":[{"id":7001,"name":"Docs","workflow_id":40,"event":"push","status":"completed","conclusion":"success","check_suite_id":601,"created_at":"2026-01-01T00:00:00Z"},{"id":7002,"name":"Prod","workflow_id":41,"event":"push","status":"pending","conclusion":"","check_suite_id":602,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/globruns", "--target", "main", "--head", ciWaitHead,
+		"--check", "deploy*", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("the Docs job matching must not pass the wait while Prod has registered no job at all: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	foundJoblessEntry := false
+	for _, check := range output.Checks {
+		if strings.HasPrefix(check.Name, "workflow-run:41:") {
+			foundJoblessEntry = true
+		}
+	}
+	if !foundJoblessEntry {
+		t.Fatalf("filter dropped the jobless Prod run's synthetic entry: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents covers M2(b)
+// (red-team round 3 on PR #629, new since round 2): an exact `--check build`
+// matches the push run's "build" job, which has passed. The same workflow's
+// pull_request run — same WorkflowID, different event, so a run identity
+// keyed on WorkflowID alone would conflate the two — is still "queued" and
+// has not registered a "build" job of its own yet. The filtered wait must
+// stay pending, not pass just because the push run's job already matched.
+func TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/dualtrigger/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/dualtrigger/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":701}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":2,"workflow_runs":[{"id":8001,"name":"CI","workflow_id":20,"event":"push","status":"completed","conclusion":"success","check_suite_id":701,"created_at":"2026-01-01T00:00:00Z"},{"id":8002,"name":"CI","workflow_id":20,"event":"pull_request","status":"queued","conclusion":"","check_suite_id":702,"created_at":"2026-01-01T00:00:01Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/dualtrigger", "--target", "main", "--head", ciWaitHead,
+		"--check", "build", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("the push run's build matching must not pass the wait while the pull_request run's build has not registered: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	foundJoblessEntry := false
+	for _, check := range output.Checks {
+		if strings.HasPrefix(check.Name, "workflow-run:20:pull_request") {
+			foundJoblessEntry = true
+		}
+	}
+	if !foundJoblessEntry {
+		t.Fatalf("filter dropped the still-queued pull_request run's synthetic entry: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone covers minor 1 (red-
+// team round 3 on PR #629): two runs share a WorkflowID but differ by event.
+// An exact `--check deploy` matches and passes in the push run. The
+// pull_request run — same WorkflowID — has already registered a DIFFERENT,
+// unrelated, still-running job ("verify"): it is not jobless, and it is not
+// owned by the "deploy" match, because ownership keys on (WorkflowID, Event),
+// not WorkflowID alone. The wait must pass once "deploy" is terminal, not
+// wait on "verify".
+func TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/sharedworkflowid/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/sharedworkflowid/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":1,"name":"deploy","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":901}},{"id":2,"name":"verify","status":"in_progress","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":902}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":2,"workflow_runs":[{"id":9101,"name":"Shared","workflow_id":50,"event":"push","status":"completed","conclusion":"success","check_suite_id":901,"created_at":"2026-01-01T00:00:00Z"},{"id":9102,"name":"Shared","workflow_id":50,"event":"pull_request","status":"in_progress","conclusion":"","check_suite_id":902,"created_at":"2026-01-01T00:00:01Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/sharedworkflowid", "--target", "main", "--head", ciWaitHead,
+		"--check", "deploy", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("an unrelated in_progress job under the same WorkflowID but a different event must not hold the wait: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:deploy" {
+		t.Fatalf("passed receipt should carry only the matched deploy job: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun covers minor 1 (red-team
+// round 3 on PR #629): with --workflow AND --check combined, an exact
+// `--check publish` under `--workflow Release` matches and is terminal, but
+// a sibling job in the same Release run ("verify", gated by `needs: publish`)
+// has not registered yet. Because --workflow means "wait for the whole run"
+// even when combined with an exact --check, the wait must stay pending — this
+// specifically exercises the workflowOwnedRuns retention path, not
+// globOwnedRuns or anyUnmatchedExact (both false here, since the sole exact
+// pattern "publish" has already matched).
+func TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/combined/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/combined/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"publish","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":1001}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":11001,"name":"Release","workflow_id":60,"event":"push","status":"in_progress","conclusion":"","check_suite_id":1001,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/combined", "--target", "main", "--head", ciWaitHead,
+		"--workflow", "Release", "--check", "publish", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("publish matching must not pass the wait while --workflow Release's run is still in_progress: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	foundRunEntry := false
+	for _, check := range output.Checks {
+		if strings.HasPrefix(check.Name, "workflow-run:60:") {
+			foundRunEntry = true
+		}
+	}
+	if !foundRunEntry {
+		t.Fatalf("--workflow combined with --check should still retain the owning run's synthetic entry: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass covers M3
+// (red-team round 3 on PR #629): "build" failed, so "publish" (which
+// `needs: build`) concluded "skipped", and the run itself concluded
+// "failure". An exact `--check publish` must not report passed — that would
+// answer "is the release built?", #627's own headline use, with a false yes.
+func TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/skipchain/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/skipchain/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":801}},{"id":2,"name":"publish","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":801}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":12001,"name":"Release","workflow_id":30,"event":"push","status":"completed","conclusion":"failure","check_suite_id":801,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/skipchain", "--target", "main", "--head", ciWaitHead,
+		"--check", "publish", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("a --check on a job skipped because an earlier job failed must never report passed: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.Status != "failed" || code == exitOK {
+		t.Fatalf("skipped-by-upstream-failure should fail, matching what an unfiltered wait would see: %+v", output)
 	}
 }
 

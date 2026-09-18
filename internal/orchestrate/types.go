@@ -173,6 +173,18 @@ type RemoteCheck struct {
 	// WorkflowID alone: GitHub can run the same workflow ID for more than one
 	// event on the same head. Empty wherever WorkflowID is zero.
 	WorkflowEvent string `json:"workflow_event,omitempty" yaml:"workflow_event,omitempty"`
+	// WorkflowRunConclusion is the owning GitHub Actions run's own top-level
+	// conclusion (e.g. "failure", "success", "cancelled"), alongside
+	// WorkflowID/WorkflowEvent (sneat-dev/wb#627 M3, red-team round 3 on PR
+	// #629). It backs the "a skipped selected check must not report passed
+	// when its run failed" rule: Bucket buckets a "skipped" job conclusion as
+	// "skipping", indistinguishable on its own from an intentionally-skipped
+	// job, but a "skipping" bucket whose WorkflowRunConclusion indicates the
+	// run itself failed or was cancelled is treated as failed instead — the
+	// same verdict an unfiltered wait reaches by observing the upstream
+	// job's own failing check-run directly. Empty wherever WorkflowID is
+	// zero.
+	WorkflowRunConclusion string `json:"workflow_run_conclusion,omitempty" yaml:"workflow_run_conclusion,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
@@ -307,10 +319,11 @@ type PullRequestWaitResult struct {
 	// Filter is present only when the wait was scoped by --workflow/--check
 	// (sneat-dev/wb#627); an unfiltered receipt carries no filter field at
 	// all (the field is additive and does not otherwise change unfiltered
-	// pass/fail/pending decisions — see RemoteCheck.WorkflowName/WorkflowID
-	// for the one additive field present on every receipt, filtered or not).
-	// Checks and RequiredChecks above already carry the selected subset;
-	// this states that a filter was in force and how many it matched.
+	// pass/fail/pending decisions — see RemoteCheck.WorkflowName/WorkflowID/
+	// WorkflowEvent for the additive fields present on every receipt,
+	// filtered or not, sneat-dev/wb#627 minor 3, red-team round 3 on PR
+	// #629). Checks and RequiredChecks above already carry the selected
+	// subset; this states that a filter was in force and how many it matched.
 	Filter *CheckWaitFilter `json:"filter,omitempty" yaml:"filter,omitempty"`
 	Reason string           `json:"reason,omitempty" yaml:"reason,omitempty"`
 	// Evidence carries auxiliary receipt facts that are not part of the wait

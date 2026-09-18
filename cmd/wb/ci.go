@@ -76,9 +76,25 @@ run — the case #627 exists for. --workflow always waits for the whole run,
 since that is its meaning regardless of --check. With several --check
 patterns, a pass requires every exact (non-glob) pattern to have matched at
 least one observed check, not merely one of them — a mistyped or
-not-yet-registered exact name is reported pending, naming the pattern, rather
-than letting an unrelated matched pattern wave the wait through. A filter
-that selects nothing at all is never a vacuous pass either: it keeps
+not-yet-registered exact name is reported pending, naming the pattern (plus
+any nearby observed name it almost matches, such as a matrix job "build
+(ubuntu)" or a reusable-workflow-qualified "caller / build"), rather than
+letting an unrelated matched pattern wave the wait through. The same "every
+name must match" rule applies to several --workflow names: one finishing
+never passes the wait while another named workflow — for example one that
+only starts via workflow_run after the first finishes — has produced no
+observed check at all yet. While --check is active, a still-registering
+Actions run with no job of its own yet is also kept open regardless of
+whether anything has already matched elsewhere: an exact or glob --check
+selection can be held pending by any other still-registering run on the
+head, under the same or a different workflow, not only one related to what
+has already matched — WB cannot know in advance which run a job will
+register under. A skipped job a selected --check names is not automatically
+a pass either: when its owning Actions run itself concluded failure or was
+cancelled (the common shape of a job skipped because a job it "needs:"
+failed), the wait reports it failed, the same verdict an unfiltered wait
+reaches by observing the upstream job's own failing check-run directly. A
+filter that selects nothing at all is never a vacuous pass either: it keeps
 observing, at the normal cadence, until a matching check registers or the
 slice ends — reported pending with "no check matching the filter has registered yet",
 never a claim that the filter can never match. Never pass these flags to a

@@ -937,6 +937,9 @@
                 "--workflow (repeatable, exact GitHub Actions workflow name; workflows sharing a name are all selected) and --check (repeatable, exact name, or a glob where * matches any run of characters including / and everything else is literal -- not path.Match, no ?/[...]/escapes/regex) narrow the wait to a subset of the head's checks; required-check completeness is then evaluated only over the required checks the filter selects, and the JSON result and resume arguments carry the filter (sneat-dev/wb#627)",
                 "An exact --check waits only for that one job -- a still-running sibling job in the same suite, or the whole Actions run stuck on an environment approval, never holds up the wait once the selected job itself is terminal; with several exact patterns every one must match before the wait can pass (sneat-dev/wb#627 B1-R)",
                 "A --check glob or --workflow instead keeps its owning Actions run open while non-terminal, since either could still match a job -- for example one gated by needs: -- that has not registered yet; --workflow always means the whole run",
+                "With several --workflow names, every one must have produced an observed check before the wait can pass, the same completeness rule exact --check patterns already had (sneat-dev/wb#627 M1)",
+                "While --check is active, a still-registering Actions run with no job of its own yet is kept open regardless of ownership -- a glob that already matched in one run, or an exact name that already matched under one event, can still be held pending by a different still-registering run on the head, documented rather than silent (sneat-dev/wb#627 M2)",
+                "A selected --check on a job GitHub reports skipped is not automatically a pass: when the owning Actions run itself concluded failure or was cancelled (skipped because an earlier needs: job failed), the wait reports failed, matching what an unfiltered wait sees from the earlier job's own failing check-run (sneat-dev/wb#627 M3)",
                 "A filter that selects nothing keeps polling at the normal cadence until a match registers or the slice ends, pending with \"no check matching the filter has registered yet\" -- never a vacuous pass and never a claim the filter can never match"
               ]
             }
@@ -970,6 +973,9 @@
                 "environment approval",
                 "owning Actions run",
                 "every exact",
+                "another named workflow",
+                "still-registering run",
+                "not automatically",
                 "no check matching the filter has registered yet",
                 "Never pass these flags"
               ]
@@ -1057,6 +1063,36 @@
             {
               "path": "cmd/wb/ci_wait_filter_test.go",
               "name": "TestCIWaitCheckExactNameWithBracketIsLiteral",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitAllWorkflowNamesMustMatchBeforePass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass",
               "kind": "integration"
             },
             {

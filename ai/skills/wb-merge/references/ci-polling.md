@@ -54,14 +54,38 @@ matched. What "wait for" means differs by how the check is named:
   environment approval — never holds up the wait once the selected job
   itself is terminal. With several exact patterns, every one of them must
   match a registered check before the wait can pass; an unmatched pattern is
-  reported pending, naming it, rather than letting a different matched
-  pattern wave the wait through.
+  reported pending, naming it (plus any nearby observed name it almost
+  matches, such as a matrix job `build (ubuntu)` or a
+  reusable-workflow-qualified `caller / build`), rather than letting a
+  different matched pattern wave the wait through.
 - A **`--check` glob** keeps its owning Actions run open until the run
   itself finishes, because a glob can still match a job that run has not
   registered yet — a later job gated by `needs:` on an earlier job in the
   same run, for example.
 - **`--workflow`** always waits for the whole run, regardless of `--check`:
-  that is its meaning.
+  that is its meaning. With several `--workflow` names, every one of them
+  must have produced an observed check before the wait can pass — the same
+  "every name must match" rule exact `--check` patterns already have. This
+  matters for a workflow that only starts via `workflow_run` after another
+  one finishes: without the rule, the first workflow finishing would pass
+  the wait before GitHub has even created the second workflow's run.
+
+**While `--check` is active**, a still-registering Actions run that has no
+job of its own yet is also kept open, regardless of whether it "owns" a
+match: an exact or glob `--check` can be held pending by any other
+still-registering run on the head — under the same workflow on a different
+trigger event, or a different workflow altogether — not only one related to
+what has already matched. WB cannot know in advance which run a job will
+register under, so this is deliberately coarse; it is documented here rather
+than left as a surprise.
+
+**A skipped job is not automatically a pass either.** When a selected
+`--check` names a job GitHub reports `skipped`, and the owning Actions run
+itself concluded `failure` or was cancelled — the common shape of a job
+skipped because a job it `needs:` failed — the wait reports it failed, not
+passed. This matches what an unfiltered wait already sees, since it also
+observes the upstream job's own failing check-run directly; a filtered wait
+that dropped that check-run must reach the same verdict some other way.
 
 A filter that selects nothing is never a vacuous pass. It keeps observing, at
 the normal poll cadence, until a matching check registers or the slice ends,

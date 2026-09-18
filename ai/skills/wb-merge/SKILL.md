@@ -105,13 +105,16 @@ wb ci wait --repo acme/app --target main --head 01234567890123456789012345678901
 ```
 
 An exact `--check` waits only for that one job (every exact pattern given
-must match before the wait can pass); a `--check` glob and `--workflow` each
-wait for their owning Actions run to finish, since either could still match a
-job — for example one gated by `needs:` — that has not registered yet. Never
-hand-roll a `gh run list` / `gh api` polling loop to watch one workflow or
-job. See `references/ci-polling.md` for the full filter contract and why a
-filter matching nothing is never a vacuous pass; never pass `--workflow`/
-`--check` to `wb pr land` or a worktree merge.
+must match before the wait can pass, and so must every `--workflow` name);
+a `--check` glob and `--workflow` each wait for their owning Actions run to
+finish, since either could still match a job — for example one gated by
+`needs:` — that has not registered yet. While `--check` is active, any other
+still-registering run on the head with no job yet is also held open, and a
+selected job GitHub reports `skipped` is not a pass when its own run
+concluded failure. Never hand-roll a `gh run list` / `gh api` polling loop to
+watch one workflow or job. See `references/ci-polling.md` for the full filter
+contract and why a filter matching nothing is never a vacuous pass; never
+pass `--workflow`/`--check` to `wb pr land` or a worktree merge.
 
 ## Fast path
 
