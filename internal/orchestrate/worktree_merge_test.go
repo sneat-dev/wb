@@ -3634,7 +3634,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		return fixture, source, receipt
 	}
 	t.Run("source removal", func(t *testing.T) {
-		t.Parallel()
 		fixture, source, receipt := newPrepared(t)
 		_, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
 		if err == nil || !strings.Contains(err.Error(), "must add") {
@@ -3642,7 +3641,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		}
 	})
 	t.Run("target drift", func(t *testing.T) {
-		t.Parallel()
 		fixture, source, receipt := newPrepared(t)
 		second := createMergeSource(t, fixture, "rebatch-drift-extra", "feature/rebatch-drift-extra", "extra.txt", "extra\n")
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target.txt"), "target\n")
@@ -3655,7 +3653,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		}
 	})
 	t.Run("non descendant replacement ref", func(t *testing.T) {
-		t.Parallel()
 		fixture, _, receipt := newPrepared(t)
 		extra := createMergeSource(t, fixture, "rebatch-non-descendant-extra", "feature/rebatch-non-descendant-extra", "extra.txt", "extra\n")
 		extraSources, _, _, err := inspectWorktreeMergeSources(context.Background(), fixture.githubDir, []string{extra.WorktreeDir}, "main")
@@ -3670,7 +3667,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		}
 	})
 	t.Run("duplicate source ref", func(t *testing.T) {
-		t.Parallel()
 		fixture, _, receipt := newPrepared(t)
 		extra := createMergeSource(t, fixture, "rebatch-duplicate-extra", "feature/rebatch-duplicate-extra", "extra.txt", "extra\n")
 		extraSources, _, _, err := inspectWorktreeMergeSources(context.Background(), fixture.githubDir, []string{extra.WorktreeDir}, "main")
@@ -3684,7 +3680,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		}
 	})
 	t.Run("dirty candidate", func(t *testing.T) {
-		t.Parallel()
 		fixture, source, receipt := newPrepared(t)
 		second := createMergeSource(t, fixture, "rebatch-dirty-extra", "feature/rebatch-dirty-extra", "extra.txt", "extra\n")
 		writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "dirty.txt"), "dirty\n")
@@ -3694,7 +3689,6 @@ func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvide
 		}
 	})
 	t.Run("dirty source", func(t *testing.T) {
-		t.Parallel()
 		fixture, source, receipt := newPrepared(t)
 		second := createMergeSource(t, fixture, "rebatch-dirty-source-extra", "feature/rebatch-dirty-source-extra", "extra.txt", "extra\n")
 		writeEngineFile(t, filepath.Join(second.WorktreeDir, "dirty.txt"), "dirty\n")

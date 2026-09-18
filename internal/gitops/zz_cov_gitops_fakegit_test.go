@@ -221,7 +221,6 @@ exit 0
 	}
 
 	t.Run("rev-list fails", func(t *testing.T) {
-		t.Parallel()
 		lgCovTrackingGit(t, "exit 1")
 		got, err := Tracking(t.TempDir())
 		if err != nil {
@@ -244,7 +243,6 @@ exit 0
 		{name: "non-numeric behind", body: `echo "1 y"; exit 0`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			lgCovTrackingGit(t, tc.body)
 			if _, err := Tracking(t.TempDir()); err == nil {
 				t.Fatalf("Tracking with rev-list output %q should error", tc.body)

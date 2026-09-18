@@ -2148,7 +2148,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	}
 
 	t.Run("original immutable claim bytes", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, _, claim := newCorrected(t)
 		claimBytes, err := os.ReadFile(claim.ClaimPath)
 		if err != nil {
@@ -2163,7 +2162,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("advanced target remains superseded without mutating historical replacement", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, _, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
 		runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
@@ -2175,7 +2173,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("non-descendant target remains a refusal", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", correction.CurrentTargetSHA+"^{tree}"))
 		unrelatedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-m", "test: unrelated rewritten target"))
@@ -2186,7 +2183,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("recorded replacement descendant", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(correction.CorrectedReplacement.Worktree, "replacement-drift.txt"), "replacement drift\n")
 		runEngineGit(t, correction.CorrectedReplacement.Worktree, "add", "replacement-drift.txt")
@@ -2197,7 +2193,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("target and replacement descendants retain every root", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-descendant.go"), "package app\n\nfunc TargetDescendant() {}\n")
 		runEngineGit(t, fixture.canonical, "add", "target-descendant.go")
@@ -2211,7 +2206,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("sibling replacement remains an exact identity refusal", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		sibling := createMergeSource(t, fixture, "self-supersession-sibling", "feature/self-supersession-sibling", "sibling.go", "package app\n\nfunc Sibling() {}\n")
 		// Make the sibling ancestry-complete first. The correction writer must
@@ -2241,7 +2235,6 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("historical source remains effective after its live worktree advances", func(t *testing.T) {
-		t.Parallel()
 		fixture, receipt, _, _ := newCorrected(t)
 		source := receipt.Sources[0]
 		writeEngineFile(t, filepath.Join(source.Worktree, "source-drift.txt"), "source drift\n")

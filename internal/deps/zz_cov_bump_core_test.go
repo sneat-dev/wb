@@ -1069,7 +1069,6 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhileRecordingWaveState(t *
 	}
 
 	t.Run("merged wave", func(t *testing.T) {
-		t.Parallel()
 		sentinel := errors.New("persist wave state failed")
 		err := campaign(t, sentinel, func(report BumpReport) bool {
 			waves := report.Waves
@@ -1081,7 +1080,6 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhileRecordingWaveState(t *
 	})
 
 	t.Run("completed wave", func(t *testing.T) {
-		t.Parallel()
 		sentinel := errors.New("persist wave state failed")
 		err := campaign(t, sentinel, func(report BumpReport) bool {
 			waves := report.Waves

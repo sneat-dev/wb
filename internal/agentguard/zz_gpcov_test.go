@@ -372,7 +372,6 @@ func TestGpCovWBStateRepositoryResolution(t *testing.T) {
 	})
 
 	t.Run("config that is not valid YAML resolves to unknown", func(t *testing.T) {
-		t.Parallel()
 		writeConfig(t, "{not: [valid\n")
 		if _, _, ok := wbStateRepository(); ok {
 			t.Fatal("wbStateRepository accepted an unparsable config")
@@ -380,7 +379,6 @@ func TestGpCovWBStateRepositoryResolution(t *testing.T) {
 	})
 
 	t.Run("a non-git provider has no local mirror", func(t *testing.T) {
-		t.Parallel()
 		writeConfig(t, "remote:\n  provider: hub\n  url: https://example.test\n")
 		if _, _, ok := wbStateRepository(); ok {
 			t.Fatal("wbStateRepository accepted a hub provider")
@@ -388,7 +386,6 @@ func TestGpCovWBStateRepositoryResolution(t *testing.T) {
 	})
 
 	t.Run("a repo without an owner/name slash is rejected", func(t *testing.T) {
-		t.Parallel()
 		writeConfig(t, "remote:\n  provider: git\n  repo: justaname\n")
 		if _, _, ok := wbStateRepository(); ok {
 			t.Fatal("wbStateRepository accepted a repo with no owner")
@@ -396,7 +393,6 @@ func TestGpCovWBStateRepositoryResolution(t *testing.T) {
 	})
 
 	t.Run("a valid git remote names the mirror", func(t *testing.T) {
-		t.Parallel()
 		writeConfig(t, "remote:\n  provider: git\n  repo: acme/wb-state\n")
 		owner, name, ok := wbStateRepository()
 		if !ok || owner != "acme" || name != "wb-state" {

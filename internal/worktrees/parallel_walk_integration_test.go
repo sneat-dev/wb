@@ -95,13 +95,11 @@ func TestInventoryOverlapsFetchesAcrossRepositoriesOnlyWhenParallelAllowsIt(t *t
 	}
 
 	t.Run("sequential", func(t *testing.T) {
-		t.Parallel()
 		if got := measure(t, 1); got != 1 {
 			t.Fatalf("workers=1 overlapped %d fetches; it must stay sequential", got)
 		}
 	})
 	t.Run("bounded", func(t *testing.T) {
-		t.Parallel()
 		if got := measure(t, 3); got < 2 {
 			t.Fatalf("workers=3 across three repositories peaked at %d concurrent fetches; fetches serialise behind the target-cache mutex", got)
 		}
