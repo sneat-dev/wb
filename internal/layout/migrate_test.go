@@ -167,7 +167,6 @@ func TestMigrateSkipsUnsafeClones(t *testing.T) {
 		"acme/mismatch": "owner",
 		"acme/occupied": "destination",
 		"acme/rebasing": "rebase",
-		"acme/claimed":  "claim",
 	}
 	for repository, wantSubstring := range expect {
 		clone, found := findMigrateClone(report, repository)
@@ -184,6 +183,17 @@ func TestMigrateSkipsUnsafeClones(t *testing.T) {
 	clone, found := findMigrateClone(report, "acme/clean")
 	if !found || clone.Status != "done" {
 		t.Fatalf("clean clone = %+v, want done", clone)
+	}
+	// A live Work Log claim confined to a linked worktree no longer refuses
+	// the whole clone (projects-root-layout#req:migration-relocates-managed-worktrees):
+	// the clone still migrates and its claimed checkout relocates to the
+	// store alongside it.
+	claimedClone, found := findMigrateClone(report, "acme/claimed")
+	if !found || claimedClone.Status != "done" {
+		t.Fatalf("acme/claimed = %+v, want done", claimedClone)
+	}
+	if len(claimedClone.Relocations) != 1 || claimedClone.Relocations[0].Status != "done" {
+		t.Fatalf("acme/claimed relocations = %+v, want one done relocation", claimedClone.Relocations)
 	}
 }
 

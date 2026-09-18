@@ -764,6 +764,35 @@ func corroborateRepositoryRelocation(ctx context.Context, worktree, repository s
 	return nil
 }
 
+// ReverseRelocation moves a checkout back from destination to source, using
+// the same move-then-repair-then-verify primitive Relocate applies forward.
+// It is the small, deliberate exception to "relocation goes through Relocate,
+// never a copy of it": Relocate always computes its destination from the
+// machine's CURRENT configured placement, so it has no way to target an
+// arbitrary historical path. A caller reversing a completed relocation (such
+// as `wb layout migrate --undo`) already holds its own run-wide lock and
+// keeps its own durable, atomically-written record of what to reverse, so
+// this deliberately does not touch the Work Log relocation journal or take a
+// task lock of its own — unlike Relocate, it is not itself retry-safe across
+// process interruption; the caller's manifest is what makes a retry safe.
+func ReverseRelocation(ctx context.Context, canonicalDir, destination, source string) error {
+	if !filepath.IsAbs(destination) || !filepath.IsAbs(source) {
+		return fmt.Errorf("relocation reversal paths must be absolute")
+	}
+	if _, statErr := os.Lstat(source); statErr == nil {
+		return fmt.Errorf("relocation-reversal destination already exists: %s", source)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect relocation-reversal destination %s: %w", source, statErr)
+	}
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		return fmt.Errorf("prepare relocation-reversal destination parent: %w", err)
+	}
+	if _, err := moveWorktree(ctx, canonicalDir, filepath.Dir(destination), destination, source, worktreeMoveHooks{}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func pendingRelocationIntent(home string, claim workLogClaim, destination, branch, head string) (*workLogRelocationIntent, string, error) {
 	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {

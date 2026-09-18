@@ -65,6 +65,19 @@ reason — the rename preserves them, and neither is an unborn `HEAD` (a
 repository with no commit yet). The command exits with the findings code
 whenever any clone is skipped or fails.
 
+After moving clones (and for every clone already at the host level, moved
+this run or earlier), `migrate` relocates each managed task checkout whose
+placement differs from the store-mode placement — calling the existing `wb
+worktree relocate` implementation itself, not a copy of it. Central store mode
+relocates to `{root}/.worktrees/{task}/{host}/{owner}/{repository}`;
+repository-local store mode leaves in-clone checkouts where they are, so
+nothing is relocated for such a clone. A checkout is left in place, with a
+finding, when a clone refusal condition applies to it, its task lock is held,
+or its destination already exists — the clone itself still migrates. A linked
+worktree with no WB task identity is repointed only (never relocated) and
+reported `unmanaged`. Pass `--clones-only` to skip relocation and get exactly
+the clone-move-and-repoint behaviour `migrate` had before this existed.
+
 `--apply` (migrate or undo) takes a single exclusive lock under `<root>/.wb`
 for the run; a second concurrent `--apply` against the same root fails
 immediately naming the conflict instead of interleaving moves. `--apply`
@@ -77,6 +90,12 @@ a single path segment — `.`, `..`, empty, or anything containing a path
 separator is rejected before touching the filesystem. It also invalidates
 WB's cached repository-path index and reports when a running daemon must be
 restarted to see the moved paths.
+
+`--undo <id>` reverses every relocation the manifest recorded as `done`
+before it reverses the clone move that relocation depended on. If a
+relocation cannot be safely reversed (its own refusal condition now applies,
+or the reversal itself fails), that clone's move is left in place too and the
+finding names why.
 
 ```sh
 wb layout migrate --apply

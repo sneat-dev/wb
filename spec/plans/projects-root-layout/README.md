@@ -229,7 +229,7 @@ external linked worktrees.
 **Id:** task-11
 **Verifies:** projects-root-layout#ac:migrate-relocates-managed-worktrees
 **Depends-On:** task-10
-**Status:** queued
+**Status:** complete
 
 Make `wb layout migrate` the one command for the unified layout: after the clone
 step, relocate each managed task checkout to its store-mode placement by calling
