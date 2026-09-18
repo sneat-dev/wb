@@ -57,8 +57,9 @@ func TestInventoryReportsEachCheckoutsPlacement(t *testing.T) {
 }
 
 // TestListResultPlacementNamesEachRecognizedLayout covers the placements the
-// inventory walk can hand to a row, including the retired $HOME/.wb worktrees
-// root that must stay readable in place.
+// inventory walk can hand to a row, including the two historic home-relative
+// layouts that must stay readable in place and must NOT be reported as the
+// central store.
 func TestListResultPlacementNamesEachRecognizedLayout(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
@@ -67,8 +68,19 @@ func TestListResultPlacementNamesEachRecognizedLayout(t *testing.T) {
 		want     string
 	}{
 		{name: "projects-root store", layout: wbhome.Layout{WorktreesRoot: filepath.Join("/projects", ".worktrees")}, want: "central"},
+		{name: "configured store root", layout: wbhome.Layout{WorktreesRoot: filepath.Join("/mnt", "wb-worktrees")}, want: "central"},
 		{name: "canonical local", layout: wbhome.Layout{WorktreesRoot: filepath.Join("/projects", "github.com", "acme", "app", ".worktrees"), Local: true}, want: "repository-local"},
-		{name: "retired home", layout: wbhome.Layout{WorktreesRoot: filepath.Join("/home", "alex", ".wb", "worktrees"), Legacy: true}, want: "legacy"},
+		{name: "retired user home", layout: wbhome.Layout{Home: filepath.Join("/home", "alex", ".wb"), WorktreesRoot: filepath.Join("/home", "alex", ".wb", "worktrees"), Legacy: true}, want: "legacy"},
+		{
+			// wbhome.Resolve registers <root>/.wb/worktrees — the state
+			// namespace holding retired stages and locks — as its own readable
+			// layout. It is a sibling of the store <root>/.worktrees, so a
+			// checkout found there is not in the central store, and saying it
+			// is would send an operator to a directory it is not in.
+			name:   "historic projects-root home",
+			layout: wbhome.Layout{Home: filepath.Join("/projects", ".wb"), WorktreesRoot: filepath.Join("/projects", ".wb", "worktrees")},
+			want:   "legacy",
+		},
 		{name: "adopted external", layout: wbhome.Layout{WorktreesRoot: filepath.Join("/tmp", "borrowed"), Local: true}, external: true, want: "external"},
 	} {
 		if got := listResultPlacement(testCase.layout, testCase.external); got != testCase.want {

@@ -126,3 +126,38 @@ func TestOpenPrivateChildReadPathPerformsNoMetadataWrite(t *testing.T) {
 		t.Fatalf("read path rewrote the directory mode to %v; reading must not write metadata", info.Mode().Perm())
 	}
 }
+
+// TestCreateRepositoryLocalDeclaresTheCheckoutRoot covers the other half of the
+// declared set in repository-local mode: the checkout lands at
+// <canonical>/.worktrees/<task>, and creating it is a mkdirat on the canonical
+// clone, so the clone itself has to be writable. Declaring only
+// <canonical>/.git would discover that denial after the task hierarchy and the
+// reserved Work Log already exist — the same defect class as a late preflight.
+func TestCreateRepositoryLocalDeclaresTheCheckoutRoot(t *testing.T) {
+	fixture := newStoreModeFixture(t, "app")
+	fixture.selectStoreMode(t, StoreModeRepositoryLocal)
+	state := filepath.Join(fixture.projectsRoot, ".wb")
+	checkoutRoot := filepath.Join(fixture.canonicals["app"], ".worktrees")
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "local-denied",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+		writableProbe: func(path string) error {
+			if path == checkoutRoot {
+				return &os.PathError{Op: "mkdir", Path: path, Err: syscall.EPERM}
+			}
+			return nil
+		},
+	})
+	var denial *pathguard.Error
+	if !errors.As(err, &denial) {
+		t.Fatalf("create = %v, want the repository-local checkout root to be declared", err)
+	}
+	if !strings.Contains(denial.Error(), checkoutRoot) {
+		t.Fatalf("diagnostic %q does not name the repository-local checkout root %q", denial.Error(), checkoutRoot)
+	}
+	if _, statErr := os.Lstat(state); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("state exists after the refusal (stat err = %v); the preflight must run before the first mutation", statErr)
+	}
+}

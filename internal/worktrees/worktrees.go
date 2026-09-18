@@ -493,10 +493,15 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	// creates the task hierarchy and reserves the Work Log: a refusal that
 	// leaves durable state behind is not a preflight.
 	//
-	// The store requirement is declared only when the selected mode has a store
-	// root: repository-local mode keeps checkouts inside their canonical clone,
-	// so the clone's own Git registration is what has to be writable. The
-	// canonical clone paths are read-only derivations, so resolving them here
+	// The central store requirement is declared only when the selected mode has
+	// a central store root. Repository-local mode keeps each checkout inside its
+	// own canonical clone, so its store root is per repository
+	// (<canonical>/.worktrees) and is declared alongside that clone's Git
+	// registration. Both directories are created by mkdirat on the clone, which
+	// needs the clone itself writable; declaring only .git would report the
+	// denial later, as a bare errno, with the task hierarchy already on disk.
+	//
+	// The canonical paths are read-only derivations, so resolving them here
 	// costs nothing the loop below would not have done anyway.
 	requirements := pathguard.Requirements(home, storePolicy.CentralRoot)
 	canonicalPaths := make([]string, 0, len(repositories))
@@ -506,6 +511,12 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, pathErr
 		}
 		canonicalPaths = append(canonicalPaths, canonical)
+		if storePolicy.RepositoryLocal {
+			requirements = append(requirements, pathguard.Requirement{
+				Path: filepath.Join(canonical, ".worktrees"),
+				Role: pathguard.RoleStore,
+			})
+		}
 		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))
 	}
 	if err := pathguard.Check(resolution.Root, requirements, normalized.writableProbe); err != nil {

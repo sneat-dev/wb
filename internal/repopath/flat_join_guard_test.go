@@ -167,9 +167,12 @@ func flatCanonicalJoinReason(line string) string {
 		return "joins a projects root onto a bare owner level instead of the resolved clone"
 	}
 	if len(arguments) >= 3 {
-		// A join that names the host level explicitly is the resolver's own
-		// host-aware derivation, not a flat one. The defect this guard exists
-		// for is the join that stops at owner/repository.
+		// A join that names the host level explicitly is a host-aware
+		// derivation, not the flat one this guard exists for. Note the limit:
+		// the host field being *empty* still degrades such a join to
+		// <root>/<owner>/<repo>, which is the correct path for a clone that
+		// predates the host level, so the guard cannot tell the two apart from
+		// the source line alone. It is a shape a reviewer still has to check.
 		for _, argument := range arguments[1:] {
 			if hostArgument.MatchString(argument) {
 				return ""

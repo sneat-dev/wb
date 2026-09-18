@@ -61,8 +61,9 @@ the projects-root resolver derives — `<root>/.wb`, where `<root>` is
 [`projects-root-layout#req:single-root-derivation`](../projects-root-layout/README.md).
 `WB_HOME` MUST NOT select the state directory; when it is set to a non-empty
 value WB MUST report the ignored variable, its value, and the state directory in
-use, then continue. A populated `<projects-root>/.wb` MUST NOT silently become
-the write home. The write home MUST NOT choose the physical checkout location:
+use, then continue. The retired `$HOME/.wb` state directory MUST NOT become the
+write home, and a populated directory at that path MUST NOT be implicitly
+adopted as one. The write home MUST NOT choose the physical checkout location:
 placement is governed by `local-default-and-user-shared-root` below.
 
 #### REQ: local-default-and-user-shared-root
@@ -98,7 +99,8 @@ checkout's recorded claim is.
 Inventory MUST recognize repository-local
 `<canonical-repository>/.worktrees/<task>` entries, central-store
 `<task>/<host>/<org>/<repository>` entries, the historic
-`~/.wb/worktrees/<task>/...` entries, and adopted external checkouts. The host
+`~/.wb/worktrees/<task>/...` and `<projects-root>/.wb/worktrees/<task>/...`
+entries, and adopted external checkouts. The host
 level is the canonical clone's literal forge hostname, or its legacy
 `<task>/<org>/<repository>` suffix when its origin names no forge. Each result
 MUST report its placement alongside its task identity, so an operator can see

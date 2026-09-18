@@ -3486,10 +3486,16 @@ func (policy inspectPolicy) clock() time.Time {
 // listResultPlacement names the layout a checkout was discovered in. External
 // wins over everything else: an adopted checkout is registered under WB's task
 // directory but its real, unmoved path may sit anywhere. Repository-local is
-// the canonical clone's own .worktrees root, legacy is the retired $HOME/.wb
-// worktrees root, and everything else — the projects-root store, an overridden
-// central store root, and the logical task namespace inside the state
-// directory — is the central layout.
+// the canonical clone's own .worktrees root. Legacy is any layout that keeps
+// checkouts inside its own home — the retired $HOME/.wb worktrees root and the
+// historic <projects-root>/.wb/worktrees root, which WB still reads in place.
+// Everything else is the central store: the projects-root <root>/.worktrees and
+// an overriding worktrees.root, which select the same layout.
+//
+// The home-relative case is easy to get wrong, and it matters: the state
+// namespace <root>/.wb/worktrees is a sibling of the store <root>/.worktrees,
+// not the store itself, so labelling it "central" would send an operator to a
+// directory their checkout is not in.
 func listResultPlacement(layout wbhome.Layout, external bool) string {
 	switch {
 	case external:
@@ -3497,6 +3503,8 @@ func listResultPlacement(layout wbhome.Layout, external bool) string {
 	case layout.Local:
 		return "repository-local"
 	case layout.Legacy:
+		return "legacy"
+	case layout.Home != "" && filepath.Clean(layout.WorktreesRoot) == filepath.Join(filepath.Clean(layout.Home), "worktrees"):
 		return "legacy"
 	default:
 		return "central"
