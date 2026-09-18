@@ -323,8 +323,8 @@ exit 30
 		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
 	}
 	want := []RemoteCheck{
-		{Name: "check-run:strongo_workflow / Lint", Bucket: "pass", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281489", AppID: 15368, CheckRunID: 103590281489},
-		{Name: "check-run:strongo_workflow / Build & test", Bucket: "pass", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281623", AppID: 15368, CheckRunID: 103590281623},
+		{Name: "check-run:strongo_workflow / Lint", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281489", AppID: 15368, CheckRunID: 103590281489},
+		{Name: "check-run:strongo_workflow / Build & test", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281623", AppID: 15368, CheckRunID: 103590281623},
 	}
 	if !reflect.DeepEqual(checks, want) {
 		t.Fatalf("commit check runs = %#v, want %#v", checks, want)
@@ -372,8 +372,8 @@ exit 30
 		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
 	}
 	want := []RemoteCheck{
-		{Name: "check-run:CI", Bucket: "fail", AppID: 15368, CheckRunID: 202},
-		{Name: "check-run:CI", Bucket: "pass", AppID: 15368, CheckRunID: 203},
+		{Name: "check-run:CI", Bucket: "fail", Conclusion: "failure", AppID: 15368, CheckRunID: 202},
+		{Name: "check-run:CI", Bucket: "pass", Conclusion: "success", AppID: 15368, CheckRunID: 203},
 		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
 	}
 	if !reflect.DeepEqual(checks, want) {
@@ -439,7 +439,7 @@ exit 30
 		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
 	})
 	want := []RemoteCheck{
-		{Name: "check-run:Third party", Bucket: "pass", AppID: 7, CheckRunID: 51},
+		{Name: "check-run:Third party", Bucket: "pass", Conclusion: "success", AppID: 7, CheckRunID: 51},
 		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
 	}
 	if reason != "" || !pending || !reflect.DeepEqual(checks, want) {
