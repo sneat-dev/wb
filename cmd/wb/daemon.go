@@ -105,6 +105,18 @@ type daemonHubStatus struct {
 	RepositoriesPolled    int                   `json:"repositories_polled"`
 	LastEventReceived     *daemonHubEventMarker `json:"last_event_received,omitempty"`
 	LastEventAcknowledged *daemonHubEventMarker `json:"last_event_acknowledged,omitempty"`
+	// WebhookRedelivery is the missed-webhook recovery sweep's last completed
+	// pass. Like RepositoriesPolled, it comes from the running daemon's
+	// health endpoint, because only the serving process has it.
+	WebhookRedelivery *daemonHubRedeliverySweep `json:"webhook_redelivery,omitempty"`
+}
+
+// daemonHubRedeliverySweep reports the missed-webhook recovery sweep's last
+// completed pass in `wb daemon status`.
+type daemonHubRedeliverySweep struct {
+	LastSweepAt time.Time `json:"last_sweep_at,omitempty"`
+	Redelivered int       `json:"redelivered"`
+	Abandoned   int       `json:"abandoned"`
 }
 
 // daemonHubEventMarker names the last repository event the hub received or
@@ -1192,6 +1204,13 @@ func (controller daemonController) hubStatus(ctx context.Context, listen string)
 	status.RepositoriesPolled = live.RepositoriesPolled
 	status.LastEventReceived = live.LastEventReceived
 	status.LastEventAcknowledged = live.LastEventAcknowledged
+	if live.WebhookRedelivery != nil {
+		status.WebhookRedelivery = &daemonHubRedeliverySweep{
+			LastSweepAt: live.WebhookRedelivery.LastSweepAt,
+			Redelivered: live.WebhookRedelivery.Redelivered,
+			Abandoned:   live.WebhookRedelivery.Abandoned,
+		}
+	}
 	return status
 }
 
@@ -1692,6 +1711,9 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// The poller is bound to the server's context, so a shutdown stops it
 	// without a second lifecycle to get wrong.
 	mount.startPolling(ctx)
+	// The sweep is bound to the same shutdown context, so it stops when the
+	// poller does with no second lifecycle to get wrong.
+	mount.startRedeliverySweep(ctx)
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "WB dashboard: http://%s\n", listener.Addr()); err != nil {
 		_ = listener.Close()
 		return err

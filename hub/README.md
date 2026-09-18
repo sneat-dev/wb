@@ -98,8 +98,20 @@ Set the App's webhook URL to `<public_url>/v0/workbench/github/webhook`.
 In webhook mode the poller is not started at all, even with a token file:
 the App reports every default-branch push and rename, and the daemon pulls
 only the repository an event names. `token_file` is optional in this mode.
-If the tunnel is down, GitHub keeps the deliveries and retries them, and the
-App's Advanced tab lets you redeliver any of them.
+
+GitHub does **not** keep or automatically retry a delivery that failed —
+if the tunnel is down or the daemon is unreachable, every push in that
+window is lost unless something asks GitHub for it afterwards. The daemon
+does that itself: on start, and then hourly, it lists the App's webhook
+deliveries of the last 72 hours through the App API, redelivers every one
+whose latest attempt failed, and retries a delivery whose redelivery also
+fails up to three times before narrating it abandoned and never touching it
+again. Redelivered events arrive at the normal webhook route and
+deduplicate by delivery ID exactly like any other delivery, so nothing else
+needs to know a redelivery happened. Each redelivery and each abandonment is
+narrated as `redeliver`; a sweep that could not reach GitHub is narrated as
+one failed line and retried, with backoff, on the next tick — it never
+crashes the daemon.
 
 The connect, setup and OAuth-callback routes under
 `/v0/workbench/github/installations/` answer `503

@@ -70,6 +70,17 @@ type HubHealth struct {
 	RepositoriesPolled    int                `json:"repositories_polled"`
 	LastEventReceived     *HubDeliveryMarker `json:"last_event_received,omitempty"`
 	LastEventAcknowledged *HubDeliveryMarker `json:"last_event_acknowledged,omitempty"`
+	// WebhookRedelivery is the missed-webhook recovery sweep's last completed
+	// pass, or nil without a configured GitHub App.
+	WebhookRedelivery *HubRedeliverySweep `json:"webhook_redelivery,omitempty"`
+}
+
+// HubRedeliverySweep is the missed-webhook recovery sweep's last completed
+// pass, as /api/v1/health reports it.
+type HubRedeliverySweep struct {
+	LastSweepAt time.Time `json:"last_sweep_at,omitempty"`
+	Redelivered int       `json:"redelivered"`
+	Abandoned   int       `json:"abandoned"`
 }
 
 // HubDeliveryMarker names one repository event and when the hub handled it.
