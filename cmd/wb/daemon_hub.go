@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/hubstore"
+	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -50,9 +52,22 @@ type hubMount struct {
 	Interval time.Duration
 	// Webhook is nil unless hub.github.app is configured.
 	Webhook *webhookMode
-	closer  io.Closer
-	status  *hub.StatusService
-	viewer  hub.Viewer
+	// PeerAdmin is nil unless a hub is mounted. It is never reachable from an
+	// HTTP route; the daemon's owner-token RPC (cmd/wb/daemon_peers.go) is
+	// its only caller.
+	PeerAdmin *hub.PeerAdminService
+	// Enrollment is the same self-hosted machine enrollment service
+	// ensureLocalEnrollment already uses in-process. The owner RPC's
+	// "enroll" route reuses it rather than duplicating credential minting.
+	Enrollment *hub.MachineEnrollmentService
+	// PeersSource backs the local daemon API's peers read route
+	// (/api/v1/peers) with the same data the hub mount's own
+	// /v0/workbench/peers route reads, so the two mounts answer identically.
+	// Nil unless a hub is mounted.
+	PeersSource peers.Source
+	closer      io.Closer
+	status      *hub.StatusService
+	viewer      hub.Viewer
 }
 
 // hubTuning overrides the two values a whole-journey end-to-end test cannot
@@ -222,11 +237,25 @@ func (reader hubSnapshotReader) ListLatest(ctx context.Context) ([]machinesnapsh
 // would advertise something that cannot answer.
 var workbenchReadPaths = []string{"/dashboard", "/stats/", "/series", "/leaderboards", "/latest-merges", "/worktrees"}
 
-// composeWorkbenchAPI routes the dashboard reads to the bench read API and
-// everything else to the hub, on the one loopback listener both share.
-func composeWorkbenchAPI(readAPI, hubAPI http.Handler) http.Handler {
+// composeWorkbenchAPI routes the dashboard reads to the bench read API, the
+// peers read model to peersAPI, and everything else to the hub, on the one
+// loopback listener all three share.
+//
+// "/peers/connect" is deliberately excluded from the peers-prefix match: it
+// is the WebSocket session route (peer-connectivity#req:outbound-websocket-
+// session and, until Task 2, its verification probe), which hub.NewHandler
+// itself registers and must keep answering.
+func composeWorkbenchAPI(readAPI, hubAPI, peersAPI http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		path := strings.TrimPrefix(request.URL.Path, githubapp.APIPrefix)
+		if path == "/peers/connect" {
+			hubAPI.ServeHTTP(writer, request)
+			return
+		}
+		if path == "/peers" || strings.HasPrefix(path, "/peers/") {
+			peersAPI.ServeHTTP(writer, request)
+			return
+		}
 		for _, prefix := range workbenchReadPaths {
 			if path == prefix || strings.HasPrefix(path, prefix) {
 				readAPI.ServeHTTP(writer, request)
@@ -268,6 +297,8 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		return nil, err
 	}
 	credentials, resolver, snapshots := hub.NewMachineStores(store)
+	machineIndex := hub.NewMachineIndex(store)
+	peerTrust, peerStats := hub.NewPeerStores(store)
 	states, bindings, _, lifecycle := hub.NewInstallationStores(store)
 	events, eventStatus := hub.NewRepositoryEventStore(store)
 	redeliveries := hub.NewWebhookRedeliveryStore(store)
@@ -280,10 +311,19 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	enrollment := &hub.MachineEnrollmentService{Store: credentials, Pepper: pepper}
 	snapshotService := &hub.MachineSnapshotService{Store: snapshots}
 	status := &hub.StatusService{Bindings: bindings, Snapshots: snapshots, Events: eventStatus, AppName: localIdentityID}
+	// peerAdmin is never wired into an HTTP route: cmd/wb mounts it only on
+	// the daemon's owner-token unix-socket RPC
+	// (peer-connectivity#req:admin-requires-owner-credential).
+	peerAdmin := &hub.PeerAdminService{
+		Credentials: credentials, Index: machineIndex, Trust: peerTrust, Stats: peerStats,
+		Pepper: pepper, HubMachineName: machine, MemoryEngine: cfg.Store.Engine == hubconfig.EngineMemory,
+	}
+	peersSource := hubPeerReadSource{trust: peerTrust}
+	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource)
 
 	handler := hub.NewHandler(hub.HandlerOptions{
 		ViewerResolver: fixedViewerResolver{viewer: viewer},
-		MachineBearer:  hub.NewMachineBearerResolver(resolver, pepper),
+		MachineBearer:  hub.NewPeerAwareBearerResolver(hub.NewMachineBearerResolver(resolver, pepper), peerTrust),
 		Enrollment:     enrollment,
 		Snapshots:      snapshotService,
 		RepositoryEvents: &hub.RepositoryEventService{
@@ -298,6 +338,13 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		// same store the events are written to.
 		AllowedOrigin: "http://" + listenAddress,
 		Narrate:       writer.Write,
+		// A self-hosted hub's loopback listener is reachable through a tunnel
+		// or proxy, which is not proof of the local operator
+		// (peer-connectivity#req:admin-requires-owner-credential). Self-hosted
+		// enrollment moves to peerAdmin's owner-token RPC path instead; the
+		// hosted instance (which never sets this) keeps serving the HTTP
+		// route behind its own OAuth viewer.
+		DisableSelfHostedEnrollment: true,
 	})
 
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
@@ -333,11 +380,94 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Webhook:      webhook,
 		status:       status,
 		viewer:       viewer,
+		PeerAdmin:    peerAdmin,
+		Enrollment:   enrollment,
+		PeersSource:  peersSource,
 		Mounts: map[string]http.Handler{
-			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler),
+			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler, peersAPI),
 			web.MountPath:       web.Handler(),
+			// The local daemon API's peers route (peer-connectivity#req:
+			// peers-api's "on every node") reads the same source as the hub
+			// mount above, so the two answer identically.
+			"/api/v1/peers/": peers.NewHandler("/api/v1/peers", peersSource),
 		},
 	}, nil
+}
+
+// hubPeerReadSource adapts hub.PeerTrustStore to internal/peers.Source. It is
+// the hub-side (downstream role) half of "the same handler serves identical
+// JSON everywhere it is mounted"; task 2 adds the laptop-side (upstream
+// role) counterpart.
+type hubPeerReadSource struct{ trust hub.PeerTrustStore }
+
+func (source hubPeerReadSource) ListPeers(ctx context.Context) ([]peers.Record, error) {
+	if source.trust == nil {
+		return nil, nil
+	}
+	records, err := source.trust.ListPeers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]peers.Record, 0, len(records))
+	for _, record := range records {
+		list = append(list, peerRecordToRead(record))
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
+
+func (source hubPeerReadSource) GetPeer(ctx context.Context, idOrName string) (peers.Detail, bool, error) {
+	if source.trust == nil {
+		return peers.Detail{}, false, nil
+	}
+	record, found, err := source.trust.GetPeer(ctx, idOrName)
+	if err != nil {
+		return peers.Detail{}, false, err
+	}
+	if !found {
+		record, found, err = source.trust.FindPeerByName(ctx, idOrName)
+		if err != nil {
+			return peers.Detail{}, false, err
+		}
+	}
+	if !found {
+		return peers.Detail{}, false, nil
+	}
+	return peers.Detail{
+		Record: peerRecordToRead(record),
+		// Session is nil and Counters is zero until Task 2 and Task 6.
+		// AdminAvailable is false until Task 7's dashboard admin session.
+	}, true, nil
+}
+
+// peerRecordToRead converts the hub's persisted trust record to the read
+// API's shape: status is derived per the REQ (blocked if trust is blocked,
+// offline otherwise until Task 2 adds "connected"), and the node ID is
+// truncated to 8 characters for display.
+func peerRecordToRead(record hub.PeerRecord) peers.Record {
+	status := "offline"
+	if record.Trust == hub.PeerTrustBlocked {
+		status = "blocked"
+	}
+	return peers.Record{
+		SchemaVersion: peers.SchemaVersion,
+		ID:            record.MachineID,
+		Name:          record.Name,
+		Role:          "downstream",
+		Status:        status,
+		NodeID:        truncateNodeID(record.NodeID),
+		CreatedAt:     record.CreatedAt,
+		ResetPending:  record.ResetPending,
+	}
+}
+
+// truncateNodeID shows a node ID at 8 characters, per peers-api: node IDs are
+// not secret, and 8 characters is enough for an operator to eyeball a match.
+func truncateNodeID(nodeID string) string {
+	if len(nodeID) <= 8 {
+		return nodeID
+	}
+	return nodeID[:8]
 }
 
 // newHubPoller builds the polling ingester, or returns nil when no token file

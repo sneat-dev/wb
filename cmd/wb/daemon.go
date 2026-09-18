@@ -24,6 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/hubconfig"
+	"github.com/sneat-dev/wb/internal/nodeidentity"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/repositoryevents"
@@ -1695,6 +1696,14 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// Narration goes to stderr, which is where the detached daemon's log file
 	// already points, so there is no second writer to mirror into.
 	narrator := narrate.Writer{Out: command.ErrOrStderr(), Quiet: quiet}
+	// Every daemon carries a stable node ID (peer-connectivity#req:node-
+	// identity), generated once here and again — idempotently — on the
+	// laptop's first `wb peers join`. A failure to create it is reported but
+	// does not stop the daemon: node identity matters once Task 2 opens a
+	// session, not to any surface this task adds.
+	if _, err := nodeidentity.Load(projectsRoot, nil); err != nil && !quiet {
+		_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: node identity unavailable:", err)
+	}
 	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
 		_ = listener.Close()
@@ -1714,6 +1723,11 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(rpcPath, authenticatedDaemonHandler(ownerToken, rpcHandler))
+	// The peer admin routes share the same owner-token authentication and the
+	// same unix-socket listener, and are therefore never reachable over the
+	// TCP dashboard listener (peer-connectivity#req:admin-requires-owner-
+	// credential).
+	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
 	fileBridge, err := newDaemonFileBridgeServer(projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
 		_ = listener.Close()
