@@ -170,7 +170,19 @@ case "$*" in
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
     printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
-      "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" ;;
+      "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head"
+    # M3: a force push that landed in the exact window between the
+    # update-branch write and this read must be visible on the NEXT read,
+    # never THIS one - the response above already used the head captured at
+    # the top of this script invocation. Consuming it here, after building
+    # this response, lets one scripted test drive two different reads
+    # (waitForUpdatedHead's, then awaitLandablePullRequest's own re-read)
+    # to two different heads without adding a fragile call counter.
+    if [ -f "$S/pending-force-push" ]; then
+      raced=$(cat "$S/pending-force-push")
+      rm -f "$S/pending-force-push"
+      printf '%s' "$raced" >"$S/head"
+    fi ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls')
@@ -206,6 +218,15 @@ case "$*" in
     ref="${4#*git/refs/heads/}"
     git --git-dir="$WB_LAND_REMOTE" update-ref -d "refs/heads/$ref" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100')
+    if [ -f "$S/fail-check-runs-once" ]; then
+      # A hard, non-transient failure (no HTTP status code, no signal-killed
+      # text) reading checks - used to prove a fix made earlier in the same
+      # attempt (an update-branch fast-forward note, M1) survives a later
+      # step in the same call failing outright.
+      rm -f "$S/fail-check-runs-once"
+      printf '{"message":"deliberately failed for a test"}\n' >&2
+      exit 1
+    fi
     if [ -f "$S/advance-on-checks" ]; then
       # Another landing reaches main while this candidate's checks run.
       rm -f "$S/advance-on-checks"
@@ -213,11 +234,38 @@ case "$*" in
       next=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$tip^{tree}")" -p "$tip" -m "landed mid-wait")
       git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$next"
     fi
+    if [ -f "$S/auto-merge-lands-on-checks" ]; then
+      # GitHub's own armed auto-merge lands the exact candidate head right
+      # between the wait's own stable-terminal decision (reached after the
+      # FIRST check-runs read leaves the target untouched) and its final
+      # re-read of the target (which this, the SECOND check-runs read,
+      # precedes within the same iteration) - the precise race #600
+      # reports: main moves to the candidate head itself (an ordinary
+      # fast-forward, not a foreign commit) and the pull request reports
+      # merged/closed from here on, with every check still green.
+      count=$(( $(cat "$S/checkruns-count" 2>/dev/null || echo 0) + 1 ))
+      printf '%s' "$count" >"$S/checkruns-count"
+      if [ "$count" -ge 2 ]; then
+        rm -f "$S/auto-merge-lands-on-checks"
+        git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$head"
+        printf 'true' >"$S/merged"
+        printf 'closed' >"$S/pr-state"
+      fi
+    fi
     printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")" ;;
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   'api repos/acme/app/compare/'*)
+    if [ -f "$S/fail-compare-once" ]; then
+      # A hard, non-transient failure (no HTTP status code, no signal-killed
+      # text) on the FIRST post-update-branch behind-check - used to prove a
+      # fix made earlier in the same attempt (an update-branch fast-forward
+      # note, M1) survives a later step in the same call failing outright.
+      rm -f "$S/fail-compare-once"
+      printf '{"message":"deliberately failed for a test"}\n' >&2
+      exit 1
+    fi
     pair="${2#*compare/}"
     left="${pair%%...*}"
     right="${pair#*...}"
@@ -285,6 +333,19 @@ case "$*" in
     git --git-dir="$WB_LAND_REMOTE" update-ref "refs/heads/$(cat "$S/head-ref" 2>/dev/null || echo feature)" "$merged"
     printf '%s' "$merged" >"$S/head"
     printf 'updated' >"$S/update-branch"
+    if [ -f "$S/fail-compare-after-update" ]; then
+      rm -f "$S/fail-compare-after-update"
+      printf '1' >"$S/fail-compare-once"
+    fi
+    # M3: a test arms a force push that "lands" in the exact race window
+    # between this write and the engine's own re-read, by naming the head it
+    # should land as. See the pulls/7 read case above for how it surfaces on
+    # the NEXT read only.
+    if [ -f "$S/force-push-race" ]; then
+      raced=$(cat "$S/force-push-race")
+      rm -f "$S/force-push-race"
+      printf '%s' "$raced" >"$S/pending-force-push"
+    fi
     printf '{"message":"Updating pull request branch.","url":"https://api.github.com/repos/acme/app/pulls/7"}\n' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac

@@ -815,7 +815,25 @@ func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pu
 	// refusal. That would let a rebatch believe an armed, already-landed
 	// candidate had been retired when it was actually merged. Re-read and
 	// require both closed and not merged before trusting the close.
-	view, readErr := ReadPullRequest(ctx, repository, numberText)
+	//
+	// Red-team finding M5: the close PATCH above already succeeded by this
+	// point. A transient GitHub read failure on the verification below is
+	// not a verdict on the close - it is exactly the kind of blip every
+	// other read in this area (ciwait.go, pr_land_engine.go) retries rather
+	// than surfaces as a failure that leaves an already-closed pull request
+	// looking stuck and prompts a manual reopen. Retry it a few times before
+	// giving up.
+	const verifyAttempts = 3
+	const verifyDelay = 500 * time.Millisecond
+	var view PullRequestView
+	var readErr error
+	for attempt := 1; attempt <= verifyAttempts; attempt++ {
+		view, readErr = ReadPullRequest(ctx, repository, numberText)
+		if readErr == nil || !IsTransientReadFailure(readErr) || attempt == verifyAttempts {
+			break
+		}
+		time.Sleep(verifyDelay)
+	}
 	if readErr != nil {
 		return fmt.Errorf("verify superseded pull request %s was closed, not merged: %w", pullRequest, readErr)
 	}
@@ -861,14 +879,23 @@ func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMe
 	// may already be armed — this is retirement of a replaced candidate,
 	// never disarm-on-red, which stays forbidden.
 	if worktreeMergeReceiptPublishedUnlanded(original) {
-		if closeErr := closeSupersededWorktreeMergePullRequest(ctx, original.Repository, original.PullRequest); closeErr != nil {
-			return fmt.Errorf("close superseded pull request %s before rebatch: %w", original.PullRequest, closeErr)
-		}
-		complete.ClosedPullRequest = original.PullRequest
+		// Red-team finding M5: persist the close intent on the replacement
+		// receipt BEFORE the PATCH that closes the superseded original, not
+		// after. A crash, kill, or lost connection between that PATCH and
+		// this function's own bookkeeping must not leave a resume unable to
+		// tell "WB already closed this as superseded" from an unrelated,
+		// unexplained closed pull request - the durable receipt says so
+		// either way, and a resume that re-reads a closed-not-merged PR here
+		// can trust it as the retired state rather than needing a manual
+		// reopen to make sense of it.
 		replacement.SupersededPullRequest = original.PullRequest
 		if persistErr := persistWorktreeMergeReceipt(*replacement); persistErr != nil {
 			return persistErr
 		}
+		if closeErr := closeSupersededWorktreeMergePullRequest(ctx, original.Repository, original.PullRequest); closeErr != nil {
+			return fmt.Errorf("close superseded pull request %s before rebatch: %w", original.PullRequest, closeErr)
+		}
+		complete.ClosedPullRequest = original.PullRequest
 	}
 	return persistPreparedWorktreeMergeRebatchForPrepare(path, complete)
 }

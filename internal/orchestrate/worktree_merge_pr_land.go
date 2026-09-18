@@ -239,6 +239,18 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 	if targetErr != nil {
 		return fmt.Errorf("update-branch merge commit %s: %w", updated, targetErr)
 	}
+	// Red-team finding M3: the GitHub commits API told us updated's parents
+	// look right, but that alone does not prove updated is an ordinary merge
+	// of our recorded candidate and a target-side ancestor - the same proof
+	// adoptServerUpdatedWorktreeMergeHead requires before trusting a resumed
+	// receipt's stale head. Reuse it here so a crafted force-push cannot be
+	// recorded as a trusted advance merely because its two parents happen to
+	// match the shape this function checks for. Any failure to positively
+	// verify is a refusal, not a silent adoption.
+	if !verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated) {
+		return fmt.Errorf("update-branch merge commit %s does not prove an ordinary merge of candidate %s and target %s; refusing to adopt it as an advance",
+			shortMergeRevision(updated), shortMergeRevision(previous), receipt.Target)
+	}
 	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
 		RecordedAt:           time.Now().UTC(),
 		PreviousTargetSHA:    receipt.TargetSHA,
@@ -278,6 +290,89 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 	default:
 		return "", fmt.Errorf("has unexpected parents %v for previous head %s", parents, previous)
 	}
+}
+
+// verifyUpdateBranchMergeProof proves that headSHA is an ordinary merge of
+// candidateSHA (its first parent) and targetParent (its second parent):
+// that targetParent is an ancestor of the repository's current remote
+// target, and that headSHA's tree exactly matches the tree
+// `git merge-tree --write-tree` would produce for those two parents.
+//
+// Both M3 (adoptWorktreeMergeUpdateBranchAdvance, trusting a live
+// update-branch merge before persisting it) and M-A
+// (adoptServerUpdatedWorktreeMergeHead, trusting a resumed receipt's stale
+// head) share this exact proof, so a crafted force-push landing a head that
+// merely LOOKS like an update-branch merge (right parent shape, wrong
+// content) cannot be adopted as a trusted advance by either path.
+//
+// It never returns an error for "not proved" - only false - so callers do
+// not need to distinguish an unreadable repository from a genuine mismatch;
+// both mean "do not trust this as an advance".
+//
+// Red-team finding M4: GitHub commonly deletes a pull request's branch the
+// moment it merges. Fetching by branch NAME then fails outright, even though
+// headSHA itself may already be reachable locally (a plain `wb pr land`
+// fast-forwarded this very worktree to it earlier) or readable from GitHub's
+// commit API by its exact SHA. Only fetch the branch when headSHA is not
+// already local, and fall back to reading its tree from the commits API
+// (commitTreeSHA) rather than failing "not proved" merely because the branch
+// name no longer resolves.
+func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) bool {
+	worktree = strings.TrimSpace(worktree)
+	if worktree == "" {
+		return false
+	}
+	headLocal := commitExistsLocally(ctx, worktree, headSHA)
+	if !headLocal && strings.TrimSpace(branch) != "" {
+		// Best effort: bring headSHA's object in reach locally by branch name.
+		// It was produced server-side by GitHub and this worktree has not
+		// necessarily fetched it yet. A failure here (deleted branch) is not
+		// fatal - the tree can still be read from GitHub's commit API below.
+		if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
+			"+refs/heads/"+branch+":refs/remotes/origin/"+branch); err == nil {
+			headLocal = commitExistsLocally(ctx, worktree, headSHA)
+		}
+	}
+	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, worktree, target)
+	if fetchErr != nil {
+		return false
+	}
+	targetAncestor, ancestorErr := isMergeAncestor(ctx, worktree, targetParent, remoteTarget)
+	if ancestorErr != nil || !targetAncestor {
+		return false
+	}
+	writtenTree, treeErr := runGit(ctx, worktree, "merge-tree", "--write-tree", candidateSHA, targetParent)
+	if treeErr != nil {
+		return false
+	}
+	var headTree string
+	if headLocal {
+		tree, headTreeErr := runGit(ctx, worktree, "show", "-s", "--format=%T", headSHA)
+		if headTreeErr != nil {
+			return false
+		}
+		headTree = tree
+	} else {
+		tree, treeErr := commitTreeSHA(ctx, repository, headSHA)
+		if treeErr != nil {
+			return false
+		}
+		headTree = tree
+	}
+	return strings.TrimSpace(writtenTree) == strings.TrimSpace(headTree)
+}
+
+// commitExistsLocally reports whether sha's commit object is already
+// reachable in worktree's object database, without attempting any network
+// fetch. Used to skip a branch-name fetch (which fails once GitHub deletes
+// the branch on merge - M4) when the object is already present.
+func commitExistsLocally(ctx context.Context, worktree, sha string) bool {
+	sha = strings.TrimSpace(sha)
+	if sha == "" {
+		return false
+	}
+	_, err := runGit(ctx, worktree, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
 
 // adoptServerUpdatedWorktreeMergeHead closes red-team finding M5 for the one
@@ -326,27 +421,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, receipt *WorktreeM
 	if strings.TrimSpace(receipt.Candidate.Worktree) == "" {
 		return false, nil
 	}
-	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-	if fetchErr != nil {
-		return false, nil
-	}
-	targetAncestor, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, parents[1], remoteTarget)
-	if ancestorErr != nil || !targetAncestor {
-		return false, nil
-	}
-	if _, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "fetch", "--no-tags", "origin",
-		"+refs/heads/"+receipt.Candidate.Branch+":refs/remotes/origin/"+receipt.Candidate.Branch); err != nil {
-		return false, nil
-	}
-	writtenTree, treeErr := runGit(ctx, receipt.Candidate.Worktree, "merge-tree", "--write-tree", receipt.Candidate.SHA, parents[1])
-	if treeErr != nil {
-		return false, nil
-	}
-	headTree, headTreeErr := runGit(ctx, receipt.Candidate.Worktree, "show", "-s", "--format=%T", view.Head.SHA)
-	if headTreeErr != nil {
-		return false, nil
-	}
-	if strings.TrimSpace(writtenTree) != strings.TrimSpace(headTree) {
+	if !verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA) {
 		// Not an ordinary merge of our candidate and the target: leave it
 		// for the ordinary drift/conflict handling to judge.
 		return false, nil
