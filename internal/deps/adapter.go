@@ -4,6 +4,7 @@ import "context"
 
 type adapter interface {
 	inspect(context.Context, string, string, Target, Options) ([]Decision, error)
+	inspectWorkingTree(context.Context, string, Target, Options) ([]Decision, error)
 	apply(context.Context, string, Target, Options) ([]Decision, error)
 }
 
