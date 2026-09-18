@@ -93,9 +93,13 @@ func TestSessionListRendersDerivedColumns(t *testing.T) {
 			t.Errorf("row %q missing %q", row, want)
 		}
 	}
-	columns := lastFields(row, 4)
+	// EFFORTS, WORKTREES, BRANCHES, STATE, WAITING.
+	columns := lastFields(row, 5)
 	if columns[1] != "1" {
 		t.Errorf("WORKTREES column = %q, want 1: row=%q", columns[1], row)
+	}
+	if columns[4] != "-" {
+		t.Errorf("WAITING column = %q, want '-' with no outstanding wait: row=%q", columns[4], row)
 	}
 }
 
@@ -175,7 +179,7 @@ func TestSessionListDegradesWhenWorktreesScanFails(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("output lines = %d, want header+row: %q", len(lines), out.String())
 	}
-	columns := lastFields(lines[1], 4)
+	columns := lastFields(lines[1], 5)
 	if columns[0] != "-" || columns[1] != "-" || columns[2] != "-" {
 		t.Fatalf("EFFORTS/WORKTREES/BRANCHES = %v, want all '-': row=%q", columns[:3], lines[1])
 	}
@@ -223,7 +227,7 @@ func TestSessionListWithRealWorktreesLister(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("output lines = %d, want header+row: %q", len(lines), out.String())
 	}
-	columns := lastFields(lines[1], 4)
+	columns := lastFields(lines[1], 5)
 	if columns[0] != "-" || columns[1] != "-" || columns[2] != "-" {
 		t.Fatalf("EFFORTS/WORKTREES/BRANCHES = %v, want all '-' on an empty home: row=%q", columns[:3], lines[1])
 	}
