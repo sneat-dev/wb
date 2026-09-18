@@ -383,6 +383,50 @@ func TestResolveWorktreeMergeValidationPlanForcesLocalValidationForAllowUnfenced
 	}
 }
 
+// TestPeekWorktreeMergeValidationDeferralSkipsHostLoadGateWhenDeferring is
+// Minor 10's regression test (sneat-dev/wb#591 round 3 red-team follow-up):
+// the combined `wb worktree land`/`wb land` used to check host load before
+// it could know local validation would be deferred to the pull-request
+// route's authoritative CI. PeekWorktreeMergeValidationDeferral resolves
+// that cheaply -- source inspection and remote route/policy reads only,
+// never a local validation run -- from not-yet-prepared source worktrees,
+// so the combined command can skip the host-load gate exactly when the
+// plan defers, and must still gate it (return false) when the target's
+// required-check policy is not eligible to defer.
+func TestPeekWorktreeMergeValidationDeferralSkipsHostLoadGateWhenDeferring(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "peek-defer-source", "feature/peek-defer", "peek-defer.txt", "peek\n")
+	installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+		`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+	deferred, err := PeekWorktreeMergeValidationDeferral(context.Background(), fixture.githubDir, []string{source.WorktreeDir}, "main", WorktreeMergeRoutePullRequest, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deferred {
+		t.Fatal("an authoritative, non-empty, server-fenced pull-request-route policy must be reported as deferring, so the combined command can skip the host-load gate")
+	}
+
+	// --validate-locally on this call must never report a deferral, so the
+	// combined command still gates it on host load.
+	forcedLocal, err := PeekWorktreeMergeValidationDeferral(context.Background(), fixture.githubDir, []string{source.WorktreeDir}, "main", WorktreeMergeRoutePullRequest, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forcedLocal {
+		t.Fatal("--validate-locally on this call must never be reported as deferring")
+	}
+
+	// --allow-unfenced on this call must never report a deferral either.
+	unfenced, err := PeekWorktreeMergeValidationDeferral(context.Background(), fixture.githubDir, []string{source.WorktreeDir}, "main", WorktreeMergeRoutePullRequest, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unfenced {
+		t.Fatal("--allow-unfenced must never be reported as deferring")
+	}
+}
+
 // TestWorktreeMergeValidationPlanHolderResolvesRouteExactlyOnce is the minor
 // finding #3 memo test (sneat-dev/wb#591 red-team follow-up): every
 // LandWorktreeMerge validation site and the publish guard share one
@@ -463,50 +507,50 @@ func TestApplyRecordedWorktreeMergeRouteBeforeFirstResolve(t *testing.T) {
 	}
 }
 
-// TestMissingOrUnexecutedRequiredChecksBlocksSkippedOrNeutralRequiredCheck is
-// the finding X2 regression test: a required check that GitHub itself
-// counts as satisfied while never actually running ("skipped" or "neutral")
-// must not satisfy a deferred candidate's required-check policy, even
-// though the ordinary (non-deferred) `pr land` path keeps trusting a
-// registered name regardless of conclusion.
-func TestMissingOrUnexecutedRequiredChecksBlocksSkippedOrNeutralRequiredCheck(t *testing.T) {
+// TestMissingRequiredChecksTrustsGitHubsOwnSkippedOrNeutralVerdict is round
+// 3's replacement for the round-2 finding X2 regression test
+// (sneat-dev/wb#591 red-team follow-up): the final red-team pass found the
+// strict "requireExecuted" mode itself broken (on sneat-co/sneat-go, a
+// required check that legitimately concludes "skipped" on an exact-tree
+// reuse made the post-target wait hang forever), so round 3 removes it
+// entirely. missingRequiredChecks (reverted to its pre-X2 signature and
+// behavior) must treat a registered required check as satisfied by name
+// regardless of its conclusion -- including "skipped" and "neutral" -- for
+// every caller, deferred or not: GitHub branch protection's own evaluation
+// is the gate.
+func TestMissingRequiredChecksTrustsGitHubsOwnSkippedOrNeutralVerdict(t *testing.T) {
 	required := []RequiredRemoteCheck{{Name: "CI"}}
 
-	skipped := []RemoteCheck{{Name: "check-run:CI", Bucket: "skipping", Conclusion: "skipped"}}
-	if missing := missingOrUnexecutedRequiredChecks(skipped, required, false); len(missing) != 0 {
-		t.Fatalf("ordinary (non-deferred) mode treated a registered skipped required check as missing: %v", missing)
-	}
-	if missing := missingOrUnexecutedRequiredChecks(skipped, required, true); len(missing) == 0 {
-		t.Fatal("X2: a skipped required check satisfied the deferral's strict required-check check")
+	skipped := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "skipped"}}
+	if missing := missingRequiredChecks(skipped, required); len(missing) != 0 {
+		t.Fatalf("a registered skipped required check was treated as missing: %v", missing)
 	}
 
-	neutral := []RemoteCheck{{Name: "check-run:CI", Bucket: "skipping", Conclusion: "neutral"}}
-	if missing := missingOrUnexecutedRequiredChecks(neutral, required, true); len(missing) == 0 {
-		t.Fatal("X2: a neutral required check satisfied the deferral's strict required-check check")
+	neutral := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "neutral"}}
+	if missing := missingRequiredChecks(neutral, required); len(missing) != 0 {
+		t.Fatalf("a registered neutral required check was treated as missing: %v", missing)
 	}
 
 	success := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "success"}}
-	if missing := missingOrUnexecutedRequiredChecks(success, required, true); len(missing) != 0 {
-		t.Fatalf("a genuinely successful required check was blocked by the strict required-check check: %v", missing)
+	if missing := missingRequiredChecks(success, required); len(missing) != 0 {
+		t.Fatalf("a genuinely successful required check was treated as missing: %v", missing)
 	}
 
-	// A commit-status-derived check carries no Conclusion at all; it must
-	// still count as executed under the strict check.
-	status := []RemoteCheck{{Name: "status:CI", Bucket: "pass"}}
-	if missing := missingOrUnexecutedRequiredChecks(status, required, true); len(missing) != 0 {
-		t.Fatalf("a commit-status required check was blocked by the strict required-check check: %v", missing)
+	unregistered := []RemoteCheck{{Name: "check-run:OtherCheck", Bucket: "pass", Conclusion: "success"}}
+	if missing := missingRequiredChecks(unregistered, required); len(missing) == 0 {
+		t.Fatal("a required check that never registered under its own name was not reported missing")
 	}
 }
 
-// TestCheckRunBucketTreatsNeutralAsSkipping covers the checkRunBucket change
-// backing finding X2: "neutral" must join "skipped" in the "skipping"
-// bucket (rather than "pass") so a strict, deferral-aware caller can tell
-// them apart from a genuine "success" via RemoteCheck.Conclusion, while the
-// ordinary pass/fail overall-check loop (which treats "pass" and "skipping"
-// identically) is unaffected.
-func TestCheckRunBucketTreatsNeutralAsSkipping(t *testing.T) {
-	if bucket := checkRunBucket("completed", "neutral"); bucket != "skipping" {
-		t.Fatalf("checkRunBucket(completed, neutral) = %q, want skipping", bucket)
+// TestCheckRunBucketTreatsNeutralAsPass is Minor 11's regression test
+// (sneat-dev/wb#591 round 3 red-team follow-up): round 2's global
+// neutral-joins-skipped-in-"skipping" bucket change altered `wb ci wait`
+// JSON output and graduation's validateCIWait as an unintended side effect.
+// Round 3 reverts it: "neutral" buckets as "pass" again, exactly as before
+// round 2, while "skipped" alone still buckets as "skipping".
+func TestCheckRunBucketTreatsNeutralAsPass(t *testing.T) {
+	if bucket := checkRunBucket("completed", "neutral"); bucket != "pass" {
+		t.Fatalf("checkRunBucket(completed, neutral) = %q, want pass", bucket)
 	}
 	if bucket := checkRunBucket("completed", "skipped"); bucket != "skipping" {
 		t.Fatalf("checkRunBucket(completed, skipped) = %q, want skipping", bucket)
@@ -562,17 +606,102 @@ func TestLandWorktreeMergePullRequestDeferredValidationWaitsOnFakeCI(t *testing.
 	}
 }
 
-// TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral is
-// the finding X2 engine-level test (sneat-dev/wb#591 red-team follow-up):
-// the shared engine both `wb pr land` and the worktree-merge PR route drive
-// through awaitLandablePullRequest must not report a passed wait, or
-// proceed to merge, when RequireExecutedRequiredChecks is set (a deferred
-// candidate) and the exact head's required check concluded "skipped".
-// Arming GitHub auto-merge is unaffected either way (this test disables it
-// only to keep the fixture minimal, not because the guard depends on it) —
-// what matters is that WB itself never reports landable on a suite that
-// never ran.
-func TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral(t *testing.T) {
+// TestLandWorktreeMergePullRequestDeferredValidationSkippedCheckLandsAndRecordsFinding
+// is round 3's B1 regression test (sneat-dev/wb#591 red-team follow-up): a
+// deferred PR-route land whose exact head's required check concludes
+// "skipped" (the real-world sneat-co/sneat-go `strongo_workflow / Lint`
+// exact-tree-reuse shape) must still land through both the candidate/PR
+// phase and the post-target phase — waitForWorktreeMergeChecks must never
+// hang the post-merge wait to checks_pending on a false "have not
+// registered" reason — and must record the non-blocking
+// deferred-validation-check-skipped finding on the landed receipt.
+func TestLandWorktreeMergePullRequestDeferredValidationSkippedCheckLandsAndRecordsFinding(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "deferred-skip-source", "feature/deferred-skip", "deferred-skip.txt", "skip\n")
+	installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+		`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+		Model: "test-model", AgentRuntime: "test", Route: WorktreeMergeRoutePullRequest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ValidationDeferral == nil {
+		t.Fatalf("prepare did not defer validation, so this test would not exercise the deferred-landing path: %+v", receipt)
+	}
+
+	installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch).writeState(t, "check-conclusion", "skipped")
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil {
+		t.Fatalf("landing a deferred candidate with a skipped required check failed (B1 regression): receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded && landed.Status != WorktreeMergeComplete {
+		t.Fatalf("landed receipt status = %s, want landed or complete (B1: must not hang at checks_pending): %+v", landed.Status, landed)
+	}
+	found := false
+	for _, finding := range landed.Findings {
+		if finding.Code == WorktreeMergeFindingDeferredValidationCheckSkipped {
+			found = true
+			if len(finding.Checks) == 0 {
+				t.Fatalf("recorded finding named no checks: %+v", finding)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("landed receipt did not record the deferred-validation-check-skipped finding: %+v", landed.Findings)
+	}
+}
+
+// TestLandWorktreeMergePullRequestNonDeferredSkippedCheckRecordsNoFinding
+// covers the negative case the coordinator asked for directly: a land whose
+// candidate was validated locally (never deferred) must never record the
+// deferred-validation-check-skipped finding, even when the exact head's
+// required check concludes "skipped" — the finding only ever describes a
+// deferred candidate's own required-check policy, never an ordinary one.
+func TestLandWorktreeMergePullRequestNonDeferredSkippedCheckRecordsNoFinding(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "non-deferred-skip-source", "feature/non-deferred-skip", "non-deferred-skip.txt", "skip\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ValidationDeferral != nil {
+		t.Fatalf("this test requires a non-deferred receipt: %+v", receipt)
+	}
+
+	installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch).writeState(t, "check-conclusion", "skipped")
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil {
+		t.Fatalf("landing a non-deferred candidate with a skipped required check failed: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded && landed.Status != WorktreeMergeComplete {
+		t.Fatalf("landed receipt status = %s, want landed or complete: %+v", landed.Status, landed)
+	}
+	if len(landed.Findings) != 0 {
+		t.Fatalf("non-deferred land unexpectedly recorded findings: %+v", landed.Findings)
+	}
+}
+
+// TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses is round 3's
+// replacement for the round-2 pair of X2 engine-level tests
+// (sneat-dev/wb#591 red-team follow-up). The round-2 "blocks" test only
+// passed by exhausting its own wait budget (Minor B2), not by proving
+// correctness against real-world GitHub behavior: on sneat-co/sneat-go a
+// required check legitimately concludes "skipped" on an exact-tree reuse,
+// and GitHub itself still counts it as satisfied and merges. Round 3
+// removes the strict RequireExecutedRequiredChecks gate entirely, so there
+// is no longer a "deferred" vs. "plain" distinction at this engine level:
+// every awaitLandablePullRequest caller must report a skipped required
+// check as passing and proceed to merge.
+func TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "x2-engine-source", "feature/x2-engine", "x2-engine.txt", "x2\n")
 	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
@@ -582,8 +711,7 @@ func TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral(t *te
 		t.Fatal(err)
 	}
 
-	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
-	gh.writeState(t, "check-conclusion", "skipped")
+	installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch).writeState(t, "check-conclusion", "skipped")
 	runEngineGit(t, receipt.Candidate.Worktree, "push", fixture.repository.CloneURL, "HEAD:refs/heads/"+receipt.Candidate.Branch)
 
 	view := PullRequestView{Number: 41}
@@ -595,56 +723,6 @@ func TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral(t *te
 		MergeMethod: "merge", MergeMethodExplicit: true,
 		NoAutoMerge: true, NoUpdateBranch: true,
 		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
-		RequireExecutedRequiredChecks: true,
-	}
-	_, waited, _, mergedByGitHub, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
-	if err != nil {
-		t.Fatalf("awaitLandablePullRequest returned an unexpected error: %v", err)
-	}
-	if refusal != nil {
-		t.Fatalf("awaitLandablePullRequest unexpectedly refused: %+v", refusal)
-	}
-	if mergedByGitHub {
-		t.Fatal("mergedByGitHub unexpectedly true")
-	}
-	if waited.Status == PullRequestWaitPassed {
-		t.Fatalf("X2: deferred wait reported passed despite a skipped required check: %+v", waited)
-	}
-	log := gh.ghLog(t)
-	if strings.Contains(log, "api --method PUT repos/acme/app/pulls/41/merge") {
-		t.Fatalf("X2: engine attempted to merge despite a skipped required check:\n%s", log)
-	}
-}
-
-// TestAwaitLandablePullRequestPlainPRLandKeepsSkippedAsPassing is the
-// control for finding X2: the plain `wb pr land` route
-// (RequireExecutedRequiredChecks left false, its default) keeps trusting a
-// registered required-check name regardless of its conclusion, exactly as
-// before this change.
-func TestAwaitLandablePullRequestPlainPRLandKeepsSkippedAsPassing(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "x2-control-source", "feature/x2-control", "x2-control.txt", "x2\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
-	gh.writeState(t, "check-conclusion", "skipped")
-	runEngineGit(t, receipt.Candidate.Worktree, "push", fixture.repository.CloneURL, "HEAD:refs/heads/"+receipt.Candidate.Branch)
-
-	view := PullRequestView{Number: 41}
-	view.Head.SHA, view.Head.Ref = receipt.Candidate.SHA, receipt.Candidate.Branch
-	view.Base.Ref = "main"
-
-	options := PullRequestLandOptions{
-		Repository: "acme/app", PullRequest: "41", ProjectsRoot: fixture.githubDir,
-		MergeMethod: "merge", MergeMethodExplicit: true,
-		NoAutoMerge: true, NoUpdateBranch: true,
-		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
-		// RequireExecutedRequiredChecks left false: the plain `wb pr land` default.
 	}
 	_, waited, _, _, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
 	if err != nil {
@@ -654,6 +732,6 @@ func TestAwaitLandablePullRequestPlainPRLandKeepsSkippedAsPassing(t *testing.T) 
 		t.Fatalf("awaitLandablePullRequest unexpectedly refused: %+v", refusal)
 	}
 	if waited.Status != PullRequestWaitPassed {
-		t.Fatalf("control: plain pr land no longer treats a skipped required check as passing: %+v", waited)
+		t.Fatalf("a skipped required check must count as passing: %+v", waited)
 	}
 }

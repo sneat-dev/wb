@@ -708,3 +708,26 @@ func runCLIWorktreeGit(t *testing.T, directory string, args ...string) string {
 	}
 	return string(output)
 }
+
+// TestWorktreeMergePrepareForcesLocalValidationExceptExplicitPRRoute is
+// Minor 13's regression test (sneat-dev/wb#591 round 3 red-team follow-up):
+// a standalone `wb worktree merge prepare` must validate locally by default
+// (auto, or an explicit --route direct), since dependent agents consume its
+// candidate SHA directly and may need it validated before any land call
+// ever runs. Only an explicit --route pr (this call itself intends to land
+// through the pull-request route) may still defer.
+func TestWorktreeMergePrepareForcesLocalValidationExceptExplicitPRRoute(t *testing.T) {
+	for _, test := range []struct {
+		route string
+		want  bool
+	}{
+		{route: "auto", want: true},
+		{route: "", want: true},
+		{route: "direct", want: true},
+		{route: "pr", want: false},
+	} {
+		if got := worktreeMergePrepareForcesLocalValidation(test.route); got != test.want {
+			t.Errorf("worktreeMergePrepareForcesLocalValidation(%q) = %t, want %t", test.route, got, test.want)
+		}
+	}
+}

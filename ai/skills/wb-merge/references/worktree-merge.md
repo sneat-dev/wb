@@ -50,16 +50,20 @@ an unprotected target resolve `auto` to `direct`) to force it. `--validate-local
 and `--allow-unfenced` both restore the old unconditional local-validation
 behavior for one call — a stale deferral recorded by an earlier call is
 re-validated locally, never silently accepted, before that call publishes or
-merges. A deferred candidate's wait still demands that every required check
-on the exact head actually ran to a real conclusion: "CI is the gate" means
-GitHub's own required-check policy is trusted as the suite even when it is a
-single aggregate or path-scoped gate check (for example a repository's own
-"Required checks passed" check, green on a PR that the underlying per-language
-job scoped itself out of) — but a required check that GitHub itself counts as
-satisfied while never actually running ("skipped" or "neutral") does not
-satisfy the deferral; WB validates locally or refuses rather than merging on
-a suite that never ran. When every configured candidate check passes, the
-receipt says the target baseline was not needed.
+merges. A standalone `wb worktree merge prepare` (no later `land` call of its
+own to resolve the route) validates locally by default for the same reason —
+dependent agents consume its exact candidate SHA directly — unless this call
+itself passes `--route pr`. A deferred candidate's wait never re-judges its
+required checks: CI's required checks, as GitHub branch protection evaluates
+them, are the gate, exactly as for any other candidate. A required check that
+GitHub itself counts as satisfied while never actually running ("skipped" or
+"neutral") still lands — GitHub branch protection judged the head landable —
+but the candidate/PR phase records a non-blocking `deferred-validation-check-skipped`
+finding naming it, in both the text output and the receipt/JSON; it never
+refuses and never waits longer because of it, and it is never evaluated again
+on the later post-target phase. Pass `--validate-locally` to force a real
+local run instead of deferring. When every configured candidate check passes,
+the receipt says the target baseline was not needed.
 When a candidate check fails, WB validates the exact target snapshot and
 permits only equivalent pre-existing failures. Repositories may declare safe
 process-isolated Go test packages in `.wb/quality.yaml`; merge validation

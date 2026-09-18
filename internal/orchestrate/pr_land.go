@@ -110,19 +110,6 @@ type PullRequestLandOptions struct {
 	// target the merge will use, so this is an explicit widening rather than a
 	// default — and the receipt records that it was used.
 	AllowUnfenced bool
-	// RequireExecutedRequiredChecks demands that every required check on the
-	// exact head actually ran to a real conclusion — not "skipped" or
-	// "neutral" — before the shared engine reports landable (sneat-dev/wb#591
-	// red-team finding X2). The worktree-merge PR route sets this whenever
-	// its receipt's local validation was deferred to CI (ValidationDeferral
-	// != nil): a candidate whose local suite never ran must not also slip
-	// past CI on a required check that itself never ran. The plain `wb pr
-	// land` route always validated locally already, so it leaves this false
-	// and keeps trusting a registered required-check name regardless of
-	// conclusion. Arming GitHub auto-merge is unaffected either way — GitHub
-	// itself enforces branch protection on the actual merge — this only
-	// gates what WB itself reports as landable/proceeds on.
-	RequireExecutedRequiredChecks bool
 	// Slice is the total foreground wait budget retained under its historical
 	// name for API compatibility. A landing may outlive the bounded CI waiter:
 	// WB divides this budget into exact-identity observation slices instead of

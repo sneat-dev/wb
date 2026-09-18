@@ -291,9 +291,23 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 	if err := refuseLinkedWorktrees(args); err != nil {
 		return err
 	}
-	admission, err := checkHostLoadAdmission(*flags)
-	if err != nil {
-		return err
+	// Gate on host load only when this call will actually run local
+	// CPU-heavy validation. A cheap pre-resolution of the merge route and
+	// pull-request deferral eligibility -- before any receipt exists --
+	// lets a call whose validation is about to be deferred to the
+	// pull-request route's authoritative CI skip the refusal instead of
+	// being gated on host load for CPU work it will never do locally. Any
+	// error resolving the plan falls back to checking admission, the same
+	// safe default `wb worktree merge land`'s receipt peek uses (Minor 10,
+	// sneat-dev/wb#591 round 3 red-team follow-up).
+	var admission *orchestrate.WorktreeMergeHostLoadAdmission
+	deferred, peekErr := orchestrate.PeekWorktreeMergeValidationDeferral(command.Context(), projectsRoot, args, flags.target, orchestrate.WorktreeMergeRoute(flags.route), flags.validateLocally, flags.allowUnfenced)
+	if peekErr != nil || !deferred {
+		var err error
+		admission, err = checkHostLoadAdmission(*flags)
+		if err != nil {
+			return err
+		}
 	}
 	campaign := newWorktreeMergeProgress(command, *flags)
 	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission, command.ErrOrStderr()))
@@ -378,6 +392,23 @@ separately with supersede-validation-failed.`,
 	return command
 }
 
+// worktreeMergePrepareForcesLocalValidation is Minor 13's fix (sneat-dev/wb#591
+// round 3 red-team follow-up): a standalone `wb worktree merge prepare` has
+// no later `land` call to resolve the route, so under the "auto" default it
+// can resolve to the pull-request route and defer local validation to CI —
+// but dependent agents consume THIS command's exact candidate SHA directly
+// and may need it validated now, before any land call ever runs. It reports
+// true (force flags.validateLocally) for every requested route except an
+// explicit --route pr, which is this call's own signal that it intends to
+// land through the pull-request route itself and so may still defer. This
+// applies only to the standalone prepare command's own PrepareWorktreeMerge
+// call — never to prepareMergeOptions, resolveWorktreeMergeValidationPlan,
+// or the combined `wb worktree land`/`wb land`'s own prepare phase (which is
+// invoked inside the land PR route and calls prepareMergeOptions directly).
+func worktreeMergePrepareForcesLocalValidation(requestedRoute string) bool {
+	return orchestrate.WorktreeMergeRoute(requestedRoute) != orchestrate.WorktreeMergeRoutePullRequest
+}
+
 func newWorktreeMergePrepareCmd() *cobra.Command {
 	var flags worktreeMergeFlags
 	command := &cobra.Command{
@@ -389,6 +420,11 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			}
 			if err := refuseLinkedWorktrees(args); err != nil {
 				return err
+			}
+			// Minor 13 (sneat-dev/wb#591 round 3 red-team follow-up): see
+			// worktreeMergePrepareForcesLocalValidation.
+			if worktreeMergePrepareForcesLocalValidation(flags.route) {
+				flags.validateLocally = true
 			}
 			admission, err := checkHostLoadAdmission(flags)
 			if err != nil {
@@ -434,7 +470,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			// unrelated, already-finished lane for no reason. See
 			// hostLoadCheckSkippable.
 			var admission *orchestrate.WorktreeMergeHostLoadAdmission
-			if peeked, peekErr := orchestrate.PeekWorktreeMergeReceipt(projectsRoot, args[0]); peekErr != nil || !hostLoadCheckSkippable(peeked, flags.validateLocally, orchestrate.WorktreeMergeRoute(flags.route)) {
+			if peeked, peekErr := orchestrate.PeekWorktreeMergeReceipt(projectsRoot, args[0]); peekErr != nil || !hostLoadCheckSkippable(peeked, flags.validateLocally, flags.allowUnfenced, orchestrate.WorktreeMergeRoute(flags.route)) {
 				var err error
 				admission, err = checkHostLoadAdmission(flags)
 				if err != nil {
@@ -1267,16 +1303,20 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 // published receipt, etc. — still re-validates or otherwise does CPU-heavy
 // work locally, so the check still applies to it.
 //
-// validateLocally and requestedRoute are this call's own --validate-locally
-// and --route flags (minor finding, sneat-dev/wb#591 red-team follow-up):
-// either one forces a real local validation run regardless of any deferral
-// recorded on the receipt, so this call is never skippable when either is
-// set.
-func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt, validateLocally bool, requestedRoute orchestrate.WorktreeMergeRoute) bool {
+// validateLocally, allowUnfenced, and requestedRoute are this call's own
+// --validate-locally, --allow-unfenced, and --route flags (minor finding,
+// sneat-dev/wb#591 red-team follow-up): --validate-locally and --route
+// direct both force a real local validation run regardless of any deferral
+// recorded on the receipt, and --allow-unfenced tells ciwait it may accept
+// an unfenced or unreadable required-check policy as a merge gate -- the
+// exact opposite of the authoritative fence deferral relies on -- so this
+// call is never skippable when any of the three is set (Minor 10, round 3:
+// --allow-unfenced was missing from this list).
+func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt, validateLocally, allowUnfenced bool, requestedRoute orchestrate.WorktreeMergeRoute) bool {
 	if receipt.Status == orchestrate.WorktreeMergeComplete {
 		return true
 	}
-	if validateLocally || requestedRoute == orchestrate.WorktreeMergeRouteDirect {
+	if validateLocally || allowUnfenced || requestedRoute == orchestrate.WorktreeMergeRouteDirect {
 		return false
 	}
 	if strings.TrimSpace(receipt.PullRequest) == "" || receipt.Candidate.SHA == "" {
@@ -1329,9 +1369,15 @@ func writeWorktreeMergeReceipt(writer io.Writer, format string, receipt orchestr
 		return err
 	}
 	if admission := receipt.HostLoadAdmission; admission != nil {
-		_, err := fmt.Fprintf(writer, "host_load_admission: load=%.2f floor=%.2f overridden=%t checked_at=%s\n",
-			admission.Load, admission.Floor, admission.Overridden, admission.CheckedAt.Format(time.RFC3339))
-		return err
+		if _, err := fmt.Fprintf(writer, "host_load_admission: load=%.2f floor=%.2f overridden=%t checked_at=%s\n",
+			admission.Load, admission.Floor, admission.Overridden, admission.CheckedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	for _, finding := range receipt.Findings {
+		if _, err := fmt.Fprintf(writer, "finding: %s: %s\n", finding.Code, finding.Message); err != nil {
+			return err
+		}
 	}
 	return nil
 }
