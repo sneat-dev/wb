@@ -169,7 +169,7 @@ each checkout's placement alongside its task identity.
 
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
-**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10
+**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10, task-11
 **Status:** blocked
 
 **Blocked by:** the operator deferred this one-off machine migration until the
@@ -223,6 +223,20 @@ under `<root>/.wb/layout-migrations/<id>/`. Remove emptied legacy owner
 directories, invalidate the cached repository-path index, and report when the
 daemon needs a restart. Tests build real Git repositories with in-clone and
 external linked worktrees.
+
+### Task 11: `wb layout migrate` also relocates managed worktrees
+
+**Id:** task-11
+**Verifies:** projects-root-layout#ac:migrate-relocates-managed-worktrees
+**Depends-On:** task-10
+**Status:** queued
+
+Make `wb layout migrate` the one command for the unified layout: after the clone
+step, relocate each managed task checkout to its store-mode placement by calling
+the `wb worktree relocate` implementation, not a copy of it. Add `--clones-only`
+to skip relocation. Relocations appear in the dry run and in the manifest, and
+`--undo` reverses them. Unmanaged worktrees are repointed and reported, never
+relocated. Repository-local store mode leaves in-clone checkouts where they are.
 
 ## Open Questions
 
