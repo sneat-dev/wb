@@ -22,6 +22,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
 | [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) | Draft | 2026-09-17 | ai | — |
 | [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Draft | 2026-07-21 | alex | — |
+| [scratch-has-an-owner](scratch-has-an-owner.md) | Draft | 2026-09-18 | ai | — |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |
 | [unify-session-move-and-park-continuation-storage](unify-session-move-and-park-continuation-storage.md) | Draft | 2026-08-27 | alex | — |
 
