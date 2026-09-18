@@ -50,6 +50,10 @@ const (
 	// already owns the (repository, target) landing lane. See
 	// internal/landinglane and LaneGuardRequest.
 	LandRefusalLandingLaneHeld = "landing-lane-held"
+	// LandRefusalReviewCommentEmpty reports that the identity form of
+	// --approved-by was given with no --review-comment/--review-comment-file
+	// text, or an empty one (#604).
+	LandRefusalReviewCommentEmpty = "review-comment-empty"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
@@ -70,11 +74,19 @@ type PullRequestLandOptions struct {
 	// Keep retains the task's worktrees and claims. Cleanup is the default
 	// precisely because the opt-in form was never passed.
 	Keep bool
-	// ApprovedBy records the review that authorized a non-mechanical change: a
-	// review file path or a pull-request comment URL. The durable review ledger
-	// is a later phase; until it exists this value is recorded verbatim on the
-	// receipt so the approval is at least attributable.
+	// ApprovedBy records the review that authorized a non-mechanical change.
+	// It is one of: an existing file path or a pull-request comment URL
+	// (unchanged, back-compatible); the literal "ci"; or a reviewer identity
+	// `{model}[@{harness}[@{session}]]`, which requires ReviewComment or
+	// ReviewCommentFile and causes WB to post the review as a PR comment and
+	// bind it to the exact head it reviewed (#604, #586).
 	ApprovedBy string
+	// ReviewComment is the review text for the identity form of ApprovedBy.
+	// Mutually exclusive with ReviewCommentFile; the caller validates that.
+	ReviewComment string
+	// ReviewCommentFile is a path to the review text for the identity form
+	// of ApprovedBy.
+	ReviewCommentFile string
 	// MergeMethod is merge by default: preserve commits and the reviewed PR boundary.
 	MergeMethod string
 	// MergeMethodExplicit distinguishes an operator-selected method from the merge
@@ -194,6 +206,27 @@ type PullRequestLandResult struct {
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	NonManifest  []string `json:"non_manifest_files,omitempty"`
 	ApprovedBy   string   `json:"approved_by,omitempty"`
+	// Reviewer, ReviewedHeadSHA, ReviewDigest, ReviewCommentURL, and
+	// SelfReview are the #604/#586 receipt fields: the full reviewer
+	// identity triple, the exact head it reviewed, a digest of the review
+	// text, the posted comment's URL (identity form only), and whether the
+	// reviewer identity fully matches this session's own (see
+	// currentSessionIdentity).
+	Reviewer         string `json:"reviewer,omitempty"`
+	ReviewedHeadSHA  string `json:"reviewed_head,omitempty"`
+	ReviewDigest     string `json:"review_digest,omitempty"`
+	ReviewCommentURL string `json:"review_comment_url,omitempty"`
+	SelfReview       bool   `json:"self_review,omitempty"`
+	// ReviewBound is false when the recorded review named no commit to bind
+	// to (#586's warn-still-land design, founder-decided 2026-09-18): the
+	// landing proceeds — this is never a refusal — but Evidence["review"]
+	// carries the informational "review-unbound" finding so the gap is
+	// visible rather than silent.
+	ReviewBound bool `json:"review_bound"`
+	// Closes lists the issues GitHub's own closingIssuesReferences reports
+	// this landing closes (#615). Empty is reported as the informational
+	// "no linked issue" finding in Evidence["closes"], never a refusal.
+	Closes []int `json:"closes,omitempty"`
 
 	Checks *PullRequestWaitResult `json:"checks,omitempty"`
 
@@ -325,6 +358,12 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 	if strings.TrimSpace(options.ApprovedBy) != "" {
 		parts = append(parts, "--approved-by", strconv.Quote(options.ApprovedBy))
 	}
+	if strings.TrimSpace(options.ReviewComment) != "" {
+		parts = append(parts, "--review-comment", strconv.Quote(options.ReviewComment))
+	}
+	if strings.TrimSpace(options.ReviewCommentFile) != "" {
+		parts = append(parts, "--review-comment-file", strconv.Quote(options.ReviewCommentFile))
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -455,13 +494,76 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
-	if !result.Mechanical && result.ApprovedBy == "" {
-		return mergeRefusal(result, landRefusal{
-			code: LandRefusalUnapprovedPatch,
-			reason: "this change is not a mechanical dependency bump (" + verdict.Summary() +
-				"), so it needs a recorded review approval before it can land",
-			command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url>",
-		}), nil
+	// reviewedHead is the head this landing binds any review to (#586): the
+	// exact head observed before any update-branch cycle runs. A review
+	// supplied for a different head — whether the identity form (posted
+	// against this head) or a back-compat file/URL (assumed to describe
+	// this head, since nothing else names one) — is stale the moment the
+	// head advances by anything other than WB's own update-branch merges.
+	reviewedHead := result.HeadSHA
+	hasReviewComment := strings.TrimSpace(options.ReviewComment) != "" || strings.TrimSpace(options.ReviewCommentFile) != ""
+	if !result.Mechanical {
+		switch classifyApprovedBy(result.ApprovedBy, hasReviewComment) {
+		case approvalKindEmpty:
+			return mergeRefusal(result, landRefusal{
+				code: LandRefusalUnapprovedPatch,
+				reason: "this change is not a mechanical dependency bump (" + verdict.Summary() +
+					"), so it needs a recorded review approval before it can land",
+				command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url>",
+			}), nil
+		case approvalKindCI:
+			return mergeRefusal(result, landRefusal{
+				code:    LandRefusalUnapprovedPatch,
+				reason:  "--approved-by ci is not implemented yet; follow-up: https://github.com/sneat-dev/wb/issues/619",
+				command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url-or-reviewer-identity>",
+			}), nil
+		case approvalKindIdentity:
+			identity := FinalizeReviewerIdentity(FillReviewerIdentityFromEnvironment(ParseReviewerIdentity(result.ApprovedBy)))
+			comment, commentErr := readReviewCommentText(options.ReviewComment, options.ReviewCommentFile)
+			if commentErr != nil {
+				return result, commentErr
+			}
+			if comment == "" {
+				return mergeRefusal(result, landRefusal{
+					code:   LandRefusalReviewCommentEmpty,
+					reason: "--approved-by " + result.ApprovedBy + " is a reviewer identity and needs a non-empty --review-comment or --review-comment-file",
+					command: "wb pr land " + options.Repository + "#" + number + " --approved-by " + result.ApprovedBy +
+						" --review-comment \"<the review>\"",
+				}), nil
+			}
+			commentURL, postErr := postReviewComment(ctx, options.Repository, number, identity, reviewedHead, comment)
+			if postErr != nil {
+				return result, postErr
+			}
+			result.Reviewer = identity.String()
+			result.ReviewedHeadSHA = reviewedHead
+			result.ReviewBound = true
+			result.ReviewDigest = ReviewDigest(comment)
+			result.ReviewCommentURL = commentURL
+			result.SelfReview = identity.SelfReview(currentSessionIdentity())
+			result.ApprovedBy = commentURL
+			result.Evidence["reviewer"] = identity.String()
+			result.Evidence["review_comment_url"] = commentURL
+			if result.SelfReview {
+				result.Evidence["self_review"] = "true"
+			}
+		case approvalKindFile, approvalKindURL:
+			// #586 (founder-decided 2026-09-18: warn, still land): a file or
+			// comment review binds to whatever commit its own
+			// "Reviewed-Head: <sha>" line names — read now, from the review
+			// artifact itself, so a foreign push that happened between when
+			// the review was written and this invocation is still caught.
+			// A review that names no head is never refused for it; it lands,
+			// with the gap surfaced as the "review-unbound" finding.
+			named := namedReviewedHead(ctx, result.ApprovedBy, classifyApprovedBy(result.ApprovedBy, hasReviewComment))
+			if named != "" {
+				reviewedHead = named
+				result.ReviewedHeadSHA = named
+				result.ReviewBound = true
+			} else {
+				result.Evidence["review"] = "review-unbound: the review does not name the commit it reviewed; add \"Reviewed-Head: <sha>\""
+			}
+		}
 	}
 
 	// Pre-flight the cleanup now, while refusing is still free, and BEFORE
@@ -588,6 +690,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Evidence["allow_unfenced"] = "true"
 		if waited.PolicyAuthorityUnavailable != "" {
 			result.Evidence["required_check_policy"] = "unavailable: " + waited.PolicyAuthorityUnavailable
+		}
+	}
+
+	// #586: a review — identity, file, or URL — authorizes landing exactly
+	// the head it was recorded against. WB's own update-branch merges are
+	// the one exception (proved by reviewedHeadStillCurrent); a foreign
+	// push, a fix commit, or a force-push in between is not. mergedByGitHub
+	// means GitHub's armed auto-merge already landed the reviewed head
+	// itself before this check could run — nothing to refuse.
+	if !result.Mechanical && !mergedByGitHub && reviewedHead != "" {
+		if refusal := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
 		}
 	}
 
@@ -754,6 +868,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			return withSavings(result), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
+	}
+
+	// #615: report the issues this landing closes, from GitHub's own
+	// closingIssuesReferences — an informational finding, never a refusal,
+	// including when there are none.
+	if issues, closesErr := closingIssuesReferences(ctx, options.Repository, number); closesErr == nil {
+		result.Closes = issues
+		result.Evidence["closes"] = formatClosesFinding(issues)
+	} else {
+		result.Evidence["closes_error"] = closesErr.Error()
 	}
 
 	result.Outcome = LandSuccess

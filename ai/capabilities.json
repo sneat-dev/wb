@@ -6639,6 +6639,7 @@
                 "--base",
                 "--body",
                 "--body-file",
+                "--closes",
                 "--commit-all",
                 "--commit-staged",
                 "--draft",
@@ -6647,6 +6648,8 @@
                 "--land",
                 "--merge-method",
                 "--message",
+                "--review-comment",
+                "--review-comment-file",
                 "--timeout",
                 "--title"
               ],
@@ -6777,6 +6780,8 @@
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
+                "--review-comment",
+                "--review-comment-file",
                 "--subject",
                 "--take-over-lane",
                 "--timeout"

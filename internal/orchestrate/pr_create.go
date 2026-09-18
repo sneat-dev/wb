@@ -65,6 +65,11 @@ type PullRequestCreateOptions struct {
 	// Base overrides the pull request's target branch. Empty uses the
 	// worktree's own recorded base.
 	Base string
+	// Closes lists issue numbers this pull request closes; one "Closes #N"
+	// line per issue is written at the top of the body (#615). Never
+	// populated from the task's prompt automatically — see
+	// SuggestClosesFromPrompt, which the caller decides whether to act on.
+	Closes []int
 
 	// AutoMerge arms GitHub auto-merge immediately after the pull request is
 	// created or adopted, under the same authority `wb pr land` requires to
@@ -635,6 +640,14 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 // as a task name against the fleet's worktree inventory. Resolution never
 // runs a network fetch: the guard and the base-branch fetch that follow are
 // where a caller pays that cost, once, for the worktree it actually meant.
+// ResolvePullRequestCreateWorktree exports resolvePullRequestCreateWorktree
+// for cmd/wb's best-effort #615 prompt-suggestion lookup, which needs the
+// same worktree-path-or-task-name resolution `wb pr create` itself uses but
+// runs before CreatePullRequest is called.
+func ResolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argument string) (string, error) {
+	return resolvePullRequestCreateWorktree(ctx, projectsRoot, argument)
+}
+
 func resolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argument string) (string, error) {
 	if info, statErr := os.Stat(argument); statErr == nil && info.IsDir() {
 		// Absolute: ReadManifest (and the secure directory helpers it uses)
@@ -742,6 +755,14 @@ func pullRequestCreateTitle(subjects []string) string {
 // substitutes for a body: overriding what the pull request is called says
 // nothing about what it contains.
 func pullRequestCreateBody(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
+	body, err := pullRequestCreateBodyWithoutCloses(options, worktree, subjects)
+	if err != nil {
+		return "", err
+	}
+	return withClosesPrefix(body, options.Closes), nil
+}
+
+func pullRequestCreateBodyWithoutCloses(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
 	if body := strings.TrimSpace(options.Body); body != "" {
 		return options.Body, nil
 	}
