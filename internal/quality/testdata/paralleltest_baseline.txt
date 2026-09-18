@@ -469,6 +469,16 @@ internal/gen/wb/daemon/v1/daemon_dapb_test.go:327
 internal/gen/wb/daemon/v1/daemon_dapb_test.go:364
 internal/gen/wb/daemon/v1/daemon_dapb_test.go:475
 internal/gen/wb/daemon/v1/daemon_dapb_test.go:494
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:222
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:235
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:256
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:265
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:279
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:288
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:312
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:338
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:359
+internal/gen/wb/daemon/v1/daemonv1connect/daemon_connect_dapb_test.go:385
 internal/githubobserver/zz_gpcov_test.go:1154
 internal/githubobserver/zz_gpcov_test.go:1159
 internal/githubobserver/zz_gpcov_test.go:1168
