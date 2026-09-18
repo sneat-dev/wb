@@ -70,6 +70,7 @@ func TestWaitForGoReleaseRequiresVersionNewerThanBaseline(t *testing.T) {
 }
 
 func TestRunBumpDryRunPlansOnlyDirectConsumers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -95,6 +96,7 @@ func TestRunBumpDryRunPlansOnlyDirectConsumers(t *testing.T) {
 }
 
 func TestRunBumpPersistsGraphDiscoveryProgress(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -130,6 +132,7 @@ func TestRunBumpPersistsGraphDiscoveryProgress(t *testing.T) {
 }
 
 func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -164,6 +167,7 @@ func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
 }
 
 func TestRunBumpDefersDiamondSinkToAvoidDuplicateCI(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -810,6 +814,7 @@ func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOw
 // acme/widgets vs. old-org/widgets-copy production shape), so the conflict
 // is resolved and recorded as a warning instead of aborting.
 func TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -852,6 +857,7 @@ func TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity(t *testing.T) {
 // github.com) module path are NOT a stale-duplicate-clone pattern, and this
 // must still abort the bump rather than guess a resolution.
 func TestRunBumpFailsForGenuinelyUnrelatedModuleCollision(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{

@@ -382,6 +382,7 @@ exit 0
 }
 
 func TestNpmAdapterApplyBlocksDowngradeBeforeWritingAnything(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "@sneat/core", "2.0.0"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.9.0"}
@@ -402,6 +403,7 @@ func TestNpmAdapterApplyBlocksDowngradeBeforeWritingAnything(t *testing.T) {
 }
 
 func TestNpmAdapterApplyReturnsNothingWhenDependencyAbsentFromRepository(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "lodash", "^4.17.21"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
@@ -415,6 +417,7 @@ func TestNpmAdapterApplyReturnsNothingWhenDependencyAbsentFromRepository(t *test
 }
 
 func TestWaveHandlerNpmGeneratesOneVersionPlanForChangedPublishableNxProjects(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "nx.json"), `{"release":{"versionPlans":true}}`+"\n")
 	writeTestFile(t, filepath.Join(worktree, "package.json"), `{
@@ -502,6 +505,7 @@ func TestWaveHandlerNpmGeneratesOneVersionPlanForChangedPublishableNxProjects(t 
 }
 
 func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		nxJSON string
@@ -510,6 +514,7 @@ func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T)
 		{name: "disabled", nxJSON: `{"release":{"versionPlans":false}}` + "\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			worktree := t.TempDir()
 			if test.nxJSON != "" {
 				writeTestFile(t, filepath.Join(worktree, "nx.json"), test.nxJSON)
@@ -534,6 +539,7 @@ func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T)
 }
 
 func TestNpmAdapterApplyDoesNotTouchLockfilesWhenRepositoryHasNone(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "@sneat/core", "1.2.3"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}

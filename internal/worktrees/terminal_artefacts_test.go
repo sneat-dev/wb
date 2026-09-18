@@ -23,6 +23,7 @@ func newTerminalArtefactTask(t *testing.T) (worktreesRoot, task, taskPath string
 }
 
 func TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock(t *testing.T) {
+	t.Parallel()
 	worktreesRoot, task, taskPath := newTerminalArtefactTask(t)
 	if err := os.Mkdir(filepath.Join(taskPath, testRetiredStage), 0o700); err != nil {
 		t.Fatal(err)
@@ -53,6 +54,7 @@ func TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock(t *testing.T) {
 }
 
 func TestPurgeTerminalArtefactsKeepsANonEmptyStageAsAuditedBacklog(t *testing.T) {
+	t.Parallel()
 	worktreesRoot, task, taskPath := newTerminalArtefactTask(t)
 	stage := filepath.Join(taskPath, testRetiredStage)
 	if err := os.Mkdir(stage, 0o700); err != nil {
@@ -71,6 +73,7 @@ func TestPurgeTerminalArtefactsKeepsANonEmptyStageAsAuditedBacklog(t *testing.T)
 }
 
 func TestPurgeTerminalArtefactsLeavesEverythingWhileAnOperationHoldsTheTask(t *testing.T) {
+	t.Parallel()
 	worktreesRoot, task, taskPath := newTerminalArtefactTask(t)
 	if err := os.Mkdir(filepath.Join(taskPath, testRetiredStage), 0o700); err != nil {
 		t.Fatal(err)
@@ -88,6 +91,7 @@ func TestPurgeTerminalArtefactsLeavesEverythingWhileAnOperationHoldsTheTask(t *t
 }
 
 func TestPurgeTerminalArtefactsNeverFollowsOrRemovesForeignShapes(t *testing.T) {
+	t.Parallel()
 	worktreesRoot, task, taskPath := newTerminalArtefactTask(t)
 	target := filepath.Join(t.TempDir(), "elsewhere")
 	if err := os.MkdirAll(target, 0o755); err != nil {
@@ -118,6 +122,7 @@ func TestPurgeTerminalArtefactsNeverFollowsOrRemovesForeignShapes(t *testing.T) 
 }
 
 func TestPurgeTerminalArtefactsIsSilentOnAVanishedTask(t *testing.T) {
+	t.Parallel()
 	worktreesRoot := filepath.Join(t.TempDir(), "worktrees")
 	if purged := purgeTerminalArtefacts(worktreesRoot, "never-existed"); len(purged) != 0 {
 		t.Fatalf("purged = %#v, want nothing", purged)

@@ -9,6 +9,7 @@ import (
 )
 
 func TestBuildGraphReportsRepositoryDiscoveryProgress(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	_, err := BuildGraph(context.Background(), []Repository{{Slug: "example/archived", Archived: true}}, GraphOptions{
 		Ecosystem: EcosystemGo,
@@ -25,6 +26,7 @@ func TestBuildGraphReportsRepositoryDiscoveryProgress(t *testing.T) {
 }
 
 func TestRunBumpReportsDiscoveryAndPlanningProgress(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	_, err := RunBump(context.Background(), []ReleaseEvent{{
 		Dependency: "example.com/provider",
@@ -59,6 +61,7 @@ func TestRunBumpReportsDiscoveryAndPlanningProgress(t *testing.T) {
 }
 
 func TestAnalyzeDriftReportsRepositoryProgress(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	_, err := AnalyzeDrift(context.Background(), []Repository{{Slug: "example/missing"}}, DriftOptions{
 		Parallel: 1,

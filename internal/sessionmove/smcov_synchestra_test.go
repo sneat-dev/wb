@@ -41,7 +41,9 @@ func smCovSynchRunnerDispatchPath(store Store, request Request) string {
 }
 
 func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
+	t.Parallel()
 	t.Run("missing handoff", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		raw, err := EncodeRequest(request)
 		if err != nil {
@@ -55,6 +57,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("missing route", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest)); err == nil {
 			t.Fatal("SaveSynchestraDispatch accepted a handoff without a courier route")
@@ -62,6 +65,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("route is not the synchestra courier", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 			t.Fatal(err)
@@ -85,6 +89,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 		{"dispatch id empty", func(identity *SynchestraDispatch) { identity.DispatchID = "" }, nil, "dispatch_id must be"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 			request := validRequest()
 			identity := smCovSynchRunnerIdentity(request, digest)
@@ -106,6 +111,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	}
 
 	t.Run("schema version is forced", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		identity := smCovSynchRunnerIdentity(request, digest)
@@ -120,6 +126,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("different existing dispatch", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		if _, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest)); err != nil {
@@ -137,6 +144,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("tampered existing dispatch file", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		if _, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest)); err != nil {
@@ -155,6 +163,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("identical replay", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		identity := smCovSynchRunnerIdentity(request, digest)
@@ -176,6 +185,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("oversized identity", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store, digest := smCovRouteAdmit(t, request)
 		route := smCovSynchRunnerRoute(request, digest)
@@ -216,6 +226,7 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 	})
 
 	t.Run("dispatch file is a symlink", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		identity, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest))
@@ -244,7 +255,9 @@ func TestSmCovSynchSaveDispatchValidationAndReplay(t *testing.T) {
 }
 
 func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("missing handoff", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, err := store.LoadSynchestraDispatch(request.HandoffID); err == nil {
@@ -253,6 +266,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing route", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		if _, err := store.LoadSynchestraDispatch(request.HandoffID); err == nil {
 			t.Fatal("LoadSynchestraDispatch accepted a handoff without a route")
@@ -260,6 +274,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing dispatch file", func(t *testing.T) {
+		t.Parallel()
 		store, _, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		if _, err := store.LoadSynchestraDispatch(request.HandoffID); !errors.Is(err, os.ErrNotExist) {
@@ -268,6 +283,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 	})
 
 	t.Run("malformed dispatch file", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		if _, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest)); err != nil {
@@ -286,6 +302,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 	})
 
 	t.Run("tampered identity", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		identity, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest))
@@ -310,6 +327,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 	})
 
 	t.Run("happy path", func(t *testing.T) {
+		t.Parallel()
 		store, digest, _ := smCovSynchRunnerReady(t, validRequest())
 		request := validRequest()
 		saved, _, err := store.SaveSynchestraDispatch(smCovSynchRunnerIdentity(request, digest))
@@ -324,6 +342,7 @@ func TestSmCovSynchLoadDispatchArtifacts(t *testing.T) {
 }
 
 func TestSmCovSynchDecodeAndValidateDispatch(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	requestRaw, err := EncodeRequest(request)
 	if err != nil {
@@ -334,12 +353,14 @@ func TestSmCovSynchDecodeAndValidateDispatch(t *testing.T) {
 	identity := smCovSynchRunnerIdentity(request, digest)
 
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := decodeAndValidateSynchestraDispatch([]byte("{not-json\n"), request, digest, route); err == nil || !strings.Contains(err.Error(), "decode synchestra dispatch identity") {
 			t.Fatalf("decodeAndValidateSynchestraDispatch error = %v", err)
 		}
 	})
 
 	t.Run("schema zero", func(t *testing.T) {
+		t.Parallel()
 		tampered := identity
 		tampered.SchemaVersion = 0
 		raw, err := marshalJSON(tampered)
@@ -352,6 +373,7 @@ func TestSmCovSynchDecodeAndValidateDispatch(t *testing.T) {
 	})
 
 	t.Run("identity mismatch", func(t *testing.T) {
+		t.Parallel()
 		tampered := identity
 		tampered.Handler = "wb.session.other.v1"
 		raw, err := marshalJSON(tampered)
@@ -364,6 +386,7 @@ func TestSmCovSynchDecodeAndValidateDispatch(t *testing.T) {
 	})
 
 	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
 		raw, err := marshalJSON(identity)
 		if err != nil {
 			t.Fatal(err)
@@ -376,6 +399,7 @@ func TestSmCovSynchDecodeAndValidateDispatch(t *testing.T) {
 }
 
 func TestSmCovSynchValidateDispatchBranches(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	requestRaw, err := EncodeRequest(request)
 	if err != nil {
@@ -406,6 +430,7 @@ func TestSmCovSynchValidateDispatchBranches(t *testing.T) {
 		{"dispatch id oversized", func(identity *SynchestraDispatch) { identity.DispatchID = "d" + strings.Repeat("x", 128) }, nil, "dispatch_id must be"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			identity := base
 			test.mutate(&identity)
 			err := validateSynchestraDispatch(identity, request, digest, route)
@@ -422,12 +447,14 @@ func TestSmCovSynchValidateDispatchBranches(t *testing.T) {
 	}
 
 	t.Run("route is not the synchestra courier", func(t *testing.T) {
+		t.Parallel()
 		if err := validateSynchestraDispatch(base, request, digest, validRoute(request, digest)); err == nil || !strings.Contains(err.Error(), "does not use the synchestra courier") {
 			t.Fatalf("validateSynchestraDispatch(ssh route) error = %v", err)
 		}
 	})
 
 	t.Run("route has no runner address", func(t *testing.T) {
+		t.Parallel()
 		nilRoute := smCovSynchRunnerRoute(request, digest)
 		nilRoute.Synchestra = nil
 		if err := validateSynchestraDispatch(base, request, digest, nilRoute); err == nil || !strings.Contains(err.Error(), "does not use the synchestra courier") {
@@ -436,6 +463,7 @@ func TestSmCovSynchValidateDispatchBranches(t *testing.T) {
 	})
 
 	t.Run("dispatch id boundary", func(t *testing.T) {
+		t.Parallel()
 		identity := base
 		identity.DispatchID = "d" + strings.Repeat("x", 127)
 		if err := validateSynchestraDispatch(identity, request, digest, route); err != nil {

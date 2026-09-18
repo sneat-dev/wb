@@ -10,6 +10,7 @@ import (
 )
 
 func TestDqCovSingleWorkerNodeEnvStatesTheRequiredEnvironment(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(SingleWorkerNodeEnv(), " ")
 	if got != "CI=1 NX_DAEMON=false NX_SKIP_NX_CACHE=true" {
 		t.Fatalf("SingleWorkerNodeEnv = %q, want the documented environment", got)
@@ -17,6 +18,7 @@ func TestDqCovSingleWorkerNodeEnvStatesTheRequiredEnvironment(t *testing.T) {
 }
 
 func TestDqCovSortVerificationReportsOrdersByRepository(t *testing.T) {
+	t.Parallel()
 	reports := []VerificationReport{
 		{Repository: "zulu/repo"},
 		{Repository: "alpha/repo"},
@@ -33,6 +35,7 @@ func TestDqCovSortVerificationReportsOrdersByRepository(t *testing.T) {
 }
 
 func TestDqCovParseChecksDefaultsDeduplicatesAndRejects(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"", "   "} {
 		checks, err := ParseChecks(value)
 		if err != nil {
@@ -57,6 +60,7 @@ func TestDqCovParseChecksDefaultsDeduplicatesAndRejects(t *testing.T) {
 }
 
 func TestDqCovTruncateCommandDetailToBoundsEveryShape(t *testing.T) {
+	t.Parallel()
 	if got := truncateCommandDetailTo("anything", 0); got != "" {
 		t.Fatalf("truncate(max=0) = %q, want empty", got)
 	}
@@ -80,6 +84,7 @@ func TestDqCovTruncateCommandDetailToBoundsEveryShape(t *testing.T) {
 }
 
 func TestDqCovGoCommandAndNodeCheckCommandVariants(t *testing.T) {
+	t.Parallel()
 	if got := goCommand(CheckSpec, false, 0); got != nil {
 		t.Fatalf("goCommand(spec) = %v, want no command", got)
 	}
@@ -98,6 +103,7 @@ func TestDqCovGoCommandAndNodeCheckCommandVariants(t *testing.T) {
 }
 
 func TestDqCovRunVerificationSkipsAnEmptyCommand(t *testing.T) {
+	t.Parallel()
 	entry := runVerification(context.Background(), RunOptions{}, "go", ".", CheckBuild, t.TempDir())
 	if entry.Status != StatusSkipped || entry.Detail != "unsupported check" || entry.Command != "" {
 		t.Fatalf("entry = %+v, want an explicit skip", entry)
@@ -112,6 +118,7 @@ func TestDqCovRunShardedVerificationFailsWithoutTemporaryRoot(t *testing.T) {
 }
 
 func TestDqCovVerifyWithOptionsFailsOnUnreadableWorkspace(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, "go.work"), "this is not a go.work file\n")
 	report := VerifyWithOptions(context.Background(), "example/broken", repository, []Check{CheckBuild}, RunOptions{})
@@ -124,7 +131,9 @@ func TestDqCovVerifyWithOptionsFailsOnUnreadableWorkspace(t *testing.T) {
 // only request never becomes a Go or Node command, while a Node project with a
 // missing script is recorded as an explicit skip.
 func TestDqCovVerifyWithOptionsSkipsSpecInsideGoAndNodeLoops(t *testing.T) {
+	t.Parallel()
 	t.Run("go module with spec check only", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/spec-only\n\ngo 1.24\n")
 		report := VerifyWithOptions(context.Background(), "example/spec-only", repository, []Check{CheckSpec}, RunOptions{})
@@ -170,6 +179,7 @@ func TestDqCovVerifyWithOptionsSkipsSpecInsideGoAndNodeLoops(t *testing.T) {
 }
 
 func TestDqCovVerifyWithOptionsFailsOnMalformedNodeManifest(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, "package.json"), "{not json")
 	report := VerifyWithOptions(context.Background(), "example/node-broken", repository, []Check{CheckBuild}, RunOptions{})
@@ -179,6 +189,7 @@ func TestDqCovVerifyWithOptionsFailsOnMalformedNodeManifest(t *testing.T) {
 }
 
 func TestDqCovVerifyWithOptionsReturnsSkippedWhenNothingApplies(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	report := VerifyWithOptions(context.Background(), "example/nothing", repository, []Check{CheckTest}, RunOptions{})
 	if report.Status != StatusSkipped || len(report.Results) != 0 {
@@ -192,7 +203,9 @@ func TestDqCovVerifyWithOptionsReturnsSkippedWhenNothingApplies(t *testing.T) {
 // TestDqCovSpecLintOrSkipInspectFailures covers the two inspection errors that
 // force a failed spec check rather than a silent skip.
 func TestDqCovSpecLintOrSkipInspectFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable repository root", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		dqCovChmod(t, repository, 0)
 		entry := specLintOrSkip(context.Background(), RunOptions{}, repository, filepath.Join(repository, "spec"))
@@ -202,6 +215,7 @@ func TestDqCovSpecLintOrSkipInspectFailures(t *testing.T) {
 	})
 
 	t.Run("unreadable plans layout", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
 		entry := specLintOrSkip(context.Background(), RunOptions{}, repository, filepath.Join(repository, "spec"))
@@ -212,6 +226,7 @@ func TestDqCovSpecLintOrSkipInspectFailures(t *testing.T) {
 }
 
 func TestDqCovIsExternalPlansStoreSurfacesWalkFailure(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, ".gitignore"), externalStoreLifecycleLockRule+"\n")
 	writeQualityFile(t, filepath.Join(repository, "spec", "plans", "README.md"), "# Plans\n")
@@ -228,7 +243,9 @@ func TestDqCovIsExternalPlansStoreSurfacesWalkFailure(t *testing.T) {
 // TestDqCovIgnoresLifecycleLockInspectErrors covers the inspection failures and
 // the exact-line comparison, including a trailing CR and trailing spaces.
 func TestDqCovIgnoresLifecycleLockInspectErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable parent", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		dqCovChmod(t, repository, 0)
 		if _, err := ignoresLifecycleLock(filepath.Join(repository, ".gitignore")); err == nil {
@@ -237,6 +254,7 @@ func TestDqCovIgnoresLifecycleLockInspectErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable gitignore", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		path := filepath.Join(repository, ".gitignore")
 		writeQualityFile(t, path, externalStoreLifecycleLockRule+"\n")
@@ -247,6 +265,7 @@ func TestDqCovIgnoresLifecycleLockInspectErrors(t *testing.T) {
 	})
 
 	t.Run("exact rule with git line endings", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(t.TempDir(), ".gitignore")
 		writeQualityFile(t, path, "node_modules/\r\n"+externalStoreLifecycleLockRule+"  \r\n")
 		ignored, err := ignoresLifecycleLock(path)
@@ -256,6 +275,7 @@ func TestDqCovIgnoresLifecycleLockInspectErrors(t *testing.T) {
 	})
 
 	t.Run("unanchored rule is not the rule", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(t.TempDir(), ".gitignore")
 		writeQualityFile(t, path, strings.TrimPrefix(externalStoreLifecycleLockRule, "/")+"\n")
 		ignored, err := ignoresLifecycleLock(path)
@@ -266,6 +286,7 @@ func TestDqCovIgnoresLifecycleLockInspectErrors(t *testing.T) {
 }
 
 func TestDqCovNodeProjectReadAndParseFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if _, err := nodeProject(root, filepath.Join(root, "missing", "package.json"), false); err == nil {
 		t.Fatal("a missing manifest was accepted")
@@ -297,6 +318,7 @@ func TestDqCovNodeProjectReadAndParseFailures(t *testing.T) {
 // that exists but cannot be resolved (a symlink loop). The check must fail
 // closed rather than report lint as inapplicable.
 func TestDqCovVerifyWithOptionsFailsOnUninspectableSpecRoot(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/spec-loop\n\ngo 1.24\n")
 	if err := os.Symlink("spec", filepath.Join(repository, "spec")); err != nil {
@@ -315,7 +337,9 @@ func TestDqCovVerifyWithOptionsFailsOnUninspectableSpecRoot(t *testing.T) {
 // TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors covers the
 // lockfile-scope selection rules and both error paths.
 func TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("root manifest without lockfile", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x"}}`)
 		projects, ok, err := nodeProjects(repository)
@@ -328,6 +352,7 @@ func TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors(t *testing.T) {
 	})
 
 	t.Run("independent locked scopes sorted", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x"}}`)
 		writeQualityFile(t, filepath.Join(repository, "b", "package.json"), `{"scripts":{"test":"x"}}`)
@@ -347,6 +372,7 @@ func TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors(t *testing.T) {
 	})
 
 	t.Run("malformed nested manifest fails", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x"}}`)
 		writeQualityFile(t, filepath.Join(repository, "nested", "package.json"), "{not json")
@@ -357,6 +383,7 @@ func TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors(t *testing.T) {
 	})
 
 	t.Run("unreadable subtree fails", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x"}}`)
 		denied := filepath.Join(repository, "denied")
@@ -371,6 +398,7 @@ func TestDqCovNodeProjectsSelectsLockedScopesAndSurfacesErrors(t *testing.T) {
 }
 
 func TestDqCovDetectPackageManagerHonorsDeclarationThenLockfiles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name               string
 		declared, lockfile string
@@ -383,6 +411,7 @@ func TestDqCovDetectPackageManagerHonorsDeclarationThenLockfiles(t *testing.T) {
 		{name: "no evidence defaults to npm", want: "npm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			if tc.lockfile != "" {
 				writeQualityFile(t, filepath.Join(root, tc.lockfile), "")

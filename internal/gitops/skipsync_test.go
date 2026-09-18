@@ -6,6 +6,7 @@ import (
 )
 
 func TestSkipSyncReadsLocalMarker(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		value string // "" leaves the key unset
@@ -19,6 +20,7 @@ func TestSkipSyncReadsLocalMarker(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			git(t, dir, "init", "-q", "-b", "main")
 			if tc.value != "" {
@@ -38,6 +40,7 @@ func TestSkipSyncReadsLocalMarker(t *testing.T) {
 // A malformed value must surface as an error. Reporting it as "not marked"
 // would resume pulling a repo the user asked wb to leave alone.
 func TestSkipSyncMalformedValueErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	git(t, dir, "config", "--local", SkipSyncKey, "garbage")
@@ -52,6 +55,7 @@ func TestSkipSyncMalformedValueErrors(t *testing.T) {
 }
 
 func TestSkipSyncNonRepoErrors(t *testing.T) {
+	t.Parallel()
 	got, err := SkipSync(t.TempDir())
 	if err == nil {
 		t.Fatalf("SkipSync = %v, nil; want an error outside a git repository", got)
@@ -79,6 +83,7 @@ func TestSkipSyncIgnoresGlobalConfig(t *testing.T) {
 }
 
 func TestSetAndUnsetSkipSync(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -99,6 +104,7 @@ func TestSetAndUnsetSkipSync(t *testing.T) {
 
 // Unsetting an unmarked repo is a no-op, not a failure.
 func TestUnsetSkipSyncIsIdempotent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -114,6 +120,7 @@ func TestUnsetSkipSyncIsIdempotent(t *testing.T) {
 // place. Treating that 5 as success would report a repo unmarked while it is
 // still marked, so UnsetSkipSync must clear all values.
 func TestUnsetSkipSyncClearsDuplicateValues(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	git(t, dir, "config", "--local", "--add", SkipSyncKey, "true")

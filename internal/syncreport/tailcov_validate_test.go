@@ -43,6 +43,7 @@ exit 0
 // settings, root-collections, and collection definition files plus one
 // deterministic record file per repository, all byte-for-byte.
 func TestTailCovInstallWritesSchemaAndRecords(t *testing.T) {
+	t.Parallel()
 	record := tailCovParseValidRecord(t)
 	root := t.TempDir()
 	if err := Install(root, Report{ID: "sync-1", Records: []Record{record}}); err != nil {
@@ -68,6 +69,7 @@ func TestTailCovInstallWritesSchemaAndRecords(t *testing.T) {
 // TestTailCovInstallReportsDirectoryCreationFailure proves a root that cannot
 // host the collection tree is a hard error rather than a partial install.
 func TestTailCovInstallReportsDirectoryCreationFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blocker := filepath.Join(root, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
@@ -81,6 +83,7 @@ func TestTailCovInstallReportsDirectoryCreationFailure(t *testing.T) {
 // TestTailCovInstallReportsFileWriteFailure proves a path already occupied by a
 // directory is reported instead of silently skipped.
 func TestTailCovInstallReportsFileWriteFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, SettingsPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -153,6 +156,7 @@ func TestTailCovValidateInGitDBReportsCLIFailure(t *testing.T) {
 // be materialised is reported before the CLI is ever consulted; a report id
 // containing NUL makes the record path unwritable on every platform.
 func TestTailCovValidateInGitDBReportsInstallFailure(t *testing.T) {
+	t.Parallel()
 	report := Report{ID: "bad\x00id", Records: []Record{tailCovParseValidRecord(t)}}
 	err := ValidateInGitDB(context.Background(), report)
 	if err == nil {

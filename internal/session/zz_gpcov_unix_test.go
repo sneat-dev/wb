@@ -32,6 +32,7 @@ const gpCovHarnessHelperEnv = "GPCOV_HARNESS_HELPER_PID_FILE"
 // the parent can read it, and outlives the parent's observation; run as part of
 // the ordinary suite it only confirms it was not invoked as a helper.
 func TestGpCovHarnessHelperProcess(t *testing.T) {
+	t.Parallel()
 	pidFile := strings.TrimSpace(os.Getenv(gpCovHarnessHelperEnv))
 	if pidFile == "" {
 		if executable, err := os.Executable(); err != nil || executable == "" {
@@ -109,6 +110,7 @@ func gpCovWaitForPID(t *testing.T, path string) int {
 }
 
 func TestGpCovMarkParkedRejectsADanglingMarkerSymlink(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-dangling", Runtime: "codex"})
 	if err != nil {
@@ -133,6 +135,7 @@ func TestGpCovMarkParkedRejectsADanglingMarkerSymlink(t *testing.T) {
 }
 
 func TestGpCovMarkResumedRejectsADanglingMarkerSymlink(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-resume-dangling", Runtime: "codex"})
 	if err != nil {
@@ -154,6 +157,7 @@ func TestGpCovMarkResumedRejectsADanglingMarkerSymlink(t *testing.T) {
 }
 
 func TestGpCovMarkResumedReportsAResumedMarkerThatCannotBeCreated(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	// NAME_MAX is 255, so this session ID's parked marker name fits exactly
 	// while its resumed marker name (one byte longer) cannot be created. The
@@ -178,6 +182,7 @@ func TestGpCovMarkResumedReportsAResumedMarkerThatCannotBeCreated(t *testing.T) 
 }
 
 func TestGpCovLookupExactRejectsUnsafeRecordModes(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	record, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-exact-mode", Runtime: "codex"})
 	if err != nil {
@@ -208,6 +213,7 @@ func TestGpCovLookupExactRejectsUnsafeRecordModes(t *testing.T) {
 }
 
 func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
+	t.Parallel()
 	for _, pid := range []int{0, -1, -4242} {
 		if evidence, ok := processEvidence(pid); ok {
 			t.Fatalf("processEvidence(%d) = (%#v, true), want no evidence", pid, evidence)
@@ -255,6 +261,7 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 }
 
 func TestGpCovProcessEvidenceRefusesAProcessThatHasExited(t *testing.T) {
+	t.Parallel()
 	exitPath := ""
 	for _, candidate := range []string{"/usr/bin/true", "/bin/true"} {
 		if _, err := os.Stat(candidate); err == nil {
@@ -287,6 +294,7 @@ func TestGpCovProcessEvidenceRefusesAProcessThatHasExited(t *testing.T) {
 }
 
 func TestGpCovParentPIDReportsTheRealAncestorAndRefusesRoot(t *testing.T) {
+	t.Parallel()
 	parent, ok := parentPID(os.Getpid())
 	if !ok {
 		t.Fatalf("parentPID(%d) reported no parent for a running process", os.Getpid())
@@ -303,6 +311,7 @@ func TestGpCovParentPIDReportsTheRealAncestorAndRefusesRoot(t *testing.T) {
 }
 
 func TestGpCovFindHarnessAncestorNamesAKnownHarnessAncestor(t *testing.T) {
+	t.Parallel()
 	harnessPID, childPID := gpCovHarnessNamedProcess(t, "cursor-agent")
 	pid, runtime := findHarnessAncestor(childPID)
 	if pid != harnessPID || runtime != "cursor-agent" {
@@ -312,6 +321,7 @@ func TestGpCovFindHarnessAncestorNamesAKnownHarnessAncestor(t *testing.T) {
 }
 
 func TestGpCovFindHarnessAncestorWalksPastANonHarnessParent(t *testing.T) {
+	t.Parallel()
 	namedPID, childPID := gpCovHarnessNamedProcess(t, "gpcovsh")
 	pid, runtime := findHarnessAncestor(childPID)
 	if pid == namedPID {
@@ -375,6 +385,7 @@ func gpCovWithoutFileWrites(t *testing.T, fn func()) {
 }
 
 func TestGpCovLifecycleMarkersReportWriteFailures(t *testing.T) {
+	t.Parallel()
 	if gpCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

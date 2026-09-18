@@ -10,6 +10,7 @@ import (
 )
 
 func TestHarnessSpecUsesFixedSameAndCrossHarnessArgv(t *testing.T) {
+	t.Parallel()
 	request := launchTestRequest()
 
 	codex, err := harnessSpec(request, "/target/worktree")
@@ -45,6 +46,7 @@ func TestHarnessSpecUsesFixedSameAndCrossHarnessArgv(t *testing.T) {
 }
 
 func TestNormalizeRuntimeAcceptsSpokenHarnessNames(t *testing.T) {
+	t.Parallel()
 	runtime, err := NormalizeRuntime("codex", "claude")
 	if err != nil || runtime != RuntimeClaudeCode {
 		t.Fatalf("claude alias = %q %v", runtime, err)
@@ -56,6 +58,7 @@ func TestNormalizeRuntimeAcceptsSpokenHarnessNames(t *testing.T) {
 }
 
 func TestHarnessSpecRejectsUnsupportedHarness(t *testing.T) {
+	t.Parallel()
 	request := launchTestRequest()
 	request.RequestedHarness = "shell"
 	if _, err := harnessSpec(request, "/target/worktree"); err == nil || !strings.Contains(err.Error(), "supported") {
@@ -64,6 +67,7 @@ func TestHarnessSpecRejectsUnsupportedHarness(t *testing.T) {
 }
 
 func TestPrivateContinuationNeverAppearsInHarnessArgv(t *testing.T) {
+	t.Parallel()
 	secretPath := "/private/park-resumes/resume-secret/successor-context.md"
 	secretBody := "private continuation marker that must remain out of argv"
 	authority := sessionauthority.Launch{

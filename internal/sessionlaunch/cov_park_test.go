@@ -90,6 +90,7 @@ func slCovParkFixture(t *testing.T) (*launchState, launchPlan, sessionpark.Bundl
 }
 
 func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
+	t.Parallel()
 	t.Run("exact bundle", func(t *testing.T) {
 		state, plan, _, continuationPath := slCovParkFixture(t)
 		got, err := validatePrivateParkPlan(state, plan)
@@ -156,6 +157,7 @@ func TestSlCovValidatePrivateParkPlanLocalBundle(t *testing.T) {
 		}
 	})
 	t.Run("field divergence", func(t *testing.T) {
+		t.Parallel()
 		mutations := map[string]func(*launchPlan){
 			"handoff":           func(plan *launchPlan) { plan.HandoffID = "other" },
 			"successor":         func(plan *launchPlan) { plan.SuccessorWBSessionID = "other" },
@@ -280,6 +282,7 @@ func slCovParkEnvelopeFixture(t *testing.T, continuation string, requestContinua
 }
 
 func TestSlCovValidatePrivateParkPlanRemoteEnvelope(t *testing.T) {
+	t.Parallel()
 	t.Run("exact envelope", func(t *testing.T) {
 		state, plan, continuationPath := slCovParkEnvelopeFixture(t, "envelope continuation\n", "envelope continuation\n")
 		got, err := validatePrivateParkPlan(state, plan)
@@ -390,6 +393,7 @@ func TestSlCovVerifyPrivateLocalRootLocalMembers(t *testing.T) {
 		t.Fatalf("exact parked-local plan = %v", err)
 	}
 	t.Run("member HEAD changed", func(t *testing.T) {
+		t.Parallel()
 		slCovWrite(t, filepath.Join(repo, "extra.txt"), 0o644, "extra\n")
 		slCovGit(t, repo, "add", "extra.txt")
 		slCovGit(t, repo, "commit", "-q", "-m", "extra")

@@ -44,6 +44,7 @@ func validMessageReceipt(message Message, digest Digest) MessageReceipt {
 }
 
 func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	message := validMessage(request)
 	if _, err := EncodeMessage(message); err != nil {
@@ -67,6 +68,7 @@ func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value := message
 			test.mutate(&value)
 			if _, err := EncodeMessage(value); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -89,6 +91,7 @@ func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing
 }
 
 func TestMessageReceiptStrictlyBindsExactMessageAndPasteAcknowledgement(t *testing.T) {
+	t.Parallel()
 	message := validMessage(validRequest())
 	raw, err := EncodeMessage(message)
 	if err != nil {
@@ -121,6 +124,7 @@ func TestMessageReceiptStrictlyBindsExactMessageAndPasteAcknowledgement(t *testi
 }
 
 func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	requestRaw, err := EncodeRequest(request)
 	if err != nil {
@@ -209,6 +213,7 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 		{"paste intent", func(value *MessageReceipt) { value.PaneID = "%8" }},
 	} {
 		t.Run("load refuses forged "+test.name, func(t *testing.T) {
+			t.Parallel()
 			forged := receipt
 			test.mutate(&forged)
 			raw, err := EncodeMessageReceipt(forged)
@@ -229,6 +234,7 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 }
 
 func TestMessageStoreRepairsPayloadOnlyAdmissionAndRefusesConflictingRecord(t *testing.T) {
+	t.Parallel()
 	fixture := func(t *testing.T) (Store, Request, Digest, *ExecutionLock, Message, []byte) {
 		t.Helper()
 		request := validRequest()
@@ -267,6 +273,7 @@ func TestMessageStoreRepairsPayloadOnlyAdmissionAndRefusesConflictingRecord(t *t
 	}
 
 	t.Run("repairs missing record", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, lock, message, _ := fixture(t)
 		defer func() { _ = lock.Close() }()
 		state, err := store.ResumeOutgoingMessageUnderLock(lock, request.HandoffID, digest, message.MessageID)
@@ -276,6 +283,7 @@ func TestMessageStoreRepairsPayloadOnlyAdmissionAndRefusesConflictingRecord(t *t
 	})
 
 	t.Run("refuses conflicting existing record", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, lock, message, _ := fixture(t)
 		defer func() { _ = lock.Close() }()
 		entry := filepath.Join(store.Root, request.HandoffID, messageOutboxDirName, message.MessageID)

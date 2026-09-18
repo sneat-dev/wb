@@ -45,6 +45,7 @@ func latestScopeOptions(githubDir string, versions map[string]string) BumpOption
 }
 
 func TestDeriveLatestReleaseEventsSeedsEveryPublishedModuleInScope(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	events, resolutions, err := DeriveLatestReleaseEvents(context.Background(), repositories, []string{"@acme/*"},
@@ -78,6 +79,7 @@ func TestDeriveLatestReleaseEventsSeedsEveryPublishedModuleInScope(t *testing.T)
 // "This scope publishes four modules" and "four of this scope's modules could
 // be read" are different statements, and only one of them is true here.
 func TestDeriveLatestReleaseEventsRecordsUnpublishedModulesWithoutSeedingThem(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	events, resolutions, err := DeriveLatestReleaseEvents(context.Background(), repositories, []string{"@acme/*"},
@@ -98,6 +100,7 @@ func TestDeriveLatestReleaseEventsRecordsUnpublishedModulesWithoutSeedingThem(t 
 }
 
 func TestDeriveLatestReleaseEventsRefusesWithoutAScope(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	_, _, err := DeriveLatestReleaseEvents(context.Background(), repositories, []string{"  "},
@@ -108,6 +111,7 @@ func TestDeriveLatestReleaseEventsRefusesWithoutAScope(t *testing.T) {
 }
 
 func TestDeriveLatestReleaseEventsRefusesAScopeThatMatchesNothing(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	_, _, err := DeriveLatestReleaseEvents(context.Background(), repositories, []string{"@nobody/*"},
@@ -120,6 +124,7 @@ func TestDeriveLatestReleaseEventsRefusesAScopeThatMatchesNothing(t *testing.T) 
 // A scope whose modules all fail to resolve is a refusal, not an empty
 // campaign: silently bumping nothing looks identical to success.
 func TestDeriveLatestReleaseEventsRefusesWhenNothingInScopeIsPublished(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	_, resolutions, err := DeriveLatestReleaseEvents(context.Background(), repositories, []string{"@acme/*"},
@@ -136,6 +141,7 @@ func TestDeriveLatestReleaseEventsRefusesWhenNothingInScopeIsPublished(t *testin
 // event from a module WB has agreed never to touch would push the whole fleet
 // onto a version this run refuses to verify.
 func TestDeriveLatestReleaseEventsHonoursExcludedRepositories(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	options := latestScopeOptions(githubDir, map[string]string{"@acme/core": "0.4.0", "@acme/extras": "0.2.1"})
@@ -153,6 +159,7 @@ func TestDeriveLatestReleaseEventsHonoursExcludedRepositories(t *testing.T) {
 }
 
 func TestDeriveLatestReleaseEventsRefusesUnderANoRegistryPlan(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	options := latestScopeOptions(githubDir, map[string]string{"@acme/core": "0.4.0"})
@@ -166,6 +173,7 @@ func TestDeriveLatestReleaseEventsRefusesUnderANoRegistryPlan(t *testing.T) {
 // The derived events must actually drive the campaign, not merely be printed:
 // this runs the wave engine on them and asserts the consumer was planned.
 func TestRunBumpAcceptsDerivedLatestEventsAndReportsTheirProvenance(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newLatestScopeFleet(t)
 
 	options := latestScopeOptions(githubDir, map[string]string{"@acme/core": "0.4.0"})

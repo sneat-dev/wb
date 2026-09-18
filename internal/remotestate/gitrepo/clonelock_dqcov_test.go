@@ -12,6 +12,7 @@ import (
 // whose parent cannot be created as a directory fails acquisition with the
 // lock-directory error rather than panicking or silently proceeding unlocked.
 func TestDQCovAcquireCloneLockReportsUncreatableLockDirectory(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -32,6 +33,7 @@ func TestDQCovAcquireCloneLockReportsUncreatableLockDirectory(t *testing.T) {
 // exists as a directory cannot be opened as the lock file, and the failure is
 // reported with the open error.
 func TestDQCovAcquireCloneLockReportsUnopenableLockFile(t *testing.T) {
+	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
 	if err := os.MkdirAll(clonePath+cloneLockSuffix, 0o755); err != nil {
 		t.Fatal(err)
@@ -83,6 +85,7 @@ func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 // TestDQCovCloneLockReleaseNilAndEmptyIsNoop proves release is safe on a nil
 // lock and on a lock whose file was never set, returning nil both times.
 func TestDQCovCloneLockReleaseNilAndEmptyIsNoop(t *testing.T) {
+	t.Parallel()
 	var nilLock *cloneLock
 	if err := nilLock.release(); err != nil {
 		t.Fatalf("nil lock release = %v, want nil", err)
@@ -97,6 +100,7 @@ func TestDQCovCloneLockReleaseNilAndEmptyIsNoop(t *testing.T) {
 // failing unlock: after the underlying descriptor is closed out from under it,
 // Flock can no longer succeed and release returns that error.
 func TestDQCovCloneLockReleaseReportsUnlockFailure(t *testing.T) {
+	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
 	lock, err := acquireCloneLock(clonePath)
 	if err != nil {

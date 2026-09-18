@@ -562,6 +562,7 @@ func TestCreateDoesNotFollowSubstitutedWBHomeBeforeInitialOpen(t *testing.T) {
 }
 
 func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(*testing.T, *gitFixture, string)
@@ -965,6 +966,7 @@ func TestCreateRefusesLatePublishedWorktreeSubstitutionBeforeRepair(t *testing.T
 }
 
 func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1009,6 +1011,7 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 }
 
 func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1038,6 +1041,7 @@ func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
 }
 
 func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1061,6 +1065,7 @@ func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
 }
 
 func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		retiredName string
@@ -1083,6 +1088,7 @@ func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			operationRoot := t.TempDir()
 			if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
 				operationRoot = resolved
@@ -1113,6 +1119,7 @@ func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 }
 
 func TestSecureStagePoolSkipsReplacementAndDoesNotCapExhaustedEntries(t *testing.T) {
+	t.Parallel()
 	operationRoot := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
 		operationRoot = resolved
@@ -1151,6 +1158,7 @@ func TestSecureStagePoolSkipsReplacementAndDoesNotCapExhaustedEntries(t *testing
 }
 
 func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1186,6 +1194,7 @@ func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
 }
 
 func TestOperationLockClaimNeverMutatesHardLinkedRetirement(t *testing.T) {
+	t.Parallel()
 	directoryPath := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
 		directoryPath = resolved
@@ -1244,6 +1253,7 @@ func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
 }
 
 func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
+	t.Parallel()
 	environment := gitEnvironmentWithHeldGitDirAndWorkTree("/retained/git", "/retained/repository")
 	values := map[string]string{}
 	for _, entry := range environment {
@@ -1884,11 +1894,13 @@ func TestGuardCanonicalFreshnessReportsOfflineExplicitly(t *testing.T) {
 }
 
 func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
+	t.Parallel()
 	const local = "1111111111111111111111111111111111111111"
 	const fetched = "2222222222222222222222222222222222222222"
 	const moved = "3333333333333333333333333333333333333333"
 
 	t.Run("fetch failure", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
 				return local + "\n", nil
@@ -1908,6 +1920,7 @@ func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
 	})
 
 	t.Run("target drift", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			switch args[0] {
 			case "rev-parse":
@@ -2034,6 +2047,7 @@ func TestGuardAdmitsCommitInAnAdoptedWorktree(t *testing.T) {
 }
 
 func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name  string
 		args  []string

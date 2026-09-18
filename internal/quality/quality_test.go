@@ -19,6 +19,7 @@ import (
 )
 
 func TestCoverAggregatesGoStatements(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/coverage\n\ngo 1.26\n")
 	writeQualityFile(t, filepath.Join(repository, "coverage.go"), "package coverage\n\nfunc Covered() int { return 1 }\nfunc Uncovered() int { return 2 }\n")
@@ -44,6 +45,7 @@ func TestCoverAggregatesGoStatements(t *testing.T) {
 }
 
 func TestProfileTotals(t *testing.T) {
+	t.Parallel()
 	profile := filepath.Join(t.TempDir(), "coverage.out")
 	writeQualityFile(t, profile, "mode: set\nexample.go:1.1,1.2 3 1\nexample.go:2.1,2.2 2 0\n")
 	statements, covered, err := profileTotals(profile)
@@ -313,6 +315,7 @@ func TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace(t *testing.T) {
 }
 
 func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
+	t.Parallel()
 	for manager, want := range map[string]string{
 		"npm":  "npm ci",
 		"pnpm": "pnpm install --frozen-lockfile",
@@ -326,6 +329,7 @@ func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
 }
 
 func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(nodeCheckCommand("pnpm", CheckLint, true, true), " ")
 	want := "node node_modules/nx/dist/bin/nx.js run-many --target=lint --all --skip-nx-cache --parallel=1"
 	if got != want {
@@ -334,7 +338,9 @@ func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testi
 }
 
 func TestVerifySpecScoreConfiguration(t *testing.T) {
+	t.Parallel()
 	t.Run("configured missing root fails closed", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "specscore.yaml"), "project:\n  slug: example\n")
 
@@ -349,6 +355,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 	})
 
 	t.Run("unconfigured missing root remains non-applicable", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 
 		report := Verify(context.Background(), "example/no-spec", repository, []Check{CheckSpec})
@@ -403,6 +410,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 	// pins the boundaries of the carve-out.
 
 	t.Run("external plans store without config is skipped", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeExternalPlansStore(t, repository)
 
@@ -466,6 +474,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 // not exactly an external store must run specscore spec lint (fail closed);
 // a stub specscore records whether it ran.
 func TestVerifyExternalPlansStore(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper and symlinks are POSIX-only")
 	}
@@ -686,6 +695,7 @@ func TestVerifyExternalPlansStore(t *testing.T) {
 // TestExternalPlansStorePath pins the path rule for every non-directory
 // entry under spec/ in an external Plans store.
 func TestExternalPlansStorePath(t *testing.T) {
+	t.Parallel()
 	for rel, want := range map[string]bool{
 		// Aggregate index, and what a symlinked spec/ or spec/plans looks like.
 		"plans/README.md":         true,
@@ -798,6 +808,7 @@ func stubSpecscoreBinary(t *testing.T, repository string) string {
 }
 
 func TestParseChecks(t *testing.T) {
+	t.Parallel()
 	checks, err := ParseChecks("test,lint,test")
 	if err != nil {
 		t.Fatal(err)
@@ -811,6 +822,7 @@ func TestParseChecks(t *testing.T) {
 }
 
 func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
+	t.Parallel()
 	prefix := "setup context\n"
 	middle := strings.Repeat("passing package output\n", 100)
 	failure := "--- FAIL: TestImportantJourney (15.14s)\n    journey_test.go:42: exact failure\nFAIL"
@@ -829,6 +841,7 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 }
 
 func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *testing.T) {
+	t.Parallel()
 	jobs := []goCoverageJob{
 		{label: "example.test/serial shard 2/2"},
 		{label: "unsharded packages"},
@@ -887,6 +900,7 @@ func TestBoundedCoverageParallelismLeavesOneEffectiveCPUForOtherAgents(t *testin
 }
 
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
 	writeQualityFile(t, filepath.Join(module, "serial", "serial.go"), "package serial\n\nfunc Value() int { return 1 }\n")
@@ -953,6 +967,7 @@ func TestBetaFails(t *testing.T) {
 }
 
 func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
@@ -977,6 +992,7 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 }
 
 func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
+	t.Parallel()
 	if got := strings.Join(goCommand(CheckTest, false, 20*time.Minute), " "); got != "go test -timeout 20m0s ./..." {
 		t.Fatalf("go test command=%q", got)
 	}
@@ -986,6 +1002,7 @@ func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
 }
 
 func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
@@ -1002,6 +1019,7 @@ func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
 }
 
 func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
@@ -1020,6 +1038,7 @@ func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
 }
 
 func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
 	}
@@ -1032,6 +1051,7 @@ func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
 		{name: "delayed-start", startupDelay: "sleep 1.2\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			pidsPath := filepath.Join(dir, "pids")
 			tool := filepath.Join(dir, "forking-cancellation-tool")

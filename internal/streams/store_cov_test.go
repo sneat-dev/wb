@@ -11,6 +11,7 @@ import (
 // A projects root whose ancestor is a regular file cannot be resolved, so the
 // store must fail rather than guess a location.
 func TestStoreOpenReportsAnUnresolvableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,6 +22,7 @@ func TestStoreOpenReportsAnUnresolvableProjectsRoot(t *testing.T) {
 }
 
 func TestStoreWithoutAClockUsesTheWallClock(t *testing.T) {
+	t.Parallel()
 	store := &Store{Root: filepath.Join(t.TempDir(), "streams")}
 	before := time.Now().UTC().Add(-time.Minute)
 	stream, err := store.Create(Stream{Name: "clocked"})
@@ -37,6 +39,7 @@ func TestStoreWithoutAClockUsesTheWallClock(t *testing.T) {
 }
 
 func TestStoreLoadReportsAnUnreadableStatePath(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.statePath("blocked"), 0o700); err != nil {
 		t.Fatal(err)
@@ -48,6 +51,7 @@ func TestStoreLoadReportsAnUnreadableStatePath(t *testing.T) {
 }
 
 func TestStoreListReportsAnUnreadableStoreAndSkipsNonDirectories(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "streams")
 	store := OpenAt(root)
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -82,6 +86,7 @@ func TestStoreListReportsAnUnreadableStoreAndSkipsNonDirectories(t *testing.T) {
 }
 
 func TestStoreListSortsReadableNewestFirstAndUnreadableByName(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	newer := older.Add(time.Hour)
@@ -112,6 +117,7 @@ func TestStoreListSortsReadableNewestFirstAndUnreadableByName(t *testing.T) {
 }
 
 func TestStoreCreateValidatesTheNameAndReportsALockFailure(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "has space"}); err == nil {
 		t.Fatal("Create accepted an invalid stream name")
@@ -142,6 +148,7 @@ func TestStoreCreateValidatesTheNameAndReportsALockFailure(t *testing.T) {
 }
 
 func TestStoreWithStoreLockRunsTheBodyAndReportsItsError(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	ran := false
 	if err := store.WithStoreLock(func() error { ran = true; return nil }); err != nil {
@@ -157,6 +164,7 @@ func TestStoreWithStoreLockRunsTheBodyAndReportsItsError(t *testing.T) {
 }
 
 func TestStoreCreateReportsUninspectableAndUnwritableState(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Root, 0o700); err != nil {
 		t.Fatal(err)
@@ -182,6 +190,7 @@ func TestStoreCreateReportsUninspectableAndUnwritableState(t *testing.T) {
 }
 
 func TestStoreArchiveReusesAnEndedStreamNameAndKeepsTheEvidence(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	fixed := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 	store.Now = func() time.Time { return fixed }
@@ -238,6 +247,7 @@ func TestStoreArchiveReusesAnEndedStreamNameAndKeepsTheEvidence(t *testing.T) {
 }
 
 func TestStoreArchiveRefusesOpenAndMissingStreams(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "live", Phase: PhaseOpen}); err != nil {
 		t.Fatal(err)
@@ -262,6 +272,7 @@ func TestStoreArchiveRefusesOpenAndMissingStreams(t *testing.T) {
 }
 
 func TestStoreDeleteRemovesOnlyEndedStreams(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	ended := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	if _, err := store.Create(Stream{Name: "finished", Phase: PhaseEnded, EndedAt: &ended}); err != nil {
@@ -294,6 +305,7 @@ func TestStoreDeleteRemovesOnlyEndedStreams(t *testing.T) {
 }
 
 func TestStoreUpdateReportsUnknownNamesAndUncreatableLocks(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Update("has space", func(*Stream) error { return nil }); err == nil {
 		t.Fatal("Update accepted an invalid stream name")
@@ -326,6 +338,7 @@ func TestStoreUpdateReportsUnknownNamesAndUncreatableLocks(t *testing.T) {
 }
 
 func TestStoreRepositoryStreamReportsAnUnreadableStore(t *testing.T) {
+	t.Parallel()
 	blocked := OpenAt(filepath.Join(t.TempDir(), "store-file"))
 	if _, err := os.Create(blocked.Root); err != nil {
 		t.Fatal(err)
@@ -346,6 +359,7 @@ func TestStoreRepositoryStreamReportsAnUnreadableStore(t *testing.T) {
 // refuse that repository's stream. A record that does name the repository, or
 // whose index is incomplete, stays fail-closed.
 func TestRepositoryStreamExcludesUnreadableRecordsByTheirStableIndex(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	writeState := func(name, contents string) {
 		t.Helper()
@@ -379,6 +393,7 @@ func TestRepositoryStreamExcludesUnreadableRecordsByTheirStableIndex(t *testing.
 // A record whose index cannot be reread is unknown, never absent: it is handed
 // to the caller so the one-open-stream guard can fail closed.
 func TestRepositoryStreamKeepsRecordsWhoseIndexCannotBeRead(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(filepath.Join(store.Dir("unreadable-index"), "stream.json"), 0o700); err != nil {
 		t.Fatal(err)
@@ -396,6 +411,7 @@ func TestRepositoryStreamKeepsRecordsWhoseIndexCannotBeRead(t *testing.T) {
 // links held by a linked consumer as well as by a member, and must never
 // resurrect a link recorded by an ended stream.
 func TestLiveLinksForWorktreeFindsMemberAndLinkedConsumerLinks(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	store := OpenAt(filepath.Join(base, "streams"))
 	worktree := filepath.Join(base, "consumer")
@@ -460,6 +476,7 @@ func TestLiveLinksForWorktreeFindsMemberAndLinkedConsumerLinks(t *testing.T) {
 }
 
 func TestNormalizePathHandlesEmptyMissingAndSymlinkedPaths(t *testing.T) {
+	t.Parallel()
 	if got := normalizePath("   "); got != "" {
 		t.Fatalf("normalizePath of a blank path = %q, want empty", got)
 	}

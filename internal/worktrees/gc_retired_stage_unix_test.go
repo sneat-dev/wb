@@ -48,6 +48,7 @@ func TestGCApplyRetiresEmptyUnscopedCanonicalStage(t *testing.T) {
 }
 
 func TestRetireEmptyUnscopedLocalStagePreservesStageThatBecameNonEmpty(t *testing.T) {
+	t.Parallel()
 	worktreesRoot := t.TempDir()
 	stage := filepath.Join(worktreesRoot, testRetiredStage)
 	if err := os.Mkdir(stage, 0o700); err != nil {
@@ -70,6 +71,7 @@ func TestRetireEmptyUnscopedLocalStagePreservesStageThatBecameNonEmpty(t *testin
 }
 
 func TestRetireEmptyUnscopedLocalStageRefusesRenameReplacementRace(t *testing.T) {
+	t.Parallel()
 	worktreesRoot := t.TempDir()
 	stage := filepath.Join(worktreesRoot, testRetiredStage)
 	escaped := filepath.Join(worktreesRoot, "concurrently-moved-stage")
@@ -100,6 +102,7 @@ func TestRetireEmptyUnscopedLocalStageRefusesRenameReplacementRace(t *testing.T)
 }
 
 func TestRetireEmptyUnscopedLocalStageDoesNotClaimReplacementRemoval(t *testing.T) {
+	t.Parallel()
 	worktreesRoot := t.TempDir()
 	stage := filepath.Join(worktreesRoot, testRetiredStage)
 	if err := os.Mkdir(stage, 0o700); err != nil {

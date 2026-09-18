@@ -47,6 +47,7 @@ func newCreatedManifest(effort string) Manifest {
 }
 
 func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		path string
@@ -59,6 +60,7 @@ func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := effortFromWorktreePath(test.path); got != test.want {
 				t.Fatalf("effortFromWorktreePath(%q) = %q, want %q", test.path, got, test.want)
 			}
@@ -70,6 +72,7 @@ func TestEffortFromWorktreePathSupportsLocalAndSharedLayouts(t *testing.T) {
 // be triaged with nothing else intact. This deletes every external record
 // before reading, because that is the state an abandoned checkout is found in.
 func TestManifestAndPromptsSurviveLossOfEveryExternalRecord(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if err := WriteManifest(worktree, newCreatedManifest("gg-input-types")); err != nil {
 		t.Fatal(err)
@@ -103,6 +106,7 @@ func TestManifestAndPromptsSurviveLossOfEveryExternalRecord(t *testing.T) {
 }
 
 func TestManifestIsImmutableOnceWritten(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if err := WriteManifest(worktree, newCreatedManifest("effort")); err != nil {
 		t.Fatal(err)
@@ -114,6 +118,7 @@ func TestManifestIsImmutableOnceWritten(t *testing.T) {
 }
 
 func TestConcurrentManifestWritersCannotReplaceWinner(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	manifests := []Manifest{newCreatedManifest("first-effort"), newCreatedManifest("second-effort")}
 	start := make(chan struct{})
@@ -151,6 +156,7 @@ func TestConcurrentManifestWritersCannotReplaceWinner(t *testing.T) {
 }
 
 func TestReconstructedManifestMustRecordWhatWasInferred(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	manifest := newCreatedManifest("legacy-effort")
 	manifest.Provenance = ProvenanceReconstructed
@@ -174,6 +180,7 @@ func TestReconstructedManifestMustRecordWhatWasInferred(t *testing.T) {
 // Lexical order must equal chronological order past ordinal nine, which is
 // exactly where an unpadded ordinal starts replaying a session out of order.
 func TestPromptOrdinalsStayOrderedPastNine(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	for index := 0; index < 12; index++ {
 		body := []byte("instruction " + string(rune('a'+index)))
@@ -209,6 +216,7 @@ func TestPromptOrdinalsStayOrderedPastNine(t *testing.T) {
 }
 
 func TestConcurrentPromptWritersSerializeOrdinalsWithoutOverwrite(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	bodies := [][]byte{[]byte("first exact concurrent prompt\n"), []byte("second exact concurrent prompt\n")}
 	start := make(chan struct{})
@@ -248,6 +256,7 @@ func TestConcurrentPromptWritersSerializeOrdinalsWithoutOverwrite(t *testing.T) 
 }
 
 func TestPromptSourceIsRecordedNeverInferred(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if _, err := AppendPrompt(worktree, PromptHeader{}, []byte("no source")); err == nil {
 		t.Fatal("a prompt without an explicit source must be refused")
@@ -263,6 +272,7 @@ func TestPromptSourceIsRecordedNeverInferred(t *testing.T) {
 }
 
 func TestPromptBodyIsStoredExactlyWithItsDigest(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	body := []byte("worklog can't be 20 bytes - worklog is all what happened\n")
 	name, err := AppendPrompt(worktree, PromptHeader{Source: PromptSourceHuman}, body)
@@ -289,6 +299,7 @@ func TestPromptBodyIsStoredExactlyWithItsDigest(t *testing.T) {
 // The exclude rule must never be /.wb/, which would swallow newly added files
 // in the repository's own tracked .wb/templates/.
 func TestExcludeRuleDoesNotSwallowTrackedRepositoryPolicy(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	policy := filepath.Join(worktree, journalRootDirectory, "templates")
 	if err := os.MkdirAll(policy, 0o755); err != nil {
@@ -311,6 +322,7 @@ func TestExcludeRuleDoesNotSwallowTrackedRepositoryPolicy(t *testing.T) {
 }
 
 func TestEffortPathParentageIsLexicalAndValidated(t *testing.T) {
+	t.Parallel()
 	for _, valid := range []string{"feature", "feature.task", "feature.task1.subtask2.level4"} {
 		if !ValidEffortPath(valid) {
 			t.Fatalf("%q must be a valid effort path", valid)
@@ -336,6 +348,7 @@ func TestEffortPathParentageIsLexicalAndValidated(t *testing.T) {
 }
 
 func TestManifestRejectsParentContradictingItsPath(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	manifest := newCreatedManifest("feature.task")
 	manifest.ParentEffort = "somewhere-else"
@@ -349,6 +362,7 @@ func TestManifestRejectsParentContradictingItsPath(t *testing.T) {
 // can lack its record. Warn mode is what lets a fleet with unattended agents
 // adopt the gate without a flag day.
 func TestAdmissionWarnsBeforeItEnforces(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 
 	warned := CheckAdmission(worktree, AdmissionWarn)
@@ -386,6 +400,7 @@ func TestAdmissionWarnsBeforeItEnforces(t *testing.T) {
 // recording a prompt has to backfill the manifest too or the advice is a dead
 // end.
 func TestReconstructionMakesTheNamedRemedySufficient(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	gitTest(t, worktree, "commit", "--allow-empty", "-m", "seed")
 	gitTest(t, worktree, "checkout", "-b", "some-effort")
@@ -417,6 +432,7 @@ func TestReconstructionMakesTheNamedRemedySufficient(t *testing.T) {
 }
 
 func TestReconstructionIsIdempotentAndNeverOverwrites(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	gitTest(t, worktree, "commit", "--allow-empty", "-m", "seed")
 	gitTest(t, worktree, "checkout", "-b", "some-effort")
@@ -435,6 +451,7 @@ func TestReconstructionIsIdempotentAndNeverOverwrites(t *testing.T) {
 }
 
 func TestMissingManifestIsADeterministicDiagnosis(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	_, err := ReadManifest(worktree)
 	if !errors.Is(err, errManifestNotFound) {

@@ -28,6 +28,7 @@ func (roundTrip installationTokenRoundTripper) RoundTrip(request *http.Request) 
 }
 
 func TestInstallationTokenSourceExchangesSignedAppJWT(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.September, 6, 5, 0, 0, 0, time.UTC)
 	privateKey := testRSAPrivateKey(t)
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
@@ -63,6 +64,7 @@ func TestInstallationTokenSourceExchangesSignedAppJWT(t *testing.T) {
 }
 
 func TestInstallationTokenSourceAcceptsPKCS8AndDefaultGitHubAPI(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.September, 6, 5, 0, 0, 0, time.UTC)
 	privateKey := testRSAPrivateKey(t)
 	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
@@ -86,6 +88,7 @@ func TestInstallationTokenSourceAcceptsPKCS8AndDefaultGitHubAPI(t *testing.T) {
 }
 
 func TestInstallationTokenSourceRejectsInvalidConfigurationAndDelivery(t *testing.T) {
+	t.Parallel()
 	valid := validInstallationTokenSource(t)
 	cases := map[string]InstallationTokenSource{
 		"app ID":      func() InstallationTokenSource { source := valid; source.AppID = 0; return source }(),
@@ -95,6 +98,7 @@ func TestInstallationTokenSourceRejectsInvalidConfigurationAndDelivery(t *testin
 	}
 	for name, source := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := source.Token(context.Background(), WebhookDelivery{Payload: []byte(`{"installation":{"id":1}}`)}); err == nil {
 				t.Fatal("expected configuration error")
 			}
@@ -109,6 +113,7 @@ func TestInstallationTokenSourceRejectsInvalidConfigurationAndDelivery(t *testin
 		"repository only": `{"repository":{"id":1}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := valid.Token(context.Background(), WebhookDelivery{Payload: []byte(payload)}); err == nil {
 				t.Fatal("expected installation identity error")
 			}
@@ -117,6 +122,7 @@ func TestInstallationTokenSourceRejectsInvalidConfigurationAndDelivery(t *testin
 }
 
 func TestInstallationTokenSourceRejectsInvalidPrivateKeys(t *testing.T) {
+	t.Parallel()
 	source := validInstallationTokenSource(t)
 	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -135,6 +141,7 @@ func TestInstallationTokenSourceRejectsInvalidPrivateKeys(t *testing.T) {
 		"RSA too small": pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(tinyRSAPrivateKey())}),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			source.PrivateKeyPEM = key
 			_, tokenErr := source.Token(context.Background(), WebhookDelivery{Payload: []byte(`{"installation":{"id":1}}`)})
 			if tokenErr == nil {
@@ -148,6 +155,7 @@ func TestInstallationTokenSourceRejectsInvalidPrivateKeys(t *testing.T) {
 }
 
 func TestInstallationTokenSourceRejectsRequestAndResponseFailures(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.September, 6, 5, 0, 0, 0, time.UTC)
 	cases := map[string]struct {
 		base      string
@@ -174,6 +182,7 @@ func TestInstallationTokenSourceRejectsRequestAndResponseFailures(t *testing.T) 
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			source := validInstallationTokenSource(t)
 			source.APIBase = testCase.base
 			source.Transport = testCase.transport
@@ -192,6 +201,7 @@ func TestInstallationTokenSourceRejectsRequestAndResponseFailures(t *testing.T) 
 }
 
 func TestInstallationTokenSourcePreservesContextCancellationWithoutTransportErrorDetails(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	source := validInstallationTokenSource(t)
@@ -204,6 +214,7 @@ func TestInstallationTokenSourcePreservesContextCancellationWithoutTransportErro
 }
 
 func TestSignGitHubAppJWTRejectsInvalidRSAKey(t *testing.T) {
+	t.Parallel()
 	key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: big.NewInt(1), E: 65537}}
 	if _, err := signGitHubAppJWT(key, 1, time.Unix(1, 0)); err == nil {
 		t.Fatal("expected signing error")

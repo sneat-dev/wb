@@ -10,6 +10,7 @@ import (
 )
 
 func TestMigCovImportedGoPackageWithoutScopeOrBinding(t *testing.T) {
+	t.Parallel()
 	// A selector whose package binding was never recorded resolves to no
 	// package at all rather than falling back to a spelling-only match.
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Scopes: map[ast.Node]*types.Scope{}}
@@ -134,6 +135,7 @@ func migCovIsolateGitIdentity(t *testing.T) {
 }
 
 func TestMigCovCampaignRegisteredWorktreesReportsUnreadableOwner(t *testing.T) {
+	t.Parallel()
 	githubDir := t.TempDir()
 	owner := filepath.Join(githubDir, "acme")
 	if err := os.MkdirAll(owner, 0o755); err != nil {
@@ -173,6 +175,7 @@ func TestMigCovCampaignPRReportsLatePhaseFailures(t *testing.T) {
 	}
 
 	t.Run("finalize", func(t *testing.T) {
+		t.Parallel()
 		err := run(t, "ok", func(fixture *campaignIntegrationFixture) {
 			fixture.spec.GoModuleReleases = []GoModuleRelease{{Path: "github.com/acme/provider", Version: "not a version"}}
 		})
@@ -182,6 +185,7 @@ func TestMigCovCampaignPRReportsLatePhaseFailures(t *testing.T) {
 	})
 
 	t.Run("push", func(t *testing.T) {
+		t.Parallel()
 		err := run(t, "fail-create", nil)
 		if err == nil {
 			t.Fatal("RunCampaign() succeeded although gh pr create failed")
@@ -189,6 +193,7 @@ func TestMigCovCampaignPRReportsLatePhaseFailures(t *testing.T) {
 	})
 
 	t.Run("checks-error", func(t *testing.T) {
+		t.Parallel()
 		err := run(t, "fail-api", nil)
 		if err == nil {
 			t.Fatal("RunCampaign() succeeded although checks could not be read")
@@ -196,6 +201,7 @@ func TestMigCovCampaignPRReportsLatePhaseFailures(t *testing.T) {
 	})
 
 	t.Run("checks-not-green", func(t *testing.T) {
+		t.Parallel()
 		err := run(t, "fail-checks", nil)
 		if err == nil || !strings.Contains(err.Error(), "required checks are not successful") {
 			t.Fatalf("RunCampaign() = %v, want a required-checks refusal", err)
@@ -203,6 +209,7 @@ func TestMigCovCampaignPRReportsLatePhaseFailures(t *testing.T) {
 	})
 
 	t.Run("merge", func(t *testing.T) {
+		t.Parallel()
 		err := run(t, "fail-merge", nil)
 		if err == nil {
 			t.Fatal("RunCampaign() succeeded although gh pr merge failed")

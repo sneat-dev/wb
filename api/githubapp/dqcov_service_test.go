@@ -19,6 +19,7 @@ func (model dqCovWorktreeModel) Worktrees(context.Context, Viewer, WorktreeFilte
 }
 
 func TestDQCovServiceFailsClosedWithoutConfiguredModels(t *testing.T) {
+	t.Parallel()
 	service := Service{}
 	ctx := context.Background()
 	if _, err := service.Dashboard(ctx, Viewer{}); !errors.Is(err, ErrNoReadModel) {
@@ -48,6 +49,7 @@ func TestDQCovServiceFailsClosedWithoutConfiguredModels(t *testing.T) {
 }
 
 func TestDQCovServicePropagatesReadModelFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	boom := errors.New("read model down")
 	service := Service{ReadModel: &dqCovReadModel{err: boom}}
@@ -74,6 +76,7 @@ func TestDQCovServicePropagatesReadModelFailures(t *testing.T) {
 }
 
 func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	member := Viewer{Authenticated: true, Member: true, UserID: "firebase-user"}
 
@@ -110,11 +113,13 @@ func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
 		},
 	} {
 		t.Run(name+"/anonymous", func(t *testing.T) {
+			t.Parallel()
 			if err := call(Viewer{}); !errors.Is(err, ErrPrivateData) {
 				t.Fatalf("anonymous err = %v, want ErrPrivateData", err)
 			}
 		})
 		t.Run(name+"/member", func(t *testing.T) {
+			t.Parallel()
 			if err := call(member); err != nil {
 				t.Fatalf("member err = %v", err)
 			}
@@ -131,6 +136,7 @@ func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
 }
 
 func TestDQCovEventStreamPropagatesSourceFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if _, _, err := (Service{Events: &dqCovEventSource{replayErr: errors.New("replay down"), live: make(chan Event)}}).
 		EventStream(ctx, Viewer{}, EventFilter{}); err == nil || !strings.Contains(err.Error(), "replay daemon events") {
@@ -147,6 +153,7 @@ func TestDQCovEventStreamPropagatesSourceFailures(t *testing.T) {
 }
 
 func TestDQCovEventStreamFiltersVisibleEventsAndAdvancesCursor(t *testing.T) {
+	t.Parallel()
 	since := time.Unix(100, 0)
 	source := &dqCovEventSource{
 		replay: []Event{
@@ -178,6 +185,7 @@ func TestDQCovEventStreamFiltersVisibleEventsAndAdvancesCursor(t *testing.T) {
 }
 
 func TestDQCovEventStreamKeepsCursorForEmptyReplayAndSkipsStaleLiveEvents(t *testing.T) {
+	t.Parallel()
 	live := make(chan Event, 1)
 	live <- Event{ID: 3, Visibility: VisibilityPublic, Payload: []byte(`{}`)}
 	close(live)
@@ -202,6 +210,7 @@ func TestDQCovEventStreamKeepsCursorForEmptyReplayAndSkipsStaleLiveEvents(t *tes
 }
 
 func TestDQCovEventStreamGoroutineStopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	source := &dqCovEventSource{live: make(chan Event)}
 	_, updates, err := (Service{Events: source}).EventStream(ctx, Viewer{}, EventFilter{})
@@ -215,6 +224,7 @@ func TestDQCovEventStreamGoroutineStopsOnCancelledContext(t *testing.T) {
 }
 
 func TestDQCovEventStreamDropsLiveEventWhenCancelledWhileBlocked(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	live := make(chan Event)
 	source := &dqCovEventSource{live: live}
@@ -233,6 +243,7 @@ func TestDQCovEventStreamDropsLiveEventWhenCancelledWhileBlocked(t *testing.T) {
 }
 
 func TestDQCovProcessWebhookRejectsMalformedSignatureEncoding(t *testing.T) {
+	t.Parallel()
 	engine := ProjectionEngine{
 		Deliveries: &testDeliveries{}, Reader: &testReader{}, Writer: &testProjectionWriter{},
 		AuthoritativeReader: &testReader{}, WebhookSecret: []byte("secret"),

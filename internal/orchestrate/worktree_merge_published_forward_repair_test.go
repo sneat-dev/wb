@@ -54,6 +54,7 @@ func assertNoPublishedForwardRepairCandidate(t *testing.T, fixture engineFixture
 // helper, so exercise each list independently with a real, conflict-free
 // commit that the failed candidate never contained.
 func TestRequireImmutableHistoricalWorktreeMergeSourcesRefusesSideCommitOutsideFailedCandidate(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*WorktreeMergeReceipt, WorktreeMergeSource)
@@ -243,9 +244,11 @@ func assertHistoricalSideArtifacts(t *testing.T, fixture engineFixture, receipt 
 }
 
 func TestHistoricalSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t *testing.T) {
+	t.Parallel()
 	for _, variant := range historicalSideVariants {
 		variant := variant
 		t.Run(variant.name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("forward repair dry-run and apply", func(t *testing.T) {
 				for _, apply := range []bool{false, true} {
 					t.Run(fmt.Sprintf("apply=%t", apply), func(t *testing.T) {
@@ -554,6 +557,7 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			refusal := options
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)
@@ -567,6 +571,7 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 }
 
 func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCreation(t *testing.T) {
+	t.Parallel()
 	t.Run("malformed historical self-supersession", func(t *testing.T) {
 		fixture, receipt, supersession, options := publishedForwardRepairFixture(t)
 		receiptBefore, err := os.ReadFile(receipt.ReceiptPath)

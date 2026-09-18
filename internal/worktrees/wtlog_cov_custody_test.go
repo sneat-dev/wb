@@ -13,6 +13,7 @@ import (
 )
 
 func TestWtLogCovSameExternalHandoffEvidence(t *testing.T) {
+	t.Parallel()
 	if !sameExternalHandoffEvidence(nil, nil) || sameExternalHandoffEvidence(&workLogExternalHandoffEvidence{Version: 1}, nil) || sameExternalHandoffEvidence(nil, &workLogExternalHandoffEvidence{Version: 1}) {
 		t.Fatal("nil handling is wrong")
 	}
@@ -28,6 +29,7 @@ func TestWtLogCovSameExternalHandoffEvidence(t *testing.T) {
 }
 
 func TestWtLogCovValidExternalAttempt(t *testing.T) {
+	t.Parallel()
 	valid := "000001-" + strings.Repeat("a", 32)
 	if !validExternalAttempt(valid, 1) {
 		t.Fatal("valid attempt id was refused")
@@ -56,6 +58,7 @@ func TestWtLogCovValidExternalAttempt(t *testing.T) {
 }
 
 func TestWtLogCovExternalTargetRuntimeModel(t *testing.T) {
+	t.Parallel()
 	request := sessionmove.Request{SourceRuntime: "codex", SourceModel: "gpt-5", RequestedHarness: "codex"}
 	if runtime, model := externalTargetRuntimeModel(request); runtime != "codex" || model != "gpt-5" {
 		t.Fatalf("same harness = %q/%q", runtime, model)
@@ -71,6 +74,7 @@ func TestWtLogCovExternalTargetRuntimeModel(t *testing.T) {
 }
 
 func TestWtLogCovSessionNativeHarnessID(t *testing.T) {
+	t.Parallel()
 	if got := sessionNativeHarnessID(session.Record{NativeHarnessID: " native ", AgentID: "agent"}); got != "native" {
 		t.Fatalf("native harness id = %q", got)
 	}
@@ -83,6 +87,7 @@ func TestWtLogCovSessionNativeHarnessID(t *testing.T) {
 }
 
 func TestWtLogCovExternalLocalEventID(t *testing.T) {
+	t.Parallel()
 	digest := sessionmove.DigestBytes([]byte("payload"))
 	first := externalLocalEventID("kind", digest, "attempt")
 	if first != externalLocalEventID("kind", digest, "attempt") {
@@ -149,6 +154,7 @@ func TestWtLogCovFindExternalSourceOffer(t *testing.T) {
 }
 
 func TestWtLogCovExpectedExternalClaimID(t *testing.T) {
+	t.Parallel()
 	parentID := strings.Repeat("a", 64)
 	claimID := strings.Repeat("b", 64)
 	claim := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: claimID, ParentClaimID: parentID, AgentID: "agent"}
@@ -223,6 +229,7 @@ func TestWtLogCovRequestHandoverBytes(t *testing.T) {
 }
 
 func TestWtLogCovReadBoundedRelativeRegular(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o700); err != nil {
 		t.Fatal(err)
@@ -457,6 +464,7 @@ func TestWtLogCovFindExternalSourceOwner(t *testing.T) {
 }
 
 func TestWtLogCovSessionReceivePureHelpers(t *testing.T) {
+	t.Parallel()
 	ref := sessionReceiveFetchRef("handoff-1")
 	if !strings.HasPrefix(ref, "refs/wb/session-receive/") || len(strings.TrimPrefix(ref, "refs/wb/session-receive/")) != 64 {
 		t.Fatalf("fetch ref = %q", ref)

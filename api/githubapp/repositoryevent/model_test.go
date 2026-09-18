@@ -14,6 +14,7 @@ func validEvent() Event {
 }
 
 func TestEventContractAllowsOnlySafeRepositoryMetadata(t *testing.T) {
+	t.Parallel()
 	if err := validEvent().Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -27,6 +28,7 @@ func TestEventContractAllowsOnlySafeRepositoryMetadata(t *testing.T) {
 		"rename without previous": func(event *Event) { event.Reason = ReasonRepositoryRenamed },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			event := validEvent()
 			mutate(&event)
 			if err := event.Validate(); !errors.Is(err, ErrInvalidEvent) {
@@ -37,6 +39,7 @@ func TestEventContractAllowsOnlySafeRepositoryMetadata(t *testing.T) {
 }
 
 func TestOptionalAuditFieldsAreOmitted(t *testing.T) {
+	t.Parallel()
 	event := validEvent()
 	event.TargetSHA = ""
 	event.OccurredAt = nil
@@ -50,6 +53,7 @@ func TestOptionalAuditFieldsAreOmitted(t *testing.T) {
 }
 
 func TestPollAndAckContractsBindOpaqueCursorAndUniqueEvents(t *testing.T) {
+	t.Parallel()
 	event := validEvent()
 	response := PollResponse{Version: ContractVersion, Cursor: "opaque-before", NextCursor: "opaque-after", Events: []Event{event}}
 	if err := response.Validate("opaque-before"); err != nil {

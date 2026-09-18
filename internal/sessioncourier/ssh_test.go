@@ -43,6 +43,7 @@ func (f *fakeCommandRunner) Run(ctx context.Context, executable string, args []s
 }
 
 func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{
@@ -76,6 +77,7 @@ func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
 }
 
 func TestSSHDelivererPassesConfiguredUserAsFixedArgv(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "178.104.41.143", User: "ai"}, runner)
@@ -89,6 +91,7 @@ func TestSSHDelivererPassesConfiguredUserAsFixedArgv(t *testing.T) {
 }
 
 func TestSSHDelivererUsesFixedRemoteWBCommandByDefault(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target-alias"}, runner)
@@ -101,6 +104,7 @@ func TestSSHDelivererUsesFixedRemoteWBCommandByDefault(t *testing.T) {
 }
 
 func TestSSHDelivererAcceptsCrossHarnessSuccessorIdentity(t *testing.T) {
+	t.Parallel()
 	request, _ := courierTestRequest(t)
 	request.RequestedHarness = "claude-code"
 	raw, err := sessionmove.EncodeRequest(request)
@@ -119,6 +123,7 @@ func TestSSHDelivererAcceptsCrossHarnessSuccessorIdentity(t *testing.T) {
 }
 
 func TestSSHDelivererAcceptsCompletedReceiptOnlyReplay(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	response := validCourierResult(request, raw)
 	response.Worktree = nil
@@ -136,6 +141,7 @@ func TestSSHDelivererAcceptsCompletedReceiptOnlyReplay(t *testing.T) {
 }
 
 func TestSSHDelivererRefusesNoncanonicalRequestBeforeSSH(t *testing.T) {
+	t.Parallel()
 	_, raw := courierTestRequest(t)
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, raw); err != nil {
@@ -152,6 +158,7 @@ func TestSSHDelivererRefusesNoncanonicalRequestBeforeSSH(t *testing.T) {
 }
 
 func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	tests := map[string]struct {
 		response func() []byte
@@ -325,6 +332,7 @@ func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &fakeCommandRunner{response: test.response()}
 			deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 			if _, err := deliverer.Deliver(context.Background(), raw); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -338,8 +346,10 @@ func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
 }
 
 func TestSSHDelivererBoundsOutputAndSanitizesFailure(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	t.Run("stdout", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{response: bytes.Repeat([]byte("x"), maxSSHStdoutBytes+1)}
 		deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		if _, err := deliverer.Deliver(context.Background(), raw); err == nil || !strings.Contains(err.Error(), "exceeds") {
@@ -347,6 +357,7 @@ func TestSSHDelivererBoundsOutputAndSanitizesFailure(t *testing.T) {
 		}
 	})
 	t.Run("stderr", func(t *testing.T) {
+		t.Parallel()
 		stderr := append([]byte("first line\nsecond line\r\n"), bytes.Repeat([]byte("x"), maxSSHDiagnosticBytes+100)...)
 		diagnostic := sanitizeDiagnostic(stderr, false)
 		if len(diagnostic) > maxSSHDiagnosticBytes || strings.ContainsAny(diagnostic, "\r\n") || !strings.HasSuffix(diagnostic, "...") {
@@ -369,12 +380,14 @@ func TestSSHDelivererBoundsOutputAndSanitizesFailure(t *testing.T) {
 }
 
 func TestNewSSHDelivererRefusesUnsafeConfigBeforeExecutableLookup(t *testing.T) {
+	t.Parallel()
 	for name, config := range map[string]sessionmove.SSHConfig{
 		"host": {Host: "target;touch"},
 		"user": {Host: "target", User: "ai;touch"},
 		"path": {Host: "target", WBPath: "/opt/$HOME/wb"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			lookups := 0
 			_, err := newSSHDeliverer(config, func(string) (string, error) {
 				lookups++
@@ -388,6 +401,7 @@ func TestNewSSHDelivererRefusesUnsafeConfigBeforeExecutableLookup(t *testing.T) 
 }
 
 func TestNewSSHDelivererRequiresResolvedAbsoluteExecutable(t *testing.T) {
+	t.Parallel()
 	for _, resolved := range []string{"ssh", "/usr/bin/../bin/ssh"} {
 		_, err := newSSHDeliverer(sessionmove.SSHConfig{Host: "target"}, func(string) (string, error) {
 			return resolved, nil

@@ -14,6 +14,7 @@ import (
 )
 
 func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := corroborateExistingRunPrompt(home, "effort", "missing-run", WorkLogOptions{}); err != nil {
 		t.Fatalf("absent run must be accepted: %v", err)
@@ -234,6 +235,7 @@ func TestWtLogCovValidateRemovedTerminalWorkLogs(t *testing.T) {
 }
 
 func TestWtLogCovPreApplyRenameReservationHelpers(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	effort, run := "task", "run"
 	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
@@ -360,6 +362,7 @@ func TestWtLogCovPreApplyRenameReservationHelpers(t *testing.T) {
 }
 
 func TestWtLogCovReadWorkLogProjectionForClaimBranches(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	home := t.TempDir()
 	if _, err := readWorkLogProjectionForClaim(home, worktree); !os.IsNotExist(err) && err != errWorkLogProjectionNotFound {

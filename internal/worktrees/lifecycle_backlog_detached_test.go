@@ -74,6 +74,7 @@ func assertFileUnchanged(t *testing.T, path string, want []byte) {
 }
 
 func TestLifecycleBacklogAcceptsIssue338DetachedReviewRecord(t *testing.T) {
+	t.Parallel()
 	content, record := issue338Record(t)
 	if !record.Detached || record.Branch != "" || record.Stage != lifecycleStageComplete || record.Disposition != "removed" {
 		t.Fatalf("fixture is not the detached, complete record the issue describes: %#v", record)
@@ -98,6 +99,7 @@ func TestLifecycleBacklogAcceptsIssue338DetachedReviewRecord(t *testing.T) {
 }
 
 func TestLifecycleBacklogRejectsIssue338RecordWithoutDetachedMarker(t *testing.T) {
+	t.Parallel()
 	_, poisoned := issue338RecordWithoutDetachedMarker(t)
 	var record lifecycleBacklogRecord
 	if err := json.Unmarshal(poisoned, &record); err != nil {
@@ -116,6 +118,7 @@ func TestLifecycleBacklogRejectsIssue338RecordWithoutDetachedMarker(t *testing.T
 // not — is nobody's business and is passed over in silence; a file that does
 // not even decode is named. Nothing is moved or deleted.
 func TestLoaderReadsPastUnreadableBacklogRecords(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	// The valid neighbour is written by the writer itself, in the detached
 	// shape the issue's record has, so this also pins what cleanup persists

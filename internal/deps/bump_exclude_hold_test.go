@@ -41,6 +41,7 @@ func newExcludeHoldFleet(t *testing.T) (string, []Repository) {
 }
 
 func TestRunBumpExcludeRemovesTheRepositoryFromWaveComputation(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newExcludeHoldFleet(t)
 
 	report, err := RunBump(context.Background(),
@@ -75,6 +76,7 @@ func TestRunBumpExcludeRemovesTheRepositoryFromWaveComputation(t *testing.T) {
 }
 
 func TestRunBumpExcludeGlobMatchesAWholeOwner(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newExcludeHoldFleet(t)
 
 	report, err := RunBump(context.Background(),
@@ -100,6 +102,7 @@ func TestRunBumpExcludeGlobMatchesAWholeOwner(t *testing.T) {
 // A held repository must never be treated as excluded: it is still bumped,
 // still gets a pull request, and its release is still what later waves need.
 func TestHoldAndExcludeAreDifferentSelections(t *testing.T) {
+	t.Parallel()
 	githubDir, repositories := newExcludeHoldFleet(t)
 
 	report, err := RunBump(context.Background(),

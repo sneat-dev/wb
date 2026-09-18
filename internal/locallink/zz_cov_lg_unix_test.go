@@ -14,6 +14,7 @@ import (
 // the portable-on-unix way to present a non-regular entry that is not a
 // symlink, so the entry-boundary refusal is asserted for real.
 func TestLgCovCopyBuiltPackageRejectsNonRegularEntries(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	fifo := filepath.Join(source, "a-fifo")
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
@@ -30,6 +31,7 @@ func TestLgCovCopyBuiltPackageRejectsNonRegularEntries(t *testing.T) {
 // A built package that carries a file the build user cannot read must be
 // reported rather than copied as a truncated package.
 func TestLgCovCopyBuiltPackageReportsAnUnreadableFile(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root can read a mode-000 file")
 	}

@@ -10,6 +10,7 @@ import (
 )
 
 func TestIsTransientPullFailure(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		message string
 		want    bool
@@ -22,6 +23,7 @@ func TestIsTransientPullFailure(t *testing.T) {
 		{message: "git pull: Permission denied (publickey).", want: false},
 	} {
 		t.Run(test.message, func(t *testing.T) {
+			t.Parallel()
 			if got := isTransientPullFailure(errors.New(test.message)); got != test.want {
 				t.Fatalf("isTransientPullFailure(%q) = %t, want %t", test.message, got, test.want)
 			}
@@ -30,6 +32,7 @@ func TestIsTransientPullFailure(t *testing.T) {
 }
 
 func TestPullRetryDelayBacksOffAndStaggersCheckouts(t *testing.T) {
+	t.Parallel()
 	first := pullRetryDelay("/fleet/acme/widgets", 0)
 	if first < 500*time.Millisecond || first >= time.Second {
 		t.Fatalf("first retry delay = %s, want [500ms, 1s)", first)
@@ -55,6 +58,7 @@ func git(t testing.TB, dir string, args ...string) {
 }
 
 func TestLocalState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -80,6 +84,7 @@ func TestLocalState(t *testing.T) {
 }
 
 func TestPull(t *testing.T) {
+	t.Parallel()
 	remoteDir := t.TempDir()
 	git(t, remoteDir, "init", "-q", "--bare", "-b", "main")
 
@@ -118,6 +123,7 @@ func TestPull(t *testing.T) {
 }
 
 func TestStatusClean(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -131,6 +137,7 @@ func TestStatusClean(t *testing.T) {
 }
 
 func TestStatusUntrackedAndModified(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("v1\n"), 0o644); err != nil {
@@ -162,6 +169,7 @@ func TestStatusUntrackedAndModified(t *testing.T) {
 }
 
 func TestStatusStashAndUnpushed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("v1\n"), 0o644); err != nil {
@@ -199,6 +207,7 @@ func TestStatusStashAndUnpushed(t *testing.T) {
 }
 
 func TestStatusConflict(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("base\n"), 0o644); err != nil {
@@ -239,6 +248,7 @@ func TestStatusConflict(t *testing.T) {
 }
 
 func TestRepoStatusSummary(t *testing.T) {
+	t.Parallel()
 	s := RepoStatus{
 		Modified:  []string{"a.txt"},
 		Untracked: []string{"b.txt", "c.txt"},

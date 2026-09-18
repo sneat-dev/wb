@@ -261,6 +261,7 @@ func TestClean_ApplyRequiresExplicitUntrackedDeletionAuthority(t *testing.T) {
 }
 
 func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -293,6 +294,7 @@ func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) 
 }
 
 func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(t *testing.T, clone string)
@@ -332,6 +334,7 @@ func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
 }
 
 func TestPlanUntrackedRefusesSymlinkAndTraversal(t *testing.T) {
+	t.Parallel()
 	clone := t.TempDir()
 	mustWriteFile(t, filepath.Join(clone, "outside.txt"), "outside\n")
 	if err := os.Symlink("outside.txt", filepath.Join(clone, "linked.txt")); err != nil {
@@ -460,6 +463,7 @@ func TestClean_RefusesUnpushedTag(t *testing.T) {
 // task against this repository open, even if its worktree directory no
 // longer exists.
 func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -491,6 +495,7 @@ func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
 // A terminal claim for the same repository must not block anything: the task
 // is finished, and every other check still has to pass on its own.
 func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -517,6 +522,7 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 }
 
 func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -548,6 +554,7 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 }
 
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := filepath.Join(root, ".wb")
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")

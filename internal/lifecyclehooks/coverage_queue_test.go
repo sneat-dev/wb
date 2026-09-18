@@ -47,6 +47,7 @@ func hkCovWriteJob(t *testing.T, directory string, job queuedJob) string {
 }
 
 func TestHkCovEnqueueRejectsUnusableStateDirectories(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	item := pending{event: hkCovEvent(checkout), name: "index", count: 1}
 
@@ -70,6 +71,7 @@ func TestHkCovEnqueueRejectsUnusableStateDirectories(t *testing.T) {
 }
 
 func TestHkCovEnqueueSurfacesLockAndDecodeFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	item := pending{event: hkCovEvent(checkout), name: "index", count: 1}
 	if err := os.MkdirAll(dispatcher.StateDir, 0o700); err != nil {
@@ -90,6 +92,7 @@ func TestHkCovEnqueueSurfacesLockAndDecodeFailures(t *testing.T) {
 }
 
 func TestHkCovEnqueueCoalescesOntoExistingPendingJob(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	first := pending{event: hkCovEvent(checkout), name: "index", count: 1}
 	if coalesced, err := dispatcher.enqueue(first); err != nil || coalesced != 0 {
@@ -107,6 +110,7 @@ func TestHkCovEnqueueCoalescesOntoExistingPendingJob(t *testing.T) {
 }
 
 func TestHkCovDrainClampsParallelismAndReleasesIdleWorker(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	for _, parallel := range []int{0, -1, 17, 64} {
 		report, err := dispatcher.Drain(context.Background(), parallel)
@@ -121,6 +125,7 @@ func TestHkCovDrainClampsParallelismAndReleasesIdleWorker(t *testing.T) {
 }
 
 func TestHkCovDrainReportsStateAndLockFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	file := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 
@@ -140,6 +145,7 @@ func TestHkCovDrainReportsStateAndLockFailures(t *testing.T) {
 }
 
 func TestHkCovDrainReturnsQuietlyWhenWorkerLockHeld(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -156,6 +162,7 @@ func TestHkCovDrainReturnsQuietlyWhenWorkerLockHeld(t *testing.T) {
 }
 
 func TestHkCovDrainRecordsFailedHealthWhenStartCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := os.MkdirAll(filepath.Join(dispatcher.StateDir, "worker-health.json"), 0o700); err != nil {
 		t.Fatal(err)
@@ -169,6 +176,7 @@ func TestHkCovDrainRecordsFailedHealthWhenStartCannotBeWritten(t *testing.T) {
 }
 
 func TestHkCovDrainMarksWorkerFailedAndUnlocksOnRecoveryError(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -191,6 +199,7 @@ func TestHkCovDrainMarksWorkerFailedAndUnlocksOnRecoveryError(t *testing.T) {
 }
 
 func TestHkCovDrainReportsErrorWhenCompletionHealthCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	healthPath := dispatcher.workerHealthPath()
 	dispatcher.Run = func(context.Context, Invocation) error {
@@ -207,6 +216,7 @@ func TestHkCovDrainReportsErrorWhenCompletionHealthCannotBeWritten(t *testing.T)
 }
 
 func TestHkCovDrainWarnsWhenReceiptCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	dispatcher.ReceiptPath = filepath.Join(blocker, "receipts.jsonl")
@@ -222,6 +232,7 @@ func TestHkCovDrainWarnsWhenReceiptCannotBeRecorded(t *testing.T) {
 }
 
 func TestHkCovDrainSkipsNonJobEntriesAndRenamesToRunning(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	dispatcher.Run = func(context.Context, Invocation) error { return nil }
 	hkCovEnqueueOne(t, dispatcher, checkout)
@@ -243,6 +254,7 @@ func TestHkCovDrainSkipsNonJobEntriesAndRenamesToRunning(t *testing.T) {
 }
 
 func TestHkCovDrainReportsClaimRenameFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovEnqueueOne(t, dispatcher, checkout)
 	entries, err := os.ReadDir(dispatcher.pendingDir())
@@ -260,6 +272,7 @@ func TestHkCovDrainReportsClaimRenameFailure(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningSkipsNonJobEntries(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -275,6 +288,7 @@ func TestHkCovRecoverRunningSkipsNonJobEntries(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningQuarantinesInvalidRunningItem(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -294,6 +308,7 @@ func TestHkCovRecoverRunningQuarantinesInvalidRunningItem(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningMergesIntoExistingPendingItem(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -323,6 +338,7 @@ func TestHkCovRecoverRunningMergesIntoExistingPendingItem(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningQuarantinesCorruptPendingAndRestoresRunning(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -346,6 +362,7 @@ func TestHkCovRecoverRunningQuarantinesCorruptPendingAndRestoresRunning(t *testi
 }
 
 func TestHkCovRecoverRunningMovesRunningWithoutPending(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -364,6 +381,7 @@ func TestHkCovRecoverRunningMovesRunningWithoutPending(t *testing.T) {
 }
 
 func TestHkCovClaimBatchLockAndReadFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -387,6 +405,7 @@ func TestHkCovClaimBatchLockAndReadFailures(t *testing.T) {
 }
 
 func TestHkCovClaimBatchReleasesIdleWorker(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -405,11 +424,13 @@ func TestHkCovClaimBatchReleasesIdleWorker(t *testing.T) {
 }
 
 func TestHkCovRunJobConfigurationFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := hkCovWriteFile(t, filepath.Join(root, "indexer"), "#!/bin/sh\nexit 0\n", 0o755)
 	checkout := hkCovCheckout(t, root)
 
 	t.Run("unparseable config", func(t *testing.T) {
+		t.Parallel()
 		config := hkCovWriteFile(t, filepath.Join(root, "bad.yaml"), "hooks: [\n", 0o600)
 		dispatcher := hkCovDispatcherFor(t, root, config)
 		result := dispatcher.runJob(context.Background(), hkCovJob("index", checkout, "b"))
@@ -419,6 +440,7 @@ func TestHkCovRunJobConfigurationFailures(t *testing.T) {
 	})
 
 	t.Run("config removed", func(t *testing.T) {
+		t.Parallel()
 		dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "absent.yaml"))
 		result := dispatcher.runJob(context.Background(), hkCovJob("index", checkout, "b"))
 		if result.receipt.Status != "failed" || !strings.Contains(result.receipt.Message, "no longer exists") {
@@ -427,6 +449,7 @@ func TestHkCovRunJobConfigurationFailures(t *testing.T) {
 	})
 
 	t.Run("executor removed", func(t *testing.T) {
+		t.Parallel()
 		config := hkCovWriteFile(t, filepath.Join(root, "wb.yaml"), hkCovValidConfigYAML(executable), 0o600)
 		dispatcher := hkCovDispatcherFor(t, root, config)
 		result := dispatcher.runJob(context.Background(), hkCovJob("ghost", checkout, "b"))
@@ -437,6 +460,7 @@ func TestHkCovRunJobConfigurationFailures(t *testing.T) {
 }
 
 func TestHkCovRunJobTimesOutAndClassifiesDeadline(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := hkCovWriteFile(t, filepath.Join(root, "indexer"), "#!/bin/sh\nexit 0\n", 0o755)
 	checkout := hkCovCheckout(t, root)
@@ -456,6 +480,7 @@ func TestHkCovRunJobTimesOutAndClassifiesDeadline(t *testing.T) {
 }
 
 func TestHkCovCappedFileTruncatesAndSurfacesWriteErrors(t *testing.T) {
+	t.Parallel()
 	saturated := &cappedFile{written: maxDiagnosticBytes}
 	written, err := saturated.Write([]byte("more"))
 	if err != nil || written != 4 || !saturated.truncated {
@@ -477,6 +502,7 @@ func TestHkCovCappedFileTruncatesAndSurfacesWriteErrors(t *testing.T) {
 }
 
 func TestHkCovCappedFilePartialWrite(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "log")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -495,6 +521,7 @@ func TestHkCovCappedFilePartialWrite(t *testing.T) {
 }
 
 func TestHkCovOpenDiagnosticsFailures(t *testing.T) {
+	t.Parallel()
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	if _, _, err := openDiagnostics(filepath.Join(blocker, "diag")); err == nil {
 		t.Fatal("expected MkdirAll failure under a regular file")
@@ -521,6 +548,7 @@ func TestHkCovOpenDiagnosticsFailures(t *testing.T) {
 }
 
 func TestHkCovOpenDiagnosticsCreatesPrivateLogs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stdout, stderr, err := openDiagnostics(filepath.Join(root, "diag"))
 	if err != nil {
@@ -537,6 +565,7 @@ func TestHkCovOpenDiagnosticsCreatesPrivateLogs(t *testing.T) {
 }
 
 func TestHkCovBoundedMessageCollapsesAndTruncates(t *testing.T) {
+	t.Parallel()
 	if got := boundedMessage("  line one\nline two  ", 100); got != "line one line two" {
 		t.Fatalf("bounded=%q", got)
 	}
@@ -546,6 +575,7 @@ func TestHkCovBoundedMessageCollapsesAndTruncates(t *testing.T) {
 }
 
 func TestHkCovCompleteLockAndRemoveFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	job := hkCovJob("index", checkout, "b")
 	if err := dispatcher.ensureState(); err != nil {
@@ -567,6 +597,7 @@ func TestHkCovCompleteLockAndRemoveFailures(t *testing.T) {
 }
 
 func TestHkCovCompleteIgnoresMissingJob(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -577,6 +608,7 @@ func TestHkCovCompleteIgnoresMissingJob(t *testing.T) {
 }
 
 func TestHkCovReadJobRejectsInvalidRecords(t *testing.T) {
+	t.Parallel()
 	job := hkCovJob("index", "/tmp/checkout", "b")
 	cases := map[string]queuedJob{}
 	broken := job
@@ -597,6 +629,7 @@ func TestHkCovReadJobRejectsInvalidRecords(t *testing.T) {
 
 	for name, invalid := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "job.json"), hkCovMustJSON(t, invalid), 0o600)
 			if _, err := readJob(path); err == nil {
 				t.Fatalf("expected %s to be rejected", name)
@@ -605,6 +638,7 @@ func TestHkCovReadJobRejectsInvalidRecords(t *testing.T) {
 	}
 
 	t.Run("broken json", func(t *testing.T) {
+		t.Parallel()
 		path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "job.json"), "{broken", 0o600)
 		if _, err := readJob(path); err == nil {
 			t.Fatal("expected broken JSON to be rejected")
@@ -612,6 +646,7 @@ func TestHkCovReadJobRejectsInvalidRecords(t *testing.T) {
 	})
 
 	t.Run("missing file", func(t *testing.T) {
+		t.Parallel()
 		if _, err := readJob(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 			t.Fatal("expected error for missing file")
 		}
@@ -619,6 +654,7 @@ func TestHkCovReadJobRejectsInvalidRecords(t *testing.T) {
 }
 
 func TestHkCovReadJobAcceptsValidRecord(t *testing.T) {
+	t.Parallel()
 	job := hkCovJob("index", "/tmp/checkout", "b")
 	path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "job.json"), hkCovMustJSON(t, job), 0o600)
 	got, err := readJob(path)
@@ -637,6 +673,7 @@ func hkCovMustJSON(t *testing.T, value any) string {
 }
 
 func TestHkCovWriteJSONAtomicFailures(t *testing.T) {
+	t.Parallel()
 	if err := writeJSONAtomic(filepath.Join(t.TempDir(), "x.json"), make(chan int), 0o600); err == nil {
 		t.Fatal("expected marshal failure")
 	}
@@ -654,6 +691,7 @@ func TestHkCovWriteJSONAtomicFailures(t *testing.T) {
 }
 
 func TestHkCovWriteJSONAtomicWritesPrivateFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nested", "value.json")
 	if err := writeJSONAtomic(path, map[string]string{"k": "v"}, 0o600); err != nil {
 		t.Fatal(err)
@@ -672,7 +710,9 @@ func TestHkCovWriteJSONAtomicWritesPrivateFile(t *testing.T) {
 }
 
 func TestHkCovQuarantineFileFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("quarantine path is a regular file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "wb.yaml"))
 		dispatcher.StateDir = filepath.Join(root, "state")
@@ -684,6 +724,7 @@ func TestHkCovQuarantineFileFailures(t *testing.T) {
 	})
 
 	t.Run("quarantine path is a symlink", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "wb.yaml"))
 		dispatcher.StateDir = filepath.Join(root, "state")
@@ -700,6 +741,7 @@ func TestHkCovQuarantineFileFailures(t *testing.T) {
 	})
 
 	t.Run("source vanished", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "wb.yaml"))
 		dispatcher.StateDir = filepath.Join(root, "state")
@@ -713,6 +755,7 @@ func TestHkCovQuarantineFileFailures(t *testing.T) {
 }
 
 func TestHkCovQuarantineFileWritesReasonAndPrivateDestination(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "wb.yaml"))
 	dispatcher.StateDir = filepath.Join(root, "state")
@@ -739,6 +782,7 @@ func TestHkCovQuarantineFileWritesReasonAndPrivateDestination(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := appendReceipt(dispatcher.ReceiptPath, Receipt{ID: "id"}); err == nil || !strings.Contains(err.Error(), "unsupported receipt schema version") {
 		t.Fatalf("schema error=%v", err)
@@ -753,6 +797,7 @@ func TestHkCovAppendReceiptRejectsMalformedInput(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptRejectsUntrustedIndexDirectory(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	root := t.TempDir()
 	dispatcher.ReceiptPath = filepath.Join(root, "receipts.jsonl")
@@ -774,6 +819,7 @@ func TestHkCovAppendReceiptRejectsUntrustedIndexDirectory(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptRejectsUntrustedStreamAndLock(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	root := t.TempDir()
 	dispatcher.ReceiptPath = filepath.Join(root, "receipts.jsonl")
@@ -795,6 +841,7 @@ func TestHkCovAppendReceiptRejectsUntrustedStreamAndLock(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptIndexWriteFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	receipt := hkCovReceipt("hk-index")
 	if err := appendReceipt(dispatcher.ReceiptPath, receipt); err != nil {
@@ -813,6 +860,7 @@ func TestHkCovAppendReceiptIndexWriteFailure(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptWritesIndexAndStream(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	receipt := hkCovReceipt("hk-written")
 	if err := appendReceipt(dispatcher.ReceiptPath, receipt); err != nil {
@@ -829,6 +877,7 @@ func TestHkCovAppendReceiptWritesIndexAndStream(t *testing.T) {
 }
 
 func TestHkCovSyncQueueDirectoriesPropagatesFailure(t *testing.T) {
+	t.Parallel()
 	if err := syncQueueDirectories(t.TempDir()); err != nil {
 		t.Fatalf("valid directory error=%v", err)
 	}
@@ -838,6 +887,7 @@ func TestHkCovSyncQueueDirectoriesPropagatesFailure(t *testing.T) {
 }
 
 func TestHkCovReadRecentReceiptsKeepsNewestAndHonoursLimit(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	for _, id := range []string{"a", "b", "c"} {
 		if err := appendReceipt(dispatcher.ReceiptPath, hkCovReceipt(id)); err != nil {
@@ -858,6 +908,7 @@ func TestHkCovReadRecentReceiptsKeepsNewestAndHonoursLimit(t *testing.T) {
 }
 
 func TestHkCovFindReceiptRejectsInvalidAndUnreadableIndex(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	for _, id := range []string{"", "a/b", `a\b`} {
 		if _, _, err := findReceipt(dispatcher.ReceiptPath, id); err == nil {
@@ -873,6 +924,7 @@ func TestHkCovFindReceiptRejectsInvalidAndUnreadableIndex(t *testing.T) {
 }
 
 func TestHkCovFindReceiptPrefersValidIndex(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	receipt := hkCovReceipt("hk-find")
 	if err := appendReceipt(dispatcher.ReceiptPath, receipt); err != nil {
@@ -888,6 +940,7 @@ func TestHkCovFindReceiptPrefersValidIndex(t *testing.T) {
 }
 
 func TestHkCovScanReceiptsRejectsUntrustedParentAndLock(t *testing.T) {
+	t.Parallel()
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	if _, err := scanReceipts(filepath.Join(blocker, "receipts.jsonl"), func(Receipt) {}); err == nil {
 		t.Fatal("expected trusted parent failure")
@@ -901,6 +954,7 @@ func TestHkCovScanReceiptsRejectsUntrustedParentAndLock(t *testing.T) {
 }
 
 func TestHkCovScanReceiptsReportsInvalidLines(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := appendReceipt(dispatcher.ReceiptPath, hkCovReceipt("good")); err != nil {
 		t.Fatal(err)
@@ -927,6 +981,7 @@ func TestHkCovScanReceiptsReportsInvalidLines(t *testing.T) {
 }
 
 func TestHkCovValidateReceiptAndDecodeReceipt(t *testing.T) {
+	t.Parallel()
 	if err := validateReceipt(hkCovReceipt("ok")); err != nil {
 		t.Fatalf("valid receipt rejected: %v", err)
 	}
@@ -951,6 +1006,7 @@ func TestHkCovValidateReceiptAndDecodeReceipt(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsMissingDirectory(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := os.MkdirAll(dispatcher.StateDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -961,6 +1017,7 @@ func TestHkCovRecoverRunningReportsMissingDirectory(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsRunningQuarantineFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	hkCovWriteFile(t, filepath.Join(dispatcher.runningDir(), "bad.json"), "{broken", 0o600)
 	hkCovWriteFile(t, dispatcher.quarantineDir(), "not a dir", 0o600)
@@ -970,6 +1027,7 @@ func TestHkCovRecoverRunningReportsRunningQuarantineFailure(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsPendingQuarantineFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	job := hkCovJob("index", checkout, "new")
 	hkCovWriteJob(t, dispatcher.runningDir(), job)
@@ -981,6 +1039,7 @@ func TestHkCovRecoverRunningReportsPendingQuarantineFailure(t *testing.T) {
 }
 
 func TestHkCovClaimBatchReportsQuarantineFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	hkCovWriteFile(t, filepath.Join(dispatcher.pendingDir(), "bad.json"), "{broken", 0o600)
 	hkCovWriteFile(t, dispatcher.quarantineDir(), "not a dir", 0o600)

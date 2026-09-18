@@ -233,6 +233,7 @@ func TestValidateDependencyDeltasRejectsFamilyOnlyUpgrade(t *testing.T) {
 }
 
 func TestValidateDependencyDeltasRejectsSourceHeadForceUpdate(t *testing.T) {
+	t.Parallel()
 	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17, OriginalPRRepository: "acme/app", OriginalPRHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", OriginalHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DependencyDeltasComplete: true,
 		DependencyDeltas: []SupersessionDependencyDelta{{SourcePR: "https://github.com/acme/app/pull/17", SourceHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Consumer: "acme/app", Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx", Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true}}}
 	entry := ListResult{Repository: "acme/app", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", OpenPullRequest: dependencyTestPullRequest("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}
@@ -242,6 +243,7 @@ func TestValidateDependencyDeltasRejectsSourceHeadForceUpdate(t *testing.T) {
 }
 
 func TestDependencyCampaignReceiptCannotBypassDeltaProof(t *testing.T) {
+	t.Parallel()
 	receipt := SupersessionReceipt{DependencyDeltasComplete: false}
 	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Branch: "wb/deps/bump-example-wave-01"}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "requires original_pr") {
@@ -250,6 +252,7 @@ func TestDependencyCampaignReceiptCannotBypassDeltaProof(t *testing.T) {
 }
 
 func TestDependencyReceiptRequiresAuthoritativeSourcePullRequest(t *testing.T) {
+	t.Parallel()
 	receipt := SupersessionReceipt{
 		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17,
 		OriginalPRRepository: "acme/app", OriginalPRHead: "head", OriginalHead: "head",
@@ -389,6 +392,7 @@ func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
 }
 
 func TestDependencyAuditRenderingSortsPerPREvidence(t *testing.T) {
+	t.Parallel()
 	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalHead: "head", TargetHead: "target", DependencyDeltasComplete: true, DependencyDeltas: []SupersessionDependencyDelta{
 		{SourcePR: "https://github.com/acme/app/pull/17", Consumer: "acme/app", Package: "@nx/js", Manifest: "package.json", Selector: "dependencies.@nx/js", Before: "22.6.4", RequestedAfter: "22.7.8", CandidateAfter: "22.7.8", SourceHead: "head", Reviewed: true},
 		{SourcePR: "https://github.com/acme/app/pull/17", Consumer: "acme/app", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx", Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", SourceHead: "head", Reviewed: true},
@@ -407,6 +411,7 @@ func TestDependencyAuditRenderingSortsPerPREvidence(t *testing.T) {
 }
 
 func TestLockfileEntryProofIsStructuredAndPackageExact(t *testing.T) {
+	t.Parallel()
 	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/nxfoo":{"version":"22.7.7"},"node_modules/@nx/js":{"version":"22.7.7"}}}`
 	if !lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages|node_modules/nx|version", "22.7.7") {
 		t.Fatal("structured package-lock proof was not accepted")
@@ -420,6 +425,7 @@ func TestLockfileEntryProofIsStructuredAndPackageExact(t *testing.T) {
 }
 
 func TestValidateDependencyDeltasRejectsMaliciousLockfileSelectors(t *testing.T) {
+	t.Parallel()
 	if selectorNamesExactPackage("packages|node_modules/nxfoo|version", "nx") {
 		t.Fatal("nxfoo selector was treated as exact nx")
 	}
@@ -429,6 +435,7 @@ func TestValidateDependencyDeltasRejectsMaliciousLockfileSelectors(t *testing.T)
 }
 
 func TestDependencyVersionSatisfactionUsesEcosystemRanges(t *testing.T) {
+	t.Parallel()
 	if !dependencyVersionSatisfies("npm", "22.8.0", "^22.7.7") {
 		t.Fatal("npm caret range should accept a compatible candidate")
 	}

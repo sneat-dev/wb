@@ -52,6 +52,7 @@ func newHostLevelCleanupTaskFixture(t *testing.T) *cleanupTaskHandle {
 // opened descriptor-anchored, exactly like the existing 1- and 2-segment
 // cases, instead of being refused as "unsupported hierarchy" (#594).
 func TestOpenCleanupWorktreeAcceptsHostLevelHierarchy(t *testing.T) {
+	t.Parallel()
 	task := newHostLevelCleanupTaskFixture(t)
 	repoPath := filepath.Join(task.taskPath, "github.com", "acme", "app")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
@@ -80,6 +81,7 @@ func TestOpenCleanupWorktreeAcceptsHostLevelHierarchy(t *testing.T) {
 // retire <owner> and then <host> in turn, exactly mirroring what it already
 // does for the legacy <task>/<owner>/<repository> layout's single parent.
 func TestCleanupRetiresHostLevelWorktreeAndBothEmptyAncestors(t *testing.T) {
+	t.Parallel()
 	task := newHostLevelCleanupTaskFixture(t)
 	repoPath := filepath.Join(task.taskPath, "github.com", "acme", "app")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
@@ -118,6 +120,7 @@ func TestCleanupRetiresHostLevelWorktreeAndBothEmptyAncestors(t *testing.T) {
 // <host>, are both left in place — AT_REMOVEDIR's own ENOTEMPTY refusal, not
 // a size check, is what protects them.
 func TestCleanupLeavesNonEmptyHostLevelSiblingsIntact(t *testing.T) {
+	t.Parallel()
 	task := newHostLevelCleanupTaskFixture(t)
 	appPath := filepath.Join(task.taskPath, "github.com", "acme", "app")
 	otherPath := filepath.Join(task.taskPath, "github.com", "acme", "other")
@@ -185,9 +188,11 @@ func TestCleanupLeavesNonEmptyHostLevelSiblingsIntact(t *testing.T) {
 // symlink swapped in at the host, owner, or repository segment is refused
 // rather than followed.
 func TestOpenCleanupWorktreeRefusesSymlinkAtHostOwnerOrRepositorySegment(t *testing.T) {
+	t.Parallel()
 	elsewhere := t.TempDir()
 
 	t.Run("host", func(t *testing.T) {
+		t.Parallel()
 		task := newHostLevelCleanupTaskFixture(t)
 		target := filepath.Join(elsewhere, "host-target")
 		if err := os.MkdirAll(filepath.Join(target, "acme", "app"), 0o755); err != nil {
@@ -204,6 +209,7 @@ func TestOpenCleanupWorktreeRefusesSymlinkAtHostOwnerOrRepositorySegment(t *test
 	})
 
 	t.Run("owner", func(t *testing.T) {
+		t.Parallel()
 		task := newHostLevelCleanupTaskFixture(t)
 		target := filepath.Join(elsewhere, "owner-target")
 		if err := os.MkdirAll(filepath.Join(target, "app"), 0o755); err != nil {
@@ -223,6 +229,7 @@ func TestOpenCleanupWorktreeRefusesSymlinkAtHostOwnerOrRepositorySegment(t *test
 	})
 
 	t.Run("repository", func(t *testing.T) {
+		t.Parallel()
 		task := newHostLevelCleanupTaskFixture(t)
 		target := filepath.Join(elsewhere, "repo-target")
 		if err := os.MkdirAll(target, 0o755); err != nil {
@@ -250,6 +257,7 @@ func TestOpenCleanupWorktreeRefusesSymlinkAtHostOwnerOrRepositorySegment(t *test
 // the 2-segment case already used. All three refuse "..", empty, and any
 // segment carrying a path separator.
 func TestHostLevelSegmentValidatorsRefuseTraversalEmptyAndSeparatorSegments(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"..", "", "a/b", "a" + string(filepath.Separator) + "b"} {
 		if validSafeSegment(value) {
 			t.Errorf("validSafeSegment(%q) = true, want false", value)

@@ -61,6 +61,7 @@ func depsCovBumpReleaseWriteGoMod(t *testing.T, body string) string {
 // assessment outcome waveHandler.Inspect can produce, plus the fatal path
 // where the adapter itself cannot read the repository at the given base.
 func TestDepsCovBumpReleaseWaveHandlerInspectClassifiesAssessment(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	consumer := newBumpRepository(t, root, githubDir, "consumer", "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -119,6 +120,7 @@ func TestDepsCovBumpReleaseWaveHandlerInspectClassifiesAssessment(t *testing.T) 
 // whose official tooling fails, and an npm wave that edits manifests and then
 // reaches the Nx version-plan hook.
 func TestDepsCovBumpReleaseWaveHandlerApplyGoAndNpm(t *testing.T) {
+	t.Parallel()
 	t.Run("go applies and validates the exact final selection", func(t *testing.T) {
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -188,6 +190,7 @@ func TestDepsCovBumpReleaseWaveHandlerApplyGoAndNpm(t *testing.T) {
 	})
 
 	t.Run("npm reports a version-plan failure", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@acme/app", "@acme/provider", "0.1.0"))
 		writeTestFile(t, filepath.Join(worktree, "nx.json"), "this is not json\n")
@@ -206,6 +209,7 @@ func TestDepsCovBumpReleaseWaveHandlerApplyGoAndNpm(t *testing.T) {
 	})
 
 	t.Run("npm applies literal manifest edits and runs the version-plan hook", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@acme/app", "@acme/provider", "0.1.0"))
 		handler := waveHandler{
@@ -237,6 +241,7 @@ func TestDepsCovBumpReleaseWaveHandlerApplyGoAndNpm(t *testing.T) {
 // ecosystem gate: Go (and the zero ecosystem that historically means Go)
 // rejects local module replacements, while npm has no such rule to enforce.
 func TestDepsCovBumpReleaseWaveHandlerValidatePublishablePerEcosystem(t *testing.T) {
+	t.Parallel()
 	clean := t.TempDir()
 	writeTestFile(t, filepath.Join(clean, "go.mod"), "module example.com/clean\n\ngo 1.24\n")
 	if err := (waveHandler{ecosystem: EcosystemGo}).ValidatePublishable(context.Background(), clean, orchestrate.Repository{}); err != nil {
@@ -311,6 +316,7 @@ func TestDepsCovBumpReleaseValidateGoWaveSelectionsSkipsAndSelectionOutcomes(t *
 // TestDepsCovBumpReleaseCommitMessageAndPullRequestPerMode pins the commit
 // title for one versus several targets and all four pull-request bodies.
 func TestDepsCovBumpReleaseCommitMessageAndPullRequestPerMode(t *testing.T) {
+	t.Parallel()
 	single := waveHandler{
 		ecosystem:           EcosystemNPM,
 		targetsByRepository: map[string][]Target{"acme/app": {{Dependency: "@acme/provider", Version: "2.0.0"}}},
@@ -356,6 +362,7 @@ func TestDepsCovBumpReleaseCommitMessageAndPullRequestPerMode(t *testing.T) {
 // observed at all, and a registry failure is recorded per module and joined
 // into the returned error.
 func TestDepsCovBumpReleaseCaptureReleaseBaselinesErrorAndSkips(t *testing.T) {
+	t.Parallel()
 	graph := goFleetGraph{requirements: map[string][]goFleetRequirement{
 		"example.com/observed": {{Repository: "acme/consumer"}},
 		"example.com/internal": {{Repository: "acme/provider"}},
@@ -388,6 +395,7 @@ func TestDepsCovBumpReleaseCaptureReleaseBaselinesErrorAndSkips(t *testing.T) {
 // success path — including the deterministic module/repository ordering that
 // makes the read-only pool's fan-out reproducible.
 func TestDepsCovBumpReleaseCaptureReleaseBaselinesSuccessAndOrdering(t *testing.T) {
+	t.Parallel()
 	graph := goFleetGraph{requirements: map[string][]goFleetRequirement{
 		"example.com/a":      {{Repository: "acme/consumer"}},
 		"example.com/b":      {{Repository: "acme/consumer"}},
@@ -422,6 +430,7 @@ func TestDepsCovBumpReleaseCaptureReleaseBaselinesSuccessAndOrdering(t *testing.
 // pins that only baselines from a repository that actually merged, and whose
 // module was affected, survive — sorted by module.
 func TestDepsCovBumpReleaseMergedReleaseBaselinesKeepsOnlyMergedAffectedModules(t *testing.T) {
+	t.Parallel()
 	results := []orchestrate.Result[[]Decision]{
 		{Repository: "acme/merged", Merged: true},
 		{Repository: "acme/open", Merged: false},
@@ -462,6 +471,7 @@ func depsCovBumpReleaseCarrierGraph(repository string) goFleetGraph {
 // release, and a registry failure is reported with the command that would have
 // answered it.
 func TestDepsCovBumpReleaseDiscoverExistingReleaseCarriers(t *testing.T) {
+	t.Parallel()
 	events := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}
 	graph := depsCovBumpReleaseCarrierGraph("acme/adapter")
 
@@ -532,7 +542,9 @@ func TestDepsCovBumpReleaseDiscoverExistingReleaseCarriers(t *testing.T) {
 // resolver seam and every failure mode of the real `go mod download -json`
 // path, driven by a fake `go` on PATH so no network is touched.
 func TestDepsCovBumpReleaseLatestPublishedGoRelease(t *testing.T) {
+	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
+		t.Parallel()
 		release, err := latestPublishedGoRelease(context.Background(), "example.com/provider", BumpOptions{
 			LatestGoRelease: func(context.Context, string) (PublishedGoRelease, error) {
 				return PublishedGoRelease{Version: "v1.2.3", Requirements: map[string]string{"example.com/dep": "v1.0.0"}}, nil
@@ -654,9 +666,11 @@ func TestDepsCovBumpReleaseLatestPublishedGoRelease(t *testing.T) {
 // release after a newer version appears, timeout, registry failure, and
 // context cancellation.
 func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
+	t.Parallel()
 	expected := map[string]string{"example.com/provider": "v0.2.0"}
 
 	t.Run("already published", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForPublishedGoRequirements(context.Background(), ReleaseObservation{
 			Module: "example.com/adapter", Repository: "acme/adapter", Before: "v0.5.0", ExpectedRequirements: expected,
 		}, BumpOptions{
@@ -676,6 +690,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 	})
 
 	t.Run("waits for a newer release", func(t *testing.T) {
+		t.Parallel()
 		calls := 0
 		observation, err := waitForPublishedGoRequirements(context.Background(), ReleaseObservation{
 			Module: "example.com/adapter", Before: "v0.5.0", RequireNewer: true, ExpectedRequirements: expected,
@@ -699,6 +714,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 	})
 
 	t.Run("a missing baseline never blocks on version ordering", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForPublishedGoRequirements(context.Background(), ReleaseObservation{
 			Module: "example.com/adapter", RequireNewer: true, ExpectedRequirements: expected,
 		}, BumpOptions{
@@ -716,6 +732,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 	})
 
 	t.Run("times out", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForPublishedGoRequirements(context.Background(), ReleaseObservation{
 			Module: "example.com/adapter", Before: "v0.5.0", ExpectedRequirements: expected,
 		}, BumpOptions{
@@ -734,6 +751,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 	})
 
 	t.Run("registry failure", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForPublishedGoRequirements(context.Background(), ReleaseObservation{
 			Module: "example.com/adapter", ExpectedRequirements: expected,
 		}, BumpOptions{
@@ -752,6 +770,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		observation, err := waitForPublishedGoRequirements(ctx, ReleaseObservation{
@@ -775,6 +794,7 @@ func TestDepsCovBumpReleaseWaitForPublishedGoRequirements(t *testing.T) {
 // TestDepsCovBumpReleaseRequirementsContainAndSortedObservations pins the
 // exact-match requirement check and deterministic module ordering.
 func TestDepsCovBumpReleaseRequirementsContainAndSortedObservations(t *testing.T) {
+	t.Parallel()
 	if !requirementsContain(nil, nil) {
 		t.Fatal("two empty requirement sets must match")
 	}
@@ -805,6 +825,7 @@ func TestDepsCovBumpReleaseRequirementsContainAndSortedObservations(t *testing.T
 // shared wave helper relies on, the no-registry refusal, and the command
 // description each ecosystem reports as release evidence.
 func TestDepsCovBumpReleaseRegistryDispatchers(t *testing.T) {
+	t.Parallel()
 	if _, err := latestReleaseVersion(context.Background(), "example.com/x", BumpOptions{NoRegistry: true}); err == nil || !strings.Contains(err.Error(), "registry lookup is disabled") {
 		t.Fatalf("no-registry version error = %v", err)
 	}
@@ -870,7 +891,9 @@ func TestDepsCovBumpReleaseRegistryDispatchers(t *testing.T) {
 // TestDepsCovBumpReleaseLatestNpmVersion pins the injected seam, the fake
 // `pnpm view` path, and the invalid/command-failure outcomes.
 func TestDepsCovBumpReleaseLatestNpmVersion(t *testing.T) {
+	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
+		t.Parallel()
 		version, err := latestNpmVersion(context.Background(), "@acme/core", BumpOptions{
 			LatestNpmVersion: func(context.Context, string) (string, error) { return "1.2.3", nil },
 		})
@@ -934,7 +957,9 @@ func depsCovBumpReleaseFakePnpmRelease(t *testing.T, version, fields string) {
 // TestDepsCovBumpReleaseLatestPublishedNpmRelease pins the injected seam and
 // the real two-command `pnpm view` path, including parse and command failures.
 func TestDepsCovBumpReleaseLatestPublishedNpmRelease(t *testing.T) {
+	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
+		t.Parallel()
 		release, err := latestPublishedNpmRelease(context.Background(), "@acme/core", BumpOptions{
 			LatestNpmRelease: func(context.Context, string) (PublishedGoRelease, error) {
 				return PublishedGoRelease{Version: "1.2.3", Requirements: map[string]string{"@acme/dep": "1.0.0"}}, nil
@@ -1027,6 +1052,7 @@ func TestDepsCovBumpReleaseLatestPublishedNpmRelease(t *testing.T) {
 // published-field decoder: empty input, merged fields, null fields, malformed
 // JSON, a malformed section, and a conflicting selection.
 func TestDepsCovBumpReleaseParsePublishedNpmRequirements(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		output  string
@@ -1042,6 +1068,7 @@ func TestDepsCovBumpReleaseParsePublishedNpmRequirements(t *testing.T) {
 		{name: "conflicting selections", output: `{"dependencies":{"a":"1.0.0"},"peerDependencies":{"a":"2.0.0"}}`, wantErr: "conflicting published npm selections for a"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := parsePublishedNpmRequirements(testCase.output)
 			if testCase.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
@@ -1067,7 +1094,9 @@ func TestDepsCovBumpReleaseParsePublishedNpmRequirements(t *testing.T) {
 // TestDepsCovBumpReleaseLatestGoVersion pins the injected seam and every
 // outcome of `go list -m -json`, driven by a fake `go` on PATH.
 func TestDepsCovBumpReleaseLatestGoVersion(t *testing.T) {
+	t.Parallel()
 	t.Run("injected resolver", func(t *testing.T) {
+		t.Parallel()
 		version, err := latestGoVersion(context.Background(), "example.com/core", BumpOptions{
 			LatestGoVersion: func(context.Context, string) (string, error) { return "v1.2.3", nil },
 		})
@@ -1127,7 +1156,9 @@ func TestDepsCovBumpReleaseLatestGoVersion(t *testing.T) {
 // observation, and a version that never advances times out (or is cancelled
 // by its context).
 func TestDepsCovBumpReleaseWaitForGoRelease(t *testing.T) {
+	t.Parallel()
 	t.Run("missing baseline releases immediately", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForGoRelease(context.Background(), ReleaseObservation{Module: "example.com/provider"}, BumpOptions{
 			PollInterval: time.Millisecond,
 			LatestGoVersion: func(context.Context, string) (string, error) {
@@ -1143,6 +1174,7 @@ func TestDepsCovBumpReleaseWaitForGoRelease(t *testing.T) {
 	})
 
 	t.Run("registry failure", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForGoRelease(context.Background(), ReleaseObservation{Module: "example.com/provider", Before: "v1.0.0"}, BumpOptions{
 			PollInterval: time.Millisecond,
 			LatestGoVersion: func(context.Context, string) (string, error) {
@@ -1158,6 +1190,7 @@ func TestDepsCovBumpReleaseWaitForGoRelease(t *testing.T) {
 	})
 
 	t.Run("times out without a newer version", func(t *testing.T) {
+		t.Parallel()
 		observation, err := waitForGoRelease(context.Background(), ReleaseObservation{Module: "example.com/provider", Before: "v1.0.0"}, BumpOptions{
 			Options:      Options{Timeout: 10 * time.Millisecond},
 			PollInterval: time.Millisecond,
@@ -1174,6 +1207,7 @@ func TestDepsCovBumpReleaseWaitForGoRelease(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		observation, err := waitForGoRelease(ctx, ReleaseObservation{Module: "example.com/provider", Before: "v1.0.0"}, BumpOptions{
@@ -1197,6 +1231,7 @@ func TestDepsCovBumpReleaseWaitForGoRelease(t *testing.T) {
 // require-newer observation replacing the whole release state, and CheckedAt
 // never moving backwards.
 func TestDepsCovBumpReleaseMergeReleaseObservations(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 	only := []ReleaseObservation{{
@@ -1274,6 +1309,7 @@ func TestDepsCovBumpReleaseMergeReleaseObservations(t *testing.T) {
 // persister, a successful persist that still returns the original cause, and a
 // failed persist that joins both errors.
 func TestDepsCovBumpReleasePersistBumpFailure(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("wave failed")
 	report := BumpReport{SchemaVersion: 1, Operation: "deps-bump-go-cov", Status: "failed"}
 

@@ -32,6 +32,7 @@ func TestOrchCovNormalizeRejectsIncoherentLifecycleOptions(t *testing.T) {
 		{name: "dry run with resume", mutate: func(o *Options) { o.DryRun, o.Resume = true, true }, wantIn: "--dry-run cannot be combined"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			options := valid
 			test.mutate(&options)
 			if _, err := Normalize(options); err == nil || !strings.Contains(err.Error(), test.wantIn) {
@@ -140,6 +141,7 @@ func TestOrchCovParseLsRemoteSymrefReadsTheDefaultBranch(t *testing.T) {
 }
 
 func TestOrchCovReadOriginHeadSymrefRefusesAnUnexpectedRef(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	if _, err := readOriginHeadSymref(context.Background(), dir, Options{Timeout: time.Minute}); err == nil {
@@ -214,6 +216,7 @@ func (orchCovIdleHandler) Apply(_ context.Context, worktree string, _ Repository
 }
 
 func TestOrchCovProcessRepositorySkipsEveryUnapplicableVerdict(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		assessment Assessment[string]
@@ -245,6 +248,7 @@ func TestOrchCovProcessRepositorySkipsEveryUnapplicableVerdict(t *testing.T) {
 }
 
 func TestOrchCovProcessRepositoryFailsTheStageThatFailed(t *testing.T) {
+	t.Parallel()
 	t.Run("inspect", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		_, err := Run(context.Background(), []Repository{fixture.repository},
@@ -347,6 +351,7 @@ func TestOrchCovProcessRepositoryPushesAVerifiedCommit(t *testing.T) {
 }
 
 func TestOrchCovOpenPullRequestReusesOrCreatesExactlyOne(t *testing.T) {
+	t.Parallel()
 	const script = `#!/bin/sh
 S="$ORCHCOV_GH_STATE"
 if [ "$1" = pr ] && [ "$2" = list ]; then cat "$S/list"; exit 0; fi

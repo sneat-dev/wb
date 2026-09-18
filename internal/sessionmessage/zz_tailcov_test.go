@@ -114,6 +114,7 @@ func tailCovReceiveTmux(fixture *receiveFixture) *tailCovTmux {
 }
 
 func TestTailCovReceiveRejectsMalformedAdmissionInput(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// The nil context is exactly what this test asserts is rejected.
@@ -143,6 +144,7 @@ func TestTailCovReceiveRejectsMalformedAdmissionInput(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsWrongMachineAndMessageLineage(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	fixture := newReceiveFixture(t)
@@ -170,6 +172,7 @@ func TestTailCovReceiveRejectsWrongMachineAndMessageLineage(t *testing.T) {
 }
 
 func TestTailCovReceiveRequiresCompletedHandoffReceipt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	fixture := newReceiveFixture(t)
@@ -208,6 +211,7 @@ func TestTailCovReceiveRequiresCompletedHandoffReceipt(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenStoreProjectionIsUnreadable(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	// Replace the events directory with a regular file so the locked projection
 	// load fails after the execution fence is held but before any durable paste
@@ -225,6 +229,7 @@ func TestTailCovReceiveFailsWhenStoreProjectionIsUnreadable(t *testing.T) {
 }
 
 func TestTailCovReceiveFailsWhenExecutionFenceCannotBeOpened(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: directory permission bits do not deny writes")
 	}
@@ -243,6 +248,7 @@ func TestTailCovReceiveFailsWhenExecutionFenceCannotBeOpened(t *testing.T) {
 }
 
 func TestTailCovReceiveCorroboratesTheLiveRegisteredRecipient(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	fixture := newReceiveFixture(t)
@@ -272,6 +278,7 @@ func TestTailCovReceiveCorroboratesTheLiveRegisteredRecipient(t *testing.T) {
 }
 
 func TestTailCovMatchesRecipientIdentityRules(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	base := fixture.session
 
@@ -302,6 +309,7 @@ func TestTailCovMatchesRecipientIdentityRules(t *testing.T) {
 }
 
 func TestTailCovReceiveUsesDefaultSessionLookup(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	fixture.options.LookupSession = nil
 	fixture.options.SessionDir = t.TempDir()
@@ -320,6 +328,7 @@ func TestTailCovReceiveFailsWhenNoTmuxExecutableExists(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsTmuxInspectorFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	fixture.options.Tmux = &tailCovTmux{
 		inspectFn: func(context.Context, string) (Pane, error) {
@@ -332,6 +341,7 @@ func TestTailCovReceiveRejectsTmuxInspectorFailure(t *testing.T) {
 }
 
 func TestTailCovReceiveUsesDefaultWorkLogRecorder(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	fixture.options.RecordReceived = nil
 	fixture.options.Tmux = tailCovReceiveTmux(fixture)
@@ -343,6 +353,7 @@ func TestTailCovReceiveUsesDefaultWorkLogRecorder(t *testing.T) {
 }
 
 func TestTailCovReceiveReportsWorkLogRecorderFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	injected := errors.New("work log down")
 	fixture.options.RecordReceived = func(WorkLogRecord) error { return injected }
@@ -356,6 +367,7 @@ func TestTailCovReceiveReportsWorkLogRecorderFailure(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsConflictingDurableInboxBytes(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	other := fixture.message
 	other.Body = "a completely different instruction"
@@ -378,6 +390,7 @@ func TestTailCovReceiveRejectsConflictingDurableInboxBytes(t *testing.T) {
 }
 
 func TestTailCovReceiveRejectsReceiptThatPredatesItsPasteIntent(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	base := time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC)
 	// recordedAt, then intent one second later, then a pasted-at that moves
@@ -392,10 +405,12 @@ func TestTailCovReceiveRejectsReceiptThatPredatesItsPasteIntent(t *testing.T) {
 }
 
 func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := []byte(`{"kind":"text"}`)
 
 	t.Run("load", func(t *testing.T) {
+		t.Parallel()
 		injected := errors.New("load failed")
 		client := &tailCovTmux{loadFn: func(context.Context, string, []byte) error { return injected }}
 		err := pasteExact(ctx, client, "wb-message-x", "%7", raw)
@@ -408,6 +423,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 	})
 
 	t.Run("save", func(t *testing.T) {
+		t.Parallel()
 		injected := errors.New("save failed")
 		client := &tailCovTmux{saveFn: func(context.Context, string) ([]byte, error) { return nil, injected }}
 		err := pasteExact(ctx, client, "wb-message-x", "%7", raw)
@@ -420,6 +436,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 	})
 
 	t.Run("save mismatch", func(t *testing.T) {
+		t.Parallel()
 		client := &tailCovTmux{saveFn: func(context.Context, string) ([]byte, error) {
 			return []byte("tampered"), nil
 		}}
@@ -433,6 +450,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 	})
 
 	t.Run("paste", func(t *testing.T) {
+		t.Parallel()
 		injected := errors.New("paste failed")
 		client := &tailCovTmux{
 			saveFn:  func(context.Context, string) ([]byte, error) { return raw, nil },
@@ -448,6 +466,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 	})
 
 	t.Run("delete after paste", func(t *testing.T) {
+		t.Parallel()
 		injected := errors.New("delete failed")
 		client := &tailCovTmux{
 			saveFn:   func(context.Context, string) ([]byte, error) { return raw, nil },
@@ -463,6 +482,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 	})
 
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		client := &tailCovTmux{saveFn: func(context.Context, string) ([]byte, error) { return raw, nil }}
 		if err := pasteExact(ctx, client, "wb-message-x", "%7", raw); err != nil {
 			t.Fatal(err)
@@ -471,6 +491,7 @@ func TestTailCovPasteExactCleansUpOnEveryFailure(t *testing.T) {
 }
 
 func TestTailCovReceiveWithoutInjectedClockUsesWallTime(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	fixture.options.Now = nil
 	fixture.options.Tmux = tailCovReceiveTmux(fixture)
@@ -486,6 +507,7 @@ func TestTailCovReceiveWithoutInjectedClockUsesWallTime(t *testing.T) {
 // --- tmux adapter ---------------------------------------------------------
 
 func TestTailCovExecTmuxCommandRunnerPropagatesExitFailures(t *testing.T) {
+	t.Parallel()
 	runner := execTmuxCommandRunner{}
 	var stdout, stderr bytes.Buffer
 	err := runner.Run(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), nil, nil, &stdout, &stderr)
@@ -544,6 +566,7 @@ func TestTailCovNewOSTmuxRejectsRelativePATHEntry(t *testing.T) {
 }
 
 func TestTailCovOSTmuxInspectRejectsMalformedPaneListings(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		stdout string
@@ -561,6 +584,7 @@ func TestTailCovOSTmuxInspectRejectsMalformedPaneListings(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			client := &osTmux{executable: "/usr/bin/tmux", runner: &scriptedTmuxRunner{
 				runs: []tmuxRun{{stdout: []byte(test.stdout), err: test.err}},
 			}}
@@ -576,6 +600,7 @@ func TestTailCovOSTmuxInspectRejectsMalformedPaneListings(t *testing.T) {
 }
 
 func TestTailCovOSTmuxRunGuardsAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	if _, err := (&osTmux{}).run(ctx, nil, nil, 16); err == nil || !strings.Contains(err.Error(), "unavailable") {
@@ -649,6 +674,7 @@ func (runner *tailCovFailingRunner) Run(ctx context.Context, _ string, _ []strin
 }
 
 func TestTailCovLimitedBufferTruncatesAndFlagsOverflow(t *testing.T) {
+	t.Parallel()
 	var buffer limitedBuffer
 	buffer.limit = 4
 

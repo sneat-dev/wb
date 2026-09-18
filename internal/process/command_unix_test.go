@@ -17,6 +17,7 @@ import (
 )
 
 func TestCommandContextCancellationTerminatesForkedChild(t *testing.T) {
+	t.Parallel()
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
 	parentPIDPath := filepath.Join(filepath.Dir(pidPath), "parent.pid")
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -48,6 +49,7 @@ func TestCommandContextCancellationTerminatesForkedChild(t *testing.T) {
 }
 
 func TestProcessHelper(t *testing.T) {
+	t.Parallel()
 	switch os.Getenv("WB_PROCESS_HELPER") {
 	case "sleep-child":
 		sleepUntilKilled()

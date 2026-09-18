@@ -82,6 +82,7 @@ func lgCovBareRepo(t *testing.T, path string) {
 // the branch-name rule: an empty Branch is derived from the clock, and a
 // caller-supplied clock is what the derived name is built from.
 func TestLgCovInspectSeesACleanCloneAndDerivesItsBranchName(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	ctx := context.Background()
 
@@ -133,6 +134,7 @@ func TestLgCovInspectSeesACleanCloneAndDerivesItsBranchName(t *testing.T) {
 // managed path that only looks like a clone: agentguard classifies it as
 // canonical from the .git directory alone, and Git then refuses it.
 func TestLgCovInspectRefusesACanonicalPathThatIsNotAGitRepository(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	broken := filepath.Join(projectsRoot, "sneat-co", "broken")
 	if err := os.MkdirAll(filepath.Join(broken, ".git"), 0o755); err != nil {
@@ -147,6 +149,7 @@ func TestLgCovInspectRefusesACanonicalPathThatIsNotAGitRepository(t *testing.T) 
 // rescue must report rather than mistake for "nothing to rescue": Git can
 // still name the branch and HEAD, but cannot say what the clone holds.
 func TestLgCovInspectRefusesACloneWhoseIndexIsUnreadable(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	index := filepath.Join(repositories.Canonical, ".git", "index")
@@ -165,6 +168,7 @@ func TestLgCovInspectRefusesACloneWhoseIndexIsUnreadable(t *testing.T) {
 // TestLgCovCaptureRefusesNothingAndAnUnrelatedDirectory checks the two ways a
 // capture is refused before a temporary index is even attempted.
 func TestLgCovCaptureRefusesNothingAndAnUnrelatedDirectory(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	ctx := context.Background()
 
@@ -194,6 +198,7 @@ func TestLgCovCaptureRefusesNothingAndAnUnrelatedDirectory(t *testing.T) {
 // there is no index to copy and no HEAD to read a tree from, so the capture
 // must fail rather than record an incomplete rescue.
 func TestLgCovCaptureRefusesACloneWithNoCommitToBuildOn(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	canonical := filepath.Join(projectsRoot, "sneat-co", "backstage")
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
@@ -246,6 +251,7 @@ func TestLgCovCaptureFailsWhenNoTemporaryDirectoryExists(t *testing.T) {
 // capture's own failure contract: when staging the clone's content into the
 // scratch index fails, the rescue reports it instead of committing a partial tree.
 func TestLgCovCaptureFailsWhenTheContentCannotBeStaged(t *testing.T) {
+	t.Parallel()
 	lgCovRequireEffectivePermissions(t)
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
@@ -268,6 +274,7 @@ func TestLgCovCaptureFailsWhenTheContentCannotBeStaged(t *testing.T) {
 // a deletion needs no new object, but writing the resulting tree does, and a
 // tree that cannot be written must not become a rescue commit.
 func TestLgCovCaptureFailsWhenTheTreeCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	lgCovRequireEffectivePermissions(t)
 	repositories := newFixture(t)
 	// A single tracked deletion: staging it writes no object, so the failure
@@ -297,6 +304,7 @@ func TestLgCovCaptureFailsWhenTheTreeCannotBeWritten(t *testing.T) {
 // reuse path honest: when the named branch cannot be read back, the capture
 // refuses rather than assuming it already holds this content.
 func TestLgCovCaptureRefusesAnExistingBranchWhoseTreeCannotBeRead(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	gitIn(t, repositories.Canonical, "branch", "rescue/one", "HEAD")
@@ -320,6 +328,7 @@ func TestLgCovCaptureRefusesAnExistingBranchWhoseTreeCannotBeRead(t *testing.T) 
 // TestLgCovCaptureFailsWhenTheRescueCommitCannotBeRecorded covers the parent
 // the clone no longer has: commit-tree refuses, and no branch is created.
 func TestLgCovCaptureFailsWhenTheRescueCommitCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -339,6 +348,7 @@ func TestLgCovCaptureFailsWhenTheRescueCommitCannotBeRecorded(t *testing.T) {
 // capture: a name Git will not accept must not leave a rescue commit behind
 // pretending to be recoverable.
 func TestLgCovCaptureRefusesABranchNameGitRejects(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -358,6 +368,7 @@ func TestLgCovCaptureRefusesABranchNameGitRejects(t *testing.T) {
 // from the remote-tracking ref that the content is already off this machine,
 // and the second push is a no-op rather than a second publish.
 func TestLgCovCaptureAndPushAreIdempotentAndSeeTheRemoteReceipt(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -400,6 +411,7 @@ func TestLgCovCaptureAndPushAreIdempotentAndSeeTheRemoteReceipt(t *testing.T) {
 // TestLgCovPushRequiresACaptureAndAReachableRemote covers the two refusals
 // that happen before anything is published.
 func TestLgCovPushRequiresACaptureAndAReachableRemote(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	ctx := context.Background()
 	if _, err := Push(ctx, Report{Path: repositories.Canonical, RescueBranch: "rescue/x"}, "origin"); err == nil {
@@ -423,6 +435,7 @@ func TestLgCovPushRequiresACaptureAndAReachableRemote(t *testing.T) {
 // TestLgCovPushRefusesToReplaceADifferentRemoteCommit is the guard against a
 // rescue silently overwriting somebody else's branch on the remote.
 func TestLgCovPushRefusesToReplaceADifferentRemoteCommit(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -449,6 +462,7 @@ func TestLgCovPushRefusesToReplaceADifferentRemoteCommit(t *testing.T) {
 // TestLgCovPushReportsAPushFailure makes the push's own failure observable:
 // the remote is reachable for the receipt read but refuses the write.
 func TestLgCovPushReportsAPushFailure(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -475,6 +489,7 @@ func TestLgCovPushReportsAPushFailure(t *testing.T) {
 // URLs: the write lands, but the ref read back afterwards is not the rescue
 // commit, so the push is not allowed to claim success.
 func TestLgCovPushRefusesAPushWithoutExactRemoteReceipt(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -512,6 +527,7 @@ func TestLgCovPushRefusesAPushWithoutExactRemoteReceipt(t *testing.T) {
 // what it holds. A post-receive hook removes the fetch remote, which is the
 // only way the same Push call can see a writable remote and an unreadable one.
 func TestLgCovPushReportsAnUnreadableRemoteAfterPushing(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fixture deletes the fetch remote with a shell post-receive hook")
 	}
@@ -554,6 +570,7 @@ func TestLgCovPushReportsAnUnreadableRemoteAfterPushing(t *testing.T) {
 // more than one remote branch: without exactly one receipt the push must not
 // guess which commit it published.
 func TestLgCovPushRejectsAnAmbiguousRemoteRef(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	gitIn(t, repositories.Canonical, "push", "-q", "origin", "HEAD:refs/heads/rescue/one")
 	gitIn(t, repositories.Canonical, "push", "-q", "origin", "HEAD:refs/heads/rescue/two")
@@ -572,6 +589,7 @@ func TestLgCovPushRejectsAnAmbiguousRemoteRef(t *testing.T) {
 // TestLgCovRestoreRefusesWhenTheCloneCannotReturnToItsHead keeps a rescue from
 // cleaning a clone whose recorded HEAD is no longer there.
 func TestLgCovRestoreRefusesWhenTheCloneCannotReturnToItsHead(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -601,6 +619,7 @@ func TestLgCovRestoreRefusesWhenTheCloneCannotReturnToItsHead(t *testing.T) {
 // returned to the captured base, so the restore reports it rather than
 // claiming a clean clone.
 func TestLgCovRestoreRefusesWhenTheCloneCannotBeCleaned(t *testing.T) {
+	t.Parallel()
 	lgCovRequireEffectivePermissions(t)
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
@@ -635,6 +654,7 @@ func TestLgCovRestoreRefusesWhenTheCloneCannotBeCleaned(t *testing.T) {
 // the capture rather than trusting the report: a rescue commit that is not in
 // this repository is a refusal, not a clean.
 func TestLgCovRestoreRefusesACommitItCannotReadBack(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	report, err := Inspect(context.Background(), repositories.Canonical, options(repositories))
@@ -657,6 +677,7 @@ func TestLgCovRestoreRefusesACommitItCannotReadBack(t *testing.T) {
 // the completeness check must not flag: a deletion is captured by being
 // absent, and a directory entry stands for the files inside it.
 func TestLgCovRestoreTreatsDeletionsAndDirectoriesAsCaptured(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -694,6 +715,7 @@ func TestLgCovRestoreTreatsDeletionsAndDirectoriesAsCaptured(t *testing.T) {
 // managed-hook route: the attestation names the branch and commit the capture
 // actually produced, and the pre-push stream publishes only that ref.
 func TestLgCovVerifyAttestedPushAcceptsTheExactCapture(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -716,6 +738,7 @@ func TestLgCovVerifyAttestedPushAcceptsTheExactCapture(t *testing.T) {
 // own input contract, checked against a real capture so every refusal is the
 // rule under test rather than a missing fixture.
 func TestLgCovVerifyAttestedPushRefusesMalformedAttestations(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -747,6 +770,7 @@ func TestLgCovVerifyAttestedPushRefusesMalformedAttestations(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			err := VerifyAttestedPush(ctx, repositories.Canonical, repositories.ProjectsRoot, testCase.branch, testCase.commit, strings.NewReader(testCase.input))
 			if err == nil {
 				t.Fatalf("%s was accepted", testCase.name)
@@ -767,6 +791,7 @@ func TestLgCovVerifyAttestedPushRefusesMalformedAttestations(t *testing.T) {
 // TestLgCovVerifyAttestedPushRefusesANonCanonicalRoot keeps the managed-hook
 // route pointed at the clone rescue exists for.
 func TestLgCovVerifyAttestedPushRefusesANonCanonicalRoot(t *testing.T) {
+	t.Parallel()
 	elsewhere := t.TempDir()
 	run(t, elsewhere, "git", "init", "-q")
 	run(t, elsewhere, "git", "config", "user.email", "rescue@example.test")
@@ -789,6 +814,7 @@ func TestLgCovVerifyAttestedPushRefusesANonCanonicalRoot(t *testing.T) {
 // reason for existing: it proves the rescue preserved a dirty clone, so a
 // clean clone has nothing this route may publish.
 func TestLgCovVerifyAttestedPushRefusesACleanCanonicalClone(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commit := gitIn(t, repositories.Canonical, "rev-parse", "HEAD")
 	err := VerifyAttestedPush(context.Background(), repositories.Canonical, repositories.ProjectsRoot, "rescue/clean", commit, strings.NewReader(lgCovPushInput("rescue/clean", commit)))
@@ -803,6 +829,7 @@ func TestLgCovVerifyAttestedPushRefusesACleanCanonicalClone(t *testing.T) {
 // TestLgCovVerifyAttestedPushRefusesAMismatchedCommit binds the attestation to
 // the branch: naming a different commit than the branch holds is a refusal.
 func TestLgCovVerifyAttestedPushRefusesAMismatchedCommit(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -830,6 +857,7 @@ func TestLgCovVerifyAttestedPushRefusesAMismatchedCommit(t *testing.T) {
 // ref that was written without its object: the branch read succeeds, so the
 // refusal has to come from reading the commit itself.
 func TestLgCovVerifyAttestedPushRefusesABranchPointingAtAMissingObject(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	const bogus = "1111111111111111111111111111111111111111"
@@ -853,6 +881,7 @@ func TestLgCovVerifyAttestedPushRefusesABranchPointingAtAMissingObject(t *testin
 // TestLgCovVerifyAttestedPushRefusesAWrongParent proves the commit must be a
 // capture of the clone's own HEAD and not merely a commit that exists.
 func TestLgCovVerifyAttestedPushRefusesAWrongParent(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -882,6 +911,7 @@ func TestLgCovVerifyAttestedPushRefusesAWrongParent(t *testing.T) {
 // checked, not just the shape of the commit: a branch holding the clean tree
 // is not a capture of the dirty clone.
 func TestLgCovVerifyAttestedPushRefusesADifferentCapturedTree(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
 	ctx := context.Background()
@@ -909,6 +939,7 @@ func TestLgCovVerifyAttestedPushRefusesADifferentCapturedTree(t *testing.T) {
 // wall before the push is allowed: if the pre-push hook cannot re-capture the
 // clone's complete dirty state, nothing may be published under this route.
 func TestLgCovVerifyAttestedPushRefusesWhenTheCaptureCannotBeRebuilt(t *testing.T) {
+	t.Parallel()
 	lgCovRequireEffectivePermissions(t)
 	repositories := newFixture(t)
 	dirtyTheClone(t, repositories)
@@ -975,6 +1006,7 @@ func TestLgCovPushAttestationFromEnvironment(t *testing.T) {
 // the rescue commit message depends on: a long SHA is shortened, a short one
 // is left alone, and a long change list is summarised rather than dumped.
 func TestLgCovShortSHAAndRescueMessageBoundTheirOutput(t *testing.T) {
+	t.Parallel()
 	if got := shortSHA("0123456789abcdef0123"); got != "0123456789ab" {
 		t.Fatalf("shortSHA of a long SHA = %q, want its first 12 characters", got)
 	}
@@ -1010,6 +1042,7 @@ func TestLgCovShortSHAAndRescueMessageBoundTheirOutput(t *testing.T) {
 // TestLgCovCopyFileReportsAnUnreadableSource covers the copy that must report
 // a missing source rather than write an empty index.
 func TestLgCovCopyFileReportsAnUnreadableSource(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	err := copyFile(filepath.Join(directory, "missing"), filepath.Join(directory, "destination"))
 	if err == nil {
@@ -1023,6 +1056,7 @@ func TestLgCovCopyFileReportsAnUnreadableSource(t *testing.T) {
 // TestLgCovGitRawReportsAFailureOutsideARepository covers the raw read that
 // must return Git's failure rather than an empty status.
 func TestLgCovGitRawReportsAFailureOutsideARepository(t *testing.T) {
+	t.Parallel()
 	if _, err := gitRaw(context.Background(), t.TempDir(), "status", "--porcelain=v1"); err == nil {
 		t.Fatal("reading the status of a directory that is not a repository succeeded")
 	}

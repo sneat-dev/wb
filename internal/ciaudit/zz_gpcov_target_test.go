@@ -10,6 +10,7 @@ import (
 // comparison the package cannot make fails loudly instead of reporting "no
 // lowered floors".
 func TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed(t *testing.T) {
+	t.Parallel()
 	t.Run("the root is not a git repository", func(t *testing.T) {
 		root := t.TempDir()
 		// Keep discovery from escaping into a repository that happens to
@@ -26,6 +27,7 @@ func TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed(t *testing.T) 
 	})
 
 	t.Run("the target cannot be fetched", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		targetGit(t, root, "init", "-q", "-b", "main")
 		targetGit(t, root, "config", "user.email", "audit@example.test")
@@ -48,6 +50,7 @@ func TestGpCovCompareCoverageFloorsReportsTheGitCommandThatFailed(t *testing.T) 
 // TestGpCovCompareCoverageFloorsReportsAWorkflowsPathThatIsNotADirectory pins
 // that a local read failure is propagated rather than read as "no floors".
 func TestGpCovCompareCoverageFloorsReportsAWorkflowsPathThatIsNotADirectory(t *testing.T) {
+	t.Parallel()
 	root := gpCovRepo(t, nil)
 	targetGit(t, root, "checkout", "-qb", "feature/x")
 	write(t, root, filepath.Join(".github", "workflows"), "not a directory\n")
@@ -64,6 +67,7 @@ func TestGpCovCompareCoverageFloorsReportsAWorkflowsPathThatIsNotADirectory(t *t
 // TestGpCovCompareCoverageFloorsWithoutAWorkflowsDirectoryIsAValidNoOp pins
 // that a branch carrying no workflows at all has nothing to lower.
 func TestGpCovCompareCoverageFloorsWithoutAWorkflowsDirectoryIsAValidNoOp(t *testing.T) {
+	t.Parallel()
 	root := gpCovRepo(t, nil)
 	targetGit(t, root, "checkout", "-qb", "feature/x")
 	write(t, root, "backend/main.go", "package main\n")
@@ -81,7 +85,9 @@ func TestGpCovCompareCoverageFloorsWithoutAWorkflowsDirectoryIsAValidNoOp(t *tes
 // in the local read: a target workflow with no floor, a non-YAML entry, a
 // subdirectory, and an unreadable file.
 func TestGpCovCompareCoverageFloorsSkipsWorkflowsItCannotCompare(t *testing.T) {
+	t.Parallel()
 	t.Run("the target has no floor for the workflow", func(t *testing.T) {
+		t.Parallel()
 		root := gpCovRepo(t, map[string]string{
 			".github/workflows/ci.yml": "jobs:\n  build:\n    with:\n      other: 1\n",
 		})
@@ -103,6 +109,7 @@ func TestGpCovCompareCoverageFloorsSkipsWorkflowsItCannotCompare(t *testing.T) {
 	// directory. Only the extension filter keeps it from being compared, so a
 	// finding here would mean the filter is gone.
 	t.Run("a non-YAML entry is not a workflow", func(t *testing.T) {
+		t.Parallel()
 		const targetNote = "jobs:\n  build:\n    with:\n      min_test_coverage_percent: 85\n"
 		root := gpCovRepo(t, map[string]string{".github/workflows/README.md": targetNote})
 		targetGit(t, root, "checkout", "-qb", "feature/x")
@@ -122,6 +129,7 @@ func TestGpCovCompareCoverageFloorsSkipsWorkflowsItCannotCompare(t *testing.T) {
 	// Reading a directory as a file fails; only the IsDir skip keeps this call
 	// from returning an error.
 	t.Run("a subdirectory is skipped", func(t *testing.T) {
+		t.Parallel()
 		root := gpCovRepo(t, nil)
 		targetGit(t, root, "checkout", "-qb", "feature/x")
 		write(t, root, ".github/workflows/nested/keep.yml", "min_test_coverage_percent: 10\n")
@@ -136,6 +144,7 @@ func TestGpCovCompareCoverageFloorsSkipsWorkflowsItCannotCompare(t *testing.T) {
 	})
 
 	t.Run("an unreadable workflow file", func(t *testing.T) {
+		t.Parallel()
 		root := gpCovRepo(t, nil)
 		targetGit(t, root, "checkout", "-qb", "feature/x")
 		write(t, root, ".github/workflows/ci.yml", "min_test_coverage_percent: 70\n")
@@ -154,6 +163,7 @@ func TestGpCovCompareCoverageFloorsSkipsWorkflowsItCannotCompare(t *testing.T) {
 // TestGpCovMinTestCoveragePercentRejectsUnusableValues pins the extractor's
 // own boundary: no floor at all, and a floor that cannot be represented.
 func TestGpCovMinTestCoveragePercentRejectsUnusableValues(t *testing.T) {
+	t.Parallel()
 	if value, ok := minTestCoveragePercent("jobs:\n  with:\n    min_test_coverage_percent: 85.5\n"); !ok || value != 85.5 {
 		t.Fatalf("value = %v, ok = %v; want the declared 85.5", value, ok)
 	}

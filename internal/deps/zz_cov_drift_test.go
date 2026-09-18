@@ -77,6 +77,7 @@ func depsCovDriftGoDependency(dependency string, selected, declared VersionEvide
 // and that asking for more workers than repositories is clamped rather than
 // spawning idle goroutines.
 func TestDepsCovDriftAnalyzeDriftDefaultsAndOversubscribedParallelism(t *testing.T) {
+	t.Parallel()
 	checkout := depsCovDriftGoRepository(t, map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n",
 	})
@@ -110,6 +111,7 @@ func TestDepsCovDriftAnalyzeDriftDefaultsAndOversubscribedParallelism(t *testing
 // checkout (an error row that fails the gate), and a repository with no slug
 // at all (silently dropped rather than reported as an unnamed repository).
 func TestDepsCovDriftAnalyzeDriftReportsSkippedAndErroredRepositories(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "not-cloned")
 	report, err := AnalyzeDrift(context.Background(), []Repository{
 		{Slug: "acme/beta", Path: ""},
@@ -142,6 +144,7 @@ func TestDepsCovDriftAnalyzeDriftReportsSkippedAndErroredRepositories(t *testing
 	}
 
 	t.Run("repository without a slug is not reported", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod": "module example.com/anon\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n",
 		})
@@ -160,6 +163,7 @@ func TestDepsCovDriftAnalyzeDriftReportsSkippedAndErroredRepositories(t *testing
 // was not populated, --fail-on-behind is independent from --fail-on-drift, and
 // a clean report never fails.
 func TestDepsCovDriftFailedWithGates(t *testing.T) {
+	t.Parallel()
 	if !DriftFailedWith(DriftReport{Summary: DriftSummary{Error: 1}}, false, false) {
 		t.Fatal("a summary error must fail")
 	}
@@ -188,6 +192,7 @@ func TestDepsCovDriftFailedWithGates(t *testing.T) {
 // classification bucket, the orthogonal Behind counter, and the fact that a
 // repository-level error increments the same Error bucket.
 func TestDepsCovDriftSummarizeDriftCountsEveryClassification(t *testing.T) {
+	t.Parallel()
 	report := DriftReport{
 		Groups: []DriftVersionGroup{
 			{Dependency: "a", Classification: DriftConverged},
@@ -221,6 +226,7 @@ func TestDepsCovDriftSummarizeDriftCountsEveryClassification(t *testing.T) {
 // selector drops non-matching rows, and that offline groups record why latest
 // was not queried.
 func TestDepsCovDriftClassifyDriftGroupsDeclaredAndUnknownFallbacks(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	repositories := []DriftRepository{
 		{Repository: "acme/broken", Status: "error", Dependencies: []DriftDependency{
@@ -271,6 +277,7 @@ func TestDepsCovDriftClassifyDriftGroupsDeclaredAndUnknownFallbacks(t *testing.T
 // a group whose observations lag the published latest is classified
 // behind_latest with the offending repositories named.
 func TestDepsCovDriftClassifyDriftGroupsUnavailableAndBehindLatest(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	unavailable := classifyDriftGroups([]DriftRepository{
 		{Repository: "acme/app", Status: "ok", Dependencies: []DriftDependency{
@@ -318,6 +325,7 @@ func TestDepsCovDriftClassifyDriftGroupsUnavailableAndBehindLatest(t *testing.T)
 // placeholders, empty values and non-version kinds are all ignored, while the
 // same version observed by two repositories counts once.
 func TestDepsCovDriftDistinctSelectedVersionsIgnoresNonVersionUses(t *testing.T) {
+	t.Parallel()
 	versions := []DriftVersionUse{
 		{Version: "1.0.0", Kind: "selected"},
 		{Version: "1.0.0", Kind: "declared"},
@@ -338,6 +346,7 @@ func TestDepsCovDriftDistinctSelectedVersionsIgnoresNonVersionUses(t *testing.T)
 // TestDepsCovDriftMatchesAnyGlobSemantics asserts literal comparison, path.Match
 // semantics where "*" never crosses "/", and the malformed-pattern fallback.
 func TestDepsCovDriftMatchesAnyGlobSemantics(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		value    string
@@ -352,6 +361,7 @@ func TestDepsCovDriftMatchesAnyGlobSemantics(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := matchesAnyGlob(test.value, test.patterns); got != test.want {
 				t.Fatalf("matchesAnyGlob(%q, %v) = %v, want %v", test.value, test.patterns, got, test.want)
 			}
@@ -364,6 +374,7 @@ func TestDepsCovDriftMatchesAnyGlobSemantics(t *testing.T) {
 // locked/selected versions, the Go "specifier WB cannot read is never behind"
 // rule, and npm's evaluated-range judgement.
 func TestDepsCovDriftObservationLagsLatestMatrix(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                            string
 		ecosystem                       Ecosystem
@@ -381,6 +392,7 @@ func TestDepsCovDriftObservationLagsLatestMatrix(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := observationLagsLatest(test.ecosystem, test.version, test.kind, test.declared, test.latest); got != test.want {
 				t.Fatalf("observationLagsLatest(%s, %q, %q, %q, %q) = %v, want %v",
 					test.ecosystem, test.version, test.kind, test.declared, test.latest, got, test.want)
@@ -394,6 +406,7 @@ func TestDepsCovDriftObservationLagsLatestMatrix(t *testing.T) {
 // usable family prefix, the relative-manifest failure fallback, and module
 // directory resolution for root and nested manifests.
 func TestDepsCovDriftPathHelpers(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		modulePath string
 		want       string
@@ -429,7 +442,9 @@ func TestDepsCovDriftPathHelpers(t *testing.T) {
 // reported with its redirect, the selector can drop it, and the same module
 // named by two manifests produces two rows ordered by manifest.
 func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) {
+	t.Parallel()
 	t.Run("missing checkout", func(t *testing.T) {
+		t.Parallel()
 		_, err := inspectGoDriftRepository(context.Background(), Repository{
 			Slug: "acme/missing", Path: filepath.Join(t.TempDir(), "absent"),
 		}, DriftOptions{}, driftObservedAt())
@@ -439,6 +454,7 @@ func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) 
 	})
 
 	t.Run("unparsable go.mod", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod": "module example.com/app\n\nrequire (\n",
 		})
@@ -449,6 +465,7 @@ func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) 
 	})
 
 	t.Run("go.mod disappears before the read", func(t *testing.T) {
+		t.Parallel()
 		checkout := t.TempDir()
 		depsCovSymlink(t, filepath.Join(checkout, "gone.mod"), filepath.Join(checkout, "go.mod"))
 		if _, err := inspectGoDriftRepository(context.Background(), Repository{Slug: "acme/app", Path: checkout}, DriftOptions{}, driftObservedAt()); err == nil {
@@ -457,6 +474,7 @@ func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) 
 	})
 
 	t.Run("replace without a require row", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod": "module example.com/app\n\ngo 1.22\n\nreplace example.com/money => example.com/fork v1.0.0\n",
 		})
@@ -483,6 +501,7 @@ func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) 
 	})
 
 	t.Run("replace-only row filtered by the selector", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod": "module example.com/app\n\ngo 1.22\n\nreplace example.com/money => example.com/fork v1.0.0\n",
 		})
@@ -498,6 +517,7 @@ func TestDepsCovDriftInspectGoDriftRepositoryErrorsAndReplaceRows(t *testing.T) 
 	})
 
 	t.Run("same module in two manifests", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"go.mod":     "module example.com/app\n\ngo 1.22\n\nrequire example.com/sdk v1.0.0\n",
 			"sub/go.mod": "module example.com/sub\n\ngo 1.22\n\nrequire example.com/sdk v1.1.0\n",
@@ -555,6 +575,7 @@ exit 0
 // declared require version with an explicit reason when go is unavailable or
 // returns nothing.
 func TestDepsCovDriftSelectedGoModuleVersionFallbacks(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	t.Run("go list wins", func(t *testing.T) {
 		depsCovWriteFakeExecutable(t, "go", "printf '%s\\n' 'v1.2.3'\nexit 0\n")
@@ -589,6 +610,7 @@ func TestDepsCovDriftSelectedGoModuleVersionFallbacks(t *testing.T) {
 // records the proxy version on success and an explicit reason when the proxy
 // lookup fails.
 func TestDepsCovDriftObserveLatestGoVersion(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	t.Run("valid version", func(t *testing.T) {
 		depsCovWriteFakeExecutable(t, "go", "printf '%s\\n' '{\"Version\":\"v1.2.3\"}'\nexit 0\n")
@@ -624,7 +646,9 @@ func TestDepsCovDriftObserveLatestGoVersion(t *testing.T) {
 // workspace reference excluded by the selector, and manifests that vanish
 // between the walk and the read.
 func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("missing checkout", func(t *testing.T) {
+		t.Parallel()
 		_, err := inspectNpmDriftRepository(context.Background(), Repository{
 			Slug: "acme/missing", Path: filepath.Join(t.TempDir(), "absent"),
 		}, DriftOptions{}, driftObservedAt(), newNpmLatestVersions())
@@ -634,6 +658,7 @@ func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
 	})
 
 	t.Run("unparsable package.json", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{"package.json": "{"})
 		_, err := inspectNpmDriftRepository(context.Background(), Repository{Slug: "acme/app", Path: checkout}, DriftOptions{}, driftObservedAt(), newNpmLatestVersions())
 		if err == nil || !strings.Contains(err.Error(), "parse package.json") {
@@ -642,6 +667,7 @@ func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
 	})
 
 	t.Run("workspace reference filtered by the selector", func(t *testing.T) {
+		t.Parallel()
 		checkout := depsCovDriftGoRepository(t, map[string]string{
 			"pnpm-workspace.yaml": "overrides:\n  '@sneat/core': 1.0.0\n",
 		})
@@ -657,6 +683,7 @@ func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
 	})
 
 	t.Run("package.json disappears before the read", func(t *testing.T) {
+		t.Parallel()
 		checkout := t.TempDir()
 		depsCovSymlink(t, filepath.Join(checkout, "gone.json"), filepath.Join(checkout, "package.json"))
 		_, err := inspectNpmDriftRepository(context.Background(), Repository{Slug: "acme/app", Path: checkout}, DriftOptions{}, driftObservedAt(), newNpmLatestVersions())
@@ -666,6 +693,7 @@ func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
 	})
 
 	t.Run("pnpm-workspace.yaml disappears before the read", func(t *testing.T) {
+		t.Parallel()
 		checkout := t.TempDir()
 		depsCovSymlink(t, filepath.Join(checkout, "gone.yaml"), filepath.Join(checkout, "pnpm-workspace.yaml"))
 		_, err := inspectNpmDriftRepository(context.Background(), Repository{Slug: "acme/app", Path: checkout}, DriftOptions{Ecosystem: EcosystemNPM}, driftObservedAt(), newNpmLatestVersions())
@@ -680,6 +708,7 @@ func TestDepsCovDriftInspectNpmDriftRepositoryManifestErrors(t *testing.T) {
 // package, a lockfile that could not be indexed, conflicting importers, and a
 // clean single resolution.
 func TestDepsCovDriftNpmSelectedVersionEvidenceMatrix(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	scopes := map[string]npmLockScope{
 		"packages/app": {Directory: "packages/app", Versions: map[string]npmLockedVersion{
@@ -719,6 +748,7 @@ func TestDepsCovDriftNpmSelectedVersionEvidenceMatrix(t *testing.T) {
 // TestDepsCovDriftLockScopeLabel asserts the human-readable lockfile scope
 // label for the repository root and for a nested workspace.
 func TestDepsCovDriftLockScopeLabel(t *testing.T) {
+	t.Parallel()
 	if got := lockScopeLabel(""); got != "the repository root" {
 		t.Fatalf("lockScopeLabel(\"\") = %q", got)
 	}
@@ -730,6 +760,7 @@ func TestDepsCovDriftLockScopeLabel(t *testing.T) {
 // TestDepsCovDriftSortDriftDependencies asserts the three-key ordering:
 // dependency name, then manifest, then field.
 func TestDepsCovDriftSortDriftDependencies(t *testing.T) {
+	t.Parallel()
 	dependencies := []DriftDependency{
 		{Dependency: "b", Manifest: "a.json", Field: "dependencies"},
 		{Dependency: "a", Manifest: "z.json", Field: "dependencies"},
@@ -756,9 +787,11 @@ func TestDepsCovDriftSortDriftDependencies(t *testing.T) {
 // at most once and that a concurrent writer's first observation wins, so the
 // report stays deterministic under parallel workers.
 func TestDepsCovDriftNpmLatestVersionsCache(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 
 	t.Run("memoized across calls", func(t *testing.T) {
+		t.Parallel()
 		cache := newNpmLatestVersions()
 		calls := 0
 		options := DriftOptions{LatestNpmVersion: func(context.Context, string) (string, error) {
@@ -776,6 +809,7 @@ func TestDepsCovDriftNpmLatestVersionsCache(t *testing.T) {
 	})
 
 	t.Run("first recorded observation wins", func(t *testing.T) {
+		t.Parallel()
 		cache := newNpmLatestVersions()
 		options := DriftOptions{LatestNpmVersion: func(context.Context, string) (string, error) {
 			// Simulate a concurrent worker that resolved the package while
@@ -797,14 +831,17 @@ func TestDepsCovDriftNpmLatestVersionsCache(t *testing.T) {
 // reason instead of a fabricated version, and that a valid lookup records the
 // published version.
 func TestDepsCovDriftObserveLatestNpmVersionErrorsAndSuccess(t *testing.T) {
+	t.Parallel()
 	at := driftObservedAt()
 	t.Run("invalid package name", func(t *testing.T) {
+		t.Parallel()
 		evidence := observeLatestNpmVersion(context.Background(), "NotScoped", DriftOptions{}, at)
 		if evidence.Value != "" || !strings.Contains(evidence.Reason, "must be lowercase") {
 			t.Fatalf("evidence = %+v", evidence)
 		}
 	})
 	t.Run("registry lookup failure", func(t *testing.T) {
+		t.Parallel()
 		evidence := observeLatestNpmVersion(context.Background(), "@sneat/core", DriftOptions{
 			LatestNpmVersion: func(context.Context, string) (string, error) {
 				return "", context.DeadlineExceeded
@@ -815,6 +852,7 @@ func TestDepsCovDriftObserveLatestNpmVersionErrorsAndSuccess(t *testing.T) {
 		}
 	})
 	t.Run("published version", func(t *testing.T) {
+		t.Parallel()
 		evidence := observeLatestNpmVersion(context.Background(), "@sneat/core", DriftOptions{
 			LatestNpmVersion: func(context.Context, string) (string, error) { return "1.2.3", nil },
 		}, at)
@@ -829,6 +867,7 @@ func TestDepsCovDriftObserveLatestNpmVersionErrorsAndSuccess(t *testing.T) {
 // repository with a reason, a rename replacement, a per-dependency latest, and
 // a repository that contributes no dependencies at all.
 func TestDepsCovDriftMarkdownRendersEverySection(t *testing.T) {
+	t.Parallel()
 	report := DriftReport{
 		Ecosystem:  EcosystemNPM,
 		Mode:       "online",
@@ -897,6 +936,7 @@ func TestDepsCovDriftMarkdownRendersEverySection(t *testing.T) {
 // TestDepsCovDriftEvidenceOrDash asserts the evidence rendering ladder:
 // a value, then a reason, then a dash.
 func TestDepsCovDriftEvidenceOrDash(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		evidence VersionEvidence
@@ -907,6 +947,7 @@ func TestDepsCovDriftEvidenceOrDash(t *testing.T) {
 		{name: "dash", evidence: VersionEvidence{}, want: "—"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := evidenceOrDash(test.evidence); got != test.want {
 				t.Fatalf("evidenceOrDash(%+v) = %q, want %q", test.evidence, got, test.want)
 			}
@@ -919,6 +960,7 @@ func TestDepsCovDriftEvidenceOrDash(t *testing.T) {
 // can surface: an unusable report directory, and a markdown, yaml, or json
 // destination already occupied by a directory.
 func TestDepsCovDriftWriteDriftReportsArtifactsAndErrors(t *testing.T) {
+	t.Parallel()
 	report := DriftReport{
 		Ecosystem: EcosystemGo, Mode: "offline", BaseRef: "main", ObservedAt: driftObservedAt(),
 		Summary: DriftSummary{Repositories: 1, Dependencies: 1, Converged: 1},
@@ -926,6 +968,7 @@ func TestDepsCovDriftWriteDriftReportsArtifactsAndErrors(t *testing.T) {
 	}
 
 	t.Run("artifacts", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "nested", "report")
 		if err := WriteDriftReports(directory, report); err != nil {
 			t.Fatal(err)
@@ -949,6 +992,7 @@ func TestDepsCovDriftWriteDriftReportsArtifactsAndErrors(t *testing.T) {
 	})
 
 	t.Run("unusable report directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		blocker := filepath.Join(root, "blocker")
 		writeTestFile(t, blocker, "not a directory")
@@ -959,6 +1003,7 @@ func TestDepsCovDriftWriteDriftReportsArtifactsAndErrors(t *testing.T) {
 
 	for _, occupied := range []string{"deps-drift.md", "deps-drift.yaml", "deps-drift.json"} {
 		t.Run("write failure for "+occupied, func(t *testing.T) {
+			t.Parallel()
 			directory := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(directory, occupied), 0o755); err != nil {
 				t.Fatal(err)

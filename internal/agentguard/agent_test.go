@@ -35,9 +35,11 @@ func agentDispatch(prompt, model string) string {
 // is exactly the rule ("Name the model on every subagent dispatch — never
 // let it inherit") a prose-only rule could not fail closed on.
 func TestAgentDispatchRequiresModel(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 
 	t.Run("no model is denied", func(t *testing.T) {
+		t.Parallel()
 		decision := Inspect(agentCall(agentDispatch("Investigate the failing test.", ""), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if !decision.Deny {
 			t.Fatal("Inspect allowed a dispatch with no model")
@@ -50,6 +52,7 @@ func TestAgentDispatchRequiresModel(t *testing.T) {
 	})
 
 	t.Run("an explicit model is allowed", func(t *testing.T) {
+		t.Parallel()
 		decision := Inspect(agentCall(agentDispatch("Investigate the failing test.", "sonnet"), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if decision.Deny {
 			t.Fatalf("Inspect refused a dispatch that named a model:\n%s", decision.Reason)
@@ -57,6 +60,7 @@ func TestAgentDispatchRequiresModel(t *testing.T) {
 	})
 
 	t.Run("an empty/unrecognised tool_input is allowed, not guessed at", func(t *testing.T) {
+		t.Parallel()
 		decision := Inspect(agentCall(`{}`, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if decision.Deny {
 			t.Fatalf("Inspect refused an empty tool_input:\n%s", decision.Reason)
@@ -67,6 +71,7 @@ func TestAgentDispatchRequiresModel(t *testing.T) {
 // TestAgentDispatchRefusesLiteralReportPath pins
 // lesson:a-report-path-hand-written-into-a-brief-diverges-from-wb-home-on-the-target-host.
 func TestAgentDispatchRefusesLiteralReportPath(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 
 	denied := []string{
@@ -76,6 +81,7 @@ func TestAgentDispatchRefusesLiteralReportPath(t *testing.T) {
 	}
 	for _, prompt := range denied {
 		t.Run(prompt, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(agentCall(agentDispatch(prompt, "sonnet"), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a literal report path", prompt)
@@ -89,6 +95,7 @@ func TestAgentDispatchRefusesLiteralReportPath(t *testing.T) {
 	}
 
 	t.Run("deriving the path from the owning verb is allowed", func(t *testing.T) {
+		t.Parallel()
 		prompt := "When done, finalize with `wb worktree log finalize --report` and report the printed path."
 		decision := Inspect(agentCall(agentDispatch(prompt, "sonnet"), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if decision.Deny {
@@ -211,6 +218,7 @@ func TestAgentDispatchRefusesLiveClaimNamedBesideWorktreeCreate(t *testing.T) {
 // not refuse: the same lane continuing its own work, an unclaimed
 // repository, a released claim, and a prompt naming no repository at all.
 func TestAgentDispatchLiveClaimFalsePositives(t *testing.T) {
+	t.Parallel()
 	t.Run("dispatch from inside the claimed worktree is the same lane continuing", func(t *testing.T) {
 		claim := newClaimFixture(t)
 		prompt := "Continue the fix in /Users/alex/projects/" + claim.Owner + "/" + claim.Repository + "."

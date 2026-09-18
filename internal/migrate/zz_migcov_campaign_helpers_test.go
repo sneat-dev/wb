@@ -32,6 +32,7 @@ func migCovParseModfile(t *testing.T, contents string) *modfile.File {
 }
 
 func TestMigCovNormalizeCampaignOptionsRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
 	if _, err := normalizeCampaignOptions(CampaignOptions{}); err == nil || !strings.Contains(err.Error(), "github directory is required") {
 		t.Fatalf("normalizeCampaignOptions(no dir) = %v", err)
 	}
@@ -56,6 +57,7 @@ func TestMigCovNormalizeCampaignOptionsRejectsInvalidInput(t *testing.T) {
 }
 
 func TestMigCovRunCampaignRejectsInvalidSpecAndMissingDirectory(t *testing.T) {
+	t.Parallel()
 	if _, err := RunCampaign(Spec{}, t.TempDir(), CampaignOptions{GitHubDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "missing id") {
 		t.Fatalf("RunCampaign(invalid spec) = %v", err)
 	}
@@ -81,6 +83,7 @@ func TestMigCovRunCampaignRefusesAConcurrentlyHeldLock(t *testing.T) {
 }
 
 func TestMigCovRunCampaignReportsPlanFailureAndReturnsPlanOnlyReport(t *testing.T) {
+	t.Parallel()
 	sourceRoot := t.TempDir()
 	githubDir := t.TempDir()
 	spec := migCovTextReplaceSpec("plan-only")
@@ -116,6 +119,7 @@ func TestMigCovRunCampaignReportsPlanFailureAndReturnsPlanOnlyReport(t *testing.
 }
 
 func TestMigCovCampaignDiscoveryRootSelectsOnlyAValidatedResumeWorktree(t *testing.T) {
+	t.Parallel()
 	githubDir := t.TempDir()
 	sourceRoot := t.TempDir()
 	migCovWriteGoMod(t, sourceRoot, "module github.com/acme/repo\n\ngo 1.24\n")
@@ -237,6 +241,7 @@ func migCovInitGitRepository(t *testing.T, dir, goMod string) {
 }
 
 func TestMigCovCampaignPureHelpers(t *testing.T) {
+	t.Parallel()
 	if owner, name, repository, err := githubRepository("example.com/acme/repo"); err == nil || repository != "" {
 		t.Fatalf("githubRepository(non-GitHub) = %q %q %q %v", owner, name, repository, err)
 	}
@@ -286,6 +291,7 @@ func TestMigCovCampaignPureHelpers(t *testing.T) {
 }
 
 func TestMigCovRunRepositoriesParallelPropagatesTheFirstError(t *testing.T) {
+	t.Parallel()
 	first := &campaignRepository{repository: "github.com/acme/first"}
 	second := &campaignRepository{repository: "github.com/acme/second"}
 	repos := []*campaignRepository{first, second}
@@ -308,6 +314,7 @@ func TestMigCovRunRepositoriesParallelPropagatesTheFirstError(t *testing.T) {
 }
 
 func TestMigCovPseudoVersionForCommitRejectsImpossibleSeeds(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	runCampaignGit(t, repository, "init", "--initial-branch=main")
 	migCovWriteGoMod(t, repository, "module github.com/acme/module\n\ngo 1.24\n")
@@ -350,6 +357,7 @@ func TestMigCovPseudoVersionForCommitRejectsImpossibleSeeds(t *testing.T) {
 }
 
 func TestMigCovCachedGoModPathRejectsMalformedInputs(t *testing.T) {
+	t.Parallel()
 	if _, err := cachedGoModPath("/cache", "example.com/bad path", "v1.0.0"); err == nil {
 		t.Fatal("cachedGoModPath(malformed module path) succeeded")
 	}
@@ -359,6 +367,7 @@ func TestMigCovCachedGoModPathRejectsMalformedInputs(t *testing.T) {
 }
 
 func TestMigCovAddGoModRequirementEdgesHandlesUnreadableManifests(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	// A declared module whose go.mod is gone is simply skipped.
@@ -412,6 +421,7 @@ func TestMigCovAddGoModRequirementEdgesHandlesUnreadableManifests(t *testing.T) 
 }
 
 func TestMigCovFindModuleRootAndParseGoMod(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent")
 	if _, err := findModuleRoot(missing, "example.com/mod"); err == nil {
 		t.Fatal("findModuleRoot(missing root) succeeded")

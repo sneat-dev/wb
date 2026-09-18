@@ -29,6 +29,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (fn roundTripFunc) Do(request *http.Request) (*http.Response, error) { return fn(request) }
 
 func TestWorkbenchRootREADMEProvidesPublicOptIn(t *testing.T) {
+	t.Parallel()
 	if _, err := VerifyPublicEligibility(
 		"github.com/sneat-dev/wb",
 		"https://github.com/sneat-dev/wb/blob/0123456789abcdef0123456789abcdef01234567/README.md",
@@ -40,6 +41,7 @@ func TestWorkbenchRootREADMEProvidesPublicOptIn(t *testing.T) {
 }
 
 func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
+	t.Parallel()
 	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\n[Dashboard](https://sneat.work/bench)\n"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -84,12 +86,14 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 }
 
 func TestGitHubRESTProjectionReaderRequiresIdentityAndDependencies(t *testing.T) {
+	t.Parallel()
 	reader := GitHubRESTProjectionReader{}
 	for name, delivery := range map[string]WebhookDelivery{
 		"missing identity": {Payload: []byte(`{"action":"push"}`)},
 		"invalid identity": {Repository: "acme/widgets"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := reader.RefreshAuthoritativeProjection(context.Background(), delivery); err == nil {
 				t.Fatal("expected identity error")
 			}
@@ -114,6 +118,7 @@ func TestGitHubRESTProjectionReaderRequiresIdentityAndDependencies(t *testing.T)
 }
 
 func TestGitHubRESTProjectionReaderHTTPFailures(t *testing.T) {
+	t.Parallel()
 	reader := GitHubRESTProjectionReader{HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("transport down")
 	})}
@@ -135,10 +140,12 @@ func TestGitHubRESTProjectionReaderHTTPFailures(t *testing.T) {
 }
 
 func TestGitHubRESTProjectionReaderRejectsReachableFailures(t *testing.T) {
+	t.Parallel()
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	readme := base64.StdEncoding.EncodeToString([]byte("## WB\n\n[Dashboard](https://sneat.work/bench)\n"))
 	for _, mode := range []string{"repository", "identity", "commits", "badsha", "readme-error", "encoding", "base64", "content-error", "nooptin", "open", "merged", "releases", "negative", "default", "pulls"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				fail := func() { http.Error(w, "boom", http.StatusBadGateway) }
@@ -252,6 +259,7 @@ func (reader *combinedProjectionReader) RefreshAuthoritativeProjection(context.C
 }
 
 func TestProjectionEngineUsesRequestScopedAuthoritativeReaderHandoff(t *testing.T) {
+	t.Parallel()
 	reader := &combinedProjectionReader{}
 	engine, store, writer := newProjector()
 	engine.Reader = reader

@@ -19,6 +19,7 @@ import (
 // (fetch failure, missing target, drift, ahead/behind classification) is
 // asserted on the returned receipt rather than merely executed.
 func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
+	t.Parallel()
 	const target = "main"
 
 	type wtCoreCovFreshnessStub struct {
@@ -180,6 +181,7 @@ func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := inspectCanonicalFreshnessWith(context.Background(), "/canonical", target, run(testCase.stub))
 			if result.Target != target || result.RemoteRef != "origin/"+target {
 				t.Fatalf("receipt identity = %#v", result)
@@ -213,6 +215,7 @@ func TestWTCoreCovFreshnessClassifiesEveryOutcome(t *testing.T) {
 // behaviours: a real exit error gains the child's own stderr text, and an
 // ordinary error is returned unchanged.
 func TestWTCoreCovDescribeExitErrorKeepsStderrAndPlainErrors(t *testing.T) {
+	t.Parallel()
 	command := exec.Command("git", "-C", filepath.Join(t.TempDir(), "absent"), "rev-parse", "HEAD")
 	command.Env = console.Env()
 	_, err := command.Output()
@@ -237,6 +240,7 @@ func TestWTCoreCovDescribeExitErrorKeepsStderrAndPlainErrors(t *testing.T) {
 // a replayed patch is recognised across rewritten commits, an unrelated patch
 // is not, and an empty sealed range proves nothing.
 func TestWTCoreCovPatchIDHelpers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 
@@ -317,6 +321,7 @@ func TestWTCoreCovPatchIDHelpers(t *testing.T) {
 // TestWTCoreCovEnsureManifestFillsOnlyAMissingRecord asserts idempotence: the
 // first call writes the manifest, the second leaves the immutable record alone.
 func TestWTCoreCovEnsureManifestFillsOnlyAMissingRecord(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	manifest := newCreatedManifest("wtcore-ensure")
 	if err := EnsureManifest(worktree, manifest); err != nil {
@@ -377,6 +382,7 @@ func TestWTCoreCovHeartbeatScopedToCurrentDirectory(t *testing.T) {
 // TestWTCoreCovHeartbeatAtRejectsCorruptRecord asserts a malformed heartbeat
 // reads as "unknown" rather than as some earlier or fabricated time.
 func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if err := EnsureManifest(worktree, newCreatedManifest("wtcore-corrupt")); err != nil {
 		t.Fatalf("write manifest: %v", err)
@@ -399,6 +405,7 @@ func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
 // porcelain answer is used, including the rename target and a path that no
 // longer exists on disk.
 func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	repository := newJournalWorktree(t)
 	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("one\n"), 0o644); err != nil {
@@ -462,6 +469,7 @@ func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
 // always returns the zero time. Covering it would require a source change, so
 // only the honest negative behaviour is asserted here; see the report.
 func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
+	t.Parallel()
 	if got := newestWorkLogEventTime(t.TempDir()); !got.IsZero() {
 		t.Fatalf("non-worktree work log signal = %v, want zero", got)
 	}
@@ -470,6 +478,7 @@ func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
 // TestWTCoreCovExtraStringTrimsOnlyStrings asserts the helper reports an empty
 // string for a missing key and for a non-string value, and trims a real one.
 func TestWTCoreCovExtraStringTrimsOnlyStrings(t *testing.T) {
+	t.Parallel()
 	extra := map[string]any{"present": "  value  ", "number": 7, "null": nil}
 	if got := extraString(extra, "present"); got != "value" {
 		t.Fatalf("extraString(present) = %q, want %q", got, "value")

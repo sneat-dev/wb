@@ -12,6 +12,7 @@ import (
 )
 
 func TestProgressModelTracksCounts(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(map[string]int{"acme": 2, "beta": 1}, 4)
 
 	updated, _ := m.Update(RepoStarted{Org: "acme", Name: "widgets"})
@@ -42,6 +43,7 @@ func TestProgressModelTracksCounts(t *testing.T) {
 }
 
 func TestProgressModelInFlightBounded(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(map[string]int{"acme": 5}, 2)
 	for i := 0; i < 5; i++ {
 		updated, _ := m.Update(RepoStarted{Org: "acme", Name: fmt.Sprintf("repo%d", i)})
@@ -54,6 +56,7 @@ func TestProgressModelInFlightBounded(t *testing.T) {
 }
 
 func TestProgressModelSyncDoneQuits(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(nil, 4)
 	updated, cmd := m.Update(SyncDone{})
 	m = updated.(ProgressModel)
@@ -66,6 +69,7 @@ func TestProgressModelSyncDoneQuits(t *testing.T) {
 }
 
 func TestProgressModelUsesAlternateScreen(t *testing.T) {
+	t.Parallel()
 	model := NewProgressModel(map[string]int{"sneat-dev": 1}, 1)
 	if !model.View().AltScreen {
 		t.Fatal("sync progress view must use the alternate screen")
@@ -73,6 +77,7 @@ func TestProgressModelUsesAlternateScreen(t *testing.T) {
 }
 
 func TestProgressModelCtrlCQuits(t *testing.T) {
+	t.Parallel()
 	m := NewProgressModel(nil, 4)
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(ProgressModel)

@@ -43,6 +43,7 @@ func testIdentity(t *testing.T, receiptPath string) ReceiptIdentity {
 }
 
 func TestComputeIDIsStableAndSensitiveToEveryRecordedField(t *testing.T) {
+	t.Parallel()
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
 	base := newTestAcknowledgement(receiptPath)
 	base.ID = ComputeID(base)
@@ -83,6 +84,7 @@ func TestComputeIDIsStableAndSensitiveToEveryRecordedField(t *testing.T) {
 }
 
 func TestSameIgnoresActorReasonIDAndRecordedAtButNotEvidence(t *testing.T) {
+	t.Parallel()
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
 	left := newTestAcknowledgement(receiptPath)
 	left.ID = ComputeID(left)
@@ -104,6 +106,7 @@ func TestSameIgnoresActorReasonIDAndRecordedAtButNotEvidence(t *testing.T) {
 }
 
 func TestIsDerivedPathAllowed(t *testing.T) {
+	t.Parallel()
 	cases := map[string]bool{
 		"spec/README.md":              true,
 		"spec/features/foo/README.md": true,
@@ -120,6 +123,7 @@ func TestIsDerivedPathAllowed(t *testing.T) {
 }
 
 func TestPersistAndLoadRoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -153,6 +157,7 @@ func TestPersistAndLoadRoundTrip(t *testing.T) {
 }
 
 func TestLoadRejectsReceiptEditedAfterAcknowledgement(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -179,6 +184,7 @@ func TestLoadRejectsReceiptEditedAfterAcknowledgement(t *testing.T) {
 }
 
 func TestLoadRejectsTamperedIDWithoutInvalidatingHash(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -203,6 +209,7 @@ func TestLoadRejectsTamperedIDWithoutInvalidatingHash(t *testing.T) {
 }
 
 func TestLoadRejectsMissingSidecar(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -217,6 +224,7 @@ func TestLoadRejectsMissingSidecar(t *testing.T) {
 }
 
 func TestLoadRejectsEmptiedSourceProofs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)
@@ -242,6 +250,7 @@ func TestLoadRejectsEmptiedSourceProofs(t *testing.T) {
 }
 
 func TestLoadRejectsExcusedPathOutsideAllowedShape(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "receipt.json")
 	writeTestReceipt(t, receiptPath)

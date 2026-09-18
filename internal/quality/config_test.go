@@ -8,6 +8,7 @@ import (
 )
 
 func TestRepositoryRunOptionsLoadsExplicitShardingPolicy(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, repositoryQualityConfigPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -29,6 +30,7 @@ func TestRepositoryRunOptionsLoadsExplicitShardingPolicy(t *testing.T) {
 }
 
 func TestRepositoryRunOptionsLoadsGoLintWithoutGoTest(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, repositoryQualityConfigPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -51,6 +53,7 @@ func TestRepositoryRunOptionsLoadsGoLintWithoutGoTest(t *testing.T) {
 }
 
 func TestRepositoryRunOptionsFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, contents := range []string{
 		"version: 2\ngo_test:\n  shards: 8\n  packages: [./cmd/wb]\n",
 		"version: 1\ngo_test:\n  shards: 1\n  packages: [./cmd/wb]\n",

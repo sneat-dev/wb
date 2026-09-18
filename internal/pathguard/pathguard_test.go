@@ -16,6 +16,7 @@ var errDenied = errors.New("operation not permitted")
 // must learn the path, what it is for, and what to do — never just the errno
 // they already had.
 func TestCheckNamesEveryDeniedPathItsRoleAndTheRemedies(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(string(filepath.Separator), "tmp", "projects")
 	state := filepath.Join(root, ".wb")
 	store := filepath.Join(root, ".worktrees")
@@ -67,6 +68,7 @@ func TestCheckNamesEveryDeniedPathItsRoleAndTheRemedies(t *testing.T) {
 // TestCheckPassesWhenEveryDeclaredPathIsWritable keeps the preflight from
 // becoming a blanket refusal.
 func TestCheckPassesWhenEveryDeclaredPathIsWritable(t *testing.T) {
+	t.Parallel()
 	if err := Check("/projects", []Requirement{
 		{Path: "/projects/.wb", Role: RoleState},
 		{Path: "/projects/.worktrees", Role: RoleStore},
@@ -80,6 +82,7 @@ func TestCheckPassesWhenEveryDeclaredPathIsWritable(t *testing.T) {
 // inside their canonical clone, so it declares no store root — and must
 // therefore not demand write access to one.
 func TestRequirementsDeclareTheStoreOnlyWhenTheModeHasOne(t *testing.T) {
+	t.Parallel()
 	central := Requirements("/projects/.wb", "/projects/.worktrees")
 	if !hasRole(central, RoleState) || !hasRole(central, RoleTemp) || !hasRole(central, RoleStore) {
 		t.Fatalf("central requirements = %#v", central)
@@ -97,6 +100,7 @@ func TestRequirementsDeclareTheStoreOnlyWhenTheModeHasOne(t *testing.T) {
 // probe: a declared path that does not exist yet must be judged by the
 // permission a later create actually needs, not by its own absence.
 func TestOSProbeReportsAMissingPathThroughItsNearestAncestor(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := OSProbe(filepath.Join(root, ".wb", "worktrees", "task")); err != nil {
 		t.Fatalf("probe of a creatable path = %v, want nil", err)

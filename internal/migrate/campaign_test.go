@@ -89,6 +89,7 @@ func TestCampaignLockReleasePreservesLateReplacement(t *testing.T) {
 }
 
 func TestCampaignLockRefusesSymlinkAndHardLinkRemnants(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		link func(string, string) error
@@ -150,6 +151,7 @@ func campaignLockPath(t *testing.T, githubDir, migrationID string) string {
 }
 
 func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
+	t.Parallel()
 	repositories := []*campaignRepository{
 		{repository: "github.com/acme/first"},
 		{repository: "github.com/acme/second"},
@@ -166,6 +168,7 @@ func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
 }
 
 func TestReadyRepositoryComponentsContinuesIndependentPeersAtomically(t *testing.T) {
+	t.Parallel()
 	blocked := &campaignRepository{repository: "github.com/acme/blocked"}
 	cyclicPeer := &campaignRepository{repository: "github.com/acme/cyclic-peer"}
 	ready := &campaignRepository{repository: "github.com/acme/ready"}
@@ -193,6 +196,7 @@ func TestReadyRepositoryComponentsContinuesIndependentPeersAtomically(t *testing
 }
 
 func TestReadyRepositoryComponentsBootstrapsMissingCycleReleases(t *testing.T) {
+	t.Parallel()
 	cycleA := &campaignRepository{repository: "github.com/acme/cycle-a"}
 	cycleB := &campaignRepository{repository: "github.com/acme/cycle-b"}
 	cycleA.modules = []*campaignModule{{path: cycleA.repository, migrate: true}}
@@ -220,6 +224,7 @@ func TestReadyRepositoryComponentsBootstrapsMissingCycleReleases(t *testing.T) {
 }
 
 func TestPseudoVersionForCommitUsesCurrentTaggedVersion(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	runCampaignGit(t, repository, "init", "--initial-branch=main")
 	writeCampaignFile(t, filepath.Join(repository, "go.mod"), "module github.com/acme/module\n\ngo 1.24\n")
@@ -237,6 +242,7 @@ func TestPseudoVersionForCommitUsesCurrentTaggedVersion(t *testing.T) {
 }
 
 func TestCampaignGraphSelectsDependentsDependencyFirst(t *testing.T) {
+	t.Parallel()
 	children := map[string][]string{
 		"github.com/sneat-co/bots": {"github.com/sneat-co/core"},
 		"github.com/sneat-co/core": {"github.com/dal-go/dalgo"},
@@ -251,6 +257,7 @@ func TestCampaignGraphSelectsDependentsDependencyFirst(t *testing.T) {
 }
 
 func TestMigrationTargetModulesUsesLongestGoModulePrefix(t *testing.T) {
+	t.Parallel()
 	modules := map[string]listedModule{
 		"github.com/dal-go/dalgo":         {Path: "github.com/dal-go/dalgo"},
 		"github.com/dal-go/dalgo/adapter": {Path: "github.com/dal-go/dalgo/adapter"},
@@ -263,6 +270,7 @@ func TestMigrationTargetModulesUsesLongestGoModulePrefix(t *testing.T) {
 }
 
 func TestAddGoModRequirementEdgesRestoresPrunedDependency(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	adapterMod := filepath.Join(root, "adapter.mod")
 	if err := os.WriteFile(adapterMod, []byte("module github.com/acme/adapter\n\ngo 1.24\n\nrequire github.com/acme/core v1.2.3\n\nfuture_directive example\n"), 0o644); err != nil {
@@ -282,6 +290,7 @@ func TestAddGoModRequirementEdgesRestoresPrunedDependency(t *testing.T) {
 }
 
 func TestCachedGoModPathUsesOfficialModuleEscaping(t *testing.T) {
+	t.Parallel()
 	got, err := cachedGoModPath("/cache", "github.com/RoaringBitmap/roaring/v2", "v2.21.0")
 	if err != nil {
 		t.Fatal(err)
@@ -293,6 +302,7 @@ func TestCachedGoModPathUsesOfficialModuleEscaping(t *testing.T) {
 }
 
 func TestCampaignOptionsDefaultVerificationAndPush(t *testing.T) {
+	t.Parallel()
 	options, err := normalizeCampaignOptions(CampaignOptions{GitHubDir: t.TempDir(), Apply: true, Push: true})
 	if err != nil {
 		t.Fatal(err)
@@ -309,6 +319,7 @@ func TestCampaignOptionsDefaultVerificationAndPush(t *testing.T) {
 }
 
 func TestCampaignChangeTitle(t *testing.T) {
+	t.Parallel()
 	if got, want := campaignChangeTitle(Spec{ID: "dalgo-record-v1", Title: "Extract DALgo records."}), "chore: Extract DALgo records"; got != want {
 		t.Fatalf("campaign title = %q, want %q", got, want)
 	}
@@ -318,6 +329,7 @@ func TestCampaignChangeTitle(t *testing.T) {
 }
 
 func TestCampaignOptionsImplyPRAndMergePhases(t *testing.T) {
+	t.Parallel()
 	options, err := normalizeCampaignOptions(CampaignOptions{GitHubDir: t.TempDir(), Apply: true, Merge: true, Parallel: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -328,6 +340,7 @@ func TestCampaignOptionsImplyPRAndMergePhases(t *testing.T) {
 }
 
 func TestRepositoryLayersRunDependenciesFirst(t *testing.T) {
+	t.Parallel()
 	provider := &campaignRepository{repository: "github.com/acme/provider"}
 	consumer := &campaignRepository{repository: "github.com/acme/consumer"}
 	c := campaign{
@@ -350,6 +363,7 @@ func TestRepositoryLayersRunDependenciesFirst(t *testing.T) {
 }
 
 func TestRepositoryLayersCollapseDependencyCycles(t *testing.T) {
+	t.Parallel()
 	provider := &campaignRepository{repository: "github.com/acme/provider"}
 	cycleA := &campaignRepository{repository: "github.com/acme/cycle-a"}
 	cycleB := &campaignRepository{repository: "github.com/acme/cycle-b"}
@@ -387,6 +401,7 @@ func TestRepositoryLayersCollapseDependencyCycles(t *testing.T) {
 }
 
 func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
+	t.Parallel()
 	owner, name, repository, err := githubRepository("github.com/acme/repo/submodule")
 	if err != nil {
 		t.Fatal(err)
@@ -439,6 +454,7 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 }
 
 func TestCampaignReportIndexesCumulativeRepositoryChanges(t *testing.T) {
+	t.Parallel()
 	changedFiles := []string{"go.mod", "pkg/example.go"}
 	report := CampaignReport{
 		SchemaVersion: 1,

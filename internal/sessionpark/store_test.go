@@ -23,6 +23,7 @@ func testParkedSSH() sessionmove.SSHConfig {
 }
 
 func TestStorePreservesMultipleWorktreesAndDirtyEvidence(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -38,6 +39,7 @@ func TestStorePreservesMultipleWorktreesAndDirtyEvidence(t *testing.T) {
 }
 
 func TestStoreResumeLineageAndIdenticalRetry(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -61,6 +63,7 @@ func TestStoreResumeLineageAndIdenticalRetry(t *testing.T) {
 }
 
 func TestStoreRejectsOversizeContinuation(t *testing.T) {
+	t.Parallel()
 	bundle := testBundle(t)
 	bundle.Continuation = string(make([]byte, MaxContinuationBytes+1))
 	if _, err := NewStore(t.TempDir()).Create(bundle); err == nil {
@@ -69,6 +72,7 @@ func TestStoreRejectsOversizeContinuation(t *testing.T) {
 }
 
 func TestStoreRejectsUnsafeParkedOwnerEvidence(t *testing.T) {
+	t.Parallel()
 	bundle := testBundle(t)
 	bundle.Worktrees[0].OwnerEventID = "../newer-owner"
 	if _, err := NewStore(t.TempDir()).Create(bundle); err == nil {
@@ -77,6 +81,7 @@ func TestStoreRejectsUnsafeParkedOwnerEvidence(t *testing.T) {
 }
 
 func TestStoreResumeConcurrentSuccessorsHasOneWinner(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -112,6 +117,7 @@ func TestStoreResumeConcurrentSuccessorsHasOneWinner(t *testing.T) {
 }
 
 func TestStoreFindBySourceRepairsLifecycleProjectionWithoutNewID(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -124,6 +130,7 @@ func TestStoreFindBySourceRepairsLifecycleProjectionWithoutNewID(t *testing.T) {
 }
 
 func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -176,6 +183,7 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 }
 
 func TestSourceStoreRemoteRouteBindsExactSSHEndpoint(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -210,7 +218,9 @@ func TestSourceStoreRemoteRouteBindsExactSSHEndpoint(t *testing.T) {
 }
 
 func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
+	t.Parallel()
 	t.Run("ambiguous remote delivery refuses local", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		bundle := remoteTestBundle(t)
 		if _, err := store.Create(bundle); err != nil {
@@ -235,6 +245,7 @@ func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
 	})
 
 	t.Run("prepared local launch refuses remote", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		bundle := remoteTestBundle(t)
 		if _, err := store.Create(bundle); err != nil {
@@ -258,6 +269,7 @@ func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
 }
 
 func TestSourceStoreConcurrentLocalRemoteRouteHasOneWinner(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -308,7 +320,9 @@ func TestSourceStoreConcurrentLocalRemoteRouteHasOneWinner(t *testing.T) {
 }
 
 func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
+	t.Parallel()
 	t.Run("traversal", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		for _, id := range []string{".", "..", "park-../escape", "/park-absolute"} {
 			if _, err := store.Load(id); err == nil {
@@ -317,6 +331,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		}
 	})
 	t.Run("aggregate symlink", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		store := NewStore(root)
 		if err := os.Symlink(t.TempDir(), filepath.Join(root, "park-symlink")); err != nil {
@@ -327,6 +342,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		}
 	})
 	t.Run("store root symlink", func(t *testing.T) {
+		t.Parallel()
 		parent := t.TempDir()
 		root := filepath.Join(parent, "parked-sessions")
 		if err := os.Symlink(t.TempDir(), root); err != nil {
@@ -337,6 +353,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		}
 	})
 	t.Run("bundle symlink", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		bundle := testBundle(t)
 		if _, err := store.Create(bundle); err != nil {
@@ -354,6 +371,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		}
 	})
 	t.Run("bundle mode", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		bundle := testBundle(t)
 		if _, err := store.Create(bundle); err != nil {
@@ -389,6 +407,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := NewStore(t.TempDir())
 			bundle := testBundle(t)
 			if _, err := store.Create(bundle); err != nil {
@@ -406,6 +425,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 		})
 	}
 	t.Run("unexpected event artifact", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		bundle := testBundle(t)
 		if _, err := store.Create(bundle); err != nil {
@@ -422,6 +442,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 }
 
 func TestSourceLockRetainAndCloseRaceNeverReturnsUnvalidatedCapability(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -462,6 +483,7 @@ func TestSourceLockRetainAndCloseRaceNeverReturnsUnvalidatedCapability(t *testin
 }
 
 func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {

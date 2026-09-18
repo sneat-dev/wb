@@ -191,6 +191,7 @@ func TestResolveOrRegisterRefusesToOverwriteAParkedRecordAtTheSamePID(t *testing
 }
 
 func TestFindHarnessAncestorNamesOnlyKnownHarnesses(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]string{
 		"claude": "claude-code", "Codex": "codex", "copilot.exe": "copilot-cli",
 	} {
@@ -211,6 +212,7 @@ func TestFindHarnessAncestorNamesOnlyKnownHarnesses(t *testing.T) {
 }
 
 func TestRuntimeForProcessEvidenceKeepsCodexRoleExact(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		evidence ProcessEvidence
@@ -223,6 +225,7 @@ func TestRuntimeForProcessEvidenceKeepsCodexRoleExact(t *testing.T) {
 		{name: "generic shell", evidence: ProcessEvidence{Executable: "/bin/zsh", Args: []string{"zsh"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got, ok := runtimeForProcessEvidence(test.evidence)
 			if got != test.want || ok != test.ok {
 				t.Fatalf("runtimeForProcessEvidence() = (%q, %t), want (%q, %t)", got, ok, test.want, test.ok)
@@ -232,6 +235,7 @@ func TestRuntimeForProcessEvidenceKeepsCodexRoleExact(t *testing.T) {
 }
 
 func TestLookupByWBSessionIDIgnoresParkedAndUnknownSessions(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-live", Runtime: "codex"}); err != nil {
 		t.Fatal(err)

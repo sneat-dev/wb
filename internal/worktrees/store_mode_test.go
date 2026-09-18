@@ -336,6 +336,7 @@ func TestCentralStoreEmbedsTheOriginHostForALegacyClone(t *testing.T) {
 // .wb/worktrees.yaml may not select or override the mode (or the central store
 // root), and the refusal must name the machine-local configuration path.
 func TestRepositoryTrackedStoreModeIsRejectedNamingTheUserConfig(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		contents string
@@ -487,6 +488,7 @@ func TestUserStoreConfigurationValidationRejectsUnsupportedAndConflictingModes(t
 		{name: "mode and root together", contents: "version: 1\nworktrees:\n  store: repository-local\n  root: " + fixture.base + "\n", want: "store"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			mustWriteBranchConfig(t, fixture.userConfig, test.contents)
 			_, err := ResolveWorktreePlacement(context.Background(), fixture.projectsRoot, canonical, base)
 			if err == nil {
@@ -526,6 +528,7 @@ func TestCentralStoreRootIsTheProjectsRootStore(t *testing.T) {
 // layout, a legacy clone keeps the two-level suffix, and an address that is not
 // a safe relative clone path is refused rather than joined.
 func TestStoreModeHelpersUnderstandTheHostLevel(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		relative string
 		ok       bool

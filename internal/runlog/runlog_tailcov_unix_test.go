@@ -44,6 +44,7 @@ func tailCovSpawnFileSizeLimitedChild(t *testing.T) bool {
 // freshly created log, which is the only portable way to reach that branch —
 // open and flock have already succeeded by then.
 func TestTailCovAppendReportsWriteFailure(t *testing.T) {
+	t.Parallel()
 	if tailCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

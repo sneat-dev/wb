@@ -128,6 +128,7 @@ func TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination(t *testing.T) 
 	for _, scope := range []string{BranchScopeLocal, BranchScopeRemote, BranchScopeAll} {
 		for _, olderThan := range []time.Duration{0, time.Hour, 24 * time.Hour} {
 			t.Run(scope+"/"+olderThan.String(), func(t *testing.T) {
+				t.Parallel()
 				outcome, err := BranchCleanup(ctx, BranchCleanupOptions{
 					ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: scope,
 					Apply: true, OlderThan: olderThan, Now: future,

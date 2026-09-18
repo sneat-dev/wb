@@ -41,6 +41,7 @@ func hkCovEvent(t *testing.T) Event {
 // projects root is reported rather than producing a relative runtime root. The
 // root now comes from the resolver's argument, so it is passed there.
 func TestHkCovResolveExecutionLayoutReportsHomeFailure(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
 	if _, err := ResolveExecutionLayout(t.TempDir(), filepath.Join(blocker, "projects")); err == nil {
@@ -178,6 +179,7 @@ func TestHkCovReplayPendingMetricsPreparesLayout(t *testing.T) {
 }
 
 func TestHkCovReplayPendingMetricsDirect(t *testing.T) {
+	t.Parallel()
 	layout := hkCovPendingLayout(t)
 	target := filepath.Join(t.TempDir(), "events.jsonl")
 
@@ -259,6 +261,7 @@ func TestHkCovReplayPendingMetricsDirect(t *testing.T) {
 }
 
 func TestHkCovReplayPendingMetricsReportsUnremovableReceipt(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		return
 	}
@@ -288,6 +291,7 @@ func TestHkCovReplayPendingMetricsReportsUnremovableReceipt(t *testing.T) {
 }
 
 func TestHkCovReadPendingMetricsReceiptErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if _, err := readPendingMetricsReceipt(filepath.Join(dir, "missing.json")); err == nil || !strings.Contains(err.Error(), "read pending hook metrics receipt") {
 		t.Fatalf("readPendingMetricsReceipt(missing) error = %v", err)
@@ -321,6 +325,7 @@ func TestHkCovReadPendingMetricsReceiptErrors(t *testing.T) {
 }
 
 func TestHkCovPersistPendingMetricsReceipt(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "pending")
 	now := time.Date(2024, 5, 6, 7, 8, 9, 123456789, time.UTC)
 	events := []Event{hkCovEvent(t)}
@@ -362,10 +367,12 @@ func TestHkCovPersistPendingMetricsReceipt(t *testing.T) {
 // metrics recorder, including the pending-receipt fallback when the metrics
 // file itself is unwritable.
 func TestHkCovRecordMetricsBranches(t *testing.T) {
+	t.Parallel()
 	events := []Event{hkCovEvent(t)}
 	now := time.Now()
 
 	t.Run("no events records nothing", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		if err := recordMetrics(hkCovMetricsPolicy(filepath.Join(t.TempDir(), "e.jsonl")), layout, nil, now); err != nil {
 			t.Fatalf("recordMetrics(no events) = %v, want nil", err)
@@ -373,6 +380,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("appends and replays", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		target := filepath.Join(t.TempDir(), "e.jsonl")
 		if err := recordMetrics(hkCovMetricsPolicy(target), layout, events, now); err != nil {
@@ -385,6 +393,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("replay failure is reported after a successful append", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		mustWrite(t, filepath.Join(layout.PendingMetricsRoot, "bad.json"), "{not json\n")
@@ -403,6 +412,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	unwritableTarget := filepath.Join(blocker, "e.jsonl")
 
 	t.Run("append and pending receipt both fail", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustWrite(t, layout.PendingMetricsRoot, "not a directory\n")
 		err := recordMetrics(hkCovMetricsPolicy(unwritableTarget), layout, events, now)
@@ -414,6 +424,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append and replay fail but the receipt is written", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		mustWrite(t, filepath.Join(layout.PendingMetricsRoot, "bad.json"), "{not json\n")
@@ -429,6 +440,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append fails but the receipt is written", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		err := recordMetrics(hkCovMetricsPolicy(unwritableTarget), layout, events, now)
@@ -439,6 +451,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append fails and the receipt cannot be created", func(t *testing.T) {
+		t.Parallel()
 		if os.Geteuid() == 0 {
 			return
 		}
@@ -458,6 +471,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 }
 
 func TestHkCovUniqueSortedPaths(t *testing.T) {
+	t.Parallel()
 	// A blank entry cleans to ".", which this helper keeps: it is a real
 	// directory reference, not an absent path.
 	got := uniqueSortedPaths([]string{"  /b  ", "/a", "/a", "", "/c"})
@@ -476,6 +490,7 @@ func TestHkCovUniqueSortedPaths(t *testing.T) {
 }
 
 func TestHkCovSanitizeRuntimeSegment(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"":             "unknown",
 		"   ":          "unknown",
@@ -491,6 +506,7 @@ func TestHkCovSanitizeRuntimeSegment(t *testing.T) {
 }
 
 func TestHkCovRandomTokenIsRandomHex(t *testing.T) {
+	t.Parallel()
 	first, err := randomToken(8)
 	if err != nil {
 		t.Fatal(err)
@@ -517,6 +533,7 @@ func hkCovWriteReceipt(t *testing.T, path string, receipt PendingMetricsReceipt)
 }
 
 func TestHkCovNewEventActionsAndOutcomes(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	context := eventContext{repository: "acme/widget", commit: "abc123", branch: "main", labels: map[string]string{"dev": "alex"}}
 	cases := map[string]string{
@@ -562,6 +579,7 @@ func TestHkCovNewEventActionsAndOutcomes(t *testing.T) {
 }
 
 func TestHkCovAppendEventsRejectsEmptyAndBadPaths(t *testing.T) {
+	t.Parallel()
 	if err := AppendEvents(filepath.Join(t.TempDir(), "events.jsonl"), nil); err != nil {
 		t.Fatalf("AppendEvents(nil) = %v, want nil", err)
 	}
@@ -587,6 +605,7 @@ func TestHkCovAppendEventsRejectsEmptyAndBadPaths(t *testing.T) {
 }
 
 func TestHkCovReadEventsErrorBranches(t *testing.T) {
+	t.Parallel()
 	if events, err := ReadEvents(filepath.Join(t.TempDir(), "missing.jsonl")); err != nil || events != nil {
 		t.Fatalf("ReadEvents(missing) = %#v, %v; want nil, nil", events, err)
 	}
@@ -623,6 +642,7 @@ func TestHkCovReadEventsErrorBranches(t *testing.T) {
 }
 
 func TestHkCovSummarizeEdgeCases(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	events := []Event{
 		{
@@ -688,6 +708,7 @@ func TestHkCovSummarizeEdgeCases(t *testing.T) {
 }
 
 func TestHkCovMeasureEdgeCases(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	stream := Event{
 		SchemaVersion: EventSchemaVersion,

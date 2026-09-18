@@ -14,6 +14,7 @@ import (
 )
 
 func TestSdCovNewQueueRejectsUnusableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -24,7 +25,9 @@ func TestSdCovNewQueueRejectsUnusableProjectsRoot(t *testing.T) {
 }
 
 func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T) {
+	t.Parallel()
 	t.Run("unrelated entries are skipped", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(filepath.Join(jobs, "nested"), 0o700); err != nil {
@@ -49,6 +52,7 @@ func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T
 	})
 
 	t.Run("invalid json is rejected", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -63,6 +67,7 @@ func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T
 	})
 
 	t.Run("invalid record is rejected", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -77,6 +82,7 @@ func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T
 	})
 
 	t.Run("duplicate sequence is rejected", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -90,6 +96,7 @@ func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T
 	})
 
 	t.Run("unreadable entry is rejected", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -105,6 +112,7 @@ func TestSdCovNewQueueSkipsUnrelatedEntriesAndRejectsInvalidRecords(t *testing.T
 }
 
 func TestSdCovNewQueueReportsUnlistableDirectory(t *testing.T) {
+	t.Parallel()
 	sdCovSkipIfPrivileged(t)
 	projects := t.TempDir()
 	jobs := sdCovJobsDir(projects)
@@ -124,7 +132,9 @@ func TestSdCovNewQueueReportsUnlistableDirectory(t *testing.T) {
 // persist calls inside NewQueue to failure by pre-creating a directory where
 // the atomic rename expects a file. This works regardless of privileges.
 func TestSdCovNewQueueReportsRecoveryPersistenceFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("running record recovery", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -143,6 +153,7 @@ func TestSdCovNewQueueReportsRecoveryPersistenceFailures(t *testing.T) {
 	})
 
 	t.Run("supersession reconciliation", func(t *testing.T) {
+		t.Parallel()
 		projects := t.TempDir()
 		jobs := sdCovJobsDir(projects)
 		if err := os.MkdirAll(jobs, 0o700); err != nil {
@@ -164,6 +175,7 @@ func TestSdCovNewQueueReportsRecoveryPersistenceFailures(t *testing.T) {
 }
 
 func TestSdCovQueueDefaultAcquireUsesSharedBudget(t *testing.T) {
+	t.Parallel()
 	projects := t.TempDir()
 	queue, err := NewQueue(projects)
 	if err != nil {
@@ -197,6 +209,7 @@ func TestSdCovQueueDefaultAcquireUsesSharedBudget(t *testing.T) {
 }
 
 func TestSdCovQueueEnqueueRejectsInvalidEventsAndReportsPersistenceFailures(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +253,7 @@ func TestSdCovQueueEnqueueRejectsInvalidEventsAndReportsPersistenceFailures(t *t
 }
 
 func TestSdCovQueueClaimNextRestoresQueuedStateOnPersistFailure(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -262,6 +276,7 @@ func TestSdCovQueueClaimNextRestoresQueuedStateOnPersistFailure(t *testing.T) {
 }
 
 func TestSdCovQueueRunIgnoresNilProcessorAndDefaultsToOneWorker(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -316,6 +331,7 @@ func TestSdCovQueueRunIgnoresNilProcessorAndDefaultsToOneWorker(t *testing.T) {
 }
 
 func TestSdCovQueueWorkerWaitsForRetryThenClaimsNewWork(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -359,6 +375,7 @@ func TestSdCovQueueWorkerWaitsForRetryThenClaimsNewWork(t *testing.T) {
 }
 
 func TestSdCovQueueRunClaimedReportsAdmissionFailuresAndSkipsInactiveJobs(t *testing.T) {
+	t.Parallel()
 	newQueueWithClaimedJob := func(t *testing.T, id string) (*Queue, repositoryevent.Event) {
 		t.Helper()
 		queue, err := NewQueue(t.TempDir())
@@ -376,6 +393,7 @@ func TestSdCovQueueRunClaimedReportsAdmissionFailuresAndSkipsInactiveJobs(t *tes
 	}
 
 	t.Run("admission failure", func(t *testing.T) {
+		t.Parallel()
 		queue, event := newQueueWithClaimedJob(t, "event-admission")
 		called := false
 		queue.acquire = func(context.Context) (func(), error) { return nil, errors.New("no sync admission") }
@@ -396,6 +414,7 @@ func TestSdCovQueueRunClaimedReportsAdmissionFailuresAndSkipsInactiveJobs(t *tes
 	})
 
 	t.Run("unknown and inactive jobs", func(t *testing.T) {
+		t.Parallel()
 		queue, err := NewQueue(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -423,6 +442,7 @@ func TestSdCovQueueRunClaimedReportsAdmissionFailuresAndSkipsInactiveJobs(t *tes
 	})
 
 	t.Run("syncing progress persistence failure", func(t *testing.T) {
+		t.Parallel()
 		queue, event := newQueueWithClaimedJob(t, "event-syncing-persist")
 		queue.beforePersist = func(item *job) error {
 			if strings.HasPrefix(item.Progress, "syncing ") {
@@ -449,6 +469,7 @@ func TestSdCovQueueRunClaimedReportsAdmissionFailuresAndSkipsInactiveJobs(t *tes
 }
 
 func TestSdCovQueueCheckpointCleanupValidatesInputAndJobState(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -463,6 +484,7 @@ func TestSdCovQueueCheckpointCleanupValidatesInputAndJobState(t *testing.T) {
 		{name: "oversized command", receipt: "receipt.json", command: strings.Repeat("c", 8193)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if err := queue.checkpointCleanup("event-unknown", test.receipt, test.command); err == nil {
 				t.Fatal("invalid cleanup checkpoint was accepted")
 			}
@@ -487,6 +509,7 @@ func TestSdCovQueueCheckpointCleanupValidatesInputAndJobState(t *testing.T) {
 }
 
 func TestSdCovQueueFinishHandlesUnknownIncompleteAndProgress(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -525,6 +548,7 @@ func TestSdCovQueueFinishHandlesUnknownIncompleteAndProgress(t *testing.T) {
 }
 
 func TestSdCovQueueApplySupersedesSkipsNonQueuedAndReportsPersistFailure(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -548,6 +572,7 @@ func TestSdCovQueueApplySupersedesSkipsNonQueuedAndReportsPersistFailure(t *test
 }
 
 func TestSdCovQueueReconcileSupersededReportsPersistFailure(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -563,6 +588,7 @@ func TestSdCovQueueReconcileSupersededReportsPersistFailure(t *testing.T) {
 }
 
 func TestSdCovRepositoryAliasesCollapsesCaseEquivalentRename(t *testing.T) {
+	t.Parallel()
 	event := repositoryevent.Event{
 		Version:            repositoryevent.ContractVersion,
 		ID:                 "event-case-rename",
@@ -578,6 +604,7 @@ func TestSdCovRepositoryAliasesCollapsesCaseEquivalentRename(t *testing.T) {
 }
 
 func TestSdCovQueueHeartbeatRefreshesRunningJobAndStops(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -620,6 +647,7 @@ func TestSdCovQueueHeartbeatRefreshesRunningJobAndStops(t *testing.T) {
 }
 
 func TestSdCovQueueHeartbeatHonorsCancellationAndIgnoresInactiveJobs(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -676,6 +704,7 @@ func TestSdCovQueueHeartbeatHonorsCancellationAndIgnoresInactiveJobs(t *testing.
 }
 
 func TestSdCovQueuePersistReportsFilesystemAndRenameFailures(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -724,6 +753,7 @@ func TestSdCovQueuePersistReportsFilesystemAndRenameFailures(t *testing.T) {
 }
 
 func TestSdCovValidateJobRecordRejectsInvalidFields(t *testing.T) {
+	t.Parallel()
 	event := sdCovQueueEvent("event-valid")
 	base := sdCovValidJob(event, 1)
 	if err := validateJobRecord(base); err != nil {
@@ -786,6 +816,7 @@ func TestSdCovValidateJobRecordRejectsInvalidFields(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			item := base
 			test.mutate(&item)
 			err := validateJobRecord(item)
@@ -797,6 +828,7 @@ func TestSdCovValidateJobRecordRejectsInvalidFields(t *testing.T) {
 }
 
 func TestSdCovQueuePersistReportsUnmarshalableRecord(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

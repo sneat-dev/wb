@@ -365,6 +365,7 @@ func TestCleanupAppliesCoordinatedMultiRepositoryTasksWithoutDeadlock(t *testing
 // The lock order is a property of the plan, not of the acquisition loop, so it
 // is asserted where it is decided.
 func TestPlanCleanupApplyOrdersAndDedupesEachTaskRepositories(t *testing.T) {
+	t.Parallel()
 	worktreesRoot := "/wb/worktrees"
 	result := func(task, repository string) CleanupResult {
 		return CleanupResult{ListResult: ListResult{

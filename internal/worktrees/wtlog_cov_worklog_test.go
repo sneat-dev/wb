@@ -11,6 +11,7 @@ import (
 )
 
 func TestWtLogCovSameEvidencePointers(t *testing.T) {
+	t.Parallel()
 	if !sameFinalizeReport(nil, nil) || sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, nil) || sameFinalizeReport(nil, &workLogFinalizeReport{Result: "x"}) {
 		t.Fatal("sameFinalizeReport nil handling is wrong")
 	}
@@ -43,6 +44,7 @@ func TestWtLogCovSameEvidencePointers(t *testing.T) {
 }
 
 func TestWtLogCovValidateProjection(t *testing.T) {
+	t.Parallel()
 	claimID := strings.Repeat("a", 64)
 	valid := workLogProjection{Version: 1, EffortID: "effort", RunID: "run", ClaimID: claimID, Lifecycle: "active"}
 	if err := validateProjection(valid); err != nil {
@@ -68,6 +70,7 @@ func TestWtLogCovValidateProjection(t *testing.T) {
 }
 
 func TestWtLogCovNormalizeTaskSummary(t *testing.T) {
+	t.Parallel()
 	if got, err := NormalizeTaskSummary("  "); err != nil || got != "" {
 		t.Fatalf("blank summary = %q/%v", got, err)
 	}
@@ -98,6 +101,7 @@ func TestWtLogCovNormalizeTaskSummary(t *testing.T) {
 }
 
 func TestWtLogCovValidExecutionIdentifier(t *testing.T) {
+	t.Parallel()
 	if !ValidExecutionIdentifier("unknown", true) {
 		t.Fatal("unknown must be allowed when allowUnknown is set")
 	}
@@ -115,6 +119,7 @@ func TestWtLogCovValidExecutionIdentifier(t *testing.T) {
 }
 
 func TestWtLogCovValidateNewExecutionIdentity(t *testing.T) {
+	t.Parallel()
 	if err := validateNewExecutionIdentity(ClaimExecutionIdentity{Model: "claude-sonnet"}); err != nil {
 		t.Fatalf("plain identity rejected: %v", err)
 	}
@@ -134,6 +139,7 @@ func TestWtLogCovValidateNewExecutionIdentity(t *testing.T) {
 }
 
 func TestWtLogCovValidateCorrectionIdentity(t *testing.T) {
+	t.Parallel()
 	model := "claude-sonnet"
 	empty := ""
 	bad := "sk-secret"
@@ -176,6 +182,7 @@ func TestWtLogCovValidateCorrectionIdentity(t *testing.T) {
 }
 
 func TestWtLogCovIdentityFromClaim(t *testing.T) {
+	t.Parallel()
 	legacy := identityFromClaim(workLogClaim{})
 	if legacy.Model != "unknown" || legacy.ModelProvenance != modelProvenanceUnknown {
 		t.Fatalf("legacy identity = %#v", legacy)
@@ -195,6 +202,7 @@ func TestWtLogCovIdentityFromClaim(t *testing.T) {
 }
 
 func TestWtLogCovClaimIDDerivations(t *testing.T) {
+	t.Parallel()
 	result := CreateResult{Repository: "acme/app", WorktreeDir: "/tmp/wt", Branch: "wb/x", Base: "main", BaseSHA: "abc"}
 	direct := workLogClaimID("effort", result)
 	if direct != WorkLogClaimID("effort", result) {
@@ -224,6 +232,7 @@ func TestWtLogCovClaimIDDerivations(t *testing.T) {
 }
 
 func TestWtLogCovDeclaredBy(t *testing.T) {
+	t.Parallel()
 	if got := declaredBy(WorkLogOptions{Initiator: "operator", AgentID: "agent"}); got != "operator" {
 		t.Fatalf("declaredBy initiator = %q", got)
 	}
@@ -236,6 +245,7 @@ func TestWtLogCovDeclaredBy(t *testing.T) {
 }
 
 func TestWtLogCovRemovedTerminalExpectations(t *testing.T) {
+	t.Parallel()
 	valid := TerminalWorkLogExpectation{Task: "task", Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main", FinalCommit: "sha"}
 	if err := validateRemovedTerminalExpectation(valid); err != nil {
 		t.Fatalf("valid expectation rejected: %v", err)
@@ -272,6 +282,7 @@ func TestWtLogCovRemovedTerminalExpectations(t *testing.T) {
 }
 
 func TestWtLogCovValidateStaticWorkLogClaim(t *testing.T) {
+	t.Parallel()
 	base := workLogClaim{Version: 1, EffortID: "effort", RunID: "run", Task: "effort",
 		Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main",
 		BaseSHA: strings.Repeat("a", 40), Lifecycle: "active"}
@@ -379,6 +390,7 @@ func TestWtLogCovValidateStaticWorkLogClaim(t *testing.T) {
 }
 
 func TestWtLogCovPrivateDirectoryHelpers(t *testing.T) {
+	t.Parallel()
 	root, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -411,6 +423,7 @@ func TestWtLogCovPrivateDirectoryHelpers(t *testing.T) {
 }
 
 func TestWtLogCovAtomicReadWriteHelpers(t *testing.T) {
+	t.Parallel()
 	directory, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -481,6 +494,7 @@ func TestWtLogCovAtomicReadWriteHelpers(t *testing.T) {
 }
 
 func TestWtLogCovOpenWorkLogRunAndOutbox(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, _, err := openWorkLogRun(home, "../bad", "run", true); err == nil {
 		t.Fatal("unsafe effort was accepted")
@@ -516,6 +530,7 @@ func TestWtLogCovOpenWorkLogRunAndOutbox(t *testing.T) {
 }
 
 func TestWtLogCovLockClaimSerializes(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	runDir, _, err := openWorkLogRun(home, "effort", "run", true)
 	if err != nil {
@@ -535,6 +550,7 @@ func TestWtLogCovLockClaimSerializes(t *testing.T) {
 }
 
 func TestWtLogCovRemoveWorkLogProjection(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if err := removeWorkLogProjection(worktree); err != nil {
 		t.Fatalf("removing an absent projection: %v", err)
@@ -558,6 +574,7 @@ func TestWtLogCovRemoveWorkLogProjection(t *testing.T) {
 }
 
 func TestWtLogCovReadWorkLogProjectionRoundTrip(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if _, err := readWorkLogProjection(worktree); !os.IsNotExist(err) {
 		t.Fatalf("missing projection error = %v", err)
@@ -617,6 +634,7 @@ func TestWtLogCovReadWorkLogProjectionRoundTrip(t *testing.T) {
 }
 
 func TestWtLogCovRelocationRecordValidation(t *testing.T) {
+	t.Parallel()
 	source := filepath.Join(t.TempDir(), "source")
 	destination := filepath.Join(t.TempDir(), "destination")
 	claim := workLogClaim{ClaimID: strings.Repeat("f", 64), Task: "task", Repository: "acme/app", Branch: "wb/x"}
@@ -685,6 +703,7 @@ func TestWtLogCovRelocationRecordValidation(t *testing.T) {
 }
 
 func TestWtLogCovSameRelocationBinding(t *testing.T) {
+	t.Parallel()
 	intent := workLogRelocationIntent{OperationID: "op", ClaimID: "claim", Task: "task", Repository: "acme/app",
 		Branch: "wb/x", HeadSHA: "head", Source: "/a/b", Destination: "/a/c", To: "local"}
 	receipt := intent
@@ -714,6 +733,7 @@ func TestWtLogCovSameRelocationBinding(t *testing.T) {
 }
 
 func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
+	t.Parallel()
 	if got := relocationIntentName("claim", "op"); got != "claim-op.intent.json" {
 		t.Fatalf("intent name = %q", got)
 	}
@@ -744,6 +764,7 @@ func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
 }
 
 func TestWtLogCovOpenRelocationJournalAndPendingIntent(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	sourceDir := t.TempDir()
 	claim := workLogClaim{Version: 1, EffortID: "effort", RunID: "run", ClaimID: strings.Repeat("a", 64),

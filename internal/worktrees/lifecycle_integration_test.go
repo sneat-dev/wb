@@ -969,6 +969,7 @@ func TestCleanupRefusesOpenExactHeadPRWhileMergedPRRecoversStaleTarget(t *testin
 }
 
 func TestMatchingOpenPullRequestRequiresExactSourceIdentity(t *testing.T) {
+	t.Parallel()
 	const head = "0123456789012345678901234567890123456789"
 	for _, test := range []struct {
 		name       string
@@ -981,6 +982,7 @@ func TestMatchingOpenPullRequestRequiresExactSourceIdentity(t *testing.T) {
 		{name: "exact source identity", repository: "acme/app", branch: "incidentius-task2-core-contract", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			pullRequests := []githubPullRequest{{
 				Number: 325, URL: "https://github.com/acme/app/pull/325", State: "open",
 				Head: githubRef{
@@ -1092,6 +1094,7 @@ func TestCleanupEndsZeroDiffChildIgnoringOpenTargetPullRequestSharingHead(t *tes
 }
 
 func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
+	t.Parallel()
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	const head = "0123456789012345678901234567890123456789"
 	merged := func(base, sha string) githubPullRequest {
@@ -1115,6 +1118,7 @@ func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 }
 
 func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *testing.T) {
+	t.Parallel()
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	head := strings.Repeat("a", 40)
 	merge := strings.Repeat("b", 40)
@@ -1136,6 +1140,7 @@ func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *test
 		{name: "wrong recorded source", mutate: func(pr *githubPullRequest) { pr.Head.Ref = "feature/other" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			pullRequest := valid()
 			if test.mutate != nil {
 				test.mutate(&pullRequest)
@@ -2295,6 +2300,7 @@ func TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate(t *testing.T) {
 // (a detached worktree, one still on the base branch, and so on) keeps
 // reporting its own plain message unchanged.
 func TestListDiagnosticForInspectErrorFallsBackToPlainMessageForNonMismatchErrors(t *testing.T) {
+	t.Parallel()
 	diagnostic := listDiagnosticForInspectError(
 		"/root/worktrees", "task", "/root/worktrees/task/acme/app", "acme",
 		fmt.Errorf("some other inspection failure"),
@@ -3028,6 +3034,7 @@ exit 2
 }
 
 func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing.T) {
+	t.Parallel()
 	expected := strings.Repeat("a", 40)
 	var calls [][]string
 	run := func(ctx context.Context, args ...string) (string, error) {
@@ -3536,6 +3543,7 @@ func TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock(t *testi
 }
 
 func TestCleanupResumeInterruptedNamedTaskPreservesAmbiguousLock(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(t *testing.T, lockPath, task string) string
@@ -3770,6 +3778,7 @@ func assertRecoveryFailureReport(t *testing.T, path string) {
 }
 
 func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(t *testing.T) {
+	t.Parallel()
 	t.Run("dirty merged task", func(t *testing.T) {
 		const task = "cleanup-recovery-dirty-merged"
 		fixture, created, head, mergedAt := prepareMergedTask(t, task)
@@ -3920,6 +3929,7 @@ func assertInterruptedLockPreserved(t *testing.T, path, want string) {
 }
 
 func TestCleanupResumeInterruptedRequiresOneNamedTask(t *testing.T) {
+	t.Parallel()
 	if _, err := normalizeCleanupOptions(CleanupOptions{
 		ProjectsRoot: t.TempDir(), AllMerged: true, ResumeInterrupted: true,
 	}); err == nil || !strings.Contains(err.Error(), "requires one explicit task") {

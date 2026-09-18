@@ -9,6 +9,7 @@ import (
 )
 
 func TestHkCovRepositoryRootResolvesBlankAndNonRepositoryPaths(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	root, err := RepositoryRoot("   ")
 	if err != nil {
@@ -28,12 +29,14 @@ func TestHkCovRepositoryRootResolvesBlankAndNonRepositoryPaths(t *testing.T) {
 }
 
 func TestHkCovGitCommonDirRejectsNonRepository(t *testing.T) {
+	t.Parallel()
 	if _, err := gitCommonDir(t.TempDir()); err == nil {
 		t.Fatal("gitCommonDir(non-repo) should fail")
 	}
 }
 
 func TestHkCovConfiguredHooksPathReturnsEmptyForBlankValue(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "config", "--local", "core.hooksPath", "")
 	path, err := configuredHooksPath(repo)
@@ -46,6 +49,7 @@ func TestHkCovConfiguredHooksPathReturnsEmptyForBlankValue(t *testing.T) {
 }
 
 func TestHkCovResolveGitPathFallsBackWhenUnresolvable(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if got := resolveGitPath(missing); got != filepath.Clean(missing) {
 		t.Fatalf("resolveGitPath(missing) = %q, want the cleaned path %q", got, filepath.Clean(missing))
@@ -57,6 +61,7 @@ func TestHkCovResolveGitPathFallsBackWhenUnresolvable(t *testing.T) {
 }
 
 func TestHkCovSetHooksPathAtRequiresDescriptors(t *testing.T) {
+	t.Parallel()
 	if err := setHooksPathAt(nil, nil, "/tmp/hooks"); err == nil || !strings.Contains(err.Error(), "descriptor is unavailable") {
 		t.Fatalf("setHooksPathAt(nil, nil) error = %v", err)
 	}
@@ -85,6 +90,7 @@ func TestHkCovSetHooksPathAtReportsMissingGit(t *testing.T) {
 // inherited descriptor that cannot be entered, proving the failure is surfaced
 // rather than silently ignored.
 func TestHkCovSetHooksPathAtReportsHelperFailure(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	repoFile, err := os.Open(repo)
 	if err != nil {
@@ -104,6 +110,7 @@ func TestHkCovSetHooksPathAtReportsHelperFailure(t *testing.T) {
 }
 
 func TestHkCovSecureHooksGitHelperRejectsWrongArgumentCount(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(os.Args[0], SecureHooksGitHelperArgument, "only-one")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -120,6 +127,7 @@ func TestHkCovSecureHooksGitHelperRejectsWrongArgumentCount(t *testing.T) {
 // TestHkCovSecureHooksGitHelperInheritedDescriptors exercises both inherited
 // descriptor failures through a real child process, plus the success path.
 func TestHkCovSecureHooksGitHelperInheritedDescriptors(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	gitDir := filepath.Join(repo, ".git")
 	gitExecutable, err := exec.LookPath("git")
@@ -148,6 +156,7 @@ func TestHkCovSecureHooksGitHelperInheritedDescriptors(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			repository, err := os.Open(test.repository)
 			if err != nil {
 				t.Fatal(err)
@@ -203,6 +212,7 @@ func TestHkCovOriginSlugReadsHostedRemotes(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.remote, func(t *testing.T) {
+			t.Parallel()
 			repo := initRepo(t)
 			git(t, repo, "remote", "add", "origin", test.remote)
 			if got := originSlug(repo); got != test.want {
@@ -213,6 +223,7 @@ func TestHkCovOriginSlugReadsHostedRemotes(t *testing.T) {
 }
 
 func TestHkCovCanonicalRootFromCheckoutRejectsSymlinkedGitEntry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(t.TempDir(), "target")
 	mustMkdirAll(t, target)
@@ -225,12 +236,14 @@ func TestHkCovCanonicalRootFromCheckoutRejectsSymlinkedGitEntry(t *testing.T) {
 }
 
 func TestHkCovCanonicalRootFromCheckoutReportsMissingGitEntry(t *testing.T) {
+	t.Parallel()
 	if got := canonicalRootFromCheckout(t.TempDir()); got != "" {
 		t.Fatalf("canonicalRootFromCheckout(no .git) = %q, want empty", got)
 	}
 }
 
 func TestHkCovCanonicalRootFromCheckoutUnreadableGitfile(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		// Root bypasses the mode bits, so the read cannot be made to fail.
 		return
@@ -248,6 +261,7 @@ func TestHkCovCanonicalRootFromCheckoutUnreadableGitfile(t *testing.T) {
 }
 
 func TestHkCovCanonicalRootFromGitfileParsesEveryShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		repoRoot string
@@ -263,6 +277,7 @@ func TestHkCovCanonicalRootFromGitfileParsesEveryShape(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := canonicalRootFromGitfile(test.repoRoot, test.contents); got != test.want {
 				t.Fatalf("canonicalRootFromGitfile(%q) = %q, want %q", test.contents, got, test.want)
 			}
@@ -271,6 +286,7 @@ func TestHkCovCanonicalRootFromGitfileParsesEveryShape(t *testing.T) {
 }
 
 func TestHkCovCheckoutSlugAtFilesystemRoot(t *testing.T) {
+	t.Parallel()
 	if got := checkoutSlug(string(filepath.Separator)); got != string(filepath.Separator) {
 		t.Fatalf("checkoutSlug(/) = %q, want %q", got, string(filepath.Separator))
 	}

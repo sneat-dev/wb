@@ -13,6 +13,7 @@ import (
 // detached checkout by its head, names the disposition that decides it, and
 // renders ages on the documented boundaries.
 func TestWTCoreCovGCEntryRendersEveryRowShape(t *testing.T) {
+	t.Parallel()
 	head := strings.Repeat("a", 40)
 	detached := GCEntry{Task: "task", Repository: "acme/app", HeadSHA: head, Class: "detached_review", Owner: "none", AgeSeconds: 120}
 	row := detached.String()
@@ -58,6 +59,7 @@ func TestWTCoreCovGCEntryRendersEveryRowShape(t *testing.T) {
 // TestWTCoreCovDetachedReviewReasonNamesTheEvidence asserts the classifier's
 // reason names the fact that decided it, in the documented precedence.
 func TestWTCoreCovDetachedReviewReasonNamesTheEvidence(t *testing.T) {
+	t.Parallel()
 	merged := detachedReviewReason(ListResult{MergedPullRequest: &PullRequest{URL: "https://example.test/pr/1"}})
 	if !strings.Contains(merged, "merged pull request https://example.test/pr/1") {
 		t.Fatalf("merged reason = %q", merged)
@@ -79,6 +81,7 @@ func TestWTCoreCovDetachedReviewReasonNamesTheEvidence(t *testing.T) {
 // TestWTCoreCovWorktreeAddArguments asserts the two Git argument shapes: an
 // existing branch is checked out, a new one is created from the base revision.
 func TestWTCoreCovWorktreeAddArguments(t *testing.T) {
+	t.Parallel()
 	existing := worktreeAddArguments("/checkout", "wb/task", "base", true)
 	if got := strings.Join(existing, " "); got != "worktree add --quiet /checkout wb/task" {
 		t.Fatalf("existing branch arguments = %q", got)
@@ -93,6 +96,7 @@ func TestWTCoreCovWorktreeAddArguments(t *testing.T) {
 // reports its state honestly across acquisition, reclaim, release, and
 // preservation, and that a nil wrapper is inert.
 func TestWTCoreCovHeldOperationLockLifecycle(t *testing.T) {
+	t.Parallel()
 	var absent *HeldOperationLock
 	if absent.File() != nil || absent.ReclaimedInterrupted() {
 		t.Fatal("a nil held lock reported state")
@@ -195,6 +199,7 @@ func TestWTCoreCovLogVerbHelpersRefuseIncompleteRequests(t *testing.T) {
 // byte-exact and fails closed on empty input, and that execution identifiers
 // follow one shared rule.
 func TestWTCoreCovWorkLogOptionHelpers(t *testing.T) {
+	t.Parallel()
 	if _, err := (WorkLogOptions{}).WithOriginalPromptFromStdin([]byte("   \n\t")); err == nil {
 		t.Fatal("whitespace-only stdin was accepted as an original prompt")
 	}
@@ -309,6 +314,7 @@ func TestWTCoreCovCreateAdoptionRegistrationIsIdempotentAndExclusive(t *testing.
 // TestWTCoreCovReadAdoptedWorktreePointerRejectsMalformedRecords asserts the
 // reconnaissance reader refuses every record it cannot trust.
 func TestWTCoreCovReadAdoptedWorktreePointerRejectsMalformedRecords(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	if _, ok := readAdoptedWorktreePointer(directory); ok {
 		t.Fatal("a directory with no pointer was accepted")
@@ -339,6 +345,7 @@ func TestWTCoreCovReadAdoptedWorktreePointerRejectsMalformedRecords(t *testing.T
 // TestWTCoreCovOrphanedClaimInputValidation asserts every refusal the
 // orphaned-abort entry point makes before it touches any state.
 func TestWTCoreCovOrphanedClaimInputValidation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, testCase := range []struct {
 		name    string
@@ -357,6 +364,7 @@ func TestWTCoreCovOrphanedClaimInputValidation(t *testing.T) {
 		{name: "missing task", options: AbortOptions{ClaimID: strings.Repeat("a", 64), Actor: "tester", Reason: "gone", ProjectsRoot: t.TempDir()}, wantErr: "task is required"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := abortOrphanedClaim(ctx, testCase.options); err == nil {
 				t.Fatal("invalid input was accepted")
 			} else if !strings.Contains(err.Error(), testCase.wantErr) {
@@ -369,6 +377,7 @@ func TestWTCoreCovOrphanedClaimInputValidation(t *testing.T) {
 // TestWTCoreCovValidateOrphanedClaimIdentityRejectsIncompleteClaims asserts the
 // identity gate refuses every incomplete or self-inconsistent claim.
 func TestWTCoreCovValidateOrphanedClaimIdentityRejectsIncompleteClaims(t *testing.T) {
+	t.Parallel()
 	base := workLogClaim{
 		Version: 1, Lifecycle: "active", EffortID: "task", RunID: "run",
 		ClaimID: strings.Repeat("a", 64), Task: "task", Repository: "acme/app",
@@ -409,6 +418,7 @@ func TestWTCoreCovValidateOrphanedClaimIdentityRejectsIncompleteClaims(t *testin
 	}
 	for name, claim := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := validateOrphanedClaimIdentity(claim); err == nil {
 				t.Fatal("an invalid claim identity was accepted")
 			}

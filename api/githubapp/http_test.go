@@ -106,6 +106,7 @@ func (events *testEvents) Subscribe(_ context.Context, filter EventFilter) (<-ch
 }
 
 func TestHandlerReturnsPublicDashboardAndExactCORS(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPublic}}})
 	request := httptest.NewRequest(http.MethodGet, APIPrefix+"/dashboard", nil)
 	request.Header.Set("Origin", UIOrigin)
@@ -128,6 +129,7 @@ func TestHandlerReturnsPublicDashboardAndExactCORS(t *testing.T) {
 }
 
 func TestHandlerHidesPrivateSubjectsFromAnonymousViewer(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPrivate}}})
 	response := httptest.NewRecorder()
 
@@ -142,6 +144,7 @@ func TestHandlerHidesPrivateSubjectsFromAnonymousViewer(t *testing.T) {
 }
 
 func TestHandlerStatsRoundTripsCanonicalRepositoryID(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPublic}}})
 	request := httptest.NewRequest(http.MethodGet, APIPrefix+"/stats/repository/github.com/acme/app", nil)
 	response := httptest.NewRecorder()
@@ -152,6 +155,7 @@ func TestHandlerStatsRoundTripsCanonicalRepositoryID(t *testing.T) {
 }
 
 func TestHandlerRejectsUnapprovedCORSPreflight(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{})
 	request := httptest.NewRequest(http.MethodOptions, APIPrefix+"/dashboard", nil)
 	request.Header.Set("Origin", "https://attacker.example")
@@ -168,6 +172,7 @@ func TestHandlerRejectsUnapprovedCORSPreflight(t *testing.T) {
 }
 
 func TestHandlerAllowsCredentialedCORSPreflightOnlyForUIOrigin(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPublic}}})
 	request := httptest.NewRequest(http.MethodOptions, APIPrefix+"/dashboard", nil)
 	request.Header.Set("Origin", UIOrigin)
@@ -186,6 +191,7 @@ func TestHandlerAllowsCredentialedCORSPreflightOnlyForUIOrigin(t *testing.T) {
 }
 
 func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
+	t.Parallel()
 	secret := []byte("webhook-secret")
 	store := &testDeliveries{}
 	reader := &testReader{}
@@ -225,6 +231,7 @@ func TestWebhookRefreshesBeforeDurableDedupedWakeup(t *testing.T) {
 }
 
 func TestWebhookRejectsUnsignedPayload(t *testing.T) {
+	t.Parallel()
 	store := &testDeliveries{}
 	reader := &testReader{}
 	handler := NewHandler(HandlerOptions{Service: Service{
@@ -243,6 +250,7 @@ func TestWebhookRejectsUnsignedPayload(t *testing.T) {
 }
 
 func TestEventStreamReplaysWithMonotonicCursorAndFiltersPrivateEvents(t *testing.T) {
+	t.Parallel()
 	live := make(chan Event, 2)
 	live <- Event{ID: 4, Type: EventCI, Visibility: VisibilityPrivate, Payload: []byte(`{"secret":true}`)}
 	live <- Event{ID: 5, Type: EventCleanup, Visibility: VisibilityPublic, Payload: []byte(`{"done":true}`)}
@@ -275,6 +283,7 @@ func TestEventStreamReplaysWithMonotonicCursorAndFiltersPrivateEvents(t *testing
 }
 
 func TestEventsSSEUsesCursorAndEventNames(t *testing.T) {
+	t.Parallel()
 	live := make(chan Event)
 	close(live)
 	source := &testEvents{replay: []Event{{ID: 8, Type: EventDaemonGeneration, Visibility: VisibilityPublic, Payload: []byte(`{"generation":2}`)}}, live: live}

@@ -107,6 +107,7 @@ func wtLifeCovTrustedGit(t *testing.T) string {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovSecureStageHelperReportsHeldDirectory(t *testing.T) {
+	t.Parallel()
 	_, stage, descriptor := wtLifeCovStage(t)
 	result := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, []string{secureStagePathArgument})
 	if result.exitCode != 0 {
@@ -119,6 +120,7 @@ func TestWtLifeCovSecureStageHelperReportsHeldDirectory(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 	cases := []struct {
 		name       string
@@ -133,6 +135,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, testCase.args)
 			if result.exitCode != 1 {
 				t.Fatalf("exit = %d, want 1 (stderr %q)", result.exitCode, result.stderr)
@@ -145,6 +148,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRejectsMissingStageDescriptor(t *testing.T) {
+	t.Parallel()
 	result := wtLifeCovRunSecureHelper(t, "stage", nil, []string{secureStagePathArgument})
 	if result.exitCode != 1 {
 		t.Fatalf("stage without descriptor exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -155,6 +159,7 @@ func TestWtLifeCovSecureStageHelperRejectsMissingStageDescriptor(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperChecksContainment(t *testing.T) {
+	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 
 	inside := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, []string{secureStageCheckArgument, operationRoot})
@@ -169,6 +174,7 @@ func TestWtLifeCovSecureStageHelperChecksContainment(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRunsGitFromHeldStage(t *testing.T) {
+	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 	marker := filepath.Join(operationRoot, "ran.txt")
 	script := wtLifeCovScript(t, "git-stub.sh", "printf 'stub-output\\n'\nprintf 'ran' > \"$WT_LIFECOV_MARKER\"\nexit 0\n")
@@ -201,6 +207,7 @@ func TestWtLifeCovSecureStageHelperRunsGitFromHeldStage(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperPropagatesCommandFailure(t *testing.T) {
+	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 
 	failing := wtLifeCovScript(t, "git-stub.sh", "printf 'boom\\n' >&2\nexit 7\n")
@@ -226,6 +233,7 @@ func TestWtLifeCovSecureStageHelperPropagatesCommandFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovSecureStageCanonicalHelperRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
@@ -242,6 +250,7 @@ func TestWtLifeCovSecureStageCanonicalHelperRejectsInvalidArguments(t *testing.T
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage-canonical", files, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid arguments") {
 				t.Fatalf("exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -252,6 +261,7 @@ func TestWtLifeCovSecureStageCanonicalHelperRejectsInvalidArguments(t *testing.T
 }
 
 func TestWtLifeCovSecureStageCanonicalHelperRejectsDescriptorAndContainmentDrift(t *testing.T) {
+	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
@@ -302,6 +312,7 @@ func TestWtLifeCovSecureStageCanonicalHelperRejectsDescriptorAndContainmentDrift
 }
 
 func TestWtLifeCovSecureStageCanonicalHelperReportsHookLayoutFailure(t *testing.T) {
+	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
@@ -317,6 +328,7 @@ func TestWtLifeCovSecureStageCanonicalHelperReportsHookLayoutFailure(t *testing.
 }
 
 func TestWtLifeCovSecureStageCanonicalHelperCreatesStagedCheckout(t *testing.T) {
+	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
@@ -340,6 +352,7 @@ func TestWtLifeCovSecureStageCanonicalHelperCreatesStagedCheckout(t *testing.T) 
 }
 
 func TestWtLifeCovSecureStageCanonicalHelperSurfacesExecFailure(t *testing.T) {
+	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 	repo := wtLifeCovNewRepo(t)
 	broken := wtLifeCovNonExecutable(t, operationRoot)
@@ -359,6 +372,7 @@ func TestWtLifeCovSecureStageCanonicalHelperSurfacesExecFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovSecureCanonicalHelperRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	for _, args := range [][]string{
@@ -373,6 +387,7 @@ func TestWtLifeCovSecureCanonicalHelperRejectsInvalidArguments(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCanonicalHelperRejectsDescriptorDrift(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	other := wtLifeCovOpenDirectory(t, t.TempDir())
@@ -396,6 +411,7 @@ func TestWtLifeCovSecureCanonicalHelperRejectsDescriptorDrift(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCanonicalHelperReportsHookLayoutFailure(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelperInvocation(t, wtLifeCovHelperInvocation{
@@ -410,6 +426,7 @@ func TestWtLifeCovSecureCanonicalHelperReportsHookLayoutFailure(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCanonicalHelperRunsGitFromHeldRoot(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelper(t, "canonical",
@@ -423,6 +440,7 @@ func TestWtLifeCovSecureCanonicalHelperRunsGitFromHeldRoot(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCanonicalHelperSurfacesExecFailure(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	broken := wtLifeCovNonExecutable(t, t.TempDir())
 	result := wtLifeCovRunSecureHelper(t, "canonical",
@@ -440,6 +458,7 @@ func TestWtLifeCovSecureCanonicalHelperSurfacesExecFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovSecureCanonicalPolicyHelperRejectsNonPolicyQueries(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	cases := []struct {
@@ -453,6 +472,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperRejectsNonPolicyQueries(t *testing.
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "canonical-policy",
 				[]*os.File{repo.root, repo.common}, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid read-only query") {
@@ -463,6 +483,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperRejectsNonPolicyQueries(t *testing.
 }
 
 func TestWtLifeCovSecureCanonicalPolicyHelperRejectsDescriptorDrift(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	other := wtLifeCovOpenDirectory(t, t.TempDir())
@@ -486,6 +507,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperRejectsDescriptorDrift(t *testing.T
 }
 
 func TestWtLifeCovSecureCanonicalPolicyHelperReadsExactPolicyBytes(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelper(t, "canonical-policy",
@@ -500,6 +522,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperReadsExactPolicyBytes(t *testing.T)
 }
 
 func TestWtLifeCovSecureCanonicalPolicyHelperReportsGitAndExecFailures(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 
@@ -519,6 +542,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperReportsGitAndExecFailures(t *testin
 }
 
 func TestWtLifeCovSecureCanonicalPolicyHelperRejectsRepositoryChangedDuringRead(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	moved := repo.path + "-git-moved"
 	script := wtLifeCovScript(t, "policy-read-stub.sh", "mv \"$WT_LIFECOV_REPO/.git\" \"$WT_LIFECOV_MOVED\"\nprintf 'policy bytes'\n")
@@ -546,6 +570,7 @@ func wtLifeCovCleanupArgs(repo *wtLifeCovRepo, git, worktreePath, worktreeParent
 }
 
 func TestWtLifeCovSecureCleanupHelperRejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelper(t, "cleanup",
@@ -557,6 +582,7 @@ func TestWtLifeCovSecureCleanupHelperRejectsMalformedRequests(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperRejectsDescriptorDrift(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	other := wtLifeCovOpenDirectory(t, t.TempDir())
@@ -580,6 +606,7 @@ func TestWtLifeCovSecureCleanupHelperRejectsDescriptorDrift(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperRunsGitFromHeldCanonical(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelper(t, "cleanup",
@@ -594,6 +621,7 @@ func TestWtLifeCovSecureCleanupHelperRunsGitFromHeldCanonical(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperValidatesHeldWorktree(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	parent := t.TempDir()
@@ -630,6 +658,7 @@ func TestWtLifeCovSecureCleanupHelperValidatesHeldWorktree(t *testing.T) {
 // non-executable Git keeps the helper from replacing its own process at exec,
 // so those authorizations are observable and the refusal is asserted.
 func TestWtLifeCovSecureCleanupHelperAuthorizesEveryHeldRoot(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	broken := wtLifeCovNonExecutable(t, t.TempDir())
 
@@ -659,6 +688,7 @@ func TestWtLifeCovSecureCleanupHelperAuthorizesEveryHeldRoot(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperValidatesLocalRemoteDescriptor(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	remote := t.TempDir()
@@ -687,6 +717,7 @@ func TestWtLifeCovSecureCleanupHelperValidatesLocalRemoteDescriptor(t *testing.T
 }
 
 func TestWtLifeCovSecureCleanupHelperPushesToHeldLocalRemote(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -706,6 +737,7 @@ func TestWtLifeCovSecureCleanupHelperPushesToHeldLocalRemote(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperReportsHookLayoutFailure(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	git := wtLifeCovTrustedGit(t)
 	result := wtLifeCovRunSecureHelperInvocation(t, wtLifeCovHelperInvocation{
@@ -720,6 +752,7 @@ func TestWtLifeCovSecureCleanupHelperReportsHookLayoutFailure(t *testing.T) {
 }
 
 func TestWtLifeCovSecureCleanupHelperSurfacesExecFailure(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	broken := wtLifeCovNonExecutable(t, t.TempDir())
 	result := wtLifeCovRunSecureHelper(t, "cleanup",
@@ -774,6 +807,7 @@ func TestWtLifeCovCanonicalPolicyEnvironmentPinsHeldGitDirectory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovRunSecureCleanupGitHelperRejectsUnusableCanonical(t *testing.T) {
+	t.Parallel()
 	err := runSecureCleanupGitHelper(context.Background(), nil, nil, nil, "", "")
 	if err == nil || !strings.Contains(err.Error(), "cleanup canonical repository descriptor is unavailable") {
 		t.Fatalf("nil canonical error = %v", err)
@@ -785,6 +819,7 @@ func TestWtLifeCovRunSecureCleanupGitHelperRejectsUnusableCanonical(t *testing.T
 }
 
 func TestWtLifeCovRunSecureCleanupGitHelperReportsCanonicalDrift(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	canonical, err := openCanonicalRepository(repo.path)
 	if err != nil {
@@ -802,6 +837,7 @@ func TestWtLifeCovRunSecureCleanupGitHelperReportsCanonicalDrift(t *testing.T) {
 }
 
 func TestWtLifeCovRunSecureCleanupGitHelperRequiresWorktreeParent(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	canonical, err := openCanonicalRepository(repo.path)
 	if err != nil {
@@ -816,6 +852,7 @@ func TestWtLifeCovRunSecureCleanupGitHelperRequiresWorktreeParent(t *testing.T) 
 }
 
 func TestWtLifeCovRunSecureCleanupGitHelperReportsChildFailure(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	canonical, err := openCanonicalRepository(repo.path)
 	if err != nil {
@@ -829,6 +866,7 @@ func TestWtLifeCovRunSecureCleanupGitHelperReportsChildFailure(t *testing.T) {
 }
 
 func TestWtLifeCovRunSecureCleanupGitHelperRunsFromHeldDescriptors(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	canonical, err := openCanonicalRepository(repo.path)
 	if err != nil {
@@ -841,6 +879,7 @@ func TestWtLifeCovRunSecureCleanupGitHelperRunsFromHeldDescriptors(t *testing.T)
 }
 
 func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.T) {
+	t.Parallel()
 	repo := wtLifeCovNewRepo(t)
 	canonical, err := openCanonicalRepository(repo.path)
 	if err != nil {
@@ -884,6 +923,7 @@ func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.
 }
 
 func TestWtLifeCovSecurePushRepositoryArgumentSelectsRemote(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		args []string
 		want string

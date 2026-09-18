@@ -12,6 +12,7 @@ import (
 )
 
 func TestPublishedRebatchPreservesEvidenceAcrossFastForwardTarget(t *testing.T) {
+	t.Parallel()
 	for _, status := range []WorktreeMergeStatus{WorktreeMergeChecksFailed, WorktreeMergePublished} {
 		t.Run(string(status), func(t *testing.T) {
 			fixture := newEngineFixture(t)
@@ -132,6 +133,7 @@ func TestPublishedRebatchTargetRaceRetainsDurableCandidateReceipt(t *testing.T) 
 }
 
 func TestPublishedRebatchRefusesRewoundOrLandedTarget(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"rewound", "landed", "no additional source"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture := newEngineFixture(t)

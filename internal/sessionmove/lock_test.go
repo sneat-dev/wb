@@ -10,6 +10,7 @@ import (
 )
 
 func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -74,6 +75,7 @@ func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
 }
 
 func TestAcquireExecutionLockAllowsConcurrentFirstCreation(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {

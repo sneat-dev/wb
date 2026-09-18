@@ -61,6 +61,7 @@ func gpCovWriteEntry(t *testing.T, stateDir string, request GetRequest, entry *c
 // WithRetryTelemetry documents that a nil accumulator is a no-op rather than a
 // panic: the caller keeps its own context.
 func TestGpCovWithRetryTelemetryNilReturnsParentContext(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if got := WithRetryTelemetry(ctx, nil); got != ctx {
 		t.Fatalf("WithRetryTelemetry(ctx, nil) = %v, want the parent context unchanged", got)
@@ -73,6 +74,7 @@ func TestGpCovWithRetryTelemetryNilReturnsParentContext(t *testing.T) {
 
 // WithProgress documents that a nil reporter is a no-op rather than a panic.
 func TestGpCovWithProgressNilReturnsParentContext(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if got := WithProgress(ctx, nil); got != ctx {
 		t.Fatalf("WithProgress(ctx, nil) = %v, want the parent context unchanged", got)
@@ -148,6 +150,7 @@ func TestGpCovDefaultObserverServesPackageLevelHelpers(t *testing.T) {
 
 // An empty endpoint must fail before any state directory or lock is touched.
 func TestGpCovGetRequiresAnEndpoint(t *testing.T) {
+	t.Parallel()
 	for _, endpoint := range []string{"", "   "} {
 		observer := &Observer{StateDir: t.TempDir()}
 		_, err := observer.Get(context.Background(), GetRequest{Endpoint: endpoint})
@@ -160,6 +163,7 @@ func TestGpCovGetRequiresAnEndpoint(t *testing.T) {
 // pathsForKey must surface both directory-creation failures with a message
 // naming which directory failed.
 func TestGpCovPathsForKeyReportsDirectoryCreationFailures(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -183,6 +187,7 @@ func TestGpCovPathsForKeyReportsDirectoryCreationFailures(t *testing.T) {
 // A state directory that cannot be prepared must fail the read instead of
 // silently falling back to the user's real state directory.
 func TestGpCovGetReportsUnpreparableStateDirectory(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -197,6 +202,7 @@ func TestGpCovGetReportsUnpreparableStateDirectory(t *testing.T) {
 // A lock that cannot even be opened must fail the whole read, before any gh
 // invocation, rather than running without cross-process exclusion.
 func TestGpCovGetReportsUnopenableLock(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	request := GetRequest{Endpoint: "user"}
 	key := cacheKey(request.Repository, request.Target, request.Head, request.Endpoint, request.Query, request.Accept)
@@ -225,6 +231,7 @@ func TestGpCovGetReportsUnopenableLock(t *testing.T) {
 // A 403 whose remaining rate-limit budget is zero is retryable even when the
 // response carries no Retry-After and the body never says "rate limit".
 func TestGpCovGetRetriesExhaustedRateLimitForbidden(t *testing.T) {
+	t.Parallel()
 	var calls int
 	observer := &Observer{
 		StateDir:    t.TempDir(),
@@ -256,6 +263,7 @@ func TestGpCovGetRetriesExhaustedRateLimitForbidden(t *testing.T) {
 // A 304 with no cached body means the conditional request was sent without a
 // validator; the caller gets an error rather than an empty success.
 func TestGpCovGetRejectsNotModifiedWithoutCachedBody(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -277,6 +285,7 @@ func TestGpCovGetRejectsNotModifiedWithoutCachedBody(t *testing.T) {
 // cannot happen the read must fail rather than report a cached body it could
 // not persist.
 func TestGpCovGetReportsUnwritableCacheWhenRevalidating(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	now := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
 	request := gpCovRequest("5", "repos/acme/app/branches/main")
@@ -314,6 +323,7 @@ func TestGpCovGetReportsUnwritableCacheWhenRevalidating(t *testing.T) {
 // A fresh 200 that cannot be cached must surface the write failure rather than
 // pretend the response was observed durably.
 func TestGpCovGetReportsUnwritableCacheForFreshResponse(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	request := gpCovRequest("6", "repos/acme/app/branches/main")
 	key := cacheKey(request.Repository, request.Target, request.Head, request.Endpoint, request.Query, request.Accept)
@@ -341,6 +351,7 @@ func TestGpCovGetReportsUnwritableCacheForFreshResponse(t *testing.T) {
 // Any status other than 200/304 is a hard error; the caller must not treat an
 // unparsed 404 as a successful observation.
 func TestGpCovGetRejectsUnexpectedHTTPStatus(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -355,6 +366,7 @@ func TestGpCovGetRejectsUnexpectedHTTPStatus(t *testing.T) {
 
 // A request Accept header must reach the gh command line verbatim.
 func TestGpCovGetForwardsAcceptHeaderToGh(t *testing.T) {
+	t.Parallel()
 	var observed []string
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -377,6 +389,7 @@ func TestGpCovGetForwardsAcceptHeaderToGh(t *testing.T) {
 // document is salvaged as a 200 carrying the raw output, so callers that only
 // need JSON (gh api without --include formatting) still work.
 func TestGpCovGetSalvagesUnparsableSuccessfulOutput(t *testing.T) {
+	t.Parallel()
 	raw := []byte("plain text without an included response")
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -396,6 +409,7 @@ func TestGpCovGetSalvagesUnparsableSuccessfulOutput(t *testing.T) {
 // The Read retry loop must stop before its first attempt once MaxRetryElapsed
 // is already spent, naming zero attempts instead of running anyway.
 func TestGpCovReadStopsBeforeFirstAttemptWhenBudgetIsSpent(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	observer := &Observer{
 		MaxRetryElapsed: time.Nanosecond,
@@ -423,6 +437,7 @@ func TestGpCovReadStopsBeforeFirstAttemptWhenBudgetIsSpent(t *testing.T) {
 // A retry wait that cannot be honoured must abort the read with the sleep
 // failure rather than continue into another attempt.
 func TestGpCovReadReportsSleepFailure(t *testing.T) {
+	t.Parallel()
 	sleepErr := errors.New("clock refused to wait")
 	observer := &Observer{
 		MaxAttempts: 3,
@@ -444,6 +459,7 @@ func TestGpCovReadReportsSleepFailure(t *testing.T) {
 // A rate-limit message with no HTTP status is still a transient read failure
 // worth retrying, and the recorded cause names the rate limit.
 func TestGpCovReadRetriesRateLimitMessages(t *testing.T) {
+	t.Parallel()
 	var calls int
 	telemetry := &RetryTelemetry{}
 	observer := &Observer{
@@ -477,6 +493,7 @@ func TestGpCovReadRetriesRateLimitMessages(t *testing.T) {
 // A rate-limit failure with no HTTP status must not be retried when the
 // caller's own context is already done: that cancellation is authoritative.
 func TestGpCovRetryableReadFailureRefusesDoneCallerContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := CommandResponse{Stderr: []byte("gh: HTTP 503"), ExitCode: 1, Err: errors.New("exit status 1")}
@@ -489,6 +506,7 @@ func TestGpCovRetryableReadFailureRefusesDoneCallerContext(t *testing.T) {
 // repositoryArgument must read both --repo forms so retry progress names the
 // repository a caller asked about.
 func TestGpCovReadReportsRepositoryFromRepoEqualsFlag(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	observer := &Observer{
 		MaxAttempts: 2,
@@ -517,6 +535,7 @@ func TestGpCovReadReportsRepositoryFromRepoEqualsFlag(t *testing.T) {
 // A failure message must combine stderr and stdout when both are present, so
 // an operator sees everything the failed command printed.
 func TestGpCovReadCombinesStderrAndStdoutInFailureMessage(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {
 			t.Fatal("an authoritative failure must not be retried")
@@ -540,6 +559,7 @@ func TestGpCovReadCombinesStderrAndStdoutInFailureMessage(t *testing.T) {
 // A net timeout surfaces as a retryable read failure even without any HTTP
 // status in the output, and the recorded cause names the timeout.
 func TestGpCovReadRetriesNetworkTimeouts(t *testing.T) {
+	t.Parallel()
 	var calls int
 	telemetry := &RetryTelemetry{}
 	observer := &Observer{
@@ -569,6 +589,7 @@ func TestGpCovReadRetriesNetworkTimeouts(t *testing.T) {
 // A killed attempt whose output says nothing recognisable still gets the
 // generic temporary-network cause, and the exhausted error names it.
 func TestGpCovReadNamesGenericTemporaryNetworkCause(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		MaxAttempts:          2,
 		MinAPIAttemptTimeout: 20 * time.Millisecond,
@@ -592,6 +613,7 @@ func TestGpCovReadNamesGenericTemporaryNetworkCause(t *testing.T) {
 // documented rules: no error is never retryable, a done caller context is
 // authoritative, and a net timeout is retryable.
 func TestGpCovIsTemporaryCommandFailureClassifiesFailures(t *testing.T) {
+	t.Parallel()
 	live := context.Background()
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -621,6 +643,7 @@ func TestGpCovIsTemporaryCommandFailureClassifiesFailures(t *testing.T) {
 // The apiGet retry loop must stop before its first attempt once the budget is
 // spent, reporting that GitHub never answered.
 func TestGpCovApiGetStopsBeforeFirstAttemptWhenBudgetIsSpent(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	observer := &Observer{
 		StateDir:        t.TempDir(),
@@ -643,6 +666,7 @@ func TestGpCovApiGetStopsBeforeFirstAttemptWhenBudgetIsSpent(t *testing.T) {
 // The per-attempt timeout must be clamped to the little budget that remains
 // rather than handed the full 30s floor.
 func TestGpCovGetClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	var attemptTimeout time.Duration
 	observer := &Observer{
@@ -674,6 +698,7 @@ func TestGpCovGetClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
 // A retryable HTTP status must stop retrying once MaxAttempts is reached and
 // report the exhausted budget as transient.
 func TestGpCovGetFailsAfterRetryableStatusExhaustsAttempts(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir:    t.TempDir(),
 		MaxAttempts: 1,
@@ -702,6 +727,7 @@ func TestGpCovGetFailsAfterRetryableStatusExhaustsAttempts(t *testing.T) {
 // A retry wait that fails while recovering from a retryable HTTP status must
 // abort with the sleep failure.
 func TestGpCovGetReportsSleepFailureForRetryableStatus(t *testing.T) {
+	t.Parallel()
 	sleepErr := errors.New("no wait possible")
 	observer := &Observer{
 		StateDir:    t.TempDir(),
@@ -729,6 +755,7 @@ func TestGpCovGetReportsSleepFailureForRetryableStatus(t *testing.T) {
 // When a retryable status is recovered on a later attempt and the budget runs
 // out meanwhile, the last retry error is what the caller sees.
 func TestGpCovApiGetReturnsLastRetryErrorWhenBudgetRunsOut(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	clock := 0
 	observer := &Observer{
@@ -765,6 +792,7 @@ func TestGpCovApiGetReturnsLastRetryErrorWhenBudgetRunsOut(t *testing.T) {
 // An unparsable gh failure whose stderr is empty must fall back to stdout so
 // the operator still sees the diagnostic.
 func TestGpCovApiGetFallsBackToStdoutWhenStderrIsEmpty(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -784,6 +812,7 @@ func TestGpCovApiGetFallsBackToStdoutWhenStderrIsEmpty(t *testing.T) {
 // A temporary command failure must exhaust attempts as transient, naming the
 // cause.
 func TestGpCovGetFailsAfterTemporaryCommandFailureExhaustsAttempts(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir:    t.TempDir(),
 		MaxAttempts: 1,
@@ -807,6 +836,7 @@ func TestGpCovGetFailsAfterTemporaryCommandFailureExhaustsAttempts(t *testing.T)
 // A retry wait that fails while recovering from a temporary command failure
 // must abort with the sleep failure.
 func TestGpCovGetReportsSleepFailureForTemporaryCommandFailure(t *testing.T) {
+	t.Parallel()
 	sleepErr := errors.New("no wait possible")
 	observer := &Observer{
 		StateDir:    t.TempDir(),
@@ -829,6 +859,7 @@ func TestGpCovGetReportsSleepFailureForTemporaryCommandFailure(t *testing.T) {
 // A command that reports no error but an empty body and a nonzero exit status
 // leaves only the parse failure to report.
 func TestGpCovApiGetReturnsParseErrorWhenCommandReportsNoError(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -844,6 +875,7 @@ func TestGpCovApiGetReturnsParseErrorWhenCommandReportsNoError(t *testing.T) {
 // readCacheEntry must distinguish an unreadable path, a corrupt document, and
 // a stale schema version, and must treat a missing file as an ordinary miss.
 func TestGpCovReadCacheEntryClassifiesFailures(t *testing.T) {
+	t.Parallel()
 	if entry, err := readCacheEntry(filepath.Join(t.TempDir(), "missing.json")); err != nil || entry != nil {
 		t.Fatalf("missing cache = (%+v, %v), want an ordinary miss", entry, err)
 	}
@@ -876,6 +908,7 @@ func TestGpCovReadCacheEntryClassifiesFailures(t *testing.T) {
 // writeCacheEntry must report an unusable parent directory and an
 // unactivatable destination instead of silently losing the cache write.
 func TestGpCovWriteCacheEntryReportsFailures(t *testing.T) {
+	t.Parallel()
 	entry := &cacheEntry{
 		SchemaVersion: cacheSchemaVersion,
 		Endpoint:      "user",
@@ -904,6 +937,7 @@ func TestGpCovWriteCacheEntryReportsFailures(t *testing.T) {
 // normalizeHeaders must lower-case and trim header names, keep values intact,
 // and fall back to the cached validators only when the response omitted them.
 func TestGpCovNormalizeHeadersPrefersResponseThenCache(t *testing.T) {
+	t.Parallel()
 	entry := &cacheEntry{ETag: `"cached"`, LastModified: "cached-lm"}
 
 	got := normalizeHeaders(map[string]string{}, entry)
@@ -925,6 +959,7 @@ func TestGpCovNormalizeHeadersPrefersResponseThenCache(t *testing.T) {
 // parseIncludedResponse must reject empty, headerless, and malformed status
 // lines, skip blank and colonless header lines, and normalise CRLF.
 func TestGpCovParseIncludedResponseRejectsMalformedPayloads(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		raw  string
@@ -956,6 +991,7 @@ func TestGpCovParseIncludedResponseRejectsMalformedPayloads(t *testing.T) {
 // parseRetryAfter accepts positive seconds and HTTP dates in the future, and
 // returns zero for anything else.
 func TestGpCovParseRetryAfterTable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	for _, testCase := range []struct {
 		value string
@@ -979,6 +1015,7 @@ func TestGpCovParseRetryAfterTable(t *testing.T) {
 // parseRateLimitReset accepts a future unix timestamp and returns zero for
 // malformed, non-positive, and already-elapsed resets.
 func TestGpCovParseRateLimitResetTable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	for _, testCase := range []struct {
 		value string
@@ -999,6 +1036,7 @@ func TestGpCovParseRateLimitResetTable(t *testing.T) {
 
 // httpTime accepts every documented HTTP date layout and rejects garbage.
 func TestGpCovHTTPTimeParsesSupportedLayouts(t *testing.T) {
+	t.Parallel()
 	want := time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)
 	for _, value := range []string{
 		"Mon, 02 Jan 2006 15:04:05 UTC",
@@ -1023,6 +1061,7 @@ func TestGpCovHTTPTimeParsesSupportedLayouts(t *testing.T) {
 // retryDelay must stop doubling once the configured maximum backoff is
 // reached instead of growing without bound.
 func TestGpCovRetryDelayCapsAtMaxBackoff(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		BaseBackoff: time.Millisecond,
 		MaxBackoff:  2 * time.Millisecond,
@@ -1040,6 +1079,7 @@ func TestGpCovRetryDelayCapsAtMaxBackoff(t *testing.T) {
 // A non-positive delay is not a wait at all, and an already-cancelled caller
 // must be able to interrupt a real wait.
 func TestGpCovSleepSkipsNonPositiveDelaysAndHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {
 			t.Fatal("a non-positive delay must not reach the sleep function")
@@ -1062,6 +1102,7 @@ func TestGpCovSleepSkipsNonPositiveDelaysAndHonoursCancellation(t *testing.T) {
 
 // randomIntn must not consult its source for non-positive bounds.
 func TestGpCovRandomIntnDefaultsForNonPositiveBounds(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		RandomIntn: func(int64) int64 {
 			t.Fatal("a non-positive bound must not reach the random source")
@@ -1078,6 +1119,7 @@ func TestGpCovRandomIntnDefaultsForNonPositiveBounds(t *testing.T) {
 
 // maxBackoff must prefer the configured cap over the default.
 func TestGpCovMaxBackoffPrefersConfiguredValue(t *testing.T) {
+	t.Parallel()
 	if got := (&Observer{MaxBackoff: 7 * time.Second}).maxBackoff(); got != 7*time.Second {
 		t.Fatalf("maxBackoff() = %v, want the configured 7s", got)
 	}
@@ -1088,6 +1130,7 @@ func TestGpCovMaxBackoffPrefersConfiguredValue(t *testing.T) {
 
 // Only `gh api` and `gh pr view` earn the longer per-attempt floor.
 func TestGpCovIsAPIOrPRViewCommandClassifiesArguments(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		args []string
 		want bool
@@ -1109,6 +1152,7 @@ func TestGpCovIsAPIOrPRViewCommandClassifiesArguments(t *testing.T) {
 // stateDir must resolve, in order, an explicit setting, XDG_STATE_HOME, the
 // user's home directory, and finally a relative fallback.
 func TestGpCovStateDirResolutionOrder(t *testing.T) {
+	t.Parallel()
 	if got := (&Observer{StateDir: "/tmp/explicit"}).stateDir(); got != "/tmp/explicit" {
 		t.Fatalf("stateDir() = %q, want the explicit setting", got)
 	}
@@ -1186,6 +1230,7 @@ func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
 // attemptContext must not shorten a caller's own deadline; only its
 // cancellation propagates.
 func TestGpCovAttemptContextPreservesCallerDeadline(t *testing.T) {
+	t.Parallel()
 	parent, cancelParent := context.WithTimeout(context.Background(), time.Hour)
 	defer cancelParent()
 	parentDeadline, _ := parent.Deadline()
@@ -1200,6 +1245,7 @@ func TestGpCovAttemptContextPreservesCallerDeadline(t *testing.T) {
 
 // A lock path that cannot be opened must fail with a message naming the lock.
 func TestGpCovAcquireLockRejectsAnUnopenablePath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if _, err := acquireLock(dir); err == nil || !strings.Contains(err.Error(), "open GitHub observer lock") {
 		t.Fatalf("err = %v, want the lock-open failure", err)
@@ -1209,6 +1255,7 @@ func TestGpCovAcquireLockRejectsAnUnopenablePath(t *testing.T) {
 // A lock that is acquired then released must leave a real, re-acquirable lock
 // file behind.
 func TestGpCovAcquireLockRoundTrip(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "round-trip.lock")
 	unlock, err := acquireLock(path)
 	if err != nil {
@@ -1232,6 +1279,7 @@ func TestGpCovAcquireLockRoundTrip(t *testing.T) {
 // GetPages must propagate a page read failure instead of returning a partial
 // walk as success.
 func TestGpCovGetPagesPropagatesPageReadFailure(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -1251,6 +1299,7 @@ func TestGpCovGetPagesPropagatesPageReadFailure(t *testing.T) {
 
 // A link section without a bracketed target is not a next link.
 func TestGpCovNextPageEndpointSkipsSectionsWithoutABracketedTarget(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		headers map[string]string
@@ -1268,6 +1317,7 @@ func TestGpCovNextPageEndpointSkipsSectionsWithoutABracketedTarget(t *testing.T)
 
 // A progress detail must name the delay reason when the server supplied one.
 func TestGpCovRetryProgressNamesTheDelayReason(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	reportRetryProgress(func(event progress.Event) { events = append(events, event) }, "acme/app", "github_api", 1, 4, "HTTP 503", time.Second, "Retry-After")
 	if len(events) != 1 {
@@ -1281,6 +1331,7 @@ func TestGpCovRetryProgressNamesTheDelayReason(t *testing.T) {
 // A reporter attached to the context must receive retry progress for a
 // GetRequest with no explicit Progress, so the ctx seam is honoured.
 func TestGpCovGetUsesProgressFromContext(t *testing.T) {
+	t.Parallel()
 	var events []progress.Event
 	calls := 0
 	observer := &Observer{
@@ -1317,6 +1368,7 @@ func TestGpCovGetUsesProgressFromContext(t *testing.T) {
 // A 200 response must be cached with the validators it arrived with, and a
 // subsequent read served from that cache before the fresh window elapses.
 func TestGpCovGetCachesFreshResponseWithValidators(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	now := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
 	calls := 0
@@ -1356,6 +1408,7 @@ func TestGpCovGetCachesFreshResponseWithValidators(t *testing.T) {
 
 // A malformed link header with no rel=next parameter must end the walk.
 func TestGpCovNextPageEndpointIgnoresOtherRelationsInAMixedHeader(t *testing.T) {
+	t.Parallel()
 	headers := map[string]string{
 		"Link": `<https://api.github.com/a?page=1>; rel="first", <https://api.github.com/a?page=9>; rel="last"`,
 	}
@@ -1367,6 +1420,7 @@ func TestGpCovNextPageEndpointIgnoresOtherRelationsInAMixedHeader(t *testing.T) 
 // A failed retryable read must record its cause through the telemetry seam
 // even when the retry eventually succeeds, and an unrelated failure must not.
 func TestGpCovReadTelemetryIgnoresAuthoritativeFailures(t *testing.T) {
+	t.Parallel()
 	telemetry := &RetryTelemetry{}
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {

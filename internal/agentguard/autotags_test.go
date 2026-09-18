@@ -89,6 +89,7 @@ jobs:
 // repository whose own CI already tags it can hand-tag a lower version onto
 // newer code, hiding the fix.
 func TestGitTagDeniedInAutoTaggingRepository(t *testing.T) {
+	t.Parallel()
 	t.Run("explicit .wb/hooks.yaml agent.autoTags: true", func(t *testing.T) {
 		repo := newTagRepoFixture(t)
 		repo.writeHooksConfig(t, true)
@@ -138,6 +139,7 @@ func TestGitTagDeniedInAutoTaggingRepository(t *testing.T) {
 // no config and no heuristic hit, an explicit opt-out, read-only tag
 // inspection, and an ordinary (non-tag) push.
 func TestGitTagAutoTaggingFalsePositives(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		command string

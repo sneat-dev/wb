@@ -122,6 +122,7 @@ func TestLoadWorkLogViewFallsBackToArchiveWhenJournalPromptsMissing(t *testing.T
 }
 
 func TestLoadWorkLogViewWithoutBodiesKeepsHeadersOnly(t *testing.T) {
+	t.Parallel()
 	worktree := newJournalWorktree(t)
 	if err := WriteManifest(worktree, newCreatedManifest("headers-only")); err != nil {
 		t.Fatal(err)

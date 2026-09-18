@@ -275,6 +275,7 @@ func TestDepsCovGraphsRepositoryContainsLocalManifests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			for _, name := range testCase.files {
 				writeTestFile(t, filepath.Join(root, name), "fixture\n")
@@ -304,6 +305,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 	options := orchestrate.Options{Timeout: time.Minute}
 
 	t.Run("npm base ref missing", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"package.json": "{}\n"})
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "origin/missing", options); err == nil {
@@ -311,6 +313,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm package.json cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "package.json")
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -318,6 +321,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm pnpm-workspace.yaml cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "pnpm-workspace.yaml")
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -325,6 +329,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm package.json does not parse", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"package.json": "{ this is not JSON }\n"})
 		_, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options)
@@ -333,6 +338,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go base ref missing", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"go.mod": "module example.com/repo\n\ngo 1.24\n"})
 		if _, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "origin/missing", options); err == nil {
@@ -340,6 +346,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go go.mod cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "go.mod")
 		if _, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -347,6 +354,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go root go.mod declares no module path", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"go.mod": "go 1.24\n"})
 		_, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "main", options)
@@ -585,6 +593,7 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			directory := depsCovSeedOriginRepository(t, root, testCase.name, testCase.url)
 			got, err := remoteOriginSlug(context.Background(), directory, options)
 			if err != nil || got != testCase.want {
@@ -602,6 +611,7 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 		{name: "github without repository", url: "git@github.com:lib", want: "origin remote does not identify owner/repository"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			directory := depsCovSeedOriginRepository(t, root, testCase.name, testCase.url)
 			if _, err := remoteOriginSlug(context.Background(), directory, options); err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("remoteOriginSlug(%q) error = %v, want %q", testCase.url, err, testCase.want)
@@ -609,6 +619,7 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 		})
 	}
 	t.Run("not a repository", func(t *testing.T) {
+		t.Parallel()
 		if _, err := remoteOriginSlug(context.Background(), filepath.Join(root, "absent"), options); err == nil {
 			t.Fatal("a directory that is not a git repository must fail remote resolution")
 		}
@@ -731,6 +742,7 @@ func TestDepsCovGraphsPendingCarriersBlockTargets(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := npmFleet(testCase.packages, testCase.requirements).pendingCarriersBlockTargets(testCase.carriers, testCase.targets); got != testCase.want {
 				t.Errorf("npm pendingCarriersBlockTargets = %t, want %t", got, testCase.want)
 			}

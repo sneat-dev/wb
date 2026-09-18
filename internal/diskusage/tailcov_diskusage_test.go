@@ -23,6 +23,7 @@ func tailCovWrite(t *testing.T, path string, size int) {
 // a fleet sweep must not fail because one worktree directory cannot be listed:
 // the walk skips it and still measures everything else.
 func TestTailCovMeasureSkipsAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tailCovWrite(t, filepath.Join(root, "readable", "kept.bin"), 2048)
 	blocked := filepath.Join(root, "blocked")
@@ -48,6 +49,7 @@ func TestTailCovMeasureSkipsAnUnreadableDirectory(t *testing.T) {
 // removed" from "not a directory": only the former is an answer of zero, and a
 // path whose parent is a regular file must surface as an error.
 func TestTailCovMeasureReportsAWalkErrorThatIsNotAMissingPath(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "regular-file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -69,6 +71,7 @@ func TestTailCovMeasureReportsAWalkErrorThatIsNotAMissingPath(t *testing.T) {
 // fail the same way a direct Measure does, and proves the walk keeps its
 // previously recorded trees intact rather than dropping them.
 func TestTailCovWalkMeasurePropagatesAMeasurementFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tailCovWrite(t, filepath.Join(root, "kept.bin"), 1024)
 
@@ -95,6 +98,7 @@ func TestTailCovWalkMeasurePropagatesAMeasurementFailure(t *testing.T) {
 // that declares a Walk and measures into it must get a working accounting unit
 // rather than a nil-map panic.
 func TestTailCovZeroValueWalkIsUsable(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tailCovWrite(t, filepath.Join(root, "a.bin"), 512)
 
@@ -112,6 +116,7 @@ func TestTailCovZeroValueWalkIsUsable(t *testing.T) {
 // accounting: asking what removing a tree that this walk never saw would
 // reclaim must answer nothing, not everything.
 func TestTailCovWalkTotalIsZeroForRootsItNeverMeasured(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	tailCovWrite(t, filepath.Join(root, "pkgs", "pkg.bin"), 4096)
 
@@ -136,6 +141,7 @@ func TestTailCovWalkTotalIsZeroForRootsItNeverMeasured(t *testing.T) {
 // figure above the TB suffix must not fall off the end of the loop and print
 // the wrong scale.
 func TestTailCovHumanRendersPetabyteScale(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		bytes int64
 		want  string
@@ -155,6 +161,7 @@ func TestTailCovHumanRendersPetabyteScale(t *testing.T) {
 // directory listing showed but Lstat can no longer resolve is skipped instead
 // of aborting the whole measurement.
 func TestTailCovMeasureSkipsAnEntryItCannotStat(t *testing.T) {
+	t.Parallel()
 	// The platform caps a path argument at PATH_MAX (1024 bytes on Darwin, 4096
 	// on Linux). A directory whose own path stays under that limit can be
 	// listed, while a 255-byte entry inside it has a full path that is over the

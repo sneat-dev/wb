@@ -26,6 +26,7 @@ func (store fakeLinkStore) LiveLinksForWorktree(worktree string) ([]streams.Stre
 // AC: merge-refuses-while-a-link-is-live — a recorded link refuses, naming the
 // link and the command that clears it.
 func TestHasLiveLinkReportsARecordedLink(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	store := fakeLinkStore{links: map[string][]streams.StreamLink{
 		worktree: {{
@@ -56,6 +57,7 @@ func TestHasLiveLinkReportsARecordedLink(t *testing.T) {
 // go.work with a `use` entry and NO stream record still refuses. State alone
 // would miss it, which is why the two signals are independent.
 func TestHasLiveLinkReportsAHandWrittenGoWorkWithNoStreamRecord(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"), []byte("go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library/backend\n)\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -73,6 +75,7 @@ func TestHasLiveLinkReportsAHandWrittenGoWorkWithNoStreamRecord(t *testing.T) {
 }
 
 func TestHasLiveLinkAcceptsTrackedIntrinsicGoWorkspace(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse (\n\t./bookius\n\t./debtus\n)\n")
 	writeGuardTestFile(t, worktree, "bookius/go.mod", "module example.com/contracts/bookius\n\ngo 1.27\n")
@@ -86,6 +89,7 @@ func TestHasLiveLinkAcceptsTrackedIntrinsicGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsExternalEntryInTrackedGoWorkspace(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse /elsewhere/library\n")
 	commitGuardTestRepository(t, worktree)
@@ -100,6 +104,7 @@ func TestHasLiveLinkRejectsExternalEntryInTrackedGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsUntrackedInternalGoWorkspace(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "backend/go.mod", "module example.com/backend\n\ngo 1.27\n")
 	commitGuardTestRepository(t, worktree)
@@ -112,6 +117,7 @@ func TestHasLiveLinkRejectsUntrackedInternalGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsUntrackedModuleInTrackedGoWorkspace(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./local-module\n")
 	commitGuardTestRepository(t, worktree)
@@ -124,6 +130,7 @@ func TestHasLiveLinkRejectsUntrackedModuleInTrackedGoWorkspace(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsTrackedGoWorkSymlink(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "workspace-source", "go 1.27\n\nuse ./module\n")
 	writeGuardTestFile(t, worktree, "module/go.mod", "module example.com/module\n\ngo 1.27\n")
@@ -139,6 +146,7 @@ func TestHasLiveLinkRejectsTrackedGoWorkSymlink(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsTrackedGoModSymlink(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
 	writeGuardTestFile(t, worktree, "module-source.mod", "module example.com/module\n\ngo 1.27\n")
@@ -157,6 +165,7 @@ func TestHasLiveLinkRejectsTrackedGoModSymlink(t *testing.T) {
 }
 
 func TestHasLiveLinkRejectsMissingTrackedGoMod(t *testing.T) {
+	t.Parallel()
 	worktree := initGuardTestRepository(t)
 	writeGuardTestFile(t, worktree, "go.work", "go 1.27\n\nuse ./module\n")
 	writeGuardTestFile(t, worktree, "module/go.mod", "module example.com/module\n\ngo 1.27\n")
@@ -173,12 +182,14 @@ func TestHasLiveLinkRejectsMissingTrackedGoMod(t *testing.T) {
 
 // "I could not tell" must not be spelled the same way as "there is no link".
 func TestHasLiveLinkPropagatesAnUnreadableStore(t *testing.T) {
+	t.Parallel()
 	if _, err := HasLiveLink(fakeLinkStore{err: errors.New("state is unreadable")}, t.TempDir()); err == nil {
 		t.Fatal("an unreadable store reported no links")
 	}
 }
 
 func TestHasLiveLinkOnACleanWorktreeReportsNothing(t *testing.T) {
+	t.Parallel()
 	links, err := HasLiveLink(fakeLinkStore{links: map[string][]streams.StreamLink{}}, t.TempDir())
 	if err != nil || len(links) != 0 {
 		t.Fatalf("links = %#v, err = %v", links, err)
@@ -190,6 +201,7 @@ func TestHasLiveLinkOnACleanWorktreeReportsNothing(t *testing.T) {
 
 // A go.work with an empty use block is not a link.
 func TestGoWorkWithNoUseEntriesIsNotALink(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"), []byte("go 1.27\n\nuse (\n)\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -201,6 +213,7 @@ func TestGoWorkWithNoUseEntriesIsNotALink(t *testing.T) {
 }
 
 func TestGoWorkUseEntriesReadsBothSpellingsAndSkipsComments(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	contents := "// generated\ngo 1.27\n\nuse ./backend\n\nuse (\n\t// a comment inside the block\n\t./tools/lint\n\t/abs/library/backend\n)\n"
 	if err := os.WriteFile(filepath.Join(worktree, "go.work"), []byte(contents), 0o644); err != nil {
@@ -221,6 +234,7 @@ func TestGoWorkUseEntriesReadsBothSpellingsAndSkipsComments(t *testing.T) {
 }
 
 func TestGoWorkUseEntriesOnAWorktreeWithoutOneIsEmpty(t *testing.T) {
+	t.Parallel()
 	entries, err := GoWorkUseEntries(t.TempDir())
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("entries = %v, err = %v", entries, err)
@@ -243,6 +257,7 @@ func (store fakeLinkSourceStore) LinkSourcesForWorktree(worktree string) ([]stre
 // worktree still recorded as a link source refuses, naming the stream, the
 // consumer, and the command that clears it.
 func TestHasLiveLinkSourceReportsAPnpmLinkConsumer(t *testing.T) {
+	t.Parallel()
 	library := t.TempDir()
 	store := fakeLinkSourceStore{sources: map[string][]streams.StreamLinkSource{
 		library: {{
@@ -272,6 +287,7 @@ func TestHasLiveLinkSourceReportsAPnpmLinkConsumer(t *testing.T) {
 // AC: merge-refuses-a-linked-worktree (removal-time half, go.work) — the
 // other recorded mechanism refuses identically, naming its link kind.
 func TestHasLiveLinkSourceReportsAGoWorkConsumer(t *testing.T) {
+	t.Parallel()
 	library := t.TempDir()
 	store := fakeLinkSourceStore{sources: map[string][]streams.StreamLinkSource{
 		library: {{
@@ -297,6 +313,7 @@ func TestHasLiveLinkSourceReportsAGoWorkConsumer(t *testing.T) {
 // A worktree with no recorded source link proceeds silently — most cleanups
 // never touch a library worktree at all.
 func TestHasLiveLinkSourceIsEmptyWithNoRecordedLink(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	sources, err := HasLiveLinkSource(fakeLinkSourceStore{}, worktree)
 	if err != nil || len(sources) != 0 {
@@ -310,6 +327,7 @@ func TestHasLiveLinkSourceIsEmptyWithNoRecordedLink(t *testing.T) {
 // A nil store — no WB home, the ordinary case outside a stream — must not be
 // mistaken for an unreadable store.
 func TestHasLiveLinkSourceAcceptsANilStore(t *testing.T) {
+	t.Parallel()
 	sources, err := HasLiveLinkSource(nil, t.TempDir())
 	if err != nil || len(sources) != 0 {
 		t.Fatalf("sources = %#v, err = %v, want none from a nil store", sources, err)
@@ -319,6 +337,7 @@ func TestHasLiveLinkSourceAcceptsANilStore(t *testing.T) {
 // An unreadable store is an error, never an empty result: "I could not tell"
 // must not be spelled the same way as "nothing links here".
 func TestHasLiveLinkSourcePropagatesAStoreReadFailure(t *testing.T) {
+	t.Parallel()
 	if _, err := HasLiveLinkSource(fakeLinkSourceStore{err: errors.New("disk fell over")}, t.TempDir()); err == nil {
 		t.Fatal("an unreadable store reported no error")
 	}

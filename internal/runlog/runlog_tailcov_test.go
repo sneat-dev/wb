@@ -53,6 +53,7 @@ func tailCovWantError(t *testing.T, what string, err error, want string) {
 // through a zero-time Begin/Finish pair and asserts every admission field
 // survives into the terminal event, including the failed-exit-code state.
 func TestTailCovRecorderRecordsAdmissionLoadAndFailureDetails(t *testing.T) {
+	t.Parallel()
 	root := tailCovManagedWorktree(t)
 
 	recorder, err := Begin(root, []string{"go", "test", "./..."}, time.Time{})
@@ -110,6 +111,7 @@ func TestTailCovRecorderRecordsAdmissionLoadAndFailureDetails(t *testing.T) {
 // TestTailCovRecordLoadOverrideCanBeCleared proves the override flag is a
 // faithful copy of the caller's value rather than a latched one.
 func TestTailCovRecordLoadOverrideCanBeCleared(t *testing.T) {
+	t.Parallel()
 	recorder := Recorder{}
 	recorder.RecordLoadOverride(true)
 	if !recorder.event.LoadOverride {
@@ -124,6 +126,7 @@ func TestTailCovRecordLoadOverrideCanBeCleared(t *testing.T) {
 // TestTailCovFinishWithoutManagedWorktreeIsNoop covers the unmanaged-path
 // contract: no log path means Finish writes nothing and reports no error.
 func TestTailCovFinishWithoutManagedWorktreeIsNoop(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	recorder, err := Begin(root, []string{"git", "status"}, time.Time{})
 	if err != nil {
@@ -147,6 +150,7 @@ func TestTailCovFinishWithoutManagedWorktreeIsNoop(t *testing.T) {
 // TestTailCovBeginSurfacesAppendFailure proves Begin reports a broken run log
 // rather than silently dropping the requested event.
 func TestTailCovBeginSurfacesAppendFailure(t *testing.T) {
+	t.Parallel()
 	root := tailCovManagedWorktree(t)
 	runPath := filepath.Join(root, ".wb", "local", "run")
 	if err := os.WriteFile(runPath, []byte("a file where the directory belongs\n"), 0o600); err != nil {
@@ -164,6 +168,7 @@ func TestTailCovBeginSurfacesAppendFailure(t *testing.T) {
 // timestamp outside RFC3339's four-digit year range must be reported, and no
 // partial line may be written.
 func TestTailCovAppendRejectsUnencodableEvent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	err := Append(path, Event{
 		SchemaVersion: EventSchemaVersion,
@@ -179,6 +184,7 @@ func TestTailCovAppendRejectsUnencodableEvent(t *testing.T) {
 // happen before the file is locked. The lock failure itself is covered by
 // TestTailCovAppendReportsLockFailure, which needs a Unix-only fault seam.
 func TestTailCovAppendCreateAndOpenFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	blocker := filepath.Join(dir, "blocker")
@@ -203,6 +209,7 @@ func TestTailCovAppendCreateAndOpenFailures(t *testing.T) {
 // TestTailCovReadHandlesMissingUnreadableMalformedAndFutureLogs covers every
 // branch of the parser's failure handling.
 func TestTailCovReadHandlesMissingUnreadableMalformedAndFutureLogs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	events, err := Read(filepath.Join(dir, "absent.jsonl"))
@@ -251,6 +258,7 @@ func TestTailCovReadHandlesMissingUnreadableMalformedAndFutureLogs(t *testing.T)
 // TestTailCovReadCurrentManagedAndUnmanaged covers both halves of the
 // worktree-discovery contract used by `wb run --summary`.
 func TestTailCovReadCurrentManagedAndUnmanaged(t *testing.T) {
+	t.Parallel()
 	if _, _, err := ReadCurrent(t.TempDir()); err == nil {
 		t.Fatal("ReadCurrent outside a managed worktree must fail")
 	} else if !strings.Contains(err.Error(), "is not inside a managed WB worktree") {
@@ -284,6 +292,7 @@ func TestTailCovReadCurrentManagedAndUnmanaged(t *testing.T) {
 // window filter, failure counters, per-kind accumulators, and both sort
 // comparators.
 func TestTailCovSummarizeFiltersWindowAndAggregatesKinds(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	events := []Event{
 		{OperationID: "old", Timestamp: since.Add(-time.Minute), State: "succeeded", Kind: "go/vet", DurationMS: 9999},
@@ -332,6 +341,7 @@ func TestTailCovSummarizeFiltersWindowAndAggregatesKinds(t *testing.T) {
 }
 
 func TestTailCovPercentileHandlesEmptyAndZeroQuantile(t *testing.T) {
+	t.Parallel()
 	if got := percentile(nil, 0.5); got != 0 {
 		t.Fatalf("percentile(nil) = %d, want 0", got)
 	}
@@ -350,6 +360,7 @@ func TestTailCovPercentileHandlesEmptyAndZeroQuantile(t *testing.T) {
 // unparseable manifest degrades to "unmanaged" (no path, no error) rather
 // than recording telemetry against an unknown worktree.
 func TestTailCovManagedWorktreeIgnoresUnreadableManifest(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -380,6 +391,7 @@ func TestTailCovManagedWorktreeIgnoresUnreadableManifest(t *testing.T) {
 // table's observable outputs, including the flag-skipping and stop-at-first-
 // unknown-verb rules.
 func TestTailCovClassifyCoversToolsVerbsAndFallbacks(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		argv []string
@@ -404,6 +416,7 @@ func TestTailCovClassifyCoversToolsVerbsAndFallbacks(t *testing.T) {
 }
 
 func TestTailCovNewOperationIDIsUniqueAndWellFormed(t *testing.T) {
+	t.Parallel()
 	first, err := newOperationID()
 	if err != nil {
 		t.Fatalf("newOperationID: %v", err)

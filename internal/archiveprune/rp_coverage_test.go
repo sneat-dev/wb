@@ -15,6 +15,7 @@ import (
 )
 
 func TestRPCovCleanReportsAnUnscannableProjectsRoot(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestRPCovCleanReportsProgressForEveryRepository(t *testing.T) {
 }
 
 func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
+	t.Parallel()
 	t.Run("skip-sync marker unreadable", func(t *testing.T) {
 		isolateWBHome(t)
 		f := newFixture(t, "acme", "widgets")
@@ -114,6 +116,7 @@ func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
 	})
 
 	t.Run("work log claims unreadable", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t, "acme", "widgets")
 		f.archived()
 		// The claim scan reads the fixture root's own state home now, so an
@@ -129,6 +132,7 @@ func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
 }
 
 func TestRPCovWorkingTreeBlockersNamesEveryDirtyShape(t *testing.T) {
+	t.Parallel()
 	status := gitops.RepoStatus{
 		Modified:   []string{"a.txt"},
 		Untracked:  []string{"b.txt"},
@@ -150,6 +154,7 @@ func TestRPCovWorkingTreeBlockersNamesEveryDirtyShape(t *testing.T) {
 }
 
 func TestRPCovUnpushedBranchBlockersFallBackToTheGenericCommitCount(t *testing.T) {
+	t.Parallel()
 	blockers := unpushedBranchBlockers(gitops.RepoStatus{Unpushed: []string{"abc1234 wip", "def5678 more"}})
 	if len(blockers) != 1 || blockers[0] != "2 unpushed commits" {
 		t.Fatalf("blockers = %v, want the generic unattributed-commit refusal", blockers)
@@ -160,6 +165,7 @@ func TestRPCovUnpushedBranchBlockersFallBackToTheGenericCommitCount(t *testing.T
 }
 
 func TestRPCovRunGitReportsExitAndLaunchFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	run(t, dir, "git", "init", "-q", "-b", "main")
 	if _, err := runGit(context.Background(), dir, "rev-parse", "--verify", "does-not-exist"); err == nil ||
@@ -175,6 +181,7 @@ func TestRPCovRunGitReportsExitAndLaunchFailures(t *testing.T) {
 }
 
 func TestRPCovRefHelpersReportGitFailures(t *testing.T) {
+	t.Parallel()
 	notARepo := t.TempDir()
 	if _, err := localOnlyBranches(context.Background(), notARepo); err == nil {
 		t.Fatal("localOnlyBranches accepted a directory that is not a repository")
@@ -191,6 +198,7 @@ func TestRPCovRefHelpersReportGitFailures(t *testing.T) {
 }
 
 func TestRPCovLocalOnlyBranchesReportsAMissingRemote(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	run(t, dir, "git", "init", "-q", "-b", "main")
 	mustWriteFile(t, filepath.Join(dir, "f.txt"), "v1\n")
@@ -226,6 +234,7 @@ func TestRPCovRemoteRefNamesSkipsMalformedLinesAndStripsThePeelSuffix(t *testing
 }
 
 func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
+	t.Parallel()
 	// claimFor plants a claim in the state home that derives from the projects
 	// root the scan is given.
 	claimFor := func(root, claimID, repository, lifecycle string) {
@@ -244,6 +253,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	}
 
 	t.Run("unresolvable projects root", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "regular-file")
 		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -254,6 +264,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("malformed glob", func(t *testing.T) {
+		t.Parallel()
 		// A projects root containing a glob metacharacter makes the claim
 		// pattern under its state home malformed.
 		root := filepath.Join(t.TempDir(), "projects[")
@@ -266,6 +277,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("claim path is not a file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims", "claim.json")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -277,6 +289,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("claim is not json", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims")
 		mustMkdirAll(t, dir)
@@ -287,6 +300,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("claim for another repository is ignored", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		claimFor(root, "claim", "other/repo", "active")
 		blockers, err := nonTerminalClaims(root, "acme/widgets")
@@ -296,6 +310,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("claim without an id", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dir := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "claims")
 		mustMkdirAll(t, dir)
@@ -307,6 +322,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 	})
 
 	t.Run("terminal seal is unreadable", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		claimFor(root, "claim-1", "acme/widgets", "active")
 		terminalPath := filepath.Join(root, ".wb", "worklogs", "task", "runs", "run-1", "terminals", "claim-1.json")
@@ -320,6 +336,7 @@ func TestRPCovNonTerminalClaimsReportsEveryUnreadableInputShape(t *testing.T) {
 }
 
 func TestRPCovPlanUntrackedRejectsMissingRootsAndTraversalShapes(t *testing.T) {
+	t.Parallel()
 	if _, err := planUntracked(filepath.Join(t.TempDir(), "missing"), []string{"x"}); err == nil ||
 		!strings.Contains(err.Error(), "open clone root") {
 		t.Fatalf("missing root error = %v", err)
@@ -345,6 +362,7 @@ func TestRPCovPlanUntrackedRejectsMissingRootsAndTraversalShapes(t *testing.T) {
 }
 
 func TestRPCovPlanUntrackedRejectsExcessiveDepthAndBrokenParentPaths(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "plain.txt"), "x\n")
 	rootFile, err := os.Open(root)
@@ -374,6 +392,7 @@ func TestRPCovPlanUntrackedRejectsExcessiveDepthAndBrokenParentPaths(t *testing.
 }
 
 func TestRPCovOpenParentAndDirectoryListingReportClosedDescriptors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "file.txt"), "x\n")
 	closedRoot, err := os.Open(root)
@@ -400,6 +419,7 @@ func TestRPCovOpenParentAndDirectoryListingReportClosedDescriptors(t *testing.T)
 }
 
 func TestRPCovDeleteExactUntrackedRefusesEmptyAndUnreadablePlans(t *testing.T) {
+	t.Parallel()
 	if err := deleteExactUntracked(context.Background(), t.TempDir(), nil); err == nil ||
 		!strings.Contains(err.Error(), "empty plan") {
 		t.Fatalf("empty-plan error = %v", err)
@@ -434,6 +454,7 @@ func TestRPCovDeleteExactUntrackedRefusesEmptyAndUnreadablePlans(t *testing.T) {
 }
 
 func TestRPCovRemoveExactPathAtRefusesUnsafeEntries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "file.txt"), "content\n")
 	rootFile, err := os.Open(root)
@@ -489,6 +510,7 @@ func TestRPCovRemoveExactPathAtRefusesUnsafeEntries(t *testing.T) {
 }
 
 func TestRPCovRemoveExactPathAtRefusesUndeclaredAndChangedDirectoryChildren(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "dir", "known.txt"), "known\n")
 	mustWriteFile(t, filepath.Join(root, "dir", "extra.txt"), "extra\n")
@@ -533,6 +555,7 @@ func TestRPCovRemoveExactPathAtRefusesUndeclaredAndChangedDirectoryChildren(t *t
 }
 
 func TestRPCovWriteArchiveCleanReceiptReportsUnusableHomesAndTargets(t *testing.T) {
+	t.Parallel()
 	if _, err := writeArchiveCleanReceipt(rpCovUnusableProjectsRoot(t), archiveCleanReceipt{Repository: "acme/widgets"}); err == nil {
 		t.Fatal("writeArchiveCleanReceipt accepted an unusable projects root")
 	}

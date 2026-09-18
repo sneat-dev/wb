@@ -87,6 +87,7 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 }
 
 func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSuccessorChains(t *testing.T) {
+	t.Parallel()
 	sources := []WorktreeMergeSource{{Task: "source", Worktree: "/worktrees/source", Branch: "feature/source", SHA: "0123456789abcdef"}}
 	lane := worktreeMergeLaneID("acme/app", "main")
 	root := worktreeMergeOperationID(lane, sources)
@@ -131,6 +132,7 @@ func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSucces
 		"unrelated refresh source":  func(r *WorktreeMergeReceipt) { r.SourceRefreshes[0].Sources[0].SHA = "deadbeefdeadbeef" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := refreshed
 			candidate.SourceRefreshes = append([]WorktreeMergeSourceRefresh(nil), refreshed.SourceRefreshes...)
 			candidate.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), refreshed.SourceRefreshes[0].Sources...)
@@ -160,6 +162,7 @@ func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSucces
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if err := validatePrepareFailureSupersessionReceipt(test.receipt, test.receipt.ReceiptPath); err == nil {
 				t.Fatal("invalid successor identity was accepted")
 			}
@@ -498,6 +501,7 @@ func TestAcknowledgeLandedFailedValidationPreservesAdvancedSources(t *testing.T)
 }
 
 func TestLandedFailureAcknowledgementRefusesLandedReceiptWithoutFailedValidation(t *testing.T) {
+	t.Parallel()
 	receipt := WorktreeMergeReceipt{
 		ReceiptPath: "/tmp/receipt.json", ID: "receipt", Repository: "acme/app", Target: "main",
 		Candidate: WorktreeMergeCandidate{SHA: strings.Repeat("a", 40)}, LandingSHA: strings.Repeat("a", 40),
@@ -608,6 +612,7 @@ func TestAcknowledgeLandedFailureAcceptsOlderClaimBaseOnlyWhenItIsAnAncestor(t *
 }
 
 func TestAcknowledgeLandedFailureRefusesNonAncestorClaimBaseAndIdentityMismatch(t *testing.T) {
+	t.Parallel()
 	t.Run("non-ancestor claim base", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		initialTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
@@ -763,6 +768,7 @@ func TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingR
 }
 
 func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescendant(t *testing.T) {
+	t.Parallel()
 	t.Run("recorded source descendant retains every root", func(t *testing.T) {
 		fixture, receipt, replacement := supersessionFixture(t)
 		originalReceipt, originalCandidateClaim, replacementClaim := mergeSupersessionImmutableBytes(t, fixture, receipt, replacement)
@@ -1098,6 +1104,7 @@ func TestSupersedeValidationFailedWorktreeMergeBindsCleanCandidateDescendant(t *
 }
 
 func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("dirty original candidate", func(t *testing.T) {
 		fixture, receipt, replacement := supersessionFixture(t)
 		receipt.Status = WorktreeMergeConflict
@@ -1335,6 +1342,7 @@ func assertMergeSupersessionImmutableBytes(t *testing.T, fixture engineFixture, 
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, replacement worktrees.CreateResult)
@@ -1465,6 +1473,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRefusesMissingSourceAncestryAndTampering(t *testing.T) {
+	t.Parallel()
 	t.Run("missing receipted source ancestry", func(t *testing.T) {
 		fixture := newEngineFixture(t)
 		source := createMergeSource(t, fixture, "missing-source", "feature/missing-source", "source.txt", "source\n")
@@ -1575,6 +1584,7 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	}
 
 	t.Run("missing identity fails closed", func(t *testing.T) {
+		t.Parallel()
 		if err := os.Remove(identityPath); err != nil {
 			t.Fatal(err)
 		}
@@ -1587,6 +1597,7 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	})
 
 	t.Run("tampered identity fails closed", func(t *testing.T) {
+		t.Parallel()
 		tampered := strings.Replace(string(identityBefore), receipt.ID, "tampered", 1)
 		if tampered == string(identityBefore) {
 			t.Fatal("identity fixture did not contain receipt ID")
@@ -1603,6 +1614,7 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	})
 
 	t.Run("mismatched identity fails closed", func(t *testing.T) {
+		t.Parallel()
 		var identity WorktreeMergeLegacyValidationFailureIdentity
 		if err := json.Unmarshal(identityBefore, &identity); err != nil {
 			t.Fatal(err)
@@ -1680,6 +1692,7 @@ func TestLegacyConflictSupersessionCorrelatesMissingCandidateSHA(t *testing.T) {
 	}
 
 	t.Run("missing identity fails closed", func(t *testing.T) {
+		t.Parallel()
 		if err := os.Remove(identityPath); err != nil {
 			t.Fatal(err)
 		}
@@ -1692,6 +1705,7 @@ func TestLegacyConflictSupersessionCorrelatesMissingCandidateSHA(t *testing.T) {
 	})
 
 	t.Run("tampered identity fails closed", func(t *testing.T) {
+		t.Parallel()
 		tampered := strings.Replace(string(identityBefore), ack.OriginalCandidate.SHA, strings.Repeat("0", 40), 1)
 		if err := os.WriteFile(identityPath, []byte(tampered), 0o600); err != nil {
 			t.Fatal(err)
@@ -1963,7 +1977,9 @@ func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCrea
 }
 
 func TestCorrectValidationFailedSelfSupersessionRefusesUnsafeHistoricalEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("malformed receipt state or landing", func(t *testing.T) {
+		t.Parallel()
 		for _, mutate := range []struct {
 			name  string
 			apply func(*WorktreeMergeReceipt)
@@ -2132,6 +2148,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	}
 
 	t.Run("original immutable claim bytes", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, _, claim := newCorrected(t)
 		claimBytes, err := os.ReadFile(claim.ClaimPath)
 		if err != nil {
@@ -2146,6 +2163,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("advanced target remains superseded without mutating historical replacement", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, _, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
 		runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
@@ -2157,6 +2175,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("non-descendant target remains a refusal", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", correction.CurrentTargetSHA+"^{tree}"))
 		unrelatedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-m", "test: unrelated rewritten target"))
@@ -2167,6 +2186,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("recorded replacement descendant", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(correction.CorrectedReplacement.Worktree, "replacement-drift.txt"), "replacement drift\n")
 		runEngineGit(t, correction.CorrectedReplacement.Worktree, "add", "replacement-drift.txt")
@@ -2177,6 +2197,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("target and replacement descendants retain every root", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-descendant.go"), "package app\n\nfunc TargetDescendant() {}\n")
 		runEngineGit(t, fixture.canonical, "add", "target-descendant.go")
@@ -2190,6 +2211,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("sibling replacement remains an exact identity refusal", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, correction, _ := newCorrected(t)
 		sibling := createMergeSource(t, fixture, "self-supersession-sibling", "feature/self-supersession-sibling", "sibling.go", "package app\n\nfunc Sibling() {}\n")
 		// Make the sibling ancestry-complete first. The correction writer must
@@ -2219,6 +2241,7 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 	})
 
 	t.Run("historical source remains effective after its live worktree advances", func(t *testing.T) {
+		t.Parallel()
 		fixture, receipt, _, _ := newCorrected(t)
 		source := receipt.Sources[0]
 		writeEngineFile(t, filepath.Join(source.Worktree, "source-drift.txt"), "source drift\n")

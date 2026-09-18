@@ -3,6 +3,7 @@ package session
 import "testing"
 
 func TestProcessEvidenceMatchesCodexAppServerByExecutableAndRole(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		evidence ProcessEvidence
@@ -48,6 +49,7 @@ func TestProcessEvidenceMatchesCodexAppServerByExecutableAndRole(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := processEvidenceMatchesRuntime(test.evidence, "codex"); got != test.want {
 				t.Fatalf("processEvidenceMatchesRuntime() = %t, want %t", got, test.want)
 			}

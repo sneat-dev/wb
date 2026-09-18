@@ -98,6 +98,7 @@ func TestLandRefusesAConflictingUpdateWithoutWithdrawingAutoMerge(t *testing.T) 
 }
 
 func TestUpdateBranchConflictClassification(t *testing.T) {
+	t.Parallel()
 	for reason, want := range map[string]bool{
 		"update pull request branch: merge conflict between base and head": true,
 		"update pull request branch: not mergeable":                        true,
@@ -115,6 +116,7 @@ func TestUpdateBranchConflictClassification(t *testing.T) {
 // that keeps advancing extending a landing forever. Updating mid-wait must
 // spend the same budget, not restart it.
 func TestWaitDeadlineSpendsOneBudgetAcrossUpdates(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1_700_000_000, 0)
 	options := PullRequestLandOptions{Slice: 30 * time.Minute, Now: func() time.Time { return start }}
 	deadline := waitDeadline(options)
@@ -227,6 +229,7 @@ func TestLandArmsAutoMergeOnAnUnfencedTargetWhenAllowed(t *testing.T) {
 // TestAutoMergeNeverArmsForKeptCommits: --keep-commits merges a branch WB
 // rebuilds, so an armed auto-merge would let GitHub squash the original.
 func TestAutoMergeNeverArmsForKeptCommits(t *testing.T) {
+	t.Parallel()
 	options := PullRequestLandOptions{KeepCommits: []string{"4f2a1c9"}, AllowUnfenced: true}
 	if got := autoMergeBypassesAGuard(context.Background(), options, "main"); !strings.Contains(got, "--keep-commits") {
 		t.Fatalf("autoMergeBypassesAGuard = %q, want the --keep-commits guard named", got)
@@ -392,6 +395,7 @@ func TestPRLandResumeTimeoutFlagNamesAConvergingBudget(t *testing.T) {
 // TestTargetMovedClassification pins which wait failures mean the target
 // moved, and which update failures mean the head moved.
 func TestTargetMovedClassification(t *testing.T) {
+	t.Parallel()
 	for reason, want := range map[string]bool{
 		"pull request head abc does not contain current target main at def; rebase": true,
 		"target main advanced after checks passed from a to b; rebase":              true,

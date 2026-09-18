@@ -28,6 +28,7 @@ func wtLogCovBacklogRecord(t *testing.T, disposition string) (string, string, li
 }
 
 func TestWtLogCovValidateLifecycleBacklog(t *testing.T) {
+	t.Parallel()
 	projectsRoot, worktreesRoot, record := wtLogCovBacklogRecord(t, "removed")
 	if err := validateLifecycleBacklog(record); err != nil {
 		t.Fatalf("valid backlog record rejected: %v", err)
@@ -136,6 +137,7 @@ func TestWtLogCovValidateLifecycleBacklog(t *testing.T) {
 }
 
 func TestWtLogCovLifecycleBacklogIdentityAndPaths(t *testing.T) {
+	t.Parallel()
 	_, _, record := wtLogCovBacklogRecord(t, "removed")
 	result := ListResult{Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch, HeadSHA: record.HeadSHA}
@@ -158,6 +160,7 @@ func TestWtLogCovLifecycleBacklogIdentityAndPaths(t *testing.T) {
 }
 
 func TestWtLogCovOpenLifecycleBacklogDirectory(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := openLifecycleBacklogDirectory(home, false); err == nil {
 		t.Fatal("absent backlog directory was opened")
@@ -183,6 +186,7 @@ func TestWtLogCovOpenLifecycleBacklogDirectory(t *testing.T) {
 }
 
 func TestWtLogCovPersistLifecycleBacklog(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := persistLifecycleBacklog(home, nil, lifecycleStageSealed); err == nil {
 		t.Fatal("nil backlog record was accepted")

@@ -10,6 +10,7 @@ import (
 // TestDqCovMergeCoverageProfilesRejectsEmptyAndUnreadableInputs pins the two
 // preconditions that must fail before a merged profile can be published.
 func TestDqCovMergeCoverageProfilesRejectsEmptyAndUnreadableInputs(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	if err := mergeCoverageProfiles(nil, filepath.Join(directory, "out.cov")); err == nil || !strings.Contains(err.Error(), "at least one coverage profile") {
 		t.Fatalf("empty input error = %v, want the profile requirement", err)
@@ -24,6 +25,7 @@ func TestDqCovMergeCoverageProfilesRejectsEmptyAndUnreadableInputs(t *testing.T)
 // reader fails closed for each malformed shape instead of reporting a partial
 // union.
 func TestDqCovReadCoverageProfileRejectsEveryMalformedShape(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	long := strings.Repeat("x", 70000)
 	for _, tc := range []struct {
@@ -43,6 +45,7 @@ func TestDqCovReadCoverageProfileRejectsEveryMalformedShape(t *testing.T) {
 		{name: "oversized block line", contents: "mode: set\n" + long + "\n", want: "bufio.Scanner: token too long"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(directory, strings.ReplaceAll(tc.name, " ", "-")+".cov")
 			writeQualityFile(t, path, tc.contents)
 			mode, blocks, err := readCoverageProfile(path)
@@ -67,9 +70,11 @@ func TestDqCovReadCoverageProfileRejectsEveryMalformedShape(t *testing.T) {
 // failures a caller can observe: an unusable destination directory and a
 // destination occupied by a directory.
 func TestDqCovWriteCoverageProfileAtomicallyFailsClosed(t *testing.T) {
+	t.Parallel()
 	blocks := map[string]coverageBlock{"example/a.go:1.1,2.2": {location: "example/a.go:1.1,2.2", statements: 2, count: 1}}
 
 	t.Run("unusable destination directory", func(t *testing.T) {
+		t.Parallel()
 		output := filepath.Join(t.TempDir(), "missing", "merged.cov")
 		err := writeCoverageProfileAtomically(output, "set", blocks)
 		if err == nil || !strings.Contains(err.Error(), "create merged coverage profile beside") {
@@ -81,6 +86,7 @@ func TestDqCovWriteCoverageProfileAtomicallyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("destination is a directory", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		output := filepath.Join(directory, "occupied.cov")
 		if err := os.Mkdir(output, 0o755); err != nil {

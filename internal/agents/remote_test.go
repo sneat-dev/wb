@@ -58,6 +58,7 @@ func testTarget() RemoteTarget {
 }
 
 func TestRemoteRequestValidationIsIndependentOfTheFlagParser(t *testing.T) {
+	t.Parallel()
 	valid := RemoteRequest{
 		SchemaVersion: 1, Operation: RemoteDispatch, Mode: ModeNew,
 		Worktree: "task-one", Profile: "cheap", Task: "do it", TimeoutMS: 1000,
@@ -78,6 +79,7 @@ func TestRemoteRequestValidationIsIndependentOfTheFlagParser(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			request := valid
 			mutate(&request)
 			if err := request.Validate(); err == nil {
@@ -88,6 +90,7 @@ func TestRemoteRequestValidationIsIndependentOfTheFlagParser(t *testing.T) {
 }
 
 func TestRemoteRequestValidationCoversEveryOperation(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{RemoteStatus, RemoteAwait, RemoteLogs, RemoteStop} {
 		request := RemoteRequest{SchemaVersion: 1, Operation: operation}
 		if err := request.Validate(); err == nil {
@@ -110,6 +113,7 @@ func TestRemoteRequestValidationCoversEveryOperation(t *testing.T) {
 }
 
 func TestRemoteTargetValidationBlocksShellMetacharacters(t *testing.T) {
+	t.Parallel()
 	cases := map[string]RemoteTarget{
 		"no machine": {Host: "h"},
 		"no host":    {Machine: "m"},
@@ -135,6 +139,7 @@ func TestRemoteTargetValidationBlocksShellMetacharacters(t *testing.T) {
 	}
 	for name, target := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := target.Validate(); err == nil {
 				t.Fatalf("Validate accepted %s", name)
 			}
@@ -155,6 +160,7 @@ func writeRemoteConfig(t *testing.T, body string) string {
 }
 
 func TestLoadRemoteTargetsReusesTheSessionMoveMachineMap(t *testing.T) {
+	t.Parallel()
 	path := writeRemoteConfig(t, `
 session_move:
   targets:
@@ -195,6 +201,7 @@ session_move:
 }
 
 func TestLoadRemoteTargetsReportsUnconfiguredAndUnusableState(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
 	if _, err := LoadRemoteTargets(missing); err == nil {
 		t.Fatal("an absent configuration must be reported")
@@ -215,6 +222,7 @@ func TestLoadRemoteTargetsReportsUnconfiguredAndUnusableState(t *testing.T) {
 }
 
 func TestSplitAgentRefAcceptsBothForms(t *testing.T) {
+	t.Parallel()
 	machine, id, err := SplitAgentRef("hetzner-vm1:agt-00000000000000000000000000000000")
 	if err != nil || machine != "hetzner-vm1" || id != "agt-00000000000000000000000000000000" {
 		t.Fatalf("qualified ref = %q %q %v", machine, id, err)
@@ -237,6 +245,7 @@ func TestSplitAgentRefAcceptsBothForms(t *testing.T) {
 }
 
 func TestCallRemoteSendsAFixedArgvAndTheRequestOnStdin(t *testing.T) {
+	t.Parallel()
 	runner := &fakeSSH{}
 	result := Result{AgentID: "agt-00000000000000000000000000000000", State: StateCompleted}
 	response, _ := json.Marshal(RemoteResponse{SchemaVersion: 1, Operation: RemoteDispatch, Result: &result})
@@ -279,6 +288,7 @@ func TestCallRemoteSendsAFixedArgvAndTheRequestOnStdin(t *testing.T) {
 }
 
 func TestCallRemoteDefaultsTheRemoteCommandName(t *testing.T) {
+	t.Parallel()
 	runner := &fakeSSH{}
 	response, _ := json.Marshal(RemoteResponse{SchemaVersion: 1, Operation: RemoteList, Results: []Result{}})
 	runner.response = response
@@ -302,6 +312,7 @@ func TestCallRemoteDefaultsTheRemoteCommandName(t *testing.T) {
 }
 
 func TestCallRemoteDistinguishesRefusalFromTransportFailure(t *testing.T) {
+	t.Parallel()
 	refusal, _ := json.Marshal(RemoteResponse{SchemaVersion: 1, Operation: RemoteStatus, Failure: "no dispatched agent run"})
 	runner := &fakeSSH{response: refusal}
 	_, err := CallRemote(context.Background(), testTarget(), RemoteRequest{SchemaVersion: 1, Operation: RemoteStatus, AgentID: "agt-00000000000000000000000000000000"}, fakeRemoteDeps(t, runner))
@@ -330,6 +341,7 @@ func TestCallRemoteDistinguishesRefusalFromTransportFailure(t *testing.T) {
 }
 
 func TestCallRemoteRejectsAnUnusableRemoteAnswer(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		response string
 		want     string
@@ -341,6 +353,7 @@ func TestCallRemoteRejectsAnUnusableRemoteAnswer(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &fakeSSH{response: []byte(testCase.response)}
 			_, err := CallRemote(context.Background(), testTarget(), RemoteRequest{SchemaVersion: 1, Operation: RemoteList}, fakeRemoteDeps(t, runner))
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -351,6 +364,7 @@ func TestCallRemoteRejectsAnUnusableRemoteAnswer(t *testing.T) {
 }
 
 func TestCallRemoteRefusesAnOversizedAnswer(t *testing.T) {
+	t.Parallel()
 	runner := &fakeSSH{response: []byte(strings.Repeat("x", maxRemoteStdoutBytes+16))}
 	_, err := CallRemote(context.Background(), testTarget(), RemoteRequest{SchemaVersion: 1, Operation: RemoteList}, fakeRemoteDeps(t, runner))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
@@ -359,6 +373,7 @@ func TestCallRemoteRefusesAnOversizedAnswer(t *testing.T) {
 }
 
 func TestCallRemoteRefusesAnInvalidRequestBeforeReachingSSH(t *testing.T) {
+	t.Parallel()
 	runner := &fakeSSH{}
 	_, err := CallRemote(context.Background(), testTarget(), RemoteRequest{SchemaVersion: 1, Operation: RemoteDispatch}, fakeRemoteDeps(t, runner))
 	if err == nil {
@@ -376,6 +391,7 @@ func TestCallRemoteRefusesAnInvalidRequestBeforeReachingSSH(t *testing.T) {
 }
 
 func TestCallRemoteGivesAwaitRoomForItsWaitBound(t *testing.T) {
+	t.Parallel()
 	response, _ := json.Marshal(RemoteResponse{SchemaVersion: 1, Operation: RemoteAwait})
 	runner := &fakeSSH{response: response}
 	request := RemoteRequest{

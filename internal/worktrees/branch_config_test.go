@@ -74,6 +74,7 @@ func TestBranchNamingPrecedenceReadsTargetBaseObject(t *testing.T) {
 }
 
 func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	create, err := normalizeCreateOptions(CreateOptions{
 		ProjectsRoot: projectsRoot,
@@ -141,6 +142,7 @@ func TestCreateUsesConfiguredSharedWorktreesRoot(t *testing.T) {
 }
 
 func TestSharedWorktreeRootRejectsRelativePath(t *testing.T) {
+	t.Parallel()
 	if _, err := resolveSharedWorktreesRoot("relative/worktrees"); err == nil {
 		t.Fatal("relative shared root was accepted")
 	}
@@ -201,6 +203,7 @@ func TestCreateResumeIgnoresMalformedUnrelatedRegisteredClaim(t *testing.T) {
 }
 
 func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		initialPolicy string
@@ -262,6 +265,7 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 }
 
 func TestRepositoryBranchPolicyRejectsUnsafeOrInvalidBlob(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		contents string

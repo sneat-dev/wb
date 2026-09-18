@@ -94,6 +94,7 @@ func TestGraphFromNpmFleetLabelsWorkspaceOnlyOverrideConsumer(t *testing.T) {
 }
 
 func TestBuildGraphPreservesNpmManifestEvidenceIncludingPnpmOverrides(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	provider := seedNpmGraphRepository(t, root, githubDir, "sneat-libs", map[string]string{
@@ -154,6 +155,7 @@ func TestBuildGraphPreservesNpmManifestEvidenceIncludingPnpmOverrides(t *testing
 }
 
 func TestBuildGraphIgnoresTestdataPackageJSONFixtures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repository := seedNpmGraphRepository(t, root, githubDir, "fixture-safe", map[string]string{
@@ -176,6 +178,7 @@ func TestBuildGraphIgnoresTestdataPackageJSONFixtures(t *testing.T) {
 }
 
 func TestBuildGraphIgnoresDistPackageJSONButKeepsDistinguishedSource(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repository := seedNpmGraphRepository(t, root, githubDir, "generated-safe", map[string]string{

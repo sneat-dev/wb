@@ -10,6 +10,7 @@ import (
 )
 
 func TestHkCovReadWorkerHealthFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestHkCovReadWorkerHealthFailures(t *testing.T) {
 }
 
 func TestHkCovStartWorkerIfIdleHonoursDisabledLauncher(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	dispatcher.LaunchWorker = nil
 	started, err := dispatcher.startWorkerIfIdle()
@@ -52,6 +54,7 @@ func TestHkCovStartWorkerIfIdleHonoursDisabledLauncher(t *testing.T) {
 }
 
 func TestHkCovStartWorkerIfIdleStateAndLockFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	broken := dispatcher
@@ -78,6 +81,7 @@ func TestHkCovStartWorkerIfIdleStateAndLockFailures(t *testing.T) {
 }
 
 func TestHkCovStartWorkerIfIdleQuarantinesInvalidHealth(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -100,6 +104,7 @@ func TestHkCovStartWorkerIfIdleQuarantinesInvalidHealth(t *testing.T) {
 }
 
 func TestHkCovStartWorkerIfIdleRecordsLaunchFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	dispatcher.LaunchWorker = func(WorkerRequest) error { return errors.New("exec format error") }
 	started, err := dispatcher.startWorkerIfIdle()
@@ -113,6 +118,7 @@ func TestHkCovStartWorkerIfIdleRecordsLaunchFailure(t *testing.T) {
 }
 
 func TestHkCovResumeReportsStatusFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	dispatcher.StateDir = filepath.Join(blocker, "state")
@@ -122,6 +128,7 @@ func TestHkCovResumeReportsStatusFailure(t *testing.T) {
 }
 
 func TestHkCovResumeIsNoOpWhenQueueIsEmpty(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	launched := 0
 	dispatcher.LaunchWorker = func(WorkerRequest) error { launched++; return nil }
@@ -132,6 +139,7 @@ func TestHkCovResumeIsNoOpWhenQueueIsEmpty(t *testing.T) {
 }
 
 func TestHkCovResumeWarnsWhenWorkerCannotStart(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovSeedJob(t, dispatcher, hkCovJob("index", checkout, "b"))
 	dispatcher.LaunchWorker = func(WorkerRequest) error { return errors.New("spawn denied") }
@@ -142,6 +150,7 @@ func TestHkCovResumeWarnsWhenWorkerCannotStart(t *testing.T) {
 }
 
 func TestHkCovRecordUnseenFailureRejectsUnusableDirectory(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	broken := dispatcher
@@ -163,6 +172,7 @@ func TestHkCovRecordUnseenFailureRejectsUnusableDirectory(t *testing.T) {
 }
 
 func TestHkCovRecordUnseenFailureIsReadBackByStatus(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	receipt := hkCovReceipt("unseen")
 	if err := dispatcher.recordUnseenFailure(receipt); err != nil {
@@ -175,6 +185,7 @@ func TestHkCovRecordUnseenFailureIsReadBackByStatus(t *testing.T) {
 }
 
 func TestHkCovClaimUnseenWarningsLimitAndStateErrors(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if warnings, err := dispatcher.claimUnseenWarnings(0); err != nil || len(warnings) != 0 {
 		t.Fatalf("warnings=%v err=%v", warnings, err)
@@ -213,6 +224,7 @@ func TestHkCovClaimUnseenWarningsLimitAndStateErrors(t *testing.T) {
 }
 
 func TestHkCovClaimUnseenWarningsSortsSkipsAndQuarantines(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -239,6 +251,7 @@ func TestHkCovClaimUnseenWarningsSortsSkipsAndQuarantines(t *testing.T) {
 }
 
 func TestHkCovClaimUnseenWarningsHonoursLimit(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -257,6 +270,7 @@ func TestHkCovClaimUnseenWarningsHonoursLimit(t *testing.T) {
 }
 
 func TestHkCovUnseenFailureCountErrors(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	if count, err := dispatcher.unseenFailureCount(); err != nil || count != 0 {
 		t.Fatalf("count=%d err=%v", count, err)
@@ -286,6 +300,7 @@ func TestHkCovUnseenFailureCountErrors(t *testing.T) {
 }
 
 func TestHkCovWorkerHealthRoundTrip(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	started := time.Unix(1700000000, 0).UTC()
 	if err := dispatcher.writeWorkerHealth(WorkerHealth{Status: "running", StartedAt: started}); err != nil {

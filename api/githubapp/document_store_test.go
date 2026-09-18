@@ -86,6 +86,7 @@ func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(DocumentTra
 func mustJSON(value any) []byte { raw, _ := json.Marshal(value); return raw }
 
 func TestProjectionStoreReadsDocumentContracts(t *testing.T) {
+	t.Parallel()
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	repository := ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/app", DisplayName: "app", UpdatedAt: time.Unix(1, 0)}
@@ -136,6 +137,7 @@ func TestProjectionStoreReadsDocumentContracts(t *testing.T) {
 }
 
 func TestProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
+	t.Parallel()
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	writer := DocumentProjectionWriter{Backend: fake}
 	ctx := context.Background()
@@ -161,6 +163,7 @@ func TestProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 }
 
 func TestProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t *testing.T) {
+	t.Parallel()
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	other := LatestMerge{Repository: "github.com/acme/other", PullRequest: 2, MergedAt: time.Unix(20, 0)}
@@ -195,6 +198,7 @@ func TestProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t *testing
 }
 
 func TestProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	valid := RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true}
 	for name, writer := range map[string]DocumentProjectionWriter{
@@ -203,6 +207,7 @@ func TestProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T)
 		"write failure":   {Backend: &firestoreFake{documents: map[string]json.RawMessage{}, setErr: errors.New("write")}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := writer.WriteLatestMerges(ctx, "delivery", valid); err == nil {
 				t.Fatal("expected latest-merge write failure")
 			}
@@ -218,6 +223,7 @@ func TestProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T)
 }
 
 func TestProjectionWriterBoundsAndDeterministicallySortsLatestMerges(t *testing.T) {
+	t.Parallel()
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	entries := make([]LatestMerge, maxPublicLatestMerges+1)
 	for i := range entries {
@@ -234,6 +240,7 @@ func TestProjectionWriterBoundsAndDeterministicallySortsLatestMerges(t *testing.
 }
 
 func TestFirestoreDeliveryOutcomesFollowFinalTransactionAttempt(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(100, 0)
 	first := &firestoreFake{documents: map[string]json.RawMessage{}}
 	second := &firestoreFake{documents: map[string]json.RawMessage{}}
@@ -263,6 +270,7 @@ func TestFirestoreDeliveryOutcomesFollowFinalTransactionAttempt(t *testing.T) {
 }
 
 func TestProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T) {
+	t.Parallel()
 	if _, err := (DocumentProjectionDeliveryStore{}).HasDelivery(context.Background(), "missing"); err == nil {
 		t.Fatal("nil delivery backend did not fail closed")
 	}
@@ -307,6 +315,7 @@ func TestProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T) {
 // state that was already spent. The port must therefore expose Delete on the
 // transaction, and the host's transaction must honor it.
 func TestDocumentTransactionDeleteConsumesDocumentAtomically(t *testing.T) {
+	t.Parallel()
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	ctx := context.Background()
 	if err := fake.Set(ctx, "installation-states", "digest-1", map[string]string{"kind": "pending"}); err != nil {

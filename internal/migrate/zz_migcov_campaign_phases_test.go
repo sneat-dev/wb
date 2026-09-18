@@ -41,6 +41,7 @@ func migCovClone(t *testing.T, name string, goMod string) string {
 }
 
 func TestMigCovPreflightRepositoryCollectsCycleBootstraps(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v0.0.0\n")
 	depRoot := t.TempDir()
@@ -67,6 +68,7 @@ func TestMigCovPreflightRepositoryCollectsCycleBootstraps(t *testing.T) {
 }
 
 func TestMigCovApplyRepositorySourcesWritesPerModuleReports(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n")
 	writeCampaignFile(t, filepath.Join(root, "app.go"), "package app\n\nconst Value = \"old\"\n")
@@ -154,6 +156,7 @@ func TestMigCovUpdateRepositoryManifestsAndChangeIndex(t *testing.T) {
 }
 
 func TestMigCovFinalizeRepositoryManifestsRecordsPublishableUpdates(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "app")
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ../dep\n")
@@ -424,6 +427,7 @@ func TestMigCovVerifyRepositoryRunsAndReportsVerification(t *testing.T) {
 }
 
 func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
+	t.Parallel()
 	// Children whose parent is unknown are ignored entirely.
 	c := &campaign{
 		modules:  map[string]*campaignModule{},
@@ -463,6 +467,7 @@ func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
 }
 
 func TestMigCovRepositoryComponentsCollapsesCycles(t *testing.T) {
+	t.Parallel()
 	repositories := map[string]*campaignRepository{
 		"github.com/acme/a": {repository: "github.com/acme/a"},
 		"github.com/acme/b": {repository: "github.com/acme/b"},
@@ -572,6 +577,7 @@ func TestMigCovPrepareCampaignRepositoryReportsPreparationFailures(t *testing.T)
 }
 
 func TestMigCovCampaignRegisteredWorktreesSkipsNonRepositories(t *testing.T) {
+	t.Parallel()
 	if worktrees, err := campaignRegisteredWorktrees(filepath.Join(t.TempDir(), "absent"), "wb/migrate/x"); err != nil || worktrees != nil {
 		t.Fatalf("campaignRegisteredWorktrees(absent) = %v, %v", worktrees, err)
 	}
@@ -688,6 +694,7 @@ func TestMigCovCleanupCampaignWorktreesRefusesLockedAndDirty(t *testing.T) {
 }
 
 func TestMigCovAcquireCampaignLockReportsUnusableRoots(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -714,6 +721,7 @@ func TestMigCovAcquireCampaignLockReportsUnusableRoots(t *testing.T) {
 }
 
 func TestMigCovValidCampaignLockMetadataRejectsMalformedContents(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "lock")
 	for name, contents := range map[string]string{

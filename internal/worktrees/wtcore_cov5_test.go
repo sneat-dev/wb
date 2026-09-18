@@ -99,6 +99,7 @@ func TestWTCoreCovResidueRemovesOnlyTheExactHeldCheckout(t *testing.T) {
 // the exact cause a caller inspects with errors.Is, and a nil error unwraps to
 // nothing.
 func TestWTCoreCovCreatePublicationErrorUnwrap(t *testing.T) {
+	t.Parallel()
 	var absent *CreatePublicationError
 	if absent.Unwrap() != nil {
 		t.Fatal("a nil publication error unwrapped to a cause")
@@ -114,6 +115,7 @@ func TestWTCoreCovCreatePublicationErrorUnwrap(t *testing.T) {
 // exported opener creates the named operation directory but never fabricates a
 // missing parent hierarchy.
 func TestWTCoreCovOpenOperationLockDirectoryRefusesMissingPath(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +157,7 @@ func TestWTCoreCovOpenOperationLockDirectoryRefusesMissingPath(t *testing.T) {
 // asserts the exported verifier fails closed before reading any Work Log when
 // the supplied expectations are empty, malformed, or duplicated.
 func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	if err := ValidateRemovedTerminalWorkLogs(projectsRoot, nil); err == nil {
 		t.Fatal("an empty expectation set was accepted")
@@ -173,6 +176,7 @@ func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t
 		"empty commit":   {Task: "task", Repository: "acme/app", Worktree: "/checkout", Branch: "wb/task"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := ValidateRemovedTerminalWorkLogs(projectsRoot, []TerminalWorkLogExpectation{invalid}); err == nil {
 				t.Fatal("an incomplete expectation was accepted")
 			} else if !strings.Contains(err.Error(), "invalid terminal Work Log expectation") {
@@ -191,6 +195,7 @@ func TestWTCoreCovValidateRemovedTerminalWorkLogsRefusesIncompleteExpectations(t
 // identity gate routes each recorded successor acquisition through the digest
 // rule that owns it, accepting none of them when the recorded ID is wrong.
 func TestWTCoreCovValidateOrphanedClaimIdentitySuccessorShapes(t *testing.T) {
+	t.Parallel()
 	successor := func(version int, via string) workLogClaim {
 		return workLogClaim{
 			Version: version, Lifecycle: "active", EffortID: "task", RunID: "run",
@@ -211,6 +216,7 @@ func TestWTCoreCovValidateOrphanedClaimIdentitySuccessorShapes(t *testing.T) {
 		{name: "recycled failure", via: "recycle_failed"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if err := validateOrphanedClaimIdentity(successor(2, testCase.via)); err == nil {
 				t.Fatal("a successor claim with a mismatched digest was accepted")
 			}

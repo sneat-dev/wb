@@ -69,6 +69,7 @@ func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 }
 
 func TestRunPlansManagedWorktreeFromItsLiveManifest(t *testing.T) {
+	t.Parallel()
 	oldRef := strings.Repeat("1", 40)
 	exactRef := strings.Repeat("2", 40)
 	for _, test := range []struct {

@@ -14,6 +14,7 @@ import (
 )
 
 func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *testing.T) {
+	t.Parallel()
 	ack := WorktreeMergeStrandedLandingAcknowledgement{
 		ReceiptID: "receipt", ReceiptPath: "/receipts/receipt.json", ReceiptSHA256: "receipt-hash",
 		ReceiptStatus: WorktreeMergeConflict, ReceiptTargetSHA: "target", CandidateSHA: "candidate",
@@ -432,6 +433,7 @@ func TestAcknowledgeStrandedPullRequestLandingRefusesDivergedRemoteTarget(t *tes
 }
 
 func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
+	t.Parallel()
 	base := func() WorktreeMergeReceipt {
 		return WorktreeMergeReceipt{
 			ID: "receipt-id", ReceiptPath: "/receipts/lane.json", Lane: worktreeMergeLaneID("acme/app", "main"),
@@ -461,6 +463,7 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := base()
 			receipt.PublishedCandidateSHA = receipt.Candidate.SHA
 			tt.mutate(&receipt)

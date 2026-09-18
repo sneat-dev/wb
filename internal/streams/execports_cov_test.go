@@ -352,6 +352,7 @@ func TestExecGitHubDefaultBranchStatusReadsTheConclusion(t *testing.T) {
 
 // runBounded must still bound a child when the caller left the timeout unset.
 func TestStreamsRunBoundedDefaultsAnUnsetTimeout(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not installed")
 	}
@@ -361,11 +362,13 @@ func TestStreamsRunBoundedDefaultsAnUnsetTimeout(t *testing.T) {
 }
 
 func TestExecGitDefaultBranchReadsRemoteHeadThenFallsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	git := ExecGit{Timeout: time.Minute}
 
 	for _, branch := range []string{"main", "master"} {
 		t.Run("clone of "+branch, func(t *testing.T) {
+			t.Parallel()
 			base := t.TempDir()
 			remote := filepath.Join(base, "origin.git")
 			runStreamGit(t, "", "init", "--bare", "--initial-branch="+branch, remote)
@@ -394,6 +397,7 @@ func TestExecGitDefaultBranchReadsRemoteHeadThenFallsBack(t *testing.T) {
 	}
 
 	t.Run("unresolvable default branch is an error", func(t *testing.T) {
+		t.Parallel()
 		base := t.TempDir()
 		remote := filepath.Join(base, "origin.git")
 		runStreamGit(t, "", "init", "--bare", "--initial-branch=trunk", remote)
@@ -409,6 +413,7 @@ func TestExecGitDefaultBranchReadsRemoteHeadThenFallsBack(t *testing.T) {
 }
 
 func TestExecGitLocalBranchHeadReportsAbsenceAndUnreadableState(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
@@ -425,6 +430,7 @@ func TestExecGitLocalBranchHeadReportsAbsenceAndUnreadableState(t *testing.T) {
 }
 
 func TestExecGitIsAncestorDistinguishesDirection(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
@@ -442,6 +448,7 @@ func TestExecGitIsAncestorDistinguishesDirection(t *testing.T) {
 }
 
 func TestExecGitReportsUnreadableRepositoryState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -467,6 +474,7 @@ func TestExecGitReportsUnreadableRepositoryState(t *testing.T) {
 // branch is not the one that is checked out rather than fast-forwarding
 // whatever happens to be current.
 func TestPushBranchRefusesToFastForwardABranchThatIsNotCheckedOut(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	runStreamGit(t, local, "checkout", "main")
 	runStreamGit(t, other, "fetch", "origin")
@@ -485,6 +493,7 @@ func TestPushBranchRefusesToFastForwardABranchThatIsNotCheckedOut(t *testing.T) 
 }
 
 func TestPushBranchReportsAnUnbornHead(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	remote := filepath.Join(base, "empty.git")
 	runStreamGit(t, "", "init", "--bare", "--initial-branch=main", remote)
@@ -501,6 +510,7 @@ func TestPushBranchReportsAnUnbornHead(t *testing.T) {
 // credential or permission failure: the local ahead extension must be reported
 // as a failed push, never as a published branch.
 func TestPushBranchReportsAFailedPush(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	commitStreamFile(t, local, "local.txt", "local\n", "feat: local advance")
 	runStreamGit(t, local, "remote", "set-url", "--push", "origin", filepath.Join(t.TempDir(), "missing.git"))
@@ -513,6 +523,7 @@ func TestPushBranchReportsAFailedPush(t *testing.T) {
 }
 
 func TestDeleteRemoteBranchRefusesAnEmptyExpectedSHA(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	err := git.DeleteRemoteBranch(context.Background(), local, "stream/recovery", "")
@@ -528,6 +539,7 @@ func TestDeleteRemoteBranchRefusesAnEmptyExpectedSHA(t *testing.T) {
 // reports the expected SHA, the caller must see the push failure rather than a
 // silent success: the ref is demonstrably not deleted.
 func TestDeleteRemoteBranchReportsARejectedDeletion(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	remote := filepath.Join(filepath.Dir(local), "origin.git")
 	expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/stream/recovery"))
@@ -547,6 +559,7 @@ func TestDeleteRemoteBranchReportsARejectedDeletion(t *testing.T) {
 // An unreadable push destination is unknown, not absent: the idempotent-retry
 // path must fail closed instead of reporting the branch retired.
 func TestDeleteRemoteBranchFailsClosedWhenThePushDestinationIsUnreadable(t *testing.T) {
+	t.Parallel()
 	local, _ := newPublishedStreamFixture(t)
 	expected := strings.TrimSpace(runStreamGit(t, local, "rev-parse", "refs/remotes/origin/stream/recovery"))
 	runStreamGit(t, local, "remote", "set-url", "--push", "origin", filepath.Join(t.TempDir(), "missing.git"))
@@ -559,6 +572,7 @@ func TestDeleteRemoteBranchFailsClosedWhenThePushDestinationIsUnreadable(t *test
 }
 
 func TestExecGitCommitSubjectsAndPatchIDsHandleAnEmptyInput(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
@@ -573,6 +587,7 @@ func TestExecGitCommitSubjectsAndPatchIDsHandleAnEmptyInput(t *testing.T) {
 }
 
 func TestPushBranchReportsADetachedHeadDuringFastForward(t *testing.T) {
+	t.Parallel()
 	local, other := newPublishedStreamFixture(t)
 	runStreamGit(t, other, "fetch", "origin")
 	runStreamGit(t, other, "checkout", "stream/recovery")
@@ -594,6 +609,7 @@ func TestPushBranchReportsADetachedHeadDuringFastForward(t *testing.T) {
 }
 
 func TestExecGitCommitsNotInReportsAnUnreadableBase(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	commits, err := git.CommitsNotIn(context.Background(), root, "stream/fixture", "no-such-base")
 	if err == nil {
@@ -605,6 +621,7 @@ func TestExecGitCommitsNotInReportsAnUnreadableBase(t *testing.T) {
 }
 
 func TestExecGitCommitSubjectsAndPatchIDsReportUnreadableInput(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	ctx := context.Background()
 
@@ -617,6 +634,7 @@ func TestExecGitCommitSubjectsAndPatchIDsReportUnreadableInput(t *testing.T) {
 }
 
 func TestRemoteHeadsOnOriginPushDestinationsFailsClosedWithoutOrigin(t *testing.T) {
+	t.Parallel()
 	root, git := gitFixture(t)
 	if _, err := git.remoteHeadsOnOriginPushDestinations(context.Background(), root, "stream/fixture"); err == nil {
 		t.Fatal("the push-destination reread reported success in a repository with no origin")
@@ -662,6 +680,7 @@ func TestExecGitHubRetargetPullRequestReportsAnUnreadableVerification(t *testing
 // while the fetch URL cannot yet read it back; that re-read failure is
 // reported rather than silently claiming the push landed.
 func TestPushBranchReportsAFailedRereadAfterThePush(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -691,6 +710,7 @@ func TestPushBranchReportsAFailedRereadAfterThePush(t *testing.T) {
 // A post-receive hook that rewrites the pushed ref makes the push exit 0 while
 // origin holds a different commit; the verification must catch that.
 func TestPushBranchReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}

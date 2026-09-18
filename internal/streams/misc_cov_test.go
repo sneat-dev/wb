@@ -10,6 +10,7 @@ import (
 )
 
 func TestFileEventLogReportsUnwritableLocations(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	if err := os.WriteFile(blocker, []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -30,6 +31,7 @@ func TestFileEventLogReportsUnwritableLocations(t *testing.T) {
 }
 
 func TestReadEventsReportsUnreadableAndUnparseableLogs(t *testing.T) {
+	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "events.jsonl")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
@@ -51,6 +53,7 @@ func TestReadEventsReportsUnreadableAndUnparseableLogs(t *testing.T) {
 }
 
 func TestStreamLookupsReportAbsence(t *testing.T) {
+	t.Parallel()
 	if _, ok := (Stream{}).Library(); ok {
 		t.Fatal("an empty stream reported a library member")
 	}
@@ -67,6 +70,7 @@ func TestStreamLookupsReportAbsence(t *testing.T) {
 }
 
 func TestValidateRepositoryRefusesANonSlug(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRepository("no-slash"); err == nil {
 		t.Fatal("ValidateRepository accepted a repository without an owner")
 	}
@@ -76,6 +80,7 @@ func TestValidateRepositoryRefusesANonSlug(t *testing.T) {
 }
 
 func TestCanonicalPathHandlesARepositoryWithoutAnOwner(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if got := canonicalPath(root, "acme/app"); got != filepath.Join(root, "acme", "app") {
 		t.Fatalf("canonicalPath = %q", got)
@@ -86,6 +91,7 @@ func TestCanonicalPathHandlesARepositoryWithoutAnOwner(t *testing.T) {
 }
 
 func TestDiscoverPublishedReportsAnUnreadableGoManifest(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// A directory named go.mod passes the existence probe and then fails to read.
 	if err := os.MkdirAll(filepath.Join(root, "backend", "go.mod"), 0o755); err != nil {
@@ -97,6 +103,7 @@ func TestDiscoverPublishedReportsAnUnreadableGoManifest(t *testing.T) {
 }
 
 func TestDiscoverPublishedSortsGoBeforeNpm(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"go.mod":                    "module example.test/library\n\ngo 1.27\n",
@@ -119,6 +126,7 @@ func TestDiscoverPublishedSortsGoBeforeNpm(t *testing.T) {
 }
 
 func TestDiscoverDeclarationsReportsUnreadableRoots(t *testing.T) {
+	t.Parallel()
 	identity := Identity{Ecosystem: EcosystemNpm, Name: "@acme/core"}
 	if _, err := DiscoverDeclarations(filepath.Join(t.TempDir(), "absent"), []Identity{identity}); err == nil {
 		t.Fatal("DiscoverDeclarations accepted a root that does not exist")
@@ -132,6 +140,7 @@ func TestDiscoverDeclarationsReportsUnreadableRoots(t *testing.T) {
 }
 
 func TestDiscoverDeclarationsSkipsANonObjectDependencySection(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	writeFiles(t, consumer, map[string]string{
 		"package.json": `{"name":"consumer","dependencies":{"@acme/core":123}}`,
@@ -146,6 +155,7 @@ func TestDiscoverDeclarationsSkipsANonObjectDependencySection(t *testing.T) {
 }
 
 func TestDiscoverDeclarationsSortsByManifestThenIdentity(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	writeFiles(t, consumer, map[string]string{
 		"backend/go.mod": "module example.test/consumer/backend\n\ngo 1.27\n\nrequire example.test/library v1.0.0\n",
@@ -167,6 +177,7 @@ func TestDiscoverDeclarationsSortsByManifestThenIdentity(t *testing.T) {
 }
 
 func TestGoModulesReportsAnUnreadableManifestAndSkipsAModulelessOne(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"tooling/go.mod": "go 1.27\n"})
 	modules, err := GoModules(root)
@@ -187,6 +198,7 @@ func TestGoModulesReportsAnUnreadableManifestAndSkipsAModulelessOne(t *testing.T
 }
 
 func TestGoModulePathRequiresAModuleDirective(t *testing.T) {
+	t.Parallel()
 	if _, ok := goModulePath([]byte("go 1.27\n\nrequire example.test/x v1.0.0\n")); ok {
 		t.Fatal("goModulePath found a module directive where there is none")
 	}
@@ -196,6 +208,7 @@ func TestGoModulePathRequiresAModuleDirective(t *testing.T) {
 }
 
 func TestCheckHooksReportsAMissingOrUnreadableChecker(t *testing.T) {
+	t.Parallel()
 	input := PreflightInput{Repository: "acme/app", Path: t.TempDir()}
 	finding := checkHooks(input, nil)
 	if finding.Status != PreflightUnknown || !strings.Contains(finding.Detail, "no hooks checker") {
@@ -216,6 +229,7 @@ func TestCheckHooksReportsAMissingOrUnreadableChecker(t *testing.T) {
 }
 
 func TestCollectNpmPackageNamesReportsProviderIdentityProblems(t *testing.T) {
+	t.Parallel()
 	broken := t.TempDir()
 	writeFiles(t, broken, map[string]string{"package.json": "{not json"})
 	if _, finding := collectNpmPackageNames(PreflightInput{Repository: "acme/app", Path: broken}); finding.Status != PreflightUnknown {
@@ -240,6 +254,7 @@ func TestCollectNpmPackageNamesReportsProviderIdentityProblems(t *testing.T) {
 }
 
 func TestCollectNpmPackageNamesSkipsANestedWorkspaceRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"frontend/pnpm-workspace.yaml": "packages:\n  - 'libs/*'\n",
@@ -258,6 +273,7 @@ func TestCollectNpmPackageNamesSkipsANestedWorkspaceRoot(t *testing.T) {
 }
 
 func TestCheckRedMainReportsEveryConclusion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if finding := checkRedMain(ctx, nil, PreflightInput{Repository: "acme/app"}); finding.Status != PreflightUnknown {
 		t.Fatalf("nil hub finding = %#v", finding)
@@ -289,7 +305,9 @@ func TestCheckRedMainReportsEveryConclusion(t *testing.T) {
 }
 
 func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable workflows directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
 			t.Fatal(err)
@@ -304,6 +322,7 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 	})
 
 	t.Run("no pull request workflow", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeFiles(t, root, map[string]string{
 			".github/workflows/push.yml": "name: Push\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
@@ -315,6 +334,7 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 	})
 
 	t.Run("group not keyed to the ref", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeFiles(t, root, map[string]string{
 			".github/workflows/ci.yml": "name: CI\non:\n  pull_request:\nconcurrency:\n  group: ci-static\n  cancel-in-progress: true\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
@@ -326,6 +346,7 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 	})
 
 	t.Run("no cancel-in-progress", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeFiles(t, root, map[string]string{
 			".github/workflows/ci.yml": "name: CI\non:\n  pull_request:\nconcurrency:\n  group: ci-${{ github.ref }}\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
@@ -337,6 +358,7 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 	})
 
 	t.Run("healthy workflow", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeFiles(t, root, map[string]string{".github/workflows/ci.yml": cancellingWorkflow})
 		if finding := checkStreamConcurrency(PreflightInput{Repository: "acme/app", Path: root}); finding.Status != PreflightPass {
@@ -346,6 +368,7 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 }
 
 func TestNpmPackageManifestsReportsUnreadableAndUnparseableManifests(t *testing.T) {
+	t.Parallel()
 	broken := t.TempDir()
 	if err := os.Symlink(filepath.Join(broken, "missing"), filepath.Join(broken, "package.json")); err != nil {
 		t.Fatal(err)
@@ -362,6 +385,7 @@ func TestNpmPackageManifestsReportsUnreadableAndUnparseableManifests(t *testing.
 }
 
 func TestNpmPackageManifestsRecordsAWorkspaceRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"package.json":           `{"name":"root","workspaces":["libs/*"]}`,
@@ -386,6 +410,7 @@ func TestNpmPackageManifestsRecordsAWorkspaceRoot(t *testing.T) {
 }
 
 func TestInstalledHooksCheckerReportsFindings(t *testing.T) {
+	t.Parallel()
 	root, _ := gitFixture(t)
 	checker := InstalledHooksChecker("", t.TempDir())
 	messages, err := checker(root)
@@ -398,6 +423,7 @@ func TestInstalledHooksCheckerReportsFindings(t *testing.T) {
 }
 
 func TestDiscoverPublishedSortsWithinOneEcosystem(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"libs/beta/package.json":  `{"name":"@acme/beta","version":"1.0.0"}`,
@@ -413,6 +439,7 @@ func TestDiscoverPublishedSortsWithinOneEcosystem(t *testing.T) {
 }
 
 func TestDiscoverDeclarationsSortsWithinOneManifest(t *testing.T) {
+	t.Parallel()
 	consumer := t.TempDir()
 	writeFiles(t, consumer, map[string]string{
 		"package.json": `{"name":"consumer","dependencies":{"@acme/beta":"1.0.0","@acme/alpha":"1.0.0"}}`,
@@ -430,6 +457,7 @@ func TestDiscoverDeclarationsSortsWithinOneManifest(t *testing.T) {
 }
 
 func TestAmbiguousProviderFindingsSkipUniquelyOwnedPackages(t *testing.T) {
+	t.Parallel()
 	findings := ambiguousProviderFindings(map[string][]string{
 		"solo":   {"acme/a"},
 		"shared": {"acme/b", "acme/a"},

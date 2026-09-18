@@ -137,6 +137,7 @@ func TestLandDoesNotErrorWithNoWorktreeForTheBranch(t *testing.T) {
 // fixture — the mismatch is trivial to construct this way and the assertion
 // is exactly the same code path.
 func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")

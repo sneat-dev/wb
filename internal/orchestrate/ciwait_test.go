@@ -268,6 +268,7 @@ func TestCompactFailureAnnotationIsSingleLineAndBounded(t *testing.T) {
 }
 
 func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
+	t.Parallel()
 	checks := []RemoteCheck{
 		{Name: "build", Bucket: "pass", Link: "https://example.test/build", AppID: 22},
 		{Name: "build", Bucket: "pass", Link: "https://example.test/build", AppID: 11},
@@ -279,6 +280,7 @@ func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
 }
 
 func TestTerminalChecksFingerprintIncludesCheckRunIdentity(t *testing.T) {
+	t.Parallel()
 	first := terminalChecksFingerprint([]RemoteCheck{{Name: "check-run:CI", Bucket: "pass", AppID: 42, CheckRunID: 101}}, nil, "authority", "head", "fresh")
 	second := terminalChecksFingerprint([]RemoteCheck{{Name: "check-run:CI", Bucket: "pass", AppID: 42, CheckRunID: 102}}, nil, "authority", "head", "fresh")
 	if first == second {
@@ -448,6 +450,7 @@ exit 30
 }
 
 func TestWaitForCommitChecksRejectsSliceAboveForegroundCeiling(t *testing.T) {
+	t.Parallel()
 	_, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: "0123456789012345678901234567890123456789",
 		Slice: MaxForegroundCheckWaitSlice + time.Second, CheckPollInterval: time.Second,
@@ -482,6 +485,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 }
 
 func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
+	t.Parallel()
 	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
 		t.Fatalf("default GitHub check poll interval = %s, want %s", got, DefaultCheckPollInterval)
 	}
@@ -491,6 +495,7 @@ func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 }
 
 func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
+	t.Parallel()
 	if got := stableRereadDelay(DefaultCheckPollInterval, 0); got != DefaultStableRereadDelay {
 		t.Fatalf("stable reread delay under the default cadence = %s, want %s", got, DefaultStableRereadDelay)
 	}
@@ -509,6 +514,7 @@ func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
 }
 
 func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		branchSummary string

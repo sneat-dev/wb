@@ -21,6 +21,7 @@ func TestHkCovPackageLevelDispatchIsHermeticAndEmpty(t *testing.T) {
 }
 
 func TestHkCovDispatchWarnsWhenStateCannotBeInspected(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	dispatcher.StateDir = filepath.Join(blocker, "state")
@@ -31,6 +32,7 @@ func TestHkCovDispatchWarnsWhenStateCannotBeInspected(t *testing.T) {
 }
 
 func TestHkCovDispatchSurfacesEnqueueFailure(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -43,6 +45,7 @@ func TestHkCovDispatchSurfacesEnqueueFailure(t *testing.T) {
 }
 
 func TestHkCovDispatchWarnsWhenWorkerCannotStart(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	dispatcher.LaunchWorker = func(WorkerRequest) error { return errors.New("no fork today") }
 	report, err := dispatcher.Dispatch(context.Background(), []Event{hkCovEvent(checkout)})
@@ -52,6 +55,7 @@ func TestHkCovDispatchWarnsWhenWorkerCannotStart(t *testing.T) {
 }
 
 func TestHkCovPlanReportsWhatWouldBeQueued(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	events := []Event{
 		{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: checkout, OldSHA: "a", NewSHA: "b", Cause: "pull"},
@@ -68,6 +72,7 @@ func TestHkCovPlanReportsWhatWouldBeQueued(t *testing.T) {
 }
 
 func TestHkCovPlanWithoutHooksSectionPlansNothing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	config := hkCovWriteFile(t, filepath.Join(root, "wb.yaml"), "remote:\n  provider: git\n", 0o600)
 	dispatcher := hkCovDispatcherFor(t, root, config)
@@ -79,6 +84,7 @@ func TestHkCovPlanWithoutHooksSectionPlansNothing(t *testing.T) {
 }
 
 func TestHkCovExecutorTimeoutDefaultsAndRejectsNonPositive(t *testing.T) {
+	t.Parallel()
 	if got, err := (Executor{}).timeout(); err != nil || got != 2*time.Minute {
 		t.Fatalf("default timeout=%v err=%v", got, err)
 	}
@@ -94,6 +100,7 @@ func TestHkCovExecutorTimeoutDefaultsAndRejectsNonPositive(t *testing.T) {
 }
 
 func TestHkCovPrepareSurfacesExecutableAndCheckoutFailures(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	event := hkCovEvent(checkout)
 	relative := pending{event: event, name: "index", executor: Executor{Run: "relative/indexer"}}
@@ -111,6 +118,7 @@ func TestHkCovPrepareSurfacesExecutableAndCheckoutFailures(t *testing.T) {
 }
 
 func TestHkCovPrepareBuildsInvocation(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	executable := hkCovWriteFile(t, filepath.Join(t.TempDir(), "indexer.exe"), "#!/bin/sh\n", 0o755)
 	item := pending{event: hkCovEvent(checkout), name: "index", executor: Executor{Run: executable, Args: []string{"sync", "."}}}
@@ -131,6 +139,7 @@ func TestHkCovPrepareBuildsInvocation(t *testing.T) {
 }
 
 func TestHkCovInspectExecutableRejectsUnusableRuns(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := hkCovEnv(t)
 	relative := dispatcher
 	relative.EvalSymlinks = filepath.EvalSymlinks
@@ -173,6 +182,7 @@ func TestHkCovInspectExecutableRejectsUnusableRuns(t *testing.T) {
 }
 
 func TestHkCovRevalidateRejectsEveryIdentityChange(t *testing.T) {
+	t.Parallel()
 	dispatcher, checkout := hkCovEnv(t)
 	executable := hkCovWriteFile(t, filepath.Join(t.TempDir(), "indexer.exe"), "#!/bin/sh\n", 0o755)
 	item := pending{event: hkCovEvent(checkout), name: "index", executor: Executor{Run: executable}}
@@ -205,6 +215,7 @@ func TestHkCovRevalidateRejectsEveryIdentityChange(t *testing.T) {
 }
 
 func TestHkCovRepositoryIdentityFailures(t *testing.T) {
+	t.Parallel()
 	if _, err := RepositoryIdentity(t.TempDir()); err == nil {
 		t.Fatal("expected missing origin to fail")
 	}
@@ -215,6 +226,7 @@ func TestHkCovRepositoryIdentityFailures(t *testing.T) {
 }
 
 func TestHkCovRepositoryIdentityNormalizesSupportedOrigin(t *testing.T) {
+	t.Parallel()
 	repository := hkCovGitRepository(t, "https://github.com/ACME/App.git")
 	identity, err := RepositoryIdentity(repository)
 	if err != nil || identity != "github.com/acme/app" {
@@ -274,6 +286,7 @@ func TestHkCovDefaultsFillsMissingFields(t *testing.T) {
 }
 
 func TestHkCovFailureClassDistinguishesExitAndConfiguration(t *testing.T) {
+	t.Parallel()
 	if got := failureClass(errors.New("bad config")); got != "configuration" {
 		t.Fatalf("configuration class=%q", got)
 	}

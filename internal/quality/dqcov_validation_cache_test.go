@@ -14,6 +14,7 @@ import (
 // file can participate in a cache key: absent is neutral, present is digested,
 // and unreadable fails closed.
 func TestDqCovAddValidationCacheFileCoversAllOutcomes(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	unchanged := ""
@@ -64,6 +65,7 @@ func TestDqCovValidationCacheDirHonorsOverride(t *testing.T) {
 // binds repository policy, every module manifest, the toolchain, and the exact
 // ordered check list, while pruning generated dependency trees.
 func TestDqCovNewValidationCacheKeyFingerprintsPolicyAndModules(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeQualityFile(t, filepath.Join(root, repositoryQualityConfigPath), "version: 1\n")
 	writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/key\n\ngo 1.24\n")
@@ -105,7 +107,9 @@ func TestDqCovNewValidationCacheKeyFingerprintsPolicyAndModules(t *testing.T) {
 // unreadable policy path, an unreadable subtree, and an unreadable module
 // manifest.
 func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
+	t.Parallel()
 	t.Run("policy path is a directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/key\n")
 		if err := os.MkdirAll(filepath.Join(root, repositoryQualityConfigPath), 0o755); err != nil {
@@ -117,6 +121,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("unreadable subtree", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/key\n")
 		denied := filepath.Join(root, "denied")
@@ -130,6 +135,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("dangling module manifest", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Symlink(filepath.Join(root, "absent-go.mod"), filepath.Join(root, "go.mod")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
@@ -155,6 +161,7 @@ func dqCovSaveValidCache(t *testing.T, cacheRoot string) ValidationCacheKey {
 // TestDqCovLoadValidationCacheMissesEveryWeakenedRecord proves the loader only
 // returns evidence that is intact, current, terminal, and clean.
 func TestDqCovLoadValidationCacheMissesEveryWeakenedRecord(t *testing.T) {
+	t.Parallel()
 	cacheRoot := filepath.Join(t.TempDir(), "cache")
 	key := dqCovSaveValidCache(t, cacheRoot)
 
@@ -201,6 +208,7 @@ func TestDqCovLoadValidationCacheMissesEveryWeakenedRecord(t *testing.T) {
 	}
 
 	t.Run("invalid json", func(t *testing.T) {
+		t.Parallel()
 		if err := os.WriteFile(recordPath, []byte("{not json"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -241,6 +249,7 @@ func TestDqCovLoadValidationCacheMissesEveryWeakenedRecord(t *testing.T) {
 // TestDqCovLoadValidationCacheSurfacesUnreadableCacheRoot distinguishes a
 // missing record (a miss) from an unreadable cache root (an error).
 func TestDqCovLoadValidationCacheSurfacesUnreadableCacheRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blocker := filepath.Join(root, "cache-is-a-file")
 	writeQualityFile(t, blocker, "not a directory")
@@ -253,6 +262,7 @@ func TestDqCovLoadValidationCacheSurfacesUnreadableCacheRoot(t *testing.T) {
 // TestDqCovSaveValidationCacheRejectsNonTerminalEvidence pins that the cache
 // never stores evidence that is not a terminal, clean, current success.
 func TestDqCovSaveValidationCacheRejectsNonTerminalEvidence(t *testing.T) {
+	t.Parallel()
 	key := ValidationCacheKey{Repository: "example/cache", TargetRevision: "revision-1"}
 	for _, tc := range []struct {
 		name   string
@@ -263,6 +273,7 @@ func TestDqCovSaveValidationCacheRejectsNonTerminalEvidence(t *testing.T) {
 		{name: "dirty workspace", report: VerificationReport{Repository: key.Repository, Revision: key.TargetRevision, Status: StatusPassed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cacheRoot := filepath.Join(t.TempDir(), "cache")
 			err := SaveValidationCache(cacheRoot, key, tc.report)
 			if err == nil || !strings.Contains(err.Error(), "terminal clean evidence") {
@@ -278,10 +289,12 @@ func TestDqCovSaveValidationCacheRejectsNonTerminalEvidence(t *testing.T) {
 // TestDqCovSaveValidationCacheSurfacesFilesystemFailures covers an unusable
 // cache root and a cache root that refuses new files.
 func TestDqCovSaveValidationCacheSurfacesFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	key := ValidationCacheKey{Repository: "example/cache", TargetRevision: "revision-1"}
 	report := VerificationReport{Repository: key.Repository, Revision: key.TargetRevision, WorkspaceClean: true, Status: StatusPassed}
 
 	t.Run("cache root parent is a file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		blocker := filepath.Join(root, "blocker")
 		writeQualityFile(t, blocker, "x")
@@ -291,6 +304,7 @@ func TestDqCovSaveValidationCacheSurfacesFilesystemFailures(t *testing.T) {
 	})
 
 	t.Run("read-only cache root", func(t *testing.T) {
+		t.Parallel()
 		cacheRoot := filepath.Join(t.TempDir(), "cache")
 		if err := os.Mkdir(cacheRoot, 0o755); err != nil {
 			t.Fatal(err)

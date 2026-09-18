@@ -8,6 +8,7 @@ import (
 )
 
 func TestStoreRoundTrip(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	id, err := NewID()
 	if err != nil {
@@ -31,6 +32,7 @@ func TestStoreRoundTrip(t *testing.T) {
 }
 
 func TestStoreRejectsEmptyContext(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	err := store.Save(Record{SchemaVersion: 1, TaskID: "task-abc", Task: "x", WorktreeDir: "/tmp"}, "")
 	if err == nil {

@@ -7,6 +7,7 @@ import (
 )
 
 func TestVerifyPublicEligibilityAcceptsOnlyExplicitRootREADMESections(t *testing.T) {
+	t.Parallel()
 	verifiedAt := time.Date(2026, time.September, 6, 3, 30, 0, 0, time.FixedZone("IST", 3600))
 	for name, markdown := range map[string]string{
 		"wb section markdown link":              "# Widget\n\n## WB\n\n[Workbench dashboard](https://sneat.work/bench)\n",
@@ -15,6 +16,7 @@ func TestVerifyPublicEligibilityAcceptsOnlyExplicitRootREADMESections(t *testing
 		"nested content stays in section":       "## WB\n\n### Operations\n\n[Open](https://sneat.work/bench/repo/github.com/acme/widgets)\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			evidence, err := VerifyPublicEligibility("github.com/acme/widgets", "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/README.md", markdown, verifiedAt)
 			if err != nil {
 				t.Fatal(err)
@@ -30,6 +32,7 @@ func TestVerifyPublicEligibilityAcceptsOnlyExplicitRootREADMESections(t *testing
 }
 
 func TestVerifyPublicEligibilityRejectsAmbiguousOrUnrelatedLinks(t *testing.T) {
+	t.Parallel()
 	for name, markdown := range map[string]string{
 		"outside WB section":          "[Workbench](https://sneat.work/bench)\n\n## About\n",
 		"wrong heading level":         "### WB\n\n[Workbench](https://sneat.work/bench)\n",
@@ -43,6 +46,7 @@ func TestVerifyPublicEligibilityRejectsAmbiguousOrUnrelatedLinks(t *testing.T) {
 		"fragment":                    "## WB\n\n[Workbench](https://sneat.work/bench#dashboard)\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := VerifyPublicEligibility("github.com/acme/widgets", "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/README.md", markdown, time.Now())
 			if err == nil || !strings.Contains(err.Error(), "opt-in") {
 				t.Fatalf("err = %v, want opt-in refusal", err)
@@ -52,6 +56,7 @@ func TestVerifyPublicEligibilityRejectsAmbiguousOrUnrelatedLinks(t *testing.T) {
 }
 
 func TestValidatePublicEligibilityRejectsNonCanonicalEvidence(t *testing.T) {
+	t.Parallel()
 	valid := PublicEligibility{Repository: "github.com/acme/widgets", READMEURL: "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/README.md", VerifiedAt: time.Now()}
 	if err := ValidatePublicEligibility(valid); err != nil {
 		t.Fatal(err)
@@ -76,6 +81,7 @@ func TestValidatePublicEligibilityRejectsNonCanonicalEvidence(t *testing.T) {
 		"verification time missing": func(e *PublicEligibility) { e.VerifiedAt = time.Time{} },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			evidence := valid
 			mutate(&evidence)
 			if err := ValidatePublicEligibility(evidence); err == nil {

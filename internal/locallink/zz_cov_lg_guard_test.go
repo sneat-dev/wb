@@ -37,6 +37,7 @@ func lgCovGuardWorktree(t *testing.T, entry string) string {
 }
 
 func TestLgCovHasLiveLinkReportsAnUnreadableWorkspace(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	if err := os.Mkdir(filepath.Join(worktree, streams.GoWorkFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -48,6 +49,7 @@ func TestLgCovHasLiveLinkReportsAnUnreadableWorkspace(t *testing.T) {
 }
 
 func TestLgCovGuardGitProbeFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("git cannot be run at all", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovRestrictPath(t, t.TempDir())
@@ -86,6 +88,7 @@ esac`)
 }
 
 func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
+	t.Parallel()
 	t.Run("a module directory that does not resolve", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./missing")
 		lgCovGitScript(t, "exit 0")
@@ -198,6 +201,7 @@ func TestLgCovGuardGitProbeHelpers(t *testing.T) {
 }
 
 func TestLgCovRefusalErrorAndRefused(t *testing.T) {
+	t.Parallel()
 	plain := &Refusal{Code: RefusalNotRecordable, Message: "cannot record"}
 	if got := plain.Error(); got != "cannot record" {
 		t.Fatalf("Error() = %q, want the bare message", got)
@@ -217,6 +221,7 @@ func TestLgCovRefusalErrorAndRefused(t *testing.T) {
 }
 
 func TestLgCovLinkGoFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	declarations := []streams.Declaration{{
 		Identity: streams.Identity{Ecosystem: streams.EcosystemGo, Name: "github.com/acme/library/backend"},
@@ -230,6 +235,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	}
 
 	t.Run("the consumer modules cannot be scanned", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		if err := os.Symlink(filepath.Join(consumer, "nowhere"), filepath.Join(consumer, "go.mod")); err != nil {
 			t.Fatal(err)
@@ -241,6 +247,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	})
 
 	t.Run("the consumer has no module", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		_, err := engine(newFakeGit()).linkGo(ctx, goodLibrary, consumer, declarations, "acme/library", "hash")
 		if err == nil || !strings.Contains(err.Error(), "contains no go.mod") {
@@ -249,6 +256,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	})
 
 	t.Run("the library modules cannot be scanned", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, "backend", "go.mod"), "module github.com/acme/app/backend\n")
 		library := t.TempDir()
@@ -262,6 +270,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	})
 
 	t.Run("the library has no module", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, "backend", "go.mod"), "module github.com/acme/app/backend\n")
 		_, err := engine(newFakeGit()).linkGo(ctx, t.TempDir(), consumer, declarations, "acme/library", "hash")
@@ -271,6 +280,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	})
 
 	t.Run("the exclude cannot be written", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, "backend", "go.mod"), "module github.com/acme/app/backend\n")
 		git := lgCovNewGit()
@@ -285,6 +295,7 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 	})
 
 	t.Run("the workspace cannot be written", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, "backend", "go.mod"), "module github.com/acme/app/backend\n")
 		if err := os.Mkdir(filepath.Join(consumer, goWorkFile), 0o755); err != nil {
@@ -298,7 +309,9 @@ func TestLgCovLinkGoFailurePaths(t *testing.T) {
 }
 
 func TestLgCovGoDirectiveAndVersionComparison(t *testing.T) {
+	t.Parallel()
 	t.Run("an unreadable manifest is skipped", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		modules := []streams.GoModule{
 			{Manifest: "missing/go.mod", Directory: "missing"},
@@ -311,6 +324,7 @@ func TestLgCovGoDirectiveAndVersionComparison(t *testing.T) {
 	})
 
 	t.Run("a manifest without a go directive is skipped", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(root, "mod", "go.mod"), "module example.test/mod\n")
 		if got := goDirective(root, []streams.GoModule{{Manifest: "mod/go.mod", Directory: "mod"}}); got != "" {
@@ -319,6 +333,7 @@ func TestLgCovGoDirectiveAndVersionComparison(t *testing.T) {
 	})
 
 	t.Run("the newest directive wins", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(root, "old", "go.mod"), "module example.test/old\n\ngo 1.21\n")
 		lgCovWriteFile(t, filepath.Join(root, "new", "go.mod"), "module example.test/new\n\ngo 1.27\n")
@@ -343,7 +358,9 @@ func TestLgCovGoDirectiveAndVersionComparison(t *testing.T) {
 }
 
 func TestLgCovRemoveGoWorkAndStillReferences(t *testing.T) {
+	t.Parallel()
 	t.Run("a workspace sum that cannot be removed is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, goWorkFile), "go 1.27\n")
 		sumPath := filepath.Join(consumer, goWorkSum)
@@ -358,6 +375,7 @@ func TestLgCovRemoveGoWorkAndStillReferences(t *testing.T) {
 	})
 
 	t.Run("an empty library never looks referenced", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, goWorkFile), "go 1.27\n")
 		still, err := goWorkStillReferencesLibrary(consumer, "  ")
@@ -367,6 +385,7 @@ func TestLgCovRemoveGoWorkAndStillReferences(t *testing.T) {
 	})
 
 	t.Run("an unreadable workspace is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		if err := os.Mkdir(filepath.Join(consumer, goWorkFile), 0o755); err != nil {
 			t.Fatal(err)
@@ -378,6 +397,7 @@ func TestLgCovRemoveGoWorkAndStillReferences(t *testing.T) {
 	})
 
 	t.Run("a subdirectory of the library counts as a reference", func(t *testing.T) {
+		t.Parallel()
 		library := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(library, "backend"), 0o755); err != nil {
 			t.Fatal(err)
@@ -419,6 +439,7 @@ func (node *lgCovNodeStub) LinkSiblings(context.Context, string, []string) error
 }
 
 func TestLgCovLinkNpmFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	library := t.TempDir()
 	consumer := t.TempDir()
@@ -429,6 +450,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	}
 
 	t.Run("no Node toolchain", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{}
 		_, err := engine.linkNpm(ctx, library, consumer, declaration, "acme/library", "hash")
 		if err == nil || !strings.Contains(err.Error(), "no Node toolchain available") {
@@ -437,6 +459,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an unusable library workspace", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Node: &lgCovNodeStub{}}
 		bad := declaration
 		bad.Identity.Workspace = string(filepath.Separator) + "absolute"
@@ -447,6 +470,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an unusable consumer workspace", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Node: &lgCovNodeStub{}}
 		bad := declaration
 		bad.Workspace = ".."
@@ -457,6 +481,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a link failure is reported", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Node: &lgCovNodeStub{linkErr: errors.New("symlink refused")}}
 		_, err := engine.linkNpm(ctx, library, consumer, declaration, "acme/library", "hash")
 		if err == nil || !strings.Contains(err.Error(), "symlink refused") {
@@ -465,6 +490,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a restored previous package is added to the artefacts", func(t *testing.T) {
+		t.Parallel()
 		node := &lgCovNodeStub{
 			linkResult: NodeLinkResult{
 				Previous:  "node_modules/@acme/core.wb-locallink-backup",
@@ -485,6 +511,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an empty artefact list falls back to the package path", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Node: &lgCovNodeStub{}}
 		link, err := engine.linkNpm(ctx, library, consumer, declaration, "acme/library", "hash")
 		if err != nil {
@@ -504,6 +531,7 @@ func TestLgCovLinkNpmFailurePaths(t *testing.T) {
 }
 
 func TestLgCovWorkspacePathRejections(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 
 	if _, err := workspacePath(worktree, string(filepath.Separator)+"absolute"); err == nil || !strings.Contains(err.Error(), "is not inside worktree") {
@@ -524,6 +552,7 @@ func TestLgCovWorkspacePathRejections(t *testing.T) {
 }
 
 func TestLgCovSkippedCheckError(t *testing.T) {
+	t.Parallel()
 	skipped := &SkippedCheck{Check: "frozen-install", Reason: "no lockfile"}
 	if got := skipped.Error(); got != "frozen-install could not be evaluated: no lockfile" {
 		t.Fatalf("Error() = %q, want the check and reason", got)

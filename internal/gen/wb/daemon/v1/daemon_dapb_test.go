@@ -122,6 +122,7 @@ func dapbFullName(name string) protoreflect.FullName {
 // gzipped file descriptor plus the right index, and that ProtoReflect works for
 // both an allocated message and a nil pointer receiver.
 func TestDapbMessageDescriptorAndProtoReflect(t *testing.T) {
+	t.Parallel()
 	cases := dapbMessageCases()
 	if len(cases) != 19 {
 		t.Fatalf("expected 19 named message cases, got %d", len(cases))
@@ -129,6 +130,7 @@ func TestDapbMessageDescriptorAndProtoReflect(t *testing.T) {
 	seen := make(map[string]bool, len(cases))
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if seen[tc.name] {
 				t.Fatalf("duplicate case %q", tc.name)
 			}
@@ -180,8 +182,10 @@ func TestDapbMessageDescriptorAndProtoReflect(t *testing.T) {
 // TestDapbGettersReturnFieldValues sets every exported field and checks that the
 // corresponding generated getter returns exactly that value.
 func TestDapbGettersReturnFieldValues(t *testing.T) {
+	t.Parallel()
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			m := tc.fresh()
 			dapbSetAllFields(t, m)
 			rv := reflect.ValueOf(m).Elem()
@@ -237,8 +241,10 @@ func TestDapbGettersReturnFieldValues(t *testing.T) {
 // TestDapbGettersAreNilSafe calls every generated getter on a nil receiver and
 // asserts it returns the field's zero value instead of panicking.
 func TestDapbGettersAreNilSafe(t *testing.T) {
+	t.Parallel()
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ptrType := reflect.TypeOf(tc.fresh())
 			rv := reflect.Zero(ptrType)
 			if !rv.IsNil() {
@@ -268,8 +274,10 @@ func TestDapbGettersAreNilSafe(t *testing.T) {
 
 // TestDapbResetClearsFields asserts Reset returns the message to its zero value.
 func TestDapbResetClearsFields(t *testing.T) {
+	t.Parallel()
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			m := tc.fresh()
 			dapbSetAllFields(t, m)
 			rv := reflect.ValueOf(m).Elem()
@@ -296,8 +304,10 @@ func TestDapbResetClearsFields(t *testing.T) {
 // TestDapbMarshalUnmarshalRoundTrip asserts the generated messages survive a
 // binary protobuf round trip with every field populated.
 func TestDapbMarshalUnmarshalRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, tc := range dapbMessageCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			src := tc.fresh()
 			dapbSetAllFields(t, src)
 			blob, err := proto.Marshal(src)
@@ -321,7 +331,9 @@ func TestDapbMarshalUnmarshalRoundTrip(t *testing.T) {
 // TestDapbEnumAccessors asserts the generated accessors of both enums agree with
 // the generated name/value maps, and that unknown numbers still format.
 func TestDapbEnumAccessors(t *testing.T) {
+	t.Parallel()
 	t.Run("DaemonState", func(t *testing.T) {
+		t.Parallel()
 		if got, want := len(DaemonState_name), 3; got != want {
 			t.Fatalf("DaemonState_name has %d entries, want %d", got, want)
 		}
@@ -359,6 +371,7 @@ func TestDapbEnumAccessors(t *testing.T) {
 	})
 
 	t.Run("OperationState", func(t *testing.T) {
+		t.Parallel()
 		if got, want := len(OperationState_name), 7; got != want {
 			t.Fatalf("OperationState_name has %d entries, want %d", got, want)
 		}
@@ -399,6 +412,7 @@ func TestDapbEnumAccessors(t *testing.T) {
 // TestDapbFileDescriptor asserts the file descriptor carries the two enums and
 // the single service declared in daemon.proto.
 func TestDapbFileDescriptor(t *testing.T) {
+	t.Parallel()
 	fd := File_wb_daemon_v1_daemon_proto
 	if fd == nil {
 		t.Fatal("File_wb_daemon_v1_daemon_proto is nil")
@@ -488,6 +502,7 @@ func TestDapbFileInitIsIdempotent(t *testing.T) {
 // TestDapbEnumStringMatchesDescriptor cross-checks enum String() against the
 // descriptor values so a stale name map cannot pass unnoticed.
 func TestDapbEnumStringMatchesDescriptor(t *testing.T) {
+	t.Parallel()
 	values := DaemonState(0).Descriptor().Values()
 	for i := 0; i < values.Len(); i++ {
 		v := values.Get(i)

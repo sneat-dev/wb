@@ -49,6 +49,7 @@ func (r *scriptedCommandRunner) Run(_ context.Context, executable string, args [
 }
 
 func TestSynchestraDelivererInvokesAndPollsFixedHandlerWithExactBytes(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	dispatchID := "dsp_handoff_123"
@@ -106,6 +107,7 @@ func TestSynchestraDelivererInvokesAndPollsFixedHandlerWithExactBytes(t *testing
 }
 
 func TestSynchestraDelivererRequiresDurableDispatchRecorderBeforeFreshInvocation(t *testing.T) {
+	t.Parallel()
 	runner := &scriptedCommandRunner{}
 	_, err := newSynchestraDeliverer(
 		sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
@@ -123,6 +125,7 @@ func TestSynchestraDelivererRequiresDurableDispatchRecorderBeforeFreshInvocation
 }
 
 func TestSynchestraDelivererResumesExactPersistedDispatchWithoutReinvoking(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	dispatchID := "dsp_existing"
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
@@ -151,6 +154,7 @@ func TestSynchestraDelivererResumesExactPersistedDispatchWithoutReinvoking(t *te
 }
 
 func TestSynchestraDelivererRejectsMalformedTypedOutputFields(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	valid := encodeSynchestraInvocationOutput(t, request, raw, "dsp_typed", "completed",
@@ -188,6 +192,7 @@ func TestSynchestraDelivererRejectsMalformedTypedOutputFields(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{
 				stdout: mutateSynchestraJSONOutput(t, valid, mutate),
 			}}}
@@ -201,6 +206,7 @@ func TestSynchestraDelivererRejectsMalformedTypedOutputFields(t *testing.T) {
 }
 
 func TestSynchestraDelivererRejectsArtifactTamperingWithoutAcceptingReceipt(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	valid := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)
@@ -217,6 +223,7 @@ func TestSynchestraDelivererRejectsArtifactTamperingWithoutAcceptingReceipt(t *t
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{
 				stdout: encodeSynchestraInvocationOutput(t, request, raw, "dsp_tampered", "completed", test.artifact),
 			}}}
@@ -233,6 +240,7 @@ func TestSynchestraDelivererRejectsArtifactTamperingWithoutAcceptingReceipt(t *t
 }
 
 func TestSynchestraDelivererRejectsFailedCancelledAndAmbiguousTerminalResults(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	artifact := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)
@@ -292,6 +300,7 @@ func TestSynchestraDelivererRejectsFailedCancelledAndAmbiguousTerminalResults(t 
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{stdout: test.output}}}
 			deliverer := newTestSynchestraDeliverer(t, sessionmove.SynchestraConfig{Runner: "hetzner-vm1"}, SynchestraOptions{}, runner,
 				func(context.Context, time.Duration) error { return nil })
@@ -306,6 +315,7 @@ func TestSynchestraDelivererRejectsFailedCancelledAndAmbiguousTerminalResults(t 
 }
 
 func TestSynchestraDelivererOmitsUntrustedFailureDetails(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	output := encodeSynchestraInvocationOutput(t, request, raw, "dsp_failed", "completed",
@@ -331,8 +341,10 @@ func TestSynchestraDelivererOmitsUntrustedFailureDetails(t *testing.T) {
 }
 
 func TestSynchestraDelivererBoundsCommandOutputAndPolling(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	t.Run("output", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{
 			stdout: bytes.Repeat([]byte("x"), maxSynchestraCommandStdoutBytes+1),
 		}}}
@@ -346,6 +358,7 @@ func TestSynchestraDelivererBoundsCommandOutputAndPolling(t *testing.T) {
 		}
 	})
 	t.Run("poll count", func(t *testing.T) {
+		t.Parallel()
 		queued := encodeSynchestraInvocationOutput(t, request, raw, "dsp_pending", "queued", "")
 		status := encodeSynchestraStatusOutput(t, request, raw, "dsp_pending", "queued", "")
 		responses := make([]scriptedCommandResponse, maxSynchestraStatusPolls+1)

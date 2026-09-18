@@ -134,6 +134,7 @@ func TestSDCovDeliverSSHFailureBranchesThroughResolvedExecutable(t *testing.T) {
 	_, raw := courierTestRequest(t)
 
 	t.Run("already cancelled context", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := DeliverSSH(ctx, sessionmove.SSHConfig{Host: "target"}, raw)
@@ -250,6 +251,7 @@ func TestSDCovNewSynchestraMessageDelivererThroughResolvedExecutable(t *testing.
 // recorder is the no-op closure installed by newSynchestraMessageDeliverer, so
 // a completed accept dispatch must be accepted without writing anything.
 func TestSDCovMessageTransportRecordsAcceptDispatch(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	receiptBytes := encodeCourierResult(t, validCourierResult(request, raw))
 	artifact := encodeSynchestraReceiptArtifact(t, request, raw, receiptBytes)

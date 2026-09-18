@@ -99,6 +99,7 @@ func smCovUnder(store Store, handoffID string, names ...string) string {
 }
 
 func TestSmCovStoreHappyLifecycleCoversEveryExportedPath(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequestWithInlineHandover("inline handover document\n")
 	raw, digest := smCovAdmit(t, store, request)
@@ -190,6 +191,7 @@ func TestSmCovStoreHappyLifecycleCoversEveryExportedPath(t *testing.T) {
 }
 
 func TestSmCovStoreEnsureHandoverRefusesMissingAuthority(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequestWithInlineHandover("inline\n")
 	_, digest := smCovAdmit(t, store, request)
@@ -216,6 +218,7 @@ func TestSmCovStoreEnsureHandoverRefusesMissingAuthority(t *testing.T) {
 }
 
 func TestSmCovStoreReadHandoverRefusesMissingAndInvalidIDs(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	smCovMkdirAll(t, store.Root, 0o700)
 
@@ -231,6 +234,7 @@ func TestSmCovStoreReadHandoverRefusesMissingAndInvalidIDs(t *testing.T) {
 }
 
 func TestSmCovStoreAdmitRefusals(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -296,6 +300,7 @@ func TestSmCovStoreAdmitRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreAdmitReplayRefusesCorruptDurableReceipt(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	raw, digest := smCovAdmit(t, store, request)
@@ -310,6 +315,7 @@ func TestSmCovStoreAdmitReplayRefusesCorruptDurableReceipt(t *testing.T) {
 }
 
 func TestSmCovStoreReadmitUnderLockRefusals(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	raw, digest := smCovAdmit(t, store, request)
@@ -344,6 +350,7 @@ func TestSmCovStoreReadmitUnderLockRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAndAppendEventRefuseMissingState(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	smCovMkdirAll(t, store.Root, 0o700)
 	request := validRequest()
@@ -372,6 +379,7 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseMissingState(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAndAppendEventRefuseCorruptRequest(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -388,6 +396,7 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseCorruptRequest(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAndAppendEventRefuseWrongDigest(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -407,6 +416,7 @@ func TestSmCovStoreSaveReceiptAndAppendEventRefuseWrongDigest(t *testing.T) {
 }
 
 func TestSmCovStoreSaveReceiptAtRejectsInvalidAndConflictingReceipts(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -464,6 +474,7 @@ func TestSmCovStoreSaveReceiptAtRejectsInvalidAndConflictingReceipts(t *testing.
 }
 
 func TestSmCovStoreAppendEventRejectsInvalidPhaseAndTime(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -493,6 +504,7 @@ func TestSmCovStoreAppendEventRejectsInvalidPhaseAndTime(t *testing.T) {
 }
 
 func TestSmCovStoreAppendEventRefusesEventsPathThatIsNotADirectory(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -507,6 +519,7 @@ func TestSmCovStoreAppendEventRefusesEventsPathThatIsNotADirectory(t *testing.T)
 }
 
 func TestSmCovStoreAppendEventRejectsBadEventNames(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		file string
@@ -516,6 +529,7 @@ func TestSmCovStoreAppendEventRejectsBadEventNames(t *testing.T) {
 		{"noncanonical", "1.json", "noncanonical handoff event name"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := smCovStore(t)
 			request := validRequest()
 			_, digest := smCovAdmit(t, store, request)
@@ -531,6 +545,7 @@ func TestSmCovStoreAppendEventRejectsBadEventNames(t *testing.T) {
 }
 
 func TestSmCovStoreAppendEventSkipsNonEventDirectoryEntries(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -550,6 +565,7 @@ func TestSmCovStoreAppendEventSkipsNonEventDirectoryEntries(t *testing.T) {
 }
 
 func TestSmCovStoreAppendEventGivesUpAfterConcurrentSequenceCollisions(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -573,6 +589,7 @@ func TestSmCovStoreAppendEventGivesUpAfterConcurrentSequenceCollisions(t *testin
 }
 
 func TestSmCovStoreAppendEventRejectsOversizedDiagnostic(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -589,6 +606,7 @@ func TestSmCovStoreAppendEventRejectsOversizedDiagnostic(t *testing.T) {
 }
 
 func TestSmCovStoreLoadRefusals(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	smCovMkdirAll(t, store.Root, 0o700)
 	request := validRequest()
@@ -620,6 +638,7 @@ func TestSmCovStoreLoadRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreLoadRefusesCompletedEventWithoutReceipt(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -645,6 +664,7 @@ func TestSmCovStoreLoadRefusesCompletedEventWithoutReceipt(t *testing.T) {
 }
 
 func TestSmCovStoreHandoffDirValidation(t *testing.T) {
+	t.Parallel()
 	for _, root := range []string{"", "   "} {
 		if _, err := NewStore(root).handoffDir("handoff-123"); err == nil || !strings.Contains(err.Error(), "root is required") {
 			t.Fatalf("handoffDir(root=%q) error = %v", root, err)
@@ -661,6 +681,7 @@ func TestSmCovStoreHandoffDirValidation(t *testing.T) {
 }
 
 func TestSmCovStoreOpenHandoffAndRootRefusals(t *testing.T) {
+	t.Parallel()
 	if _, err := openHandoffAtRoot(nil, "handoff-123"); err == nil || !strings.Contains(err.Error(), "exact Store root is required") {
 		t.Fatalf("openHandoffAtRoot(nil) error = %v", err)
 	}
@@ -696,6 +717,7 @@ func TestSmCovStoreOpenHandoffAndRootRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreOpenHandoffRefusesRegularFileInPlaceOfDirectory(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	raw, err := EncodeRequest(request)
@@ -715,6 +737,7 @@ func TestSmCovStoreOpenHandoffRefusesRegularFileInPlaceOfDirectory(t *testing.T)
 }
 
 func TestSmCovStoreRetainHandoffUnderLockRefusals(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -758,9 +781,11 @@ func TestSmCovStoreRetainHandoffUnderLockRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
+	t.Parallel()
 	at := smCovEventTime(1)
 
 	t.Run("append completed with corrupt receipt", func(t *testing.T) {
+		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -771,6 +796,7 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("load with corrupt request", func(t *testing.T) {
+		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		smCovAdmit(t, store, request)
@@ -781,6 +807,7 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("load with corrupt receipt", func(t *testing.T) {
+		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -794,6 +821,7 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("load receipt with widened mode", func(t *testing.T) {
+		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -812,6 +840,7 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 	})
 
 	t.Run("save receipt over a directory", func(t *testing.T) {
+		t.Parallel()
 		store := smCovStore(t)
 		request := validRequest()
 		_, digest := smCovAdmit(t, store, request)
@@ -825,6 +854,7 @@ func TestSmCovStoreDurableArtifactCorruptionRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreLoadRequestAtRefusals(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	smCovAdmit(t, store, request)
@@ -856,6 +886,7 @@ func TestSmCovStoreLoadRequestAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreLoadReceiptAtRefusals(t *testing.T) {
+	t.Parallel()
 	store := smCovStore(t)
 	request := validRequest()
 	_, digest := smCovAdmit(t, store, request)
@@ -886,6 +917,7 @@ func TestSmCovStoreLoadReceiptAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreValidateReceiptForRequestFieldMismatches(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -924,6 +956,7 @@ func TestSmCovStoreValidateReceiptForRequestFieldMismatches(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := base
 			mutate(&candidate)
 			if err := ValidateReceiptForRequest(candidate, request, digest); !errors.Is(err, ErrHandoffConflict) {
@@ -934,6 +967,7 @@ func TestSmCovStoreValidateReceiptForRequestFieldMismatches(t *testing.T) {
 }
 
 func TestSmCovStoreValidateReceiptForRequestHarnessPolicy(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	request.SourceModel = "gpt-5"
 	raw, err := EncodeRequest(request)
@@ -978,6 +1012,7 @@ func TestSmCovStoreValidateReceiptForRequestHarnessPolicy(t *testing.T) {
 }
 
 func TestSmCovStoreOpenEventsAtRefusals(t *testing.T) {
+	t.Parallel()
 	if _, err := openEventsAt(nil, true); err == nil || !strings.Contains(err.Error(), "authority is required") {
 		t.Fatalf("openEventsAt(nil, create) error = %v", err)
 	}
@@ -1019,6 +1054,7 @@ func TestSmCovStoreOpenEventsAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreLoadEventsAtRefusals(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	at := smCovEventTime(7)
 	base := HandoffEvent{
@@ -1128,6 +1164,7 @@ func TestSmCovStoreLoadEventsAtRefusals(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := smCovStore(t)
 			_, digest := smCovAdmit(t, store, request)
 			eventsPath := smCovUnder(store, request.HandoffID, eventsDirName)
@@ -1158,6 +1195,7 @@ func TestSmCovStoreLoadEventsAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStoreReadEventEntriesRejectsRegularFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "regular.txt")
 	smCovWriteFile(t, path, []byte("x"), 0o600)
 	if _, err := readEventEntries(smCovOpenRegularFile(t, path)); err == nil || !strings.Contains(err.Error(), "read handoff events") {
@@ -1166,6 +1204,7 @@ func TestSmCovStoreReadEventEntriesRejectsRegularFile(t *testing.T) {
 }
 
 func TestSmCovStoreNextEventSequenceAt(t *testing.T) {
+	t.Parallel()
 	regularPath := filepath.Join(t.TempDir(), "regular.txt")
 	smCovWriteFile(t, regularPath, []byte("x"), 0o600)
 	if _, err := nextEventSequenceAt(smCovOpenRegularFile(t, regularPath)); err == nil || !strings.Contains(err.Error(), "read handoff events") {
@@ -1181,6 +1220,7 @@ func TestSmCovStoreNextEventSequenceAt(t *testing.T) {
 		{"noncanonical name", "1.json", "noncanonical handoff event name"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			directory := t.TempDir()
 			smCovWriteFile(t, filepath.Join(directory, test.file), []byte("{}"), 0o600)
 			if _, err := nextEventSequenceAt(smCovOpenDirectory(t, directory)); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -1202,6 +1242,7 @@ func TestSmCovStoreNextEventSequenceAt(t *testing.T) {
 }
 
 func TestSmCovStoreValidPhase(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []Phase{PhaseOffered, PhaseReceived, PhaseWorktreeReady, PhaseSuccessorStarted, PhaseCompleted, PhaseFailed, PhaseCancelled} {
 		if !validPhase(phase) {
 			t.Errorf("validPhase(%q) = false, want true", phase)
@@ -1215,6 +1256,7 @@ func TestSmCovStoreValidPhase(t *testing.T) {
 }
 
 func TestSmCovStoreReadImmutableAtRefusals(t *testing.T) {
+	t.Parallel()
 	if _, err := readImmutableAt(nil, "artifact", 1024, "smcov artifact"); err == nil || !strings.Contains(err.Error(), "directory authority is required") {
 		t.Fatalf("readImmutableAt(nil) error = %v", err)
 	}
@@ -1263,6 +1305,7 @@ func TestSmCovStoreReadImmutableAtRefusals(t *testing.T) {
 }
 
 func TestSmCovStorePublishImmutableAtRefusalsAndFirstWinner(t *testing.T) {
+	t.Parallel()
 	if _, err := publishImmutableAt(nil, "artifact", []byte("payload"), 0o600); err == nil || !strings.Contains(err.Error(), "directory authority is required") {
 		t.Fatalf("publishImmutableAt(nil) error = %v", err)
 	}
@@ -1309,6 +1352,7 @@ func TestSmCovStorePublishImmutableAtRefusalsAndFirstWinner(t *testing.T) {
 }
 
 func TestSmCovStoreIsPendingPublicationName(t *testing.T) {
+	t.Parallel()
 	if !isPendingPublicationName(".pending-" + strings.Repeat("0", 32)) {
 		t.Fatal("isPendingPublicationName refused a canonical pending name")
 	}
@@ -1333,6 +1377,7 @@ func TestSmCovStoreIsPendingPublicationName(t *testing.T) {
 }
 
 func TestSmCovStoreRepairPendingLinkAtReachableBranches(t *testing.T) {
+	t.Parallel()
 	pendingName := ".pending-" + strings.Repeat("0", 32)
 	unrelatedName := ".pending-" + strings.Repeat("1", 32)
 
@@ -1393,6 +1438,7 @@ func TestSmCovStoreRepairPendingLinkAtReachableBranches(t *testing.T) {
 }
 
 func TestSmCovStoreReadEventEntriesRejectsUnseekableFile(t *testing.T) {
+	t.Parallel()
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1407,6 +1453,7 @@ func TestSmCovStoreReadEventEntriesRejectsUnseekableFile(t *testing.T) {
 }
 
 func TestSmCovStoreRepairPendingLinkAtRefusesUnopenablePendingName(t *testing.T) {
+	t.Parallel()
 	pendingName := ".pending-" + strings.Repeat("2", 32)
 	directory := t.TempDir()
 	target := filepath.Join(directory, "artifact")

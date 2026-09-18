@@ -33,6 +33,7 @@ func TestTailCovNewOSTmuxRejectsNonRegularExecutable(t *testing.T) {
 // the child, and the child's stdout, stderr, and exit status must be surfaced
 // unchanged. Unix-only because the stub is a shell script.
 func TestTailCovExecTmuxCommandRunnerWiresStreams(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "stub")
 	script := "#!/bin/sh\n" +

@@ -15,6 +15,7 @@ import (
 )
 
 func TestSdCovSleepContextHonorsTimerAndCancellation(t *testing.T) {
+	t.Parallel()
 	if err := sleepContext(context.Background(), time.Millisecond); err != nil {
 		t.Fatalf("sleepContext with live context = %v", err)
 	}
@@ -26,6 +27,7 @@ func TestSdCovSleepContextHonorsTimerAndCancellation(t *testing.T) {
 }
 
 func TestSdCovSyncDirectoryReportsMissingDirectory(t *testing.T) {
+	t.Parallel()
 	if err := syncDirectory(t.TempDir()); err != nil {
 		t.Fatalf("syncDirectory(existing) = %v", err)
 	}
@@ -35,6 +37,7 @@ func TestSdCovSyncDirectoryReportsMissingDirectory(t *testing.T) {
 }
 
 func TestSdCovReceiverRunUsesContractWaitDefaults(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		pollWait time.Duration
@@ -45,6 +48,7 @@ func TestSdCovReceiverRunUsesContractWaitDefaults(t *testing.T) {
 		{name: "a valid wait is honored", pollWait: 5 * time.Second, want: 5 * time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			source := &sdCovSource{}
@@ -66,6 +70,7 @@ func TestSdCovReceiverRunUsesContractWaitDefaults(t *testing.T) {
 }
 
 func TestSdCovReceiverRunFallsBackForInvalidDurationsAndReturnsOnCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	source := &sdCovSource{}
@@ -77,6 +82,7 @@ func TestSdCovReceiverRunFallsBackForInvalidDurationsAndReturnsOnCancellation(t 
 }
 
 func TestSdCovReceiverRunRetriesFailedPollsOnTheTimer(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var polls int
@@ -124,6 +130,7 @@ func TestSdCovReceiverRunRetriesFailedPollsOnTheTimer(t *testing.T) {
 }
 
 func TestSdCovReceiverRunStopsWhenCancelledDuringRetryDelay(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	retrying := make(chan struct{}, 1)
@@ -162,6 +169,7 @@ func TestSdCovReceiverRunStopsWhenCancelledDuringRetryDelay(t *testing.T) {
 }
 
 func TestSdCovReceiverRunReportsProgressWhileWaiting(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tickerSeen := make(chan struct{})
@@ -210,6 +218,7 @@ func TestSdCovReceiverRunReportsProgressWhileWaiting(t *testing.T) {
 }
 
 func TestSdCovReceiverRunStopsTickerOnRepeatedCancellation(t *testing.T) {
+	t.Parallel()
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	for attempt := 0; attempt < 64; attempt++ {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -227,6 +236,7 @@ func TestSdCovReceiverRunStopsTickerOnRepeatedCancellation(t *testing.T) {
 }
 
 func TestSdCovReceiveOnceRequiresSourceAndQueue(t *testing.T) {
+	t.Parallel()
 	if err := (Receiver{}).ReceiveOnce(context.Background(), 0); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unconfigured receiver error = %v", err)
 	}
@@ -237,6 +247,7 @@ func TestSdCovReceiveOnceRequiresSourceAndQueue(t *testing.T) {
 }
 
 func TestSdCovReceiveOnceSurfacesCursorAndPollFailures(t *testing.T) {
+	t.Parallel()
 	corrupt := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	if err := os.WriteFile(corrupt.Path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
@@ -257,6 +268,7 @@ func TestSdCovReceiveOnceSurfacesCursorAndPollFailures(t *testing.T) {
 }
 
 func TestSdCovReceiveOnceResumesPendingAcknowledgement(t *testing.T) {
+	t.Parallel()
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	state := cursorState{
 		Version:    repositoryevent.ContractVersion,
@@ -313,6 +325,7 @@ func TestSdCovReceiveOnceResumesPendingAcknowledgement(t *testing.T) {
 }
 
 func TestSdCovCursorStoreLoadStateRejectsInvalidFiles(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	write := func(t *testing.T, name, body string) CursorStore {
 		t.Helper()
@@ -350,6 +363,7 @@ func TestSdCovCursorStoreLoadStateRejectsInvalidFiles(t *testing.T) {
 }
 
 func TestSdCovCursorStoreSaveValidatesAndRoundTrips(t *testing.T) {
+	t.Parallel()
 	store := CursorStore{Path: filepath.Join(t.TempDir(), "nested", "cursor.json")}
 	if got, err := store.Load(); err != nil || got != "" {
 		t.Fatalf("missing cursor = %q, %v", got, err)
@@ -376,6 +390,7 @@ func TestSdCovCursorStoreSaveValidatesAndRoundTrips(t *testing.T) {
 }
 
 func TestSdCovCursorStoreSaveStateRejectsInvalidStatesAndFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	store := CursorStore{Path: filepath.Join(directory, "cursor.json")}
 
@@ -426,9 +441,11 @@ func TestSdCovCursorStoreSaveStateRejectsInvalidStatesAndFilesystemFailures(t *t
 // final acknowledged write, by doing so from inside the acknowledgement
 // callback, which runs between the two writes).
 func TestSdCovReceiveOnceReportsCursorPersistenceFailures(t *testing.T) {
+	t.Parallel()
 	sdCovSkipIfPrivileged(t)
 
 	t.Run("empty poll cursor", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		if err := os.Chmod(directory, 0o500); err != nil {
 			t.Fatal(err)
@@ -445,6 +462,7 @@ func TestSdCovReceiveOnceReportsCursorPersistenceFailures(t *testing.T) {
 	})
 
 	t.Run("pending acknowledgement", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		if err := os.Chmod(directory, 0o500); err != nil {
 			t.Fatal(err)
@@ -461,6 +479,7 @@ func TestSdCovReceiveOnceReportsCursorPersistenceFailures(t *testing.T) {
 	})
 
 	t.Run("resumed acknowledgement", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		cursor := CursorStore{Path: filepath.Join(directory, "cursor.json")}
 		if err := cursor.saveState(cursorState{
@@ -482,6 +501,7 @@ func TestSdCovReceiveOnceReportsCursorPersistenceFailures(t *testing.T) {
 	})
 
 	t.Run("acknowledged cursor", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		cursor := CursorStore{Path: filepath.Join(directory, "cursor.json")}
 		if err := cursor.Save("cursor-1"); err != nil {

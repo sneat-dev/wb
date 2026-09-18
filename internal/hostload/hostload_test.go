@@ -24,6 +24,7 @@ func clearAdmissionEnv(t *testing.T) {
 }
 
 func TestCheckRefusesAboveFloor(t *testing.T) {
+	t.Parallel()
 	read := func() (float64, error) { return 9.0, nil }
 	err := Check(read, 4.0, false)
 	if err == nil {
@@ -38,6 +39,7 @@ func TestCheckRefusesAboveFloor(t *testing.T) {
 }
 
 func TestCheckAdmitsAtOrBelowFloor(t *testing.T) {
+	t.Parallel()
 	for _, load := range []float64{1.0, 4.0} {
 		read := func() (float64, error) { return load, nil }
 		if err := Check(read, 4.0, false); err != nil {
@@ -47,6 +49,7 @@ func TestCheckAdmitsAtOrBelowFloor(t *testing.T) {
 }
 
 func TestCheckOverrideRecordedByCallerBypassesRefusal(t *testing.T) {
+	t.Parallel()
 	read := func() (float64, error) { return 99.0, nil }
 	if err := Check(read, 1.0, true); err != nil {
 		t.Fatalf("Check with allow=true = %v, want nil", err)
@@ -54,6 +57,7 @@ func TestCheckOverrideRecordedByCallerBypassesRefusal(t *testing.T) {
 }
 
 func TestCheckReaderErrorFailsOpen(t *testing.T) {
+	t.Parallel()
 	read := func() (float64, error) { return 0, errors.New("no loadavg source") }
 	if err := Check(read, 1.0, false); err != nil {
 		t.Fatalf("Check with a failing reader = %v, want nil (fail open)", err)
@@ -61,6 +65,7 @@ func TestCheckReaderErrorFailsOpen(t *testing.T) {
 }
 
 func TestCheckUnsupportedPlatformFailsOpen(t *testing.T) {
+	t.Parallel()
 	read := func() (float64, error) { return 0, ErrUnsupported }
 	if err := Check(read, 0.1, false); err != nil {
 		t.Fatalf("Check with ErrUnsupported = %v, want nil (fail open)", err)
@@ -139,6 +144,7 @@ func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
 // fixed floor would refuse genuine `wb run`/`wb worktree merge` work inside
 // CI workflows, not just protect a shared developer machine.
 func TestResolveDisablesInCI(t *testing.T) {
+	t.Parallel()
 	for _, env := range []string{"CI", "GITHUB_ACTIONS"} {
 		t.Run(env, func(t *testing.T) {
 			clearAdmissionEnv(t)
@@ -197,6 +203,7 @@ func TestResolveEnvOverrideSetsPositiveFloorAndWinsOverCI(t *testing.T) {
 }
 
 func TestConsumersOrdersMostCPUFirst(t *testing.T) {
+	t.Parallel()
 	consumers := Consumers(5)
 	// Best-effort and host-dependent: only assert it never exceeds the
 	// requested count and never errors out (ps must always be present in
@@ -207,6 +214,7 @@ func TestConsumersOrdersMostCPUFirst(t *testing.T) {
 }
 
 func TestConsumersZeroReturnsNothing(t *testing.T) {
+	t.Parallel()
 	if got := Consumers(0); got != nil {
 		t.Fatalf("Consumers(0) = %v, want nil", got)
 	}

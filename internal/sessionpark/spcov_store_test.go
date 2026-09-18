@@ -13,6 +13,7 @@ import (
 )
 
 func TestSpCovNewIDIsUniquePrivateRandomIdentity(t *testing.T) {
+	t.Parallel()
 	first, err := NewID()
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +31,7 @@ func TestSpCovNewIDIsUniquePrivateRandomIdentity(t *testing.T) {
 }
 
 func TestSpCovValidateBundleRejectsEveryIncompleteField(t *testing.T) {
+	t.Parallel()
 	base := testBundle(t)
 	remoteBase := remoteTestBundle(t)
 	for name, mutate := range map[string]func(*Bundle){
@@ -54,6 +56,7 @@ func TestSpCovValidateBundleRejectsEveryIncompleteField(t *testing.T) {
 		"duplicate worktree":    func(value *Bundle) { value.Worktrees[1].WorktreeDir = value.Worktrees[0].WorktreeDir },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := base
 			candidate.Worktrees = append([]Worktree(nil), base.Worktrees...)
 			mutate(&candidate)
@@ -72,6 +75,7 @@ func TestSpCovValidateBundleRejectsEveryIncompleteField(t *testing.T) {
 		"blank remote value": func(value *Bundle) { value.Worktrees[0].RepositoryRemote = "  " },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := remoteBase
 			candidate.Worktrees = append([]Worktree(nil), remoteBase.Worktrees...)
 			mutate(&candidate)
@@ -89,6 +93,7 @@ func TestSpCovValidateBundleRejectsEveryIncompleteField(t *testing.T) {
 }
 
 func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
+	t.Parallel()
 	bundle := testBundle(t)
 	raw, err := EncodeBundle(bundle)
 	if err != nil {
@@ -106,6 +111,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 	}
 
 	t.Run("empty and oversized rejected", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeBundle(nil); err == nil {
 			t.Fatal("empty bundle decoded")
 		}
@@ -114,11 +120,13 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 		}
 	})
 	t.Run("malformed JSON rejected", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeBundle([]byte("{not json")); err == nil {
 			t.Fatal("malformed bundle decoded")
 		}
 	})
 	t.Run("unknown field rejected", func(t *testing.T) {
+		t.Parallel()
 		var value map[string]any
 		if err := json.Unmarshal(raw, &value); err != nil {
 			t.Fatal(err)
@@ -133,6 +141,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 		}
 	})
 	t.Run("invalid bundle rejected after decode", func(t *testing.T) {
+		t.Parallel()
 		invalid := bundle
 		invalid.Source.PID = 0
 		encoded, err := json.Marshal(invalid)
@@ -144,6 +153,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 		}
 	})
 	t.Run("noncanonical encoding rejected", func(t *testing.T) {
+		t.Parallel()
 		compact, err := json.Marshal(bundle)
 		if err != nil {
 			t.Fatal(err)
@@ -153,6 +163,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 		}
 	})
 	t.Run("oversized encoding rejected", func(t *testing.T) {
+		t.Parallel()
 		huge := bundle
 		huge.Worktrees = append([]Worktree(nil), bundle.Worktrees...)
 		huge.Worktrees[0].WorktreeDir = "/" + strings.Repeat("d", MaxBundleBytes+1024)
@@ -161,6 +172,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 		}
 	})
 	t.Run("equal bundle distinguishes content", func(t *testing.T) {
+		t.Parallel()
 		other := bundle
 		other.Worktrees = append([]Worktree(nil), bundle.Worktrees...)
 		other.Continuation = "a different continuation"
@@ -171,6 +183,7 @@ func TestSpCovBundleCodecRoundTripBoundsAndCanonicalBytes(t *testing.T) {
 }
 
 func TestSpCovCreateRejectsInvalidAndDuplicateAggregates(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -181,6 +194,7 @@ func TestSpCovCreateRejectsInvalidAndDuplicateAggregates(t *testing.T) {
 	}
 
 	t.Run("invalid bundle", func(t *testing.T) {
+		t.Parallel()
 		invalid := testBundle(t)
 		invalid.ParkedSessionID = "not-a-park-id"
 		if _, err := NewStore(t.TempDir()).Create(invalid); err == nil {
@@ -188,6 +202,7 @@ func TestSpCovCreateRejectsInvalidAndDuplicateAggregates(t *testing.T) {
 		}
 	})
 	t.Run("unencodable bundle", func(t *testing.T) {
+		t.Parallel()
 		huge := testBundle(t)
 		huge.Worktrees = append([]Worktree(nil), huge.Worktrees...)
 		huge.Worktrees[0].WorktreeDir = "/" + strings.Repeat("e", MaxBundleBytes+1024)
@@ -196,6 +211,7 @@ func TestSpCovCreateRejectsInvalidAndDuplicateAggregates(t *testing.T) {
 		}
 	})
 	t.Run("unusable store root", func(t *testing.T) {
+		t.Parallel()
 		if _, err := NewStore("relative-store").Create(testBundle(t)); err == nil {
 			t.Fatal("relative store root accepted")
 		}
@@ -203,12 +219,15 @@ func TestSpCovCreateRejectsInvalidAndDuplicateAggregates(t *testing.T) {
 }
 
 func TestSpCovFindBySourceRepairsProjectsAndRejectsForeignArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid source id", func(t *testing.T) {
+		t.Parallel()
 		if _, _, err := NewStore(t.TempDir()).FindBySource(".."); err == nil {
 			t.Fatal("invalid source ID accepted")
 		}
 	})
 	t.Run("absent store root", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(filepath.Join(t.TempDir(), "missing-store"))
 		found, ok, err := store.FindBySource("wbs-source")
 		if err != nil || ok || found.ParkedSessionID != "" {
@@ -216,11 +235,13 @@ func TestSpCovFindBySourceRepairsProjectsAndRejectsForeignArtifacts(t *testing.T
 		}
 	})
 	t.Run("unusable store root", func(t *testing.T) {
+		t.Parallel()
 		if _, _, err := NewStore("relative-store").FindBySource("wbs-source"); err == nil {
 			t.Fatal("relative store root accepted")
 		}
 	})
 	t.Run("unexpected artifact", func(t *testing.T) {
+		t.Parallel()
 		root := spCovStoreRoot(t)
 		if err := os.Mkdir(filepath.Join(root, "rogue-artifact"), 0o700); err != nil {
 			t.Fatal(err)
@@ -230,6 +251,7 @@ func TestSpCovFindBySourceRepairsProjectsAndRejectsForeignArtifacts(t *testing.T
 		}
 	})
 	t.Run("unreadable aggregate", func(t *testing.T) {
+		t.Parallel()
 		root := spCovStoreRoot(t)
 		dir := filepath.Join(root, "park-broken")
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -241,6 +263,7 @@ func TestSpCovFindBySourceRepairsProjectsAndRejectsForeignArtifacts(t *testing.T
 		}
 	})
 	t.Run("sorted lookup finds exact source", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(t.TempDir())
 		for _, identity := range [][2]string{{"park-zulu", "wbs-zulu"}, {"park-alpha", "wbs-alpha"}} {
 			if _, err := store.Create(spCovBundleWithID(t, identity[0], identity[1])); err != nil {
@@ -258,6 +281,7 @@ func TestSpCovFindBySourceRepairsProjectsAndRejectsForeignArtifacts(t *testing.T
 }
 
 func TestSpCovLoadRejectsUnusableRootsAndMissingAggregates(t *testing.T) {
+	t.Parallel()
 	if _, err := NewStore("relative-store").Load("park-test"); err == nil {
 		t.Fatal("relative store root accepted")
 	}
@@ -270,28 +294,34 @@ func TestSpCovLoadRejectsUnusableRootsAndMissingAggregates(t *testing.T) {
 }
 
 func TestSpCovOpenPrivateStoreRootModesAndFailures(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	t.Run("relative root", func(t *testing.T) {
+		t.Parallel()
 		if _, err := openPrivateStoreRoot("relative", false); err == nil {
 			t.Fatal("relative root accepted")
 		}
 	})
 	t.Run("unclean root", func(t *testing.T) {
+		t.Parallel()
 		if _, err := openPrivateStoreRoot(parent+"/./store", false); err == nil {
 			t.Fatal("unclean root accepted")
 		}
 	})
 	t.Run("missing parent without create", func(t *testing.T) {
+		t.Parallel()
 		if _, err := openPrivateStoreRoot(filepath.Join(parent, "absent", "store"), false); err == nil {
 			t.Fatal("missing parent accepted")
 		}
 	})
 	t.Run("missing leaf without create", func(t *testing.T) {
+		t.Parallel()
 		if _, err := openPrivateStoreRoot(filepath.Join(parent, "absent-store"), false); err == nil {
 			t.Fatal("missing leaf accepted")
 		}
 	})
 	t.Run("create beneath a regular file", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(parent, "blocker")
 		spCovWriteRaw(t, blocker, []byte("x"), 0o600)
 		if _, err := openPrivateStoreRoot(filepath.Join(blocker, "store"), true); err == nil {
@@ -299,6 +329,7 @@ func TestSpCovOpenPrivateStoreRootModesAndFailures(t *testing.T) {
 		}
 	})
 	t.Run("existing root with wrong mode", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(parent, "loose-store")
 		if err := os.Mkdir(root, 0o755); err != nil {
 			t.Fatal(err)
@@ -308,6 +339,7 @@ func TestSpCovOpenPrivateStoreRootModesAndFailures(t *testing.T) {
 		}
 	})
 	t.Run("create tightens and reuses existing root", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(parent, "loose-create-store")
 		if err := os.Mkdir(root, 0o755); err != nil {
 			t.Fatal(err)
@@ -323,6 +355,7 @@ func TestSpCovOpenPrivateStoreRootModesAndFailures(t *testing.T) {
 		}
 	})
 	t.Run("create fresh root", func(t *testing.T) {
+		t.Parallel()
 		root := filepath.Join(parent, "fresh-store")
 		dir, err := openPrivateStoreRoot(root, true)
 		if err != nil {
@@ -337,6 +370,7 @@ func TestSpCovOpenPrivateStoreRootModesAndFailures(t *testing.T) {
 }
 
 func TestSpCovOpenPrivateDirectoryAtModesAndFailures(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "store")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -368,6 +402,7 @@ func TestSpCovOpenPrivateDirectoryAtModesAndFailures(t *testing.T) {
 }
 
 func TestSpCovGitRemoteSafetyFixtureIsStable(t *testing.T) {
+	t.Parallel()
 	// Guard the shared remote fixture so upstream parser changes cannot make
 	// every remote test vacuously pass for the wrong reason.
 	remote, err := gitremote.Parse("https://github.com/acme/app.git")

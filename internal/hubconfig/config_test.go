@@ -20,11 +20,13 @@ func writeConfig(t *testing.T, body string) string {
 // TestLoadReportsAnAbsentSectionRatherThanAnError is the promise that keeps
 // every operator who does not self-host on exactly the path they were on.
 func TestLoadReportsAnAbsentSectionRatherThanAnError(t *testing.T) {
+	t.Parallel()
 	for name, body := range map[string]string{
 		"empty file":          "",
 		"other sections only": "remote:\n  provider: git\n  repo: sneat-dev/wb\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			cfg, found, err := Load(writeConfig(t, body))
 			if err != nil || found || cfg != (Config{}) {
 				t.Fatalf("Load = %+v, %t, %v", cfg, found, err)
@@ -32,6 +34,7 @@ func TestLoadReportsAnAbsentSectionRatherThanAnError(t *testing.T) {
 		})
 	}
 	t.Run("missing file", func(t *testing.T) {
+		t.Parallel()
 		cfg, found, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
 		if err != nil || found || cfg != (Config{}) {
 			t.Fatalf("Load = %+v, %t, %v", cfg, found, err)
@@ -42,6 +45,7 @@ func TestLoadReportsAnAbsentSectionRatherThanAnError(t *testing.T) {
 // TestLoadAppliesTheDocumentedDefaults pins the founder's 2026-09-11
 // resolution: inGitDB under ~/.wb/hub, 60s polling.
 func TestLoadAppliesTheDocumentedDefaults(t *testing.T) {
+	t.Parallel()
 	cfg, found, err := Load(writeConfig(t, "hub:\n  github:\n    token_file: /tmp/github.token\n"))
 	if err != nil || !found {
 		t.Fatalf("Load = %+v, %t, %v", cfg, found, err)
@@ -66,6 +70,7 @@ func TestLoadAppliesTheDocumentedDefaults(t *testing.T) {
 // TestLoadParsesEveryFieldAndExpandsHome walks the section the feature
 // documents, including the optional App block.
 func TestLoadParsesEveryFieldAndExpandsHome(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("no home directory on this machine")
@@ -114,6 +119,7 @@ func TestLoadParsesEveryFieldAndExpandsHome(t *testing.T) {
 // TestMemoryEngineSaysSoInItsLocation is what makes `wb daemon status` honest
 // about a throwaway run.
 func TestMemoryEngineSaysSoInItsLocation(t *testing.T) {
+	t.Parallel()
 	cfg, found, err := Load(writeConfig(t, "hub:\n  store:\n    engine: memory\n"))
 	if err != nil || !found {
 		t.Fatalf("Load = %+v, %t, %v", cfg, found, err)
@@ -124,6 +130,7 @@ func TestMemoryEngineSaysSoInItsLocation(t *testing.T) {
 }
 
 func TestLoadRejectsEveryInvalidSection(t *testing.T) {
+	t.Parallel()
 	for name, testCase := range map[string]struct{ body, want string }{
 		"unreadable yaml": {
 			body: "hub:\n  store:\n   - engine: memory\n", want: "parse config",
@@ -164,6 +171,7 @@ func TestLoadRejectsEveryInvalidSection(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, found, err := Load(writeConfig(t, testCase.body))
 			if err == nil {
 				t.Fatalf("invalid section was accepted (found=%t)", found)
@@ -176,6 +184,7 @@ func TestLoadRejectsEveryInvalidSection(t *testing.T) {
 }
 
 func TestLoadSurfacesAnUnreadableFile(t *testing.T) {
+	t.Parallel()
 	// A directory in place of the file is the portable way to make ReadFile
 	// fail with something that is not ErrNotExist.
 	if _, _, err := Load(t.TempDir()); err == nil {
@@ -186,6 +195,7 @@ func TestLoadSurfacesAnUnreadableFile(t *testing.T) {
 // TestAbsolutePathResolvesABareTilde covers the "~" spelling the ~/ prefix
 // check would otherwise miss.
 func TestAbsolutePathResolvesABareTilde(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("no home directory on this machine")

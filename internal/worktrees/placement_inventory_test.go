@@ -13,6 +13,7 @@ import (
 // be able to see which layout each row uses, and asking for the inventory must
 // not move any of them.
 func TestInventoryReportsEachCheckoutsPlacement(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, testCase := range []struct {
 		name      string
@@ -61,6 +62,7 @@ func TestInventoryReportsEachCheckoutsPlacement(t *testing.T) {
 // layouts that must stay readable in place and must NOT be reported as the
 // central store.
 func TestListResultPlacementNamesEachRecognizedLayout(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name     string
 		layout   wbhome.Layout

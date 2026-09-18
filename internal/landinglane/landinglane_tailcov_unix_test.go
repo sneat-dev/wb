@@ -14,6 +14,7 @@ import (
 // write permission on the containing directory. A root process bypasses that
 // check and so has nothing to assert here.
 func TestTailCovReleaseReportsRecordRemovalFailure(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	if _, err := Acquire(home, AcquireRequest{
 		Repository: "acme/app", Target: "main",

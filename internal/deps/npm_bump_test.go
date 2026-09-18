@@ -41,6 +41,7 @@ func newNpmBumpRepository(t *testing.T, root, githubDir, name string, files map[
 // requirements, proving `deps bump npm` shares the same wave engine as `deps
 // bump go` rather than a parallel implementation that could silently drift.
 func TestRunBumpNpmDryRunPlansOnlyDirectConsumers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -145,6 +146,7 @@ exit 1
 }
 
 func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T) {
+	t.Parallel()
 	requirements, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "devDependencies": {"@acme/data": "1.0.0"},
@@ -168,6 +170,7 @@ func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T)
 }
 
 func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
+	t.Parallel()
 	_, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "peerDependencies": {"@acme/core": "2.0.0"}
@@ -182,6 +185,7 @@ func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
 // already current for the provider event and has an external consumer, which
 // would normally make discoverExistingReleaseCarriers invoke pnpm view.
 func TestRunBumpNpmNoRegistrySkipsCurrentCarrierEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{

@@ -34,6 +34,7 @@ func tailCovStubFlock(t *testing.T, err error) (restore func()) {
 // TestTailCovLaneEntryPointsSurfaceLockFailures covers the flock failure
 // branch shared by every lane entry point.
 func TestTailCovLaneEntryPointsSurfaceLockFailures(t *testing.T) {
+	t.Parallel()
 	tailCovStubFlock(t, errors.New("tailcov: flock unavailable"))
 	tailCovAssertLaneEntryPointsFail(t, tailCovLaneHome(t), "lock landing lane")
 }

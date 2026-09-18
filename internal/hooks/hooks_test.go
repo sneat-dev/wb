@@ -148,6 +148,7 @@ func TestLoadPolicyRejectsUnknownAndMissingTemplates(t *testing.T) {
 }
 
 func TestLoadPolicyAutoDetectsOnlyRelevantBuiltInProfiles(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		files        []string
@@ -294,6 +295,7 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 // prevent, so enforce is the default. It stays off wherever an instruction
 // cannot be recorded anyway, and WB_ADMISSION still relaxes it.
 func TestWorktreeGuardRequestsCommitAdmissionOnlyAtCommit(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		hook      string
 		args      []string
@@ -361,6 +363,7 @@ func TestWorktreeAdmissionWarnsAfterCheckoutAndBlocksCommitOrPush(t *testing.T) 
 
 	for _, hook := range []string{"pre-commit", "pre-push"} {
 		t.Run(hook, func(t *testing.T) {
+			t.Parallel()
 			result, runErr := Run(RunOptions{
 				RepoPath: repo, Hook: hook, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
 				WBExecutable: fakeWB, ProjectsRoot: projects,
@@ -452,6 +455,7 @@ func TestApplyRejectsTransientGoRunExecutable(t *testing.T) {
 }
 
 func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	nonExecutable := filepath.Join(root, "not-executable")
 	mustWrite(t, nonExecutable, "#!/bin/sh\nexit 0\n")
@@ -482,6 +486,7 @@ func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
 		{name: "symlink to transient path", executable: transientLink, want: "transient go run executable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := durableWBExecutable(test.executable); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("durableWBExecutable(%q) error = %v, want %q", test.executable, err, test.want)
 			}
@@ -625,6 +630,7 @@ func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
 		{name: "non executable", executable: nonExecutable, want: "not executable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			command := exec.Command(preCommit)
 			command.Dir = repo
 			command.Env = hookEnvironment(map[string]string{
@@ -639,6 +645,7 @@ func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
 	}
 
 	t.Run("missing from PATH", func(t *testing.T) {
+		t.Parallel()
 		gitExecutable, lookErr := exec.LookPath("git")
 		if lookErr != nil {
 			t.Fatal(lookErr)
@@ -2041,6 +2048,7 @@ func TestRunFailurePreservesExitCodeAndRecordsFailure(t *testing.T) {
 }
 
 func TestAppendReadAndSummarizeMetrics(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "events.jsonl")
 	zone := time.FixedZone("test", 2*60*60)
 	now := time.Date(2026, 7, 20, 18, 0, 0, 0, zone)
@@ -2094,6 +2102,7 @@ func TestAppendReadAndSummarizeMetrics(t *testing.T) {
 }
 
 func TestReadEventsRejectsUnsupportedSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	mustWrite(t, path, `{"schema_version":99,"timestamp":"2026-07-20T00:00:00Z"}`+"\n")
 	if _, err := ReadEvents(path); err == nil || !strings.Contains(err.Error(), "schema version 99") {
@@ -2236,6 +2245,7 @@ func hasFinding(findings []Finding, code string) bool {
 // A fleet still adopting the journal must be able to step back to reporting
 // without editing hook policy.
 func TestWorktreeAdmissionRespectsEnvironmentOverride(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"warn", "off"} {
 		t.Run(mode, func(t *testing.T) {
 			repo := initRepo(t)

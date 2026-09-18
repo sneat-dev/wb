@@ -37,6 +37,7 @@ func TestDepsCovNpmFormatLockedVersionResolution(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			locked := npmLockedVersion{Values: test.values, Source: "pnpm-lock.yaml"}
 			if got := locked.Version(); got != test.version {
 				t.Fatalf("Version() = %q, want %q", got, test.version)
@@ -64,6 +65,7 @@ func TestDepsCovNpmFormatMergeSortedUnique(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got := mergeSortedUnique(test.existing, test.addition)
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("mergeSortedUnique(%v, %v) = %v, want %v", test.existing, test.addition, got, test.want)
@@ -95,6 +97,7 @@ func TestDepsCovNpmFormatCleanPnpmLockVersion(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := cleanPnpmLockVersion(test.in); got != test.want {
 				t.Fatalf("cleanPnpmLockVersion(%q) = %q, want %q", test.in, got, test.want)
 			}
@@ -153,6 +156,7 @@ importers:
 	}
 
 	t.Run("rejects a lockfile with no importers", func(t *testing.T) {
+		t.Parallel()
 		versions, err := parsePnpmLockVersions([]byte("lockfileVersion: '9.0'\n"))
 		if err == nil || err.Error() != "no `importers` section; WB indexes pnpm lockfile versions 6 and 9" {
 			t.Fatalf("error = %v", err)
@@ -163,6 +167,7 @@ importers:
 	})
 
 	t.Run("rejects malformed yaml", func(t *testing.T) {
+		t.Parallel()
 		versions, err := parsePnpmLockVersions([]byte("lockfileVersion: '9.0'\nimporters: [\n"))
 		if err == nil || !strings.Contains(err.Error(), "yaml:") {
 			t.Fatalf("error = %v, want a yaml parse error", err)
@@ -202,6 +207,7 @@ func TestDepsCovNpmFormatParsePackageLockVersions(t *testing.T) {
 	}
 
 	t.Run("rejects a lockfile with no packages", func(t *testing.T) {
+		t.Parallel()
 		versions, err := parsePackageLockVersions([]byte(`{"lockfileVersion":3}`))
 		if err == nil || err.Error() != "no `packages` section; WB indexes package-lock.json versions 2 and 3" {
 			t.Fatalf("error = %v", err)
@@ -212,6 +218,7 @@ func TestDepsCovNpmFormatParsePackageLockVersions(t *testing.T) {
 	})
 
 	t.Run("rejects malformed json", func(t *testing.T) {
+		t.Parallel()
 		versions, err := parsePackageLockVersions([]byte("{"))
 		if err == nil || err.Error() != "unexpected end of JSON input" {
 			t.Fatalf("error = %v", err)
@@ -241,6 +248,7 @@ func TestDepsCovNpmFormatPackageLockEntryName(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			name, ok := packageLockEntryName(test.key)
 			if name != test.want || ok != test.ok {
 				t.Fatalf("packageLockEntryName(%q) = (%q, %v), want (%q, %v)", test.key, name, ok, test.want, test.ok)
@@ -409,6 +417,7 @@ func TestDepsCovNpmFormatScanPackageJSONRefsUnclosedDependencyBlock(t *testing.T
 func TestDepsCovNpmFormatApplyPackageJSONOverrideLineEndings(t *testing.T) {
 	t.Parallel()
 	t.Run("preserves crlf and trailing comma", func(t *testing.T) {
+		t.Parallel()
 		contents := []byte("{\r\n  \"dependencies\": {\r\n    \"@sneat/core\": \"1.2.3\",\r\n    \"lodash\": \"^4.17.21\"\r\n  }\r\n}\r\n")
 		updated, matched, err := applyNpmPackageJSONOverride(contents, "@sneat/core", "1.3.0")
 		if err != nil {
@@ -424,6 +433,7 @@ func TestDepsCovNpmFormatApplyPackageJSONOverrideLineEndings(t *testing.T) {
 	})
 
 	t.Run("preserves lf and missing trailing comma", func(t *testing.T) {
+		t.Parallel()
 		contents := []byte("{\n  \"dependencies\": {\n    \"@sneat/core\": \"1.2.3\"\n  }\n}\n")
 		updated, matched, err := applyNpmPackageJSONOverride(contents, "@sneat/core", "1.3.0")
 		if err != nil {
@@ -508,6 +518,7 @@ func TestDepsCovNpmFormatParsePnpmWorkspaceLine(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got := parsePnpmWorkspaceLine(test.raw)
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("parsePnpmWorkspaceLine(%q) = %+v, want %+v", test.raw, got, test.want)
@@ -533,6 +544,7 @@ func TestDepsCovNpmFormatIndexUnescapedQuote(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := indexUnescapedQuote(test.value, test.quote); got != test.want {
 				t.Fatalf("indexUnescapedQuote(%q, %q) = %d, want %d", test.value, test.quote, got, test.want)
 			}
@@ -560,6 +572,7 @@ func TestDepsCovNpmFormatParsePnpmWorkspaceValue(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value, quote, comment := parsePnpmWorkspaceValue(test.rest)
 			if value != test.wantValue || quote != test.wantQuote || comment != test.wantComment {
 				t.Fatalf("parsePnpmWorkspaceValue(%q) = (%q, %q, %q), want (%q, %q, %q)",
@@ -588,6 +601,7 @@ func TestDepsCovNpmFormatRenderPnpmWorkspaceValue(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := renderPnpmWorkspaceValue(test.value, test.quote, test.comment); got != test.want {
 				t.Fatalf("renderPnpmWorkspaceValue(%q, %q, %q) = %q, want %q", test.value, test.quote, test.comment, got, test.want)
 			}
@@ -611,6 +625,7 @@ func TestDepsCovNpmFormatRenderPnpmWorkspaceKey(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := renderPnpmWorkspaceKey(test.key, test.quote); got != test.want {
 				t.Fatalf("renderPnpmWorkspaceKey(%q, %q) = %q, want %q", test.key, test.quote, got, test.want)
 			}
@@ -698,6 +713,7 @@ overrides:
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			updated, matched, err := applyPnpmWorkspaceOverride([]byte(contents), test.dependency, test.version)
 			if err != nil {
 				t.Fatal(err)
@@ -727,6 +743,7 @@ func TestDepsCovNpmFormatSplitPreservingLineEndings(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := splitPreservingLineEndings(test.text); !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("splitPreservingLineEndings(%q) = %#v, want %#v", test.text, got, test.want)
 			}
@@ -748,6 +765,7 @@ func TestDepsCovNpmFormatLineEndingOf(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(strings.ReplaceAll(test.line, "\n", "LF"), func(t *testing.T) {
+			t.Parallel()
 			if got := lineEndingOf(test.line); got != test.want {
 				t.Fatalf("lineEndingOf(%q) = %q, want %q", test.line, got, test.want)
 			}

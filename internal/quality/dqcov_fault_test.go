@@ -75,6 +75,7 @@ func dqCovLimitFileSize(t *testing.T, limit uint64) func() {
 // final flush is reported and no merged profile is published, rather than a
 // silently truncated union.
 func TestDqCovWriteCoverageProfileAtomicallySurfacesFlushFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
@@ -102,6 +103,7 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesFlushFailure(t *testing.T) {
 // writer past its internal buffer so a failing write surfaces from the block
 // formatting call itself.
 func TestDqCovWriteCoverageProfileAtomicallySurfacesBlockWriteFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
@@ -126,6 +128,7 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesBlockWriteFailure(t *testing
 // TestDqCovSaveValidationCacheSurfacesEvidenceWriteFailure proves a failed
 // evidence write returns an error and publishes no cache entry.
 func TestDqCovSaveValidationCacheSurfacesEvidenceWriteFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

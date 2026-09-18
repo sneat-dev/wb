@@ -60,6 +60,7 @@ func TestHkCovLoadPolicyRejectsMalformedExplicitConfigs(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(dir, "hooks.yaml")
 			mustWrite(t, path, test.content)
 			_, err := LoadPolicy(repo, path)
@@ -123,6 +124,7 @@ func TestHkCovLoadPolicyRejectsInvalidResolvedHooks(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			// Every case except the glob one needs a real go.mod for the
 			// through-a-file case to produce ENOTDIR rather than ENOENT.
 			mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/x\n")
@@ -152,6 +154,7 @@ func TestHkCovLoadPolicyRejectsDirectoryTemplateNotRegular(t *testing.T) {
 // TestHkCovLoadWBConfigGitHooksBranches drives each decode branch inside the
 // global wb.yaml git_hooks reader.
 func TestHkCovLoadWBConfigGitHooksBranches(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	cases := []struct {
 		name       string
@@ -205,6 +208,7 @@ func TestHkCovLoadWBConfigGitHooksReportsOpenFailure(t *testing.T) {
 }
 
 func TestHkCovLoadPolicyReportsRepositoryConfigErrors(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		setup   func(t *testing.T, repo string)
@@ -324,6 +328,7 @@ func TestHkCovExpandPathHandlesHomeAndErrors(t *testing.T) {
 }
 
 func TestHkCovBuiltinTemplateRejectsUnknownNames(t *testing.T) {
+	t.Parallel()
 	if content, ok := builtinTemplate("builtin:does-not-exist"); ok || content != "" {
 		t.Fatalf("builtinTemplate(unknown) = %q, %v; want empty and false", content, ok)
 	}
@@ -335,6 +340,7 @@ func TestHkCovBuiltinTemplateRejectsUnknownNames(t *testing.T) {
 // TestHkCovApplyProfilesDirectBranches exercises applyProfiles paths that
 // LoadPolicy cannot reach because its own layering always initialises Hooks.
 func TestHkCovApplyProfilesDirectBranches(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["ghost"] = ProfileDefinition{Name: "ghost"}
@@ -401,6 +407,7 @@ func TestHkCovResolveProfilesAutoDetectionBranches(t *testing.T) {
 // TestHkCovMatchProfileAndGlobBranches exercises matchRepositoryPath directly so
 // the glob and through-a-file branches are asserted on their returned values.
 func TestHkCovMatchProfileAndGlobBranches(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/x\n")
 	mustWrite(t, filepath.Join(repo, "a_test.go"), "package a\n")
@@ -443,6 +450,7 @@ func TestHkCovMatchProfileAndGlobBranches(t *testing.T) {
 // TestHkCovHookBlocksSkipsEmptyProfileHooks asserts a profile entry whose hook
 // is disabled or template-less contributes no block.
 func TestHkCovHookBlocksSkipsEmptyProfileHooks(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["custom"] = ProfileDefinition{

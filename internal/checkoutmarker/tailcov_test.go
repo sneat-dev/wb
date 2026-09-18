@@ -35,6 +35,7 @@ func tailCovDescriptor(checkoutPath string) Descriptor {
 // must appear on the `wb worktree create` remedy line too, or the copy-pasted
 // command is nonsense.
 func TestTailCovCanonicalRenderNamesThePlaceholderContract(t *testing.T) {
+	t.Parallel()
 	rendered := Render(Descriptor{
 		Kind: KindCanonical, CheckoutPath: "/p/owner/name", CanonicalPath: "/p/owner/name",
 		Branch: "main", BaseBranch: "main", GeneratedBy: "wb v1", GeneratedAt: time.Unix(0, 0),
@@ -53,6 +54,7 @@ func TestTailCovCanonicalRenderNamesThePlaceholderContract(t *testing.T) {
 // for a worktree: an unrecorded task and an unknown repository each read as an
 // explicit placeholder rather than as empty table cells.
 func TestTailCovWorktreeRenderNamesThePlaceholderContract(t *testing.T) {
+	t.Parallel()
 	rendered := Render(Descriptor{
 		Kind: KindWorktree, Writable: true, CheckoutPath: "/w/tailcov",
 		Branch: "tailcov", BaseBranch: "main", GeneratedBy: "wb v1", GeneratedAt: time.Unix(0, 0),
@@ -72,6 +74,7 @@ func TestTailCovWorktreeRenderNamesThePlaceholderContract(t *testing.T) {
 // names the staging step, and the ignore rule — written first, on purpose —
 // is still in place.
 func TestTailCovApplyReportsAMarkerItCannotStage(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	excludePath := filepath.Join(root, "info", "exclude")
 	descriptor := tailCovDescriptor(filepath.Join(root, "vanished"))
@@ -102,6 +105,7 @@ func TestTailCovApplyReportsAMarkerItCannotStage(t *testing.T) {
 // a path that already exists as a non-empty directory cannot be replaced by
 // the marker file, and Apply must report that rather than claim success.
 func TestTailCovApplyReportsAMarkerItCannotReplace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	checkout := filepath.Join(root, "checkout")
 	blocker := filepath.Join(checkout, FileName)
@@ -131,6 +135,7 @@ func TestTailCovApplyReportsAMarkerItCannotReplace(t *testing.T) {
 // TestTailCovEnsureExcludeRefusesAnEmptyPath pins that a checkout whose exclude
 // file could not be resolved is an error, never a silent success.
 func TestTailCovEnsureExcludeRefusesAnEmptyPath(t *testing.T) {
+	t.Parallel()
 	written, err := EnsureExclude("")
 	if err == nil {
 		t.Fatal("EnsureExclude(\"\") succeeded with no exclude file resolved")
@@ -147,6 +152,7 @@ func TestTailCovEnsureExcludeRefusesAnEmptyPath(t *testing.T) {
 // other than "not there yet" is surfaced rather than treated as an empty file,
 // which would otherwise blindly append and could mask a permission problem.
 func TestTailCovEnsureExcludeReportsAnUnreadableFile(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	written, err := EnsureExclude(directory)
 	if err == nil {
@@ -165,6 +171,7 @@ func TestTailCovEnsureExcludeReportsAnUnreadableFile(t *testing.T) {
 // created. A dangling symlink stands in for that parent so the failure is
 // deterministic and needs no elevated permissions.
 func TestTailCovEnsureExcludeReportsWhenTheDirectoryCannotBeCreated(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	link := filepath.Join(root, "dangling")
 	if err := os.Symlink(filepath.Join(root, "absent-target"), link); err != nil {
@@ -191,6 +198,7 @@ func TestTailCovEnsureExcludeReportsWhenTheDirectoryCannotBeCreated(t *testing.T
 // BaseBranch falls back to "main" rather than leaving the marker's
 // base_branch empty.
 func TestTailCovDescribeDefaultsTheBaseBranchToMain(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	options := describeOptions(repositories)
 	options.BaseBranch = ""
@@ -208,6 +216,7 @@ func TestTailCovDescribeDefaultsTheBaseBranchToMain(t *testing.T) {
 // failure path: a `.git` file that Classify reads as a linked worktree but
 // that carries no gitdir pointer is reported, not guessed at.
 func TestTailCovDescribeReportsAWorktreeWithNoGitdirPointer(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	linked := filepath.Join(projectsRoot, "loose-worktree")
 	if err := os.MkdirAll(linked, 0o755); err != nil {
@@ -236,6 +245,7 @@ func TestTailCovDescribeReportsAWorktreeWithNoGitdirPointer(t *testing.T) {
 // TestTailCovLinkedGitDirReportsAnUnreadablePointer pins the read failure of
 // the pointer reader, using a `.git` that cannot be read as a file.
 func TestTailCovLinkedGitDirReportsAnUnreadablePointer(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -248,6 +258,7 @@ func TestTailCovLinkedGitDirReportsAnUnreadablePointer(t *testing.T) {
 // TestTailCovLinkedGitDirFollowsTheGitdirLine pins the parser: comment and
 // blank lines are skipped, and the first gitdir target is returned cleaned.
 func TestTailCovLinkedGitDirFollowsTheGitdirLine(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	contents := "# a worktree pointer\n\ngitdir: /canonical/repo/.git/worktrees/tailcov\n"
 	if err := os.WriteFile(filepath.Join(root, ".git"), []byte(contents), 0o644); err != nil {
@@ -267,6 +278,7 @@ func TestTailCovLinkedGitDirFollowsTheGitdirLine(t *testing.T) {
 // target is resolved against the worktree root, which is what Git writes for
 // some layouts.
 func TestTailCovLinkedGitDirResolvesARelativeTarget(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: ../elsewhere/worktrees/tailcov\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -285,6 +297,7 @@ func TestTailCovLinkedGitDirResolvesARelativeTarget(t *testing.T) {
 // no target stops the parse and is reported, rather than falling through to
 // some later line or a guessed path.
 func TestTailCovLinkedGitDirReportsAnEmptyTarget(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	contents := "gitdir:   \ngitdir: /canonical/repo/.git/worktrees/tailcov\n"
 	if err := os.WriteFile(filepath.Join(root, ".git"), []byte(contents), 0o644); err != nil {
@@ -302,6 +315,7 @@ func TestTailCovLinkedGitDirReportsAnEmptyTarget(t *testing.T) {
 // TestTailCovCommonDirectoryForOnlyAcceptsWorktreesLayout pins the common
 // directory derivation and that anything else yields "" rather than a guess.
 func TestTailCovCommonDirectoryForOnlyAcceptsWorktreesLayout(t *testing.T) {
+	t.Parallel()
 	gitDir := filepath.Join("/tmp", "repo", ".git", "worktrees", "tailcov")
 	if got, want := commonDirectoryFor(gitDir), filepath.Join("/tmp", "repo", ".git"); got != want {
 		t.Fatalf("commonDirectoryFor(%q) = %q, want %q", gitDir, got, want)
@@ -316,6 +330,7 @@ func TestTailCovCommonDirectoryForOnlyAcceptsWorktreesLayout(t *testing.T) {
 // usable owner/repository pair the task and worktrees root are both empty,
 // rather than being recovered from an unrelated directory shape.
 func TestTailCovTaskCoordinatesNeedsRepositoryCoordinates(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "some", "task")
 	if task, worktreesRoot := taskCoordinates(root, "", ""); task != "" || worktreesRoot != "" {
 		t.Fatalf("taskCoordinates with no repository = (%q, %q), want empty", task, worktreesRoot)
@@ -329,6 +344,7 @@ func TestTailCovTaskCoordinatesNeedsRepositoryCoordinates(t *testing.T) {
 // detached HEAD both yield "" — the marker states an empty branch rather than
 // inventing one.
 func TestTailCovReadHeadBranchReportsNoBranch(t *testing.T) {
+	t.Parallel()
 	if got := readHeadBranch(filepath.Join(t.TempDir(), "missing-git-dir")); got != "" {
 		t.Fatalf("readHeadBranch(missing git dir) = %q, want \"\"", got)
 	}
@@ -345,6 +361,7 @@ func TestTailCovReadHeadBranchReportsNoBranch(t *testing.T) {
 // TestTailCovReadHeadBranchStripsTheHeadsPrefix pins the normal case's exact
 // output, so a branch name that itself contains slashes survives unchanged.
 func TestTailCovReadHeadBranchStripsTheHeadsPrefix(t *testing.T) {
+	t.Parallel()
 	gitDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/feature/tailcov\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -42,6 +42,7 @@ func wtLifeCovTerminalReport(task, repository string, generatedAt time.Time, app
 }
 
 func TestWtLifeCovValidateTerminalCleanupReportsRejectsEveryInconsistency(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
 	write := func(t *testing.T, report cleanupReport) string {
 		t.Helper()
@@ -279,6 +280,7 @@ func TestWtLifeCovValidateTerminalCleanupReportsRejectsEveryInconsistency(t *tes
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			err := ValidateTerminalCleanupReports(testCase.paths(t), "acme/app", testCase.tasks)
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("error = %v, want %q", err, testCase.wantErr)
@@ -288,6 +290,7 @@ func TestWtLifeCovValidateTerminalCleanupReportsRejectsEveryInconsistency(t *tes
 }
 
 func TestWtLifeCovValidateTerminalCleanupReportsAcceptsRetainedHistory(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
 	failed := wtLifeCovWriteJSON(t, filepath.Join(t.TempDir(), "failed.json"),
 		wtLifeCovTerminalReport("task-one", "acme/app", base, false))
@@ -299,6 +302,7 @@ func TestWtLifeCovValidateTerminalCleanupReportsAcceptsRetainedHistory(t *testin
 }
 
 func TestWtLifeCovRequireJSONEOFClassifiesTrailingContent(t *testing.T) {
+	t.Parallel()
 	decoder := json.NewDecoder(strings.NewReader("{}"))
 	var value any
 	if err := decoder.Decode(&value); err != nil {
@@ -326,6 +330,7 @@ func TestWtLifeCovRequireJSONEOFClassifiesTrailingContent(t *testing.T) {
 }
 
 func TestWtLifeCovActiveWorkLogClaimAtPathFindsActiveClaim(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -358,6 +363,7 @@ func TestWtLifeCovActiveWorkLogClaimAtPathFindsActiveClaim(t *testing.T) {
 }
 
 func TestWtLifeCovActiveWorkLogClaimAtPathClassifiesCorruption(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -444,6 +450,7 @@ func wtLifeCovCleanupTaskHandle(t *testing.T, root, taskDir string) *cleanupTask
 }
 
 func TestWtLifeCovPrepareAndArchiveCleanupLifecycleArtifacts(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")
@@ -485,6 +492,7 @@ func TestWtLifeCovPrepareAndArchiveCleanupLifecycleArtifacts(t *testing.T) {
 }
 
 func TestWtLifeCovPrepareCleanupLifecycleArtifactsRejectsUnsafeEntries(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")
@@ -536,6 +544,7 @@ func TestWtLifeCovPrepareCleanupLifecycleArtifactsRejectsUnsafeEntries(t *testin
 }
 
 func TestWtLifeCovArchiveCleanupLifecycleArtifactsReportsFailures(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	root := t.TempDir()
 	taskDir := filepath.Join(root, "task-one")

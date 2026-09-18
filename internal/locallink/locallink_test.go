@@ -297,6 +297,7 @@ const goLibraryModule = "module github.com/acme/library/backend\n\ngo 1.27\n"
 // worktree AND the library; go.work and go.work.sum are both excluded; go.mod
 // is unchanged.
 func TestGoConsumerGetsAWorkspaceNamingEveryModuleAndTheLibrary(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{
@@ -353,6 +354,7 @@ func TestGoConsumerGetsAWorkspaceNamingEveryModuleAndTheLibrary(t *testing.T) {
 // declares none of the discovered identities is reported and skipped, never
 // linked to something it does not use.
 func TestAConsumerThatDoesNotDependOnTheLibraryIsSkipped(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
@@ -374,6 +376,7 @@ func TestAConsumerThatDoesNotDependOnTheLibraryIsSkipped(t *testing.T) {
 }
 
 func TestALibraryPublishingNothingIsRefusedRatherThanGuessed(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t, map[string]string{"README.md": "no manifests\n"}, map[string]string{})
 	_, err := fixture.engine.Run(context.Background(), Options{
 		Library: fixture.library, Consumers: []string{fixture.consumer},
@@ -387,6 +390,7 @@ func TestALibraryPublishingNothingIsRefusedRatherThanGuessed(t *testing.T) {
 // with the repository's own build target and linked from its dist; every
 // manifest stays byte-identical.
 func TestNpmConsumerLinksFromABuiltDistWithoutTouchingTrackedConfig(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`},
 		map[string]string{
@@ -432,6 +436,7 @@ func TestNpmConsumerLinksFromABuiltDistWithoutTouchingTrackedConfig(t *testing.T
 // below frontend/. Discovery and every npm operation use that workspace while
 // the link record and merge guard remain attached to the repository member.
 func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"frontend/package.json":           `{"name":"provider","private":true}`,
@@ -502,6 +507,7 @@ func TestNestedFrontendWorkspaceLinksAndUndoesFromRepositoryRoot(t *testing.T) {
 }
 
 func TestEngineRealPnpmSiblingFailureRetryAndUndoJourney(t *testing.T) {
+	t.Parallel()
 	type packageSpec struct {
 		name         string
 		directory    string
@@ -691,6 +697,7 @@ func TestEngineRealPnpmSiblingFailureRetryAndUndoJourney(t *testing.T) {
 }
 
 func TestNestedConsumerPathDoesNotBypassRepositoryRootStreamMembership(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"frontend/pnpm-workspace.yaml":    "packages:\n  - libs/**\n",
@@ -713,6 +720,7 @@ func TestNestedConsumerPathDoesNotBypassRepositoryRootStreamMembership(t *testin
 }
 
 func TestSamePackageInTwoConsumerWorkspacesKeepsTwoUndoRecords(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"libs/core/package.json": `{"name":"@acme/core"}`,
@@ -759,6 +767,7 @@ func TestSamePackageInTwoConsumerWorkspacesKeepsTwoUndoRecords(t *testing.T) {
 }
 
 func TestUndoRejectsWorkspaceSymlinkEscapeAndKeepsMergeGuardClosed(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t, map[string]string{"backend/go.mod": goLibraryModule}, map[string]string{})
 	outside := t.TempDir()
 	if err := os.MkdirAll(fixture.consumer, 0o755); err != nil {
@@ -794,6 +803,7 @@ func TestUndoRejectsWorkspaceSymlinkEscapeAndKeepsMergeGuardClosed(t *testing.T)
 }
 
 func TestFailedBuildUndoPreservesPublishedPackageFilesystem(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"frontend/package.json":           `{"private":true}`,
@@ -860,6 +870,7 @@ func TestFailedBuildUndoPreservesPublishedPackageFilesystem(t *testing.T) {
 }
 
 func TestAppliedRecordWithoutOwnershipMarkerFailsClosed(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t, map[string]string{"backend/go.mod": goLibraryModule}, map[string]string{})
 	if _, err := fixture.store.Update("fixture", func(stream *streams.Stream) error {
 		for index := range stream.Members {
@@ -890,6 +901,7 @@ func TestAppliedRecordWithoutOwnershipMarkerFailsClosed(t *testing.T) {
 }
 
 func TestRefreshBuildFailureKeepsAppliedRecoveryUntilUndo(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"package.json":           `{"private":true}`,
@@ -985,6 +997,7 @@ func TestRefreshBuildFailureKeepsAppliedRecoveryUntilUndo(t *testing.T) {
 // REQ: npm-link-preserves-a-frozen-lockfile-baseline — a consumer whose frozen
 // install fails is never linked, so a link cannot mask a lockfile mismatch.
 func TestNpmLinkRefusesWhenTheFrozenInstallFails(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`},
 		map[string]string{
@@ -1010,6 +1023,7 @@ func TestNpmLinkRefusesWhenTheFrozenInstallFails(t *testing.T) {
 // verified, the failure is attributed to its consumer, and the passing consumer
 // is still reported.
 func TestVerifyReportsEveryConsumerAndDoesNotStopAtTheFirstFailure(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	library := writeTree(t, filepath.Join(base, "library"), map[string]string{"backend/go.mod": goLibraryModule})
 	consumerModule := "module github.com/acme/%s/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"
@@ -1071,6 +1085,7 @@ func TestVerifyReportsEveryConsumerAndDoesNotStopAtTheFirstFailure(t *testing.T)
 // AC: undo-restores-published-versions — undo succeeds without reading the
 // removed library worktree, leaves no go.work behind, and clears the record.
 func TestUndoRestoresPublishedVersionsAfterTheLibraryIsGone(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1105,6 +1120,7 @@ func TestUndoRestoresPublishedVersionsAfterTheLibraryIsGone(t *testing.T) {
 }
 
 func TestUndoOnAConsumerWithNoRecordedLinkIsReportedNotFailed(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t, map[string]string{"backend/go.mod": goLibraryModule}, map[string]string{})
 	result, err := fixture.engine.Run(context.Background(), Options{
 		Consumers: []string{fixture.consumer}, Undo: true,
@@ -1121,6 +1137,7 @@ func TestUndoOnAConsumerWithNoRecordedLinkIsReportedNotFailed(t *testing.T) {
 // a second one, and must keep the ORIGINAL published version — that is what
 // undo has to restore.
 func TestRelinkingKeepsTheOriginalPublishedVersion(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1154,6 +1171,7 @@ func TestRelinkingKeepsTheOriginalPublishedVersion(t *testing.T) {
 // A link that changes a tracked file is a defect, and the verb says so rather
 // than reporting success.
 func TestLinkingThatChangesATrackedFileIsReportedAsAFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1192,6 +1210,7 @@ func (git *trackedChangeInjector) TrackedChanges(ctx context.Context, dir string
 }
 
 func TestPlanStatesTheChecksBeforeTheyRun(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1237,6 +1256,7 @@ func containsAll(values []string, wanted ...string) bool {
 // Derived from the reviewer's probe A, which showed `go.work` written with
 // zero links recorded and `--undo` reporting "nothing to undo".
 func TestNoLinkIsWrittenWhenTheRecordCannotBe(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1261,6 +1281,7 @@ func TestNoLinkIsWrittenWhenTheRecordCannotBe(t *testing.T) {
 // MF-2. `--undo` clears a `go.work` that stream state has no record of, so the
 // command the merge guard names can actually satisfy the guard.
 func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
@@ -1300,6 +1321,7 @@ func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
 // deleting go.work here could take other entries this undo has no business
 // owning down with it.
 func TestUndoClearsARecordWhenGoWorkNoLongerReferencesTheLibrary(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1354,6 +1376,7 @@ func TestUndoClearsARecordWhenGoWorkNoLongerReferencesTheLibrary(t *testing.T) {
 // MF-3. A failed removal KEEPS its record, so the guard stays closed and
 // `stream end` keeps refusing while the artefact is still on disk.
 func TestUndoKeepsTheRecordWhenRemovalFails(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`},
 		map[string]string{
@@ -1396,6 +1419,7 @@ func TestUndoKeepsTheRecordWhenRemovalFails(t *testing.T) {
 // MF-5. The frozen install proves the UNLINKED tree, so it runs once per
 // consumer regardless of how many identities that consumer declares.
 func TestFrozenInstallRunsOncePerConsumerNotPerIdentity(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{
 			"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`,
@@ -1430,6 +1454,7 @@ func TestFrozenInstallRunsOncePerConsumerNotPerIdentity(t *testing.T) {
 // an unrecorded link cannot be undone and the guard's state signal cannot see
 // it.
 func TestALinkThatCannotBeRecordedIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	library := writeTree(t, filepath.Join(base, "library"), map[string]string{"backend/go.mod": goLibraryModule})
 	consumer := writeTree(t, filepath.Join(base, "consumer"), map[string]string{
@@ -1458,6 +1483,7 @@ func TestALinkThatCannotBeRecordedIsRefusedBeforeAnythingIsWritten(t *testing.T)
 // made this look recordable, so go.work was written, nothing was recorded, and
 // the verb exited 0 — the same un-undoable link round 1 rejected.
 func TestAConsumerOutsideTheStreamIsRefusedEvenWhenTheStreamHoldsTheLibrary(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1485,6 +1511,7 @@ func TestAConsumerOutsideTheStreamIsRefusedEvenWhenTheStreamHoldsTheLibrary(t *t
 // All fences run before the first side effect: one unrecordable consumer stops
 // the whole invocation, so a recordable sibling is not half-linked.
 func TestOneUnrecordableConsumerLinksNothingAtAll(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -1506,6 +1533,7 @@ func TestOneUnrecordableConsumerLinksNothingAtAll(t *testing.T) {
 // recordLinks refuses rather than silently writing nothing when its update
 // matches no member — the second half of the same defect.
 func TestRecordLinksFailsWhenItMatchesNoMember(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
@@ -1526,6 +1554,7 @@ func TestRecordLinksFailsWhenItMatchesNoMember(t *testing.T) {
 // SHOULD-FIX (d). A consumer that was skipped is not verified, so it must not
 // be told a verifier was unavailable for a run it was never part of.
 func TestSkippedConsumersAreNotToldTheVerifierWasUnavailable(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})

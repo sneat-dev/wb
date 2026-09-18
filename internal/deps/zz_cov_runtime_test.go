@@ -195,6 +195,7 @@ func TestDepsCovRuntimeGoCommandEnvironmentSkipsMalformedAndAddsMissingNames(t *
 }
 
 func TestDepsCovRuntimeRunCommandRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
 	depsCovRuntimeRequireShell(t)
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "attempts")
@@ -223,6 +224,7 @@ printf 'recovered on attempt %s' "$attempt"
 }
 
 func TestDepsCovRuntimeRunCommandReportsTimeout(t *testing.T) {
+	t.Parallel()
 	depsCovRuntimeRequireShell(t)
 	dir := t.TempDir()
 	// `exec` replaces the shell with sleep, so the context kill reaches the
@@ -932,6 +934,7 @@ func TestDepsCovRuntimeChangedPublishableNxProjectsBranches(t *testing.T) {
 }
 
 func TestDepsCovRuntimeChangedPublishableNxProjectsUsesCandidateGitDiff(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, "packages/a/package.json"), `{"name":"@acme/a"}`+"\n")
 	writeTestFile(t, filepath.Join(dir, "packages/a/project.json"), `{"name":"a"}`+"\n")
@@ -1038,6 +1041,7 @@ func TestDepsCovRuntimeGenerateNxVersionPlanBranches(t *testing.T) {
 }
 
 func TestDepsCovRuntimeGenerateNxVersionPlanRefusesAnUncreatablePlanDirectory(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("dangling-symlink setup is not portable to windows")
 	}

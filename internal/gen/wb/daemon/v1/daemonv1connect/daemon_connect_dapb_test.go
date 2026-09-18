@@ -187,6 +187,7 @@ func dapbWant[T comparable](t *testing.T, rpc, field string, got, want T) {
 // generated handler over the default Connect protocol and asserts that request
 // payloads reach the service and responses come back intact.
 func TestDapbConnectRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 
@@ -206,6 +207,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("GetDaemonInfo", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.GetDaemonInfo(ctx, connect.NewRequest(&v1.GetDaemonInfoRequest{}))
 		if err != nil {
 			t.Fatalf("GetDaemonInfo error: %v", err)
@@ -219,6 +221,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("SubmitOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.SubmitOperation(ctx, connect.NewRequest(&v1.SubmitOperationRequest{
 			IdempotencyKey:   "dapb-idem",
 			WorkingDirectory: "/dapb/dir",
@@ -240,6 +243,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("GetOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.GetOperation(ctx, connect.NewRequest(&v1.GetOperationRequest{OperationId: "dapb-op-1"}))
 		if err != nil {
 			t.Fatalf("GetOperation error: %v", err)
@@ -249,6 +253,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("WaitOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.WaitOperation(ctx, connect.NewRequest(&v1.WaitOperationRequest{
 			OperationId:      "dapb-op-2",
 			AfterCursor:      "dapb-cursor",
@@ -263,6 +268,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("CancelOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.CancelOperation(ctx, connect.NewRequest(&v1.CancelOperationRequest{OperationId: "dapb-op-3"}))
 		if err != nil {
 			t.Fatalf("CancelOperation error: %v", err)
@@ -272,6 +278,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("RegisterWorker", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.RegisterWorker(ctx, connect.NewRequest(&v1.RegisterWorkerRequest{
 			WorkerId:        "dapb-w",
 			Build:           "dapb-build-2",
@@ -296,6 +303,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("LeaseOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.LeaseOperation(ctx, connect.NewRequest(&v1.LeaseOperationRequest{
 			WorkerId:         "dapb-w2",
 			WorkerGeneration: "dapb-wg",
@@ -322,6 +330,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("HeartbeatOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.HeartbeatOperation(ctx, connect.NewRequest(&v1.HeartbeatOperationRequest{
 			WorkerId:         "dapb-w3",
 			WorkerGeneration: "dapb-wg3",
@@ -343,6 +352,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("CompleteOperation", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.CompleteOperation(ctx, connect.NewRequest(&v1.CompleteOperationRequest{
 			WorkerId:         "dapb-w4",
 			WorkerGeneration: "dapb-wg4",
@@ -369,6 +379,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 	})
 
 	t.Run("DisconnectWorker", func(t *testing.T) {
+		t.Parallel()
 		resp, err := client.DisconnectWorker(ctx, connect.NewRequest(&v1.DisconnectWorkerRequest{
 			WorkerId:         "dapb-w5",
 			WorkerGeneration: "dapb-gen",
@@ -396,6 +407,7 @@ func TestDapbConnectRoundTrip(t *testing.T) {
 // TestDapbConnectErrorPropagation asserts service-side Connect errors survive the
 // generated client round trip with their codes intact.
 func TestDapbConnectErrorPropagation(t *testing.T) {
+	t.Parallel()
 	srv := dapbMountHandler(t, dapbNewDaemonService())
 	client := NewDaemonServiceClient(srv.Client(), srv.URL)
 	ctx := context.Background()
@@ -419,6 +431,7 @@ func TestDapbConnectErrorPropagation(t *testing.T) {
 // TestDapbConnectGRPCWebClientOption asserts the generated client works with the
 // gRPC-Web protocol selected through connect.WithGRPCWeb.
 func TestDapbConnectGRPCWebClientOption(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	srv := dapbMountHandler(t, svc)
 	client := NewDaemonServiceClient(srv.Client(), srv.URL, connect.WithGRPCWeb())
@@ -434,6 +447,7 @@ func TestDapbConnectGRPCWebClientOption(t *testing.T) {
 // TestDapbConnectGRPCClientOption asserts the generated client works with the
 // gRPC protocol selected through connect.WithGRPC over HTTP/2.
 func TestDapbConnectGRPCClientOption(t *testing.T) {
+	t.Parallel()
 	svc := dapbNewDaemonService()
 	path, handler := NewDaemonServiceHandler(svc)
 	mux := http.NewServeMux()
@@ -455,6 +469,7 @@ func TestDapbConnectGRPCClientOption(t *testing.T) {
 // TestDapbConnectHandlerUnknownPath asserts the generated handler 404s for paths
 // under the service prefix that are not one of its RPCs.
 func TestDapbConnectHandlerUnknownPath(t *testing.T) {
+	t.Parallel()
 	_, handler := NewDaemonServiceHandler(dapbNewDaemonService())
 
 	req := httptest.NewRequest(http.MethodPost, "/wb.daemon.v1.DaemonService/NoSuchRPC", strings.NewReader(""))
@@ -469,6 +484,7 @@ func TestDapbConnectHandlerUnknownPath(t *testing.T) {
 // TestDapbUnimplementedHandler asserts every generated method of the
 // Unimplemented helper fails with CodeUnimplemented and a helpful message.
 func TestDapbUnimplementedHandler(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := UnimplementedDaemonServiceHandler{}
 
@@ -567,6 +583,7 @@ func TestDapbUnimplementedHandler(t *testing.T) {
 // TestDapbConnectProcedureConstants pins the generated procedure names to the
 // paths the handler routes.
 func TestDapbConnectProcedureConstants(t *testing.T) {
+	t.Parallel()
 	dapbWant(t, "DaemonServiceName", "name", DaemonServiceName, "wb.daemon.v1.DaemonService")
 	want := map[string]string{
 		"GetDaemonInfo":      DaemonServiceGetDaemonInfoProcedure,

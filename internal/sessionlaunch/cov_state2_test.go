@@ -22,7 +22,9 @@ func slCovReadOnly(t *testing.T, path string) {
 }
 
 func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
+	t.Parallel()
 	t.Run("plan", func(t *testing.T) {
+		t.Parallel()
 		state, root := slCovOpenState(t)
 		slCovReadOnly(t, slCovStateDir(root))
 		if _, _, _, err := state.savePlan(slCovPlan("handoff-123")); err == nil || !strings.Contains(err.Error(), "persist immutable launch plan") {
@@ -30,6 +32,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 		}
 	})
 	t.Run("ready", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovReadOnly(t, filepath.Join(slCovAttemptDir(root, attempt.id), readyDirectoryName))
 		record := slCovReadyRecord(plan, 111, time.Now())
@@ -38,6 +41,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 		}
 	})
 	t.Run("release", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		record := slCovReadyRecord(plan, 112, time.Now())
 		if _, err := attempt.saveReady(plan, planDigest, record); err != nil {
@@ -54,6 +58,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 		}
 	})
 	t.Run("exec failure", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovReadOnly(t, filepath.Join(slCovAttemptDir(root, attempt.id), execDirectoryName))
 		if err := attempt.saveExecFailure(plan, planDigest, slCovDigest("r"), slCovDigest("rel"), 113, errors.New("boom"), time.Now()); err == nil {
@@ -61,6 +66,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 		}
 	})
 	t.Run("abandonment", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		fence, err := attempt.acquireExecFence(114)
 		if err != nil {
@@ -75,6 +81,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 		}
 	})
 	t.Run("started", func(t *testing.T) {
+		t.Parallel()
 		state, root, attempt, plan, planDigest := slCovAttempt(t)
 		record := slCovReadyRecord(plan, 115, time.Now())
 		fence, err := attempt.acquireExecFence(record.PID)
@@ -101,6 +108,7 @@ func TestSlCovPublishFailuresPropagateFromEveryWriter(t *testing.T) {
 }
 
 func TestSlCovSaveReadyWithoutPlanFailsClosed(t *testing.T) {
+	t.Parallel()
 	state, _ := slCovOpenState(t)
 	attempt, err := state.createAttempt()
 	if err != nil {
@@ -116,7 +124,9 @@ func TestSlCovSaveReadyWithoutPlanFailsClosed(t *testing.T) {
 }
 
 func TestSlCovSaveReleaseSurfacesMissingReadyAndFence(t *testing.T) {
+	t.Parallel()
 	t.Run("missing ready", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, plan, planDigest := slCovAttempt(t)
 		record := slCovReadyRecord(plan, 121, time.Now())
 		ready := slCovReady(plan, attempt, planDigest, record)
@@ -125,6 +135,7 @@ func TestSlCovSaveReleaseSurfacesMissingReadyAndFence(t *testing.T) {
 		}
 	})
 	t.Run("missing exec fence file", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, plan, planDigest := slCovAttempt(t)
 		record := slCovReadyRecord(plan, 122, time.Now())
 		if _, err := attempt.saveReady(plan, planDigest, record); err != nil {
@@ -136,6 +147,7 @@ func TestSlCovSaveReleaseSurfacesMissingReadyAndFence(t *testing.T) {
 		}
 	})
 	t.Run("corrupt abandonment", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(root, attempt.id), "abandoned.json"), 0o600, "{}\n")
 		if _, _, err := attempt.saveRelease(plan, planDigest, launcherReady{}, "", time.Now()); err == nil {
@@ -143,6 +155,7 @@ func TestSlCovSaveReleaseSurfacesMissingReadyAndFence(t *testing.T) {
 		}
 	})
 	t.Run("missing plan", func(t *testing.T) {
+		t.Parallel()
 		state, _ := slCovOpenState(t)
 		attempt, err := state.createAttempt()
 		if err != nil {
@@ -156,7 +169,9 @@ func TestSlCovSaveReleaseSurfacesMissingReadyAndFence(t *testing.T) {
 }
 
 func TestSlCovSaveExecFailureHandlesCorruptExistingEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("corrupt existing", func(t *testing.T) {
+		t.Parallel()
 		state, root, attempt, plan, planDigest := slCovAttempt(t)
 		_ = state
 		slCovWrite(t, filepath.Join(slCovAttemptDir(root, attempt.id), execDirectoryName, "131.failure.json"), 0o600, "{}\n")
@@ -165,6 +180,7 @@ func TestSlCovSaveExecFailureHandlesCorruptExistingEvidence(t *testing.T) {
 		}
 	})
 	t.Run("matching replay", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, plan, planDigest := slCovAttempt(t)
 		readyDigest, releaseDigest := slCovDigest("r"), slCovDigest("rel")
 		if err := attempt.saveExecFailure(plan, planDigest, readyDigest, releaseDigest, 132, errors.New("first"), time.Now()); err != nil {
@@ -175,6 +191,7 @@ func TestSlCovSaveExecFailureHandlesCorruptExistingEvidence(t *testing.T) {
 		}
 	})
 	t.Run("unreadable existing", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, _, _ := slCovAttempt(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(root, attempt.id), execDirectoryName, "133.failure.json"), 0o644, "{}\n")
 		if _, _, err := attempt.loadExecFailure(133); err == nil {
@@ -184,7 +201,9 @@ func TestSlCovSaveExecFailureHandlesCorruptExistingEvidence(t *testing.T) {
 }
 
 func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("corrupt release", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(root, attempt.id), "release.json"), 0o600, "{}\n")
 		if _, _, err := attempt.saveAbandonment(plan, planDigest, 141, time.Now()); err == nil {
@@ -192,6 +211,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("corrupt started", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovWrite(t, filepath.Join(slCovStateDir(root), "started.json"), 0o600, "{}\n")
 		if _, _, err := attempt.saveAbandonment(plan, planDigest, 142, time.Now()); err == nil {
@@ -199,6 +219,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("ambiguous evidence", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, plan, planDigest := slCovAttempt(t)
 		for _, name := range []string{"151.json", "152.json"} {
 			if created, err := attempt.publish(readyDirectoryName, name, []byte("{}")); err != nil || !created {
@@ -210,6 +231,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("unreadable lock", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(root, attempt.id), execDirectoryName, "153.lock"), 0o644, "")
 		if _, _, err := attempt.saveAbandonment(plan, planDigest, 153, time.Now()); err == nil {
@@ -217,6 +239,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("corrupt ready", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		fence, err := attempt.acquireExecFence(154)
 		if err != nil {
@@ -231,6 +254,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 		}
 	})
 	t.Run("ready digest conflict on replay", func(t *testing.T) {
+		t.Parallel()
 		_, _, attempt, plan, planDigest := slCovAttempt(t)
 		fence, err := attempt.acquireExecFence(155)
 		if err != nil {
@@ -252,6 +276,7 @@ func TestSlCovSaveAbandonmentSurfacesCorruptNeighbourArtifacts(t *testing.T) {
 }
 
 func TestSlCovSaveStartedSurfacesCorruptStartedMarker(t *testing.T) {
+	t.Parallel()
 	state, root, attempt, plan, planDigest := slCovAttempt(t)
 	record := slCovReadyRecord(plan, 161, time.Now())
 	fence, err := attempt.acquireExecFence(record.PID)
@@ -280,6 +305,7 @@ func TestSlCovSaveStartedSurfacesCorruptStartedMarker(t *testing.T) {
 }
 
 func TestSlCovDecodeLaunchJSONAcceptsCanonicalEncoding(t *testing.T) {
+	t.Parallel()
 	plan := slCovPlan("handoff-123")
 	raw, err := encodeLaunchJSON(plan)
 	if err != nil {
@@ -292,6 +318,7 @@ func TestSlCovDecodeLaunchJSONAcceptsCanonicalEncoding(t *testing.T) {
 }
 
 func TestSlCovOpenLaunchStateRejectsLaunchPathCollision(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), sessionmove.DirName)
 	if err := os.MkdirAll(filepath.Join(root, "handoff-collide"), 0o700); err != nil {
 		t.Fatal(err)
@@ -303,6 +330,7 @@ func TestSlCovOpenLaunchStateRejectsLaunchPathCollision(t *testing.T) {
 }
 
 func TestSlCovOpenLaunchStateWithoutAttemptsDirectory(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), sessionmove.DirName)
 	if err := os.MkdirAll(filepath.Join(root, "handoff-nodir", launchDirectoryName), 0o700); err != nil {
 		t.Fatal(err)
@@ -321,6 +349,7 @@ func TestSlCovOpenLaunchStateWithoutAttemptsDirectory(t *testing.T) {
 }
 
 func TestSlCovOpenAttemptRequiresFixedChildren(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	const claimedID = "000001-00000000000000000000000000000001"
 	if err := os.MkdirAll(filepath.Join(slCovAttemptDir(root, claimedID), readyDirectoryName), 0o700); err != nil {
@@ -332,6 +361,7 @@ func TestSlCovOpenAttemptRequiresFixedChildren(t *testing.T) {
 }
 
 func TestSlCovOpenOrRecoverRejectsNonDirectoryChild(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	const claimedID = "000001-00000000000000000000000000000001"
 	if err := os.MkdirAll(slCovAttemptDir(root, claimedID), 0o700); err != nil {
@@ -344,6 +374,7 @@ func TestSlCovOpenOrRecoverRejectsNonDirectoryChild(t *testing.T) {
 }
 
 func TestSlCovCreateAttemptRequiresContiguousHistory(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	if err := os.Mkdir(filepath.Join(slCovStateDir(root), attemptsDirectoryName, "garbage"), 0o700); err != nil {
 		t.Fatal(err)
@@ -354,6 +385,7 @@ func TestSlCovCreateAttemptRequiresContiguousHistory(t *testing.T) {
 }
 
 func TestSlCovListAttemptsSurfacesClosedDescriptor(t *testing.T) {
+	t.Parallel()
 	state, _ := slCovOpenState(t)
 	if err := state.attempts.Close(); err != nil {
 		t.Fatal(err)
@@ -367,12 +399,14 @@ func TestSlCovListAttemptsSurfacesClosedDescriptor(t *testing.T) {
 }
 
 func TestSlCovNilAttemptCloseIsSafe(t *testing.T) {
+	t.Parallel()
 	if err := (*launchAttempt)(nil).Close(); err != nil {
 		t.Fatalf("nil attempt Close = %v", err)
 	}
 }
 
 func TestSlCovExecFenceRejectsNonPrivateLockFile(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	attempt, err := state.createAttempt()
 	if err != nil {
@@ -390,6 +424,7 @@ func TestSlCovExecFenceRejectsNonPrivateLockFile(t *testing.T) {
 }
 
 func TestSlCovSaveReleaseWrapperRejectsMalformedAttemptIdentity(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	plan := slCovPlan("handoff-123")
 	_, planDigest, _, err := state.savePlan(plan)
@@ -402,6 +437,7 @@ func TestSlCovSaveReleaseWrapperRejectsMalformedAttemptIdentity(t *testing.T) {
 }
 
 func TestSlCovLatestAttemptSurfacesMalformedHistory(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	if err := os.Mkdir(filepath.Join(slCovStateDir(root), attemptsDirectoryName, "garbage"), 0o700); err != nil {
 		t.Fatal(err)
@@ -412,6 +448,7 @@ func TestSlCovLatestAttemptSurfacesMalformedHistory(t *testing.T) {
 }
 
 func TestSlCovPublishThroughClosedLaunchDirectoryFails(t *testing.T) {
+	t.Parallel()
 	state, root := slCovOpenState(t)
 	slCovReadOnly(t, slCovStateDir(root))
 	if _, err := state.publish("", "plan.json", []byte("{}\n")); err == nil {

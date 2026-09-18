@@ -155,6 +155,7 @@ func TestValidateUniqueModuleDeclarationsStillFailsWhenUnresolved(t *testing.T) 
 }
 
 func TestBuildGraphPreservesManifestEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{

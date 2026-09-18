@@ -16,6 +16,7 @@ func writeConfig(t *testing.T, content string) string {
 }
 
 func TestLoadConfigTemplateSectionDefaults(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `
 recipes:
   dev-approach:
@@ -57,6 +58,7 @@ recipes:
 }
 
 func TestLoadConfigCommandExplicitOverrides(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `
 recipes:
   lint:
@@ -87,12 +89,14 @@ recipes:
 }
 
 func TestLoadConfigMissingFile(t *testing.T) {
+	t.Parallel()
 	if _, err := LoadConfig("/nonexistent/wb.yaml"); err == nil {
 		t.Error("expected error for missing config file, got nil")
 	}
 }
 
 func TestLoadConfigInvalidYAML(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, "recipes: [this is not a map")
 	if _, err := LoadConfig(path); err == nil {
 		t.Error("expected error for invalid YAML, got nil")
@@ -100,6 +104,7 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 }
 
 func TestLoadConfigTemplateSectionMissingTemplate(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `
 recipes:
   bad:
@@ -111,6 +116,7 @@ recipes:
 }
 
 func TestLoadConfigCommandMissingCommand(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `
 recipes:
   bad:
@@ -122,6 +128,7 @@ recipes:
 }
 
 func TestLoadConfigUnknownType(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `
 recipes:
   bad:
@@ -133,6 +140,7 @@ recipes:
 }
 
 func TestExpandPath(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("no home dir available")

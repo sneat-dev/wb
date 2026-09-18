@@ -10,6 +10,7 @@ import (
 )
 
 func TestMemoizableGitQueryAcceptsOnlyStableReadOnlyVerbs(t *testing.T) {
+	t.Parallel()
 	accepted := [][]string{
 		{"rev-parse", "HEAD"},
 		{"rev-parse", "--path-format=absolute", "--git-common-dir"},
@@ -94,6 +95,7 @@ func TestGitQueryMemoNeverCachesWorkingTreeState(t *testing.T) {
 }
 
 func TestWithGitQueryMemoIsIdempotent(t *testing.T) {
+	t.Parallel()
 	ctx := withGitQueryMemo(context.Background())
 	again := withGitQueryMemo(ctx)
 	if gitQueryMemoFrom(ctx) != gitQueryMemoFrom(again) {
@@ -102,6 +104,7 @@ func TestWithGitQueryMemoIsIdempotent(t *testing.T) {
 }
 
 func TestIsAncestorShortCircuitsSelfComparison(t *testing.T) {
+	t.Parallel()
 	// A nonexistent repository proves no git process ran: a real spawn would
 	// fail on the missing directory rather than answer true.
 	ok, err := isAncestor(context.Background(), filepath.Join(t.TempDir(), "missing"), "abc123", "abc123")
@@ -148,6 +151,7 @@ func TestIsAncestorMemoizesBothVerdicts(t *testing.T) {
 }
 
 func TestValidBranchMemoizesVerdictPerName(t *testing.T) {
+	t.Parallel()
 	name := "memo-probe-" + t.Name()
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })
@@ -167,6 +171,7 @@ func TestValidBranchMemoizesVerdictPerName(t *testing.T) {
 }
 
 func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
+	t.Parallel()
 	name := "cancel-probe-" + t.Name()
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })
@@ -180,6 +185,7 @@ func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
 }
 
 func TestValidBranchDoesNotMemoizeFailure(t *testing.T) {
+	t.Parallel()
 	name := "invalid..branch"
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })

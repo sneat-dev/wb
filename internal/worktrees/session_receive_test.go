@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionReceiveRepositoryFromRemoteIsStrict(t *testing.T) {
+	t.Parallel()
 	local := filepath.Join(t.TempDir(), "remotes", "acme", "app.git")
 	tests := []struct {
 		remote string
@@ -34,6 +35,7 @@ func TestSessionReceiveRepositoryFromRemoteIsStrict(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.remote, func(t *testing.T) {
+			t.Parallel()
 			got, err := sessionReceiveRepositoryFromRemote(test.remote)
 			if test.ok && (err != nil || got != test.want) {
 				t.Fatalf("repository = %q, err = %v, want %q", got, err, test.want)
@@ -279,6 +281,7 @@ func TestReceiveSessionBundleDoesNotReclaimInterruptedLockUnderSameHandoffFenceF
 }
 
 func TestReceiveSessionBundleRecoversExactInterruptedReceivePublication(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"staged", "published_before_repair", "published_after_repair"} {
 		t.Run(state, func(t *testing.T) {
 			fixture := newSessionReceiveFixture(t)
@@ -373,6 +376,7 @@ func TestReceiveSessionBundleNeverRecoversPinBranchFromArbitraryPath(t *testing.
 }
 
 func TestReceiveSessionBundleRefusesUnsafeInterruptedReceiveStage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		stageName string
@@ -477,6 +481,7 @@ func TestReceiveSessionBundleRefusesMovedBranchBeforeTargetWorktree(t *testing.T
 }
 
 func TestReceiveSessionBundleRefusesInvalidBundleEvidenceBeforeTargetWorktree(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		mutate  func(t *testing.T, fixture *sessionReceiveFixture)
@@ -548,6 +553,7 @@ func TestReceiveSessionBundleRefusesInvalidBundleEvidenceBeforeTargetWorktree(t 
 }
 
 func TestReceiveSessionBundleRefusesUnsafeReuse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, fixture *sessionReceiveFixture, worktree string)

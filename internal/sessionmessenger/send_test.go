@@ -34,6 +34,7 @@ func (deliverer *fakeMessageDeliverer) DeliverMessage(_ context.Context, raw []b
 }
 
 func TestSendRejectsNilContextBeforeDurableLookup(t *testing.T) {
+	t.Parallel()
 	// The nil context is exactly what this test asserts is rejected.
 	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
 	_, err := Send(nil, Options{TargetWBSessionID: "wbs-successor"})
@@ -43,6 +44,7 @@ func TestSendRejectsNilContextBeforeDurableLookup(t *testing.T) {
 }
 
 func TestSendPersistsBeforeCourierAndBindsTextAndRequestHandoffLineage(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		kind sessionmove.MessageKind
@@ -52,6 +54,7 @@ func TestSendPersistsBeforeCourierAndBindsTextAndRequestHandoffLineage(t *testin
 		{"request handoff", sessionmove.MessageKindRequestHandoff, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newSendFixture(t, sessionmove.CourierSSH)
 			deliverer := &fakeMessageDeliverer{receipt: fixture.messageReceipt}
 			var workLogCalls int
@@ -95,6 +98,7 @@ func TestSendPersistsBeforeCourierAndBindsTextAndRequestHandoffLineage(t *testin
 }
 
 func TestSendAmbiguityReturnsExactResumeIdentityAndReusesDurableBytes(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	first := &fakeMessageDeliverer{err: errors.New("transport outcome unknown")}
 	options := fixture.options(sessionmove.MessageKindText, "Preserve these exact bytes.")
@@ -124,6 +128,7 @@ func TestSendAmbiguityReturnsExactResumeIdentityAndReusesDurableBytes(t *testing
 }
 
 func TestSendUsesOnlyRecordedSynchestraRouteAndDurableDispatch(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSynchestra)
 	deliverer := &fakeMessageDeliverer{receipt: fixture.messageReceipt}
 	options := fixture.options(sessionmove.MessageKindText, "Continue on Synchestra only.")

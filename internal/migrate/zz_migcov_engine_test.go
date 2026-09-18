@@ -12,6 +12,7 @@ func migCovTextReplaceSpec(id string) Spec {
 }
 
 func TestMigCovBuildPlanRejectsInvalidSpecAndMissingRoot(t *testing.T) {
+	t.Parallel()
 	if _, err := BuildPlan(Spec{}); err == nil || !strings.Contains(err.Error(), "missing id") {
 		t.Fatalf("BuildPlan(invalid spec) = %v", err)
 	}
@@ -21,6 +22,7 @@ func TestMigCovBuildPlanRejectsInvalidSpecAndMissingRoot(t *testing.T) {
 }
 
 func TestMigCovBuildPlanSkipsIgnoredDirectories(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var ignored []string
 	for _, name := range []string{".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "dist", "build", ".hidden"} {
@@ -57,6 +59,7 @@ func TestMigCovBuildPlanSkipsIgnoredDirectories(t *testing.T) {
 }
 
 func TestMigCovBuildPlanReportsScanAndReadFailures(t *testing.T) {
+	t.Parallel()
 	if _, err := BuildPlan(migCovTextReplaceSpec("scan"), filepath.Join(t.TempDir(), "absent")); err == nil || !strings.Contains(err.Error(), "scan ") {
 		t.Fatalf("BuildPlan(missing root) = %v, want scan error", err)
 	}
@@ -74,6 +77,7 @@ func TestMigCovBuildPlanReportsScanAndReadFailures(t *testing.T) {
 }
 
 func TestMigCovBuildPlanHonoursIncludeAndDeduplicatesRoots(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
 		t.Fatal(err)
@@ -106,6 +110,7 @@ func TestMigCovBuildPlanHonoursIncludeAndDeduplicatesRoots(t *testing.T) {
 }
 
 func TestMigCovBuildPlanReportsTransformFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "broken.go"), []byte("package p\nfunc (\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -121,6 +126,7 @@ func TestMigCovBuildPlanReportsTransformFailure(t *testing.T) {
 }
 
 func TestMigCovApplyRefusesMissingFileAndUnwritableDirectory(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "gone.py")
 	if err := Apply(Plan{Changes: []FileChange{{Path: missing, Updated: []byte("new")}}}); err == nil ||
 		!strings.Contains(err.Error(), "read "+missing) {
@@ -161,6 +167,7 @@ func TestMigCovApplyRefusesMissingFileAndUnwritableDirectory(t *testing.T) {
 }
 
 func TestMigCovIgnoredDirectoryAndMatchPath(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "dist", "build", ".cache"} {
 		if !ignoredDirectory(name) {
 			t.Errorf("ignoredDirectory(%q) = false, want true", name)
@@ -198,6 +205,7 @@ func TestMigCovIgnoredDirectoryAndMatchPath(t *testing.T) {
 }
 
 func TestMigCovScopeMatchesExcludeThenInclude(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		scope Scope
@@ -212,6 +220,7 @@ func TestMigCovScopeMatchesExcludeThenInclude(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := test.scope.matches(test.path); got != test.want {
 				t.Fatalf("matches(%q) = %v, want %v", test.path, got, test.want)
 			}
@@ -220,6 +229,7 @@ func TestMigCovScopeMatchesExcludeThenInclude(t *testing.T) {
 }
 
 func TestMigCovReviewFindingsSkipsUnmatchedAndExcluded(t *testing.T) {
+	t.Parallel()
 	source := []byte("package p\n\nvar a = legacy.One\nvar b = legacy.Two\n")
 	rules := []ReviewRule{
 		{ID: "other-language", Language: "python", Pattern: "legacy", Message: "python only"},
@@ -234,6 +244,7 @@ func TestMigCovReviewFindingsSkipsUnmatchedAndExcluded(t *testing.T) {
 }
 
 func TestMigCovSortFindingsOrdersByPathThenRule(t *testing.T) {
+	t.Parallel()
 	findings := []Finding{
 		{Path: "b.go", RuleID: "a"},
 		{Path: "a.go", RuleID: "z"},

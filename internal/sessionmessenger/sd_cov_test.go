@@ -29,6 +29,7 @@ func sdCovCountingFactory(deliverer *fakeMessageDeliverer, calls *int) func(sess
 }
 
 func TestSdCovDeliveryErrorReportsExactResumableIdentityAndUnwraps(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	cause := errors.New("transport outcome unknown")
 	options := fixture.options(sessionmove.MessageKindText, "keep these bytes")
@@ -53,6 +54,7 @@ func TestSdCovDeliveryErrorReportsExactResumableIdentityAndUnwraps(t *testing.T)
 }
 
 func TestSdCovSendRejectsBlankTargetSessionIDBeforeStoreUse(t *testing.T) {
+	t.Parallel()
 	_, err := Send(context.Background(), Options{TargetWBSessionID: "   "})
 	if err == nil || !strings.Contains(err.Error(), "target WB session ID is required") {
 		t.Fatalf("Send error = %v, want blank target refusal", err)
@@ -60,6 +62,7 @@ func TestSdCovSendRejectsBlankTargetSessionIDBeforeStoreUse(t *testing.T) {
 }
 
 func TestSdCovSendRejectsUnknownSuccessorAddress(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKindText, "hello")
 	options.TargetWBSessionID = "wbs-never-indexed"
@@ -70,6 +73,7 @@ func TestSdCovSendRejectsUnknownSuccessorAddress(t *testing.T) {
 }
 
 func TestSdCovSendFailsWhenExecutionLockCannotBeAcquired(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	// A directory where the execution lock file belongs can never be opened as
 	// the handoff fence, so no courier attempt may start. The fixture's own lock
@@ -95,6 +99,7 @@ func TestSdCovSendFailsWhenExecutionLockCannotBeAcquired(t *testing.T) {
 }
 
 func TestSdCovSendFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	// A regular file where the events directory belongs makes the exact
 	// aggregate projection unreadable while leaving address resolution intact.
@@ -114,6 +119,7 @@ func TestSdCovSendFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
 }
 
 func TestSdCovSendRejectsSourceSessionThatDoesNotMatchPredecessor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mutate  func(*session.Record)
@@ -128,6 +134,7 @@ func TestSdCovSendRejectsSourceSessionThatDoesNotMatchPredecessor(t *testing.T) 
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newSendFixture(t, sessionmove.CourierSSH)
 			options := fixture.options(sessionmove.MessageKindText, "hello")
 			tc.mutate(&options.SourceSession)
@@ -157,6 +164,7 @@ func TestSdCovSendRejectsSourceSessionThatDoesNotMatchPredecessor(t *testing.T) 
 }
 
 func TestSdCovSendRejectsResumeThatReintroducesMessageIdentity(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKindText, "body must not be resent")
 	options.ResumeMessageID = options.MessageID
@@ -167,6 +175,7 @@ func TestSdCovSendRejectsResumeThatReintroducesMessageIdentity(t *testing.T) {
 }
 
 func TestSdCovSendRejectsResumeOfUnknownOrReinterpretedMessage(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	calls := 0
 	deliverer := &fakeMessageDeliverer{receipt: fixture.messageReceipt}
@@ -195,6 +204,7 @@ func TestSdCovSendRejectsResumeOfUnknownOrReinterpretedMessage(t *testing.T) {
 }
 
 func TestSdCovSendRequiresCallerOwnedMessageIdentityAndClock(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	withoutID := fixture.options(sessionmove.MessageKindText, "hello")
 	withoutID.MessageID = "  "
@@ -209,6 +219,7 @@ func TestSdCovSendRequiresCallerOwnedMessageIdentityAndClock(t *testing.T) {
 }
 
 func TestSdCovSendRejectsUnsupportedMessageKind(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKind("telepathy"), "hello")
 	calls := 0
@@ -223,6 +234,7 @@ func TestSdCovSendRejectsUnsupportedMessageKind(t *testing.T) {
 }
 
 func TestSdCovSendReplaysDurableMessageReceiptWithoutCourier(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	deliverer := &fakeMessageDeliverer{receipt: fixture.messageReceipt}
 	calls := 0
@@ -258,6 +270,7 @@ func TestSdCovSendReplaysDurableMessageReceiptWithoutCourier(t *testing.T) {
 }
 
 func TestSdCovSendRefusesCourierAttemptWhenBoundaryHookFails(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	blocked := errors.New("crash before courier")
 	options := fixture.options(sessionmove.MessageKindText, "durable before courier")
@@ -283,6 +296,7 @@ func TestSdCovSendRefusesCourierAttemptWhenBoundaryHookFails(t *testing.T) {
 }
 
 func TestSdCovSendReportsCourierFactoryFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKindText, "hello")
 	factoryErr := errors.New("courier factory refused")
@@ -296,6 +310,7 @@ func TestSdCovSendReportsCourierFactoryFailure(t *testing.T) {
 }
 
 func TestSdCovSendRejectsTargetAcknowledgementThatDoesNotMatchExactMessage(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKindText, "hello")
 	options.NewDeliverer = func(sessionmove.SuccessorAddress, sessioncourier.MessageSynchestraOptions) (sessioncourier.MessageDeliverer, error) {
@@ -312,6 +327,7 @@ func TestSdCovSendRejectsTargetAcknowledgementThatDoesNotMatchExactMessage(t *te
 }
 
 func TestSdCovSendFailsWhenOutgoingReceiptPublicationIsBlocked(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	deliverer := &fakeMessageDeliverer{receipt: fixture.messageReceipt}
 	options := fixture.options(sessionmove.MessageKindText, "hello")
@@ -330,6 +346,7 @@ func TestSdCovSendFailsWhenOutgoingReceiptPublicationIsBlocked(t *testing.T) {
 }
 
 func TestSdCovSendReportsSourceRecordingFailureAsResumable(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	recordErr := errors.New("work log unavailable")
 	options := fixture.options(sessionmove.MessageKindText, "hello")
@@ -351,6 +368,7 @@ func TestSdCovSendReportsSourceRecordingFailureAsResumable(t *testing.T) {
 }
 
 func TestSdCovSendUsesProductionRecordingSeamWhenUnset(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	options := fixture.options(sessionmove.MessageKindText, "hello")
 	options.RecordSent = nil
@@ -367,6 +385,7 @@ func TestSdCovSendUsesProductionRecordingSeamWhenUnset(t *testing.T) {
 }
 
 func TestSdCovSendReusesDurableSynchestraDispatchOnRetry(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSynchestra)
 	var persistedDigest sessionmove.Digest
 	first := fixture.options(sessionmove.MessageKindText, "dispatch once")
@@ -416,6 +435,7 @@ func TestSdCovSendReusesDurableSynchestraDispatchOnRetry(t *testing.T) {
 }
 
 func TestSdCovSendReportsUnreadableDurableSynchestraDispatch(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSynchestra)
 	var persistedDigest sessionmove.Digest
 	first := fixture.options(sessionmove.MessageKindText, "dispatch then fail")
@@ -519,6 +539,7 @@ func TestSdCovNewDelivererRejectsIncompleteOrUnsupportedCouriers(t *testing.T) {
 }
 
 func TestSdCovSendReportsRecordingFailureOnDurableReceiptReplay(t *testing.T) {
+	t.Parallel()
 	fixture := newSendFixture(t, sessionmove.CourierSSH)
 	calls := 0
 	first := fixture.options(sessionmove.MessageKindText, "replay then fail to record")

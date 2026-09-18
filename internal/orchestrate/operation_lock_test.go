@@ -132,6 +132,7 @@ func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 		{name: "trailing data", contents: "operation=invalid-metadata\npid=6954\nextra\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			const operation = "invalid-metadata"
 			path := operationLockTestPath(t, githubDir, operation)
 			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
@@ -148,6 +149,7 @@ func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 }
 
 func TestAcquireOperationLockPreservesAmbiguousLinks(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		link func(string, string) error

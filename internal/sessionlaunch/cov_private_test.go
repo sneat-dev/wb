@@ -86,6 +86,7 @@ func TestSlCovRunPrivateLauncherRejectsInvalidInvocation(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsChangedPlanAndRequest(t *testing.T) {
+	t.Parallel()
 	t.Run("missing plan", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		if err := os.Remove(filepath.Join(slCovStateDir(fx.store.Root), "plan.json")); err != nil {
@@ -150,6 +151,7 @@ func TestSlCovRunPrivateLauncherRejectsChangedPlanAndRequest(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsExistingCustody(t *testing.T) {
+	t.Parallel()
 	t.Run("abandoned", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
@@ -228,6 +230,7 @@ func TestSlCovRunPrivateLauncherRejectsExistingCustody(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsExecutableAndSessionConflicts(t *testing.T) {
+	t.Parallel()
 	t.Run("running WB mismatch", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		other := slCovExecutable(t, t.TempDir(), "wb")
@@ -285,6 +288,7 @@ func TestSlCovRunPrivateLauncherRejectsExecutableAndSessionConflicts(t *testing.
 }
 
 func TestSlCovRunPrivateLauncherSurfacesFailureAndReleaseConflicts(t *testing.T) {
+	t.Parallel()
 	t.Run("ready publication failure", func(t *testing.T) {
 		fx, attemptID, deps := slCovPrivateFixture(t)
 		slCovReadOnly(t, filepath.Join(slCovAttemptDir(fx.store.Root, attemptID), readyDirectoryName))
@@ -416,6 +420,7 @@ func itoaSlCovLauncher(value int) string {
 }
 
 func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
+	t.Parallel()
 	fx := newLauncherRetryFixture(t)
 	state, err := fx.store.Load(fx.request.HandoffID)
 	if err != nil {
@@ -450,6 +455,7 @@ func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			broken := fx.plan
 			mutate(&broken)
 			if err := validatePrivatePlan(state, broken); err == nil {
@@ -458,6 +464,7 @@ func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
 		})
 	}
 	t.Run("sparse optional fields", func(t *testing.T) {
+		t.Parallel()
 		sparse := fx.plan
 		sparse.PinnedBranch, sparse.AuthorityFile, sparse.ContinuationKind, sparse.ContinuationDigest = "", "", "", ""
 		if err := validatePrivatePlan(state, sparse); err != nil {
@@ -489,6 +496,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		}
 	})
 	t.Run("missing handover", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(fx.worktree, filepath.FromSlash(fx.request.HandoverPath))
 		original, err := os.ReadFile(path)
 		if err != nil {
@@ -503,6 +511,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		}
 	})
 	t.Run("changed handover digest", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(fx.worktree, filepath.FromSlash(fx.request.HandoverPath))
 		original, err := os.ReadFile(path)
 		if err != nil {
@@ -517,6 +526,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		}
 	})
 	t.Run("missing worktree", func(t *testing.T) {
+		t.Parallel()
 		broken := fx.plan
 		broken.WorktreeDir = filepath.Join(t.TempDir(), "absent")
 		if err := verifyLauncherWorktree(broken, fx.request, fx.store); err == nil {
@@ -524,6 +534,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		}
 	})
 	t.Run("private handover", func(t *testing.T) {
+		t.Parallel()
 		request := completeLaunchTestRequest(t)
 		request.HandoverPath = ""
 		request.HandoverContent = "private handover\n"

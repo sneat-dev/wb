@@ -36,6 +36,7 @@ func TestIdentityFromEnvIsUndeclaredWhenUnset(t *testing.T) {
 // A malformed PID must leave liveness unknown rather than fail the command it
 // was attached to, and must never be recorded as a real process.
 func TestIdentityFromEnvRejectsAMalformedPID(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"not-a-number", "0", "-5", " "} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(EnvAgentPID, value)
@@ -54,6 +55,7 @@ func TestIdentityFromEnvRejectsAMalformedPID(t *testing.T) {
 }
 
 func TestAgentComposition(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		runtime, id string
@@ -66,6 +68,7 @@ func TestAgentComposition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := AgentIdentity{Runtime: tc.runtime, AgentID: tc.id}.Agent()
 			if got != tc.want {
 				t.Fatalf("Agent() = %q, want %q", got, tc.want)
@@ -77,6 +80,7 @@ func TestAgentComposition(t *testing.T) {
 // The warning has to be actionable on its own: an agent reading it should not
 // need to consult docs to comply.
 func TestUndeclaredOwnerWarningNamesBothRoutes(t *testing.T) {
+	t.Parallel()
 	warning := UndeclaredOwnerWarning("/tmp/wt")
 
 	for _, want := range []string{

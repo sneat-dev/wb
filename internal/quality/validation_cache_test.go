@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cache := filepath.Join(t.TempDir(), "cache")
 	write := func(name, contents string) {
@@ -64,6 +65,7 @@ func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
 }
 
 func TestValidationCacheRejectsEvidenceFromDifferentValidator(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cache := filepath.Join(t.TempDir(), "cache")
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/cache\n\ngo 1.26\n"), 0o644); err != nil {

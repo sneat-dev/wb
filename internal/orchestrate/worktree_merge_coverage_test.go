@@ -174,6 +174,7 @@ func TestOrchCovValidateExactPreparingReceiptAdmitsOnlyAnExactResume(t *testing.
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := base
 			test.mutate(&candidate)
 			if test.prepare != nil {
@@ -238,6 +239,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := receipt
 			candidate.Sources = append([]WorktreeMergeSource(nil), receipt.Sources...)
 			test.mutate(&candidate)
@@ -250,6 +252,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 }
 
 func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing.T) {
+	t.Parallel()
 	valid := WorktreeMergeReceipt{
 		Status:    WorktreeMergePrepared,
 		TargetSHA: strings.Repeat("b", 40),
@@ -289,6 +292,7 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := valid
 			test.mutate(&candidate)
 			if ok, err := preparedValidationStillValid(candidate, worktreeMergeValidationPlan{}); err != nil || ok {
@@ -381,6 +385,7 @@ func TestOrchCovCanRefreshWorktreeMergeReceiptRequiresAnAdditiveAdvance(t *testi
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := prior
 			candidate.Sources = append([]WorktreeMergeSource(nil), prior.Sources...)
 			candidateSources := append([]WorktreeMergeSource(nil), sources...)

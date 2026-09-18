@@ -10,6 +10,7 @@ import (
 )
 
 func TestCreateLocalPlacementRejectsUnsafeRoot(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"symlink", "tracked"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture := newGitFixture(t)
