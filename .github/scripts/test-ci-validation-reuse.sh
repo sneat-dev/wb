@@ -42,7 +42,7 @@ if ! awk '/name: Download selected validation receipt/{found=1} found && /contin
   printf 'download fallback must continue to verification\n' >&2
   exit 1
 fi
-if ! grep -Fq "if: \${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' }}" "$root/.github/workflows/go-ci.yml"; then
+if ! grep -Fq "if: \${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' }}" "$root/.github/workflows/go-ci.yml"; then
   printf 'receipt publication must override skipped-dependency propagation\n' >&2
   exit 1
 fi

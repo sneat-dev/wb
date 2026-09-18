@@ -327,7 +327,15 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	}
 	result.HeadSHA = strings.TrimSpace(headSHA)
 
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
+	// --set-upstream makes a plain `git push` from the worktree work right
+	// after this call, instead of failing with "no upstream branch" (#609).
+	// It is safe across the cases that matter here: it records the upstream
+	// against whatever local branch HEAD is actually on, even when that
+	// local name differs from the pushed ref; it is a no-op when an upstream
+	// is already set to the same ref; and on a detached HEAD it pushes fine
+	// and simply sets nothing (Git only warns, and only via the message
+	// this command's own output already carries) rather than failing.
+	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "--set-upstream", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return result, fmt.Errorf("push %s: %w", branch, err)
 	}
 
