@@ -248,7 +248,7 @@ func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
 		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock); err != nil {
+		if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(200, 0)); err == nil || !strings.Contains(err.Error(), "local") {

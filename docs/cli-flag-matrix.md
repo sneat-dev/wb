@@ -105,8 +105,8 @@ a general force flag.
 `--include-task <task>` (repeatable) and `--include-active-tasks` each lift
 only the live-Work-Log-claim refusal — for the named tasks, or for every
 active task. Task names are matched exactly (case-sensitive). Every other
-refusal (a busy process, a parked session, a Git operation in progress, an
-occupied destination) still applies, including the re-check immediately
+refusal (a busy process, a Git operation in progress, an occupied
+destination) still applies, including the re-check immediately
 before each clone's move. An `--include-task` name that matches no live
 claim in any resolved home is a usage error before anything moves. A clone
 planned only because of an inclusion names the included task in its dry-run

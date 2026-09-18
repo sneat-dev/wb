@@ -199,9 +199,17 @@ progress, or cannot be inspected (an index lock, or a merge, rebase,
 cherry-pick or revert state); a live Work Log claim holds the clone or any of
 its linked worktrees — checked across every home WB resolves for the root, not
 only its current write home, since a claim recorded under a retired legacy
-home is still a live task; or an un-picked-up parked session (one saved by `wb
-session park` and not yet resumed) names the clone or one of its linked
-worktrees as a member worktree. On an OS that exposes live process working
+home is still a live task. A parked session (one saved by `wb session park`
+and not yet resumed) that names the clone or one of its linked worktrees MUST
+NOT by itself refuse the clone: resume resolves members by identity, per
+[`park-and-resume-agent-sessions#req:resume-resolves-members-by-identity`](../park-and-resume-agent-sessions/README.md).
+A parked member's own Work Log claim stays active while parked, so it IS a
+live claim: the clone still moves only when the live-claim refusal above is
+lifted for that member's task, via `--include-task` or
+`--include-active-tasks`, exactly as for any other active task. For each
+parked member worktree that the move changes, migrate MUST record a
+relocation receipt keyed by that member's Work Log reference, so resume
+finds it at its new path. On an OS that exposes live process working
 directories (Linux, via `/proc`), a clone MUST also be skipped when a
 readable process's current working directory is inside the clone or one of
 its linked worktrees, naming the PID and the command in the reason; a process
@@ -505,6 +513,19 @@ home; `wb worktree land`'s claim-authority check (`LoadWorkLogView`) only
 reads the current resolved home, a limitation that predates this AC and is
 out of scope here. `t-one`'s claim resolution after migration is proved by
 task-scoped lookup across every resolved home instead.
+
+### AC: migrate-moves-clones-referenced-by-parked-sessions
+
+**Requirements:** projects-root-layout#req:clone-migration-refusals
+
+**Given** a legacy clone that a parked session names through one member
+worktree in a legacy home and one inside the clone, whose member tasks are
+included with `--include-active-tasks`, and with no process and no Git
+operation in progress
+**When** `wb layout migrate --apply` runs
+**Then** the clone moves, a relocation receipt is recorded for the in-clone
+member under its Work Log reference, and `wb session resume` of that session
+accepts both members at their new paths.
 
 ### AC: migrate-is-reversible
 

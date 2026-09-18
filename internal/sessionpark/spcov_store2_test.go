@@ -146,7 +146,7 @@ func TestSpCovRetainSessionDirAndUnderLockReads(t *testing.T) {
 	if _, err := store.ContinuationPathUnderLock(nil); err == nil {
 		t.Fatal("continuation without authority accepted")
 	}
-	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(nil); err == nil {
+	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(nil, nil); err == nil {
 		t.Fatal("successor context without authority accepted")
 	}
 	if _, _, _, err := store.LoadLocalSuccessorContextUnderLock(nil); err == nil {
@@ -202,7 +202,7 @@ func TestSpCovRetainSessionDirAndUnderLockReads(t *testing.T) {
 func TestSpCovEnsureAndLoadLocalSuccessorContext(t *testing.T) {
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
-	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock); err == nil {
+	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil); err == nil {
 		t.Fatal("successor context published without a claimed route")
 	}
 	if _, _, _, err := store.LoadLocalSuccessorContextUnderLock(lock); err == nil {
@@ -214,7 +214,7 @@ func TestSpCovEnsureAndLoadLocalSuccessorContext(t *testing.T) {
 	if _, raw, found, err := store.LoadLocalSuccessorContextUnderLock(lock); err != nil || found || raw != nil {
 		t.Fatalf("absent context raw=%q found=%t err=%v", raw, found, err)
 	}
-	path, raw, err := store.EnsureLocalSuccessorContextUnderLock(lock)
+	path, raw, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestSpCovEnsureAndLoadLocalSuccessorContext(t *testing.T) {
 	if _, _, _, err := store.LoadLocalSuccessorContextUnderLock(lock); err == nil {
 		t.Fatal("conflicting successor context accepted")
 	}
-	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock); err == nil {
+	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil); err == nil {
 		t.Fatal("conflicting successor context republished")
 	}
 	if err := os.Remove(path); err != nil {
@@ -266,7 +266,7 @@ func TestSpCovLocalSuccessorContextZeroMembersAndOversize(t *testing.T) {
 		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
 			t.Fatal(err)
 		}
-		path, raw, err := store.EnsureLocalSuccessorContextUnderLock(lock)
+		path, raw, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -290,7 +290,7 @@ func TestSpCovLocalSuccessorContextZeroMembersAndOversize(t *testing.T) {
 		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock); err == nil {
+		if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil); err == nil {
 			t.Fatal("oversized successor context accepted")
 		}
 	})

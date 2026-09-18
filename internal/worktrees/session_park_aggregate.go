@@ -21,6 +21,14 @@ type parkedSessionCaptureMember struct {
 	journal   *os.File
 	unlock    func()
 	snapshot  sessionpark.Worktree
+	// resolvedWorktreeDir is this member's checkout resolved by identity
+	// (repopath clone resolution plus the relocation-receipt chain, exactly
+	// like parkedLocalMember.resolvedWorktreeDir), rather than trusted from
+	// snapshot's recorded path. Only WithParkedRemoteResumeCustody sets it;
+	// CaptureParkedSessionAggregate's own park-time capture leaves it empty
+	// and keeps using listed.WorktreeDir, since at park time listed IS the
+	// live List() result, not a possibly-stale recorded one.
+	resolvedWorktreeDir string
 
 	branch, head, status, fetchRemote, pushRemote, workLogReference, ownerEventID string
 }

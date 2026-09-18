@@ -126,6 +126,23 @@ successor and receipt. Concurrent local or remote resumers MUST have one winner,
 and losing callers MUST NOT mutate their session registry, member custody, or
 source aggregate with a competing target.
 
+#### REQ: resume-resolves-members-by-identity
+
+A parked member MUST be identified by its logical identity: repository
+(owner/repository, corroborated by the recorded remote), branch, and Work Log
+reference. Its recorded absolute paths are hints, never the identity. At resume
+time WB MUST resolve the member's canonical clone from the repository through
+the same host-level-first placement resolution every other command uses, and
+MUST resolve its checkout from the recorded worktree path or, when that path no
+longer exists, from the relocation receipts recorded for the member's Work Log
+reference. A member whose resolved checkout is a linked worktree of the
+resolved canonical clone, on the recorded branch, under the recorded Work Log
+reference, MUST be accepted even when the canonical clone, the worktree, or the
+store root has moved since park. A member that cannot be resolved this way, or
+whose resolved checkout's repository, branch or Work Log reference differs,
+MUST still be refused with the existing identity-changed diagnostic, naming
+the recorded and the resolved paths.
+
 ### Compatibility and transport security
 
 #### REQ: independent-versioned-bundle-protocol
@@ -212,6 +229,17 @@ registry, or custody mutation.
 **Given** an existing client uses `sessionmove.Request` schema version 1 or `wb session move`
 **When** the park-and-resume protocol is installed
 **Then** the prior request/receipt bytes, tracked handover behavior, receiver proofs, and public command behavior remain accepted unchanged.
+
+### AC: resume-survives-a-layout-migration (verifies REQ:resume-resolves-members-by-identity)
+
+**Given** a session parked with two members: a worktree in a legacy home whose
+canonical clone is at the legacy `<root>/<org>/<repo>`, and a worktree inside
+its canonical clone
+**When** `wb layout migrate --apply` moves both clones to the host level, and
+then `wb session resume <id>` runs
+**Then** the resume accepts both members at their current paths, and the
+successor's context names the current paths; and a member whose checkout was
+switched to a different branch after park is still refused as identity changed.
 
 ## Open Questions
 

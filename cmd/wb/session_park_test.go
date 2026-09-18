@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -439,6 +440,23 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 		"--original-prompt-file", prompt}, stdout, stderr); code != exitOK {
 		t.Fatalf("worktree create code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
+	// setUpRenameCLIFixture's origin is a generic "remote.git" whose path does
+	// not itself carry "acme/app" identity. Resume now resolves the canonical
+	// clone from the member's repository through repopath, so origin must
+	// name the real repository, exactly like a genuine GitHub clone would;
+	// retarget it to an identically-seeded bare repo at the real placement.
+	root := filepath.Dir(projects)
+	identityRemote := filepath.Join(root, "acme", "app.git")
+	if err := os.MkdirAll(filepath.Dir(identityRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "clone", "--bare", filepath.Join(root, "remote.git"), identityRemote).CombinedOutput(); err != nil {
+		t.Fatalf("clone identity remote: %v\n%s", err, output)
+	}
+	canonical := filepath.Join(projects, "acme", "app")
+	if output, err := exec.Command("git", "-C", canonical, "remote", "set-url", "origin", identityRemote).CombinedOutput(); err != nil {
+		t.Fatalf("retarget origin to identity remote: %v\n%s", err, output)
+	}
 	home := filepath.Join(projects, ".wb")
 	worktree := filepath.Join(home, "worktrees", "park-refusal", "acme", "app")
 	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: projects, Workers: 1})
@@ -449,7 +467,6 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	for _, result := range listed {
 		if result.Repository == "acme/app" && result.Task == "park-refusal" {
 			worktree = result.WorktreeDir
-			result.Repository = ""
 			member, err = worktrees.CaptureParkedSessionWorktree(context.Background(), projects, result, source)
 			break
 		}
