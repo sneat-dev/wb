@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
 )
@@ -558,5 +559,101 @@ func TestLandWorktreeMergePullRequestDeferredValidationWaitsOnFakeCI(t *testing.
 	log := gh.ghLog(t)
 	if !strings.Contains(log, "api --method PUT repos/acme/app/pulls/41/merge") {
 		t.Fatalf("gh log did not show the shared engine actually waiting on and merging the deferred candidate:\n%s", log)
+	}
+}
+
+// TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral is
+// the finding X2 engine-level test (sneat-dev/wb#591 red-team follow-up):
+// the shared engine both `wb pr land` and the worktree-merge PR route drive
+// through awaitLandablePullRequest must not report a passed wait, or
+// proceed to merge, when RequireExecutedRequiredChecks is set (a deferred
+// candidate) and the exact head's required check concluded "skipped".
+// Arming GitHub auto-merge is unaffected either way (this test disables it
+// only to keep the fixture minimal, not because the guard depends on it) —
+// what matters is that WB itself never reports landable on a suite that
+// never ran.
+func TestAwaitLandablePullRequestBlocksOnSkippedRequiredCheckUnderDeferral(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "x2-engine-source", "feature/x2-engine", "x2-engine.txt", "x2\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "check-conclusion", "skipped")
+	runEngineGit(t, receipt.Candidate.Worktree, "push", fixture.repository.CloneURL, "HEAD:refs/heads/"+receipt.Candidate.Branch)
+
+	view := PullRequestView{Number: 41}
+	view.Head.SHA, view.Head.Ref = receipt.Candidate.SHA, receipt.Candidate.Branch
+	view.Base.Ref = "main"
+
+	options := PullRequestLandOptions{
+		Repository: "acme/app", PullRequest: "41", ProjectsRoot: fixture.githubDir,
+		MergeMethod: "merge", MergeMethodExplicit: true,
+		NoAutoMerge: true, NoUpdateBranch: true,
+		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		RequireExecutedRequiredChecks: true,
+	}
+	_, waited, _, mergedByGitHub, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
+	if err != nil {
+		t.Fatalf("awaitLandablePullRequest returned an unexpected error: %v", err)
+	}
+	if refusal != nil {
+		t.Fatalf("awaitLandablePullRequest unexpectedly refused: %+v", refusal)
+	}
+	if mergedByGitHub {
+		t.Fatal("mergedByGitHub unexpectedly true")
+	}
+	if waited.Status == PullRequestWaitPassed {
+		t.Fatalf("X2: deferred wait reported passed despite a skipped required check: %+v", waited)
+	}
+	log := gh.ghLog(t)
+	if strings.Contains(log, "api --method PUT repos/acme/app/pulls/41/merge") {
+		t.Fatalf("X2: engine attempted to merge despite a skipped required check:\n%s", log)
+	}
+}
+
+// TestAwaitLandablePullRequestPlainPRLandKeepsSkippedAsPassing is the
+// control for finding X2: the plain `wb pr land` route
+// (RequireExecutedRequiredChecks left false, its default) keeps trusting a
+// registered required-check name regardless of its conclusion, exactly as
+// before this change.
+func TestAwaitLandablePullRequestPlainPRLandKeepsSkippedAsPassing(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "x2-control-source", "feature/x2-control", "x2-control.txt", "x2\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "check-conclusion", "skipped")
+	runEngineGit(t, receipt.Candidate.Worktree, "push", fixture.repository.CloneURL, "HEAD:refs/heads/"+receipt.Candidate.Branch)
+
+	view := PullRequestView{Number: 41}
+	view.Head.SHA, view.Head.Ref = receipt.Candidate.SHA, receipt.Candidate.Branch
+	view.Base.Ref = "main"
+
+	options := PullRequestLandOptions{
+		Repository: "acme/app", PullRequest: "41", ProjectsRoot: fixture.githubDir,
+		MergeMethod: "merge", MergeMethodExplicit: true,
+		NoAutoMerge: true, NoUpdateBranch: true,
+		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		// RequireExecutedRequiredChecks left false: the plain `wb pr land` default.
+	}
+	_, waited, _, _, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
+	if err != nil {
+		t.Fatalf("awaitLandablePullRequest returned an unexpected error: %v", err)
+	}
+	if refusal != nil {
+		t.Fatalf("awaitLandablePullRequest unexpectedly refused: %+v", refusal)
+	}
+	if waited.Status != PullRequestWaitPassed {
+		t.Fatalf("control: plain pr land no longer treats a skipped required check as passing: %+v", waited)
 	}
 }

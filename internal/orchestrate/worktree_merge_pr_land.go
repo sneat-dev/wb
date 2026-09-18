@@ -75,6 +75,10 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		CheckPollInterval:   options.CheckPollInterval,
 		OperationProgress:   options.Progress,
 		Lane:                options.Lane,
+		// Finding X2 (sneat-dev/wb#591 red-team follow-up): a receipt whose
+		// local validation was deferred to CI must have its required checks
+		// actually run before the shared engine reports it landable.
+		RequireExecutedRequiredChecks: receipt.ValidationDeferral != nil,
 		headUpdated: func(previous, updated string) error {
 			return adoptWorktreeMergeUpdateBranchAdvance(ctx, &receipt, previous, updated)
 		},
