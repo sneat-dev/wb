@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -188,13 +189,18 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			result.CandidateContainsTarget = true
 		}
 
-		checks, pending, reason := commitChecks(sliceCtx, options)
+		observedChecks, _, reason := commitChecks(sliceCtx, options)
 		if reason != "" {
 			if sliceCtx.Err() == context.DeadlineExceeded || isTransientReadReason(reason) {
 				return pendingCommitWaitResult(result), nil
 			}
 			return failedCommitWaitResult(result, reason), nil
 		}
+		// A filter narrows the observed set BEFORE pass/fail/pending is
+		// decided, so a failure or a pending check outside the selection never
+		// affects this wait (#627); the discarded pending flag above was only
+		// ever a duplicate of the per-check loop just below.
+		checks := filterSelectedChecks(observedChecks, options.Workflow, options.Check)
 		result.Checks = checks
 		observations++
 		// Report as soon as the exact-head check receipt is available. Later in
@@ -202,6 +208,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// publishing this event keeps a slow authority lookup from looking hung.
 		reportPullRequestWaitProgress(options, observations, result, 0)
 		failed := false
+		pending := false
 		for _, check := range checks {
 			switch check.Bucket {
 			case "pass", "skipping":
@@ -226,14 +233,31 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
 			return pendingCommitWaitResult(result), nil
 		}
+		// A filter also narrows required-check completeness to the requested
+		// subset (#627): a required check the filter excludes never blocks
+		// this wait, and Filter.RequiredChecks states how many still applied.
+		requiredChecks = filterSelectedRequiredChecks(requiredChecks, observedChecks, options.Workflow, options.Check)
 		result.RequiredChecks = requiredChecks
 		result.RequiredChecksAuthority = authority
 		result.TargetFreshnessAuthority = freshnessAuthority
 		result.PolicyAuthorityUnavailable = policyUnavailable
+		result.Filter = checkWaitFilterBlock(options, checks, requiredChecks)
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
 		missingRequired := missingRequiredChecks(checks, requiredChecks)
+		// A filter that selects no observed and no required check is never a
+		// vacuous pass, even once the exact head's observed checks are all
+		// terminal — that state means the name/workflow never registered, not
+		// that nothing applies (#627). Once nothing more can appear, report it
+		// immediately rather than polling out the rest of the slice.
+		if filterActive(options) && len(checks) == 0 && len(requiredChecks) == 0 {
+			result.Reason = "no observed or required check matched --workflow/--check on this exact head"
+			if allChecksTerminal(observedChecks) {
+				result.Reason += "; every observed GitHub check for the head is terminal, so this filter will not match later (not found)"
+				return pendingCommitWaitResult(result), nil
+			}
+		}
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
@@ -269,7 +293,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		// waives a fence that could not be read, and separately permits an empty
 		// one that was read. A policy WB failed to fetch and a policy WB fetched
 		// and found empty are different receipts.
-		noApplicableChecks := len(checks) == 0 && len(requiredChecks) == 0 &&
+		noApplicableChecks := !filterActive(options) && len(checks) == 0 && len(requiredChecks) == 0 &&
 			(options.PullRequest == "" || options.AllowUnfenced)
 		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
@@ -286,6 +310,10 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			stableObservations = 0
 			result.StableObservations = 0
 			switch {
+			case filterActive(options) && len(checks) == 0 && len(requiredChecks) == 0:
+				// Reason was already set above with the filter-specific
+				// not-found diagnostic; keep it rather than the generic
+				// "no GitHub checks have registered" text below.
 			case len(missingRequired) > 0:
 				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
 			case len(checks) == 0:
@@ -307,10 +335,12 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
 				return pendingCommitWaitResult(result), nil
 			}
+			requiredChecks = filterSelectedRequiredChecks(requiredChecks, observedChecks, options.Workflow, options.Check)
 			result.RequiredChecks = requiredChecks
 			result.RequiredChecksAuthority = authority
 			result.TargetFreshnessAuthority = freshnessAuthority
 			result.PolicyAuthorityUnavailable = policyUnavailable
+			result.Filter = checkWaitFilterBlock(options, checks, requiredChecks)
 			if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 			}
@@ -560,6 +590,146 @@ func remoteCheckExecuted(check RemoteCheck) bool {
 	default:
 		return true
 	}
+}
+
+// filterActive reports whether a wait scopes its evaluation to a
+// --workflow/--check subset (sneat-dev/wb#627). With neither set, every
+// filter helper below is a no-op and the receipt is byte-for-byte the
+// unfiltered behaviour.
+func filterActive(options PullRequestWaitOptions) bool {
+	return len(options.Workflow) > 0 || len(options.Check) > 0
+}
+
+// checkWaitFilterBlock builds the JSON/text "filter was applied" receipt
+// (sneat-dev/wb#627), or nil when no filter was requested so an unfiltered
+// result carries no filter field at all.
+func checkWaitFilterBlock(options PullRequestWaitOptions, checks []RemoteCheck, required []RequiredRemoteCheck) *CheckWaitFilter {
+	if !filterActive(options) {
+		return nil
+	}
+	return &CheckWaitFilter{
+		Workflows:      options.Workflow,
+		Checks:         options.Check,
+		MatchedChecks:  len(checks),
+		RequiredChecks: len(required),
+	}
+}
+
+// filterSelectedChecks narrows checks to the caller's --workflow/--check
+// selection (sneat-dev/wb#627). With neither set it returns checks unchanged
+// so the unfiltered path stays byte-for-byte identical.
+func filterSelectedChecks(checks []RemoteCheck, workflows, patterns []string) []RemoteCheck {
+	if len(workflows) == 0 && len(patterns) == 0 {
+		return checks
+	}
+	selected := make([]RemoteCheck, 0, len(checks))
+	for _, check := range checks {
+		if checkSelected(check, workflows, patterns) {
+			selected = append(selected, check)
+		}
+	}
+	return selected
+}
+
+func checkSelected(check RemoteCheck, workflows, patterns []string) bool {
+	if len(workflows) > 0 && !containsExact(workflows, check.WorkflowName) {
+		return false
+	}
+	if len(patterns) > 0 && !checkNameMatchesAny(checkDisplayName(check.Name), patterns) {
+		return false
+	}
+	return true
+}
+
+// filterSelectedRequiredChecks narrows required to the checks the filter
+// selects (sneat-dev/wb#627): completeness is then evaluated only over this
+// subset. A --check pattern matches the required check's own name directly.
+// A --workflow filter has no workflow attribution on RequiredRemoteCheck
+// itself, so it is resolved through observedChecks: a required check is
+// selected when some observed check under one of the selected workflows
+// carries its exact display name. A required check that has never been
+// observed under that workflow is excluded rather than guessed at — the
+// caller's allChecksTerminal/not-found handling is what catches a filter that
+// can never match, not a false inclusion here.
+func filterSelectedRequiredChecks(required []RequiredRemoteCheck, observedChecks []RemoteCheck, workflows, patterns []string) []RequiredRemoteCheck {
+	if len(workflows) == 0 && len(patterns) == 0 {
+		return required
+	}
+	var workflowNames map[string]bool
+	if len(workflows) > 0 {
+		workflowNames = map[string]bool{}
+		for _, check := range observedChecks {
+			if containsExact(workflows, check.WorkflowName) {
+				workflowNames[checkDisplayName(check.Name)] = true
+			}
+		}
+	}
+	selected := make([]RequiredRemoteCheck, 0, len(required))
+	for _, expectation := range required {
+		if len(patterns) > 0 && !checkNameMatchesAny(expectation.Name, patterns) {
+			continue
+		}
+		if workflowNames != nil && !workflowNames[expectation.Name] {
+			continue
+		}
+		selected = append(selected, expectation)
+	}
+	return selected
+}
+
+func containsExact(values []string, value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+// checkDisplayName strips WB's internal "check-run:"/"status:" name prefix so
+// a --check pattern matches the name GitHub itself shows for the check
+// (sneat-dev/wb#627).
+func checkDisplayName(name string) string {
+	name = strings.TrimPrefix(name, "check-run:")
+	name = strings.TrimPrefix(name, "status:")
+	return name
+}
+
+// checkNameMatchesAny reports whether name matches any pattern: an exact
+// string, or a simple path.Match glob (sneat-dev/wb#627). path.Match's "*"
+// never crosses a "/", so a pattern like "Release / *" only matches within
+// the one segment after the slash. No regex is supported, by design.
+func checkNameMatchesAny(name string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if name == pattern {
+			return true
+		}
+		if matched, err := path.Match(pattern, name); err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// allChecksTerminal reports whether every observed check is terminal
+// (pass/skipping/fail/cancel). An empty set is never "terminal" by this
+// definition: nothing has registered yet, which is different from a filter
+// whose selection can now never appear (sneat-dev/wb#627).
+func allChecksTerminal(checks []RemoteCheck) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, check := range checks {
+		switch check.Bucket {
+		case "pass", "skipping", "fail", "cancel":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // missingRequiredChecks reports every required check absent from checks,
@@ -914,6 +1084,10 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
 	pending := false
 	for _, check := range response.CheckRuns {
+		// workflowName is the Actions workflow that produced this check-run,
+		// used only to back --workflow filtering (sneat-dev/wb#627); empty
+		// for a third-party check-run app, which has no such identity here.
+		workflowName := ""
 		if strings.EqualFold(check.App.Slug, "github-actions") {
 			if check.ID <= 0 || check.CheckSuite.ID <= 0 {
 				return nil, false, fmt.Sprintf("GitHub Actions check run %q omitted a positive check-run or check-suite ID", check.Name)
@@ -931,9 +1105,10 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 				continue
 			}
 			observedActionsRuns[identity]++
+			workflowName = run.Name
 		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
-		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
+		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID, WorkflowName: workflowName})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -944,10 +1119,11 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			continue
 		}
 		checks = append(checks, RemoteCheck{
-			Name:       fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
-			Bucket:     bucket,
-			Conclusion: run.Conclusion,
-			Link:       run.HTMLURL,
+			Name:         fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
+			Bucket:       bucket,
+			Conclusion:   run.Conclusion,
+			Link:         run.HTMLURL,
+			WorkflowName: run.Name,
 		})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
@@ -1137,7 +1313,10 @@ type githubActionsRunsResponse struct {
 }
 
 type githubActionsRun struct {
-	ID           int64     `json:"id"`
+	ID int64 `json:"id"`
+	// Name is GitHub's own workflow display name for this run (e.g. "Go CI"),
+	// used only to back --workflow filtering (sneat-dev/wb#627).
+	Name         string    `json:"name"`
 	WorkflowID   int64     `json:"workflow_id"`
 	RunAttempt   int       `json:"run_attempt"`
 	Event        string    `json:"event"`

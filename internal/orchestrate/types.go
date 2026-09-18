@@ -151,6 +151,12 @@ type RemoteCheck struct {
 	Link       string `json:"link,omitempty" yaml:"link,omitempty"`
 	AppID      int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 	CheckRunID int64  `json:"check_run_id,omitempty" yaml:"check_run_id,omitempty"`
+	// WorkflowName is the GitHub Actions workflow name that produced this
+	// check (sneat-dev/wb#627): the workflow backing a check-run's suite, or
+	// a synthetic workflow-run entry's own name. Empty for a third-party
+	// check-run app or a commit-status-derived check, neither of which
+	// belongs to an Actions workflow, so --workflow can never select them.
+	WorkflowName string `json:"workflow_name,omitempty" yaml:"workflow_name,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
@@ -184,6 +190,22 @@ type RequiredRemoteCheck struct {
 	IntegrationID int64  `json:"integration_id,omitempty" yaml:"integration_id,omitempty"`
 }
 
+// CheckWaitFilter records that a check wait was scoped to a --workflow/--check
+// subset of the exact head's checks and required checks (sneat-dev/wb#627),
+// and how many each selected. Present in a JSON receipt only when a filter
+// was requested (additive, omitempty).
+type CheckWaitFilter struct {
+	Workflows []string `json:"workflows,omitempty" yaml:"workflows,omitempty"`
+	Checks    []string `json:"checks,omitempty" yaml:"checks,omitempty"`
+	// MatchedChecks is how many observed checks the filter selected. Zero
+	// with a terminal observed set means the filter cannot pass: see
+	// PullRequestWaitResult.Reason for the explicit not-found diagnostic.
+	MatchedChecks int `json:"matched_checks" yaml:"matched_checks"`
+	// RequiredChecks is how many of the target's required checks the filter
+	// selected; completeness is evaluated only over this subset.
+	RequiredChecks int `json:"matched_required_checks" yaml:"matched_required_checks"`
+}
+
 // PullRequestWaitOptions identifies exactly one direct-push or pull-request
 // head whose observed checks are read by a bounded foreground invocation. A
 // caller resumes a pending result with the same repository, target, PR (when
@@ -200,7 +222,17 @@ type PullRequestWaitOptions struct {
 	// AllowUnfenced permits a validation-only PR check receipt when the target
 	// branch has no server-enforced strict freshness fence. Merge callers leave
 	// this false; it is an explicit opt-in for wait-only validation.
-	AllowUnfenced     bool
+	AllowUnfenced bool
+	// Workflow restricts the wait to check runs produced by these exact
+	// GitHub Actions workflow names (sneat-dev/wb#627), repeatable. Empty
+	// means every workflow, matching today's unfiltered behaviour exactly.
+	Workflow []string
+	// Check restricts the wait to check-run names and commit-status contexts
+	// matching one of these exact names or simple "*" globs (sneat-dev/wb#627),
+	// repeatable. Empty means every check, matching today's unfiltered
+	// behaviour exactly. Workflow and Check combine with AND: when both are
+	// set, a check must satisfy both to be selected.
+	Check             []string
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	// StableRereadDelay overrides the shortened wait before the confirming
@@ -252,7 +284,12 @@ type PullRequestWaitResult struct {
 	PolicyAuthorityUnavailable string                `json:"policy_authority_unavailable,omitempty" yaml:"policy_authority_unavailable,omitempty"`
 	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
 	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
-	Reason                     string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	// Filter is present only when the wait was scoped by --workflow/--check
+	// (sneat-dev/wb#627), so an unfiltered receipt stays byte-for-byte
+	// unchanged. Checks and RequiredChecks above already carry the selected
+	// subset; this states that a filter was in force and how many it matched.
+	Filter *CheckWaitFilter `json:"filter,omitempty" yaml:"filter,omitempty"`
+	Reason string           `json:"reason,omitempty" yaml:"reason,omitempty"`
 	// Evidence carries auxiliary receipt facts that are not part of the wait
 	// outcome itself. "github_read_retries" mirrors the same key on
 	// PullRequestLandResult: the count and last cause of in-process transient

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -51,10 +52,23 @@ func newCIWaitCmd() *cobra.Command {
 	var slice, interval time.Duration
 	var jsonOut bool
 	var format string
+	var workflows, checkPatterns []string
 	command := &cobra.Command{
-		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>]",
+		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>] [--workflow <name>]... [--check <pattern>]...",
 		Short: "Wait one bounded foreground slice for checks on an exact head",
 		Long: `Observe all GitHub checks for exactly one pull-request or direct-push head.
+
+Pass --workflow (repeatable, exact GitHub Actions workflow name) or --check
+(repeatable, exact check-run name/commit-status context or a simple "*"
+glob — no regex) to narrow the wait to a subset of the head's checks, for
+example when only a release or deploy job matters and other checks are still
+running. Required-check completeness is then evaluated only over the
+required checks the filter selects, and the JSON result carries a "filter"
+block naming what matched. A filter that selects nothing, once every
+observed check on the head is terminal, is never a vacuous pass: it is
+reported pending with an explicit not-found reason. Never pass these flags
+to a landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
+evaluates the full required set.
 
 Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
@@ -82,7 +96,7 @@ it. This command never starts a detached watcher or background loop.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
+			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval, workflows, checkPatterns)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
 			machineOutput := jsonOut || format == "json"
@@ -91,6 +105,7 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
+				Workflow: workflows, Check: checkPatterns,
 				Slice: slice, CheckPollInterval: interval, Progress: progress.report, OperationProgress: progress.operationReporter("ci wait"),
 			})
 			if err != nil {
@@ -100,7 +115,7 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.finish(result)
 			output := ciWaitOutput{SchemaVersion: 1, ObservedAt: time.Now().UTC(), PullRequestWaitResult: result}
 			if result.Status == orchestrate.PullRequestWaitPending {
-				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, machineOutput)
+				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, workflows, checkPatterns, machineOutput)
 			}
 			if machineOutput {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -125,10 +140,12 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
+	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name; never pass this to a landing route")
+	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name or a simple * glob (no regex); never pass this to a landing route")
 	return command
 }
 
-func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration) error {
+func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string) error {
 	owner, name, validRepository := strings.Cut(strings.TrimSpace(repository), "/")
 	if !validRepository || owner == "" || name == "" || strings.Contains(name, "/") {
 		return fmt.Errorf("--repo must be owner/repository")
@@ -151,13 +168,32 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 	if interval >= slice {
 		return fmt.Errorf("--interval must be shorter than --slice so WB can confirm a stable terminal reread")
 	}
+	for _, workflow := range workflows {
+		if strings.TrimSpace(workflow) == "" {
+			return fmt.Errorf("--workflow must not be empty")
+		}
+	}
+	for _, pattern := range checkPatterns {
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("--check must not be empty")
+		}
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("--check %q is not a valid exact name or simple * glob: %v", pattern, err)
+		}
+	}
 	return nil
 }
 
-func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, jsonOut bool) []string {
+func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string, jsonOut bool) []string {
 	args := []string{"wb", "ci", "wait", "--repo", repository, "--target", target, "--head", head, "--slice", slice.String(), "--interval", interval.String()}
 	if pullRequest != "" {
 		args = append(args, "--pr", pullRequest)
+	}
+	for _, workflow := range workflows {
+		args = append(args, "--workflow", workflow)
+	}
+	for _, pattern := range checkPatterns {
+		args = append(args, "--check", pattern)
 	}
 	if jsonOut {
 		args = append(args, "--json")
@@ -172,6 +208,11 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 	}
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s: %s\n", output.Status, output.Repository, identity, output.Reason); err != nil {
 		return err
+	}
+	if output.Filter != nil {
+		if err := printCIWaitFilter(command, *output.Filter); err != nil {
+			return err
+		}
 	}
 	if len(output.ResumeArgs) > 0 {
 		quoted := make([]string, 0, len(output.ResumeArgs))
@@ -216,6 +257,21 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 		}
 	}
 	return nil
+}
+
+// printCIWaitFilter reports the --workflow/--check scoping a wait applied
+// (sneat-dev/wb#627): the text counterpart of the JSON "filter" block.
+func printCIWaitFilter(command *cobra.Command, filter orchestrate.CheckWaitFilter) error {
+	line := "filter:"
+	if len(filter.Workflows) > 0 {
+		line += " workflow=" + strings.Join(filter.Workflows, ",")
+	}
+	if len(filter.Checks) > 0 {
+		line += " check=" + strings.Join(filter.Checks, ",")
+	}
+	line += fmt.Sprintf(" matched %d check(s), %d required check(s)", filter.MatchedChecks, filter.RequiredChecks)
+	_, err := fmt.Fprintln(command.OutOrStdout(), line)
+	return err
 }
 
 func shellQuoteCIWaitArg(value string) string {

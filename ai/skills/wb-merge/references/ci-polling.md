@@ -29,3 +29,27 @@ Never detach a watcher, use a background process, or leave one long shell loop
 running. Pending is not completion. A failed, cancelled, or stale run blocks
 terminalization; report the exact receipt and hand off/resume it through the
 normal effort lifecycle.
+
+## Waiting for one workflow or job
+
+To wait for only one workflow or job — a release, a deploy, a single job
+inside a bigger CI run — while other checks on the same head are still
+running, add `--workflow <name>` (repeatable, exact GitHub Actions workflow
+name) or `--check <pattern>` (repeatable, exact check-run name/commit-status
+context, or a simple `*` glob — no regex) to `wb wait checks` / `wb ci wait`.
+Required-check completeness is then evaluated only over the required checks
+the filter selects, and the JSON result carries a `filter` block naming what
+matched. A filter that selects nothing, once every observed check on the head
+is terminal, is never a vacuous pass — it comes back pending with an explicit
+not-found reason, so a mistyped workflow or check name cannot masquerade as
+success. Never pass `--workflow`/`--check` to a landing route (`wb pr land` or
+a worktree merge): landing always evaluates the full required set.
+
+Never hand-roll a `gh run list` / `gh api` polling loop to watch a single job
+or workflow — that is exactly the case these flags exist to replace.
+
+Worked example: waiting for the release job on a main merge commit.
+
+```
+wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "Release / *" --json
+```

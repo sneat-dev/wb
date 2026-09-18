@@ -93,6 +93,21 @@ new work so the next reader finds the rest of the family.
 Note which is which: `wb wait checks` is the authoritative exact-head receipt
 used as merge evidence. `wb wait pr` reports and is **not** merge evidence.
 
+To wait for one workflow or job (a release, a deploy, a single job) instead of
+every check on the head, add `--workflow <name>` or `--check <pattern>`
+(repeatable, exact name or a simple `*` glob) to `wb wait checks --repo …
+--head …`:
+
+```sh
+wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json
+wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json
+```
+
+Never hand-roll a `gh run list` / `gh api` polling loop to watch one workflow
+or job. See `references/ci-polling.md` for the full filter contract and why a
+filter matching nothing is never a vacuous pass; never pass `--workflow`/
+`--check` to `wb pr land` or a worktree merge.
+
 ## Fast path
 
 Land with one call:
