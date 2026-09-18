@@ -95,9 +95,12 @@ github.com/sneat-dev/wb/internal/hostload.Disabled
 github.com/sneat-dev/wb/internal/hostload.Floor
 github.com/sneat-dev/wb/internal/landinglane.Read
 github.com/sneat-dev/wb/internal/landinglane.lockShared
+github.com/sneat-dev/wb/internal/layout.OriginSlug
+github.com/sneat-dev/wb/internal/layout.splitSlug
 github.com/sneat-dev/wb/internal/locallink.copyBuiltPackage
 github.com/sneat-dev/wb/internal/migrate.campaign.repositoryLayers
 github.com/sneat-dev/wb/internal/orchestrate.FindAbsorbedConflictAcknowledgement
+github.com/sneat-dev/wb/internal/orchestrate.canonicalClonePath
 github.com/sneat-dev/wb/internal/orchestrate.reconcileAbsorbedSourcePullRequestsWith
 github.com/sneat-dev/wb/internal/policy.Result.Summary
 github.com/sneat-dev/wb/internal/quality.Cover
@@ -105,6 +108,8 @@ github.com/sneat-dev/wb/internal/quality.Verify
 github.com/sneat-dev/wb/internal/quality.runShardedCoverage
 github.com/sneat-dev/wb/internal/quality.runShardedCoverageWithDiagnostics
 github.com/sneat-dev/wb/internal/quality.runShardedCoverageWithDiagnosticsAndProgress
+github.com/sneat-dev/wb/internal/repopath.Address.EqualFold
+github.com/sneat-dev/wb/internal/repopath.Address.String
 github.com/sneat-dev/wb/internal/repositoryevents.CursorStore.Load
 github.com/sneat-dev/wb/internal/repositoryevents.CursorStore.Save
 github.com/sneat-dev/wb/internal/runqueue.Peek
@@ -157,9 +162,9 @@ github.com/sneat-dev/wb/internal/tui.summaryItem.FilterValue
 github.com/sneat-dev/wb/internal/tui.summaryItem.Title
 github.com/sneat-dev/wb/internal/tui.summarySectionLabel
 github.com/sneat-dev/wb/internal/tui.writeUnpushedDetail
-github.com/sneat-dev/wb/internal/wbhome.StoreRoot
 github.com/sneat-dev/wb/internal/worktrees.AttachParkedLocalSuccessor
 github.com/sneat-dev/wb/internal/worktrees.CaptureParkedSessionWorktree
+github.com/sneat-dev/wb/internal/worktrees.ExpectedRemoteURL
 github.com/sneat-dev/wb/internal/worktrees.ParkedSessionWorkLogReference
 github.com/sneat-dev/wb/internal/worktrees.ParkedSessionWorkLogSnapshot
 github.com/sneat-dev/wb/internal/worktrees.ValidateDependencyDeltas
