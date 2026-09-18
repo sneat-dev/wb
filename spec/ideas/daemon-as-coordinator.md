@@ -28,14 +28,14 @@ conclusion rested on two findings: `internal/sessionmessenger` reaches only a
 live tmux successor of a completed session move, and a documentation review
 reported no push path into a session.
 
-The second finding was wrong, or at least incomplete. Claude Code supports
-**channels** (`claude --channels plugin:<server>`): an MCP server that pushes
-events into a session. Synchestra already runs one, driven from Telegram, and
-its messages are treated as messages from the user — which means they produce a
-turn rather than queueing for one.
+The second finding was incomplete. Two push routes were missed: Claude Code
+**channels** (`claude --channels plugin:<server>`, an MCP server pushing events
+into a session) and **herdr**, the terminal multiplexer these sessions run in.
+Testing (below) settled which one works: channel notifications did **not** wake
+an idle session; `herdr agent prompt` did, in about a second.
 
-So WB *can* initiate. The question stops being "is it possible" and becomes
-"what may it say, and with what authority".
+So WB *can* initiate — for herdr-hosted sessions. The question stops being "is
+it possible" and becomes "what may it say, and with what authority".
 
 ### How Synchestra actually does it: stdin, not channels
 
@@ -86,11 +86,12 @@ So WB's reach divides cleanly:
 | Session | WB can initiate? |
 |---|---|
 | launched by the daemon | **yes** — write to its stdin |
-| launched by a human at a terminal | **no** — no pipe, no channel, no wake |
+| launched by a human inside herdr | **yes** — `herdr agent prompt` (see below) |
+| launched by a human in a plain terminal | **no** — no pipe, no channel, no wake |
 
-That second row is the honest limit, and it is unchanged by any of this. For
-those sessions the mechanisms remain the ones already shipped: the session
-blocks on `wb wait`, or WB acts on its own for work whose owner is gone.
+The last row is the honest limit. For those sessions the mechanisms remain the
+ones already shipped: the session blocks on `wb wait`, or WB acts on its own
+for work whose owner is gone.
 
 ### Verified, not assumed
 
@@ -117,7 +118,7 @@ The wake was confirmed without human observation: `herdr agent wait <pane>
 after replying.
 
 **The injected prompt renders with the `❯` prefix — identical to the human's own
-input.** So the authority concern in this document is not a inference from the
+input.** So the authority concern in this document is not an inference from the
 protocol; it is what the terminal shows. A message WB injects through `prompt`
 *is* the founder speaking, as far as the receiving agent can tell.
 
@@ -225,7 +226,8 @@ Several open problems collapse into one if the daemon can speak to sessions:
 | A waiter died (#583) | a stale record nobody reads | the owner is told its waiter is gone |
 
 The daemon already has the inputs: it receives `default_branch_updated` over
-signed webhooks, tracks sessions, and owns the landing lane.
+signed webhooks and tracks sessions; the landing lane is a lock the CLI verbs
+take on disk, where the daemon could read it.
 
 ## The serious risk: authority laundering
 
@@ -307,7 +309,7 @@ Safe: `pr sneat-dev/wb#590 target advanced; candidate is behind`.
 Not safe: anything containing a title, branch name, comment body or log line.
 
 Where provider text is genuinely needed, it stays behind a deliberate fetch —
-`wb event show <id>` — so it arrives as tool output the agent reads, not as an
+a proposed `wb event show <id>` (not built) — so it arrives as tool output the agent reads, not as an
 instruction the agent obeys. That is the progressive-disclosure split the brief
 asked for, and it is load-bearing here rather than merely tidy.
 
@@ -364,18 +366,34 @@ session in about a second) and needs no harness flag.
    `$CLAUDE_CODE_SESSION_ID` are both in a session's environment; `herdr agent
    list` maps pane → session id → status). This survives compaction, resume,
    `/move` and `/park`→`/pickup`: the wake reaches whoever owns the work now.
-3. **Delivery is guarded:** the pane must still host the same session id
-   (a reused pane gets nothing); the session must be `idle` (never mid-turn;
-   `working`/`blocked` hold until the next tick); no live owner ⇒ record only —
-   `wb pr land`/`pr create --auto-merge` (#598) armed auto-merge, so the PR
-   lands without anyone.
+3. **Delivery is guarded:**
+   - resolution follows the claim chain (a `/move` successor claim inherits the
+     binding) and refuses unless the claim records the WB session, that session
+     records its native harness id, and the pane's live session id matches it;
+     subagents inherit their parent's pane and ids, so the wake goes to the
+     parent, which is the owner;
+   - same machine only — claims are machine-scoped and herdr panes are local;
+   - the session must be `idle` or `done`, the input box empty, and both are
+     re-checked immediately before sending (never mid-turn; never on top of a
+     half-typed human draft; `working`/`blocked` hold until the next tick);
+   - no live owner ⇒ record only. If the PR is armed (`wb pr land`, #598;
+     `wb pr create --auto-merge`, #601) it lands without anyone; if not, it
+     waits for the next session to pick up the task.
 4. **Watching:** the daemon polls only registered PRs, reusing the existing
    check verdict (renamed-required-check aware); webhooks are an accelerator
    later.
-5. **Message:** fixed templates only, e.g. `[wb daemon] sneat-dev/wb#598:
-   checks failed: Lint (golangci-lint). Next: …` — identifiers and sanitised
-   check names, never titles, bodies or log text. A `[wb daemon]` message is a
-   notification, never an approval (stated in the skills).
+5. **Message — facts only, submitted.** Fixed templates, e.g. `[wb daemon]
+   sneat-dev/wb#598: checks failed: 1 required check (Lint).` — identifiers,
+   and check names only when they appear in the target's required-check
+   ruleset (otherwise a count); never titles, bodies, log text or an
+   imperative. It is delivered with `herdr agent prompt` because a wake has to
+   produce a turn. That is a **founder-approved (2026-09-18) extension of the
+   binding set** to one event class — an outcome of the session's *own* PR —
+   and the risk is accepted knowingly: the text renders as the founder's input,
+   so it states what happened and never what to do. Every other event stays
+   advisory (`send-keys`, not submitted). No WB verb accepts a daemon message
+   as `--approved-by` evidence, and the skills say a `[wb daemon]` line is a
+   notification, never an approval.
 6. **Visibility:** subscriptions appear in `wb wait list` / `wb session list`;
    the wake itself is a visible `❯` message in the transcript.
 
@@ -383,13 +401,14 @@ Later, on the same machinery: retire the worktree when GitHub merges an armed
 PR with no live owner (the daemon holds the task binding), and the typed
 vocabulary below.
 
-The longer-term shape — a WB channel server, registered per session,
-delivering **typed events from a closed vocabulary**:
+The longer-term shape — **typed events from a closed vocabulary**, delivered
+through herdr where the session runs in it, and through a channel server only
+as the fallback for sessions outside herdr:
 
 ```text
 lane.conflict        binding    another session owns (repository, target)
 pr.target_advanced   advisory   your candidate is behind
-pr.checks_failed     advisory   named checks failed; details via wb event show
+pr.checks_failed     advisory   required checks failed; details via a proposed wb event show
 pr.ready             advisory   required checks satisfied
 wait.died            advisory   a waiter you registered is gone
 ```
