@@ -301,6 +301,7 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 	// safe default `wb worktree merge land`'s receipt peek uses (Minor 10,
 	// sneat-dev/wb#591 round 3 red-team follow-up).
 	var admission *orchestrate.WorktreeMergeHostLoadAdmission
+	var requireAdmission func() (*orchestrate.WorktreeMergeHostLoadAdmission, error)
 	deferred, peekErr := orchestrate.PeekWorktreeMergeValidationDeferral(command.Context(), projectsRoot, args, flags.target, orchestrate.WorktreeMergeRoute(flags.route), flags.validateLocally, flags.allowUnfenced)
 	if peekErr != nil || !deferred {
 		var err error
@@ -308,9 +309,21 @@ func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *work
 		if err != nil {
 			return err
 		}
+	} else {
+		// Round 4, minor 2: this cheap Peek predicted the resolved plan
+		// will defer, so admission is skipped here rather than gating
+		// nothing. But prepare re-resolves the plan for real (a separate
+		// GitHub read), and a transient failure there can make it disagree
+		// with Peek and fall back to local validation. Hand PrepareWorktreeMerge
+		// a lazy fallback so that disagreement still gets checked, just in
+		// time, instead of running CPU-heavy validation ungated.
+		flagsCopy := *flags
+		requireAdmission = func() (*orchestrate.WorktreeMergeHostLoadAdmission, error) {
+			return checkHostLoadAdmission(flagsCopy)
+		}
 	}
 	campaign := newWorktreeMergeProgress(command, *flags)
-	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission), landMergeOptions(*flags, "", campaign.reporter(), admission, command.ErrOrStderr()))
+	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter(), admission, requireAdmission), landMergeOptions(*flags, "", campaign.reporter(), admission, command.ErrOrStderr()))
 	finishWorktreeMergeProgress(campaign, receipt, err)
 	releaseWorktreeMergeLane(receipt)
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -431,7 +444,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 				return err
 			}
 			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter(), admission))
+			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter(), admission, nil))
 			finishWorktreeMergeProgress(campaign, receipt, err)
 			releaseWorktreeMergeLane(receipt)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
@@ -1222,7 +1235,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 			// route: it must decide for itself whether local validation may be
 			// deferred to the pull-request route's authoritative CI. See
 			// resolveWorktreeMergeValidationPlan and sneat-dev/wb#591.
-			command.Flags().StringVar(&flags.route, "route", "auto", "merge route (decides whether local validation may be deferred to the pull-request route's authoritative CI): auto, direct, or pr")
+			command.Flags().StringVar(&flags.route, "route", "auto", "merge route: auto, direct, or pr; a standalone prepare validates locally regardless of route unless this is explicitly pr, since local validation defers to the pull-request route's authoritative CI only when this call itself intends to land through it")
 		}
 	}
 	if land {
@@ -1269,12 +1282,13 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	return nil
 }
 
-func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission) orchestrate.WorktreeMergePrepareOptions {
+func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, requireAdmission func() (*orchestrate.WorktreeMergeHostLoadAdmission, error)) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
 		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission,
-		Route: orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally,
+		RequireHostLoadAdmission: requireAdmission,
+		Route:                    orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally,
 		Lane: landingLaneGuardRequest("wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // #586: when auto-merge is armed, WB never disarms it, so the review-stale
@@ -85,6 +87,54 @@ func TestReviewStaleRefusalUnverifiableWithNoCheckoutDoesNotRefuse(t *testing.T)
 	}
 	if note == "" {
 		t.Fatal("an unverifiable binding must be reported as a note the caller records as a finding")
+	}
+	if !strings.Contains(note, "no local checkout") {
+		t.Fatalf("note = %q, want it to name the actual cause (no checkout)", note)
+	}
+}
+
+// TestReviewStaleRefusalNamesTheTransientCauseNotAlwaysNoCheckout is round
+// 4's minor 5 test: the unverifiable note must name what actually happened
+// -- here, a transient GitHub read failure mid-walk, with a checkout
+// available throughout -- rather than always blaming "no local checkout"
+// regardless of the real cause.
+func TestReviewStaleRefusalNamesTheTransientCauseNotAlwaysNoCheckout(t *testing.T) {
+	restoreProof := reviewHeadAdvanceProof
+	restoreParents := reviewCommitParents
+	restoreCheckout := resolveReviewCheckout
+	t.Cleanup(func() {
+		reviewHeadAdvanceProof = restoreProof
+		reviewCommitParents = restoreParents
+		resolveReviewCheckout = restoreCheckout
+	})
+	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (string, string, bool) {
+		return "wt", "feature", true
+	}
+	reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
+		return nil, githubobserver.ErrTransientRetriesExhausted
+	}
+	reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		t.Fatal("proof must not be consulted when the parent read itself failed transiently")
+		return false, nil
+	}
+
+	options := PullRequestLandOptions{Repository: "acme/app"}
+	view := PullRequestView{}
+	view.Base.Ref = "main"
+	view.Head.Ref = "feature"
+
+	refusal, note := reviewStaleRefusal(context.Background(), options, view, "reviewed-head", "current-head", true, "7")
+	if refusal != nil {
+		t.Fatalf("a transient read failure must never be refused as review-stale: %#v", refusal)
+	}
+	if note == "" {
+		t.Fatal("a transient read failure must still be reported as an unverifiable note")
+	}
+	if strings.Contains(note, "no local checkout") {
+		t.Fatalf("note = %q, wrongly blames no local checkout when a checkout was available and the read failed transiently", note)
+	}
+	if !strings.Contains(note, "transient") {
+		t.Fatalf("note = %q, want it to name the transient GitHub read failure as the actual cause", note)
 	}
 }
 

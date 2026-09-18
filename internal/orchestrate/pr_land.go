@@ -321,7 +321,41 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 		options.ReviewComment = ""
 		options.ReviewCommentFile = ""
 	}
-	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number, ""))
+	note := ""
+	// Round 4, B4 (second half): the comment can fail to post at all — the
+	// transient failure that lands here can happen anywhere before it, in
+	// ReadPullRequest, pullRequestChangedFiles, or lane acquisition — and
+	// in that case result.ReviewCommentURL is empty above, so this attempt
+	// never swapped ApprovedBy for a URL. options.ReviewComment (the raw
+	// review text) must still never be echoed into a shell command: it can
+	// contain a backtick or "$(...)" that would run on copy-paste, and
+	// pullRequestLandResumeCommand refuses to print it. When the review
+	// came from a file, that file's path is carried instead (safe: it is a
+	// path, not the review's own content); when it came from literal
+	// --review-comment text, the printed command gets a placeholder and
+	// this note explains why.
+	if strings.TrimSpace(result.ReviewCommentURL) == "" &&
+		strings.TrimSpace(options.ReviewCommentFile) == "" &&
+		strings.TrimSpace(options.ReviewComment) != "" {
+		note = "; the review text was never posted and is not echoed into this command (it may contain shell metacharacters) — replace " +
+			reviewCommentFilePlaceholder + " with the real review file, or rerun with --review-comment \"<the review>\""
+	}
+	return fmt.Errorf("%w; resumable: %s%s", err, pullRequestLandResumeCommand(options, number, ""), note)
+}
+
+// reviewCommentFilePlaceholder stands in for a review's literal text in a
+// printed resume command, when there is no file path to carry instead — see
+// withPullRequestLandResumeGuidance and pullRequestLandResumeCommand.
+const reviewCommentFilePlaceholder = "--review-comment-file <review.md>"
+
+// shellSingleQuote wraps a free-text argument in POSIX single quotes so a
+// shell that copy-runs a printed command treats it as one literal argument.
+// Single quotes are the only shell metacharacter this cannot itself quote,
+// so each embedded "'" is closed, escaped, and reopened: `'\”`. Unlike
+// strconv.Quote (Go's double-quote syntax), this leaves nothing — not a
+// backtick, not "$", not "$(...)" — for the shell to expand.
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // pullRequestLandResumeCommand rebuilds the exact `wb pr land` invocation
@@ -330,6 +364,12 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 // every option that changes what the command does. timeoutFlag is the
 // --timeout value to print; a caller with no opinion on it (the transient-
 // retry resume, which is not a budget problem) passes "".
+//
+// It never echoes options.ReviewComment: that field is the review's own
+// literal text, which may contain a backtick or "$(...)" that would run on
+// copy-paste. A file-backed review carries its path instead (safe: paths
+// are not review content); an inline review with no file gets a placeholder
+// (see reviewCommentFilePlaceholder), and the caller explains why.
 func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeoutFlag string) string {
 	parts := []string{"wb", "pr", "land", options.Repository + "#" + number}
 	if timeoutFlag != "" {
@@ -351,19 +391,18 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 		parts = append(parts, "--keep-commits", strings.Join(options.KeepCommits, ","))
 	}
 	if strings.TrimSpace(options.Reason) != "" {
-		parts = append(parts, "--reason", strconv.Quote(options.Reason))
+		parts = append(parts, "--reason", shellSingleQuote(options.Reason))
 	}
 	if strings.TrimSpace(options.Subject) != "" {
-		parts = append(parts, "--subject", strconv.Quote(options.Subject))
+		parts = append(parts, "--subject", shellSingleQuote(options.Subject))
 	}
 	if strings.TrimSpace(options.ApprovedBy) != "" {
-		parts = append(parts, "--approved-by", strconv.Quote(options.ApprovedBy))
-	}
-	if strings.TrimSpace(options.ReviewComment) != "" {
-		parts = append(parts, "--review-comment", strconv.Quote(options.ReviewComment))
+		parts = append(parts, "--approved-by", shellSingleQuote(options.ApprovedBy))
 	}
 	if strings.TrimSpace(options.ReviewCommentFile) != "" {
-		parts = append(parts, "--review-comment-file", strconv.Quote(options.ReviewCommentFile))
+		parts = append(parts, "--review-comment-file", shellSingleQuote(options.ReviewCommentFile))
+	} else if strings.TrimSpace(options.ReviewComment) != "" {
+		parts = append(parts, reviewCommentFilePlaceholder)
 	}
 	return strings.Join(parts, " ")
 }
@@ -611,9 +650,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// resume/sanctioned commands from here on use only that URL and never
 	// again echo the review text — both because a second run must not post
 	// a second comment re-approving whatever head is current by then, and
-	// because strconv.Quote does not escape "$" or a backtick, so a review
-	// comment containing either would shell-substitute if a sanctioned
-	// command carrying it were copy-run.
+	// because a review comment is never echoed into a shell command at
+	// all (round 4): it may contain "$" or a backtick, which would
+	// shell-substitute if a sanctioned command carrying it were copy-run.
+	// See pullRequestLandResumeCommand.
 	if pendingIdentity != nil {
 		commentURL, postErr := postReviewComment(ctx, options.Repository, number, *pendingIdentity, reviewedHead, pendingComment)
 		if postErr != nil {
@@ -847,7 +887,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			}
 			result.Reason = "the rewritten branch's own checks are not green: " + reobserved.Reason
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number +
-				" --keep-commits " + strings.Join(options.KeepCommits, ",") + " --reason " + strconv.Quote(options.Reason)
+				" --keep-commits " + strings.Join(options.KeepCommits, ",") + " --reason " + shellSingleQuote(options.Reason)
 			return withSavings(result), nil
 		}
 	}

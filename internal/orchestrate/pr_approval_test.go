@@ -160,7 +160,7 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			t.Fatal("proof must not be consulted for a non-merge commit")
 			return false, nil
 		}
-		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "foreign"); advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "foreign"); advanced || unverifiable {
 			t.Fatalf("a foreign, non-merge commit must not be treated as still current or unverifiable: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -177,7 +177,7 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return candidateSHA == "reviewed" && targetParent == "target1" && headSHA == "current", nil
 		}
-		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); !advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); !advanced || unverifiable {
 			t.Fatalf("a proved update-branch merge advance must be allowed: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -189,7 +189,7 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return false, nil // right parent shape, wrong content
 		}
-		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || unverifiable {
 			t.Fatalf("a merge shape that fails the tree/ancestor proof must not be trusted: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -205,7 +205,7 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			return false, githubobserver.ErrTransientRetriesExhausted
 		}
-		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || !unverifiable {
+		if advanced, unverifiable, _ := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || !unverifiable {
 			t.Fatalf("a transient proof failure must be unverifiable, not a stale verdict: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
@@ -232,6 +232,27 @@ func TestClosesLinesAndSuggestionsAndFinding(t *testing.T) {
 	}
 	if got := SuggestClosesFromPrompt("no issue named here"); len(got) != 0 {
 		t.Fatalf("SuggestClosesFromPrompt with no issues = %v", got)
+	}
+	// Round 4, minor 3: a hex colour that mixes digits and hex letters
+	// (#3b82f6, #00ff00) must suggest nothing at all — issueReferencePattern's
+	// `\b` excludes it before looksLikeHexColorLength is even reached, since
+	// `\d+` alone would otherwise misread a digit prefix ("3", "00") out of
+	// the middle of the colour literal as an issue number. A real issue
+	// reference alongside one must still be found.
+	if got := SuggestClosesFromPrompt("use color #3b82f6 for the accent, see #591"); len(got) != 1 || got[0] != 591 {
+		t.Fatalf("SuggestClosesFromPrompt(mixed-hex colour) = %v, want only #591", got)
+	}
+	if got := SuggestClosesFromPrompt("background #00ff00 looks off, see #591"); len(got) != 1 || got[0] != 591 {
+		t.Fatalf("SuggestClosesFromPrompt(mixed-hex colour) = %v, want only #591", got)
+	}
+	// An all-decimal-digit colour of a colour-shaped length (#123456, 6
+	// digits) is still excluded by looksLikeHexColorLength, not by `\b`.
+	if got := SuggestClosesFromPrompt("background #123456 looks off, see #591"); len(got) != 1 || got[0] != 591 {
+		t.Fatalf("SuggestClosesFromPrompt(all-decimal colour) = %v, want only #591", got)
+	}
+	// Round 4, minor 3: "#0" is never a real issue number.
+	if got := SuggestClosesFromPrompt("see #0 for context, and #591 for the real issue"); len(got) != 1 || got[0] != 591 {
+		t.Fatalf("SuggestClosesFromPrompt(#0) = %v, want #0 skipped and only #591", got)
 	}
 
 	if got := formatClosesFinding(nil); got != "no linked issue" {

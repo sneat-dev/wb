@@ -544,7 +544,7 @@ func TestCwWtMergePrepareMergeOptionsAndLandMergeOptions(t *testing.T) {
 		interval: 4 * time.Second, rebatchReceipt: "/tmp/r.json", progress: true, stopBeforeMerge: true,
 		takeOverLane: true, laneReason: "reason",
 	}
-	prepare := prepareMergeOptions(flags, []string{"/tmp/wt"}, nil, nil)
+	prepare := prepareMergeOptions(flags, []string{"/tmp/wt"}, nil, nil, nil)
 	if prepare.ProjectsRoot != projectsRoot || prepare.Target != "main" || prepare.Model != "m" || prepare.Retry != 2 {
 		t.Fatalf("prepareMergeOptions = %+v, want the flags carried through", prepare)
 	}

@@ -143,7 +143,8 @@ type RemoteCheck struct {
 	// strict deferral-satisfaction check (sneat-dev/wb#591 red-team finding
 	// X2) can tell an actually-executed pass ("success") apart from a check
 	// that never ran ("skipped" or "neutral") even though checkRunBucket
-	// treats both the same as an ordinary "skipping" pass for the overall
+	// buckets both "success" and "neutral" the same, as an ordinary "pass"
+	// (only "skipped" gets its own "skipping" bucket) for the overall
 	// pass/fail loop. Empty for a commit-status-derived check, which has no
 	// conclusion.
 	Conclusion string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
