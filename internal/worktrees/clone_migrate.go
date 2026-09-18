@@ -303,14 +303,19 @@ type cloneMoveRelocationEntry struct {
 	destination string
 }
 
-// RecordCloneMoveRelocationIntents finds the active Work Log claim for every
-// worktree named in moves whose Source differs from its Destination —
-// searching every home wbhome.Resolve reports for projectsRoot, since a claim
-// recorded before the projects-root layout existed still lives under a
-// retired legacy home — and records a durable relocation intent for each one
-// it finds, before the clone physically moves. A worktree whose Source equals
-// its Destination (registered outside the clone; only its Git administration
-// is repaired) needs no intent: its claim's frozen path already matches.
+// RecordCloneMoveRelocationIntents finds the Work Log claim -- active or
+// terminal (finished-task) alike, per the founder's decision (2026-09-18)
+// that a finished task's checkout is the safe case, not one to leave
+// unrecorded -- for every worktree named in moves whose Source differs from
+// its Destination — searching every home wbhome.Resolve reports for
+// projectsRoot, since a claim recorded before the projects-root layout
+// existed still lives under a retired legacy home — and records a durable
+// relocation intent for each one it finds, before the clone physically
+// moves. A worktree whose Source equals its Destination (registered outside
+// the clone; only its Git administration is repaired) needs no intent: its
+// claim's frozen path already matches. Recording a receipt for a finished
+// task's claim, not only an active one, is what lets its claim resolve to
+// the checkout's new location afterward (gc, land, `wb worktree relocate`).
 //
 // This is the same relocation-receipt journal RelocateRepository and `wb
 // worktree relocate` use: a claim's Worktree field is an immutable absolute
@@ -341,7 +346,7 @@ func RecordCloneMoveRelocationIntents(projectsRoot string, moves []CloneMoveWork
 			if home == "" {
 				continue
 			}
-			claim, _, _, claimErr := activeWorkLogClaim(home, move.Source)
+			claim, _, claimErr := claimForRelocation(home, move.Source)
 			if claimErr != nil {
 				continue
 			}
