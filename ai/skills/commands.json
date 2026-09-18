@@ -32,6 +32,9 @@
     "dashboard": [
       "wb-daemon"
     ],
+    "deadcode": [
+      "wb-fleet"
+    ],
     "deps": [
       "wb-deps",
       "wb-dependency-campaign"
