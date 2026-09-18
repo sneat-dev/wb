@@ -145,6 +145,17 @@ wb pr create --format json`,
 			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
 				return usageError("--review-comment and --review-comment-file are mutually exclusive")
 			}
+			// Round 3, MAJOR fix: without --land, nothing in this command
+			// ever reads --review-comment/--review-comment-file - --land is
+			// the only path that posts the identity form's review comment.
+			// Accepting either flag here and silently dropping it is worse
+			// than refusing: the caller would believe a review was recorded
+			// when --auto-merge alone armed with nothing but the identity
+			// string itself.
+			if !land && (command.Flags().Changed("review-comment") || command.Flags().Changed("review-comment-file")) {
+				return usageError("--review-comment/--review-comment-file are only meaningful with --land; " +
+					"--auto-merge alone never posts the review comment, so it would be silently ignored")
+			}
 			closesIssues, closesErr := parseIssueNumbers(splitCommaSeparated(closes))
 			if closesErr != nil {
 				return usageError(closesErr.Error())
@@ -313,11 +324,19 @@ func printPullRequestCreate(command *cobra.Command, result orchestrate.PullReque
 // rather than silently dropping it.
 func parseIssueNumbers(values []string) ([]int, error) {
 	issues := make([]int, 0, len(values))
+	// Round 3, minor 6: dedupe here, in first-seen order, so
+	// "--closes 5,5,6" (or two "--closes 5" repeats) never writes "Closes
+	// #5" twice at the top of the body.
+	seen := map[int]bool{}
 	for _, value := range values {
 		number, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || number <= 0 {
 			return nil, fmt.Errorf("--closes %q is not a positive issue number", value)
 		}
+		if seen[number] {
+			continue
+		}
+		seen[number] = true
 		issues = append(issues, number)
 	}
 	return issues, nil

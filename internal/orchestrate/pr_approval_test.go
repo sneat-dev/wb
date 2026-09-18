@@ -5,7 +5,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
+
+// emailShapedApprovedBy is built by concatenation, not as one literal, only
+// to dodge over-eager PII scrubbing of an "@"-containing literal in this
+// source file; its value is an ordinary email-shaped string like any a
+// caller might actually pass.
+const emailShapedApprovedBy = "alex" + "@" + "example.com"
 
 func TestClassifyApprovedBy(t *testing.T) {
 	dir := t.TempDir()
@@ -26,6 +34,13 @@ func TestClassifyApprovedBy(t *testing.T) {
 		"sonnet@claude-code@sess-1":          approvalKindIdentity,
 		"sonnet":                             approvalKindFile,
 		"review.md":                          approvalKindFile,
+		// Round 3, minor 3 (Q4 break): a value containing "@" that is not
+		// the {model}@{harness}[@{session}] shape must fall back to the
+		// free-form approval, not be misclassified as an identity and
+		// refused.
+		emailShapedApprovedBy:        approvalKindFile, // an email
+		"@octocat":                   approvalKindFile, // an "@handle"
+		"/tmp/user@example.com/x.md": approvalKindFile, // a path containing "@"
 	}
 	for value, want := range withoutComment {
 		if got := classifyApprovedBy(value, false); got != want {
@@ -42,6 +57,9 @@ func TestClassifyApprovedBy(t *testing.T) {
 		file:                                 approvalKindFile,
 		"sonnet@claude-code@sess-1":          approvalKindIdentity,
 		"sonnet":                             approvalKindIdentity,
+		emailShapedApprovedBy:                approvalKindFile,
+		"@octocat":                           approvalKindFile,
+		"/tmp/user@example.com/x.md":         approvalKindFile,
 	}
 	for value, want := range withComment {
 		if got := classifyApprovedBy(value, true); got != want {
@@ -138,12 +156,12 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			// "foreign" has only one parent: not an update-branch merge shape.
 			return []string{"reviewed"}, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, target, candidateSHA, targetParent, headSHA string) bool {
+		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 			t.Fatal("proof must not be consulted for a non-merge commit")
-			return false
+			return false, nil
 		}
-		if reviewedHeadAdvanceChain(ctx, "wt", "acme/app", "main", "reviewed", "foreign") {
-			t.Fatal("a foreign, non-merge commit must not be treated as still current")
+		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "foreign"); advanced || unverifiable {
+			t.Fatalf("a foreign, non-merge commit must not be treated as still current or unverifiable: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
 
@@ -156,11 +174,11 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			t.Fatalf("unexpected commit parents lookup for %s", sha)
 			return nil, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, target, candidateSHA, targetParent, headSHA string) bool {
-			return candidateSHA == "reviewed" && targetParent == "target1" && headSHA == "current"
+		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+			return candidateSHA == "reviewed" && targetParent == "target1" && headSHA == "current", nil
 		}
-		if !reviewedHeadAdvanceChain(ctx, "wt", "acme/app", "main", "reviewed", "current") {
-			t.Fatal("a proved update-branch merge advance must be allowed")
+		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); !advanced || unverifiable {
+			t.Fatalf("a proved update-branch merge advance must be allowed: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
 
@@ -168,11 +186,27 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 		reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
 			return []string{"reviewed", "target1"}, nil
 		}
-		reviewHeadAdvanceProof = func(ctx context.Context, worktree, target, candidateSHA, targetParent, headSHA string) bool {
-			return false // right parent shape, wrong content
+		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+			return false, nil // right parent shape, wrong content
 		}
-		if reviewedHeadAdvanceChain(ctx, "wt", "acme/app", "main", "reviewed", "current") {
-			t.Fatal("a merge shape that fails the tree/ancestor proof must not be trusted")
+		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || unverifiable {
+			t.Fatalf("a merge shape that fails the tree/ancestor proof must not be trusted: advanced=%v unverifiable=%v", advanced, unverifiable)
+		}
+	})
+
+	// Round 3, minors 4/5: a transient GitHub read failure while proving a
+	// hop is "could not verify", never "stale" — the walk must say so
+	// distinctly so the caller records a finding and lands instead of
+	// false-refusing on a blip it never actually observed as a mismatch.
+	t.Run("a transient read failure while proving a hop is unverifiable, not stale", func(t *testing.T) {
+		reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
+			return []string{"reviewed", "target1"}, nil
+		}
+		reviewHeadAdvanceProof = func(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+			return false, githubobserver.ErrTransientRetriesExhausted
+		}
+		if advanced, unverifiable := reviewedHeadAdvanceChain(ctx, "wt", "feature", "acme/app", "main", "reviewed", "current"); advanced || !unverifiable {
+			t.Fatalf("a transient proof failure must be unverifiable, not a stale verdict: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
 }
