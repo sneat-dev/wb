@@ -8,7 +8,7 @@ status: Draft
 **Status:** Draft
 **Date:** 2026-09-18
 **Owner:** ai
-**Promotes To:** —
+**Promotes To:** herdr-session-transport
 **Supersedes:** —
 **Related Ideas:** extends:delegated-waiting-and-agent-wake
 
@@ -464,6 +464,17 @@ templates.
   (the claim chain delivery follows).
 - **Dependencies:** the task→PR binding recorded by `wb pr create`
   (sneat-dev/wb#601); herdr on the machine.
+- **Realized as:** `spec/features/herdr-session-transport` (see **Promotes
+  To**, above), not the "daemon session-notification Feature" named above —
+  it also owns the pluggable herdr/tmux transport this idea's MVP assumed.
+  Two corrections that Feature's research made, recorded here rather than
+  rewriting this idea's original reasoning: the empty-input evidence this
+  idea assumed herdr would supply does not exist in `agent list`/`agent get`,
+  so the founder ruled its mechanism out of scope for now (2026-09-19) and
+  the MVP ships **record-only** in its first iteration — no daemon-originated
+  message is submitted into any pane; and the "inject without submitting
+  (advisory)" row's `herdr agent send-keys` is superseded by `pane
+  send-text`, which sends literal text rather than interpreted key presses.
 
 ## Open Questions
 
