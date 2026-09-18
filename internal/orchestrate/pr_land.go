@@ -495,10 +495,14 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// result can see what it landed against even when the attempt did not
 	// finish landing.
 	result.HeadSHA = view.Head.SHA
+	// local_sync is copied to the typed LocalSync field and removed from the
+	// evidence map so it does not also leak as a stray evidence.local_sync
+	// key into `wb pr land --json`.
+	result.LocalSync = result.Evidence["local_sync"]
+	delete(result.Evidence, "local_sync")
 	if err != nil {
 		return result, err
 	}
-	result.LocalSync = result.Evidence["local_sync"]
 	if updateRefusal != nil {
 		return mergeRefusal(result, *updateRefusal), nil
 	}

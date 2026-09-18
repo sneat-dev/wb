@@ -7,6 +7,13 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
+// mergedByGitHubAutoMergeDetail is the candidate_checks phase's progress
+// detail when the wait ends because GitHub's own armed auto-merge landed the
+// pull request mid-wait — every observed check was green, so this is a
+// success to report, never the generic wait-result status string
+// ("failed"), which every one of GitHub's checks contradicts. See #600/#614.
+const mergedByGitHubAutoMergeDetail = "merged by GitHub auto-merge"
+
 // awaitLandablePullRequest is the shared wait-and-arm engine both `wb pr
 // land` and the worktree-merge PR route drive to reach a green, mergeable
 // head. It arms GitHub auto-merge first — unless doing so would bypass a
@@ -107,6 +114,24 @@ func awaitLandablePullRequest(
 				if updateReason != "" {
 					continue
 				}
+				// Red-team finding M3: the re-read head MUST match what the
+				// update-branch write itself reported advancing to. Without
+				// this check, a force-push landing a crafted head [P, X] in
+				// the window between the update-branch write and this re-read
+				// could be recorded as a trusted update-branch advance (via
+				// options.headUpdated below) even though nothing here ever
+				// verified X's shape - bypassing the M-A guard the hook
+				// otherwise enforces. Refuse rather than adopt an untraced
+				// head; CI still gates whatever eventually lands.
+				if updatedView.Head.SHA != updatedHead {
+					return updatedView, waited, autoMergeArmed, false, &landRefusal{
+						code: LandRefusalHeadMoved,
+						reason: fmt.Sprintf(
+							"update-branch reported the new head as %s but the re-read pull request head is %s; refusing to adopt an untraced advance",
+							shortMergeRevision(updatedHead), shortMergeRevision(updatedView.Head.SHA)),
+						command: "wb pr land " + options.Repository + "#" + number,
+					}, nil
+				}
 				evidence["updated_onto_target"] = shortMergeRevision(updatedHead)
 				if options.headUpdated != nil {
 					// The worktree-merge PR route's own hook (M3's
@@ -114,7 +139,7 @@ func awaitLandablePullRequest(
 					// candidate worktree; calling #611/#613's local-worktree
 					// sync here too would double-fast-forward the same
 					// branch through two independent code paths.
-					if hookErr := options.headUpdated(previousHead, updatedView.Head.SHA); hookErr != nil {
+					if hookErr := options.headUpdated(previousHead, updatedHead); hookErr != nil {
 						return updatedView, waited, autoMergeArmed, false, nil, hookErr
 					}
 				} else if syncNote := syncLocalWorktreeAfterUpdateBranch(ctx, options, updatedView.Head.Ref, updatedHead); syncNote != "" {
@@ -155,8 +180,8 @@ func awaitLandablePullRequest(
 			return updatedView, waited, autoMergeArmed, false, nil, waitErr
 		}
 		waited = observed
-		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
 		if waited.Status == PullRequestWaitPassed {
+			reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
 			return updatedView, waited, autoMergeArmed, false, nil, nil
 		}
 
@@ -164,12 +189,19 @@ func awaitLandablePullRequest(
 		// checks going green — usually before the confirming observation —
 		// and the wait then sees the target move past the head and reports
 		// failure. That is the success path, not a red check: find out
-		// before judging.
+		// before judging - and, crucially, before reporting the phase's
+		// progress line below. Red-team finding (the #600 auto-merge label):
+		// reporting "failed" here first and only discovering the GitHub
+		// auto-merge afterwards is exactly what produced
+		// "candidate checks: 10/10: failed" on a pull request every one of
+		// whose checks was green and that GitHub had already merged.
 		if autoMergeArmed {
 			if merged, readErr := ReadPullRequest(ctx, options.Repository, number); readErr == nil && merged.Merged {
+				reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, mergedByGitHubAutoMergeDetail, len(waited.Checks), len(waited.Checks))
 				return updatedView, waited, autoMergeArmed, true, nil, nil
 			}
 		}
+		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
 
 		// The wait reports a target that moved under the head as a failure.
 		// When updating is allowed that is not a verdict on the work: bring
