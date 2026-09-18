@@ -727,7 +727,7 @@ func validatePublishedUnlandedRebatch(ctx context.Context, projectsRoot string, 
 	// resume accept "closed, not merged" as the retired state its own prior
 	// attempt already produced.
 	if !view.Merged && strings.EqualFold(view.State, "closed") {
-		if recorded, recordedErr := worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, target, sources, receipt.PullRequest); recordedErr == nil && recorded {
+		if recorded, recordedErr := worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, target, sources, receipt.ReceiptPath, receipt.PullRequest); recordedErr == nil && recorded {
 			return nil
 		}
 	}
@@ -736,13 +736,23 @@ func validatePublishedUnlandedRebatch(ctx context.Context, projectsRoot string, 
 
 // worktreeMergeReplacementRecordsSupersession reports whether the
 // replacement receipt a rebatch of (repository, target, sources) would
-// resolve to already exists on disk and already names pullRequest as its
-// SupersededPullRequest - i.e. a previous attempt at this exact rebatch
-// already persisted the close intent this resume is recovering, per the
-// persist-before-PATCH ordering in ensurePreparedWorktreeMergeRebatch. It
-// never itself closes or verifies anything; it only reads a receipt WB
-// itself would have written.
-func worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, target string, sources []WorktreeMergeSource, pullRequest string) (bool, error) {
+// resolve to already exists on disk, is itself bound back to
+// originalReceiptPath via its own RebatchOf field, and already names
+// pullRequest as its SupersededPullRequest - i.e. a previous attempt at this
+// exact rebatch already persisted the close intent this resume is
+// recovering, per the persist-before-PATCH ordering in
+// ensurePreparedWorktreeMergeRebatch. It never itself closes or verifies
+// anything; it only reads a receipt WB itself would have written.
+//
+// Red-team finding M6 (minor): SupersededPullRequest alone is just a string
+// field - nothing stops a corrupted or hand-edited receipt from naming an
+// arbitrary pull request there. Requiring replacement.RebatchOf to name
+// EXACTLY originalReceiptPath - the receipt validatePublishedUnlandedRebatch
+// is already validating - before trusting SupersededPullRequest binds the
+// close intent to the one rebatch chain it was durably recorded for; a
+// replacement rebatching some other receipt can never vouch for this one's
+// pull request.
+func worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, target string, sources []WorktreeMergeSource, originalReceiptPath, pullRequest string) (bool, error) {
 	home, err := wbhome.Root(projectsRoot)
 	if err != nil {
 		return false, err
@@ -753,6 +763,9 @@ func worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, targe
 	replacement, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil {
 		return false, err
+	}
+	if replacement.RebatchOf != originalReceiptPath {
+		return false, nil
 	}
 	return replacement.SupersededPullRequest != "" && replacement.SupersededPullRequest == pullRequest, nil
 }

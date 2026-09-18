@@ -320,3 +320,162 @@ func TestPrepareWorktreeMergeRebatchResumeAcceptsClosedNotMergedAfterCrashBefore
 		t.Fatalf("resumed rebatch acknowledgement did not record the closed pull request: %+v", rebatch)
 	}
 }
+
+// TestAdoptWorktreeMergeUpdateBranchAdvanceRefusesAHeadItDidNotHold is
+// required test Minor 3 (review round on #614, worktree_merge_pr_land.go's
+// adoptWorktreeMergeUpdateBranchAdvance): the engine hands this hook
+// whatever head it itself last observed as "previous". Before this fix, the
+// hook never checked that value against the receipt's own recorded
+// candidate before using it - a stale or mismatched "previous" would still
+// be accepted, and "updated" silently adopted as this receipt's own advance
+// even though the receipt never actually held "previous" as its candidate.
+// It must refuse instead, and never touch the receipt or reach the network.
+func TestAdoptWorktreeMergeUpdateBranchAdvanceRefusesAHeadItDidNotHold(t *testing.T) {
+	receipt := WorktreeMergeReceipt{
+		Repository: "acme/app", Target: "main",
+		Candidate: WorktreeMergeCandidate{Worktree: "/nonexistent", Branch: "candidate", SHA: "cccccccccccccccccccccccccccccccccccccccc"},
+		TargetSHA: "tttttttttttttttttttttttttttttttttttttttt",
+	}
+	originalCandidateSHA := receipt.Candidate.SHA
+	originalTargetSHA := receipt.TargetSHA
+	const staleHead = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	const updated = "1234567890123456789012345678901234567890"
+
+	err := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), &receipt, staleHead, updated)
+	if err == nil {
+		t.Fatalf("want a refusal when previous (%s) does not match the receipt's own candidate (%s)", staleHead, receipt.Candidate.SHA)
+	}
+	if !strings.Contains(err.Error(), "did not hold") {
+		t.Fatalf("error = %q, want it to name refusing an advance from a head the receipt did not hold", err.Error())
+	}
+	if receipt.Candidate.SHA != originalCandidateSHA || receipt.TargetSHA != originalTargetSHA || len(receipt.TargetRefreshes) != 0 {
+		t.Fatalf("receipt was mutated by a refused adoption: candidate=%s target=%s refreshes=%d",
+			receipt.Candidate.SHA, receipt.TargetSHA, len(receipt.TargetRefreshes))
+	}
+}
+
+// TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable
+// is required test Minor 5 (review round on #614,
+// verifyUpdateBranchMergeProof's commitTreeSHA fallback): a transient
+// GitHub read failure while computing the update-branch merge proof must
+// surface as a retryable error (IsTransientReadFailure), not be flattened
+// into the same "not proved, refuse" outcome a genuine mismatch produces -
+// landWorktreeMergePullRequest's own IsTransientReadFailure check then
+// classifies it as WorktreeMergeChecksPending, never Conflict.
+func TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "m5-transient-proof-source", "feature/m5-transient-proof", "m5.txt", "m5\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+receipt.Candidate.Branch)
+
+	// Build the update-branch merge commit directly in the bare remote,
+	// under no ref at all - reachable by exact SHA (as GitHub's commits API
+	// would serve it) but never fetchable via the candidate branch name, so
+	// verifyUpdateBranchMergeProof's headLocal stays false and it falls
+	// through to the commitTreeSHA read this test targets.
+	tree := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", receipt.Candidate.SHA+"^{tree}"))
+	updated := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "commit-tree", tree, "-p", receipt.Candidate.SHA, "-p", receipt.TargetSHA, "-m", "merge main"))
+
+	marker := filepath.Join(t.TempDir(), "commit-tree-transient")
+	if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_COMMIT_TREE_TRANSIENT", marker)
+
+	originalCandidateSHA := receipt.Candidate.SHA
+	adoptErr := adoptWorktreeMergeUpdateBranchAdvance(context.Background(), &receipt, receipt.Candidate.SHA, updated)
+	if adoptErr == nil {
+		t.Fatal("want an error once the proof's own GitHub read fails transiently on every attempt")
+	}
+	if !IsTransientReadFailure(adoptErr) {
+		t.Fatalf("error = %v, want IsTransientReadFailure to recognize it as retryable, not a definitive refusal", adoptErr)
+	}
+	if receipt.Candidate.SHA != originalCandidateSHA || len(receipt.TargetRefreshes) != 0 {
+		t.Fatalf("receipt was mutated by a transient proof failure: candidate=%s refreshes=%d", receipt.Candidate.SHA, len(receipt.TargetRefreshes))
+	}
+}
+
+// TestValidatePublishedUnlandedRebatchRefusesASupersededPullRequestNotBoundToThisOriginal
+// is required test Minor 6 (review round on #614,
+// worktreeMergeReplacementRecordsSupersession): SupersededPullRequest alone
+// is just a string field on a receipt WB itself wrote to disk - nothing
+// about the string forces it to name the pull request THIS original
+// receipt is being rebatched away from. This test reaches the exact crash
+// state M5's second test recovers from (a replacement whose
+// SupersededPullRequest already names the original's own closed pull
+// request), then corrupts that replacement's RebatchOf to point somewhere
+// else - simulating a receipt that was not, in fact, produced as a
+// replacement for this original. A resume must then refuse the pull
+// request as not open/unmerged, exactly as it would an externally closed
+// one, rather than trust a SupersededPullRequest that is not bound back to
+// this original via RebatchOf.
+func TestValidatePublishedUnlandedRebatchRefusesASupersededPullRequestNotBoundToThisOriginal(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "m6-bind-first", "feature/m6-bind-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "m6-bind-second", "feature/m6-bind-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	first.AutoMergeArmed = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	closedLog := filepath.Join(t.TempDir(), "closed-pr.log")
+	t.Setenv("WB_TEST_CLOSED_PR_LOG", closedLog)
+
+	// Reach the exact crash state: close succeeds and the replacement's
+	// SupersededPullRequest is durably persisted, but the acknowledgement
+	// write fails (simulating a crash before it).
+	previousPersist := persistPreparedWorktreeMergeRebatchForPrepare
+	persistPreparedWorktreeMergeRebatchForPrepare = func(string, WorktreeMergePreparedRebatch) error { return os.ErrPermission }
+	partial, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	persistPreparedWorktreeMergeRebatchForPrepare = previousPersist
+	if err == nil || partial.ReceiptPath == "" {
+		t.Fatalf("want the injected acknowledgement write failure to surface with a persisted replacement path: partial=%+v err=%v", partial, err)
+	}
+	if partial.SupersededPullRequest != "41" {
+		t.Fatalf("replacement was not persisted with the superseded pull request before the simulated crash: %+v", partial)
+	}
+
+	// Corrupt the persisted replacement's binding: it no longer names this
+	// original as the receipt it rebatches, even though its
+	// SupersededPullRequest still names pull request 41.
+	corrupted, err := readWorktreeMergeReceipt(partial.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted.RebatchOf = first.ReceiptPath + "-not-this-original"
+	if err := persistWorktreeMergeReceipt(corrupted); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume: the pull request is closed-and-not-merged on the fake remote
+	// from the pre-crash close, exactly as in M5's second test - but this
+	// time the replacement that would otherwise vouch for it is not bound
+	// to this original, so it must refuse rather than recover.
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not the exact open unmerged candidate") {
+		t.Fatalf("resume with an unbound SupersededPullRequest = %v, want a refusal naming the pull request as not open/unmerged", err)
+	}
+}
