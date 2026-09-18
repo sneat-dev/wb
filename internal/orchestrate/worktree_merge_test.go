@@ -3967,6 +3967,17 @@ case "$*" in
     if [ -f "${WB_TEST_PR_STATE_FILE:-/nonexistent}" ]; then state="$(cat "$WB_TEST_PR_STATE_FILE")"; fi
     merged="${WB_TEST_PR_MERGED:-false}"
     if [ -f "${WB_TEST_PR_MERGED_FILE:-/nonexistent}" ]; then merged="$(cat "$WB_TEST_PR_MERGED_FILE")"; fi
+    # WB_TEST_VERIFY_READ_FAIL_ONCE simulates one transient GitHub read
+    # failure on M5's post-close verification re-read only (state is
+    # already "closed" by the time that read happens; the pre-close
+    # validatePublishedUnlandedRebatch read still sees "open" and must not
+    # be disturbed). The marker file is consumed so only the first such
+    # read fails; the in-process retry's next attempt succeeds normally.
+    if [ -n "${WB_TEST_VERIFY_READ_FAIL_ONCE:-}" ] && [ "$state" = "closed" ] && [ -f "$WB_TEST_VERIFY_READ_FAIL_ONCE" ]; then
+      rm -f "$WB_TEST_VERIFY_READ_FAIL_ONCE"
+      echo "gh: connection reset by peer" >&2
+      exit 1
+    fi
     printf '{"number":41,"state":"%s","merged":%s,"draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$state" "$merged" "$WB_TEST_CANDIDATE_SHA" ;;
   'api --method PATCH repos/acme/app/pulls/'*' -f state=closed')
     if [ -n "${WB_TEST_CLOSE_PR_FAIL:-}" ]; then

@@ -1,7 +1,10 @@
 package orchestrate
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -176,5 +179,144 @@ func TestCandidateChecksProgressReportsGitHubAutoMergeNotFailed(t *testing.T) {
 	}
 	if candidateChecksDetail != mergedByGitHubAutoMergeDetail {
 		t.Fatalf("candidate_checks completed detail = %q, want %q", candidateChecksDetail, mergedByGitHubAutoMergeDetail)
+	}
+}
+
+// TestPrepareWorktreeMergeRebatchRecoversATransientVerifyReadAfterClose is
+// required test M5's first half (worktree_merge_ack.go:826-836): the PATCH
+// that closes a superseded pull request already succeeded by the time its
+// own post-close verification re-read runs. A single transient GitHub read
+// failure on that re-read is not a verdict on the close - it is exactly the
+// kind of blip every other read in this area retries - and the rebatch must
+// proceed once the in-process retry recovers, not surface the blip as a
+// hard failure that leaves an already-closed pull request looking stuck.
+func TestPrepareWorktreeMergeRebatchRecoversATransientVerifyReadAfterClose(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "m5-transient-verify-first", "feature/m5-transient-verify-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "m5-transient-verify-second", "feature/m5-transient-verify-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	first.AutoMergeArmed = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	closedLog := filepath.Join(t.TempDir(), "closed-pr.log")
+	t.Setenv("WB_TEST_CLOSED_PR_LOG", closedLog)
+	marker := filepath.Join(t.TempDir(), "verify-read-fail-once")
+	if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_VERIFY_READ_FAIL_ONCE", marker)
+
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatalf("rebatch failed despite a recoverable transient verify-read failure: %v", err)
+	}
+	if replacement.SupersededPullRequest != "41" {
+		t.Fatalf("replacement receipt did not record the closed superseded pull request: %+v", replacement)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("verify-read marker was never consumed; the transient failure this test injects was never exercised: statErr=%v", statErr)
+	}
+	closedCalls, readErr := os.ReadFile(closedLog)
+	if readErr != nil || !strings.Contains(string(closedCalls), "pulls/41") {
+		t.Fatalf("superseded pull request was not closed: err=%v calls=%q", readErr, string(closedCalls))
+	}
+}
+
+// TestPrepareWorktreeMergeRebatchResumeAcceptsClosedNotMergedAfterCrashBeforeAck
+// is required test M5's second half (worktree_merge_ack.go:879-895): the
+// replacement receipt's SupersededPullRequest is persisted BEFORE the PATCH
+// that closes the original candidate's pull request, so a crash between a
+// successful close and this function's own rebatch acknowledgement leaves a
+// durable trail. A resume must re-run the (idempotent) close, accept the
+// pull request it re-reads as "closed, not merged by us" as the retired
+// state, and complete the rebatch acknowledgement - never strand the lane
+// on a pull request that is already exactly what WB wanted.
+func TestPrepareWorktreeMergeRebatchResumeAcceptsClosedNotMergedAfterCrashBeforeAck(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "m5-resume-crash-first", "feature/m5-resume-crash-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "m5-resume-crash-second", "feature/m5-resume-crash-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	first.AutoMergeArmed = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	closedLog := filepath.Join(t.TempDir(), "closed-pr.log")
+	t.Setenv("WB_TEST_CLOSED_PR_LOG", closedLog)
+
+	// Simulate a crash between the close (which the fixture's PATCH case
+	// makes durable on the fake remote by flipping the recorded PR state to
+	// "closed") and this rebatch's own acknowledgement write.
+	previousPersist := persistPreparedWorktreeMergeRebatchForPrepare
+	persistPreparedWorktreeMergeRebatchForPrepare = func(string, WorktreeMergePreparedRebatch) error { return os.ErrPermission }
+	partial, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	persistPreparedWorktreeMergeRebatchForPrepare = previousPersist
+	if err == nil {
+		t.Fatalf("want the injected post-close acknowledgement write failure to surface, got a clean rebatch: %+v", partial)
+	}
+	closedCalls, readErr := os.ReadFile(closedLog)
+	if readErr != nil || !strings.Contains(string(closedCalls), "pulls/41") {
+		t.Fatalf("close never reached the API before the simulated crash: err=%v calls=%q", readErr, string(closedCalls))
+	}
+	if current, readErr := os.ReadFile(first.ReceiptPath); readErr != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("original receipt changed despite the crash before acknowledgement: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(rebatchPath(first.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatal("a crashed rebatch left behind an acknowledgement")
+	}
+
+	// Resume: the pull request is already closed (and never merged) on the
+	// fake remote from the pre-crash close. The resume must accept that as
+	// the retired state, complete the idempotent close, and finish the
+	// acknowledgement rather than stranding the lane.
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatalf("resume after the crash did not accept the already-closed, not-merged pull request as retired: %v", err)
+	}
+	if replacement.SupersededPullRequest != "41" {
+		t.Fatalf("resumed replacement receipt did not record the closed superseded pull request: %+v", replacement)
+	}
+	rebatch, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebatch.ClosedPullRequest != "41" {
+		t.Fatalf("resumed rebatch acknowledgement did not record the closed pull request: %+v", rebatch)
 	}
 }
