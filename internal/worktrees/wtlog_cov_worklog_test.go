@@ -764,7 +764,7 @@ func TestWtLogCovOpenRelocationJournalAndPendingIntent(t *testing.T) {
 
 	source := claim.Worktree
 	destination := filepath.Join(t.TempDir(), "destination")
-	intent, intentPath, err := appendRelocationIntent(home, claim, source, destination, "local", "head-1", time.Now().UTC())
+	intent, intentPath, err := appendRelocationIntent(home, claim, source, destination, "local", "head-1", relocationPlacementRecord{}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +772,7 @@ func TestWtLogCovOpenRelocationJournalAndPendingIntent(t *testing.T) {
 		t.Fatalf("intent = %#v path = %q", intent, intentPath)
 	}
 	// A second identical append is idempotent and returns the same operation.
-	again, againPath, err := appendRelocationIntent(home, claim, source, destination, "local", "head-1", time.Now().UTC())
+	again, againPath, err := appendRelocationIntent(home, claim, source, destination, "local", "head-1", relocationPlacementRecord{}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

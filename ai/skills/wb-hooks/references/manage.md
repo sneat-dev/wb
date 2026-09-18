@@ -30,10 +30,17 @@ wb hooks repair . --force
 
 WB backs up unmanaged collisions. Report the backup location.
 
-`install` and `repair` persist the absolute `--projects-root` and resolved WB
-home in managed shims, so guards use the same policy when Git invokes them
-later. A default-home shim keeps legacy worktrees readable during migration;
-an explicitly selected `WB_HOME` remains authoritative.
+`install` and `repair` persist the absolute `--projects-root` in managed shims,
+so guards use the same policy when Git invokes them later. `WB_HOME` is retired:
+a shim installed by an earlier release may still pin it, but it selects nothing
+and WB warns on stderr when it is set.
+
+That warning is deliberately suppressed on the agent-hook path (`wb hooks agent
+...`, the entry a WB-generated harness settings file runs around every tool
+call). WB itself planted `WB_HOME` in those shims, and their caller discards
+stderr, so warning there would be invisible effort on the hottest path in the
+product. Every other invocation — including the git-hook fan-out and
+`wb hooks run` — still warns.
 
 Worktree admission is enabled by default at post-checkout, pre-commit, and
 pre-push. Post-checkout reports an unmanaged checkout after Git has already

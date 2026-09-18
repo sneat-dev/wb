@@ -44,18 +44,20 @@ func CreateWorktreeAtPlacement(
 	}
 	defer canonical.close()
 
-	configured, err := configuredWorktreePlacement(ctx, canonical, baseRevision)
+	configured, err := configuredWorktreePlacement(ctx, projectsRoot, canonical, baseRevision)
 	if err != nil {
 		return nil, err
 	}
-	if filepath.Clean(placement.Root) != filepath.Clean(configured.Root) || placement.RepositoryLocal != configured.Local {
+	if filepath.Clean(placement.Root) != filepath.Clean(configured.Root) ||
+		placement.RepositoryLocal != configured.Local ||
+		placement.relative != configured.Relative {
 		return nil, fmt.Errorf("worktree placement does not match the configured policy for %s", canonical.path)
 	}
 	worktree, err := placement.Path(task, repository)
 	if err != nil {
 		return nil, err
 	}
-	owner, name, err := splitRepository(repository)
+	_, name, err := splitRepository(repository)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +74,10 @@ func CreateWorktreeAtPlacement(
 	}
 
 	physicalOperation := preparedOperationRoot{}
-	physicalOwner, physicalRepository := owner, name
+	physicalParent, physicalRepository := splitCloneRelative(configured.Relative)
+	if physicalRepository == "" {
+		physicalRepository = name
+	}
 	if placement.RepositoryLocal {
 		root, directory, rootErr := prepareCanonicalWorktreesRoot(ctx, canonical, baseRevision)
 		if rootErr != nil {
@@ -83,7 +88,7 @@ func CreateWorktreeAtPlacement(
 			return nil, fmt.Errorf("resolved local worktree root changed before creation")
 		}
 		physicalOperation = preparedOperationRoot{Path: root, Worktrees: directory, Directory: directory}
-		physicalOwner, physicalRepository = "", task
+		physicalParent, physicalRepository = "", task
 	} else {
 		prepared, prepareErr := prepareOperationRootAt(placement.Root, task)
 		if prepareErr != nil {
@@ -92,7 +97,7 @@ func CreateWorktreeAtPlacement(
 		defer prepared.close()
 		physicalOperation = prepared
 	}
-	planned, exists, err := prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository)
+	planned, exists, err := prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +111,7 @@ func CreateWorktreeAtPlacement(
 	var publication *createdWorktreePublication
 	if err := addWorktreeAtSecureDestination(
 		ctx, canonical, physicalOperation.Path, physicalOperation.Directory,
-		physicalOwner, physicalRepository, branch, base, baseRevision, branchExists,
+		physicalParent, physicalRepository, branch, base, baseRevision, branchExists,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &publication,
 	); err != nil {
 		return nil, err

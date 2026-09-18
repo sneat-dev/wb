@@ -16,13 +16,17 @@ func newLayoutCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "layout",
 		Short: "Audit and clean local clone placement under --projects-root",
-		Long: `Inspect whether local clones follow {owner}/{repository} under --projects-root.
+		Long: `Inspect whether local clones follow {host}/{owner}/{repository} under --projects-root.
 
-  wb layout audit   report top-level, misowned, and ok checkouts
+  wb layout audit   report top-level, misowned, bad-host, and ok checkouts
   wb layout clean   remove safe top-level duplicates (dry-run by default)
 
-Canonical fleet members are owner/repository directories with a real .git
-directory. Linked worktrees are ignored.`,
+Canonical fleet members are {host}/{owner}/{repository} directories with a real
+.git directory, where {host} is the literal forge hostname. A first-level entry
+that is not a valid hostname is reported as a bad-host finding; its clones are
+still read in place at the legacy {owner}/{repository} placement, so a fleet
+that has not moved yet stays auditable and nothing is "fixed" for it. Linked
+worktrees are ignored.`,
 	}
 	command.AddCommand(newLayoutAuditCmd())
 	command.AddCommand(newLayoutCleanCmd())
@@ -34,7 +38,16 @@ func newLayoutAuditCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "audit",
 		Short: "Report non-canonical clone placement under --projects-root",
-		Args:  cobra.NoArgs,
+		Long: `Report every canonical clone under --projects-root and the remote URL its
+path corresponds to.
+
+A clone at <root>/{host}/{owner}/{repository} inverts to its remote URL by pure
+path arithmetic — https://{host}/{owner}/{repository} — so the audit states it
+without reading any configuration or the repository's own remote. A clone still
+at the legacy {owner}/{repository} placement has no host level to invert and
+reports the host its origin remote already names, which is the host level it
+must move under.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := layout.Audit(cmd.Context(), projectsRoot)
 			if err != nil {
@@ -74,9 +87,10 @@ func newLayoutCleanCmd() *cobra.Command {
 		Long: `Remove Git checkouts that sit directly under --projects-root when it is safe.
 
 Safety requires a usable origin, a clean working tree (no dirty/stash/unpushed
-state), and a canonical {owner}/{repository} clone unless
+state), and a canonical {host}/{owner}/{repository} clone unless
 --allow-missing-canonical is set. Default mode is dry-run; pass --apply to
-delete.`,
+delete. A legacy {owner}/{repository} first level is never treated as a
+removable top-level clone.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := layout.Clean(cmd.Context(), projectsRoot, layout.CleanOptions{

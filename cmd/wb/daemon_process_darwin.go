@@ -103,12 +103,12 @@ func launchdPlistBytes(executable string, args []string, logPath string) []byte 
 		body.WriteString("</string>")
 	}
 	body.WriteString("</array>")
-	// launchd starts a job with a minimal environment, so an explicit WB_HOME
-	// has to travel in the unit or the daemon would resolve the default home
-	// instead. This is the *input* the operator chose, not a path resolved at
-	// install time: the daemon still derives its own runtime directory at
-	// startup, so a later home move cannot leave this unit pointing at an
-	// abandoned directory.
+	// launchd starts a job with a minimal environment, so an explicit projects
+	// root has to travel in the unit or the daemon would resolve the default
+	// root instead. This is the *input* the operator chose, not a path resolved
+	// at install time: the daemon still derives its own state and runtime
+	// directory at startup, so a later root move cannot leave this unit pointing
+	// at an abandoned directory.
 	if home := strings.TrimSpace(os.Getenv(wbhome.EnvOverride)); home != "" {
 		body.WriteString("<key>EnvironmentVariables</key><dict>")
 		writeString(wbhome.EnvOverride, home)

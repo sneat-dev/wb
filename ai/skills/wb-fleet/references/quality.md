@@ -6,6 +6,20 @@ Run one local repository by default:
 wb coverage .
 wb verify . --checks lint,test,build
 wb check . --profile ci
+wb deadcode
+```
+
+`wb deadcode` answers a question the other three cannot: does every mechanism
+still have a caller on a path that runs? A missing feature is loud — nothing
+compiles, a test fails. A feature that is present but unreachable is silent,
+and a test cannot see it, because the test is then its only caller. Findings
+already present are tolerated through `.wb/deadcode-baseline.txt`, so only a
+function that became unreachable in the current change fails:
+
+```sh
+wb deadcode                    # gate against the committed baseline
+wb deadcode --update-baseline  # record today's findings as tolerated
+wb deadcode --no-baseline      # report everything, gate on nothing
 ```
 
 When one Go package has many process-global fixtures and therefore cannot use

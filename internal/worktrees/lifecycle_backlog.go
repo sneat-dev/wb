@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -233,14 +234,13 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	if record.Version != lifecycleBacklogVersion || !validClaimID(record.ID) || !validSafeSegment(record.Task) {
 		return fmt.Errorf("invalid lifecycle backlog identity")
 	}
-	owner, repository, err := splitRepository(record.Repository)
-	if err != nil {
+	if _, err := splitRepositoryAddress(record.Repository); err != nil {
 		return fmt.Errorf("invalid lifecycle backlog repository: %w", err)
 	}
 	if !filepath.IsAbs(record.ProjectsRoot) || !filepath.IsAbs(record.CanonicalDir) || !filepath.IsAbs(record.WorktreesRoot) || !filepath.IsAbs(record.WorktreeDir) {
 		return fmt.Errorf("lifecycle backlog paths must be absolute")
 	}
-	if filepath.Clean(record.CanonicalDir) != filepath.Join(filepath.Clean(record.ProjectsRoot), owner, repository) {
+	if !canonicalDirMatchesRepository(record.ProjectsRoot, record.Repository, record.CanonicalDir) {
 		return fmt.Errorf("lifecycle backlog canonical path does not match repository")
 	}
 	if record.Local {
@@ -265,12 +265,14 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 		}
 		parts := strings.Split(relativeWorktree, string(filepath.Separator))
 		managedPath := len(parts) == 3 && parts[0] == record.Task && validRepositorySegment(parts[1]) && validRepositorySegment(parts[2])
+		hostedPath := len(parts) == 4 && parts[0] == record.Task && repopath.IsForgeHost(parts[1]) &&
+			validRepositorySegment(parts[2]) && validRepositorySegment(parts[3])
 		legacyPath := len(parts) == 2 && parts[0] == record.Task && validRepositorySegment(parts[1])
 		// The final on-disk repository segment may legitimately differ from the
 		// canonical slug after a historical repository rename. Inventory already
 		// corroborated the Git common directory; recovery only needs to prove this
 		// private path remained inside the exact managed task hierarchy.
-		if !managedPath && !legacyPath {
+		if !managedPath && !hostedPath && !legacyPath {
 			return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
 		}
 	}

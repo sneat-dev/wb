@@ -43,8 +43,9 @@ the agent's full completion report:
 wb worktree log finalize . --result success --message "shipped the thing" --report report.md --apply
 ```
 
-WB copies the report body into the private Work Log store under `WB_HOME` --
-never into source Git -- and records `terminal_result`, `terminal_message`,
+WB copies the report body into the private Work Log store under the WB state
+directory `<projects-root>/.wb` -- never into source Git -- and records
+`terminal_result`, `terminal_message`,
 `finalized_at`, and `report_path` on the sealed terminal. A lead session polling
 the fleet reads that a lane finished, without an ad hoc reports path, through:
 

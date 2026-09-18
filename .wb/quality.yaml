@@ -4,6 +4,12 @@ go_lint:
   commands:
     - [go, vet, ./...]
     - [go, run, "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@1b907273167eec8b3d84cae636b7798ced4433d5", run, ./...]
+    # Reachability: every mechanism must have a caller on a path that runs.
+    # A missing feature is loud; a present-but-unwired one is silent, and no
+    # other check here sees it — a test is itself a caller, so tests hide it.
+    # Existing findings are tolerated through .wb/deadcode-baseline.txt, so
+    # this only fails on a function that became unreachable in this change.
+    - [go, run, ./cmd/wb, deadcode]
 
 go_test:
   shards: 4

@@ -59,20 +59,39 @@ every repository it would edit. Inspect plausible overlaps regardless of task
 or branch name. A result is coordination evidence, not an atomic reservation:
 resume only when exact session ownership is proven; otherwise coordinate or use
 an audited handoff, and never edit another agent's checkout.
-Make feature changes only in a WB-created worktree. The default checkout is
-inside its canonical repository directory:
+Make feature changes only in a WB-created worktree. The default checkout is in
+the central store, with the task first so a multi-repository task stays
+together:
 
 ```txt
-<canonical-repository>/.worktrees/<task>
+<root>/.worktrees/<task>/<host>/<org>/<repository>
 ```
 
-`WB_HOME` is the private authority for Work Logs, task locks, receipts, and
-reports; it does not choose the default checkout path, even when explicit. A
-user may set `worktrees.root` in `~/.config/wb/worktrees.yaml` to an absolute
-path (with `~` expansion, for example `~/.wb/worktrees`) for the shared form
-`<root>/<task>/<owner>/<repository>`. Repository policy cannot set that root.
-Existing linked worktrees governed by the same `WB_HOME` remain discoverable
-during migration.
+`<host>` is the canonical clone's literal forge hostname — its own on-disk host
+level when it has one, otherwise the host named by its `origin` remote, so a
+clone still at the legacy `<root>/<org>/<repository>` path is placed below its
+forge. A clone whose origin names no forge keeps the `<org>/<repository>`
+suffix.
+
+The WB state directory `<root>/.wb` is the private authority for Work
+Logs, task locks, receipts, and reports; `WB_HOME` is retired and selects
+nothing. A user may select the repository-local mode in
+`~/.config/wb/worktrees.yaml` for the checkout
+`<canonical-repository>/.worktrees/<task>`, or set `worktrees.root` to an
+absolute path (with `~` expansion, for example `~/.wb/worktrees`) to override
+the central store root. The store mode and root are machine-local user policy:
+repository policy cannot select either, and an attempt to do so is rejected.
+Existing linked worktrees remain
+discoverable during migration.
+
+The projects root is the sandbox workspace root the common harnesses grant, so
+`<root>/.wb` and `<root>/.worktrees` are writable whenever the harness grants
+the root. WB declares that set — state, the central store when it has one, each
+canonical clone's `.git`, and the platform temporary area — and preflights it
+before its first mutation. When one is unwritable, creation fails with the path,
+its role and three remedies (widen the workspace to the root, allow that path as
+a writable root, or select repository-local mode) instead of a bare
+`operation not permitted`.
 
 ## Validation
 
@@ -167,7 +186,7 @@ Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--parallel`,
 `--remote`, `--older-than`, `--report-dir`, `--absorbed-by`,
 `--resume-interrupted`, `--format`, plus root `--filter` and
 `--projects-root`. Apply writes durable audit evidence below
-`<wb-home>/reports/worktree-cleanup/`.
+`<projects-root>/.wb/reports/worktree-cleanup/`.
 
 Never delete a branch or worktree WB refused. A skip is preserved evidence —
 `awaiting push`, an open PR, local changes, or a blocked coordinated sibling —
@@ -233,7 +252,7 @@ caller-managed staging file for a concurrent agent to overwrite; fall back to
 a readable non-empty 0600 private file outside source Git only when stdin
 cannot be used, and always give that file a per-invocation-unique name, never
 a shared default. Its per-repository claim is under
-`<WB_HOME>/worklogs/<effort>/runs/<run>/claims/`, while the tiny local
+`<projects-root>/.wb/worklogs/<effort>/runs/<run>/claims/`, while the tiny local
 `.wb-worklog/recovery.json` projection has no prompt/history and its
 `/.wb-worklog/` directory is locally Git-excluded. Never put prompt text in a
 repository or command argument. The local outbox preserves

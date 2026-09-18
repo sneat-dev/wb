@@ -19,6 +19,23 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+// selectRepositoryLocalWorktrees writes the machine-local worktrees
+// configuration that selects the repository-local checkout layout these CLI
+// fixtures describe. The central default and its literal host level are covered
+// by the worktrees package's store-mode tests.
+func selectRepositoryLocalWorktrees(t *testing.T, root string) {
+	t.Helper()
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "worktrees.yaml"),
+		[]byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeOriginalPromptFixture(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "original-prompt.txt")
@@ -460,7 +477,7 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 	}
 	home = filepath.Join(projects, ".wb")
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
 	runGit := func(dir string, args ...string) {
@@ -625,7 +642,7 @@ func setUpRenameCLIFixture(t *testing.T) (projects string) {
 	runGit(canonical, "push", "-u", "origin", "main")
 
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	return projects
 }
@@ -1250,7 +1267,7 @@ func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	prepareStaleManagedHook := func(repository string) (string, []byte) {
 		t.Helper()
@@ -1321,7 +1338,7 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	command := exec.Command("git", "-C", canonical, "init", "-b", "main")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -1387,7 +1404,7 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
 	runCanonicalGit := func(args ...string) {
@@ -1440,7 +1457,7 @@ func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	selectRepositoryLocalWorktrees(t, root)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 
 	runCanonicalGit := func(args ...string) {

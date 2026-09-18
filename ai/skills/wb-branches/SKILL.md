@@ -130,7 +130,7 @@ refetches the exact target, re-resolves the branch, and re-verifies
 containment; a branch that moved between plan and apply refuses only itself,
 with the moved SHA reported, and never aborts the rest of the sweep. An
 `--apply` attempt writes a durable machine-readable plan below
-`<wb-home>/reports/branch-cleanup/<timestamp>` before its first destructive
+`<projects-root>/.wb/reports/branch-cleanup/<timestamp>` before its first destructive
 Git operation, and updates that same report with each candidate's outcome.
 
 ## Fleet sweeps report progress

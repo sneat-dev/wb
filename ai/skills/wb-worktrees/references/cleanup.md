@@ -63,7 +63,7 @@ wb worktree summary <task> --github
 
 ## Trap 1: cleanup only sees WB-managed tasks
 
-`wb worktree cleanup`/`abort` inventory `<wb-home>/worktrees/<task>/...`. A
+`wb worktree cleanup`/`abort` inventory `<projects-root>/.worktrees/<task>/...`. A
 linked worktree created by `git worktree add`, or by an older tool, is not a
 candidate at all — it is silently outside the sweep, not skipped with a
 reason. This is the single most common reason a fleet-wide sweep reports far
@@ -245,7 +245,7 @@ Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,
 `--format`, plus the root `--filter` and `--projects-root`.
 
 `--report-dir` overrides the audit directory, which defaults to
-`<wb-home>/reports/worktree-cleanup/<timestamp>`. A plan is read-only even when
+`<projects-root>/.wb/reports/worktree-cleanup/<timestamp>`. A plan is read-only even when
 `--report-dir` is supplied; artifacts are written only for an apply attempt,
 before its first destructive Git operation, and updated with applied or failed
 state.

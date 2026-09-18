@@ -107,7 +107,7 @@ func TestWtLogCovSessionReceivePhysicalCoordinates(t *testing.T) {
 	fixture := newSessionReceiveFixture(t)
 	canonical := mustOpenCanonical(t, fixture.physicalCanonical())
 	spec := SessionReceiveSpec{OperationID: fixture.request.HandoffID, Commit: fixture.request.BundleCommit}
-	placement, operationPath, owner, name, worktreePath, err := sessionReceivePhysicalCoordinates(context.Background(), canonical, spec, "acme/app")
+	placement, operationPath, owner, name, worktreePath, err := sessionReceivePhysicalCoordinates(context.Background(), fixture.projectsRoot, canonical, spec, "acme/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestWtLogCovSessionReceivePhysicalCoordinates(t *testing.T) {
 	if operationPath != placement.Root || worktreePath != filepath.Join(operationPath, name) {
 		t.Fatalf("local coordinates op=%q worktree=%q root=%q", operationPath, worktreePath, placement.Root)
 	}
-	if _, _, _, _, _, err := sessionReceivePhysicalCoordinates(context.Background(), canonical, spec, "not-a-slug"); err == nil {
+	if _, _, _, _, _, err := sessionReceivePhysicalCoordinates(context.Background(), fixture.projectsRoot, canonical, spec, "not-a-slug"); err == nil {
 		t.Fatal("invalid repository slug was accepted")
 	}
 }
@@ -129,7 +129,7 @@ func TestWtLogCovReceivedSessionWorktreePath(t *testing.T) {
 	fixture := newSessionReceiveFixture(t)
 	canonical := mustOpenCanonical(t, fixture.physicalCanonical())
 	spec := SessionReceiveSpec{OperationID: fixture.request.HandoffID, PinBranch: "wb-session/" + fixture.request.HandoffID}
-	if _, _, err := receivedSessionWorktreePath(context.Background(), canonical, spec, "acme/app"); err == nil || !strings.Contains(err.Error(), "pin branch") {
+	if _, _, err := receivedSessionWorktreePath(context.Background(), fixture.projectsRoot, canonical, spec, "acme/app"); err == nil || !strings.Contains(err.Error(), "pin branch") {
 		t.Fatalf("unregistered pin error = %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestWtLogCovReceivedSessionWorktreePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "worktree", "add", "-b", spec.PinBranch, registered, "HEAD")
-	operationPath, worktreePath, err := receivedSessionWorktreePath(context.Background(), canonical, spec, "acme/app")
+	operationPath, worktreePath, err := receivedSessionWorktreePath(context.Background(), fixture.projectsRoot, canonical, spec, "acme/app")
 	if err != nil {
 		t.Fatalf("registered pin rejected: %v", err)
 	}
@@ -151,10 +151,10 @@ func TestWtLogCovReceivedSessionWorktreePath(t *testing.T) {
 	divergent := SessionReceiveSpec{OperationID: "other-op", PinBranch: "wb-session/other-op"}
 	divergentPath := filepath.Join(t.TempDir(), "not-the-layout")
 	gitTest(t, fixture.canonical, "worktree", "add", "-b", divergent.PinBranch, divergentPath, "HEAD")
-	if _, _, err := receivedSessionWorktreePath(context.Background(), canonical, divergent, "acme/app"); err == nil {
+	if _, _, err := receivedSessionWorktreePath(context.Background(), fixture.projectsRoot, canonical, divergent, "acme/app"); err == nil {
 		t.Fatal("out-of-layout pin registration was accepted")
 	}
-	if _, _, err := receivedSessionWorktreePath(context.Background(), canonical, divergent, "not-a-slug"); err == nil {
+	if _, _, err := receivedSessionWorktreePath(context.Background(), fixture.projectsRoot, canonical, divergent, "not-a-slug"); err == nil {
 		t.Fatal("invalid repository slug was accepted")
 	}
 }

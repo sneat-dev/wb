@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -121,7 +120,12 @@ func runFleetRescueReport(cmd *cobra.Command, format string) error {
 		if filterFlag != "" && !strings.Contains(repository.Slug(), filterFlag) {
 			continue
 		}
-		path := filepath.Join(projectsRoot, repository.Org, repository.Name)
+		// The clone's real path, as discovery found it: a host-level clone
+		// lives under <root>/<host>/<org>/<repo>, not the flat legacy shape.
+		path := repository.Path
+		if path == "" {
+			continue
+		}
 		report, err := canonicalrescue.Inspect(cmd.Context(), path, options)
 		if err != nil {
 			// A clone WB cannot read is reported by wb fleet status, not here.
@@ -136,6 +140,8 @@ func runFleetRescueReport(cmd *cobra.Command, format string) error {
 	if format == "json" {
 		encoder := json.NewEncoder(cmd.OutOrStdout())
 		encoder.SetIndent("", "  ")
+		// The findings exit code stays a property of the text renderer: this
+		// path encodes and exits 0 (see TestCwWtWorktreeRescueFleetAndArgs).
 		return encoder.Encode(dirty)
 	}
 	out := cmd.OutOrStdout()

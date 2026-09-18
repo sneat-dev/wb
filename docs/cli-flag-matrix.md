@@ -50,6 +50,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `hooks lifecycle backfill` | yes | yes | rejected | yes |
 | `hooks lifecycle check`, `status`, `resume`, `retry`, `gc` | rejected | rejected | rejected | yes |
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
+| `deadcode` | rejected | rejected | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
@@ -95,10 +96,12 @@ a general force flag.
 ## Precedence and non-interactive contract
 
 - `--projects-root` overrides the default `<home>/projects` for the selected
-  invocation. `WB_HOME` separately controls WB-managed worktree/journal state;
-  it does not change clone discovery. CI audit, coverage, verify, and check
-  consume it only with `--fleet`; status consumes it only in no-path default
-  fleet mode. Supplying it with a direct repository path is rejected.
+  invocation. It is the single root: WB-managed state lives at `<root>/.wb` and
+  the checkout store at `<root>/.worktrees`. `WB_HOME` is retired — it selects
+  nothing, and WB warns on stderr naming the value it ignored. CI audit,
+  coverage, verify, and check consume `--projects-root` only with `--fleet`;
+  status consumes it only in no-path default fleet mode. Supplying it with a
+  direct repository path is rejected.
   `wb fleet` / `overview` / `stats` / `status` always consume `--projects-root`
   and `--filter`. `wb repo status` rejects both because it targets one path.
 - Root `--org` is consumed only by fleet commands that query owners. For sync,

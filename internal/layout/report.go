@@ -12,16 +12,16 @@ func (report Report) Markdown() string {
 	out.WriteString("# WB layout audit\n\n")
 	fmt.Fprintf(&out, "- Projects root: `%s`\n", report.ProjectsRoot)
 	fmt.Fprintf(&out, "- Observed at: `%s`\n", report.ObservedAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&out, "- Inspected: `%d` · ok: `%d` · top-level: `%d` · misowned: `%d` · no-origin: `%d` · unreadable: `%d`\n\n",
-		report.Summary.Inspected, report.Summary.OK, report.Summary.TopLevel, report.Summary.Misowned, report.Summary.NoOrigin, report.Summary.Unreadable)
+	fmt.Fprintf(&out, "- Inspected: `%d` · ok: `%d` · top-level: `%d` · misowned: `%d` · no-origin: `%d` · unreadable: `%d` · bad-host: `%d`\n\n",
+		report.Summary.Inspected, report.Summary.OK, report.Summary.TopLevel, report.Summary.Misowned, report.Summary.NoOrigin, report.Summary.Unreadable, report.Summary.BadHost)
 	if len(report.Findings) == 0 {
 		out.WriteString("No Git checkouts found under the projects root.\n")
 		return out.String()
 	}
-	out.WriteString("| Path | Kind | Path slug | Origin | Reason |\n|---|---|---|---|---|\n")
+	out.WriteString("| Path | Kind | Path slug | Origin | Reason | Remote URL |\n|---|---|---|---|---|---|\n")
 	for _, finding := range report.Findings {
-		fmt.Fprintf(&out, "| `%s` | `%s` | `%s` | `%s` | %s |\n",
-			finding.Path, finding.Kind, dash(finding.PathSlug), dash(finding.OriginSlug), escape(finding.Reason))
+		fmt.Fprintf(&out, "| `%s` | `%s` | `%s` | `%s` | %s | `%s` |\n",
+			finding.Path, finding.Kind, dash(finding.PathSlug), dash(finding.OriginSlug), escape(finding.Reason), dash(finding.RemoteURL))
 	}
 	return out.String()
 }

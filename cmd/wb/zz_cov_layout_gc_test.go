@@ -82,6 +82,17 @@ func cwCovCloneWithOrigin(t *testing.T, seedRoot, name, clonePath string) string
 	return remote
 }
 
+// cwCovPointOriginAtForge makes a clone's configured origin name a literal
+// forge URL while keeping every fetch local through a url.<local>.insteadOf
+// alias. It lets a hermetic test exercise a canonical clone that is still at the
+// legacy on-disk <root>/{org}/{repo} path but whose origin names a forge.
+func cwCovPointOriginAtForge(t *testing.T, clonePath, remote, host, slug string) {
+	t.Helper()
+	forgeURL := "https://" + host + "/" + slug + ".git"
+	runGit(t, clonePath, "config", "url."+remote+".insteadOf", forgeURL)
+	runGit(t, clonePath, "remote", "set-url", "origin", forgeURL)
+}
+
 func TestCwCovLayoutAuditAndCleanInProcess(t *testing.T) {
 	root := t.TempDir()
 	seeds := t.TempDir()

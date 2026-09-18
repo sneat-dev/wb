@@ -250,8 +250,11 @@ unrecognized task-shell content remains refused for its normal recovery path.
 ## Relocate a still-active task deliberately
 
 Changing `worktrees.root` only affects new worktrees. To move an existing,
-clean, unlocked WB-managed task between the repository-local and current shared
-layout, inspect the plan and then apply the exact target:
+clean, unlocked WB-managed task between the repository-local and the shared
+layout, inspect the plan and then apply the exact target. `--to shared` resolves
+to the central store — `<root>/.worktrees` unless `worktrees.root` overrides it
+— and embeds the canonical clone's literal host level; it is refused while the
+machine-local store mode is `repository-local`, which has no shared root:
 
 ```sh
 wb worktree relocate <task> --to local
@@ -261,7 +264,9 @@ wb worktree relocate <task> --to shared --apply
 ```
 
 Relocation preserves the task, branch, and immutable Work Log claim. WB repairs
-and verifies Git's registry, then records an append-only relocation receipt.
+and verifies Git's registry, then records an append-only relocation receipt
+whose destination is stored relative to the placement root that produced it, so
+a later `worktrees.root` reconfigure does not invalidate the evidence.
 It never moves adopted external worktrees; resolve those explicitly before
 changing their location.
 

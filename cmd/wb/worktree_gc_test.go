@@ -33,6 +33,10 @@ func initGCFixture(t *testing.T) (projectsRoot, home, worktree string) {
 	gcGit(t, canonical, "push", "-u", "origin", "main")
 
 	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(root, "projects"))
+	// These GC/cleanup cases exercise the repository-local layout; select it
+	// explicitly. The central default is covered by the worktrees package's
+	// store-mode tests.
+	selectRepositoryLocalWorktrees(t, root)
 	installGCFakeGh(t)
 	prompt := writeOriginalPromptFixture(t, "gc cli fixture")
 	created := runWB(t, "worktree", "create", "gc-cli", "acme/app",

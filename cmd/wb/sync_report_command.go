@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path/filepath"
-	"strings"
 
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/syncreport"
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -31,14 +30,29 @@ func defaultSyncReportCommandDeps() syncReportCommandDeps {
 	return syncReportCommandDeps{
 		validate: syncreport.ValidateInGitDB,
 		publish: func(ctx context.Context, repository, root string, report syncreport.Report) (gitrepo.SyncReportPublishResult, error) {
-			owner, name, _ := strings.Cut(repository, "/")
-			provider := gitrepo.New(gitrepo.Options{
-				ClonePath: filepath.Join(root, owner, name),
-				CloneURL:  "git@github.com:" + repository + ".git",
-			})
+			clonePath, err := syncReportClonePath(root, repository)
+			if err != nil {
+				return gitrepo.SyncReportPublishResult{}, err
+			}
+			provider := gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: syncReportCloneURL(repository)})
 			return provider.PublishSyncReport(ctx, report, syncreport.ValidatePath)
 		},
 	}
+}
+
+// syncReportCloneURL is the state repository's transport URL. It is always on
+// GitHub, which is why the clone path below can place a missing clone at the
+// literal host level.
+func syncReportCloneURL(repository string) string {
+	return "git@github.com:" + repository + ".git"
+}
+
+// syncReportClonePath resolves the local clone of the state repository. An
+// existing clone is used where it is — host level first, legacy placement
+// second — so publishing never creates a second copy beside the real one, and
+// only a missing clone is created at the literal host level its URL names.
+func syncReportClonePath(root, repository string) (string, error) {
+	return worktrees.CanonicalRepositoryPathForURL(root, repository, syncReportCloneURL(repository))
 }
 
 func newSyncReportCmd() *cobra.Command {

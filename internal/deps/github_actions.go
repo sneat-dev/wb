@@ -74,6 +74,43 @@ func (githubActionsAdapter) inspect(ctx context.Context, repositoryDir, base str
 	return decisions, nil
 }
 
+func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	root := filepath.Join(worktree, ".github", "workflows")
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var decisions []Decision
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !workflowFile(path) {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(worktree, path)
+		if err != nil {
+			return err
+		}
+		_, found, err := rewriteGitHubActions(contents, filepath.ToSlash(relative), target, false, options.AllowDowngrade)
+		if err != nil {
+			return err
+		}
+		decisions = append(decisions, found...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(decisions, func(i, j int) bool { return decisions[i].File < decisions[j].File })
+	return decisions, nil
+}
+
 func (githubActionsAdapter) apply(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
 	root := filepath.Join(worktree, ".github", "workflows")
 	if _, err := os.Stat(root); os.IsNotExist(err) {

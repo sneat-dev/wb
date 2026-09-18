@@ -1150,7 +1150,7 @@
                 "--report-dir"
               ],
               "modes": [
-                "Reports top-level, misowned, and ok clones under --projects-root."
+                "Reports top-level, misowned, bad-host, and ok clones under --projects-root, with the remote URL each canonical path corresponds to."
               ]
             },
             {
@@ -2641,6 +2641,87 @@
         }
       },
       "notes": "The hosted and local dashboards share a short human entry point while machine callers receive a side-effect-free URL receipt."
+    },
+    {
+      "id": "wb.deadcode",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deadcode",
+              "flags": [
+                "--baseline",
+                "--filter",
+                "--format",
+                "--generated",
+                "--no-baseline",
+                "--packages",
+                "--timeout",
+                "--update-baseline"
+              ],
+              "modes": [
+                "Reports functions that no path from any main package can reach, using golang.org/x/tools/cmd/deadcode's Rapid Type Analysis at a pinned version.",
+                "Gates on a committed baseline: only findings absent from .wb/deadcode-baseline.txt fail, so the check can be adopted by a repository that is not already clean.",
+                "Reports baseline entries that became reachable or were deleted, which never fail, so the tolerated set only shrinks without review.",
+                "--update-baseline rewrites the tolerated set from the current run instead of gating; --no-baseline reports everything and never fails."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deadcode --help",
+              "contains": [
+                "--baseline",
+                "--update-baseline",
+                "--no-baseline"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "# Coverage and verification",
+              "examples": [
+                "wb deadcode"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/quality/deadcode_test.go",
+              "name": "TestDeadcodeGatesOnlyFindingsMissingFromBaseline",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/deadcode_test.go",
+              "name": "TestDeadcodeReportsBaselineEntriesThatAreReachableAgainWithoutFailing",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/deadcode_test.go",
+              "name": "TestDeadcodeFailsWhenTheAnalyzerItselfFails",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "RTA over-approximates reachability, so a reported function is genuinely unreachable apart from reflection and //go:linkname; the analysis errs toward reporting too little, which is what makes it safe to gate on. The analyzer version is pinned in internal/quality/deadcode.go for the same reason .wb/quality.yaml pins golangci-lint: an unpinned analyzer would change the gate's verdict between runs."
     },
     {
       "id": "wb.deps.bump",
@@ -6207,7 +6288,7 @@
           "limitation": null
         }
       },
-      "notes": "Canonical clones are {owner}/{repository} with a real .git directory. Linked worktrees are ignored."
+      "notes": "Canonical clones are {host}/{owner}/{repository} with a real .git directory, where {host} is the literal forge hostname. A first-level entry that is not a valid hostname is reported as a bad_host finding; its clones are still read in place at the legacy {owner}/{repository} placement. Linked worktrees are ignored."
     },
     {
       "id": "wb.layout.clean",
@@ -15195,7 +15276,8 @@
               ],
               "modes": [
                 "Dry-run is the default and --apply is required to move a checkout",
-                "--to=local selects the canonical repository .worktrees root; --to=shared requires the current user-configured worktrees.root",
+                "--to=local selects the canonical repository .worktrees root; --to=shared resolves to the central store (<root>/.worktrees unless worktrees.root overrides it) and embeds the canonical clone's literal host level",
+            "The relocation receipt records the destination relative to the placement root that produced it, so a later worktrees.root reconfigure does not invalidate it",
                 "The task, branch, immutable Work Log claim, and checkout contents are preserved",
                 "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
                 "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
@@ -15248,6 +15330,11 @@
               "path": "internal/worktrees/relocate_test.go",
               "name": "TestRelocateRefusesExternalAndDirtyWorktrees",
               "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/relocate_store_test.go",
+              "name": "TestRelocateSharedTargetsTheCentralStore",
+              "kind": "integration"
             }
           ],
           "limitation": null

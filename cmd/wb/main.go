@@ -113,6 +113,10 @@ func newRootCmd() *cobra.Command {
 			if err := rejectIgnoredPersistentFlags(cmd, args); err != nil {
 				return err
 			}
+			// WB_HOME no longer selects anything. Report the ignored value
+			// before any work starts, on stderr, without touching the exit
+			// code — a retired variable must not become a rejected command.
+			warnIgnoredWBHome(cmd)
 			commandStarted = true
 			id := persistentCommandID(cmd)
 			// `wb version` (including --json) MUST stay side-effect-free
@@ -141,7 +145,7 @@ func newRootCmd() *cobra.Command {
 			return nil
 		},
 	}
-	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {org}/{repo}")
+	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
 	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
@@ -169,6 +173,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newCoverageCmd(), rootGroupQuality),
 		groupedRootCommand(newVerifyCmd(), rootGroupQuality),
 		groupedRootCommand(newCheckCmd(), rootGroupQuality),
+		groupedRootCommand(newDeadcodeCmd(), rootGroupQuality),
 		groupedRootCommand(newCICmd(), rootGroupQuality),
 		groupedRootCommand(newHooksCmd(), rootGroupQuality),
 		groupedRootCommand(newDepsCmd(), rootGroupChange),

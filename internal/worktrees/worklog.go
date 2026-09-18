@@ -2006,9 +2006,15 @@ func openWorkLogProjectionDirectory(worktree string, create bool) (*os.File, err
 	if err != nil {
 		return nil, fmt.Errorf("open work-log projection directory: %w", err)
 	}
-	if err := unix.Fchmod(fd, 0o700); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+	// Harden the mode only on the creating path. fchmod is a metadata write,
+	// and the read path opened this descriptor O_RDONLY: under a sandbox that
+	// denies writes outside the workspace it fails with EPERM, which reports a
+	// read as a denied write. Reading must never require write permission.
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	directory := os.NewFile(uintptr(fd), "wb-worklog-projection")
 	if directory == nil {
@@ -2875,7 +2881,7 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	}
 	if intent == nil {
 		intent, _, err = appendRelocationIntentForRepository(home, claim, expected.Source, expected.Destination, expected.To, expected.HeadSHA,
-			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, time.Now().UTC())
+			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, relocationPlacementRecord{}, time.Now().UTC())
 		if err != nil {
 			return false, fmt.Errorf("append legacy checkout attestation intent: %w", err)
 		}
@@ -2927,11 +2933,46 @@ func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, clai
 	if err != nil {
 		return err
 	}
-	if entry.Local || filepath.Clean(entry.WorktreeDir) != filepath.Join(entry.WorktreesRoot, entry.Task, newOwner, newName) ||
-		filepath.Clean(claim.Worktree) != filepath.Join(entry.WorktreesRoot, entry.Task, oldOwner, oldName) {
+	// The listed repository is a slug without the host level; the canonical
+	// clone's store address supplies it, so a central-store transfer is verified
+	// against <task>/<host>/<owner>/<repository> rather than a fixed depth. Both
+	// the origin-derived store host and the clone's own on-disk host level are
+	// accepted, so a checkout published before the host reached the suffix stays
+	// valid where it lies.
+	storeAddress, err := canonicalStoreAddress(context.Background(), projectsRoot, entry.CanonicalDir)
+	if err != nil {
+		return err
+	}
+	hosts := []string{storeAddress.Host}
+	if onDisk, _, onDiskErr := canonicalPathAddress(projectsRoot, entry.CanonicalDir); onDiskErr == nil {
+		if onDisk.Host != storeAddress.Host {
+			hosts = append(hosts, onDisk.Host)
+		}
+	}
+	matches := false
+	for _, host := range hosts {
+		newParent := cloneParentRelative(host, newOwner)
+		oldParent := cloneParentRelative(host, oldOwner)
+		if filepath.Clean(entry.WorktreeDir) == filepath.Join(entry.WorktreesRoot, entry.Task, filepath.FromSlash(newParent), newName) &&
+			filepath.Clean(claim.Worktree) == filepath.Join(entry.WorktreesRoot, entry.Task, filepath.FromSlash(oldParent), oldName) {
+			matches = true
+			break
+		}
+	}
+	if entry.Local || !matches {
 		return fmt.Errorf("private work-log claim identity/path mismatch is not a deterministic repository-transfer placement")
 	}
 	return nil
+}
+
+// cloneParentRelative renders the parent path between a task directory and a
+// repository segment: <host>/<owner> for a clone with a literal host level, and
+// the legacy <owner> otherwise.
+func cloneParentRelative(host, owner string) string {
+	if host == "" {
+		return owner
+	}
+	return host + "/" + owner
 }
 
 func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {
@@ -3276,9 +3317,18 @@ func openPrivateChild(parent *os.File, name string, create bool) (*os.File, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Fchmod(fd, 0o700); err != nil {
-		_ = unix.Close(fd)
-		return nil, err
+	// Harden the mode only on the creating path. The read path opens the
+	// descriptor O_RDONLY, and fchmod is a metadata write on that descriptor:
+	// under a sandbox that denies writes outside the workspace it fails with
+	// EPERM, which surfaced as "inspect existing work-log run before mutation:
+	// operation not permitted" — a read reported as a denied write. Nothing is
+	// lost by not re-tightening a directory an earlier release already
+	// created, and reading must never require write permission.
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	file := os.NewFile(uintptr(fd), "wb-worklog-"+name)
 	if file == nil {

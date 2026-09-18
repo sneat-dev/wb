@@ -73,7 +73,9 @@ func TestHkCovShimManagedSectionEmbedsConfigWithoutLegacyMarker(t *testing.T) {
 	// wbHomeAllowsLegacy is false in production now: resolvedWBHome no longer
 	// reports a legacy <projects-root>/.wb read layout to be compatible with,
 	// so a managed shim must not pin WB_HOME_MIGRATION_COMPAT. WB_HOME itself
-	// stays pinned until the separate WB_HOME-retirement task lands.
+	// is retired but a shim still pins it until the fleet migration regenerates
+	// the installed shims (plan task 8); the retirement diagnostic suppresses
+	// the machine hook-execution path, so the pin is not noisy in the meantime.
 	section := shimManagedSection("", "pre-commit", "~/hooks.yaml", "/projects root", filepath.Join(home, ".wb"), false)
 	if !strings.Contains(section, "--projects-root '/projects root'") {
 		t.Fatalf("section = %q, want the projects root embedded", section)
