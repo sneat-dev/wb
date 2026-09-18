@@ -335,48 +335,70 @@ against responsiveness.
 - No autonomous merge that the agent did not pre-authorise with review evidence.
 - `wb wait` is not merge evidence; `wb ci wait` remains that.
 
-### The actual defect: `wb pr land` is built for a 45-minute wait and defaults to 8
+### `wb pr land` already is the wait-then-merge verb
 
-This is the finding the whole idea turns on, and it is much smaller than a
-watch programme.
+`wb pr land` chains bounded resumable check-wait slices and then merges. It is
+not a watch programme away from the motivating scenario; it *is* the
+deterministic half of it, shipped. Its sequence is one concept — complete this
+pull request atomically — and contains no dependency propagation:
 
-`wb pr land` already *is* the wait-then-merge verb. It chains bounded resumable
-slices until its total budget is spent and then merges. Its own code says how
-long that is expected to take:
+```text
+inspect_pull_request -> inspect_changed_files -> candidate_checks ->
+preflight_cleanup -> inspect_source_commits -> merge_pull_request ->
+verify_remote_landing -> sync_canonical -> delete_remote_branch -> cleanup
+```
 
-> This wait can run the full slice budget (**routinely 30-60 minutes for this
-> fleet**) in one call: keep the lane's heartbeat fresh throughout so it never
-> goes stale out from under this still-live session.
+That tail is not scope creep; `rule:land-work-dont-queue-it` defines work as
+done only when merged, pushed, and every branch and worktree cleaned.
 
-It keeps a lane heartbeat alive for exactly that duration. And yet `--timeout`
-defaults to **eight minutes**.
+#### A stale comment, and the claim it cost
 
-The eight-minute default is not a mistake in the foreground: it is the same
-harness tool-call ceiling that bounds `wb ci wait`. The mistake is what happens
-next. On expiry the command returns `checks-pending` with
+The code justifies keeping a lane heartbeat alive with:
+
+> This wait can run the full slice budget (routinely 30-60 minutes for this
+> fleet) in one call
+
+**Measurement contradicts it.** Observed successful workflow durations,
+wall-clock from creation to completion including queue time:
+
+| Repository | PR runs | Post-merge runs |
+|---|---|---|
+| `sneat-dev/wb` | 8 min | 2-3 min |
+| `sneat-co/sneat-go` | 3-11 min | — |
+| `sneat-co/backstage` | 0 min | — |
+
+Nothing in the fleet approaches thirty minutes, let alone sixty. An earlier
+draft of this idea read that comment, inferred that `wb pr land`'s eight-minute
+`--timeout` default was four to seven times too small, and built its headline
+finding on it. That was wrong, and it is recorded here because the failure mode
+is worth keeping: **a comment is not a measurement**, and this one had been
+carried forward long enough to look authoritative.
+
+#### What is actually left
+
+The default is set at roughly the *median* CI duration rather than above it, so
+a landing started right after a push times out about as often as it succeeds —
+and the `checks-pending` refusal then returns
 
 ```text
 SanctionedCommand = "wb pr land <repository>#<number>"
 ```
 
-— the identical invocation, with no `--timeout`. So the sanctioned resume is
-another eight minutes against CI that the code itself expects to take forty-five.
-An agent following WB's own guidance is placed in a loop that cannot terminate,
-which is a sufficient explanation for the measured fallback to `gh` polling.
+with no `--timeout`, so the sanctioned retry carries the same budget that just
+expired. That is a real but modest defect: a default that should sit above the
+observed distribution rather than in the middle of it, and a resume hint that
+should name the larger budget. It is a tuning fix and a message fix, not a
+feature.
 
-Backgrounded, `wb pr land <ref> --timeout 45m` has no harness ceiling and
-already does the whole job. Nothing prevents it today. Nothing suggests it
-either.
-
-**So the deterministic half of the motivating scenario needs no new code.** It
-needs the pending refusal to hand back a resume command that can actually
-succeed, and documentation that says to background it.
+The measured adoption gap therefore rests on the ergonomics finding above —
+`wb ci wait` demanding a head SHA the caller does not have — and on discovery
+across three scattered spellings. Those are what the new verb addresses.
 
 That narrows what is genuinely missing to three things:
 
 1. **Observation without authorising a merge.** `wb pr land` lands. There is no
-   way to ask "tell me when this changes" without granting it permission to
-   merge. This is the one real gap.
+   way to ask "tell me when this changes" without granting permission to merge.
+   This is the one real gap.
 2. **More than one target per process.** One landing call watches one PR;
    `wb fleet prs` snapshots many but does not wait.
 3. **A reference an agent already has.** See the measurement above.
@@ -403,9 +425,13 @@ needed, and should not delay the first three.
 
 ## Follow-up work this idea identified but does not do
 
-- `wb pr land`'s `checks-pending` refusal returns a resume command with no
-  `--timeout`, so the sanctioned retry is another eight minutes against a wait
-  the code expects to take forty-five.
+- `wb pr land`'s `--timeout` default sits at the median observed CI duration
+  rather than above it, and its `checks-pending` refusal returns a resume
+  command with no `--timeout`, so the sanctioned retry carries the budget that
+  just expired.
+- `internal/orchestrate/pr_land.go` claims check waits run "routinely 30-60
+  minutes for this fleet". Measured durations are 8 minutes for `wb`, 3-11 for
+  `sneat-go`, 0 for `backstage`. The comment should be corrected or dated.
 - The landing lane no-ops for a process with no resolvable session, and treats
   same-session re-acquisition as a refresh.
 - `--approved-by` accepts any non-empty string and is not bound to a head SHA.
