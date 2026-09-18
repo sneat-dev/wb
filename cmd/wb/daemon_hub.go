@@ -316,10 +316,10 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	// (peer-connectivity#req:admin-requires-owner-credential).
 	peerAdmin := &hub.PeerAdminService{
 		Credentials: credentials, Index: machineIndex, Trust: peerTrust, Stats: peerStats,
-		Pepper: pepper, HubMachineName: machine, MemoryEngine: cfg.Store.Engine == hubconfig.EngineMemory,
+		Backend: store, Pepper: pepper, HubMachineName: machine, MemoryEngine: cfg.Store.Engine == hubconfig.EngineMemory,
 	}
 	peersSource := hubPeerReadSource{trust: peerTrust}
-	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource)
+	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
 
 	handler := hub.NewHandler(hub.HandlerOptions{
 		ViewerResolver: fixedViewerResolver{viewer: viewer},
@@ -386,12 +386,55 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Mounts: map[string]http.Handler{
 			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler, peersAPI),
 			web.MountPath:       web.Handler(),
-			// The local daemon API's peers route (peer-connectivity#req:
-			// peers-api's "on every node") reads the same source as the hub
-			// mount above, so the two answer identically.
-			"/api/v1/peers/": peers.NewHandler("/api/v1/peers", peersSource),
+			// The local daemon API's own peers route (peer-connectivity#req:
+			// peers-api's "on every node") is mounted unconditionally by
+			// serveDashboard via dashboard.Options.Peers — including when
+			// there is no hub section at all — not through this map, so a
+			// laptop-only install still answers "no downstream peers"
+			// instead of 404ing into the dashboard's HTML index. See
+			// mount.peersSource().
 		},
 	}, nil
+}
+
+// peersViewerAuthorize matches the always-true loopback-operator viewer the
+// sibling read routes already apply (readAPI's ViewerResolver): only this
+// machine can reach the loopback listener, so there is nothing further to
+// check today. It exists so the peers read route is not structurally
+// different from its siblings, and has a real gate to grow into once a
+// non-trivial viewer exists.
+func peersViewerAuthorize(identityID string) peers.Authorize {
+	resolver := localWorkbenchViewerResolver{identityID: identityID}
+	return func(request *http.Request) error {
+		viewer, err := resolver.Viewer(request)
+		if err != nil || !viewer.Authenticated {
+			return errors.New("unauthorized")
+		}
+		return nil
+	}
+}
+
+// peersSource returns the hub-backed peers.Source, or nil when there is no
+// hub. A nil receiver (no hub configured at all) answers nil too, so
+// serveDashboard's fallback to emptyPeersSource covers both cases with one
+// check.
+func (mount *hubMount) peersSource() peers.Source {
+	if mount == nil {
+		return nil
+	}
+	return mount.PeersSource
+}
+
+// emptyPeersSource backs /api/v1/peers when this daemon has no hub mounted,
+// so a laptop-only install still answers with an empty downstream list
+// (peer-connectivity#req:peers-api is mounted "on every node") rather than
+// falling through to the dashboard's HTML index.
+type emptyPeersSource struct{}
+
+func (emptyPeersSource) ListPeers(context.Context) ([]peers.Record, error) { return nil, nil }
+
+func (emptyPeersSource) GetPeer(context.Context, string) (peers.Detail, bool, error) {
+	return peers.Detail{}, false, nil
 }
 
 // hubPeerReadSource adapts hub.PeerTrustStore to internal/peers.Source. It is

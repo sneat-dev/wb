@@ -181,6 +181,17 @@ func (handler peerAdminHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		writePeerAdminError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The owner RPC's "enroll" route mints a plain (non-peer) machine
+	// credential. It must never shadow a peer's own name or the hub's own
+	// machine name — ensureLocalEnrollment's in-process self-bootstrap is
+	// the one caller allowed to enrol the hub's own name, and it never goes
+	// through this route.
+	if handler.admin != nil {
+		if err := handler.admin.RefuseIfPeerNameCollision(r.Context(), request.Name); err != nil {
+			writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
+			return
+		}
+	}
 	response, err := handler.enrollment.Enroll(r.Context(), handler.viewer, hub.MachineEnrollmentRequest{Name: request.Name})
 	if err != nil {
 		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())

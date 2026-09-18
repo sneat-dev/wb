@@ -159,6 +159,67 @@ func TestPeerAdminEnrollReusesTheEnrollmentService(t *testing.T) {
 	}
 }
 
+// TestPeerAdminEnrollRefusesTheHubsOwnMachineName and
+// TestPeerAdminEnrollRefusesAPeerName are S4: the owner RPC's "enroll" route
+// mints a plain (non-peer) machine credential, which must never shadow the
+// hub's own machine name or an existing peer's name — ensureLocalEnrollment
+// is the one caller allowed to enrol the hub's own name, and it never goes
+// through this route.
+func TestPeerAdminEnrollRefusesTheHubsOwnMachineName(t *testing.T) {
+	mount, handler := peerAdminTestMount(t)
+	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"enroll", peerEnrollRequest{Name: mount.Machine})
+	if response.Code == http.StatusOK {
+		t.Fatalf("enroll of the hub's own machine name %q = %d %s, want a refusal", mount.Machine, response.Code, response.Body.String())
+	}
+}
+
+func TestPeerAdminEnrollRefusesAPeerName(t *testing.T) {
+	mount, handler := peerAdminTestMount(t)
+	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
+		t.Fatal(err)
+	}
+	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"enroll", peerEnrollRequest{Name: "laptop"})
+	if response.Code == http.StatusOK {
+		t.Fatalf("enroll of an existing peer name = %d %s, want a refusal", response.Code, response.Body.String())
+	}
+}
+
+// TestNewPeerAdminClientStartsTheLocalDaemonAndAuthenticates and
+// TestDaemonListenAddressBranches cover cmd/wb's own daemon-launch seams
+// directly — not just through a fake adminClient/listenAddress override, as
+// every peers.go CLI test does — using daemonTestDependencies's established,
+// safe, entirely in-memory start/stop/health fakes (cmd/wb/daemon_test.go),
+// per the common brief's daemon-safety requirement: neither test can reach a
+// real subprocess or launchd.
+func TestNewPeerAdminClientStartsTheLocalDaemonAndAuthenticates(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	deps.localClient = func(string, string) (*http.Client, error) { return &http.Client{}, nil }
+	client, err := newPeerAdminClient(context.Background(), deps, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client == nil || client.httpClient == nil {
+		t.Fatal("newPeerAdminClient returned no usable client")
+	}
+}
+
+func TestDaemonListenAddressBranches(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	if _, err := daemonListenAddress(deps, root); err == nil {
+		t.Fatal("expected daemonListenAddress to fail before the daemon has ever started")
+	}
+	controller := newDaemonController(deps, root)
+	if _, err := controller.Start(context.Background(), daemonDefaultListen); err != nil {
+		t.Fatal(err)
+	}
+	listen, err := daemonListenAddress(deps, root)
+	if err != nil || listen == "" {
+		t.Fatalf("daemonListenAddress after start = %q, %v", listen, err)
+	}
+}
+
 // TestPeerAdminHandlerWithoutAHubAnswersUnavailable proves a daemon with no
 // hub section still answers every peer admin route, just unavailably,
 // rather than panicking on a nil PeerAdmin.

@@ -54,14 +54,14 @@ restarts a running daemon so the peer session starts immediately.
   cat token.txt | wb peers join https://vm1.sneat.dev --token-stdin   # on the laptop`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return runPeersJoin(command.Context(), defaultPeersJoinDeps(), projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout())
+			return runPeersJoin(command.Context(), defaultPeersJoinDeps(), projectsRoot, args[0], tokenFile, tokenStdin, restartDaemon, jsonOut, command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	command.Flags().StringVar(&tokenFile, "token-file", "", "read the one-time token from this absolute path")
 	command.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the one-time token from stdin")
 	command.Flags().BoolVar(&restartDaemon, "restart-daemon", true, "restart WB daemon if it is running")
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers join laptop connect hub upstream token dial vm")
+	setDiscoveryTerms(command, "peers join laptop connect hub upstream token dial vm block")
 	return command
 }
 
@@ -73,7 +73,7 @@ type peersJoinResult struct {
 	DaemonRestart bool   `json:"daemon_restart"`
 }
 
-func runPeersJoin(ctx context.Context, deps peersJoinDeps, projectsRoot, hubURL, tokenFile string, tokenStdin, restartDaemon, jsonOut bool, in io.Reader, out io.Writer) error {
+func runPeersJoin(ctx context.Context, deps peersJoinDeps, projectsRoot, hubURL, tokenFile string, tokenStdin, restartDaemon, jsonOut bool, in io.Reader, out, errOut io.Writer) error {
 	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
 	if err := remotestate.ValidateHubURL(hubURL); err != nil {
 		return &exitError{code: exitUsage, message: err.Error()}
@@ -90,8 +90,18 @@ func runPeersJoin(ctx context.Context, deps peersJoinDeps, projectsRoot, hubURL,
 	}
 
 	configPath := deps.configPath()
-	if cfg, loadErr := remotestate.LoadConfig(configPath); loadErr == nil && cfg.Provider == "hub" && sameOrigin(cfg.URL, hubURL) {
+	var unconfigured *remotestate.UnconfiguredError
+	switch cfg, loadErr := remotestate.LoadConfig(configPath); {
+	case loadErr == nil && cfg.Provider == "hub" && sameOrigin(cfg.URL, hubURL):
 		return &exitError{code: exitUsage, message: fmt.Sprintf("remote.provider is already hub at %s; two receivers cannot consume one queue", cfg.URL)}
+	case loadErr != nil && !errors.As(loadErr, &unconfigured):
+		// "No remote configured yet" (a fresh install's common case) is not
+		// refused: there is nothing to conflict with. Any other load failure
+		// — wb.yaml exists but fails to parse — is refused rather than
+		// silently skipping the same-origin check it would otherwise have
+		// made: joining on top of an unreadable config risks exactly the
+		// two-receivers-one-queue conflict that check exists to catch.
+		return fmt.Errorf("load %s: %w", configPath, loadErr)
 	}
 
 	if err := deps.verify(ctx, hubURL, token); err != nil {
@@ -99,10 +109,11 @@ func runPeersJoin(ctx context.Context, deps peersJoinDeps, projectsRoot, hubURL,
 	}
 	// peer-connectivity#req:node-identity: the node ID is created on first
 	// daemon start or on first `wb peers join`, whichever happens first on
-	// this machine. A failure here is reported but does not block the join:
-	// the daemon creates it too, on its next start.
+	// this machine. A failure here is reported (to stderr: it is a
+	// diagnostic, not part of join's own result) but does not block the
+	// join: the daemon creates it too, on its next start.
 	if _, err := nodeidentity.Load(projectsRoot, nil); err != nil {
-		_, _ = fmt.Fprintln(out, "wb: node identity unavailable:", err)
+		_, _ = fmt.Fprintln(errOut, "wb: node identity unavailable:", err)
 	}
 
 	digest := sha256.Sum256([]byte(token))
@@ -154,14 +165,35 @@ func readPeersJoinToken(in io.Reader, tokenFile string, tokenStdin bool) (string
 
 // sameOrigin compares scheme and host only, so "https://vm1.sneat.dev/" and
 // "https://vm1.sneat.dev" (or a differing path/query rejected earlier by
-// ValidateHubURL) are recognised as the same receiver.
+// ValidateHubURL) are recognised as the same receiver. Both sides are
+// normalised the same way before comparing: lowercase, a trailing dot
+// stripped from the hostname (DNS treats "vm1.sneat.dev." and
+// "vm1.sneat.dev" as the same name), and the scheme's default port treated
+// as equivalent to no port at all, so "https://vm1.sneat.dev:443" and
+// "https://vm1.sneat.dev" are recognised as the same origin too.
 func sameOrigin(a, b string) bool {
 	parsedA, errA := url.Parse(a)
 	parsedB, errB := url.Parse(b)
 	if errA != nil || errB != nil {
 		return false
 	}
-	return strings.EqualFold(parsedA.Scheme, parsedB.Scheme) && strings.EqualFold(parsedA.Host, parsedB.Host)
+	schemeA, schemeB := strings.ToLower(parsedA.Scheme), strings.ToLower(parsedB.Scheme)
+	return schemeA == schemeB && normalizeOriginHost(parsedA, schemeA) == normalizeOriginHost(parsedB, schemeB)
+}
+
+// normalizeOriginHost lowercases the hostname, strips a trailing DNS root
+// dot, and drops an explicit port that already matches the scheme's default
+// (443 for https, 80 for http), so it compares equal to a URL that omitted
+// the port entirely.
+func normalizeOriginHost(parsed *url.URL, scheme string) string {
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimSuffix(host, ".")
+	port := parsed.Port()
+	defaultPort := map[string]string{"https": "443", "http": "80"}[scheme]
+	if port == "" || port == defaultPort {
+		return host
+	}
+	return host + ":" + port
 }
 
 // hostForFilename names the private credential file after the hub host, so
@@ -185,7 +217,15 @@ func verifyPeerConnectProbe(ctx context.Context, hubURL, token string) error {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		// The probe carries the peer's bearer token in a header a redirect
+		// target would also receive: refuse every redirect outright rather
+		// than silently following one to a host the operator never typed.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("peer connect probe refuses to follow a redirect")
+		},
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return err

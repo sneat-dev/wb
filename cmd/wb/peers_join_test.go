@@ -70,7 +70,7 @@ func TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical(t *testing
 	deps.configPath = func() string { return configPath }
 
 	var out bytes.Buffer
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, true, false, strings.NewReader("the-token\n"), &out); err != nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, true, false, strings.NewReader("the-token\n"), &out, &out); err != nil {
 		t.Fatal(err)
 	}
 	if *verifyCalls != 1 || *restartCalls != 1 {
@@ -114,7 +114,7 @@ func TestPeersJoinRefusesSameOriginHubRemote(t *testing.T) {
 	deps.configPath = func() string { return configPath }
 
 	var out bytes.Buffer
-	err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("the-token\n"), &out)
+	err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("the-token\n"), &out, &out)
 	if err == nil {
 		t.Fatal("expected a refusal for a same-origin remote.provider: hub")
 	}
@@ -125,9 +125,10 @@ func TestPeersJoinRefusesSameOriginHubRemote(t *testing.T) {
 
 func TestPeersJoinRefusesABadToken(t *testing.T) {
 	deps, _, restartCalls := testPeersJoinDeps(errors.New("unauthorized"), nil)
-	deps.configPath = func() string { return filepath.Join(t.TempDir(), "wb.yaml") }
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
 	var out bytes.Buffer
-	err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("bad-token\n"), &out)
+	err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("bad-token\n"), &out, &out)
 	if err == nil {
 		t.Fatal("expected a refusal for a bad token")
 	}
@@ -141,30 +142,33 @@ func TestPeersJoinRefusesABadToken(t *testing.T) {
 
 func TestPeersJoinRequiresExactlyOneTokenSource(t *testing.T) {
 	deps, _, _ := testPeersJoinDeps(nil, nil)
-	deps.configPath = func() string { return filepath.Join(t.TempDir(), "wb.yaml") }
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
 	var out bytes.Buffer
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", false, false, false, strings.NewReader(""), &out); err == nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", false, false, false, strings.NewReader(""), &out, &out); err == nil {
 		t.Fatal("expected a usage error when neither --token-stdin nor --token-file is given")
 	}
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "/abs/token", true, false, false, strings.NewReader("x"), &out); err == nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "/abs/token", true, false, false, strings.NewReader("x"), &out, &out); err == nil {
 		t.Fatal("expected a usage error when both --token-stdin and --token-file are given")
 	}
 }
 
 func TestPeersJoinRejectsANonAbsoluteTokenFile(t *testing.T) {
 	deps, _, _ := testPeersJoinDeps(nil, nil)
-	deps.configPath = func() string { return filepath.Join(t.TempDir(), "wb.yaml") }
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
 	var out bytes.Buffer
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "relative/token", false, false, false, strings.NewReader(""), &out); err == nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "relative/token", false, false, false, strings.NewReader(""), &out, &out); err == nil {
 		t.Fatal("expected a usage error for a relative --token-file")
 	}
 }
 
 func TestPeersJoinRejectsAnInvalidHubURL(t *testing.T) {
 	deps, _, _ := testPeersJoinDeps(nil, nil)
-	deps.configPath = func() string { return filepath.Join(t.TempDir(), "wb.yaml") }
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
 	var out bytes.Buffer
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "http://vm1.sneat.dev", "", true, false, false, strings.NewReader("token"), &out); err == nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "http://vm1.sneat.dev", "", true, false, false, strings.NewReader("token"), &out, &out); err == nil {
 		t.Fatal("expected a usage error for a non-loopback http:// hub URL")
 	}
 }
@@ -172,14 +176,109 @@ func TestPeersJoinRejectsAnInvalidHubURL(t *testing.T) {
 // TestPeersJoinReportsJSON proves the machine-readable output shape.
 func TestPeersJoinReportsJSON(t *testing.T) {
 	deps, _, _ := testPeersJoinDeps(nil, nil)
-	deps.configPath = func() string { return filepath.Join(t.TempDir(), "wb.yaml") }
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
 	var out bytes.Buffer
-	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, true, strings.NewReader("the-token\n"), &out); err != nil {
+	if err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, true, strings.NewReader("the-token\n"), &out, &out); err != nil {
 		t.Fatal(err)
 	}
 	var result peersJoinResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.Verified || result.DaemonRestart {
 		t.Fatalf("join JSON output = %q, %v", out.String(), err)
+	}
+}
+
+// TestPeersJoinNodeIdentityWarningGoesToStderr is M1: a failure to create
+// the node identity file is reported to stderr, not mixed into stdout's join
+// result, and does not fail the join itself.
+func TestPeersJoinNodeIdentityWarningGoesToStderr(t *testing.T) {
+	deps, _, _ := testPeersJoinDeps(nil, nil)
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	deps.configPath = func() string { return configPath }
+
+	// A projects root that is itself a regular file makes nodeidentity.Load
+	// fail deterministically — the same portable fault
+	// internal/nodeidentity's own test uses, rather than fighting
+	// HOME/USERPROFILE across platforms.
+	root := t.TempDir()
+	blocker := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	if err := runPeersJoin(context.Background(), deps, blocker, "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("the-token\n"), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if errOut.Len() == 0 || !strings.Contains(errOut.String(), "node identity unavailable") {
+		t.Fatalf("stderr = %q, want the node identity warning", errOut.String())
+	}
+	if strings.Contains(out.String(), "node identity") {
+		t.Fatalf("stdout leaked the node identity warning: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Joined https://vm1.sneat.dev") {
+		t.Fatalf("stdout = %q, want the ordinary join result despite the node identity warning", out.String())
+	}
+}
+
+// TestSameOriginNormalizesSchemeHostPortAndTrailingDot is M2: two URLs that
+// name the same origin under case, a trailing DNS root dot, or an explicit
+// default port must compare equal.
+func TestSameOriginNormalizesSchemeHostPortAndTrailingDot(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"https://VM1.sneat.dev", "https://vm1.sneat.dev"},
+		{"https://vm1.sneat.dev.", "https://vm1.sneat.dev"},
+		{"https://vm1.sneat.dev:443", "https://vm1.sneat.dev"},
+		{"http://vm1.sneat.dev:80", "http://vm1.sneat.dev"},
+	} {
+		if !sameOrigin(pair[0], pair[1]) {
+			t.Fatalf("sameOrigin(%q, %q) = false, want true", pair[0], pair[1])
+		}
+	}
+	if sameOrigin("https://vm1.sneat.dev:8443", "https://vm1.sneat.dev") {
+		t.Fatal("sameOrigin must not ignore a non-default port")
+	}
+	if sameOrigin("https://vm1.sneat.dev", "https://vm2.sneat.dev") {
+		t.Fatal("sameOrigin must not equate two different hosts")
+	}
+}
+
+// TestPeersJoinRefusesOnAnUnparsableRemoteConfig is M2's second half: a
+// wb.yaml that exists but fails to parse must refuse the join, rather than
+// silently skipping the same-origin check the way "no remote configured"
+// (an *remotestate.UnconfiguredError, the ordinary fresh-install case) is
+// allowed to.
+func TestPeersJoinRefusesOnAnUnparsableRemoteConfig(t *testing.T) {
+	deps, verifyCalls, _ := testPeersJoinDeps(nil, nil)
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("not: [valid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps.configPath = func() string { return configPath }
+	var out bytes.Buffer
+	err := runPeersJoin(context.Background(), deps, t.TempDir(), "https://vm1.sneat.dev", "", true, false, false, strings.NewReader("the-token\n"), &out, &out)
+	if err == nil {
+		t.Fatal("expected a refusal for an unparsable wb.yaml")
+	}
+	if *verifyCalls != 0 {
+		t.Fatal("an unparsable config must refuse before ever verifying the token")
+	}
+}
+
+// TestVerifyPeerConnectProbeRefusesARedirect is M10: the probe client must
+// never follow a redirect, since the peer's bearer token travels in a
+// header a redirect target would also receive.
+func TestVerifyPeerConnectProbeRefusesARedirect(t *testing.T) {
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("verifyPeerConnectProbe must never follow a redirect to a second server")
+	}))
+	t.Cleanup(redirectTarget.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL+hub.PeersConnectPath, http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	if err := verifyPeerConnectProbe(context.Background(), server.URL, "the-token"); err == nil {
+		t.Fatal("expected verifyPeerConnectProbe to refuse a redirect")
 	}
 }
 

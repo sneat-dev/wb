@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -31,6 +32,31 @@ type peersDeps struct {
 	listenAddress func(daemonDependencies, string) (string, error)
 	httpClient    *http.Client
 	now           func() time.Time
+}
+
+// isHubConfigured reports whether this machine has a hub: section at all,
+// without starting anything: the owner-token RPC needs a running daemon to
+// reach, but "is there a hub" is answerable by reading the same wb.yaml the
+// daemon itself reads.
+func isHubConfigured(deps peersDeps) (bool, error) {
+	_, found, err := hubconfig.Load(deps.configPath())
+	return found, err
+}
+
+// requireHubConfigured refuses a hub-only admin verb (invite, or block/
+// unblock/disconnect for a downstream peer, once the upstream special case
+// has already been ruled out) as a usage error when this machine has no hub
+// section at all, rather than starting a managed daemon only to learn that
+// from a 503 over the owner-token RPC.
+func requireHubConfigured(deps peersDeps) error {
+	found, err := isHubConfigured(deps)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return &exitError{code: exitUsage, message: "no hub is configured on this machine; `wb peers invite`, `block`, `unblock` and `disconnect` (for a downstream peer) require a self-hosted hub — see `hub:` in wb.yaml, or run `wb peers join` to become a peer of one instead"}
+	}
+	return nil
 }
 
 func defaultPeersDeps() peersDeps {
@@ -85,7 +111,7 @@ func newPeersInviteCmd() *cobra.Command {
 	command.Flags().BoolVar(&rotate, "rotate", false, "reissue the credential for an existing peer name")
 	command.Flags().StringVar(&tokenFile, "token-file", "", "write the one-time token here (mode 0600) instead of printing it")
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers invite laptop admit token credential mint one-time hub connect")
+	setDiscoveryTerms(command, "peers invite laptop vm admit token credential mint one-time hub connect block")
 	return command
 }
 
@@ -99,6 +125,25 @@ type peersInviteResult struct {
 }
 
 func runPeersInvite(ctx context.Context, deps peersDeps, projectsRoot, name string, rotate bool, tokenFile string, jsonOut bool, out io.Writer) error {
+	if err := requireHubConfigured(deps); err != nil {
+		return err
+	}
+	var absoluteTokenFile string
+	if strings.TrimSpace(tokenFile) != "" {
+		var err error
+		absoluteTokenFile, err = filepath.Abs(tokenFile)
+		if err != nil {
+			return fmt.Errorf("resolve token file: %w", err)
+		}
+		// Refused before minting anything: an operator's typo pointing at an
+		// existing file (or, on the second run of a script, the same path
+		// twice) must not either overwrite that file or discover the
+		// overwrite refusal only after the hub has already minted (and
+		// revoked, on a rotate) a fresh credential it can no longer show.
+		if err := refuseExistingTokenFile(absoluteTokenFile); err != nil {
+			return err
+		}
+	}
 	client, err := deps.adminClient(ctx, deps.daemonDeps, projectsRoot)
 	if err != nil {
 		return err
@@ -108,16 +153,23 @@ func runPeersInvite(ctx context.Context, deps peersDeps, projectsRoot, name stri
 		return err
 	}
 	result := peersInviteResult{PeerID: response.PeerID, Name: response.Name, Token: response.Token, CreatedAt: response.CreatedAt, Rotated: response.Rotated}
-	if strings.TrimSpace(tokenFile) != "" {
-		absolute, err := filepath.Abs(tokenFile)
-		if err != nil {
-			return fmt.Errorf("resolve token file: %w", err)
-		}
-		if err := writeOneTimeToken(absolute, response.Token); err != nil {
+	if absoluteTokenFile != "" {
+		if writeErr := writeOneTimeToken(absoluteTokenFile, response.Token); writeErr != nil {
+			// The token is already minted, and the hub never returns it
+			// again. Printing it now — with a loud warning — is the only
+			// way not to lose the operator's only copy; failing outright
+			// here would strand a live, un-recorded credential.
+			if _, err := fmt.Fprintf(out, "wb: could not write token file %s: %v\n", absoluteTokenFile, writeErr); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(out, "Token (copy this now; it cannot be shown again):"); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintln(out, response.Token)
 			return err
 		}
 		result.Token = ""
-		result.TokenFile = absolute
+		result.TokenFile = absoluteTokenFile
 	}
 	if jsonOut {
 		return json.NewEncoder(out).Encode(result)
@@ -137,12 +189,40 @@ func runPeersInvite(ctx context.Context, deps peersDeps, projectsRoot, name stri
 	return err
 }
 
+// refuseExistingTokenFile is invite's pre-mint check: an early, friendly
+// refusal before a token is minted. The actual safety guarantee is
+// writeOneTimeToken's O_CREATE|O_EXCL open, which refuses the same path
+// atomically (including a symlink placed there after this check ran: EEXIST
+// applies to a symlink target too, so the open never follows it).
+func refuseExistingTokenFile(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("token file %s already exists; refusing to overwrite it", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check token file %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeOneTimeToken creates path exclusively (O_CREATE|O_EXCL, mode 0600):
+// the open itself fails with EEXIST if anything — a plain file or a
+// symlink — already sits at path, which is the real, race-free guarantee
+// behind refuseExistingTokenFile's earlier, friendlier check.
 func writeOneTimeToken(path, token string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create token directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create token file: %w", err)
+	}
+	if _, err := io.WriteString(file, token+"\n"); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
 		return fmt.Errorf("write token file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("close token file: %w", err)
 	}
 	return nil
 }
@@ -175,12 +255,15 @@ func newPeersUnblockCmd() *cobra.Command {
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers unblock allow readmit laptop vm hub connect")
+	setDiscoveryTerms(command, "peers unblock allow readmit laptop vm hub connect block")
 	return command
 }
 
 func runPeersTrustChange(ctx context.Context, deps peersDeps, projectsRoot, path, verb, peer string, jsonOut bool, out io.Writer) error {
 	if handled, err := runPeersUpstreamTrustChange(deps, projectsRoot, verb, peer, jsonOut, out); handled {
+		return err
+	}
+	if err := requireHubConfigured(deps); err != nil {
 		return err
 	}
 	client, err := deps.adminClient(ctx, deps.daemonDeps, projectsRoot)
@@ -209,11 +292,14 @@ func newPeersDisconnectCmd() *cobra.Command {
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers disconnect close session live laptop vm hub connect")
+	setDiscoveryTerms(command, "peers disconnect close session live laptop vm hub connect block")
 	return command
 }
 
 func runPeersDisconnect(ctx context.Context, deps peersDeps, projectsRoot, peer string, jsonOut bool, out io.Writer) error {
+	if err := requireHubConfigured(deps); err != nil {
+		return err
+	}
 	client, err := deps.adminClient(ctx, deps.daemonDeps, projectsRoot)
 	if err != nil {
 		return err
@@ -238,11 +324,11 @@ func newPeersListCmd() *cobra.Command {
 		Short: "List every peer, plus the upstream hub when this machine has joined one",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return runPeersList(command.Context(), defaultPeersDeps(), projectsRoot, jsonOut, command.OutOrStdout())
+			return runPeersList(command.Context(), defaultPeersDeps(), projectsRoot, jsonOut, command.OutOrStdout(), command.ErrOrStderr())
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers list laptop vm hub connect status connected offline blocked")
+	setDiscoveryTerms(command, "peers list laptop vm hub connect block status connected offline blocked")
 	return command
 }
 
@@ -257,27 +343,46 @@ func newPeersGetCmd() *cobra.Command {
 		},
 	}
 	addJSONFormatFlags(command, &jsonOut)
-	setDiscoveryTerms(command, "peers get show detail laptop vm hub connect")
+	setDiscoveryTerms(command, "peers get show detail laptop vm hub connect block")
 	return command
 }
 
-func runPeersList(ctx context.Context, deps peersDeps, projectsRoot string, jsonOut bool, out io.Writer) error {
-	list, err := readPeersList(ctx, deps, projectsRoot)
+func runPeersList(ctx context.Context, deps peersDeps, projectsRoot string, jsonOut bool, out, errOut io.Writer) error {
+	list, downstreamErr := readPeersList(ctx, deps, projectsRoot)
+	rows := append([]peers.Record(nil), list.Peers...)
+	upstream, upstreamFound, err := resolveUpstreamRow(deps, projectsRoot)
 	if err != nil {
 		return err
 	}
-	rows := append([]peers.Record(nil), list.Peers...)
-	if upstream, found, err := resolveUpstreamRow(deps, projectsRoot); err != nil {
-		return err
-	} else if found {
+	if upstreamFound {
 		rows = append(rows, upstream)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+
+	// A downstream read failure never blocks rendering what is known (the
+	// upstream row, if any): it is reported, and — only when a hub is
+	// actually configured on this machine, so downstream data is expected to
+	// exist — escalated to a finding, rather than silently rendering "no
+	// peers" as if a self-hosted hub simply had none.
+	var finding error
+	if downstreamErr != nil {
+		_, _ = fmt.Fprintln(errOut, "wb: downstream peers unavailable:", downstreamErr)
+		hubConfigured, hubErr := isHubConfigured(deps)
+		if hubErr != nil {
+			return hubErr
+		}
+		if hubConfigured {
+			finding = &exitError{code: exitFindings, message: "downstream peers are unavailable (see stderr); the local daemon may be stopped or unhealthy"}
+		}
+	}
 	if jsonOut {
-		return json.NewEncoder(out).Encode(peers.ListResponse{SchemaVersion: peers.SchemaVersion, Peers: rows})
+		if err := json.NewEncoder(out).Encode(peers.ListResponse{SchemaVersion: peers.SchemaVersion, Peers: rows}); err != nil {
+			return err
+		}
+		return finding
 	}
 	writePeersTable(out, deps.now(), rows)
-	return nil
+	return finding
 }
 
 func runPeersGet(ctx context.Context, deps peersDeps, projectsRoot, peer string, jsonOut bool, out io.Writer) error {
@@ -324,32 +429,36 @@ func runPeersGet(ctx context.Context, deps peersDeps, projectsRoot, peer string,
 	return nil
 }
 
-// readPeersList reads the local daemon's peers API, best-effort: a daemon
-// that is not running or not self-hosting a hub yet is reported as "no
-// downstream peers" rather than failing the command outright, since `wb
-// peers list` is also the way a fresh laptop-only install (no hub, maybe an
-// upstream) checks its own state.
+// errPeersDownstreamUnavailable wraps every reason readPeersList could not
+// read the local daemon's peers API: the daemon is not running, the request
+// failed, the response was not 200, or the body was not the JSON this API
+// always answers with (including the HTML the dashboard's own index used to
+// answer with, before /api/v1/peers was mounted unconditionally). The
+// caller decides whether that is a finding: see runPeersList and
+// isHubConfigured.
+var errPeersDownstreamUnavailable = errors.New("downstream peers are unavailable")
+
 func readPeersList(ctx context.Context, deps peersDeps, projectsRoot string) (peers.ListResponse, error) {
 	empty := peers.ListResponse{SchemaVersion: peers.SchemaVersion}
 	listen, err := deps.listenAddress(deps.daemonDeps, projectsRoot)
 	if err != nil {
-		return empty, nil
+		return empty, fmt.Errorf("%w: %v", errPeersDownstreamUnavailable, err) //nolint:errorlint // deliberately wraps two errors; %w on the sentinel keeps errors.Is working.
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listen+"/api/v1/peers", nil)
 	if err != nil {
-		return empty, nil
+		return empty, err
 	}
 	response, err := deps.httpClient.Do(request)
 	if err != nil {
-		return empty, nil
+		return empty, fmt.Errorf("%w: %v", errPeersDownstreamUnavailable, err) //nolint:errorlint // see above.
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return empty, nil
+		return empty, fmt.Errorf("%w: local daemon answered %s", errPeersDownstreamUnavailable, response.Status)
 	}
 	var body peers.ListResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&body); err != nil {
-		return empty, err
+		return empty, fmt.Errorf("%w: decode local daemon response: %v", errPeersDownstreamUnavailable, err) //nolint:errorlint // see above.
 	}
 	return body, nil
 }
@@ -388,16 +497,42 @@ func loadPeerUpstreamState(path string) (peerUpstreamState, error) {
 	return state, nil
 }
 
+// savePeerUpstreamState writes atomically (temp file in the same directory,
+// then rename): a `wb peers block upstream` that crashes or is killed
+// mid-write must never leave a half-written, unparseable state file behind —
+// loadPeerUpstreamState has no repair path, only a parse error.
 func savePeerUpstreamState(path string, state peerUpstreamState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create upstream peer state directory: %w", err)
 	}
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	temporary, err := os.CreateTemp(dir, ".peer-upstream-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("stage upstream peer state: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer func() { _ = os.Remove(temporaryName) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("protect staged upstream peer state: %w", err)
+	}
+	if _, err := temporary.Write(raw); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write upstream peer state: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync upstream peer state: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close upstream peer state: %w", err)
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return fmt.Errorf("replace upstream peer state: %w", err)
 	}
 	return nil
 }

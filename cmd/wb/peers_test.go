@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +59,13 @@ func testPeersDeps(t *testing.T, adminServer, readServer *httptest.Server) peers
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.configPath = func() string { return configPath }
 	if adminServer != nil {
+		// requireHubConfigured (M7) refuses invite/block/unblock/disconnect
+		// as a usage error when this machine has no hub: section at all; a
+		// wired adminServer means the test expects the owner-RPC path to be
+		// reachable, so wb.yaml must say a hub exists for that to be true.
+		if err := os.WriteFile(configPath, []byte("hub:\n  store:\n    engine: memory\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		client := fakeDaemonHTTPClient(adminServer.Listener.Addr().String(), "owner-token")
 		deps.adminClient = func(context.Context, daemonDependencies, string) (*peerAdminClient, error) {
 			return &peerAdminClient{httpClient: client}, nil
@@ -103,6 +112,43 @@ func newPeerAdminTestServer(t *testing.T) (*httptest.Server, *hubMount) {
 	return server, mount
 }
 
+// TestHubOnlyVerbsRefuseWithoutAHubConfig is M7: invite, disconnect, and
+// block/unblock for a name that is not the configured upstream must refuse
+// as a usage error when this machine has no hub: section, instead of
+// starting a daemon just to learn that from a 503 over the owner RPC. Each
+// deps here has adminClient set to testPeersDeps's t.Fatal guard (adminServer
+// == nil), so reaching the RPC path at all would fail the test loudly.
+func TestHubOnlyVerbsRefuseWithoutAHubConfig(t *testing.T) {
+	deps := testPeersDeps(t, nil, nil)
+	var out bytes.Buffer
+
+	assertUsageRefusal := func(t *testing.T, err error) {
+		t.Helper()
+		var exit *exitError
+		if !errors.As(err, &exit) || exit.code != exitUsage {
+			t.Fatalf("error = %v, want an exitUsage *exitError", err)
+		}
+	}
+
+	err := runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", false, "", false, &out)
+	if err == nil {
+		t.Fatal("expected invite to refuse without a hub config")
+	}
+	assertUsageRefusal(t, err)
+
+	err = runPeersDisconnect(context.Background(), deps, t.TempDir(), "laptop", false, &out)
+	if err == nil {
+		t.Fatal("expected disconnect to refuse without a hub config")
+	}
+	assertUsageRefusal(t, err)
+
+	err = runPeersTrustChange(context.Background(), deps, t.TempDir(), peersRPCPrefix+"block", "Blocked", "laptop", false, &out)
+	if err == nil {
+		t.Fatal("expected block of a non-upstream name to refuse without a hub config")
+	}
+	assertUsageRefusal(t, err)
+}
+
 // TestPeersInvitePrintsTokenOnceOrWritesTokenFile covers wb.peers.invite: by
 // default the token is the one thing printed, and --token-file writes it
 // privately instead and never echoes it.
@@ -119,7 +165,7 @@ func TestPeersInvitePrintsTokenOnceOrWritesTokenFile(t *testing.T) {
 	deps := testPeersDeps(t, adminServer, nil)
 
 	var out bytes.Buffer
-	if err := runPeersInvite(context.Background(), deps, "", "laptop", true, "", false, &out); err != nil {
+	if err := runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", true, "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Rotated laptop") || !strings.Contains(out.String(), "Token (copy this now") {
@@ -128,7 +174,7 @@ func TestPeersInvitePrintsTokenOnceOrWritesTokenFile(t *testing.T) {
 
 	tokenFile := filepath.Join(t.TempDir(), "token.txt")
 	out.Reset()
-	if err := runPeersInvite(context.Background(), deps, "", "laptop", true, tokenFile, false, &out); err != nil {
+	if err := runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", true, tokenFile, false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "Token (copy this now") {
@@ -150,7 +196,7 @@ func TestPeersInvitePrintsTokenOnceOrWritesTokenFile(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runPeersInvite(context.Background(), deps, "", "laptop", true, "", true, &out); err != nil {
+	if err := runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", true, "", true, &out); err != nil {
 		t.Fatal(err)
 	}
 	var jsonResult peersInviteResult
@@ -179,7 +225,7 @@ func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
 	deps := testPeersDeps(t, adminServer, nil)
 
 	var out bytes.Buffer
-	if err := runPeersTrustChange(context.Background(), deps, "", peersRPCPrefix+"block", "Blocked", "laptop", false, &out); err != nil {
+	if err := runPeersTrustChange(context.Background(), deps, t.TempDir(), peersRPCPrefix+"block", "Blocked", "laptop", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Blocked laptop") || !strings.Contains(out.String(), "trust=blocked") {
@@ -187,7 +233,7 @@ func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runPeersTrustChange(context.Background(), deps, "", peersRPCPrefix+"unblock", "Unblocked", "laptop", false, &out); err != nil {
+	if err := runPeersTrustChange(context.Background(), deps, t.TempDir(), peersRPCPrefix+"unblock", "Unblocked", "laptop", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Unblocked laptop") || !strings.Contains(out.String(), "trust=active") {
@@ -195,7 +241,7 @@ func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runPeersDisconnect(context.Background(), deps, "", "laptop", false, &out); err != nil {
+	if err := runPeersDisconnect(context.Background(), deps, t.TempDir(), "laptop", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "no live session") {
@@ -209,24 +255,27 @@ func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
 func TestPeersListRendersDownstreamAndUpstreamRows(t *testing.T) {
 	readServer := httptest.NewServer(peers.NewHandler("/api/v1/peers", fixedPeerSource{
 		list: []peers.Record{{SchemaVersion: peers.SchemaVersion, ID: "machine_1", Name: "laptop", Role: "downstream", Status: "offline"}},
-	}))
+	}, nil))
 	t.Cleanup(readServer.Close)
 	deps := testPeersDeps(t, nil, readServer)
 	if err := wbconfig.SetPeersUpstream(deps.configPath(), "https://vm1.sneat.dev", filepath.Join(t.TempDir(), "token")); err != nil {
 		t.Fatal(err)
 	}
 
-	var out bytes.Buffer
-	if err := runPeersList(context.Background(), deps, t.TempDir(), false, &out); err != nil {
+	var out, errOut bytes.Buffer
+	if err := runPeersList(context.Background(), deps, t.TempDir(), false, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
 	if !strings.Contains(text, "laptop") || !strings.Contains(text, "downstream") || !strings.Contains(text, "vm1.sneat.dev") || !strings.Contains(text, "upstream") {
 		t.Fatalf("list text output = %q", text)
 	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty when the downstream read succeeds", errOut.String())
+	}
 
 	out.Reset()
-	if err := runPeersList(context.Background(), deps, t.TempDir(), true, &out); err != nil {
+	if err := runPeersList(context.Background(), deps, t.TempDir(), true, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	var jsonResult peers.ListResponse
@@ -239,13 +288,125 @@ func TestPeersListRendersDownstreamAndUpstreamRows(t *testing.T) {
 // (no hub, no upstream) lists cleanly rather than failing.
 func TestPeersListIsForgivingWithoutADaemonOrUpstream(t *testing.T) {
 	deps := testPeersDeps(t, nil, nil)
-	var out bytes.Buffer
-	if err := runPeersList(context.Background(), deps, t.TempDir(), true, &out); err != nil {
+	var out, errOut bytes.Buffer
+	if err := runPeersList(context.Background(), deps, t.TempDir(), true, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	var jsonResult peers.ListResponse
 	if err := json.Unmarshal(out.Bytes(), &jsonResult); err != nil || len(jsonResult.Peers) != 0 {
 		t.Fatalf("empty list output = %q, %v", out.String(), err)
+	}
+}
+
+// TestPeersListEscalatesToAFindingWhenAHubIsConfiguredButUnreachable covers
+// M6: a stopped or unhealthy daemon on a self-hosted hub machine is a
+// finding, not a silent empty list, distinguishing it from the ordinary
+// fresh-laptop case above.
+func TestPeersListEscalatesToAFindingWhenAHubIsConfiguredButUnreachable(t *testing.T) {
+	deps := testPeersDeps(t, nil, nil)
+	hubConfigPath := deps.configPath()
+	if err := os.WriteFile(hubConfigPath, []byte("hub:\n  store:\n    engine: memory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	err := runPeersList(context.Background(), deps, t.TempDir(), true, &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a finding when a hub is configured but the daemon is unreachable")
+	}
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("runPeersList error = %v, want an exitFindings *exitError", err)
+	}
+	if errOut.Len() == 0 {
+		t.Fatal("expected a stderr note naming the downstream failure")
+	}
+}
+
+// TestPeersListGoldenTextAndJSON is S5's golden-comparison upgrade over the
+// earlier strings.Contains checks: an exact expected string, for both text
+// and JSON, covering a downstream (connected-looking) row and an upstream
+// (reset-pending) row together.
+func TestPeersListGoldenTextAndJSON(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	lastSeen := now.Add(-2 * time.Hour)
+	downstream := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "machine_1", Name: "alex-macbook", Role: "downstream", Status: "connected", LastSeenAt: &lastSeen}
+	upstream := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "vm1.sneat.dev", Name: "vm1.sneat.dev", Role: "upstream", Status: "offline", ResetPending: true}
+	rows := []peers.Record{downstream, upstream}
+
+	var text bytes.Buffer
+	writePeersTable(&text, now, rows)
+	const rowFormat = "%-13s %-11s %-10s %-10s %-9s %-6s %s\n"
+	wantText := fmt.Sprintf(rowFormat, "NAME", "ROLE", "STATUS", "LAST SEEN", "CONNECTED", "CURSOR", "LAG") +
+		fmt.Sprintf(rowFormat, "alex-macbook", "downstream", "connected", "2h ago", "-", "-", "-") +
+		fmt.Sprintf(rowFormat, "vm1.sneat.dev", "upstream", "offline", "-", "-", "-", "reset")
+	if text.String() != wantText {
+		t.Fatalf("golden text mismatch:\ngot:  %q\nwant: %q", text.String(), wantText)
+	}
+
+	var gotJSON bytes.Buffer
+	if err := json.NewEncoder(&gotJSON).Encode(peers.ListResponse{SchemaVersion: peers.SchemaVersion, Peers: rows}); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON := `{"schema_version":1,"peers":[` +
+		`{"schema_version":1,"id":"machine_1","name":"alex-macbook","role":"downstream","status":"connected","created_at":"0001-01-01T00:00:00Z","last_seen_at":"2026-09-18T10:00:00Z"},` +
+		`{"schema_version":1,"id":"vm1.sneat.dev","name":"vm1.sneat.dev","role":"upstream","status":"offline","created_at":"0001-01-01T00:00:00Z","reset_pending":true}` +
+		"]}\n"
+	if gotJSON.String() != wantJSON {
+		t.Fatalf("golden JSON mismatch:\ngot:  %s\nwant: %s", gotJSON.String(), wantJSON)
+	}
+}
+
+// TestPeersGetGoldenTextAndJSON is writePeerDetail's golden-comparison
+// counterpart, for a downstream peer (with a node ID) and the upstream role
+// (no node ID, rendered as "-").
+func TestPeersGetGoldenTextAndJSON(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	lastSeen := now.Add(-90 * time.Minute)
+	downstream := peers.Detail{Record: peers.Record{
+		SchemaVersion: peers.SchemaVersion, ID: "machine_1", Name: "alex-macbook", Role: "downstream",
+		Status: "connected", NodeID: "abcd1234", LastSeenAt: &lastSeen,
+	}}
+	wantDownstreamText := "NAME           alex-macbook\n" +
+		"ROLE           downstream\n" +
+		"STATUS         connected\n" +
+		"PEER ID        machine_1\n" +
+		"NODE ID        abcd1234\n" +
+		"LAST SEEN      1h ago\n" +
+		"RESET PENDING  false\n" +
+		"SESSION        none\n" +
+		"COUNTERS       rx_events=0 tx_events=0 rx_bytes=0 tx_bytes=0\n" +
+		"ADMIN          false\n"
+	var downstreamText bytes.Buffer
+	writePeerDetail(&downstreamText, now, downstream)
+	if downstreamText.String() != wantDownstreamText {
+		t.Fatalf("golden downstream detail text mismatch:\ngot:  %q\nwant: %q", downstreamText.String(), wantDownstreamText)
+	}
+	wantDownstreamJSON := `{"schema_version":1,"id":"machine_1","name":"alex-macbook","role":"downstream","status":"connected","node_id":"abcd1234","created_at":"0001-01-01T00:00:00Z","last_seen_at":"2026-09-18T10:30:00Z","session":null,"counters":{"rx_payload_bytes":0,"tx_payload_bytes":0,"rx_messages":0,"tx_messages":0,"rx_events":0,"tx_events":0},"admin_available":false}` + "\n"
+	var downstreamJSON bytes.Buffer
+	if err := json.NewEncoder(&downstreamJSON).Encode(downstream); err != nil {
+		t.Fatal(err)
+	}
+	if downstreamJSON.String() != wantDownstreamJSON {
+		t.Fatalf("golden downstream detail JSON mismatch:\ngot:  %s\nwant: %s", downstreamJSON.String(), wantDownstreamJSON)
+	}
+
+	upstream := peers.Detail{Record: peers.Record{
+		SchemaVersion: peers.SchemaVersion, ID: "vm1.sneat.dev", Name: "vm1.sneat.dev", Role: "upstream", Status: "offline",
+	}}
+	wantUpstreamText := "NAME           vm1.sneat.dev\n" +
+		"ROLE           upstream\n" +
+		"STATUS         offline\n" +
+		"PEER ID        vm1.sneat.dev\n" +
+		"NODE ID        -\n" +
+		"LAST SEEN      -\n" +
+		"RESET PENDING  false\n" +
+		"SESSION        none\n" +
+		"COUNTERS       rx_events=0 tx_events=0 rx_bytes=0 tx_bytes=0\n" +
+		"ADMIN          false\n"
+	var upstreamText bytes.Buffer
+	writePeerDetail(&upstreamText, now, upstream)
+	if upstreamText.String() != wantUpstreamText {
+		t.Fatalf("golden upstream detail text mismatch:\ngot:  %q\nwant: %q", upstreamText.String(), wantUpstreamText)
 	}
 }
 
@@ -255,7 +416,7 @@ func TestPeersListIsForgivingWithoutADaemonOrUpstream(t *testing.T) {
 func TestPeersGetRendersAPeerDetailOrTheUpstream(t *testing.T) {
 	readServer := httptest.NewServer(peers.NewHandler("/api/v1/peers", fixedPeerSource{
 		detail: peers.Detail{Record: peers.Record{SchemaVersion: peers.SchemaVersion, ID: "machine_1", Name: "laptop", Role: "downstream", Status: "offline"}}, found: true,
-	}))
+	}, nil))
 	t.Cleanup(readServer.Close)
 	deps := testPeersDeps(t, nil, readServer)
 
