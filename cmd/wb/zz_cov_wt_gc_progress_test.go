@@ -128,7 +128,7 @@ func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
 		"partial: task gamma retired [a] and left [b] behind",
 		"artifact stage /tmp/stage: quarantined",
 		"shell alpha /tmp/shell: shell failed",
-		"\n1 retired, 2 eligible, 3 kept, 4 terminal artefacts purged, 6 empty shells to retire; reclaimable",
+		"\n1 retired, 2 eligible, 3 kept, 4 terminal artefacts purged, 0 repository-root stages to purge, 6 empty shells to retire; reclaimable",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("gc text missing %q:\n%s", want, text)
