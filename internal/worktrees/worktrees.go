@@ -493,6 +493,15 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	// creates the task hierarchy and reserves the Work Log: a refusal that
 	// leaves durable state behind is not a preflight.
 	//
+	// A resume never creates a store root: it adopts a checkout that already
+	// exists, so demanding write permission for the store would refuse a resume
+	// on a machine where nothing was going to be written there. State and the
+	// canonical Git registration are still required, because a resume can
+	// publish a recovered claim and always reads the clone.
+	centralStore := storePolicy.CentralRoot
+	if normalized.Resume {
+		centralStore = ""
+	}
 	// The central store requirement is declared only when the selected mode has
 	// a central store root. Repository-local mode keeps each checkout inside its
 	// own canonical clone, so its store root is per repository
@@ -503,7 +512,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	//
 	// The canonical paths are read-only derivations, so resolving them here
 	// costs nothing the loop below would not have done anyway.
-	requirements := pathguard.Requirements(home, storePolicy.CentralRoot)
+	requirements := pathguard.Requirements(home, centralStore)
 	canonicalPaths := make([]string, 0, len(repositories))
 	for _, repository := range repositories {
 		_, _, canonical, pathErr := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
@@ -511,10 +520,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, pathErr
 		}
 		canonicalPaths = append(canonicalPaths, canonical)
-		if storePolicy.RepositoryLocal {
+		if storePolicy.RepositoryLocal && !normalized.Resume {
 			requirements = append(requirements, pathguard.Requirement{
 				Path: filepath.Join(canonical, ".worktrees"),
-				Role: pathguard.RoleStore,
+				Role: pathguard.RoleLocalStore,
 			})
 		}
 		requirements = append(requirements, pathguard.CanonicalRequirement(canonical))

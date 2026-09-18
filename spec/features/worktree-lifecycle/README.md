@@ -13,12 +13,17 @@ status: Implementing
 ## Summary
 
 `wb worktree` creates, guards, inventories, and safely cleans task worktrees.
-Its default checkout is `<canonical-repository>/.worktrees/<task>`, while
-`WB_HOME` remains the user-scoped private home for Work Logs, locks, receipts,
-and reports. A user-only absolute shared root may instead place checkouts at
-`<root>/<task>/<owner>/<repository>`. `wb worktree list` reports local Git
-state with optional GitHub PR evidence; `wb worktree cleanup` safely plans or
-applies removal of clean task worktrees and exact merged branch refs.
+Its default checkout is in the projects root's central store,
+`<root>/.worktrees/<task>/<host>/<org>/<repository>`; a user-only
+`worktrees.store: repository-local` setting instead places it at
+`<canonical-repository>/.worktrees/<task>`, and a user-only absolute
+`worktrees.root` overrides the central store root. Private state — Work Logs,
+locks, receipts, and reports — lives under `<root>/.wb`; `WB_HOME` selects
+nothing. Every one of those paths defers to
+[`projects-root-layout`](../projects-root-layout/README.md). `wb worktree list`
+reports local Git state with optional GitHub PR evidence and each checkout's
+placement; `wb worktree cleanup` safely plans or applies removal of clean task
+worktrees and exact merged branch refs.
 
 ## Problem
 
@@ -87,7 +92,8 @@ than a bare permission error — see
 
 Guard, inventory, cleanup, and relocate MUST continue to validate and operate on
 existing linked worktrees at every previously used placement, using their actual
-on-disk location: the historic `~/.wb/worktrees/...` tasks, the repository-local
+on-disk location: the historic `~/.wb/worktrees/...` and
+`<projects-root>/.wb/worktrees/...` tasks, the repository-local
 `<canonical-repository>/.worktrees/<task>`, and a configured absolute shared
 root. Changing `worktrees.root` or `worktrees.store` MUST NOT relocate a
 checkout, stop its discovery, or re-select it for a task that already has one.

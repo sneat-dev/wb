@@ -154,10 +154,54 @@ func TestCreateRepositoryLocalDeclaresTheCheckoutRoot(t *testing.T) {
 	if !errors.As(err, &denial) {
 		t.Fatalf("create = %v, want the repository-local checkout root to be declared", err)
 	}
-	if !strings.Contains(denial.Error(), checkoutRoot) {
-		t.Fatalf("diagnostic %q does not name the repository-local checkout root %q", denial.Error(), checkoutRoot)
+	message := denial.Error()
+	if !strings.Contains(message, checkoutRoot) {
+		t.Fatalf("diagnostic %q does not name the repository-local checkout root %q", message, checkoutRoot)
+	}
+	// The role has to be the repository-local store, not the central one, and
+	// the remedy has to be one the operator can still take: suggesting
+	// repository-local mode to somebody already in it is a no-op.
+	if !strings.Contains(message, "repository-local checkout store") {
+		t.Fatalf("diagnostic %q does not name the repository-local store role", message)
+	}
+	if strings.Contains(message, "select repository-local store mode") {
+		t.Fatalf("diagnostic %q offers the mode already in force as a remedy", message)
 	}
 	if _, statErr := os.Lstat(state); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("state exists after the refusal (stat err = %v); the preflight must run before the first mutation", statErr)
+	}
+}
+
+// TestCreateResumeDoesNotRequireAnUnwritableStoreRoot keeps the declared set
+// honest about what a resume does: it adopts a checkout that already exists and
+// never creates a store root, so demanding write access to one would refuse a
+// resume that writes nothing there.
+func TestCreateResumeDoesNotRequireAnUnwritableStoreRoot(t *testing.T) {
+	fixture := newStoreModeFixture(t, "app")
+	fixture.selectStoreMode(t, StoreModeRepositoryLocal)
+	ctx := context.Background()
+	created, err := Create(ctx, []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "local-resume", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create = %#v, err=%v", created, err)
+	}
+	checkoutRoot := filepath.Join(fixture.canonicals["app"], ".worktrees")
+
+	resumed, err := Create(ctx, []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "local-resume", Resume: true,
+		WorkLog: WorkLogOptions{Model: "unknown"},
+		writableProbe: func(path string) error {
+			if path == checkoutRoot {
+				return &os.PathError{Op: "open", Path: path, Err: syscall.EPERM}
+			}
+			return nil
+		},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].Action != "resumed" {
+		t.Fatalf("resume = %#v, err=%v; a resume adopts an existing checkout and must not require the store root to be writable", resumed, err)
+	}
+	if resumed[0].WorktreeDir != created[0].WorktreeDir {
+		t.Fatalf("resume moved the checkout: %q became %q", created[0].WorktreeDir, resumed[0].WorktreeDir)
 	}
 }

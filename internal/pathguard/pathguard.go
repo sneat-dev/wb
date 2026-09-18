@@ -32,6 +32,11 @@ const (
 	// RoleStore is the central checkout store <root>/.worktrees, where
 	// central-mode task checkouts physically land.
 	RoleStore Role = "store"
+	// RoleLocalStore is <canonical>/.worktrees, where a repository-local
+	// checkout physically lands. It is a distinct role from RoleStore because
+	// the two select different layouts: telling an operator already in
+	// repository-local mode to select repository-local mode is not a remedy.
+	RoleLocalStore Role = "local-store"
 	// RoleCanonicalGit is <canonical>/.git. Git writes gitdir, commondir,
 	// HEAD, index, logs, refs, ORIG_HEAD and COMMIT_EDITMSG there on worktree
 	// create, repair and remove — so it is part of the declared writable set
@@ -48,6 +53,8 @@ func (role Role) description() string {
 		return "private state (claims, locks, Work Logs, reports)"
 	case RoleStore:
 		return "central checkout store"
+	case RoleLocalStore:
+		return "repository-local checkout store (<canonical>/.worktrees)"
 	case RoleCanonicalGit:
 		return "canonical clone Git registration (worktree add/repair/remove)"
 	case RoleTemp:
@@ -109,9 +116,23 @@ func (err *Error) Error() string {
 	}
 	fmt.Fprintf(&builder, "  - widen the sandbox workspace to %s so WB can write the paths above\n", root)
 	fmt.Fprintf(&builder, "  - add %s as an allowed writable root\n", err.paths())
-	builder.WriteString("  - select repository-local store mode (`worktrees.store: repository-local` in the machine-local worktrees config), which keeps each checkout and its Git registration inside its canonical clone\n")
+	if !err.repositoryLocal() {
+		builder.WriteString("  - select repository-local store mode (`worktrees.store: repository-local` in the machine-local worktrees config), which keeps each checkout and its Git registration inside its canonical clone\n")
+	}
 	builder.WriteString("the failing operation was a write; WB names the path rather than reporting the bare errno")
 	return builder.String()
+}
+
+// repositoryLocal reports whether the offending mode already keeps checkouts
+// inside their canonical clone. Offering that mode as a remedy then is a no-op
+// an operator cannot act on, so it is left out.
+func (err *Error) repositoryLocal() bool {
+	for _, denial := range err.Denials {
+		if denial.Role == RoleLocalStore {
+			return true
+		}
+	}
+	return false
 }
 
 // paths renders the denied paths as one comma-separated list for the
@@ -175,7 +196,10 @@ func CanonicalRequirement(canonicalPath string) Requirement {
 // OSProbe is the production probe. It walks up to the nearest existing
 // directory — a declared path such as <root>/.wb usually does not exist yet —
 // and creates and removes one uniquely named entry there, which is exactly the
-// permission a later create needs.
+// permission a later create needs. The entry is transient and dot-named, but it
+// is a real write: probing a directory inside a canonical clone briefly adds and
+// removes a `.wb-writable-probe-*` entry in it, because creating the checkout
+// root is the permission being tested and no read-only check answers it.
 func OSProbe(path string) error {
 	directory, err := nearestExistingDirectory(path)
 	if err != nil {
