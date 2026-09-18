@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -199,9 +200,20 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	}
 	goScopeFilter, _ := goScopeSteps[1].(map[string]any)
 	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@v4")
-	// Only spec/ may skip Go validation: Go embeds ai/skills and cmd/wb tests
-	// read ai/, docs/, .codex-plugin/ and the READMEs.
-	assert("Go scope filter", goScopeFilter["with"], map[string]any{"filters": "required:\n  - '!spec/**'\n"})
+	filters, _ := goScopeFilter["with"].(map[string]any)
+	var scope map[string][]string
+	if err := yaml.Unmarshal([]byte(fmt.Sprint(filters["filters"])), &scope); err != nil {
+		t.Fatalf("parse Go scope filters: %v", err)
+	}
+	// Every non-Go path Go embeds or reads in tests must stay in scope.
+	for _, pattern := range []string{"**/*.go", "go.mod", "go.sum", "cmd/**", "internal/**", "api/**", "ai/**", "skills", "hub/web/dist/**", "proto/**", "examples/**", ".wb/**", ".github/**", ".claude-plugin/**", ".codex-plugin/**", "docs/cli-flag-matrix.md", "README.md", ".goreleaser.yml"} {
+		if !slices.Contains(scope["required"], pattern) {
+			t.Errorf("Go scope filter drops %q", pattern)
+		}
+	}
+	receipt, _ := jobs["validation-receipt"].(map[string]any)
+	assert("scoped-out pull requests publish no receipt", receipt["if"],
+		"${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' }}")
 	windowsScope, ok := jobs["windows-scope"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows scope job missing")

@@ -28,16 +28,37 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      # A pull request that only touches spec/ changes nothing Go builds,
-      # embeds or reads in tests (ai/, docs/ and the READMEs are all read by
-      # cmd/wb tests, so they stay in scope). Only pull requests are scoped:
-      # main, tag and manual runs always validate.
+      # Everything Go builds, embeds or reads in tests. A pull request that
+      # touches none of it (spec/, docs/ prose, hub/web sources, …) skips Go
+      # validation. Keep this list complete: ai/ is embedded (ai/skills) or
+      # read by cmd/wb tests (capabilities.json, schema, README), as are the
+      # plugin manifests, docs/cli-flag-matrix.md, README.md, .goreleaser.yml,
+      # examples/, .wb/ and .github/. Only pull requests are scoped, and a
+      # scoped run publishes no validation receipt, so the merge to main always
+      # validates in full and catches anything this list misses.
       - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
             required:
-              - '!spec/**'
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'cmd/**'
+              - 'internal/**'
+              - 'api/**'
+              - 'ai/**'
+              - 'skills'
+              - 'hub/web/dist/**'
+              - 'proto/**'
+              - 'examples/**'
+              - '.wb/**'
+              - '.github/**'
+              - '.claude-plugin/**'
+              - '.codex-plugin/**'
+              - 'docs/cli-flag-matrix.md'
+              - 'README.md'
+              - '.goreleaser.yml'
 
   windows-scope:
     name: Decide native Windows coverage
@@ -373,7 +394,7 @@ jobs:
           if [ "$REUSE_RESULT" = "true" ]; then
             echo "Reused exact trusted pull-request validation."
           elif [ "$spec_only" = "true" ]; then
-            echo "Only spec/ changed; Go validation was not required."
+            echo "No Go-relevant file changed; Go validation was not required."
           else
             echo "All required checks passed. This job only combines their results."
           fi
@@ -382,8 +403,10 @@ jobs:
     name: Publish validation receipt
     # `test` deliberately accepts skipped optional jobs. Use !cancelled() so
     # GitHub evaluates this result instead of propagating an ancestor skip.
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' }}
-    needs: test
+    # A Go-scoped-out pull request validated nothing, so it must not let the
+    # main push reuse it.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' }}
+    needs: [test, go-scope]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
