@@ -131,3 +131,56 @@ func (resolver machineBearerResolver) ResolveMachineBearer(request *http.Request
 	}
 	return Machine{ID: binding.MachineID, Name: binding.MachineName, IdentityID: binding.IdentityID, Scopes: append([]MachineScope(nil), binding.Scopes...)}, nil
 }
+
+// PeerTrustResolver is the read the peer-aware bearer resolver needs: does a
+// peer record exist for this MachineID, and is it blocked. It is the narrow
+// slice of PeerTrustStore that authentication depends on.
+type PeerTrustResolver interface {
+	GetPeer(context.Context, string) (record PeerRecord, found bool, err error)
+}
+
+// peerAwareBearerResolver wraps an existing MachineBearerResolver with the
+// one extra read peer-connectivity#req:peer-is-persistent-state requires:
+// "After resolving a credential, the machine bearer resolver reads the peer
+// record by MachineID and refuses a blocked peer." Applied uniformly to
+// every authenticated call — the HTTP long poll and the snapshot routes
+// included — because the wrapped resolver is the one every route already
+// calls through h.machine(r). A credential with no peer record (an ordinary
+// enrollment) is unaffected: found is false and the wrapped result passes
+// straight through.
+type peerAwareBearerResolver struct {
+	inner MachineBearerResolver
+	trust PeerTrustResolver
+}
+
+// NewPeerAwareBearerResolver returns a MachineBearerResolver that refuses a
+// blocked peer's credential after delegating ordinary resolution to inner.
+// A nil trust resolver makes this a pass-through, so a caller that has not
+// wired peer storage yet (or a hosted deployment that never will) keeps
+// exactly today's behaviour.
+func NewPeerAwareBearerResolver(inner MachineBearerResolver, trust PeerTrustResolver) MachineBearerResolver {
+	return peerAwareBearerResolver{inner: inner, trust: trust}
+}
+
+func (resolver peerAwareBearerResolver) ResolveMachineBearer(request *http.Request) (Machine, error) {
+	if resolver.inner == nil {
+		return Machine{}, ErrUnauthorized
+	}
+	machine, err := resolver.inner.ResolveMachineBearer(request)
+	if err != nil {
+		return Machine{}, err
+	}
+	if resolver.trust == nil {
+		return machine, nil
+	}
+	record, found, err := resolver.trust.GetPeer(request.Context(), machine.ID)
+	if err != nil {
+		return Machine{}, ErrUnauthorized
+	}
+	if found && record.Trust == PeerTrustBlocked {
+		return Machine{}, ErrUnauthorized
+	}
+	return machine, nil
+}
+
+var _ MachineBearerResolver = peerAwareBearerResolver{}

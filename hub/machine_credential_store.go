@@ -119,7 +119,30 @@ func machineCredentialID(digest MachineTokenDigest) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// NewMachineIndex wires MachineIndex to the same enrollment collection
+// machineCredentialStore writes, without exposing RotateMachineCredential or
+// ResolveMachineCredential to a caller that only needs "does this name
+// already have a credential".
+func NewMachineIndex(backend githubapp.DocumentStore) MachineIndex {
+	return machineIndexStore{backend: backend}
+}
+
+type machineIndexStore struct{ backend githubapp.DocumentStore }
+
+func (index machineIndexStore) HasCredential(ctx context.Context, machineID string) (bool, error) {
+	if index.backend == nil {
+		return false, errMachineCredentialUnavailable
+	}
+	var document machineEnrollmentDocument
+	found, err := index.backend.Get(ctx, machineEnrollmentCollection, machineID, &document)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
 var (
 	_ MachineCredentialStore    = machineCredentialStore{}
 	_ MachineCredentialResolver = machineCredentialStore{}
+	_ MachineIndex              = machineIndexStore{}
 )

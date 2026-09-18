@@ -47,6 +47,14 @@ type HandlerOptions struct {
 	// handler accepts are narrated by RepositoryEventService instead, so each
 	// delivery produces exactly one line. Optional.
 	Narrate func(narrate.Line)
+	// DisableSelfHostedEnrollment unmounts POST MachineEnrollmentPath
+	// (peer-connectivity#req:admin-requires-owner-credential): a self-hosted
+	// hub's loopback listener is reachable through a tunnel or proxy, which is
+	// not proof of the local operator, so self-hosted enrollment moves to the
+	// daemon's owner-token RPC service instead. The zero value (false) mounts
+	// the route exactly as before, which is what the hosted instance's own
+	// OAuth-viewer-gated deployment keeps doing without changing a line here.
+	DisableSelfHostedEnrollment bool
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -57,7 +65,9 @@ func NewHandler(options HandlerOptions) http.Handler {
 	}
 	handler := apiHandler{options: options}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	if !options.DisableSelfHostedEnrollment {
+		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	}
 	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishSnapshot)
 	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.listSnapshots)
 	mux.HandleFunc("POST "+InstallationConnectPath, handler.connectInstallation)
