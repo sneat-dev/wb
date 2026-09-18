@@ -43,14 +43,24 @@ Known at decision time (repository survey, 2026-09-18):
 ## Decision
 
 A downstream node holds one outbound WebSocket session
-(`wss://<hub>/v0/workbench/peers/connect`, bearer-authenticated, JSON text
-frames, one batch in flight). It is served from the hub's existing
-repository-event store through the same `Poll` and `Acknowledge` operations as
-the HTTP long poll. After each committed enqueue, a non-blocking coalescing
-wake-up tells a live session to read the store. There is no per-peer memory
-queue. Stale peers are handled by bounded retention plus a
-reconcile-from-latest-heads reset instead of an unbounded history. The HTTP
-long poll stays for the hosted instance and the hub's own machine.
+(`wss://<hub>/v0/workbench/peers/connect`, peer-token authenticated, JSON text
+frames). It carries a pull-shaped protocol: a long poll over the socket, where
+the node sends `poll{cursor}` and the hub answers as soon as events exist. The
+session is served from the hub's existing repository-event store through the
+same `Poll` and `Acknowledge` operations as the HTTP long poll. On the laptop,
+the existing `Receiver` drives it, extended only with a reset hook.
+
+After each committed enqueue, the hub signals every live subscription of the
+affected peers. Each session holds its own subscription, and there is no
+per-peer memory queue. The hub coalesces a peer's queued default-branch work
+per repository and ref, so a queue is bounded by repositories rather than by
+time offline. The store gains a journal ID (epoch), a latest-heads record per
+repository, and idempotent acknowledgement at or below the acknowledged
+sequence.
+
+A reset reconciles from the heads instead of replaying history. The local
+processor always runs `git fetch` for a named repository and fast-forwards
+only a clean canonical checkout on the branch.
 
 The library is `github.com/coder/websocket`. It has no transitive
 dependencies, supports `context`, handles ping/pong and close codes, and
@@ -71,15 +81,28 @@ four things at once, with no correlation layer:
 
 One small, dependency-free library is the whole price.
 
-Reusing the store rather than adding a second journal means the WebSocket path
-and the long-poll path cannot disagree about what was delivered. The existing
-durability tests keep protecting both. The wake-up signal replaces the 250 ms
-scan for live sessions, so latency drops to the time of one store read, and a
-slow peer can only slow itself: nothing is ever queued for it in memory.
+The protocol is pull-shaped, a long poll over the socket, because that keeps
+the existing `Receiver` loop, its cursor file and its pending-acknowledgement
+replay intact. That code already carries the durability guarantees and their
+tests. A push-shaped protocol would have needed a second receiver with the
+same guarantees rebuilt. The pull costs nothing in latency: the hub holds the
+`poll` open and answers the moment a wake-up arrives.
 
-Reconciling from the latest head per repository, instead of replaying months
-of history, bounds storage by repositories rather than by time offline. It
-also keeps the "only fetch what changed" promise even after a reset.
+Reusing the store rather than adding a second journal means the two transports
+cannot disagree about what was delivered. Coalescing in the enqueue
+transaction turns the per-peer queue into the "compacted sync work" of the
+brief. The deduplication markers, kept for 14 days, become the "detailed
+history". The heads record becomes the "latest known state". This is the
+brief's three-way split with one new collection.
+
+Fetch-always, fast-forward-when-safe answers the brief's "`git fetch` plus
+WB-state refresh may be safer than mutating checked-out branches; decide
+explicitly". A fetch never touches a working tree, index or local branch, and
+it keeps `origin/<default>` truthful even for a dirty or diverged clone.
+Without it, every later reset would flag that clone again. The fast-forward is
+kept for the clean, on-branch, strictly-behind canonical checkout because
+decision 0002 already chose it and it is what makes the laptop feel current;
+nothing else is mutated.
 
 ## Declined Alternatives
 
@@ -121,14 +144,42 @@ hub, and it would duplicate the durable store the hub already has.
 This is the textbook shape from the brief. It lost because the hub already
 fans out per machine in the same transaction that assigns the global sequence,
 and deletes acknowledged work. A second journal would double the write path
-and make the two delivery paths diverge. The per-machine queue is the
-"compacted sync work", the heads record is the "latest known state", and a
-detailed global history is deferred until a consumer needs one.
+and make the two delivery paths diverge. Instead the coalesced per-peer queue
+is the "compacted sync work", the heads record is the "latest known state",
+and the 14-day deduplication markers are the "detailed history". A read API
+over that history waits until a consumer needs one.
 
 ### Unlimited retention for offline peers
 
-It lost because an offline peer would hold storage hostage. Instead a queue
-bound or age bound drops the queue, and the peer reconciles from heads.
+It lost because an offline peer would hold storage hostage. Hub-side
+coalescing bounds a queue by repositories. A hard bound of 10,000 documents
+remains as a safety net, and past it the queue is dropped and the peer
+reconciles from heads.
+
+### A push-shaped session protocol
+
+In a push-shaped protocol the hub sends batches unasked and the node
+acknowledges them. It lost in adversarial review:
+
+- the existing `Receiver` could not drive it, because its cursor validation
+  expects the response cursor to equal the request cursor;
+- an enqueue failure would stall the session until a slow-peer timeout;
+- a reset would have to rewrite receiver state from a second goroutine.
+
+### Admin authorised by "loopback and no forwarding header"
+
+It lost in adversarial review. SSH reverse tunnels, socat and a proxy that
+strips headers all deliver to the loopback listener without forwarding
+headers, and a browser can POST to 127.0.0.1 across origins. Admin requires
+the owner credential instead: the unix-socket RPC for the CLI, and a
+single-use-code session cookie for the dashboard.
+
+### Fetch-only, never fast-forward
+
+This is the safest reading of the brief. It lost narrowly. It would reverse
+decision 0002's fast-forward of clean canonical clones, and every canonical
+checkout would then fall behind by default. The chosen rule adds the fetch the
+old path lacked and keeps the fast-forward only where it cannot lose work.
 
 ## Consequences at Decision Time
 
@@ -147,7 +198,11 @@ Expected negative:
   auth (the daemon authenticates it);
 - minute buckets are lost on restart;
 - a reset trusts the hub's head knowledge, so a repository the hub never saw
-  an event for is left alone until the next event or a manual `wb sync`.
+  an event for is left alone until the next event or a manual `wb sync`;
+- coalescing adds a per-peer index read to the enqueue transaction, which
+  matters on inGitDB's single-writer lock at large fan-out;
+- webhooks missed while the hub is down need an explicit redelivery sweep
+  through the App API, because GitHub does not redeliver on its own.
 
 ## Observed Consequences
 

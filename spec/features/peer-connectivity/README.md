@@ -12,11 +12,11 @@ status: Draft
 ## Summary
 
 Every WB daemon is a node, and nodes know each other as peers. A laptop that is
-often asleep connects outbound to an always-on WB hub (a VM running
-`wb daemon serve` with the GitHub App), resumes from the last event it
-acknowledged, and fetches only the repositories that changed while it was away.
-While it stays connected, new GitHub events reach it within a second, with no
-polling of GitHub and no fleet-wide `git fetch`.
+often asleep connects outbound to an always-on WB hub: a VM running
+`wb daemon serve` with the GitHub App. The laptop resumes from the last event
+it acknowledged and fetches only the repositories that changed while it was
+away. While it stays connected, new GitHub events reach it within a second,
+with no polling of GitHub and no fleet-wide `git fetch`.
 
 ## Problem
 
@@ -26,39 +26,46 @@ durably queues a privacy-safe event per enrolled machine
 [self-hosted-bench](../self-hosted-bench/README.md)). Nothing connects a laptop
 to it:
 
-- The laptop's event receiver starts only when `remote.provider` is `hub`, but
-  the laptop keeps `provider: git` because claims work only on the git store.
-  So the laptop hears nothing and the founder runs `wb sync` over ~380
-  repositories to find the three that moved.
-- A self-hosted hub has no way to admit another machine. Its enrollment route
-  trusts whoever reaches the listener, and nothing lists, blocks or revokes a
-  machine credential.
-- Delivery is a 25-second HTTP long poll that re-reads the whole per-machine
-  queue every 250 ms. "Is my laptop connected?" has no answer, a slow machine
-  is invisible, and there is no traffic or event observability.
-- Storage is unbounded: poll receipts and deduplication markers are never
-  deleted, and a machine that never acknowledges keeps its queue forever.
+- **The laptop never hears from the hub.** The laptop's event receiver starts
+  only when `remote.provider` is `hub`, but the laptop keeps `provider: git`
+  because claims work only on the git store. So the laptop hears nothing, and
+  the founder runs `wb sync` over ~380 repositories to find the three that
+  moved.
+- **A self-hosted hub cannot admit another machine safely.** Its HTTP
+  enrollment route treats every caller as the owner, including a caller that
+  arrives through a tunnel. Nothing lists, blocks or revokes a machine
+  credential.
+- **Delivery is invisible.** It is a 25-second HTTP long poll that re-reads the
+  whole per-machine queue every 250 ms. "Is my laptop connected?" has no
+  answer, and there is no traffic or event observability.
+- **Storage is unbounded.** Poll receipts, deduplication markers and pending
+  refresh records are never deleted, and a machine that never acknowledges
+  keeps its queue forever.
+- **Webhooks missed during downtime are lost.** GitHub does not redeliver a
+  failed webhook by itself, so every event missed while the hub was down (the
+  VM daemon's supervisor has been failing since 2026-09-16, sneat-dev/wb#546)
+  is never delivered.
 
 ## Journey
 
 I run the hub on my VM as today. On the VM I type `wb peers invite laptop` and
 get a one-time token. On my laptop I run
-`wb peers join https://vm1.sneat.dev --token-stdin`, paste it, and the laptop
-daemon restarts. `wb peers list` on either machine shows the other one as
-`connected`.
+`wb peers join https://vm1.sneat.dev --token-stdin` and paste the token. The
+laptop checks it by opening a session and then restarts its daemon.
+`wb peers list` on either machine shows the other one as `connected`.
 
 I close the lid. Pushes land on repositories A, C and then A again. The VM
 records all three, and `wb peers list` on the VM shows the laptop `offline`
-with a lag of 3.
+with a lag of 2 (A's two pushes are one piece of sync work).
 
 I open the lid and do nothing else. Within a minute the laptop reconnects by
-itself, receives the three events it missed, and fast-forwards the canonical
-clones of A and C: A once, not twice, and no other repository is fetched.
-`wb peers list` on the VM shows lag 0. A dirty or diverged clone is left
-untouched and reported, as today.
+itself and receives what it missed. It fetches A and C, and no other
+repository. Each clean canonical clone on its default branch fast-forwards. A
+dirty or diverged clone still gets its `origin` ref updated but its checkout
+is left untouched and reported. `wb peers list` on the VM shows lag 0.
 
 While the laptop is connected, someone merges into repository F. Within a
-second the laptop has the event and F's clone moves, with nothing polling.
+second the laptop has the event and F is fetched, with nothing polling.
 
 On the VM dashboard I open the laptop's peer page. It shows the peer as
 connected, how long it has been connected, its WB version and platform, its
@@ -66,9 +73,14 @@ cursor and lag, and two charts for the last 60 minutes: traffic by minute
 (received and sent) and events by minute broken down by type. The spike at
 14:02 is visibly the burst of `github.push` events from a merge train.
 
-If I lose the laptop, `wb peers block laptop` on the VM cuts its connection at
-once and refuses every later attempt, but keeps its history. `wb peers unblock
-laptop` lets it back in, and it catches up.
+If I lose the laptop, I click **Block** on its page, or run
+`wb peers block laptop` on the VM. That cuts its connection at once and
+refuses every later attempt, but keeps its history. **Unblock** lets it back
+in. Within five minutes the laptop's next redial succeeds, and it reconciles
+and catches up.
+
+If the VM itself restarts, the hub asks GitHub for the deliveries that failed
+while it was down and redelivers them, so nothing is missing afterwards.
 
 ## Behavior
 
@@ -79,38 +91,65 @@ laptop` lets it back in, and it catches up.
 Every daemon MUST have a stable node ID: 128 random bits, generated on first
 start and stored under the private WB state directory (`<wbhome>/state/node-id`,
 mode 0600). The hostname is only a default display name. Renaming the host
-changes nothing. Copying the state directory to another machine copies the
-identity, and the hub detects that as a node mismatch (see
-`single-live-session`).
+changes nothing. The node ID is an identifier, not a secret. A copied state
+directory yields two nodes with one ID; `single-live-session` detects this.
 
 #### REQ: peer-is-persistent-state
 
-The hub MUST keep one durable peer record per admitted machine. The record
-holds the hub-issued peer ID (the existing `MachineID`), display name, owning
-identity, bound node ID, trust state (`active` or `blocked`), created, last-seen
-and last-connected times, the reported WB version, OS, architecture and
-protocol version, the acknowledged cursor, a `reset_pending` flag, and lifetime
-statistics. Status is derived, not stored: `blocked` if trust is blocked,
-`connected` while a session is live, otherwise `offline`. A peer stays listed
-while offline, whatever the duration.
+The hub MUST keep one durable peer record per peer, keyed by the hub-issued
+peer ID (the existing `MachineID`). The record holds:
+
+- display name and owning identity;
+- the bound node ID;
+- trust state (`active` or `blocked`);
+- created, last-seen and last-connected times;
+- the reported WB version, OS, architecture and protocol version;
+- `reset_pending`;
+- a queued-work count, maintained by the store operations that change the
+  queue;
+- lifetime statistics.
+
+The peer record is the single authority for trust. After resolving a
+credential, the machine bearer resolver reads the peer record by `MachineID`
+and refuses a blocked peer. That is one extra document read per authenticated
+call, applied to the HTTP long poll and snapshot routes too. Credentials
+without a record are not peers and are unaffected. The hub's own local
+machine is not a peer and is never listed.
+
+Status is derived, not stored: `blocked` if trust is blocked, `connected`
+while a session is live, otherwise `offline`. A peer stays listed while
+offline, whatever the duration.
 
 A node with an upstream (the laptop) MUST keep the mirror-image record for its
-hub: URL, peer ID and name as the hub reported them, last seen, acknowledged
-cursor and statistics. `wb peers` on the laptop lists that hub as a peer with
-role `upstream`. On the hub, admitted machines have role `downstream`.
+hub: URL, peer ID and name as the hub reported them, journal ID, last seen,
+acknowledged cursor, the lag the hub last reported, and statistics.
+`wb peers` on the laptop lists that hub with role `upstream`. On the hub,
+peers have role `downstream`.
 
 #### REQ: invite-and-join
 
-`wb peers invite <name>` MUST mint a machine credential with the existing
-enrollment scopes for a new or existing peer name on the local hub, and print
-the token once (or write it to `--token-file <path>`, mode 0600). It MUST NOT
-be retrievable later. Re-inviting an existing name rotates its credential and
-keeps the peer record, statistics and cursor.
+`wb peers invite <name>` MUST create a peer and mint its credential on the
+local hub. It prints the token once, or writes it to `--token-file <path>`
+with mode 0600. The token is never retrievable later.
+
+- An existing peer name is refused unless `--rotate` is given. Rotation keeps
+  the peer record, statistics and cursor, clears the node binding and sets
+  `reset_pending`.
+- The hub's own machine name and any name held by a non-peer credential are
+  always refused.
+- Invite is refused while the hub's store engine is `memory`.
+
+The peer credential carries only the peer scopes: `peer:session`,
+`repository_events:poll` and `repository_events:ack`. It cannot read or
+publish machine snapshots.
 
 `wb peers join <hub-url>` MUST read the token from stdin or `--token-file`,
-verify it against the hub, store it as a private credential file, write the
-`peers.upstream` configuration, and restart the daemon. It MUST NOT change
-`remote:`: remote state, claims and peer events are independent.
+verify it by completing a `hello`/`welcome` exchange on the session route,
+store it as a private credential file, write the `peers.upstream`
+configuration, and restart the daemon. It MUST NOT change `remote:`: remote
+state, claims and peer events stay independent. It MUST refuse when
+`remote.provider` is `hub` with the same origin, because two receivers would
+consume one queue.
 
 ```yaml
 peers:
@@ -119,276 +158,490 @@ peers:
     token_file: /abs/path/peer-vm1.token
 ```
 
-#### REQ: admin-is-loopback-only
+#### REQ: admin-requires-owner-credential
 
-Admission and trust changes (invite, block, unblock, disconnect, and the
-existing `POST /v0/workbench/machines/enroll` on a self-hosted hub) MUST be
-served only to the local operator. The request must arrive over the loopback
-listener with no `Forwarded` or `X-Forwarded-*` header, so a reverse proxy or
-tunnel can never reach them. The CLI reaches them through the daemon's
-existing owner-authenticated local API. This closes the self-hosted
-enrollment gap described in the Problem section.
+Every admission and trust change MUST require proof that the caller is the
+local operator. This covers invite, rotate, block, unblock, disconnect and
+the self-hosted machine enrollment. Arriving on the loopback listener is not
+proof, because tunnels and proxies deliver there.
+
+- **The CLI** calls these operations through the daemon's owner-token RPC
+  service on its unix socket.
+- **Self-hosted machine enrollment** moves to that RPC service. The HTTP
+  route `POST /v0/workbench/machines/enroll` is no longer mounted on a
+  self-hosted hub; the hosted instance keeps it with its OAuth viewer.
+- **The dashboard** gets an admin session through
+  `wb dashboard --admin`. That command obtains a single-use code over the
+  owner RPC, valid for 60 seconds, and opens `<dashboard>/admin/login?code=…`.
+  The daemon exchanges the code for an `HttpOnly`, `SameSite=Strict` session
+  cookie that expires after 12 hours. Admin HTTP routes require that cookie,
+  an `Origin` equal to the page's origin, and a JSON content type.
+- **Remote access** works through any path to the dashboard: an SSH port
+  forward, or the operator's proxy if it passes these routes.
 
 #### REQ: peer-management-commands
 
 The CLI MUST provide:
 
 - `wb peers list`: name, role, status, last seen, connected-for, cursor, lag.
-- `wb peers get <peer>`: the full record, current connection and statistics.
+- `wb peers get <peer>`: the full record, current session, counters, 1m/5m/1h
+  throughput and a one-line text sparkline of the last 60 minutes.
 - `wb peers disconnect <peer>`: closes the live session only. The peer stays
   trusted and reconnects by itself.
 - `wb peers block <peer>`: closes the live session and refuses future
-  sessions and HTTP calls with that credential. History, cursor and
+  sessions and HTTP calls with that credential. The record, cursor and
   statistics are kept.
-- `wb peers unblock <peer>`: allows sessions again.
-- `wb peers invite <name>` and `wb peers join <url>`, as above.
+- `wb peers unblock <peer>`: allows sessions again and sets `reset_pending`.
+- `wb peers invite`, `join` and `reconcile`, as specified in this document.
 
-Each supports `--format json`. `<peer>` accepts a name or peer ID. Block and
-unblock on a laptop act on its upstream locally: the laptop stops or resumes
-dialing. Default text output looks like:
+Every command supports `--format json`. `<peer>` accepts a name or peer ID.
+On a laptop, `block` and `unblock` act on its upstream locally: the laptop
+stops or resumes dialing. Default text output looks like:
 
 ```text
 NAME          ROLE        STATUS     LAST SEEN  CONNECTED  CURSOR  LAG
 alex-macbook  downstream  connected  now        2h 14m     5948    0
-dev-mac       downstream  offline    3d ago     -          5711    237
+dev-mac       downstream  offline    3d ago     -          5711    37
 old-laptop    downstream  blocked    41d ago    -          1022    -
 ```
 
-`CURSOR` is the acknowledged journal sequence. `LAG` is the number of events
-queued for that peer and not yet acknowledged, not the distance to the global
-head, because most global events are not routed to a given peer.
+`CURSOR` is the acknowledged journal sequence, decoded from the opaque cursor
+for display. `LAG` is the peer's queued-work count: pieces of sync work, after
+coalescing, not yet acknowledged. It is not the distance to the global head,
+because most global events are not routed to a given peer. `LAG` shows
+`reset` while a reset is pending.
 
 ### Session transport
 
 #### REQ: outbound-websocket-session
 
-The downstream node MUST open one long-lived WebSocket session to
-`wss://<hub>/v0/workbench/peers/connect`. It authenticates with its machine
-bearer token in the `Authorization` header of the upgrade request. TLS is
-required except to a loopback host. The hub MUST refuse an upgrade that
-carries a browser `Origin` header, a blocked or unknown credential, or an
-unsupported protocol version, before it accepts the WebSocket. The existing
-HTTP long poll stays available and unchanged for the hosted instance and for
-the hub's own local machine.
+The downstream node MUST keep one long-lived WebSocket session to
+`wss://<hub>/v0/workbench/peers/connect`. It authenticates with its peer token
+in the `Authorization` header of the upgrade request. TLS is required except
+to a loopback host.
+
+Before accepting the WebSocket, the hub MUST refuse any of the following:
+
+- a browser `Origin` header;
+- an unknown credential, a non-peer credential, or a blocked peer;
+- an unsupported protocol version;
+- more than 64 live sessions in total;
+- a source address that has had more than 10 failed authentications in the
+  last minute.
+
+The existing HTTP long poll stays available for the hosted instance and for
+the hub's own machine.
 
 #### REQ: session-protocol
 
-Messages are JSON text frames, each at most 1 MiB, with a `type` field. The
-exchange is:
+Messages are JSON text frames with a `type` field. A frame is at most 2 MiB,
+enough for a full 5,000-repository inventory. The protocol is pull-shaped, a
+long poll carried over the socket, so the existing receiver drives it
+unchanged in shape:
 
 1. downstream → `hello`: protocol version, node ID, display name, WB version,
-   OS, architecture, last acknowledged cursor, repository-inventory digest.
-2. hub → `welcome`: peer ID and name, session ID, heartbeat interval, whether
-   an inventory upload is needed, and whether a reset is pending.
-3. downstream → `inventory`: the canonical repository identities in its
-   projects root, bounded to 10,000. Sent when requested or whenever the local
-   digest changes. It replaces that peer's routing entry exactly as
-   `wb remote publish` does for a hub machine.
-4. hub → `events`: one batch of up to 100 events with its cursor and next
-   cursor. At most one batch is in flight per session.
-5. downstream → `ack`: the batch's next cursor and event IDs, the same
-   content as today's `AckRequest`. The hub → `acked` reply confirms it.
-6. The reset exchange is described under `stale-cursor-reset`.
+   OS, architecture, journal ID and last acknowledged cursor, and
+   repository-inventory digest.
+2. hub → `welcome`: peer ID and name, session ID, journal ID, heartbeat
+   interval, current lag, whether an inventory upload is needed, and whether
+   a reset is required (see `journal-epoch` and `stale-cursor-reset`).
+3. downstream → `inventory`: the canonical repository identities of its
+   canonical clones, normalized (trimmed, lower-cased, sorted, deduplicated)
+   by the shared helper that snapshot publishing uses, and bounded to 5,000.
+   Sent when requested or when the local digest changes. The hub stores it in
+   a purpose-built peer inventory record, not as a machine snapshot, so the
+   laptop does not appear as a zero-worktree machine in the fleet view.
+   Routing reads machine snapshots and peer inventories together. An invalid
+   record of either kind is skipped and narrated; it no longer fails routing
+   for every other machine.
+4. downstream → `poll{cursor, limit ≤ 100, wait ≤ 30 s}` → hub `events`:
+   `cursor`, `next_cursor`, `lag` and up to `limit` envelopes. The hub answers
+   as soon as events exist, or with an empty batch at `wait`. One poll is
+   outstanding per session.
+5. downstream → `ack{cursor, event_ids}` → hub `acked{cursor, lag}`. The ack
+   has the same content as today's `AckRequest`.
+6. The `heads_request`, `heads` and `reset_ack` messages of
+   `stale-cursor-reset`.
 
-An unknown message type, an oversized frame, or a malformed message closes the
-session with a protocol-error code. A peer that has not acknowledged an
-in-flight batch within 120 seconds is closed as slow and resumes on reconnect.
+An unknown message type, an oversized frame or a malformed message closes the
+session with a protocol-error code. A `poll` sent before the reset exchange
+completes is answered `reset_required`.
 
 #### REQ: heartbeat-and-liveness
 
 Both ends MUST send WebSocket pings every 20 seconds. A missing pong within 20
 seconds closes the session. The hub updates `last_seen` on every received
-message or pong, persisted at most once a minute. Heartbeats MUST NOT be
-logged at the normal level.
+message or pong, and persists it at most once a minute. Heartbeats MUST NOT be
+logged at the normal level. The receiver's periodic "waiting for provider
+events" progress line is not emitted for peer sessions.
 
 #### REQ: reconnect-with-backoff
 
-The downstream node MUST reconnect after any close or dial failure (DNS, TLS,
-refused, reset, VPN change) with exponential backoff from 1 second, doubling
-to a cap of 60 seconds, with full jitter. The backoff resets after a session
-has stayed up for 60 seconds. A wall-clock jump of more than 60 seconds
-beyond the monotonic clock (sleep and wake) MUST trigger an immediate redial.
-Close codes for `blocked`, `node-mismatch` and `unsupported-protocol` MUST
-stop redialing until the daemon restarts or the operator runs `wb peers
-unblock` locally, and each MUST be reported in `wb peers get` and
+The downstream node MUST reconnect after any close or dial failure: DNS, TLS,
+refused, reset or a VPN change.
+
+- **Backoff:** exponential from 1 second, doubling to a cap of 60 seconds, with
+  full jitter. It resets after a session has stayed up for 60 seconds.
+- **Wake:** a wall-clock jump of more than 60 seconds beyond the monotonic
+  clock (sleep and wake) triggers an immediate redial.
+- **Blocked:** a `blocked` refusal keeps the node redialing with a 5-minute
+  cap, so a hub-side `unblock` brings it back without any action on the
+  laptop.
+- **Terminal codes:** `unsupported-protocol` and `duplicate-node` stop
+  redialing until the daemon restarts or the operator runs `wb peers unblock`
+  on the laptop.
+
+Every refusal and terminal code is reported in `wb peers get` and
 `wb daemon status`.
 
 #### REQ: single-live-session
 
-A hub MUST keep at most one live session per peer. A new authenticated
-session for the same peer and node ID supersedes the old one, which is closed
-with a `superseded` code (the common case after sleep, when the old TCP
-connection is half-open). A session whose node ID differs from the peer's
-bound node ID MUST be refused with `node-mismatch`. The first session after an
-invite binds the node ID. Re-inviting the name clears the binding.
+A hub MUST keep at most one live session per peer.
+
+- A new session with the bound node ID supersedes the old one, which is
+  closed with `superseded`. This is the common case after sleep, when the old
+  TCP connection is half-open.
+- More than 3 supersedes within 60 seconds means two live nodes share one
+  identity, for example a copied state directory. The hub then closes the
+  session with the terminal `duplicate-node` code and narrates it.
+- A session whose node ID differs from the bound node ID is refused with
+  `node-mismatch`, which the downstream treats like `blocked` for redial
+  purposes.
+- The first session after an invite or rotation binds the node ID.
 
 ### Journal, cursor and delivery
 
 #### REQ: existing-journal-is-the-journal
 
 The durable journal is the hub's existing repository-event store: a global
-monotonic sequence, a per-machine queue fanned out at enqueue time, per-machine
-acknowledged sequence, and ID deduplication markers. The cursor a peer
-persists is the existing opaque cursor. The session transport MUST read and
-acknowledge through the same store operations as the HTTP long poll (`Poll`,
-`Acknowledge`), so there is exactly one delivery semantics.
+monotonic sequence, a per-machine queue written in the enqueue transaction, a
+per-machine acknowledged sequence, and ID deduplication markers. The cursor a
+peer persists is the existing opaque cursor. The session and the HTTP long
+poll MUST read and acknowledge through the same store operations (`Poll`,
+`Acknowledge`), so there is exactly one delivery semantics. On the
+downstream node, the existing `Receiver` drives the session through a
+session-backed `Source`. It is extended with one reset hook, and nothing else
+changes.
+
+#### REQ: journal-epoch
+
+The store MUST hold a random journal ID, created with the sequence. `welcome`
+carries it, and the downstream node stores it next to its cursor. If the
+journal IDs differ, or the presented cursor is above the global sequence (a
+store rebuilt or rolled back), the hub requires a reset instead of delivering
+from that cursor.
 
 #### REQ: at-least-once-and-idempotent
 
-Delivery is at-least-once. The downstream node MUST durably enqueue every
-event of a batch into its local repository-event queue before sending `ack`,
-and MUST persist the pending acknowledgement before sending it, exactly as the
-existing receiver does. A duplicate event ID is harmless: the local queue
-deduplicates it. A reconnect during catch-up redelivers from the last
-acknowledged cursor. Acknowledgement is idempotent for the same peer, cursor
-and ID set. A failed local enqueue MUST leave the batch unacknowledged and
-close the session, so it is redelivered after reconnect.
+Delivery is at-least-once.
+
+- **Ack ordering:** the downstream node MUST durably enqueue every event of a
+  batch into its local repository-event queue before sending `ack`, and MUST
+  persist the pending acknowledgement before sending it, as the existing
+  receiver does.
+- **Duplicates:** a duplicate event ID is harmless, because the local queue
+  deduplicates it.
+- **Replayed acks:** `Acknowledge` MUST succeed without effect for any cursor
+  at or below the peer's acknowledged sequence, whether or not its poll
+  receipt still exists. A lost `acked` reply followed by a replayed ack
+  therefore never wedges the receiver.
+- **Enqueue failure:** a failed local enqueue leaves the batch unacknowledged.
+  The next `poll` from the same cursor redelivers it.
+
+#### REQ: hub-side-coalescing
+
+In the enqueue transaction, a new default-branch event for a peer MUST replace
+that peer's still-queued default-branch event for the same repository and ref
+(tracked by a per-peer index document). The replaced event's pending-refresh
+record is removed with it. A rename is an ordering barrier: nothing coalesces
+across it. The queue is therefore bounded by the number of repositories in the
+peer's inventory plus renames, not by time offline.
+
+Replacing an event that was already delivered but not yet acknowledged is
+safe: the newer event supersedes it, and the old receipt still acknowledges by
+its own IDs.
 
 #### REQ: persist-then-notify
 
 A GitHub delivery MUST be translated, entitlement-checked and committed to the
-store before any session is told about it. After a successful commit the hub
-MUST signal each affected peer's live session through a non-blocking,
-coalescing wake-up (at most one pending signal per session). The session then
-reads the next batch from the store. There MUST be no per-peer in-memory event
-queue. A slow, stalled or disconnected peer MUST NOT delay webhook handling,
-the HTTP response to GitHub, or any other peer. Each session also re-reads the
-store every 30 seconds as a safety net against a lost signal.
+store before any session is told about it. After the commit, the hub signals
+every live subscription of each affected peer. Each session and each HTTP long
+poll holds its own subscription, a coalescing channel with room for one
+signal. A waiting `poll` then reads the store.
+
+- There is no per-peer in-memory event queue.
+- A slow, stalled or disconnected peer MUST NOT delay webhook handling, the
+  HTTP response to GitHub, or any other peer.
+- Waiters re-read the store at least every 5 seconds as a safety net against
+  a lost signal.
+- A hub with no notifier wired in (the hosted multi-instance deployment) keeps
+  the existing 250 ms scan.
 
 #### REQ: canonical-event-envelope
 
-Each element of an `events` batch MUST be an envelope `{sequence, type, id,
-occurred_at, repository_event}`, where `type` is a namespaced canonical name
-and exactly one typed payload field is present. Version 1 defines
-`github.push` (payload: the existing `repositoryevent.Event` with reason
-`default_branch_updated`) and `github.repository` (reason
-`repository_renamed`). New families add a new type and payload field and never
-change existing ones. Payloads stay trigger-only under the existing privacy
+Each element of an `events` batch MUST be an envelope
+`{sequence, type, id, occurred_at, repository_event}`. `type` is a namespaced
+canonical name, and exactly one typed payload field is present. Version 1
+defines two types:
+
+- `github.push`: payload is the existing `repositoryevent.Event` with reason
+  `default_branch_updated`;
+- `github.repository`: reason `repository_renamed`.
+
+New families add a new type and payload field and never change existing ones.
+The store keeps storing `repositoryevent.Event`, and the hub builds the
+envelope at delivery. Payloads stay trigger-only under the existing privacy
 allowlist: no webhook bodies, actors, commit messages, paths, credentials or
 installation IDs.
+
+#### REQ: missed-webhook-recovery
+
+On start and then hourly, a hub in webhook mode MUST do the following:
+
+1. List the App's webhook deliveries of the last 72 hours through the GitHub
+   App API.
+2. Select the deliveries whose latest attempt failed, and redeliver each one
+   once.
+3. Record each redelivered ID so it is never redelivered twice.
+
+Redelivered events deduplicate by delivery ID as usual. Each redelivery is
+narrated.
 
 ### Retention and reconciliation
 
 #### REQ: bounded-retention
 
-The hub MUST bound every collection that grows with events:
+The hub MUST bound every collection that grows with events or peers:
 
-- a poll receipt is deleted when its cursor, or any later one, is
-  acknowledged;
-- deduplication markers older than 14 days are pruned;
-- a peer's queue that exceeds 5,000 events, or whose oldest unacknowledged
-  event is older than 30 days, is dropped and the peer's `reset_pending` is
-  set;
-- events are not enqueued for a blocked peer, and unblocking sets
-  `reset_pending`.
+- **Poll receipts** are deleted when a cursor at or above theirs is
+  acknowledged.
+- **Queue documents** at or below the acknowledged sequence are deleted by
+  `Acknowledge` and by `reset_ack`, in chunks of at most 100 writes per
+  transaction.
+- **Pending-refresh records** are deleted with the queue document they
+  describe: on acknowledge, on coalescing, and on a queue drop.
+- **Deduplication markers** older than 14 days are pruned. The markers also
+  carry the event and its type, which makes them a 14-day detailed event
+  history.
+- **Oversized queues:** a peer queue that still exceeds 10,000 documents
+  (renames only, in practice) is dropped in chunks, and the peer's
+  `reset_pending` is set.
+- **Blocked peers** receive no events at enqueue.
+- **Heads** are pruned when no peer inventory has listed the repository for
+  90 days.
 
-Pruning runs in the daemon at start and then hourly, bounded per run, and is
-narrated. Peer records themselves are small and kept.
+Pruning runs in the daemon at start and then hourly. It walks every machine
+credential, peer or not, so a machine that never acknowledged is still found.
+It works in chunks of 100 writes per transaction, and it is narrated.
+
+On the downstream node, local job files in the terminal states `succeeded` and
+`superseded` are deleted after 7 days.
 
 #### REQ: latest-known-heads
 
-The hub MUST keep the latest known state per repository: the canonical
-identity, the default ref, the target object ID and the sequence of the event
-that set it. It is updated in the same store transaction that enqueues a
-default-branch or rename event. It holds one record per repository and is the
-source for reconciliation.
+The hub MUST keep the latest known state per repository in the same
+transaction that enqueues a default-branch or rename event. The state is the
+canonical identity, the default ref, the target object ID, the event's
+occurrence time and its sequence.
+
+- A head only moves forward: an event whose occurrence time is older than the
+  stored one does not replace it.
+- A rename moves the record to the new identity and records the previous
+  identity as an alias.
 
 #### REQ: stale-cursor-reset
 
-When `reset_pending` is set (queue dropped, unblocked, or first session after
-an invite), `welcome` reports it, and the hub sends no `events` until the reset
-completes. The downstream node sends `heads_request` for its inventory. The hub
-answers `heads` with a reset cursor (the peer's queue position at that moment)
-and the head of every requested repository it knows, in pages of at most 1,000.
-The downstream node compares each head with the canonical clone's
-`refs/remotes/origin/<default branch>`, and durably enqueues a local sync job
-only for repositories whose head differs or is missing locally. It then sends
-`reset_ack` with the reset cursor. The hub clears
-`reset_pending` and resumes normal delivery after that cursor. Events that
-arrive during the reset stay queued and are delivered afterwards. A repository
-the hub has no head for is left alone and counted in the reset report.
+A reset is required when any of these holds:
+
+- `reset_pending` is set: the queue was dropped, the peer was unblocked or
+  rotated, or this is the first session after an invite;
+- the journal ID differs;
+- the cursor is ahead of the journal.
+
+The reset exchange, in order:
+
+1. The hub reads the global sequence S first and then the heads. It answers
+   `heads_request` with `heads{reset_cursor(S), heads[], renames[]}`, in pages
+   of at most 1,000 over the inventory. `renames[]` lists every alias that
+   maps an inventory identity to its current identity.
+2. The downstream node durably enqueues a local rename job for each alias.
+3. It compares each head with the canonical clone's
+   `refs/remotes/origin/<default branch>`, read locally without a fetch, and
+   enqueues a local sync job only where the head differs or is missing
+   locally. Job IDs are a hash of the repository and target, so they are safe
+   under the event-ID rules and deduplicate.
+4. It then sends `reset_ack{reset_cursor}`.
+5. The hub sets the acknowledged sequence to S through a dedicated monotonic
+   store operation, deletes queue and pending documents at or below S in
+   chunks, and clears `reset_pending`.
+
+Events committed after S stay queued and are delivered by the next `poll`. A
+repository the hub has no head for is left alone and counted in the reset
+report.
 
 ### Selective repository sync
+
+#### REQ: fetch-always-fast-forward-when-safe
+
+For each repository named by an event or a reset, the local processor MUST
+always run `git fetch origin <ref>`. This updates `origin/<default>` and WB's
+view of the remote, and it changes no working tree, index or local branch. It
+then fast-forwards the canonical checkout only when that checkout is clean,
+on the event's branch, and strictly behind.
+
+- A dirty, diverged, detached or other-branch canonical checkout keeps its
+  working tree unchanged and is reported.
+- Feature worktrees are never touched.
+- When HEAD moved, the processor dispatches the existing `checkout-updated`
+  lifecycle hook and refreshes the checkout marker.
+
+This amends the existing safe-sync path of
+[github-app-repository-events](../github-app-repository-events/README.md),
+which fetched nothing for a dirty clone and so left its remote view stale.
 
 #### REQ: sync-only-named-repositories
 
 Received events MUST enter the existing local repository-event queue and
-processor. Same repository and ref coalesce to the newest event, renames stay
-ordered, and writers for the same repository are serialized. Only those
-repositories are touched, and nothing enumerates the fleet. The processor's
-existing safety rules apply unchanged: a clean canonical checkout on the
-event's branch fast-forwards (`pull --ff-only`). A dirty, diverged, detached
-or other-branch canonical checkout, or any feature worktree, is left
-unchanged and reported. A repository the peer has not cloned never receives
-events, because routing uses the inventory it published.
+processor. Same repository and ref coalesce, renames stay ordered, and writers
+for the same repository are serialized. Only those repositories are touched.
+Nothing enumerates the fleet, and nothing runs `gh repo list`.
 
 #### REQ: reconcile-command
 
-`wb peers reconcile [--dry-run]` MUST run the heads comparison on demand
-against the upstream and print which repositories differ. Without
-`--dry-run` it enqueues their sync jobs. This is the targeted replacement for
-a fleet-wide `wb sync` when a laptop returns.
+`wb peers reconcile [--dry-run]` MUST run the reset comparison against the
+upstream on demand, without changing the hub cursor. It prints which of the
+laptop's existing canonical clones differ from the hub's heads, and without
+`--dry-run` it enqueues their sync jobs. It never discovers repositories the
+laptop has not cloned; `wb sync` remains the tool for that.
 
 ### Statistics and dashboard
 
 #### REQ: traffic-and-event-counters
 
-Both ends MUST count, per session and as persisted lifetime totals, separately
-for received (RX) and sent (TX): payload bytes (the length of WebSocket
-message payloads, which is not TCP or TLS wire bytes; the UI and CLI say
-"payload bytes"), data messages, and events. Also counted: events by
-canonical type, connection count and total connected duration. Lifetime
-totals are persisted at least once a minute and at session close.
+Both ends MUST keep counters per session and as persisted lifetime totals,
+separately for received (RX) and sent (TX):
+
+- payload bytes: the length of WebSocket message payloads. This is not TCP or
+  TLS wire bytes, and the UI and CLI say "payload bytes";
+- data messages;
+- events;
+- events by canonical type;
+- connection count and total connected duration.
+
+Lifetime totals are persisted at least once a minute and at session close.
 
 #### REQ: minute-buckets-and-rates
 
-Each end MUST keep 60 one-minute buckets per peer, with RX and TX payload
-bytes, messages, events and events by type, driven by an injectable clock.
-From them it derives 1-minute, 5-minute and 1-hour throughput for RX and TX,
-last-hour byte and event totals, and event rates. These are called traffic
-rate or throughput, never bandwidth or speed. Buckets are in memory and do not
-survive a daemon restart. The charts say "since restart" when they cover less
-than an hour. Correctness state and lifetime totals are durable.
+Each end MUST keep 60 one-minute buckets per peer, driven by an injectable
+clock. Each bucket holds RX and TX payload bytes, messages, events, and events
+by type.
+
+From the buckets it derives:
+
+- 1-minute, 5-minute and 1-hour throughput for RX and TX;
+- last-hour byte and event totals;
+- event rates.
+
+These are called traffic rate or throughput, never bandwidth or speed. Buckets
+live in memory and do not survive a daemon restart; the charts say "since
+restart" when they cover less than an hour. Correctness state and lifetime
+totals are durable.
 
 #### REQ: peers-api
 
-The hub MUST serve read routes `GET /v0/workbench/peers` and
-`GET /v0/workbench/peers/{id}` (viewer-authorized, like the other dashboard
-reads), and every node serves `GET /api/v1/peers` and `/api/v1/peers/{id}` on
-its loopback daemon API, with `schema_version`. The detail response carries
-the record, current session (connected-at, last heartbeat, remote address as
-seen by the hub, protocol), counters, 1m/5m/1h throughput and the 60 buckets.
-Tokens, token digests and node IDs in full are never returned. Node IDs are
-shown truncated to 8 characters. Trust changes are loopback-only
-(`admin-is-loopback-only`).
+Peers MUST be served by one service with one versioned JSON schema
+(`schema_version`), mounted in three places:
+
+- **Local daemon API:** `GET /api/v1/peers` and `/api/v1/peers/{id}` on every
+  node.
+- **Hub dashboard reads:** the same handlers at `GET /v0/workbench/peers` and
+  `/v0/workbench/peers/{id}`, authorized like the other dashboard reads.
+- **Admin writes:** `POST /v0/workbench/peers/{id}/{disconnect|block|unblock}`
+  behind `admin-requires-owner-credential`, backed by the same service
+  functions as the CLI's owner RPC.
+
+The detail response carries:
+
+- the record;
+- the current session: connected-at, last heartbeat, remote address and
+  protocol;
+- the counters, the 1m/5m/1h throughput and the 60 buckets;
+- `admin_available`.
+
+The remote address is the socket peer, or the first `X-Forwarded-For` hop only
+when the connection comes from an address in `hub.trusted_proxies`.
+
+Tokens and token digests MUST never be returned. Node IDs are shown truncated
+to 8 characters for readability; they are not secret.
 
 #### REQ: peers-dashboard
 
-The embedded dashboard (`hub/web`) MUST add a peers overview (every peer with
-status, last seen, connected-for and lag) and a peer detail page. The detail
-page shows name, status, connected since, last heartbeat, WB version,
-OS/architecture, protocol, remote origin, cursor and lag, payload
-bytes/messages/events RX and TX (session and lifetime), and 1m/5m/1h
-throughput. It also shows two last-60-minutes charts: traffic RX and TX by
-minute with dynamic units, and events per minute stacked by type with a
-per-minute breakdown on hover and in a table fallback. It follows the
-existing design language (inline SVG, `global.css` tokens, no chart
-library). Block, unblock and disconnect buttons appear only on a loopback
-view. Behind a proxy they are replaced by the CLI command to run on the hub.
-`wb daemon status` adds one line per peer.
+The embedded dashboard (`hub/web`) MUST add a peers overview listing every
+peer with its status, last seen, connected-for and lag.
+
+It MUST also add a peer detail page showing:
+
+- name, status, connected since, last heartbeat;
+- WB version, OS/architecture, protocol and remote origin;
+- cursor and lag;
+- payload bytes, messages and events, RX and TX, for the session and lifetime;
+- 1m/5m/1h throughput;
+- two last-60-minutes charts: traffic RX and TX by minute with dynamic units,
+  and events per minute stacked by type, with a per-minute breakdown on hover
+  and a table fallback.
+
+The pages follow the existing design language: inline SVG, `global.css`
+tokens, no chart library.
+
+**Disconnect**, **Block** and **Unblock** buttons appear when
+`admin_available` is true. Otherwise the page shows the exact CLI command and
+the `wb dashboard --admin` hint.
+
+The laptop's own daemon page (`internal/dashboard`) shows its upstream peer
+with the same counters and a compact traffic chart. `wb daemon status` adds
+one line per peer.
 
 ### Diagnostics
 
 #### REQ: peer-narration
 
-Session lifecycle MUST be narrated through the existing `hub/narrate` line
-format on both ends, one line per fact. Narrated facts: connect (version,
-platform, cursor), disconnect (reason, duration), auth failure (reason
-category only), block and unblock, supersede, reconnect attempts after the
-third consecutive failure, catch-up start and finish (event count), cursor
-advance per batch, reset and reconciliation (repositories compared, differing,
-unknown), slow-peer close, and retention and journal errors. Heartbeats and
-individual pongs are never narrated. No token, digest or payload body appears.
+Session lifecycle MUST be narrated on both ends through the existing
+`hub/narrate` line format, one line per fact. The narrated facts are:
+
+- connect, with version, platform and cursor;
+- disconnect, with reason and duration;
+- authentication failure, with the reason category only;
+- block and unblock;
+- supersede, and duplicate-node;
+- a reconnect attempt, from the third consecutive failure onward;
+- catch-up start and finish, with the event count;
+- cursor advance, once per batch;
+- reset and reconciliation: repositories compared, differing, unknown and
+  renamed;
+- missed-webhook redelivery;
+- retention pruning and journal errors.
+
+Heartbeats and individual pongs are never narrated. No token, digest or
+payload body appears in any line.
+
+## Not in this feature
+
+These parts of the founder's brief are deliberately deferred, each with its
+reason:
+
+- **`github.pull_request` and `github.check_run` events.** The envelope
+  reserves the shape. Relaying them needs new App webhook subscriptions and a
+  generic store payload, and their consumer, the bounded `wb wait` verb, is
+  its own feature. A follow-up feature adds both together.
+- **A queryable detailed-history API.** The 14-day history is stored in the
+  deduplication markers and not yet exposed; a future consumer adds a read
+  route.
+- **Admin from the public dashboard behind basic auth.** The VM's Caddy edge
+  refuses every write by design. Admin works through `wb dashboard --admin`
+  over an SSH port forward, or through an edge route the operator opens for
+  `/v0/workbench/peers/*` and `/workbench/admin/login`.
+- **Mesh routing, several upstreams per node, key-pair or mTLS
+  authentication.** The peer record and scopes leave room for all three.
 
 ## Dependencies
 
@@ -400,112 +653,202 @@ individual pongs are never narrated. No token, digest or payload body appears.
 
 ### AC: identity-and-admission
 
-**Requirements:** peer-connectivity#req:node-identity, peer-connectivity#req:peer-is-persistent-state, peer-connectivity#req:invite-and-join, peer-connectivity#req:admin-is-loopback-only
+**Requirements:** peer-connectivity#req:node-identity, peer-connectivity#req:peer-is-persistent-state, peer-connectivity#req:invite-and-join, peer-connectivity#req:admin-requires-owner-credential
 
-A node ID survives daemon restart and host rename. `wb peers invite` prints a
-token once, and a second read is impossible. `wb peers join` writes
-`peers.upstream` without touching `remote:`. Invite, block and enroll requests
-that carry an `X-Forwarded-For` header, or arrive through a reverse proxy
-fixture, are refused, and the same requests over plain loopback succeed.
+These must hold:
+
+- **Node ID:** survives a daemon restart and a host rename.
+- **Invite:** `wb peers invite` prints the token once. It refuses an existing
+  name without `--rotate`, the hub's own name, and the memory engine.
+- **Peer token scope:** a peer token cannot read machine snapshots.
+- **Join:** `wb peers join` verifies over `hello`/`welcome`, writes
+  `peers.upstream` with `remote:` byte-identical, and refuses a same-origin
+  `remote.provider: hub`.
+- **Unauthorised admin:** no admin operation succeeds over HTTP without the
+  admin cookie. This covers a loopback request with no proxy headers, a
+  cross-origin simple POST, and a request through a proxy fixture.
+- **Enrollment route:** on a self-hosted hub,
+  `POST /v0/workbench/machines/enroll` is not mounted.
+- **Admin login:** the single-use code works once, only within 60 seconds.
 
 ### AC: peer-commands
 
-**Requirements:** peer-connectivity#req:peer-management-commands, peer-connectivity#req:peer-is-persistent-state
+**Requirements:** peer-connectivity#req:peer-management-commands, peer-connectivity#req:peer-is-persistent-state, peer-connectivity#req:reconnect-with-backoff
 
-`wb peers list/get/disconnect/block/unblock` produce the documented text and
-JSON shapes against a daemon test fixture. `disconnect` ends the session and
-the peer is `connected` again after its next dial. `block` ends it and the
-redial is refused with `blocked` while the peer record, cursor and lifetime
-counters are unchanged. `unblock` lets it in, and it catches up.
+Against a daemon fixture, `wb peers list/get/disconnect/block/unblock` produce
+the documented text and JSON shapes. Then:
+
+- `disconnect` ends the session, and the peer is `connected` again after its
+  next dial.
+- `block` ends the session, and redials are refused with `blocked`. The peer
+  record, cursor and lifetime counters are unchanged.
+- A blocked credential is also refused on the HTTP long poll.
+- After `unblock`, the downstream node's next redial (within its 5-minute cap,
+  on a fake clock) succeeds. It runs a reset and catches up.
 
 ### AC: session-lifecycle
 
 **Requirements:** peer-connectivity#req:outbound-websocket-session, peer-connectivity#req:session-protocol, peer-connectivity#req:heartbeat-and-liveness, peer-connectivity#req:reconnect-with-backoff, peer-connectivity#req:single-live-session
 
-With a fake clock and a fault-injecting dialer, tests cover hello/welcome,
-refused Origin, bad token and unsupported protocol before upgrade, a missed
-pong closing the session, backoff doubling to 60 seconds with jitter and
-resetting after a stable minute, an immediate redial after a simulated wake,
-a second session superseding the first, a node-ID mismatch refused, an
-oversized frame closing with a protocol error, and terminal close codes
-stopping the redial.
+Tests run with a fake clock and a fault-injecting dialer. They cover:
+
+- **Handshake:** hello, welcome and inventory.
+- **Pre-upgrade refusals:** a browser Origin, a bad token, a snapshot-scoped
+  token, an unsupported protocol, the session cap, and the failed-auth rate
+  limit, each refused before the upgrade.
+- **Liveness:** a missed pong closes the session.
+- **Backoff:** doubles to 60 seconds with jitter, and resets after a stable
+  minute.
+- **Wake:** a simulated wake triggers an immediate redial.
+- **Blocked redial:** a `blocked` refusal redials with a 5-minute cap.
+- **Supersede:** a second session supersedes the first.
+- **Duplicate node:** 4 supersedes within 60 seconds end in `duplicate-node`,
+  which stops redialing.
+- **Node mismatch:** refused.
+- **Oversized frame:** closes with a protocol error.
+- **Poll before reset:** a `poll` sent before a required reset gets
+  `reset_required`.
 
 ### AC: journal-resume-without-loss
 
-**Requirements:** peer-connectivity#req:existing-journal-is-the-journal, peer-connectivity#req:at-least-once-and-idempotent, peer-connectivity#req:persist-then-notify
+**Requirements:** peer-connectivity#req:existing-journal-is-the-journal, peer-connectivity#req:at-least-once-and-idempotent, peer-connectivity#req:persist-then-notify, peer-connectivity#req:journal-epoch
 
-Tests cover each of these: a disconnect mid-catch-up, a hub restart, a
-downstream restart with a persisted pending acknowledgement, a local enqueue
-failure mid-batch, and a duplicated batch. Afterwards every event is in the
-local queue exactly once and the cursor equals the last acknowledged batch. A
-peer that never reads does not delay a webhook response (measured against a
-bound) or delivery to a second peer. No per-peer queue grows in memory.
+Each of these runs as its own test:
+
+- a disconnect mid-catch-up;
+- a hub restart;
+- a downstream restart with a persisted pending acknowledgement;
+- an `acked` reply lost after the hub committed and pruned the receipt;
+- a local enqueue failure mid-batch;
+- a duplicated batch;
+- a replayed ack while a reset is pending.
+
+After each, every event is in the local queue exactly once, the cursor equals
+the last acknowledged batch, and the receiver keeps making progress.
+
+The journal-ID tests replace the store with a fresh one under the same URL,
+and separately present a cursor above the head; both yield a reset, never
+silent skipping.
+
+The live and backpressure tests show:
+
+- two subscriptions for one peer (a superseded session plus its successor)
+  both wake;
+- a peer that never polls does not delay a webhook response (measured against
+  a bound) or delivery to a second peer;
+- no per-peer memory grows.
 
 ### AC: retention-and-reset
 
-**Requirements:** peer-connectivity#req:bounded-retention, peer-connectivity#req:latest-known-heads, peer-connectivity#req:stale-cursor-reset, peer-connectivity#req:reconcile-command
+**Requirements:** peer-connectivity#req:bounded-retention, peer-connectivity#req:hub-side-coalescing, peer-connectivity#req:latest-known-heads, peer-connectivity#req:stale-cursor-reset, peer-connectivity#req:reconcile-command
 
-After acknowledgement, no poll receipt for that cursor remains. Markers older
-than 14 days are pruned. A queue pushed past its bound is dropped and the peer
-reconnects into a reset that enqueues sync jobs only for repositories whose
-local origin ref differs from the hub head. `wb peers reconcile --dry-run`
-lists the same repositories and changes nothing.
+Retention:
+
+- Ten pushes to one repository leave one queued document and one pending
+  record.
+- After an ack, no receipt, queue document or pending record at or below the
+  ack remains.
+- Markers older than 14 days are pruned.
+- A queue forced past its bound is dropped in chunks, with no transaction over
+  100 writes.
+- Terminal local job files older than 7 days are deleted.
+
+Heads:
+
+- An older push delivered after a newer one leaves the newer head in place.
+
+Reset and reconciliation:
+
+- A reset that races a new commit loses nothing: the event committed between
+  the S read and the heads read is delivered after `reset_ack`.
+- A rename dropped with the queue is replayed from the heads aliases.
+- `wb peers reconcile --dry-run` lists exactly the differing repositories and
+  changes nothing.
 
 ### AC: selective-sync
 
-**Requirements:** peer-connectivity#req:sync-only-named-repositories, peer-connectivity#req:canonical-event-envelope
+**Requirements:** peer-connectivity#req:sync-only-named-repositories, peer-connectivity#req:fetch-always-fast-forward-when-safe, peer-connectivity#req:canonical-event-envelope
 
-With 20 local canonical clones backed by bare remotes, events for A, C and
-A again produce fetch activity (observed through a git wrapper) for A and C
-only, and A's two events coalesce into one sync. A dirty clone of C is left
-byte-identical and reported. Envelope tests reject an unknown type, a missing
-or duplicated payload field, and any field outside the privacy allowlist.
+The test uses 20 local canonical clones backed by bare remotes, with a git
+wrapper that records every invocation per repository. Events for A, C and A
+again then give these results:
+
+- only A and C see `fetch`;
+- A syncs once;
+- a clean A fast-forwards;
+- a dirty C gets an updated `origin/main` while its working tree and index
+  stay byte-identical, and C is reported;
+- no `gh` or fleet-discovery call happens.
+
+The envelope tests reject an unknown type, a missing or duplicated payload
+field, and any field outside the privacy allowlist.
+
+### AC: missed-webhooks-recovered
+
+**Requirements:** peer-connectivity#req:missed-webhook-recovery
+
+Against a fake GitHub App API listing three failed deliveries and one
+successful one, the hub redelivers exactly the three, and redelivers none of
+them again on the next run. The resulting events deduplicate against any that
+had already arrived.
 
 ### AC: counters-and-rates
 
 **Requirements:** peer-connectivity#req:traffic-and-event-counters, peer-connectivity#req:minute-buckets-and-rates
 
-With an injected clock, known message sizes give exact per-session and
-lifetime RX and TX payload bytes, messages, events and events by type on both
-ends. Bucket rollover over 61 minutes keeps exactly 60 buckets. 1m, 5m and 1h
-throughput equals hand-computed values, including after an idle gap and with
-fewer than 60 minutes of history. Lifetime totals survive a restart and
-buckets do not.
+With an injected clock:
+
+- **Counts:** known message sizes give exact session and lifetime RX and TX
+  payload bytes, messages, events and events by type, on both ends.
+- **Rollover:** 61 minutes of rollover keep exactly 60 buckets.
+- **Rates:** 1m, 5m and 1h throughput equal hand-computed values, including
+  after an idle gap and with less than 60 minutes of history.
+- **Persistence:** lifetime totals survive a restart; buckets do not.
 
 ### AC: api-and-dashboard
 
 **Requirements:** peer-connectivity#req:peers-api, peer-connectivity#req:peers-dashboard, peer-connectivity#req:peer-narration
 
-API responses never contain a token, digest or full node ID (asserted by
-scanning every response in the test suite). Dashboard component tests render
-the overview and a detail page from a fixture with two charts and the table
-fallback, and hide trust buttons when the fixture marks the view as proxied.
-Narration tests assert one line per lifecycle fact and none for heartbeats.
+These must hold:
+
+- **No secrets:** no peers API response contains a token or digest. This is
+  asserted by scanning every response in the suite.
+- **Same data on every mount:** the three mounts return identical JSON for
+  the same peer.
+- **Remote address:** the displayed address uses `X-Forwarded-For` only from
+  a trusted proxy.
+- **Dashboard rendering:** component tests render the overview and a detail
+  page from a fixture with both charts and the table fallback. The admin
+  buttons appear only when `admin_available` is true; a Playwright test
+  clicks Block and observes the status change.
+- **Narration:** tests assert one line per lifecycle fact, and none for
+  heartbeats or receiver waiting.
 
 ### AC: whole-journey-e2e
 
 **Requirements:** peer-connectivity#req:outbound-websocket-session, peer-connectivity#req:persist-then-notify, peer-connectivity#req:stale-cursor-reset, peer-connectivity#req:sync-only-named-repositories, peer-connectivity#req:peer-management-commands, peer-connectivity#req:peers-api
 
 One end-to-end test runs a hub daemon and a downstream daemon in-process, with
-signed fake webhook deliveries and local bare remotes. It walks the
-canonical scenario with no step prodding the next:
+signed fake webhook deliveries and local bare remotes. It walks the canonical
+scenario from the brief, and no step prods the next:
 
 1. The downstream node is offline.
 2. Pushes arrive for A, C, then A.
-3. The hub persists them.
+3. The hub persists them and coalesces A.
 4. The downstream node starts and authenticates.
 5. It resumes from its cursor.
 6. Only A and C are reconciled.
 7. Only A and C are fetched.
 8. Lag reaches 0.
 9. A push to F arrives while the downstream node is connected.
-10. F is received with no poll interval elapsed.
+10. F is delivered with no poll interval elapsed.
 11. F is processed.
 12. `peers list/get` show the connection, cursor, lag and counters.
 13. The peers API reports the buckets.
 14. `disconnect` is followed by a push and an automatic reconnect.
-15. Catch-up finishes with no loss.
-16. `block` refuses the next dial, and `unblock` restores it and catches up.
+15. Catch-up completes with no loss.
+16. `block` refuses the next dial, and `unblock` lets the next redial
+    reconcile and catch up.
 
 ## Open Questions
 
