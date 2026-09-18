@@ -124,7 +124,7 @@ itself causes.
 
 ## Recommended Direction
 
-Four parts, smallest first. Each is useful alone.
+Five parts, smallest first. Each is useful alone.
 
 ### 1. Scratch is a task-owned location WB hands out
 
@@ -160,7 +160,51 @@ rather than read.
 This is the part that would have caught the incident weeks earlier. The disk
 did not fill suddenly; it filled with nobody looking.
 
-### 4. The sweep is scheduled, budget-driven, and announces itself
+### 4. Disk is an admission dimension, not only a warning
+
+Asked whether WB should warn on low disk or clean up automatically, the honest
+answer is that neither alone works, and the mechanism for the better answer is
+already built.
+
+Warning alone is what the incident disproves. Nothing warned, but even a warning
+would have been written to a place nobody was reading: the machine ran unattended
+with several agent sessions on it. A warning that arrives where no one is looking
+is indistinguishable from silence.
+
+Automatic deletion alone is unsafe, and unsafe in a specific direction. The bytes
+that fill the disk are per-task scratch whose owner is unknown, so "delete what
+looks old" can take a live four-day task's working state. The hand cleanup on
+2026-09-17 did exactly that and was safe only because every live session happened
+to have touched a file within 24 hours.
+
+The split in the table above resolves it, because the two halves have different
+safety properties:
+
+- **Caches may be pruned automatically.** Regenerating a build cache costs time,
+  never correctness. That is the definition of a cache and the reason it is safe
+  to reclaim without asking.
+- **Scratch may not**, until part 1 gives it an owner. After that, retiring it is
+  not a heuristic at all: the manifest says which task it belongs to, and the
+  task is gone.
+
+That leaves the real question — what happens to work that is *about* to start on
+a machine with no room. `internal/hostload` already answers the identical question
+for CPU: it resolves a load floor from `wb.yaml`'s `admission.load_floor`, and
+`wb run` and `wb worktree merge`/`prepare`/`resume` refuse admission beneath it.
+Disk is the same shape and belongs in the same place, as a second dimension of
+the same admission check.
+
+The value is in *when* it refuses. A build that starts with 200 MB free does not
+fail fast; it runs for ten minutes and dies in the linker with `no space left on
+device` — a message far enough from the cause that this session misread it as a
+successful build. Refusing admission before the work starts converts a confusing
+late failure into an accurate early one, and it lands in front of the actor that
+is about to consume the disk rather than in a log.
+
+So: prune caches automatically, never guess at scratch, and refuse admission
+below a disk floor the same way WB already refuses it below a CPU floor.
+
+### 5. The sweep is scheduled, budget-driven, and announces itself
 
 The daemon already exists, already runs, and already owns a durable queue — so
 the sweep is a scheduled WB operation, not a new launchd job. That matters
