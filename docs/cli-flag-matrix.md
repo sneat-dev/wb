@@ -42,6 +42,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `deps publish npm` | yes | yes | yes (`--fleet` is mandatory) | yes |
 | `ci audit` | `--fleet` only | `--fleet` only | rejected | yes |
 | `ci wait` | rejected | rejected | rejected | yes |
+| `wait pr` | rejected | rejected | rejected | yes |
+| `wait list` | rejected | rejected | rejected | yes |
 | `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |
 | `hooks measure` | yes | rejected | rejected | yes |
 | hidden `hooks run` | yes | rejected | rejected | yes |

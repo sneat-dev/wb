@@ -16,6 +16,10 @@ type sessionRow struct {
 	Efforts   []string `json:"efforts"`
 	Worktrees []string `json:"worktrees"`
 	Branches  []string `json:"branches"`
+	// Waiting is what this session has delegated to WB and is still blocked
+	// on. Without it a session that correctly delegated its waiting is
+	// indistinguishable from one that stopped.
+	Waiting []string `json:"waiting,omitempty"`
 }
 
 // attributeSessions joins owner entries to sessions by declared PID, with a

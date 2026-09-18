@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -235,4 +236,78 @@ func RepositoryFromPullRequestURL(pullRequestURL string) (string, error) {
 		return "", fmt.Errorf("pull request URL %q names no repository", pullRequestURL)
 	}
 	return parts[len(parts)-2] + "/" + parts[len(parts)-1], nil
+}
+
+// PullRequestFailureDetails reports why a pull request's head is red, in the
+// form a machine can act on: the failing check, its job URL, GitHub's own
+// deduplicated annotations (path, line, message), and a bounded log excerpt
+// when no annotation exists.
+//
+// It exists so a caller that has just observed a red head does not have to
+// download the Actions log and grep it. WB already extracts this for landing
+// receipts; the only thing missing was a way to ask for it without asking to
+// merge. The result is deliberately bounded — it is the failure, not a copy of
+// the run's output.
+func PullRequestFailureDetails(ctx context.Context, repository, selector string) ([]CIFailureDetail, error) {
+	view, err := ReadPullRequest(ctx, repository, selector)
+	if err != nil {
+		return nil, err
+	}
+	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
+	runs, _, reason := commitCheckRuns(ctx, options)
+	if reason != "" {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	statuses, _, reason := commitStatuses(ctx, options)
+	if reason != "" {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	observed := append(append([]RemoteCheck{}, runs...), statuses...)
+	sortRemoteChecks(observed)
+	return failedCheckDetails(ctx, repository, observed), nil
+}
+
+// UnsatisfiedRequiredChecks names the checks a pull request's target branch
+// requires that have no passing observation on its exact head.
+//
+// It exists for the renamed-workflow trap. When branch protection requires
+// "build" and the workflow that produced it is renamed to "build-and-test",
+// nothing ever reports "build": the required check is absent from the observed
+// set rather than pending in it. A caller that only counts pending checks sees
+// none, concludes the head is settled, and reports a green pull request that
+// can never merge. Naming the gap is the difference between "ready" and
+// "permanently blocked, and here is the check nobody is producing".
+//
+// A name is reported when no observation matches it, and also when a ruleset
+// pins it to one GitHub App and the matching producer did not report it.
+func UnsatisfiedRequiredChecks(ctx context.Context, repository, selector string) ([]string, error) {
+	view, err := ReadPullRequest(ctx, repository, selector)
+	if err != nil {
+		return nil, err
+	}
+	required, _, reason := targetBranchRequiredChecks(ctx, repository, view.Base.Ref, false)
+	if reason != "" {
+		return nil, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
+	}
+	if len(required) == 0 {
+		return nil, nil
+	}
+	options := PullRequestWaitOptions{Repository: repository, Target: view.Base.Ref, Head: view.Head.SHA}
+	runs, _, reason := commitCheckRuns(ctx, options)
+	if reason != "" {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	statuses, _, reason := commitStatuses(ctx, options)
+	if reason != "" {
+		return nil, fmt.Errorf("%s", reason)
+	}
+	observed := append(append([]RemoteCheck{}, runs...), statuses...)
+	gaps := make([]string, 0)
+	for _, expectation := range required {
+		if !observedSatisfies(observed, expectation) {
+			gaps = append(gaps, expectation.Name)
+		}
+	}
+	sort.Strings(gaps)
+	return gaps, nil
 }

@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/waitregistry"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -90,6 +93,10 @@ func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out,
 		results = nil
 	}
 	rows := attributeSessions(views, results)
+	// A wait is only visible if something reports it. Attribution failures
+	// degrade the column rather than failing the listing, exactly as the
+	// worktree derivation above does.
+	attributeSessionWaits(rows, projectsRoot, errOut)
 
 	if jsonOut {
 		encoder := json.NewEncoder(out)
@@ -99,9 +106,36 @@ func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out,
 	return renderSessions(out, rows)
 }
 
+// attributeSessionWaits joins outstanding wait records to their sessions. A
+// stale record is shown with a marker rather than dropped: a waiter that died
+// without clearing its record means nothing is watching for that event, which
+// is the case most worth surfacing here.
+func attributeSessionWaits(rows []sessionRow, projectsRoot string, errOut io.Writer) {
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return
+	}
+	records, err := waitregistry.List(home)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "derive outstanding waits: %v\n", err)
+		return
+	}
+	waiting := map[string][]string{}
+	for _, record := range records {
+		label := record.Kind + " " + strings.Join(record.Targets, ",")
+		if record.Stale {
+			label += " (stale)"
+		}
+		waiting[record.WBSessionID] = append(waiting[record.WBSessionID], label)
+	}
+	for index := range rows {
+		rows[index].Waiting = waiting[rows[index].WBSessionID]
+	}
+}
+
 func renderSessions(out io.Writer, rows []sessionRow) error {
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "SESSION\tMACHINE\tPID\tRUNTIME\tMODEL\tWB\tSTARTED\tEFFORTS\tWORKTREES\tBRANCHES\tSTATE"); err != nil {
+	if _, err := fmt.Fprintln(writer, "SESSION\tMACHINE\tPID\tRUNTIME\tMODEL\tWB\tSTARTED\tEFFORTS\tWORKTREES\tBRANCHES\tSTATE\tWAITING"); err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -109,10 +143,11 @@ func renderSessions(out io.Writer, rows []sessionRow) error {
 		if len(row.Worktrees) > 0 {
 			worktreeCount = strconv.Itoa(len(row.Worktrees))
 		}
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			orDash(row.WBSessionID), orDash(row.Machine), row.PID, orDash(row.Runtime), orDash(row.Model), orDash(row.WBVersion),
 			row.StartedAt.Local().Format("2006-01-02 15:04"),
-			condense(row.Efforts, 24), worktreeCount, condense(row.Branches, 24), row.State); err != nil {
+			condense(row.Efforts, 24), worktreeCount, condense(row.Branches, 24), row.State,
+			condense(row.Waiting, 32)); err != nil {
 			return err
 		}
 	}
