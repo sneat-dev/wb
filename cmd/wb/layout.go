@@ -130,7 +130,7 @@ removable top-level clone.`,
 func newLayoutMigrateCmd() *cobra.Command {
 	var (
 		format, reportDir, undoID string
-		apply                     bool
+		apply, clonesOnly         bool
 	)
 	command := &cobra.Command{
 		Use:   "migrate [owner/repository...]",
@@ -153,9 +153,21 @@ in progress, or a live Work Log claim holds it or a linked worktree.
 Uncommitted changes are never a refusal reason. The command exits with the
 findings code whenever any clone is skipped or fails.
 
+After moving clones, this is also the one command for the unified layout: it
+relocates every managed task checkout whose placement differs from the
+machine's store-mode placement, by calling the existing
+` + "`wb worktree relocate`" + ` implementation, never a copy of it. A checkout is
+left in place, with a finding, when a clone refusal condition applies to it,
+its task lock is held, or its destination already exists — the clone still
+migrates. Repository-local store mode leaves in-clone checkouts where they
+are. A linked worktree with no WB task identity is repointed only and
+reported unmanaged. Pass --clones-only to skip relocation entirely and get
+exactly the clone-move-and-repoint behaviour this command had before it.
+
 --apply writes a manifest under <root>/.wb/layout-migrations/<id>/ before its
 first move; pass --undo <id> to reverse every clone that manifest records as
-done.`,
+done, and every relocation it recorded, reversing relocations before the
+clone moves they depend on.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
 				return err
@@ -163,6 +175,7 @@ done.`,
 			report, err := layout.Migrate(cmd.Context(), projectsRoot, layout.MigrateOptions{
 				Repositories: args,
 				Apply:        apply,
+				ClonesOnly:   clonesOnly,
 				UndoID:       undoID,
 			})
 			if err != nil {
@@ -195,6 +208,7 @@ done.`,
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "move eligible clones (default is dry-run)")
+	command.Flags().BoolVar(&clonesOnly, "clones-only", false, "move clones and repoint worktrees only; skip relocating managed task checkouts")
 	command.Flags().StringVar(&undoID, "undo", "", "reverse the clones a previous --apply's manifest <id> recorded as done")
 	command.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "write layout-migrate.md/.yaml/.json to this directory")

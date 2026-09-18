@@ -139,7 +139,7 @@ denied call was a metadata write on an open descriptor.
 
 #### REQ: relocation-targets-store
 
-`wb worktree relocate` MUST remain the sole supported way to move an active
+`wb worktree relocate`'s implementation MUST remain the sole supported way to move an active
 managed checkout, as specified by
 [`worktree-lifecycle#req:explicit-layout-relocation`](../worktree-lifecycle/README.md).
 Its `--to=shared` destination MUST resolve to the central store root
@@ -231,17 +231,56 @@ intent before the move and a completion receipt after it is verified — the
 same append-only relocation-receipt journal `wb worktree relocate` and a
 repository transfer use — so a claim's immutable, frozen `Worktree` path
 resolves through that journal to its current location. Append-only historical
-records (claims, receipts) MUST NOT be rewritten. Migration MUST NOT move a
-checkout out of the clone: relocating checkouts to the central store remains
-[`relocation-targets-store`](#req-relocation-targets-store).
+records (claims, receipts) MUST NOT be rewritten.
+
+#### REQ: migration-relocates-managed-worktrees
+
+`wb layout migrate` MUST be the single command that brings a machine to the
+unified layout: by default, for every in-scope clone at the host level (moved
+by this run or earlier), it MUST also relocate each WB-managed task checkout
+whose placement differs from the one the user's store mode assigns — in the
+default central mode, `<root>/.worktrees/<task>/<host>/<org>/<repo>`. It MUST
+perform that move one checkout at a time, by its exact path, using the same
+no-replace move, Git repair, registration verification and relocation receipt
+primitives as `wb worktree relocate`, whose own behaviour is unchanged. The dry
+run MUST list each planned relocation with its source and destination.
+Uncommitted changes and unpushed commits MUST NOT be a reason to leave a
+checkout behind — the rename preserves them exactly, the same principle
+[`clone-migration-refusals`](#req-clone-migration-refusals) already applies to
+a clone move.
+
+A checkout whose Work Log claim has reached a terminal (sealed, finished-task)
+lifecycle MUST be relocated: the task is done, no live session depends on its
+current path, and this is the safe case, not an unsafe one. A checkout whose
+claim is still active MUST be left in place, with a finding reading "active
+task — relocate after it finishes" (a finding, not a failure) — a live session
+may still be using it. Every relocation candidate, whichever its claim's
+lifecycle, MUST be re-checked immediately before its own move, independently
+of the clone-level refusal check above: a Git operation in progress, a live
+process (on an OS that exposes one) with its working directory inside it, an
+un-picked-up parked session naming it, its task lock held, or its relocation
+destination already existing each leave that one checkout in place, with a
+finding naming the reason, while its clone and every other checkout still
+migrate. Every clone refusal condition in
+[`clone-migration-refusals`](#req-clone-migration-refusals) still skips the
+whole clone, including all of its checkouts, in every mode — this per-checkout
+recheck is additional to that, never a substitute for it. A linked worktree
+with no WB task identity MUST be repointed but never relocated, and MUST be
+listed in the report as unmanaged. In repository-local store mode a checkout
+already at `<canonical>/.worktrees/<task>` MUST NOT be moved, per
+[`store-mode-is-user-policy`](#req-store-mode-is-user-policy). `--clones-only`
+MUST restrict the run to clone moves and worktree repointing, and `wb worktree
+relocate <task>` MUST remain available for moving one task at a time, whether
+its claim is active or terminal.
 
 #### REQ: clone-migration-manifest-and-undo
 
 Before the first move, `--apply` MUST write a manifest of every planned clone —
 source, destination, HEAD commit and linked worktree paths — under
 `<root>/.wb/layout-migrations/<id>/`, and MUST append each clone's outcome as it
-completes. `wb layout migrate --undo <id>` MUST reverse the moves that manifest
-records as done, with the same repair and verification, appending each
+completes, including each worktree relocation. `wb layout migrate --undo <id>`
+MUST reverse the moves that manifest records as done, worktree relocations
+before the clone moves they depend on, with the same repair and verification, appending each
 clone's reversal outcome to the manifest as it completes, and re-running every
 refusal check against the clone's current location immediately before each
 move back. A legacy owner directory, and a host-level owner or host directory
@@ -396,6 +435,31 @@ working directory is inside it — plus one clean legacy clone
 **Then** each of the five is left in place with a finding naming its reason
 (the busy clone's reason naming the process's PID and command), the clean
 clone is migrated, and the command exits with the findings code.
+
+### AC: migrate-relocates-managed-worktrees
+
+**Requirements:** projects-root-layout#req:migration-relocates-managed-worktrees
+
+**Given** two clones in central store mode: clone A, a legacy clone
+`<root>/dal-go/dalgo`, holding a **finished** (terminal Work Log claim) task
+checkout `t1` at `<root>/dal-go/dalgo/.worktrees/t1`, a **finished** task
+checkout `t2` recorded in a legacy `~/.wb`-style home at
+`~/.wb/worktrees/t2/dal-go/dalgo`, and an unmanaged linked worktree created
+with plain `git worktree add`; and clone B, already at
+`<root>/github.com/dal-go/dalgo2sql`, holding an **active** (unsealed claim)
+task checkout `t3` at `<root>/github.com/dal-go/dalgo2sql/.worktrees/t3`
+**When** `wb layout migrate --apply` runs
+**Then** clone A is at `<root>/github.com/dal-go/dalgo`, `t1` and `t2` are each
+relocated to `<root>/.worktrees/<task>/github.com/dal-go/dalgo` with a
+relocation receipt, the unmanaged worktree is repointed in place and listed as
+unmanaged, `git status` succeeds in clone A and its relocated and unmanaged
+worktrees, and `<root>/github.com/dal-go/dalgo/.worktrees` no longer holds `t1`
+or `t2`; clone B does not move (it is already host-level) and `t3` is left at
+its pre-migration path with a finding reading "active task — relocate after it
+finishes"
+**When** the same setup runs with `--clones-only`
+**Then** clone A moves and every worktree is repointed, and no checkout is
+relocated.
 
 ### AC: migrate-is-reversible
 
