@@ -598,6 +598,78 @@ func TestPaginationFollowsLinkHeaderAcrossPages(t *testing.T) {
 	}
 }
 
+// TestRunSweepsOnStartAndStopsOnContextCancellation covers the actual Run
+// loop (every other test above drives Sweep directly) and the default
+// sleepContext implementation: with no Sleep override and a short interval,
+// Run ticks at least once and then returns nil once ctx ends, never once
+// erroring or panicking.
+func TestRunSweepsOnStartAndStopsOnContextCancellation(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI()
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: fixedClock(now), Interval: 5 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithTimeout(background(), 60*time.Millisecond)
+	defer cancel()
+	if err := sweeper.Run(ctx); err != nil {
+		t.Fatalf("Run = %v, want nil on a cancelled context", err)
+	}
+	if api.listRequests == 0 {
+		t.Fatal("Run must sweep at least once (on start) before its first wait")
+	}
+	if sweeper.Status().LastSweepAt.IsZero() {
+		t.Fatal("Run must have completed at least one sweep")
+	}
+}
+
+// TestRunReturnsImmediatelyOnAnAlreadyCancelledContext covers the other exit
+// from Run: a context cancelled before the first sleep even starts.
+func TestRunReturnsImmediatelyOnAnAlreadyCancelledContext(t *testing.T) {
+	api := newFakeGitHubAppAPI()
+	server := api.server()
+	defer server.Close()
+
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: newFakeStore(), Interval: time.Hour,
+	})
+	ctx, cancel := context.WithCancel(background())
+	cancel()
+	if err := sweeper.Run(ctx); err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+}
+
+// TestDeliveryItemSubjectNamesWhicheverIdentifierIsAvailable covers every
+// branch of the narrate.Line.Subject column: repository, installation-only,
+// neither, and a blank event name.
+func TestDeliveryItemSubjectNamesWhicheverIdentifierIsAvailable(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		item deliveryItem
+		want string
+	}{
+		{"repository", deliveryItem{Event: "push", RepositoryID: 42}, "push repository:42"},
+		{"installation only", deliveryItem{Event: "member", InstallationID: 7}, "member installation:7"},
+		{"neither", deliveryItem{Event: "github_app_authorization"}, "github_app_authorization"},
+		{"blank event", deliveryItem{RepositoryID: 42}, "unknown repository:42"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.item.subject(); got != testCase.want {
+				t.Fatalf("subject() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
 func containsInt64(values []int64, target int64) bool {
 	for _, value := range values {
 		if value == target {

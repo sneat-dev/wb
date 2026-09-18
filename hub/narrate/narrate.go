@@ -8,10 +8,12 @@
 //
 //	14:02:11 push            github.com/sneat-dev/wb          default branch main -> 3f1c2a9; queued for laptop
 //	14:06:30 poll            github.com/sneat-dev/wb          no change
+//	15:00:00 redeliver       push repository:987               redelivered (attempt 1 of 3)
 //
 // Columns are local time, the event name as GitHub names it ("poll" for the
-// poller), the organisation or repository the event is about, and the action
-// taken in plain words.
+// poller, "redeliver" for the missed-webhook recovery sweep), the
+// organisation or repository the event is about, and the action taken in
+// plain words.
 //
 // A Line carries only metadata the repository-event contract already treats as
 // publishable. Callers must never put a token, a webhook secret, or a payload
@@ -43,7 +45,8 @@ type Line struct {
 	// passes local time.
 	At time.Time
 	// Event is the event name as GitHub names it: "push", "repository",
-	// "installation", or "poll" for the polling ingester.
+	// "installation", "poll" for the polling ingester, or "redeliver" for the
+	// missed-webhook recovery sweep.
 	Event string
 	// Subject is the organisation or repository the event is about.
 	Subject string
