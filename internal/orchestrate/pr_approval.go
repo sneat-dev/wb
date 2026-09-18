@@ -34,14 +34,17 @@ const (
 // or --review-comment-file. A bare word like "sonnet" or "review.md" is
 // ambiguous between the new identity form and the old free-form approval
 // string that predates #604 (any string was accepted, whether or not it
-// named a file that actually existed on disk). A value containing "@" is an
-// unambiguous identity marker (`{model}@{harness}[@{session}]`) — nothing in
-// the pre-#604 free-form usage ever put an "@" in an approval string — so it
-// is always the identity shape. A bare word with no "@" is only the identity
-// shape when a review comment came with it (every genuine model-only
-// identity caller supplies one, and the landing path refuses an identity
-// without one); otherwise it stays the old free-form approval string, so
-// every pre-#604 caller keeps working exactly as before.
+// named a file that actually existed on disk). A value shaped exactly like
+// `{model}@{harness}[@{session}]` (see looksLikeReviewerIdentity) is an
+// unambiguous identity marker and is always the identity shape. A bare word
+// with no "@" — or a value containing "@" that does not fit that shape (an
+// email address, an "@handle", a path with "@" in a directory name) — is
+// only the identity shape when a review comment came with it (every genuine
+// model-only identity caller supplies one, and the landing path refuses an
+// identity without one); otherwise it stays the old free-form approval
+// string, so every pre-#604 caller keeps working exactly as before (round 3,
+// minor 3: an unqualified "value contains @" test misclassified an email or
+// an "@handle" as an identity and refused it).
 func classifyApprovedBy(value string, hasReviewComment bool) approvalKind {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -56,10 +59,53 @@ func classifyApprovedBy(value string, hasReviewComment bool) approvalKind {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
 		return approvalKindFile
 	}
-	if strings.Contains(value, "@") || hasReviewComment {
+	if looksLikeReviewerIdentity(value) {
+		return approvalKindIdentity
+	}
+	if !strings.Contains(value, "@") && hasReviewComment {
 		return approvalKindIdentity
 	}
 	return approvalKindFile
+}
+
+// knownReviewerHarnesses lists the harness names looksLikeReviewerIdentity
+// recognizes without requiring the value to avoid a "." entirely — a real
+// harness name is never itself dotted, so this list only needs to name the
+// harnesses this fleet actually uses, not every one that could ever exist.
+var knownReviewerHarnesses = map[string]bool{
+	"claude-code":       true,
+	"codex":             true,
+	"copilot":           true,
+	"gemini":            true,
+	unknownIdentityPart: true,
+}
+
+// looksLikeReviewerIdentity reports whether value is unambiguously the
+// `{model}@{harness}[@{session}]` shape (round 3, minor 3): at most three
+// non-empty "@"-separated segments, no "/" anywhere (a real identity is
+// never path-shaped), and no "." in the harness segment unless the harness
+// is one this fleet recognizes (or "unknown"). That last rule is what tells
+// an identity like "opus@codex" apart from an email like
+// "[email protected]" — "example.com" is not a known harness — without
+// having to enumerate every possible harness name.
+func looksLikeReviewerIdentity(value string) bool {
+	if !strings.Contains(value, "@") || strings.Contains(value, "/") {
+		return false
+	}
+	parts := strings.Split(value, "@")
+	if len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return false
+		}
+	}
+	harness := parts[1]
+	if strings.Contains(harness, ".") && !knownReviewerHarnesses[strings.ToLower(harness)] {
+		return false
+	}
+	return true
 }
 
 // ReviewerIdentity is the `{model}[@{harness}[@{session}]]` triple #604

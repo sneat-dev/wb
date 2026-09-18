@@ -323,22 +323,22 @@ func TestOrchCovPullRequestLandResumeCommandCarriesEveryOption(t *testing.T) {
 
 func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyExhaustedReads(t *testing.T) {
 	t.Parallel()
-	if got := withPullRequestLandResumeGuidance(nil, PullRequestLandOptions{}); got != nil {
+	if got := withPullRequestLandResumeGuidance(nil, PullRequestLandOptions{}, PullRequestLandResult{}); got != nil {
 		t.Fatalf("nil error became %v", got)
 	}
 	plain := errors.New("an authoritative refusal")
-	if got := withPullRequestLandResumeGuidance(plain, PullRequestLandOptions{}); !errors.Is(got, plain) {
+	if got := withPullRequestLandResumeGuidance(plain, PullRequestLandOptions{}, PullRequestLandResult{}); !errors.Is(got, plain) {
 		t.Fatalf("authoritative error was rewritten to %v", got)
 	}
 	exhausted := fmt.Errorf("%w: gh api failed after 3 attempts", githubobserver.ErrTransientRetriesExhausted)
-	got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{Repository: "acme/app", PullRequest: "acme/app#7", Keep: true})
+	got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{Repository: "acme/app", PullRequest: "acme/app#7", Keep: true}, PullRequestLandResult{})
 	if !errors.Is(got, githubobserver.ErrTransientRetriesExhausted) ||
 		!strings.Contains(got.Error(), "resumable: wb pr land acme/app#7 --keep") {
 		t.Fatalf("exhausted transient error = %v", got)
 	}
 	// An unaddressable selector cannot name a resume command, so the error is
 	// returned unchanged rather than decorated with a guess.
-	if got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{}); strings.Contains(got.Error(), "resumable") {
+	if got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{}, PullRequestLandResult{}); strings.Contains(got.Error(), "resumable") {
 		t.Fatalf("unaddressable selector gained resume guidance: %v", got)
 	}
 }

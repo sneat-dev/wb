@@ -49,6 +49,24 @@ func TestPRCreateRejectsApprovedByWithoutAutoMerge(t *testing.T) {
 	}
 }
 
+// Round 3, MAJOR fix: --review-comment/--review-comment-file are only ever
+// read by --land; --auto-merge alone never posts the identity form's
+// comment, so accepting either flag without --land would silently ignore
+// it rather than refuse.
+func TestPRCreateRejectsReviewCommentWithoutLand(t *testing.T) {
+	command := newPRCreateCmd()
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--auto-merge", "--approved-by", "opus@codex@run-1", "--review-comment", "looks good"})
+	err := command.Execute()
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	if !strings.Contains(exit.message, "--review-comment") || !strings.Contains(exit.message, "--land") {
+		t.Fatalf("message = %q, want it to name --review-comment and --land", exit.message)
+	}
+}
+
 func TestPRCreateRejectsAllowUnfencedWithoutAutoMerge(t *testing.T) {
 	command := newPRCreateCmd()
 	command.SilenceUsage = true

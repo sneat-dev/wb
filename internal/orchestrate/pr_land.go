@@ -204,12 +204,16 @@ type PullRequestLandResult struct {
 	ReviewDigest     string `json:"review_digest,omitempty"`
 	ReviewCommentURL string `json:"review_comment_url,omitempty"`
 	SelfReview       bool   `json:"self_review,omitempty"`
-	// ReviewBound is false when the recorded review named no commit to bind
-	// to (#586's warn-still-land design, founder-decided 2026-09-18): the
-	// landing proceeds — this is never a refusal — but Evidence["review"]
-	// carries the informational "review-unbound" finding so the gap is
-	// visible rather than silent.
-	ReviewBound bool `json:"review_bound"`
+	// ReviewBound is nil (omitted from JSON) when no review applied at all
+	// (a mechanical landing, round 3 minor 7). Once a review did apply, it
+	// is a pointer to false when the recorded review named no commit to
+	// bind to, or when the binding could not be verified (#586's
+	// warn-still-land design, founder-decided 2026-09-18) — the landing
+	// proceeds either way, this is never a refusal — but Evidence["review"]
+	// carries the informational finding so the gap is visible rather than
+	// silent. It is a pointer to true only once the binding is positively
+	// confirmed.
+	ReviewBound *bool `json:"review_bound,omitempty"`
 	// Closes lists the issues GitHub's own closingIssuesReferences reports
 	// this landing closes (#615). Empty is reported as the informational
 	// "no linked issue" finding in Evidence["closes"], never a refusal.
@@ -285,7 +289,7 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 		// githubobserver); only exhausting every in-process retry reaches
 		// here, and the exact resume command replaces the raw "start over"
 		// an agent would otherwise have to guess at.
-		err = withPullRequestLandResumeGuidance(err, options)
+		err = withPullRequestLandResumeGuidance(err, options, result)
 		// Every outcome leaves exactly one event, including the error paths:
 		// a verb that only records its successes produces a log in which
 		// nothing ever goes wrong.
@@ -299,13 +303,23 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 // in-process retry for a transient GitHub read failure was exhausted. Any
 // other error (an authoritative GitHub failure, a refusal, a validation
 // error) is returned unchanged.
-func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions) error {
+func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions, result PullRequestLandResult) error {
 	if err == nil || !errors.Is(err, githubobserver.ErrTransientRetriesExhausted) {
 		return err
 	}
 	number, numberErr := PullRequestNumber(options.PullRequest)
 	if numberErr != nil {
 		return err
+	}
+	// Round 3, B4: if this attempt already posted the identity form's
+	// review comment before hitting the exhausted-retries error, the
+	// resume command must carry the posted comment's URL, never the
+	// identity and review text again — copy-running it must not post a
+	// second comment re-approving whatever head is current when it runs.
+	if strings.TrimSpace(result.ReviewCommentURL) != "" {
+		options.ApprovedBy = result.ReviewCommentURL
+		options.ReviewComment = ""
+		options.ReviewCommentFile = ""
 	}
 	return fmt.Errorf("%w; resumable: %s", err, pullRequestLandResumeCommand(options, number, ""))
 }
@@ -489,8 +503,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// head advances by anything other than WB's own update-branch merges.
 	reviewedHead := result.HeadSHA
 	hasReviewComment := strings.TrimSpace(options.ReviewComment) != "" || strings.TrimSpace(options.ReviewCommentFile) != ""
+	// pendingIdentity/pendingComment (round 3, B4) defer actually POSTING the
+	// identity form's review comment until after the preflight cleanup check
+	// passes, and it happens exactly once per invocation: classification
+	// only validates and resolves what it can without side effects, so a
+	// preflight refusal right after never leaves a comment posted for a
+	// landing that did not happen, and nothing downstream can re-run this
+	// switch and post a second one.
+	var pendingIdentity *ReviewerIdentity
+	var pendingComment string
 	if !result.Mechanical {
-		switch classifyApprovedBy(result.ApprovedBy, hasReviewComment) {
+		kind := classifyApprovedBy(result.ApprovedBy, hasReviewComment)
+		switch kind {
 		case approvalKindEmpty:
 			return mergeRefusal(result, landRefusal{
 				code: LandRefusalUnapprovedPatch,
@@ -518,22 +542,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 						" --review-comment \"<the review>\"",
 				}), nil
 			}
-			commentURL, postErr := postReviewComment(ctx, options.Repository, number, identity, reviewedHead, comment)
-			if postErr != nil {
-				return result, postErr
-			}
-			result.Reviewer = identity.String()
-			result.ReviewedHeadSHA = reviewedHead
-			result.ReviewBound = true
-			result.ReviewDigest = ReviewDigest(comment)
-			result.ReviewCommentURL = commentURL
-			result.SelfReview = identity.SelfReview(currentSessionIdentity())
-			result.ApprovedBy = commentURL
-			result.Evidence["reviewer"] = identity.String()
-			result.Evidence["review_comment_url"] = commentURL
-			if result.SelfReview {
-				result.Evidence["self_review"] = "true"
-			}
+			pendingIdentity = &identity
+			pendingComment = comment
 		case approvalKindFile, approvalKindURL:
 			// #586 (founder-decided 2026-09-18: warn, still land): a file or
 			// comment review binds to whatever commit its own
@@ -541,13 +551,35 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// artifact itself, so a foreign push that happened between when
 			// the review was written and this invocation is still caught.
 			// A review that names no head is never refused for it; it lands,
-			// with the gap surfaced as the "review-unbound" finding.
-			named := namedReviewedHead(ctx, result.ApprovedBy, classifyApprovedBy(result.ApprovedBy, hasReviewComment))
+			// with the gap surfaced as the "review-unbound" finding. A
+			// malformed line, or (URL kind) a comment naming a different
+			// repository or pull request, IS refused (round 3, minors 1/2):
+			// those are cases where the review artifact plainly asserts
+			// something that does not check out, never silently downgraded
+			// to "unbound".
+			named, namedErr := namedReviewedHead(ctx, result.ApprovedBy, kind, options.Repository, number)
+			if namedErr != nil {
+				if errors.Is(namedErr, errReviewedHeadCrossRepository) {
+					return mergeRefusal(result, landRefusal{
+						code: LandRefusalReviewCommentCrossRepo,
+						reason: "the review comment URL " + result.ApprovedBy +
+							" names a different repository or pull/issue than " + options.Repository + "#" + number,
+						command: "wb pr land " + options.Repository + "#" + number + " --approved-by <a comment URL on this pull request>",
+					}), nil
+				}
+				return mergeRefusal(result, landRefusal{
+					code: LandRefusalReviewHeadMalformed,
+					reason: "the review named by --approved-by " + result.ApprovedBy +
+						" has a \"Reviewed-Head:\" line that is not a full 40-character SHA",
+					command: "wb pr land " + options.Repository + "#" + number + " --approved-by " + result.ApprovedBy,
+				}), nil
+			}
 			if named != "" {
 				reviewedHead = named
 				result.ReviewedHeadSHA = named
-				result.ReviewBound = true
+				result.ReviewBound = boolPtr(true)
 			} else {
+				result.ReviewBound = boolPtr(false)
 				result.Evidence["review"] = "review-unbound: the review does not name the commit it reviewed; add \"Reviewed-Head: <sha>\""
 			}
 		}
@@ -568,6 +600,60 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return mergeRefusal(result, *refusal), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
+
+	// The identity form's review comment is posted here — after the
+	// preflight passes, before anything is armed — and exactly once (round
+	// 3, B4). Posting any earlier risked a comment for a landing that then
+	// refused on the preflight; posting is also the point at which
+	// result.ApprovedBy (and options.ApprovedBy, mutated below so every
+	// resume command built from here on reflects it) switches from the
+	// identity+comment form to the posted comment's URL. WB's own
+	// resume/sanctioned commands from here on use only that URL and never
+	// again echo the review text — both because a second run must not post
+	// a second comment re-approving whatever head is current by then, and
+	// because strconv.Quote does not escape "$" or a backtick, so a review
+	// comment containing either would shell-substitute if a sanctioned
+	// command carrying it were copy-run.
+	if pendingIdentity != nil {
+		commentURL, postErr := postReviewComment(ctx, options.Repository, number, *pendingIdentity, reviewedHead, pendingComment)
+		if postErr != nil {
+			return result, postErr
+		}
+		result.Reviewer = pendingIdentity.String()
+		result.ReviewedHeadSHA = reviewedHead
+		result.ReviewBound = boolPtr(true)
+		result.ReviewDigest = ReviewDigest(pendingComment)
+		result.ReviewCommentURL = commentURL
+		result.SelfReview = pendingIdentity.SelfReview(currentSessionIdentity())
+		result.ApprovedBy = commentURL
+		result.Evidence["reviewer"] = pendingIdentity.String()
+		result.Evidence["review_comment_url"] = commentURL
+		if result.SelfReview {
+			result.Evidence["self_review"] = "true"
+		}
+		options.ApprovedBy = commentURL
+		options.ReviewComment = ""
+		options.ReviewCommentFile = ""
+	}
+
+	// #586/round 3 (B3): a named review must be checked BEFORE auto-merge is
+	// armed, not after — once armed, GitHub can merge on green at any time
+	// this process does not control, so a staleness check that runs only
+	// after arming can lose the race to GitHub's own merge. reviewedHead
+	// still equals view.Head.SHA here for the identity form (it was just
+	// posted against this exact head) and for a mechanical/no-review
+	// landing (reviewedHead == "" or unset); it can differ for a back-compat
+	// file/URL review naming an older head, which is exactly the case this
+	// guards. autoMergeArmed is always false here — arming has not happened
+	// yet — so the refusal never claims an armed state it has not reached.
+	if !result.Mechanical && reviewedHead != "" && reviewedHead != view.Head.SHA {
+		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, false, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		} else if note != "" {
+			result.ReviewBound = boolPtr(false)
+			result.Evidence["review"] = "review-unverified: " + note
+		}
+	}
 
 	// The commit message is settled before arming too, because when GitHub
 	// performs the merge it uses the message it was armed with. It is also read
@@ -683,13 +769,28 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// #586: a review — identity, file, or URL — authorizes landing exactly
 	// the head it was recorded against. WB's own update-branch merges are
 	// the one exception (proved by reviewedHeadStillCurrent); a foreign
-	// push, a fix commit, or a force-push in between is not. mergedByGitHub
-	// means GitHub's armed auto-merge already landed the reviewed head
-	// itself before this check could run — nothing to refuse.
+	// push, a fix commit, or a force-push in between is not. This is the
+	// post-wait half of the check (round 3, B3): the pre-arm check above
+	// already covers everything up to the moment auto-merge was armed; this
+	// one catches a foreign push that landed DURING the wait, while
+	// !mergedByGitHub still means this process, not GitHub's armed
+	// auto-merge, performs the merge write below — so refusing here still
+	// prevents it.
 	if !result.Mechanical && !mergedByGitHub && reviewedHead != "" {
-		if refusal := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
+		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
 			return mergeRefusal(result, *refusal), nil
+		} else if note != "" {
+			result.ReviewBound = boolPtr(false)
+			result.Evidence["review"] = "review-unverified: " + note
 		}
+	}
+	// mergedByGitHub means GitHub's armed auto-merge already landed the
+	// current head before this process's own check could run — the merge
+	// cannot be undone, so this is never a refusal (round 3, B3's third
+	// bullet). recordMergedByGitHubReviewBinding verifies the merge is
+	// provably covered before letting the receipt claim it is.
+	if !result.Mechanical && mergedByGitHub && reviewedHead != "" {
+		recordMergedByGitHubReviewBinding(ctx, options, view, reviewedHead, &result)
 	}
 
 	head := view.Head.SHA
@@ -986,6 +1087,13 @@ type landRefusal struct {
 	code    string
 	reason  string
 	command string
+}
+
+// boolPtr is PullRequestLandResult.ReviewBound's constructor: a pointer so
+// the receipt can distinguish "no review applied" (nil, omitted from JSON)
+// from a review that applied but is not (yet, or provably) bound (false).
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func mergeRefusal(result PullRequestLandResult, refusal landRefusal) PullRequestLandResult {
