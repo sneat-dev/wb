@@ -69,6 +69,30 @@ func (include migrateInclude) matches(task string) bool {
 	return include.allActive || include.tasks[task]
 }
 
+// migrateIncludeFromTasks builds a migrateInclude that matches exactly the
+// given task names -- no allActive semantics. --undo uses this to honour
+// exactly the inclusions its manifest recorded at apply time, regardless of
+// whether that run used --include-task or --include-active-tasks: the
+// manifest already resolved either form down to the exact task names that
+// were included.
+func migrateIncludeFromTasks(tasks []string) migrateInclude {
+	include := migrateInclude{tasks: map[string]bool{}}
+	for _, task := range tasks {
+		include.tasks[task] = true
+	}
+	return include
+}
+
+// UndoIncludeFlagsError reports that --include-task or --include-active-tasks
+// was passed together with --undo. Undo reverses exactly the inclusions its
+// manifest recorded when the clones were moved; those flags have no meaning
+// for it and are refused rather than silently ignored.
+type UndoIncludeFlagsError struct{}
+
+func (*UndoIncludeFlagsError) Error() string {
+	return "--include-task/--include-active-tasks have no effect with --undo: undo honours exactly the inclusions its manifest recorded when the clones were moved"
+}
+
 // resolveMigrateInclude validates IncludeTasks against every live Work Log
 // claim Migrate can see across every resolved home, before anything moves.
 func resolveMigrateInclude(root string, options MigrateOptions) (migrateInclude, error) {
@@ -120,6 +144,13 @@ type MigrateClone struct {
 	// Head is the clone's own HEAD at plan time, carried through to the
 	// undo manifest. It is not part of the report's public JSON shape.
 	Head string `json:"-"`
+	// IncludedTasks names every task whose live-claim refusal was lifted by
+	// --include-task/--include-active-tasks for this clone, carried through
+	// to the undo manifest so --undo can honour exactly those inclusions
+	// without --include-task/--include-active-tasks being passed again (they
+	// are refused with --undo; see UndoIncludeFlagsError). Not part of the
+	// report's public JSON shape.
+	IncludedTasks []string `json:"-"`
 }
 
 // MigrateRelocation is one managed task checkout's relocation plan or
@@ -128,9 +159,14 @@ type MigrateRelocation struct {
 	Task        string `json:"task,omitempty"`
 	Source      string `json:"source"`
 	Destination string `json:"destination,omitempty"`
-	// Status is one of: planned, done, skipped, failed, unmanaged. unmanaged
-	// names a linked worktree with no WB task identity: Git repointed it
-	// along with the clone, but it is never relocated.
+	// Status is one of: planned, done, skipped, failed, unmanaged,
+	// moved-with-clone. unmanaged names a linked worktree with no WB task
+	// identity: Git repointed it along with the clone, but it is never
+	// relocated. moved-with-clone names an active task's checkout whose
+	// live-claim refusal was lifted by --include-task/--include-active-tasks:
+	// it moved and repointed with its clone (a relocation intent/receipt was
+	// recorded for it) but, like any active task, is not relocated to the
+	// store -- a successful outcome, not a finding.
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
 }
@@ -203,6 +239,10 @@ type manifestClone struct {
 	Reversed    bool                 `json:"reversed,omitempty"`
 	ReversedAt  *time.Time           `json:"reversed_at,omitempty"`
 	Relocations []manifestRelocation `json:"relocations,omitempty"`
+	// IncludedTasks names every task whose live-claim refusal was lifted by
+	// --include-task/--include-active-tasks when this clone moved. --undo
+	// honours exactly these, regardless of which flag form named them.
+	IncludedTasks []string `json:"included_tasks,omitempty"`
 }
 
 // manifestRelocation is one manifestClone's durable relocation record: what
@@ -231,6 +271,9 @@ func Migrate(ctx context.Context, projectsRoot string, options MigrateOptions) (
 		options.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if options.UndoID != "" {
+		if len(options.IncludeTasks) > 0 || options.IncludeActiveTasks {
+			return MigrateReport{}, &UndoIncludeFlagsError{}
+		}
 		return migrateUndo(ctx, root, options)
 	}
 	return migrateApply(ctx, root, options)
@@ -438,7 +481,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
 			return nil
 		}
-		if err := relocateClones(ctx, root, report.Clones, options.Apply, options.Now(), persist); err != nil {
+		if err := relocateClones(ctx, root, report.Clones, options.Apply, options.Now(), persist, include); err != nil {
 			if manifest != nil {
 				report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
 			}
@@ -541,17 +584,28 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
 		worktreePaths = append(worktreePaths, worktree.Source)
 	}
-	reason, includedTask := refuseClone(ctx, root, slug, path, worktreePaths, include)
+	reason, includedTasks := refuseClone(ctx, root, slug, path, worktreePaths, include)
 	if reason != "" {
 		clone.Status = "skipped"
 		clone.Reason = reason
 		return clone
 	}
 	clone.Status = "planned"
-	if includedTask != "" {
-		clone.Reason = fmt.Sprintf("included: active task %s", includedTask)
+	clone.IncludedTasks = includedTasks
+	if len(includedTasks) > 0 {
+		clone.Reason = includedTasksReason(includedTasks)
 	}
 	return clone
+}
+
+// includedTasksReason renders the dry-run/report reason naming which
+// included task(s) are the only thing that lifted this clone's live-claim
+// refusal.
+func includedTasksReason(tasks []string) string {
+	if len(tasks) == 1 {
+		return fmt.Sprintf("included: active task %s", tasks[0])
+	}
+	return fmt.Sprintf("included: active tasks %s", strings.Join(tasks, ", "))
 }
 
 // refuseClone runs every refusal check REQ: clone-migration-refusals names
@@ -569,61 +623,63 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 // (task lock held, relocation destination exists) leave a single checkout
 // in place while its clone still migrates; see relocateClones.
 // refuseClone returns a non-empty reason when clonePath (or one of
-// worktreePaths) must refuse to move, and separately the name of a task
+// worktreePaths) must refuse to move, and separately the names of every task
 // whose live-claim refusal was lifted by include (matching neither reason
-// nor a genuine refusal): a clone is planned only because of that
-// inclusion, and the caller names it.
-func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string, include migrateInclude) (reason, includedTask string) {
+// nor a genuine refusal): a clone is planned only because of those
+// inclusions, and the caller names them.
+func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string, include migrateInclude) (reason string, includedTasks []string) {
 	if reason, err := worktrees.GitOperationInProgress(ctx, clonePath); err != nil {
-		return "cannot inspect Git state: " + err.Error(), ""
+		return "cannot inspect Git state: " + err.Error(), nil
 	} else if reason != "" {
-		return reason, ""
+		return reason, nil
 	}
 	for _, worktree := range worktreePaths {
 		if reason, err := worktrees.GitOperationInProgress(ctx, worktree); err != nil {
-			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error(), ""
+			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error(), nil
 		} else if reason != "" {
-			return "linked worktree " + worktree + ": " + reason, ""
+			return "linked worktree " + worktree + ": " + reason, nil
 		}
 	}
-	claimReason, claimIncludedTask := liveClaimReason(root, slug, include)
+	claimReason, claimIncludedTasks := liveClaimReason(root, slug, include)
 	if claimReason != "" {
-		return claimReason, ""
+		return claimReason, nil
 	}
 	paths := append([]string{clonePath}, worktreePaths...)
 	if parked := worktrees.ParkedSessionReason(root, paths); parked != "" {
-		return parked, ""
+		return parked, nil
 	}
 	if worktrees.BusyProcessCheckSupported {
 		if busy := worktrees.BusyProcessReason(paths); busy != "" {
-			return busy, ""
+			return busy, nil
 		}
 	}
-	return "", claimIncludedTask
+	return "", claimIncludedTasks
 }
 
 // liveClaimReason reports the live-claim refusal reason for slug, unless
 // every live claim on it is included by include, in which case it returns
-// the (first) included task's name instead of a refusal: a clone with two
-// active claims where only one is included still refuses on the other.
-func liveClaimReason(root, slug string, include migrateInclude) (reason, includedTask string) {
+// every included task's name instead of a refusal: a clone with two active
+// claims where only one is included still refuses on the other.
+func liveClaimReason(root, slug string, include migrateInclude) (reason string, includedTasks []string) {
 	claims, err := worktrees.ListActiveClaimSummaries(root, "")
 	if err != nil {
-		return "", ""
+		return "", nil
 	}
+	seen := map[string]bool{}
 	for _, claim := range claims {
 		if !strings.EqualFold(claim.Repository, slug) {
 			continue
 		}
 		if include.matches(claim.Task) {
-			if includedTask == "" {
-				includedTask = claim.Task
+			if !seen[claim.Task] {
+				seen[claim.Task] = true
+				includedTasks = append(includedTasks, claim.Task)
 			}
 			continue
 		}
-		return fmt.Sprintf("a live Work Log claim (task %q) holds this clone or a linked worktree", claim.Task), ""
+		return fmt.Sprintf("a live Work Log claim (task %q) holds this clone or a linked worktree", claim.Task), nil
 	}
-	return "", includedTask
+	return "", includedTasks
 }
 
 func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now time.Time, include migrateInclude) {
@@ -647,11 +703,17 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	// Re-run every refusal check immediately before moving, not only at plan
 	// time: a claim, a Git operation, or a parked session can all appear in
 	// the time between planning the whole run and reaching this one clone.
-	if reason, _ := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths, include); reason != "" {
+	reason, includedTasks := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths, include)
+	if reason != "" {
 		clone.Status = "skipped"
 		clone.Reason = "refused immediately before move: " + reason
 		return
 	}
+	// Refresh from the immediately-before-move recheck, not the plan-time
+	// value: this is what is recorded in the undo manifest, so --undo must
+	// honour exactly the inclusions that were still in effect at the moment
+	// this clone actually moved.
+	clone.IncludedTasks = includedTasks
 	pending, intentErr := worktrees.RecordCloneMoveRelocationIntents(root, plan.Worktrees, now)
 	if intentErr != nil {
 		clone.Status = "failed"
@@ -716,7 +778,7 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 // reported unmanaged; Git already repointed it along with its clone, and it
 // is never relocated. An active task's checkout is left in place with the
 // finding "active task — relocate after it finishes".
-func relocateClones(ctx context.Context, root string, clones []MigrateClone, apply bool, now time.Time, persist func(*MigrateClone) error) error {
+func relocateClones(ctx context.Context, root string, clones []MigrateClone, apply bool, now time.Time, persist func(*MigrateClone) error, include migrateInclude) error {
 	for index := range clones {
 		clone := &clones[index]
 		switch clone.Status {
@@ -737,7 +799,7 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 			if moved {
 				matchPath = worktree.Destination
 			}
-			relocation := relocateOneCheckout(ctx, root, clone.Destination, clone.Repository, matchPath, placement, apply, now)
+			relocation := relocateOneCheckout(ctx, root, clone.Destination, clone.Repository, matchPath, placement, apply, now, include)
 			if relocation == (MigrateRelocation{}) {
 				// Already at its store-mode placement: nothing to record.
 				continue
@@ -757,7 +819,7 @@ func relocateClones(ctx context.Context, root string, clones []MigrateClone, app
 // of exactly one checkout path. It returns the zero MigrateRelocation when
 // the checkout is already at its store-mode placement — the caller does not
 // record or persist that case.
-func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, checkoutPath string, placement worktrees.WorktreePlacement, apply bool, now time.Time) MigrateRelocation {
+func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, checkoutPath string, placement worktrees.WorktreePlacement, apply bool, now time.Time, include migrateInclude) MigrateRelocation {
 	task, active, ok, err := worktrees.IdentifyManagedCheckout(root, checkoutPath)
 	if err != nil {
 		return MigrateRelocation{Source: checkoutPath, Status: "skipped", Reason: "cannot resolve Work Log claim: " + err.Error()}
@@ -769,6 +831,16 @@ func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, ch
 		}
 	}
 	if active {
+		if include.matches(task) {
+			// This task's live-claim refusal was explicitly lifted
+			// (--include-task/--include-active-tasks): its checkout moved
+			// and repointed along with its clone -- via the clone-level
+			// relocation intent/receipt applyOneClone already recorded, not
+			// this store-relocation primitive -- and stays there. Relocation
+			// to the store still remains limited to finished tasks, so this
+			// is the expected, successful outcome, not a finding.
+			return MigrateRelocation{Task: task, Source: checkoutPath, Status: "moved-with-clone", Reason: "included active task; moved and repointed with its clone, not relocated to the store"}
+		}
 		// The founder's decision (2026-09-18): migrate's automatic sweep
 		// never named this checkout, so an active task's checkout — one a
 		// live session might still be using — stays exactly where it is
@@ -950,7 +1022,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 					clone.Relocations = append(clone.Relocations, migReloc)
 					continue
 				}
-				if reason, _ := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil, migrateInclude{}); reason != "" {
+				if reason, _ := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
 					migReloc.Status, migReloc.Reason = "skipped", "refused immediately before relocation reversal: "+reason
 					clone.Relocations = append(clone.Relocations, migReloc)
 					relocationsOK = false
@@ -1026,7 +1098,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		for _, worktree := range entry.Worktrees {
 			currentWorktreePaths = append(currentWorktreePaths, worktree.Destination)
 		}
-		if reason, _ := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths, migrateInclude{}); reason != "" {
+		if reason, _ := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths, migrateIncludeFromTasks(entry.IncludedTasks)); reason != "" {
 			clone.Status = "skipped"
 			clone.Reason = "refused immediately before move back: " + reason
 			report.Clones = append(report.Clones, clone)
@@ -1154,7 +1226,7 @@ func createMigrationManifest(root string, clones []MigrateClone, now time.Time) 
 	for _, clone := range clones {
 		entry := manifestClone{
 			Repository: clone.Repository, Source: clone.Source, Destination: clone.Destination,
-			Head: clone.Head, Status: "planned",
+			Head: clone.Head, Status: "planned", IncludedTasks: clone.IncludedTasks,
 		}
 		entry.Worktrees = append(entry.Worktrees, clone.Worktrees...)
 		manifest.Clones = append(manifest.Clones, entry)
@@ -1172,6 +1244,9 @@ func updateManifestClone(manifest *migrationManifest, outcome MigrateClone, now 
 			manifest.Clones[index].Status = outcome.Status
 			manifest.Clones[index].Reason = outcome.Reason
 			manifest.Clones[index].CompletedAt = &now
+			if outcome.Status == "done" {
+				manifest.Clones[index].IncludedTasks = outcome.IncludedTasks
+			}
 			return
 		}
 	}

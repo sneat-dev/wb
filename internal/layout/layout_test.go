@@ -190,3 +190,16 @@ func run(t *testing.T, dir string, name string, args ...string) {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, output)
 	}
 }
+
+// gitOutput runs git in dir and returns its trimmed combined output, failing
+// the test on a non-zero exit.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return string(output)
+}

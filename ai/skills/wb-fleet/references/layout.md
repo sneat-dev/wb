@@ -67,17 +67,22 @@ whenever any clone is skipped or fails.
 
 `--include-task <task>` (repeatable) and `--include-active-tasks` each lift
 only the live-Work-Log-claim refusal — for the named tasks, or for every
-active task. Every other refusal above still applies to an included clone,
-including the re-check just before its move. An `--include-task` name that
-matches no live claim in any home WB resolves is a usage error before
-anything moves, so a typo cannot silently include nothing. The dry run marks
-a clone planned only because of an inclusion with a reason like `included:
-active task <task>`. When an included clone moves, its claim's relocation
-intent and receipt are recorded (the same journal a finished task's
-relocation uses), so `land`, `guard` and `cleanup` resolve it at its new
-path. An included active task's in-clone checkout moves and repoints with
-its clone but is not relocated to the store — relocation stays limited to
-finished tasks (see below).
+active task. Task names are matched exactly (case-sensitive). Every other
+refusal above still applies to an included clone, including the re-check
+just before its move. An `--include-task` name that matches no live claim in
+any home WB resolves is a usage error before anything moves, so a typo
+cannot silently include nothing. The dry run marks a clone planned only
+because of an inclusion with a reason like `included: active task <task>`.
+When an included clone moves, its claim's relocation intent and receipt are
+recorded (the same journal a finished task's relocation uses), so `land`,
+`guard` and `cleanup` resolve it at its new path. An included active task's
+in-clone checkout moves and repoints with its clone but is not relocated to
+the store — relocation stays limited to finished tasks (see below) — and is
+reported `moved-with-clone`, not `skipped`, so this is not a finding.
+`--apply` records which tasks (if any) an inclusion lifted the refusal for in
+its manifest; `--undo` honours exactly those, and refuses `--include-task`/
+`--include-active-tasks` passed alongside it as a usage error, since undo
+never accepts a new inclusion.
 
 After moving clones (and for every clone already at the host level, moved
 this run or earlier), `migrate` relocates each managed task checkout whose

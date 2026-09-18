@@ -156,15 +156,18 @@ Uncommitted changes are never a refusal reason. The command exits with the
 findings code whenever any clone is skipped or fails.
 
 Pass --include-task <task> (repeatable) or --include-active-tasks to lift only
-the live-claim refusal, for the named tasks or for every active task. Every
-other refusal (a busy process, a parked session, a Git operation in progress,
-and the destination-exists check) still applies, including the re-check just
-before each move. An --include-task name matching no live claim in any
-resolved home is a usage error before anything moves. When an included
-clone moves, its claim's relocation intent and receipt are recorded so land,
-guard and cleanup resolve it at its new path; an included active task's
-in-clone checkout moves and repoints with its clone but is not relocated to
-the store, since relocation stays limited to finished tasks.
+the live-claim refusal, for the named tasks or for every active task. Task
+names are matched exactly (case-sensitive). Every other refusal (a busy
+process, a parked session, a Git operation in progress, and the
+destination-exists check) still applies, including the re-check just before
+each move. An --include-task name matching no live claim in any resolved home
+is a usage error before anything moves. When an included clone moves, its
+claim's relocation intent and receipt are recorded so land, guard and cleanup
+resolve it at its new path; an included active task's in-clone checkout moves
+and repoints with its clone but is not relocated to the store, since
+relocation stays limited to finished tasks. An included active task's
+checkout is reported moved-with-clone, not skipped, so this is not a
+finding.
 
 After moving clones, this is also the one command for the unified layout: it
 relocates every managed task checkout whose placement differs from the
@@ -178,9 +181,12 @@ reported unmanaged. Pass --clones-only to skip relocation entirely and get
 exactly the clone-move-and-repoint behaviour this command had before it.
 
 --apply writes a manifest under <root>/.wb/layout-migrations/<id>/ before its
-first move; pass --undo <id> to reverse every clone that manifest records as
+first move, recording which tasks (if any) an inclusion lifted the live-claim
+refusal for; pass --undo <id> to reverse every clone that manifest records as
 done, and every relocation it recorded, reversing relocations before the
-clone moves they depend on.`,
+clone moves they depend on. --undo honours exactly the inclusions its
+manifest recorded; passing --include-task or --include-active-tasks together
+with --undo is a usage error, since undo does not accept new inclusions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
 				return err
@@ -196,6 +202,10 @@ clone moves they depend on.`,
 			if err != nil {
 				var unknownTask *layout.UnknownIncludeTaskError
 				if errors.As(err, &unknownTask) {
+					return &exitError{code: exitUsage, message: err.Error()}
+				}
+				var undoIncludeFlags *layout.UndoIncludeFlagsError
+				if errors.As(err, &undoIncludeFlags) {
 					return &exitError{code: exitUsage, message: err.Error()}
 				}
 				// A manifest-write failure returns the partial report built
@@ -229,8 +239,8 @@ clone moves they depend on.`,
 	command.Flags().BoolVar(&apply, "apply", false, "move eligible clones (default is dry-run)")
 	command.Flags().BoolVar(&clonesOnly, "clones-only", false, "move clones and repoint worktrees only; skip relocating managed task checkouts")
 	command.Flags().StringVar(&undoID, "undo", "", "reverse the clones a previous --apply's manifest <id> recorded as done")
-	command.Flags().StringArrayVar(&includeTasks, "include-task", nil, "lift the live-claim refusal for this task (repeatable); an unknown task is a usage error")
-	command.Flags().BoolVar(&includeActiveTasks, "include-active-tasks", false, "lift the live-claim refusal for every active task")
+	command.Flags().StringArrayVar(&includeTasks, "include-task", nil, "lift the live-claim refusal for this exact (case-sensitive) task name (repeatable); an unknown task is a usage error; refused together with --undo")
+	command.Flags().BoolVar(&includeActiveTasks, "include-active-tasks", false, "lift the live-claim refusal for every active task; refused together with --undo")
 	command.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "write layout-migrate.md/.yaml/.json to this directory")
 	return command

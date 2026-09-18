@@ -483,18 +483,28 @@ relocated.
 
 **Requirements:** projects-root-layout#req:clone-migration-include-active-tasks
 
-**Given** two legacy clones, each held by a live claim with no process inside
-it: `acme/one` held by task `t-one` through a worktree in a legacy home, and
-`acme/two` held by task `t-two` through a worktree inside the clone
-**When** `wb layout migrate --include-task t-one --apply` runs
-**Then** `acme/one` moves, its worktree is repointed in place, a relocation
-receipt is recorded for `t-one`, and the claim-authority check `land` uses
-passes at the new path; `acme/two` is still skipped for its live claim
+**Given** three legacy clones, each held by a live claim with no process
+inside it: `acme/one` held by task `t-one` through a worktree in a legacy
+home, `acme/two` held by task `t-two` through a worktree inside the clone,
+and `acme/three` held by task `t-three` through a worktree inside the clone
+**When** `wb layout migrate --include-task t-one --include-task t-three
+--apply` runs
+**Then** `acme/one` moves, its worktree is repointed in place, and `t-one`'s
+claim resolves to the same checkout path after the migration as before it;
+`acme/three` moves, a relocation receipt is recorded for `t-three`, and the
+claim-authority check `land` uses passes at its new path; `acme/two` is
+still skipped for its live claim
 **When** `wb layout migrate --include-task no-such-task` runs
 **Then** it exits with the usage code and nothing moves
 **When** `wb layout migrate --include-active-tasks --apply` runs while a
 process has its working directory inside `acme/two`'s worktree
 **Then** `acme/two` is skipped, naming that process.
+
+Note: `t-one`'s worktree lives in a legacy home outside the current resolved
+home; `wb worktree land`'s claim-authority check (`LoadWorkLogView`) only
+reads the current resolved home, a limitation that predates this AC and is
+out of scope here. `t-one`'s claim resolution after migration is proved by
+task-scoped lookup across every resolved home instead.
 
 ### AC: migrate-is-reversible
 

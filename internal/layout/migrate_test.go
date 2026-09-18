@@ -1338,3 +1338,79 @@ func TestMigrateIncludeTaskLiftsOnlyTheLiveClaimRefusal(t *testing.T) {
 		t.Fatalf("apply clone = %+v, want done", appliedClone)
 	}
 }
+
+// TestMigrateUndoHonoursManifestRecordedInclusions covers the fix for a
+// reported bug: undo of an included clone was refused for the very live
+// claim the migration included, because both refuseClone call sites in
+// migrateUndo passed an empty include set instead of the manifest's own
+// recorded inclusions. --apply now records, per clone, which tasks an
+// inclusion covered; --undo reads those back and honours exactly them (a
+// task still active at undo time is still not otherwise refused). Passing
+// --include-task/--include-active-tasks together with --undo is a usage
+// error instead of being silently ignored.
+func TestMigrateUndoHonoursManifestRecordedInclusions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "undo", "acme/undo")
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "undo.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	if _, err := worktrees.Create(context.Background(), []string{"acme/undo"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-undo", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/undo.git")
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-undo"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedClone, found := findMigrateClone(applied, "acme/undo")
+	if !found || appliedClone.Status != "done" {
+		t.Fatalf("apply clone = %+v, want done", appliedClone)
+	}
+	destination := appliedClone.Destination
+
+	// --include-task/--include-active-tasks together with --undo is a usage
+	// error: undo honours exactly the manifest's own recorded inclusions.
+	var undoIncludeFlags *UndoIncludeFlagsError
+	if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, IncludeTasks: []string{"t-undo"}}); !errors.As(err, &undoIncludeFlags) {
+		t.Fatalf("err = %v, want *UndoIncludeFlagsError", err)
+	}
+	if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, IncludeActiveTasks: true}); !errors.As(err, &undoIncludeFlags) {
+		t.Fatalf("err = %v, want *UndoIncludeFlagsError", err)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("a rejected undo call must move nothing: %v", err)
+	}
+
+	// The task's claim is still live (never finished): without honouring
+	// the manifest's recorded inclusion, undo's own refuseClone call would
+	// refuse to move the clone back, citing the very claim the original
+	// --apply included.
+	undone, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undoneClone, found := findMigrateClone(undone, "acme/undo")
+	if !found || undoneClone.Status != "reversed" {
+		t.Fatalf("undo clone = %+v, want reversed (not skipped for the included live claim)", undoneClone)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("undo must restore the clone at its original path: %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("undo must remove the host-level destination: err=%v", err)
+	}
+	status := gitOutput(t, canonical, "status", "--porcelain=v1")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("git status after undo = %q, want clean", status)
+	}
+	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: root, Task: "t-undo"})
+	if err != nil {
+		t.Fatalf("list t-undo after undo: %v", err)
+	}
+	if len(listed) != 1 || listed[0].CanonicalDir != canonical {
+		t.Fatalf("t-undo resolution after undo = %+v, want exactly one result naming the restored path %s", listed, canonical)
+	}
+}
