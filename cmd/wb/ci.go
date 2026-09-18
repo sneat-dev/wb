@@ -65,14 +65,25 @@ escapes, or regex) to narrow the wait to a subset of the head's checks, for
 example when only a release or deploy job matters and other checks are still
 running. Required-check completeness is then evaluated only over the
 required checks the filter selects, and the JSON result carries a "filter"
-block naming what matched. A filter also keeps any not-yet-terminal Actions
-workflow run open as long as one of its jobs was selected, so a later job
-gated by "needs:" cannot slip through unobserved. A filter that selects
-nothing is never a vacuous pass: it keeps observing, at the normal cadence,
-until a matching check registers or the slice ends — reported pending with
-"no check matching the filter has registered yet", never a claim that the
-filter can never match. Never pass these flags to a landing route (` + "`wb pr land`" + `
-or a worktree merge) — landing always evaluates the full required set.
+block naming what matched. What "wait for" means differs by how a check is
+named: an exact --check waits only for that one job, so an unrelated sibling
+job in the same Actions run — still in progress, or the whole run stuck on an
+environment approval — never holds up the wait once that job itself is
+terminal. A --check glob instead keeps its owning Actions run open until the
+run itself finishes, since a glob can still match a job the run has not
+registered yet, such as one gated by "needs:" on an earlier job in the same
+run — the case #627 exists for. --workflow always waits for the whole run,
+since that is its meaning regardless of --check. With several --check
+patterns, a pass requires every exact (non-glob) pattern to have matched at
+least one observed check, not merely one of them — a mistyped or
+not-yet-registered exact name is reported pending, naming the pattern, rather
+than letting an unrelated matched pattern wave the wait through. A filter
+that selects nothing at all is never a vacuous pass either: it keeps
+observing, at the normal cadence, until a matching check registers or the
+slice ends — reported pending with "no check matching the filter has registered yet",
+never a claim that the filter can never match. Never pass these flags to a
+landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
+evaluates the full required set.
 
 Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
@@ -144,8 +155,8 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
-	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name (workflows sharing a name are all selected); never pass this to a landing route")
-	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name, or a glob where * matches any run of characters including / (everything else literal, no regex); never pass this to a landing route")
+	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name (workflows sharing a name are all selected); waits for the whole Actions run; never pass this to a landing route")
+	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name (waits only for that job; every exact pattern must match to pass), or a glob where * matches any run of characters including / and everything else is literal, no regex (waits for the owning Actions run to finish); never pass this to a landing route")
 	return command
 }
 

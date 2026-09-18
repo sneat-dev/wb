@@ -50,8 +50,9 @@ exit 30
 
 // ciWaitTwoWorkflowTerminalScript is ciWaitTwoWorkflowScript with both
 // workflows' check runs already terminal (both succeeded), so a filter that
-// selects neither can be told, on the very first observation, that it will
-// never match rather than polling out the whole slice.
+// selects neither reports a stable "no check matching the filter has
+// registered yet" pending receipt from the first observation on, rather than
+// looping out the whole slice budget on an unchanging empty snapshot.
 const ciWaitTwoWorkflowTerminalScript = `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -126,8 +127,9 @@ func TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns(t *testing.T) {
 }
 
 // TestCIWaitCheckGlobFilterSelectsMatchingChecks covers the --check glob
-// (path.Match "*", not regex) and confirms a pending check outside the
-// selection ("lint") never blocks the pass.
+// (WB's own hand-rolled matcher, not path.Match or regexp — see
+// simpleGlobMatch) and confirms a pending check outside the selection
+// ("lint") never blocks the pass.
 func TestCIWaitCheckGlobFilterSelectsMatchingChecks(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
@@ -485,6 +487,171 @@ exit 30
 	}
 	if len(passed.Checks) != 1 || passed.Checks[0].Name != "check-run:Release / Build" {
 		t.Fatalf("passed receipt should carry only the completed job, not the now-skipped synthetic entry: %#v", passed.Checks)
+	}
+}
+
+// TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite covers B1-R
+// (red-team round 2 on PR #629, the regression the B1 fix introduced): an
+// exact `--check "build"` selects only the "build" job. A sibling "race" job
+// still in_progress in the very same Actions suite must never hold the wait
+// pending once "build" itself has matched and gone terminal — retaining the
+// owning workflow run's synthetic entry unconditionally would have made an
+// exact selection wait for the whole workflow, the opposite of what "exact"
+// promises (and the opposite of #627's own headline case, which needs the
+// unrelated check EXCLUDED). Both check-runs carry a github-actions app slug
+// so the suite-correlation path in commitCheckRuns is exercised, not the
+// third-party fallback.
+func TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/racecheck/branches/main' ]; then
+  echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["build"]}}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/racecheck/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":8001,"name":"CI","workflow_id":5,"event":"push","status":"in_progress","conclusion":"","check_suite_id":701,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":701}},{"id":2,"name":"race","status":"in_progress","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":701}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/racecheck", "--target", "main", "--head", ciWaitHead,
+		"--check", "build", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("an exact --check must not wait for a slow sibling job in the same suite: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:build" {
+		t.Fatalf("exact --check should select only build, not the sibling race job or the run's own synthetic entry: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval covers
+// B1-R's second scenario: an Actions run stuck in "waiting" (an environment
+// approval) must not hold an exact `--check` that has already matched and
+// gone terminal, even though the run itself is still non-terminal.
+func TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/approval/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/approval/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":8002,"name":"Deploy","workflow_id":6,"event":"push","status":"waiting","conclusion":"","check_suite_id":702,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":702}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/approval", "--target", "main", "--head", ciWaitHead,
+		"--check", "build", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("an exact --check that already matched must not wait on an unrelated run stuck in environment approval: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:build" {
+		t.Fatalf("the waiting run's synthetic entry must not be retained once the exact check it owns is matched: %#v", output.Checks)
+	}
+}
+
+// TestCIWaitAllExactCheckPatternsMustMatchBeforePass covers the multi-pattern
+// completeness gate B1-R also requires: with several --check patterns, a
+// pass needs every exact (non-glob) one to have matched at least one
+// observed check, not merely one of them. Without this a mistyped or
+// not-yet-registered exact job name would let an unrelated matched sibling
+// wave the whole wait through.
+func TestCIWaitAllExactCheckPatternsMustMatchBeforePass(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/multiexact/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/multiexact/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":9101,"name":"CI","workflow_id":7,"event":"push","status":"completed","conclusion":"success","check_suite_id":801,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":801}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/multiexact", "--target", "main", "--head", ciWaitHead,
+		"--check", "build", "--check", "test", "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("build passing must not wave through the wait while the test pattern has never matched: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.Status != "pending" {
+		t.Fatalf("an unmatched exact pattern should stay pending, not fail: %+v", output)
+	}
+	if !strings.Contains(output.Reason, "test") {
+		t.Fatalf("reason should name the unmatched exact pattern: %q", output.Reason)
 	}
 }
 

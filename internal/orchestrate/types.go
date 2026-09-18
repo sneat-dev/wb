@@ -166,6 +166,13 @@ type RemoteCheck struct {
 	// runs. Zero for a third-party check-run or a commit-status-derived
 	// check.
 	WorkflowID int64 `json:"workflow_id,omitempty" yaml:"workflow_id,omitempty"`
+	// WorkflowEvent is the GitHub Actions event ("push", "pull_request", ...)
+	// that triggered the run backing this check, alongside WorkflowID
+	// (sneat-dev/wb#627 B1-R, red-team round 2 on PR #629). Filter retention
+	// keys an owning workflow run on (WorkflowID, WorkflowEvent), not
+	// WorkflowID alone: GitHub can run the same workflow ID for more than one
+	// event on the same head. Empty wherever WorkflowID is zero.
+	WorkflowEvent string `json:"workflow_event,omitempty" yaml:"workflow_event,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
@@ -206,9 +213,13 @@ type RequiredRemoteCheck struct {
 type CheckWaitFilter struct {
 	Workflows []string `json:"workflows,omitempty" yaml:"workflows,omitempty"`
 	Checks    []string `json:"checks,omitempty" yaml:"checks,omitempty"`
-	// MatchedChecks is how many observed checks the filter selected. Zero
-	// with a terminal observed set means the filter cannot pass: see
-	// PullRequestWaitResult.Reason for the explicit not-found diagnostic.
+	// MatchedChecks is how many observed checks the filter selected on the
+	// observation this receipt reports. Zero never means the filter can
+	// never pass: a workflow-run-triggered workflow, or one that is simply
+	// slow to register, can still appear later in the same bounded slice —
+	// see PullRequestWaitResult.Reason for the current diagnostic, which the
+	// wait keeps polling behind rather than treating as a dead end
+	// (sneat-dev/wb#627 M2/M3, red-team rounds 1 and 2 on PR #629).
 	MatchedChecks int `json:"matched_checks" yaml:"matched_checks"`
 	// RequiredChecks is how many of the target's required checks the filter
 	// selected; completeness is evaluated only over this subset.

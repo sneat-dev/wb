@@ -47,10 +47,21 @@ the glob crosses the `/`.
 
 Required-check completeness is then evaluated only over the required checks
 the filter selects, and the JSON result carries a `filter` block naming what
-matched. Once a job the filter selected has registered, the wait also keeps
-its parent Actions workflow run open — even if a later job in that run,
-gated by `needs:`, has not started and so has no check-run of its own yet —
-so the wait cannot pass while a chained job is still queued.
+matched. What "wait for" means differs by how the check is named:
+
+- An **exact `--check`** waits only for that one job. A sibling job in the
+  same Actions run that is still running — or the whole run stuck on an
+  environment approval — never holds up the wait once the selected job
+  itself is terminal. With several exact patterns, every one of them must
+  match a registered check before the wait can pass; an unmatched pattern is
+  reported pending, naming it, rather than letting a different matched
+  pattern wave the wait through.
+- A **`--check` glob** keeps its owning Actions run open until the run
+  itself finishes, because a glob can still match a job that run has not
+  registered yet — a later job gated by `needs:` on an earlier job in the
+  same run, for example.
+- **`--workflow`** always waits for the whole run, regardless of `--check`:
+  that is its meaning.
 
 A filter that selects nothing is never a vacuous pass. It keeps observing, at
 the normal poll cadence, until a matching check registers or the slice ends,

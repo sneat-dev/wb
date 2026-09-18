@@ -104,8 +104,12 @@ wb wait checks --repo acme/app --target main --head 0123456789012345678901234567
 wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --check "release-*" --json
 ```
 
-Never hand-roll a `gh run list` / `gh api` polling loop to watch one workflow
-or job. See `references/ci-polling.md` for the full filter contract and why a
+An exact `--check` waits only for that one job (every exact pattern given
+must match before the wait can pass); a `--check` glob and `--workflow` each
+wait for their owning Actions run to finish, since either could still match a
+job — for example one gated by `needs:` — that has not registered yet. Never
+hand-roll a `gh run list` / `gh api` polling loop to watch one workflow or
+job. See `references/ci-polling.md` for the full filter contract and why a
 filter matching nothing is never a vacuous pass; never pass `--workflow`/
 `--check` to `wb pr land` or a worktree merge.
 
