@@ -746,7 +746,6 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			if !result.AutoMergeArmed || readErr != nil || !merged.Merged {
 				return mergeRefusal(result, *refusal), nil
 			}
-			mergedByGitHub = true
 			result.Evidence["merged_by"] = "github auto-merge"
 		} else {
 			result.MergeSHA = merge
