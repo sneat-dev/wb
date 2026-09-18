@@ -81,16 +81,33 @@ type Source interface {
 	GetPeer(ctx context.Context, idOrName string) (Detail, bool, error)
 }
 
+// Authorize is the viewer check NewHandler runs before ListPeers/GetPeer, so
+// this read route carries the same discipline as every sibling dashboard
+// read route instead of being the one exception. A nil error admits the
+// request; every current caller wires one equivalent to the always-true
+// loopback-operator viewer the sibling read APIs already use, so nothing
+// behaves differently today — the hook exists so a future non-trivial
+// viewer (a hosted deployment, or Task 7's admin session) has a real gate to
+// plug into rather than this route staying structurally ungated.
+type Authorize func(*http.Request) error
+
 // NewHandler serves prefix (list) and prefix+"/{id}" (detail) as GET-only
 // JSON routes. prefix is exactly what the mount point is (no trailing
 // slash), so the same handler factory produces byte-identical JSON at
-// /api/v1/peers and at /v0/workbench/peers.
-func NewHandler(prefix string, source Source) http.Handler {
+// /api/v1/peers and at /v0/workbench/peers. authorize may be nil, which
+// disables the check (no current production caller does this).
+func NewHandler(prefix string, source Source, authorize Authorize) http.Handler {
 	prefix = strings.TrimSuffix(prefix, "/")
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
+		}
+		if authorize != nil {
+			if err := authorize(request); err != nil {
+				writeError(writer, http.StatusUnauthorized, "unauthorized")
+				return
+			}
 		}
 		if source == nil {
 			writeError(writer, http.StatusServiceUnavailable, "peers_unavailable")
