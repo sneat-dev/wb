@@ -105,6 +105,28 @@ type State struct {
 	// restarts the daemon, and without this the reason would exist only in a
 	// log the same removal may have unlinked.
 	StoppedReason string `json:"stopped_reason,omitempty"`
+
+	// Supervisor and SupervisorExecPID are what the process itself observed
+	// about its own start, through DetectSupervisor. They are empty in records
+	// written before this field existed and in a record whose process was
+	// never observed to start under a supervisor at all — both read as
+	// SupervisorNone by a reporter, since neither can name an owner to hand a
+	// restart to (sneat-dev/wb#617, sneat-dev/wb#546).
+	Supervisor        Supervisor `json:"supervisor,omitempty"`
+	SupervisorExecPID string     `json:"supervisor_exec_pid,omitempty"`
+}
+
+// ReportedSupervisor is Supervisor normalized for a reader: an empty or
+// otherwise unrecognized recorded value — a record written before this field
+// existed, most notably — is reported as SupervisorNone rather than as
+// whatever raw string happens to be on disk, because "no supervisor known" is
+// exactly the state that must never launch a detached replacement believing
+// something else owns the process.
+func (s State) ReportedSupervisor() Supervisor {
+	if s.Supervisor.Valid() {
+		return s.Supervisor
+	}
+	return SupervisorNone
 }
 
 func (s State) Valid() error {

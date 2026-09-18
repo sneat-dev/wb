@@ -76,6 +76,24 @@ func ProcessStartFromProcStat(ticks uint64, bootTime time.Time) time.Time {
 	return bootTime.Add(time.Duration(seconds)*time.Second + time.Duration(nanos))
 }
 
+// ParseProcStatusPPid extracts the parent PID from the contents of a Linux
+// `/proc/<pid>/status` file. It is the pure half of ObservedParentSupervisor,
+// kept separate so the parsing rule is testable without a real /proc.
+func ParseProcStatusPPid(contents string) (int, bool) {
+	for _, line := range strings.Split(contents, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "PPid:" {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil || ppid < 0 {
+			return 0, false
+		}
+		return ppid, true
+	}
+	return 0, false
+}
+
 // ParseProcStatBootTime extracts the btime (boot time, in Unix seconds) from
 // the contents of /proc/stat.
 func ParseProcStatBootTime(contents string) (time.Time, bool) {
