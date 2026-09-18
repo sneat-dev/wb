@@ -99,7 +99,15 @@ func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bund
 // still resolves directly, and the relocation-receipt-resolved path
 // otherwise. Callers building the successor's continuation context use this
 // so it names the CURRENT paths, never a stale recorded one.
+//
+// A nil receiver (a zero-member local resume, or a test stub that never
+// built custody) returns nil rather than panicking: callers that always
+// call this before building the continuation context must not crash on the
+// no-custody path.
 func (custody *ParkedLocalCustody) ResolvedWorktreeDirs() map[string]string {
+	if custody == nil {
+		return nil
+	}
 	out := make(map[string]string, len(custody.members))
 	for _, prepared := range custody.members {
 		out[prepared.member.WorktreeDir] = prepared.resolvedWorktreeDir
@@ -193,17 +201,22 @@ func resolveParkedMemberCanonicalDir(projectsRoot, repository string) (string, e
 }
 
 // resolveParkedMemberWorktreeDir resolves member's checkout: its recorded
-// path when that still exists, or otherwise the current location the
-// relocation-receipt journal for its Work Log reference records -- the same
-// chain claims (and RecordCloneMoveRelocationIntents) use to resolve a moved
-// checkout, tried across every home wbhome.Resolve reports for projectsRoot.
+// path when that still exists AND still carries member's own Work Log
+// reference, or otherwise the current location the relocation-receipt
+// journal for its Work Log reference records -- the same chain claims (and
+// RecordCloneMoveRelocationIntents) use to resolve a moved checkout, tried
+// across every home wbhome.Resolve reports for projectsRoot. A recorded path
+// that exists but now holds a different checkout (recycled after a move
+// this member's own relocation receipt records) is never trusted merely for
+// existing: it falls through to the receipt chain exactly like a path that
+// no longer exists at all.
 func resolveParkedMemberWorktreeDir(projectsRoot string, member sessionpark.Worktree) (string, error) {
-	if _, statErr := os.Lstat(member.WorktreeDir); statErr == nil {
+	if _, statErr := os.Lstat(member.WorktreeDir); statErr == nil && parkedMemberOwnsWorktree(member.WorktreeDir, member.WorkLogReference) {
 		return member.WorktreeDir, nil
 	}
 	reference, err := sessionmove.ParseWorkLogReference(member.WorkLogReference)
 	if err != nil {
-		return "", fmt.Errorf("recorded worktree %s no longer exists and its Work Log reference is unusable: %w", member.WorktreeDir, err)
+		return "", fmt.Errorf("recorded worktree %s is unusable and its Work Log reference is unusable: %w", member.WorktreeDir, err)
 	}
 	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {
@@ -220,7 +233,51 @@ func resolveParkedMemberWorktreeDir(projectsRoot string, member sessionpark.Work
 		}
 		return chain.worktree, nil
 	}
-	return "", fmt.Errorf("recorded worktree %s no longer exists and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+	return "", fmt.Errorf("recorded worktree %s is missing or no longer this member's checkout, and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+}
+
+// corroborateProjectionAcrossHomes corroborates projection against the
+// private Work Log claim recorded for worktree, tried across every home
+// wbhome.Resolve reports for projectsRoot -- not only the current write
+// home. A member's claim may live in a home other than the current write
+// home: one parked while its own session's write home was the retired
+// legacy $HOME/.wb (or any other home wbhome.Resolve still reads) keeps its
+// claim there across a later layout migration or a resume invoked against a
+// different projects root. Shared by local and remote parked-session
+// resume's member validation, exactly like claimForRelocationAcrossHomes is
+// shared by every relocation caller.
+func corroborateProjectionAcrossHomes(projectsRoot, worktree string, projection workLogProjection) error {
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, home := range resolvedClaimHomes(resolution) {
+		if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no resolved home could corroborate the parked member's Work Log claim")
+	}
+	return lastErr
+}
+
+// parkedMemberOwnsWorktree reports whether the checkout at path is still the
+// one carrying workLogReference -- true when path's own local Work Log
+// projection resolves to exactly that effort/run/claim identity. It is false
+// (never an error) for any other outcome: no projection, an unreadable one,
+// or one naming a different claim, all mean this path is not (or is no
+// longer) this member's checkout, so the caller must fall through to the
+// relocation-receipt chain rather than trust a recycled path.
+func parkedMemberOwnsWorktree(path, workLogReference string) bool {
+	projection, err := readWorkLogProjection(path)
+	if err != nil {
+		return false
+	}
+	return "worklog:"+projection.EffortID+"/"+projection.RunID+"/"+projection.ClaimID == workLogReference
 }
 
 // readWorkLogClaimByReference reads a Work Log claim record directly by its
@@ -350,31 +407,8 @@ func validateParkedLocalMember(ctx context.Context, projectsRoot string, bundle 
 	if err != nil || "worklog:"+projection.EffortID+"/"+projection.RunID+"/"+projection.ClaimID != member.WorkLogReference || projection.Lifecycle != "active" {
 		return fmt.Errorf("active Work Log claim changed after park")
 	}
-	// The private claim may live in a home other than this projects root's
-	// current write home: a member parked while its own session's write home
-	// was the retired legacy $HOME/.wb (or any other home wbhome.Resolve
-	// still reads) keeps its claim there across a later layout migration or a
-	// resume invoked against a different projects root. Try every resolved
-	// home, exactly like claimForRelocationAcrossHomes.
-	resolution, err := wbhome.Resolve(projectsRoot)
-	if err != nil {
+	if err := corroborateProjectionAcrossHomes(projectsRoot, prepared.resolvedWorktreeDir, projection); err != nil {
 		return err
-	}
-	var corroborateErr error
-	corroborated := false
-	for _, home := range resolvedClaimHomes(resolution) {
-		if err := corroborateProjectionWithPrivateClaim(home, prepared.resolvedWorktreeDir, projection); err == nil {
-			corroborated = true
-			break
-		} else {
-			corroborateErr = err
-		}
-	}
-	if !corroborated {
-		if corroborateErr == nil {
-			corroborateErr = fmt.Errorf("no resolved home could corroborate the parked member's Work Log claim")
-		}
-		return corroborateErr
 	}
 	events, _, err := readLocalEventsForAppend(prepared.directory)
 	if err != nil {
