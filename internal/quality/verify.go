@@ -759,8 +759,25 @@ func runWithOptions(ctx context.Context, options RunOptions, dir, name string, a
 
 func commandError(command, output string, err error) string {
 	detail := strings.TrimSpace(output)
-	if detail == "" {
-		detail = err.Error()
+	// A failing command usually explains itself in its own output, and that
+	// output is the more useful report. But it is not always the same failure:
+	// a coverage run whose tests all pass and whose profile merge then fails
+	// produces successful-looking test output plus an error describing the real
+	// cause, and preferring the output alone discarded that cause entirely.
+	// .wb/quality.yaml records the consequence — internal/orchestrate could not
+	// be added to the shard list because the failure it produced was unreadable.
+	//
+	// The error is appended rather than substituted, and appended at the end so
+	// the tail-preserving truncation below cannot drop it.
+	if err != nil {
+		if failure := strings.TrimSpace(err.Error()); failure != "" {
+			switch {
+			case detail == "":
+				detail = failure
+			case !strings.Contains(detail, failure):
+				detail = detail + "\n" + failure
+			}
+		}
 	}
 	if strings.HasPrefix(detail, coverageFailureSummaryHeader) {
 		if rawStart := strings.Index(detail, coverageRawOutputHeader); rawStart >= 0 {
