@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -43,4 +44,16 @@ func githubExecute(ctx context.Context, worktree string, args ...string) githubo
 // drift). Callers treat it like a slice deadline: resumable, not terminal.
 func isTransientReadReason(reason string) bool {
 	return strings.Contains(reason, githubobserver.ErrTransientRetriesExhausted.Error())
+}
+
+// IsTransientReadFailure is the exported form of isTransientReadReason for
+// callers outside this package that hold an error rather than a flattened
+// reason string. A verb that reports rather than merges uses it to keep a
+// target pending across a provider blip instead of ending a wait with a
+// verdict WB never observed.
+func IsTransientReadFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, githubobserver.ErrTransientRetriesExhausted) || isTransientReadReason(err.Error())
 }

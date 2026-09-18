@@ -277,7 +277,7 @@ func TestCwCovPrintWorktreeGCRendersEveryRowShape(t *testing.T) {
 		"partial: task multi retired [acme/app] and left [beta/tool] behind",
 		"artifact stage /tmp/stage: non-empty quarantined stage",
 		"shell empty /tmp/empty: permission denied",
-		"2 retired, 3 eligible, 1 kept, 4 terminal artefacts purged, 5 empty shells retired",
+		"2 retired, 3 eligible, 1 kept, 4 terminal artefacts purged, 0 repository-root stages purged, 5 empty shells retired",
 		"reclaimed",
 	} {
 		if !strings.Contains(text, want) {

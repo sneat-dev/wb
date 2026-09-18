@@ -39,6 +39,9 @@
       "wb-deps",
       "wb-dependency-campaign"
     ],
+    "disk": [
+      "wb-fleet"
+    ],
     "fleet": [
       "wb-fleet"
     ],
@@ -108,6 +111,9 @@
     ],
     "version": [
       "wb-install"
+    ],
+    "wait": [
+      "wb-merge"
     ],
     "worker": [
       "wb-daemon",

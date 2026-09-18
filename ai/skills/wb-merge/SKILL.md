@@ -5,6 +5,72 @@ description: Mechanically land one or many compatible completed WB branches/work
 
 # WB merge
 
+## Waiting for something to happen
+
+**Asynchronous waiting rule.** Do not write an ad-hoc polling loop for pull
+request, CI, agent, or operation state that WB already observes. Use the WB verb.
+Fall back to polling the provider directly only when WB cannot express the
+condition, and report that gap rather than normalising the workaround.
+
+**Run it in the foreground unless you have queued work.** A foreground wait
+renders in the harness like any other command, with a live elapsed timer, so a
+human can see that the session is waiting rather than stopped — and can move it
+to the background themselves when they would rather the agent kept working.
+Choosing background up front takes that decision away and makes the wait
+invisible unless someone goes looking for it.
+
+Background it only when there is genuinely other work to do meanwhile, or when
+the wait exceeds the harness's foreground ceiling (about ten minutes). Fleet CI
+runs in roughly eight, so most single waits fit in the foreground.
+
+```sh
+wb wait pr sneat-dev/wb#581 --until checks-settled
+```
+
+Several targets take one waiter, not one process each. The wait ends when every
+target is settled, so a busy target cannot end it while a quiet one is still
+running:
+
+```sh
+wb wait pr sneat-dev/wb#581 sneat-co/backstage#491 --until changed
+```
+
+Targets are named the way you already hold them — `owner/repository#number` or a
+pull request URL. WB resolves each base branch and exact head itself; no SHA has
+to be discovered first.
+
+Pending exits 1 and prints a `resume:` line naming only the targets still
+pending. Run that line again; do not re-observe what already settled.
+
+When a head is red, the output carries the failing file and line, or a bounded
+log excerpt when GitHub annotated nothing — so a failure does not cost a second
+round of downloading logs.
+
+A delegated wait goes quiet by design, which makes a waiting session look like
+a stopped one. Ask what is outstanding:
+
+```sh
+wb wait list
+```
+
+A waiter whose process died is reported as `stale` rather than hidden — that is
+the case worth seeing, because nothing is watching for that event any more.
+
+`wb wait` only reports. It never merges, and it is not merge evidence.
+
+### Which waiting verb
+
+| Situation | Verb |
+|---|---|
+| Wait for checks, then land the PR | `wb pr land <owner/repo#n>` |
+| Just tell me when a PR moves | `wb wait pr <owner/repo#n>...` |
+| Merge evidence for an exact head SHA | `wb ci wait --repo … --head …` |
+| A dispatched agent run finishing | `wb agent await <agent-id>` |
+| A durable daemon operation finishing | `wb daemon operation wait <id>` |
+
+Run any of them as a background command: the wait is bounded, so it terminates
+and the harness resumes you with the result.
+
 ## Fast path
 
 Land with one call:

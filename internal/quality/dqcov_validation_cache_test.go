@@ -73,7 +73,7 @@ func TestDqCovNewValidationCacheKeyFingerprintsPolicyAndModules(t *testing.T) {
 		writeQualityFile(t, filepath.Join(root, pruned, "go.mod"), "module example.test/pruned\n")
 	}
 	checks := []Check{CheckTest, CheckLint}
-	key, err := NewValidationCacheKey("example/key", "revision-1", root, "wb-revision", checks)
+	key, err := NewValidationCacheKey("example/key", "revision-1", root, "wb-revision", checks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(root, repositoryQualityConfigPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
 			t.Fatal("an unreadable policy path was accepted")
 		}
 	})
@@ -124,7 +124,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		dqCovChmod(t, denied, 0)
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
 			t.Fatal("an unreadable subtree was accepted")
 		}
 	})
@@ -134,7 +134,7 @@ func TestDqCovNewValidationCacheKeyFailsClosed(t *testing.T) {
 		if err := os.Symlink(filepath.Join(root, "absent-go.mod"), filepath.Join(root, "go.mod")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil); err == nil {
+		if _, err := NewValidationCacheKey("example/key", "rev", root, "wb", nil, nil); err == nil {
 			t.Fatal("a dangling module manifest was accepted")
 		}
 	})
@@ -209,7 +209,13 @@ func TestDqCovLoadValidationCacheMissesEveryWeakenedRecord(t *testing.T) {
 		}
 	})
 
-	write(func(record map[string]any) { record["schema"] = float64(2) })
+	// A schema the loader does not know must miss. Derived from the constant
+	// rather than written as a literal: this assertion hard-coded 2, which
+	// silently stopped being a weakening the moment the schema advanced to 2
+	// and began asserting that a correct record misses.
+	write(func(record map[string]any) {
+		record["schema"] = float64(validationCacheSchema + 1)
+	})
 	write(func(record map[string]any) {
 		record["key"].(map[string]any)["repository"] = "example/other"
 	})
