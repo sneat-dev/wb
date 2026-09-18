@@ -2617,6 +2617,12 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 		if !options.AllowUnfenced && strings.Contains(result.Reason, "strict up-to-date fence") {
 			return result, fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", result.Reason, receipt.ReceiptPath)
 		}
+		// #600: name each failing check and its first error line rather than
+		// leaving the caller to hand-roll the same log scraping WB already
+		// did while observing the checks.
+		if summary := summarizeCheckFailures(result.FailureDetails); summary != "" {
+			return result, fmt.Errorf("exact-head checks failed: %s; %s", result.Reason, summary)
+		}
 		return result, fmt.Errorf("exact-head checks failed: %s", result.Reason)
 	}
 }

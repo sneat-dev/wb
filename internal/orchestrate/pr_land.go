@@ -514,7 +514,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksPending
 		result.Reason = waited.Reason
-		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number
+		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number +
+			" --timeout " + prLandResumeTimeoutFlag(options.Slice)
 		// Auto-merge was armed before the wait, so a pending result is not a
 		// stranded change: GitHub lands it when the checks pass. Say so, and
 		// name the one part GitHub cannot do.
@@ -546,6 +547,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// checks were not the problem.
 			result.RefusalCode = LandRefusalUnfencedTarget
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number + " --allow-unfenced"
+		} else if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+			// #600: name each failing check and its first error line rather
+			// than leaving the caller to hand-roll the same log scraping WB
+			// already did while observing the checks.
+			result.Reason += "; " + summary
 		}
 		return withSavings(result), nil
 	}
@@ -728,6 +734,41 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 func manualPullRequestMergeCommand(repository, number, method string) string {
 	return "gh pr merge " + number + " --repo " + repository + " --" + method
+}
+
+// recommendedPRLandResumeTimeout is the budget named on a checks-pending
+// resume (#584). Measured CI wall-clock on this fleet ranges 3-11 minutes for
+// sneat-co/sneat-go and around 8 minutes for sneat-dev/wb, so the identical
+// invocation this refusal used to print - no --timeout, which defaults to
+// defaultCIWaitSlice (8 minutes) - could time out again about as often as it
+// succeeds. 45 minutes clears the measured range with headroom. Foreground
+// calls must still respect the harness's own ~10 minute ceiling; a caller
+// that needs 45 minutes backgrounds the resume rather than waiting on it.
+const recommendedPRLandResumeTimeout = 45 * time.Minute
+
+// prLandResumeTimeoutFlag names the --timeout value a checks-pending resume
+// should carry: the budget already in effect when it is at least the
+// recommended floor, or the recommended floor itself when the effective
+// budget was smaller (the common case, since defaultCIWaitSlice undercuts
+// it). Re-running the identical invocation that just timed out, with no
+// --timeout at all, cannot converge.
+func prLandResumeTimeoutFlag(inEffect time.Duration) string {
+	timeout := inEffect
+	if timeout < recommendedPRLandResumeTimeout {
+		timeout = recommendedPRLandResumeTimeout
+	}
+	return formatPRLandTimeoutFlag(timeout)
+}
+
+// formatPRLandTimeoutFlag renders a duration as a --timeout value a caller
+// would actually type. time.Duration.String() renders 45*time.Minute as
+// "45m0s"; whole minutes render as "<N>m" instead, and anything else falls
+// back to the standard rendering.
+func formatPRLandTimeoutFlag(d time.Duration) string {
+	if d > 0 && d%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
 }
 
 // pullRequestLandWaitSlice selects the next bounded slice from a user-facing

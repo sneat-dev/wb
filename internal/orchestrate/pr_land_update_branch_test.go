@@ -308,6 +308,56 @@ func TestLandTreatsABudgetShorterThanOnePollAsSpent(t *testing.T) {
 	}
 }
 
+// TestLandChecksPendingResumeCarriesATimeoutFloor pins #584: re-running the
+// printed resume command with no --timeout at all gets another bite of the
+// same short-lived default and cannot converge. With auto-merge disabled
+// (so the plain resume command is printed, rather than the auto-merge-armed
+// "GitHub lands it" alternative) a budget below the recommended floor must
+// have the resume command carry that floor instead of the budget that just
+// ran out.
+func TestLandChecksPendingResumeCarriesATimeoutFloor(t *testing.T) {
+	fixture := newLandFixture(t, "feature")
+	options := landOptions(fixture)
+	options.CheckPollInterval = time.Minute
+	options.Slice = 30 * time.Second
+	options.NoAutoMerge = true
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatalf("a short budget must end pending, not in an error: %v", err)
+	}
+	if result.RefusalCode != LandRefusalChecksPending {
+		t.Fatalf("refusal = %s, want %s: %s", result.RefusalCode, LandRefusalChecksPending, result.Reason)
+	}
+	want := "wb pr land " + options.Repository + "#" + "7" + " --timeout 45m"
+	if result.SanctionedCommand != want {
+		t.Fatalf("checks-pending resume command = %q, want %q", result.SanctionedCommand, want)
+	}
+}
+
+// TestPRLandResumeTimeoutFlagNamesAConvergingBudget pins #584: the
+// checks-pending resume command must carry --timeout with a budget that can
+// actually succeed, never the caller's own just-exhausted budget verbatim
+// when that budget was too small to converge.
+func TestPRLandResumeTimeoutFlagNamesAConvergingBudget(t *testing.T) {
+	tests := []struct {
+		name     string
+		inEffect time.Duration
+		want     string
+	}{
+		{"below the floor uses the recommended floor", 8 * time.Minute, "45m"},
+		{"at the floor is kept", 45 * time.Minute, "45m"},
+		{"above the floor is carried through", 90 * time.Minute, "90m"},
+		{"a non-whole-minute duration falls back to the standard rendering", 90*time.Minute + 30*time.Second, "1h30m30s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prLandResumeTimeoutFlag(tt.inEffect); got != tt.want {
+				t.Errorf("prLandResumeTimeoutFlag(%s) = %q, want %q", tt.inEffect, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestTargetMovedClassification pins which wait failures mean the target
 // moved, and which update failures mean the head moved.
 func TestTargetMovedClassification(t *testing.T) {

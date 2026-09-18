@@ -114,6 +114,13 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			reason = fmt.Errorf("exact-head checks remain pending: %s%s; resume with wb worktree merge resume %s", waited.Reason, note, receipt.ReceiptPath)
 		case !options.AllowUnfenced && strings.Contains(waited.Reason, "strict up-to-date fence"):
 			reason = fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", waited.Reason, receipt.ReceiptPath)
+		default:
+			// #600: name each failing check and its first error line rather
+			// than leaving the caller to hand-roll the same log scraping WB
+			// already did while observing the checks.
+			if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+				reason = fmt.Errorf("exact-head checks failed: %s; %s", waited.Reason, summary)
+			}
 		}
 		return failWorktreeMergePRLand(receipt, status, reason)
 	}

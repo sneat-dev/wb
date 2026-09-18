@@ -38,6 +38,129 @@ func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
 	}
 }
 
+// TestSummarizeCheckFailuresNamesOneFailingCheck pins #600: a single failed
+// check must be named alongside its first diagnosis line.
+func TestSummarizeCheckFailuresNamesOneFailingCheck(t *testing.T) {
+	t.Parallel()
+	got := summarizeCheckFailures([]CIFailureDetail{
+		{Check: "Lint (golangci-lint)", Excerpt: "internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)"},
+	})
+	want := "Lint (golangci-lint): internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)"
+	if got != want {
+		t.Fatalf("summarizeCheckFailures = %q, want %q", got, want)
+	}
+}
+
+// TestSummarizeCheckFailuresCapsSeveralFailingChecks pins #600's size bound:
+// at most maxFailureFindingChecks are named, and the remainder is counted
+// rather than silently dropped.
+func TestSummarizeCheckFailuresCapsSeveralFailingChecks(t *testing.T) {
+	t.Parallel()
+	details := []CIFailureDetail{
+		{Check: "Lint", Excerpt: "lint failed here"},
+		{Check: "Build", Excerpt: "build failed here"},
+		{Check: "Unit tests", Excerpt: "test failed here"},
+		{Check: "Coverage", Excerpt: "coverage failed here"},
+		{Check: "E2E", Excerpt: "e2e failed here"},
+	}
+	got := summarizeCheckFailures(details)
+	for _, name := range []string{"Lint", "Build", "Unit tests"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("summary missing named check %q: %q", name, got)
+		}
+	}
+	for _, name := range []string{"Coverage", "E2E"} {
+		if strings.Contains(got, name) {
+			t.Errorf("summary named check %q past the cap of %d: %q", name, maxFailureFindingChecks, got)
+		}
+	}
+	if !strings.Contains(got, "+2 more failed checks") {
+		t.Fatalf("summary must count the checks it dropped: %q", got)
+	}
+}
+
+// TestFailureFindingLineFallsBackToCheckNameAlone pins #600: with no
+// annotation and no job-log excerpt available, the finding names only the
+// check, never a fabricated diagnosis.
+func TestFailureFindingLineFallsBackToCheckNameAlone(t *testing.T) {
+	t.Parallel()
+	got := failureFindingLine(CIFailureDetail{Check: "Deploy (staging)"})
+	if got != "Deploy (staging)" {
+		t.Fatalf("failureFindingLine = %q, want the bare check name", got)
+	}
+}
+
+// TestSanitizeFailureFindingTextStripsControlCharacters pins #600: provider
+// text reaches a finding sanitized, never interpreted. A tab becomes a
+// space; other control characters (including an escape sequence a naive
+// terminal print could act on) are dropped outright.
+func TestSanitizeFailureFindingTextStripsControlCharacters(t *testing.T) {
+	t.Parallel()
+	got := sanitizeFailureFindingText("go\tvet\x1b[31mfailed\x00 here\r\n")
+	if strings.ContainsAny(got, "\t\x1b\x00\r\n") {
+		t.Fatalf("sanitized text retained a control character: %q", got)
+	}
+	if !strings.Contains(got, "go vet") || !strings.Contains(got, "failed here") {
+		t.Fatalf("sanitized text lost its content: %q", got)
+	}
+}
+
+// TestFirstFailureFindingLinePrefersAnnotationsThenActionsErrorMarker pins
+// #600's source preference: a GitHub check-run annotation first, then the
+// job log's own "##[error]" marker line, over an arbitrary log line.
+func TestFirstFailureFindingLinePrefersAnnotationsThenActionsErrorMarker(t *testing.T) {
+	t.Parallel()
+	t.Run("annotation wins over excerpt", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{
+			Annotations: []CIFailureAnnotation{{Message: "annotation message"}},
+			Excerpt:     "##[error]excerpt message",
+		})
+		if got != "annotation message" {
+			t.Fatalf("firstFailureFindingLine = %q, want the annotation", got)
+		}
+	})
+	t.Run("##[error] marker wins over an arbitrary line", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{
+			Excerpt: "some unrelated build noise\n##[error]internal/pkg/thing.go:10: broke\nmore noise",
+		})
+		if got != "internal/pkg/thing.go:10: broke" {
+			t.Fatalf("firstFailureFindingLine = %q, want the ##[error] line", got)
+		}
+	})
+	t.Run("no annotation and no marker falls back to the first nonblank line", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{Excerpt: "\n  \nfirst real line\nsecond line"})
+		if got != "first real line" {
+			t.Fatalf("firstFailureFindingLine = %q, want the first nonblank line", got)
+		}
+	})
+	t.Run("nothing available at all yields empty", func(t *testing.T) {
+		t.Parallel()
+		if got := firstFailureFindingLine(CIFailureDetail{}); got != "" {
+			t.Fatalf("firstFailureFindingLine = %q, want empty", got)
+		}
+	})
+}
+
+// TestTruncateFailureFindingTextCapsLength pins #600's per-line cap.
+func TestTruncateFailureFindingTextCapsLength(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", maxFailureFindingLineLength+50)
+	got := truncateFailureFindingText(long)
+	if length := len([]rune(got)); length != maxFailureFindingLineLength {
+		t.Fatalf("truncated length = %d, want %d", length, maxFailureFindingLineLength)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated text lacks an ellipsis: %q", got)
+	}
+	short := "short line"
+	if got := truncateFailureFindingText(short); got != short {
+		t.Fatalf("truncateFailureFindingText(%q) = %q, want unchanged", short, got)
+	}
+}
+
 func TestCompactFailureAnnotationIsSingleLineAndBounded(t *testing.T) {
 	t.Parallel()
 	got := compactFailureAnnotation("  first\nsecond\tthird  ", 14)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
@@ -1276,6 +1277,138 @@ func redactFailedJobLogLine(line string) string {
 		}
 	}
 	return line
+}
+
+const (
+	// maxFailureFindingChecks bounds how many failed checks a checks-failed
+	// finding names (#600): enough to point at every likely culprit without
+	// turning the finding into a copy of the checks list.
+	maxFailureFindingChecks = 3
+	// maxFailureFindingLineLength bounds each named check's diagnosis line.
+	maxFailureFindingLineLength = 200
+)
+
+// summarizeCheckFailures composes the bounded, sanitized "which check, which
+// line" text a checks-failed refusal or finding names (#600): up to
+// maxFailureFindingChecks checks, each with its first available diagnosis
+// line (a check-run annotation, or the job log's first "##[error]" line, or
+// its first nonblank line) capped at maxFailureFindingLineLength characters.
+// A check with no annotation or log excerpt available at all names only
+// itself. An empty details slice - a refusal that observed no FailureDetails,
+// e.g. because the failure was a policy gap rather than a red check - yields
+// an empty string, leaving the caller's existing reason untouched.
+func summarizeCheckFailures(details []CIFailureDetail) string {
+	if len(details) == 0 {
+		return ""
+	}
+	named := details
+	if len(named) > maxFailureFindingChecks {
+		named = named[:maxFailureFindingChecks]
+	}
+	lines := make([]string, 0, len(named))
+	for _, detail := range named {
+		lines = append(lines, failureFindingLine(detail))
+	}
+	summary := strings.Join(lines, "; ")
+	if remaining := len(details) - len(named); remaining > 0 {
+		summary += fmt.Sprintf(" (+%d more failed check", remaining)
+		if remaining > 1 {
+			summary += "s"
+		}
+		summary += ")"
+	}
+	return summary
+}
+
+// failureFindingLine names one failed check and, where available, its first
+// diagnosis line. The check name itself comes from GitHub and is sanitized
+// like every other provider-sourced text here; it is never interpreted.
+func failureFindingLine(detail CIFailureDetail) string {
+	name := sanitizeFailureFindingText(detail.Check)
+	if name == "" {
+		name = "(unnamed check)"
+	}
+	if line := firstFailureFindingLine(detail); line != "" {
+		return name + ": " + line
+	}
+	return name
+}
+
+// firstFailureFindingLine prefers GitHub's own deduplicated annotation
+// message (the terminal check-run endpoint WB already reads for landing
+// receipts), then the job log excerpt's first "##[error]" line, then the
+// excerpt's first nonblank line at all. All three are provider text: this
+// only sanitizes and bounds it, never parses it as anything but a string.
+func firstFailureFindingLine(detail CIFailureDetail) string {
+	for _, annotation := range detail.Annotations {
+		if message := sanitizeFailureFindingText(annotation.Message); message != "" {
+			return truncateFailureFindingText(message)
+		}
+	}
+	lines := strings.Split(detail.Excerpt, "\n")
+	if line := firstNonblankExcerptLine(lines, "##[error]"); line != "" {
+		return truncateFailureFindingText(line)
+	}
+	if line := firstNonblankExcerptLine(lines, ""); line != "" {
+		return truncateFailureFindingText(line)
+	}
+	return ""
+}
+
+// firstNonblankExcerptLine returns the first excerpt line matching marker
+// (with everything up to and including the marker stripped), or, with an
+// empty marker, the first nonblank line at all. It skips the
+// "earlier lines omitted" placeholder failedJobLogExcerpt inserts.
+func firstNonblankExcerptLine(lines []string, marker string) string {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "… earlier failed-job log lines omitted …" {
+			continue
+		}
+		if marker != "" {
+			index := strings.Index(line, marker)
+			if index < 0 {
+				continue
+			}
+			line = strings.TrimSpace(line[index+len(marker):])
+			if line == "" {
+				continue
+			}
+		}
+		if sanitized := sanitizeFailureFindingText(line); sanitized != "" {
+			return sanitized
+		}
+	}
+	return ""
+}
+
+// sanitizeFailureFindingText strips control characters from provider text
+// before it reaches a finding. The text is a GitHub-sourced check name,
+// annotation message, or job-log line: display data, never a template or a
+// command, so this only removes characters a terminal or a JSON encoder
+// could not render safely - it never rewrites or interprets the content.
+func sanitizeFailureFindingText(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(text))
+}
+
+// truncateFailureFindingText caps a diagnosis line at
+// maxFailureFindingLineLength runes so one long line cannot dominate a
+// bounded finding.
+func truncateFailureFindingText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxFailureFindingLineLength {
+		return text
+	}
+	return string(runes[:maxFailureFindingLineLength-1]) + "…"
 }
 
 func checkRunBucket(status, conclusion string) string {

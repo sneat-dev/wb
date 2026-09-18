@@ -191,6 +191,41 @@ func TestLandAliasSharesWorktreeLandContract(t *testing.T) {
 	}
 }
 
+// TestWorktreeLandAndRootLandAcceptProjectsRoot pins #502: `wb worktree land`
+// and its root alias `wb land` must consume --projects-root rather than
+// reject it, since runCombinedWorktreeMerge threads the package-level
+// projectsRoot into orchestrate.WorktreeMergeLandOptions. A source that does
+// not exist under the given root proves the flag reached the orchestrator:
+// the failure comes back as an orchestrator-level "resolve source canonical
+// clone" error rather than the PersistentPreRunE usage rejection
+// ("--projects-root is not supported by ...").
+func TestWorktreeLandAndRootLandAcceptProjectsRoot(t *testing.T) {
+	for _, args := range [][]string{
+		{"worktree", "land"},
+		{"land"},
+	} {
+		t.Run(strings.Join(args, "-"), func(t *testing.T) {
+			root := newRootCmd()
+			var stdout, stderr bytes.Buffer
+			root.SetOut(&stdout)
+			root.SetErr(&stderr)
+			projectsRootDir := t.TempDir()
+			missing := filepath.Join(projectsRootDir, "acme", "app-worktree")
+			root.SetArgs(append(append([]string{"--projects-root", projectsRootDir, "--non-interactive"}, args...), missing))
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected an orchestrator-level error for a missing source worktree")
+			}
+			if strings.Contains(err.Error(), "is not supported by") {
+				t.Fatalf("--projects-root was rejected instead of consumed: %v", err)
+			}
+			if !strings.Contains(err.Error(), "resolve source canonical clone") {
+				t.Fatalf("error = %v, want it to originate from the orchestrator (resolve source canonical clone)", err)
+			}
+		})
+	}
+}
+
 func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
 	tests := []struct {
 		name    string
