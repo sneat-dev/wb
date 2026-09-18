@@ -162,6 +162,8 @@ github.com/sneat-dev/wb/internal/tui.summaryItem.FilterValue
 github.com/sneat-dev/wb/internal/tui.summaryItem.Title
 github.com/sneat-dev/wb/internal/tui.summarySectionLabel
 github.com/sneat-dev/wb/internal/tui.writeUnpushedDetail
+github.com/sneat-dev/wb/internal/unixcompat.resolveDirectoryEntryPath
+github.com/sneat-dev/wb/internal/unixcompat.validateUnlinkatTarget
 github.com/sneat-dev/wb/internal/worktrees.AttachParkedLocalSuccessor
 github.com/sneat-dev/wb/internal/worktrees.CaptureParkedSessionWorktree
 github.com/sneat-dev/wb/internal/worktrees.ExpectedRemoteURL
