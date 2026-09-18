@@ -44,6 +44,9 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `ci wait` | rejected | rejected | rejected | yes |
 | `wait pr` | rejected | rejected | rejected | yes |
 | `wait list` | rejected | rejected | rejected | yes |
+| `wait checks` | rejected | rejected | rejected | yes |
+| `wait agent` | yes | rejected | rejected | yes |
+| `wait operation` | yes | rejected | rejected | yes |
 | `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |
 | `hooks measure` | yes | rejected | rejected | yes |
 | hidden `hooks run` | yes | rejected | rejected | yes |

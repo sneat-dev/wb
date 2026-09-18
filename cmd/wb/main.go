@@ -209,6 +209,10 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"dashboard":           true,
 		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
+		// The verb-first spellings run the same implementations, so they take
+		// the same persistent flags. Keeping them beside their originals makes
+		// a divergence obvious.
+		"wait operation": true, "wait agent": true,
 		"worker connect": true,
 		"deps graph":     true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
