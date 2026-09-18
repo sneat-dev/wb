@@ -47,8 +47,19 @@ for every validation site in the call and for the publish/landing guard that
 follows them, so a route resolved as `pr` and deferred can never be published
 on a route a later call resolves as `direct` — pass `--route direct` (or let
 an unprotected target resolve `auto` to `direct`) to force it. `--validate-locally`
-restores the old unconditional behavior for one call. When every configured
-candidate check passes, the receipt says the target baseline was not needed.
+and `--allow-unfenced` both restore the old unconditional local-validation
+behavior for one call — a stale deferral recorded by an earlier call is
+re-validated locally, never silently accepted, before that call publishes or
+merges. A deferred candidate's wait still demands that every required check
+on the exact head actually ran to a real conclusion: "CI is the gate" means
+GitHub's own required-check policy is trusted as the suite even when it is a
+single aggregate or path-scoped gate check (for example a repository's own
+"Required checks passed" check, green on a PR that the underlying per-language
+job scoped itself out of) — but a required check that GitHub itself counts as
+satisfied while never actually running ("skipped" or "neutral") does not
+satisfy the deferral; WB validates locally or refuses rather than merging on
+a suite that never ran. When every configured candidate check passes, the
+receipt says the target baseline was not needed.
 When a candidate check fails, WB validates the exact target snapshot and
 permits only equivalent pre-existing failures. Repositories may declare safe
 process-isolated Go test packages in `.wb/quality.yaml`; merge validation

@@ -230,7 +230,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
-		missingRequired := missingRequiredChecks(checks, requiredChecks)
+		missingRequired := missingOrUnexecutedRequiredChecks(checks, requiredChecks, options.RequireExecutedRequiredChecks)
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
@@ -311,7 +311,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 			}
-			if missingRequired = missingRequiredChecks(checks, requiredChecks); len(missingRequired) > 0 {
+			if missingRequired = missingOrUnexecutedRequiredChecks(checks, requiredChecks, options.RequireExecutedRequiredChecks); len(missingRequired) > 0 {
 				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
 				return pendingCommitWaitResult(result), nil
 			}
@@ -542,7 +542,27 @@ func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCh
 	return builder.String()
 }
 
-func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck) []string {
+// remoteCheckExecuted reports whether check reflects a real run rather than
+// GitHub's own "skipped"/"neutral" not-really-run conclusions (finding X2).
+// A commit-status-derived check carries no Conclusion at all and is treated
+// as executed: the commit-status API has no skip concept.
+func remoteCheckExecuted(check RemoteCheck) bool {
+	switch check.Conclusion {
+	case "skipped", "neutral":
+		return false
+	default:
+		return true
+	}
+}
+
+// missingOrUnexecutedRequiredChecks reports every required check absent
+// from checks. When requireExecuted is set (finding X2), a required check is
+// not satisfied merely by a registered name — a match whose own conclusion
+// was "skipped" or "neutral" is treated the same as a required check that
+// never registered at all, so the deferral path must not accept it.
+// Ordinary, non-deferred waits pass requireExecuted=false and keep their
+// prior behavior of trusting a registered name regardless of conclusion.
+func missingOrUnexecutedRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck, requireExecuted bool) []string {
 	observed := make(map[string][]RemoteCheck, len(checks))
 	for _, check := range checks {
 		name := strings.TrimSpace(check.Name)
@@ -556,10 +576,14 @@ func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck)
 	for _, expectation := range required {
 		matched := false
 		for _, check := range observed[expectation.Name] {
-			if expectation.IntegrationID == 0 || check.AppID == expectation.IntegrationID {
-				matched = true
-				break
+			if expectation.IntegrationID != 0 && check.AppID != expectation.IntegrationID {
+				continue
 			}
+			if requireExecuted && !remoteCheckExecuted(check) {
+				continue
+			}
+			matched = true
+			break
 		}
 		if !matched {
 			label := expectation.Name
@@ -870,7 +894,7 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			observedActionsRuns[identity]++
 		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
-		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
+		checks = append(checks, RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
 		}
@@ -881,9 +905,10 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			continue
 		}
 		checks = append(checks, RemoteCheck{
-			Name:   fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
-			Bucket: bucket,
-			Link:   run.HTMLURL,
+			Name:       fmt.Sprintf("workflow-run:%d:%s", run.WorkflowID, run.Event),
+			Bucket:     bucket,
+			Conclusion: run.Conclusion,
+			Link:       run.HTMLURL,
 		})
 		if bucket != "pass" && bucket != "skipping" && bucket != "fail" && bucket != "cancel" {
 			pending = true
@@ -1283,9 +1308,16 @@ func checkRunBucket(status, conclusion string) string {
 		return "pending"
 	}
 	switch conclusion {
-	case "success", "neutral":
+	case "success":
 		return "pass"
-	case "skipped":
+	case "skipped", "neutral":
+		// "neutral" joins "skipped" here (finding X2, sneat-dev/wb#591 red-team
+		// follow-up): both mean the check itself never actually validated
+		// anything, which RemoteCheck.Conclusion preserves for a strict,
+		// deferral-aware caller to tell apart from a genuine "success". The
+		// overall pass/fail loop treats "pass" and "skipping" identically, so
+		// this reclassification does not change ordinary (non-deferred) wait
+		// behavior.
 		return "skipping"
 	case "cancelled", "timed_out", "action_required":
 		return "cancel"

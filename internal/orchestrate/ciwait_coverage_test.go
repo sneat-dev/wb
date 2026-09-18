@@ -252,7 +252,14 @@ func TestOrchCovCheckRunBucketNamesEveryConclusion(t *testing.T) {
 	}{
 		{status: "queued", conclusion: "", want: "pending"},
 		{status: "completed", conclusion: "success", want: "pass"},
-		{status: "completed", conclusion: "neutral", want: "pass"},
+		// "neutral" joins "skipped" in the "skipping" bucket (finding X2,
+		// sneat-dev/wb#591 red-team follow-up): both mean the check itself
+		// never actually validated anything. The overall pass/fail loop
+		// treats "pass" and "skipping" identically, so this does not change
+		// ordinary (non-deferred) wait behavior; RemoteCheck.Conclusion is
+		// what lets a strict, deferral-aware caller tell them apart from a
+		// genuine "success".
+		{status: "completed", conclusion: "neutral", want: "skipping"},
 		{status: "completed", conclusion: "skipped", want: "skipping"},
 		{status: "completed", conclusion: "cancelled", want: "cancel"},
 		{status: "completed", conclusion: "timed_out", want: "cancel"},

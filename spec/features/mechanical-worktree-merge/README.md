@@ -203,8 +203,16 @@ them, honor this single per-call route decision — a route this call resolves
 as `pr` cannot authorize a publish under a route a later call resolves as
 `direct`. An unfenced policy, an unreadable policy (including a conservative
 `auto` fallback to the pull-request route), or zero required checks each keep
-validation local. `--validate-locally` forces local validation regardless of
-route.
+validation local. `--validate-locally` and `--allow-unfenced` each force local
+validation for THIS call regardless of route or any deferral recorded by an
+earlier call: a stale deferral is re-validated locally, never silently
+accepted, before that call publishes or merges. A deferred candidate's wait
+still demands that every required check on the exact head actually ran to a
+real conclusion — CI is the gate, so GitHub's own required-check policy is
+trusted as the suite even when it is a single aggregate or path-scoped gate
+check, but a required check GitHub itself counts as satisfied while never
+actually running (`skipped` or `neutral`) does not satisfy the deferral; WB
+validates locally or refuses rather than merging on a suite that never ran.
 
 ### AC: dependent-agent-can-use-phase-one-without-waiting
 

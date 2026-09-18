@@ -183,7 +183,8 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRoutePullRequest}
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
-		if err := requireWorktreeMergePublishedValidation(receipt); err != nil {
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
 			t.Fatalf("PR-route deferral was refused: %v", err)
 		}
 	})
@@ -193,7 +194,8 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRouteDirect}
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
-		if err := requireWorktreeMergePublishedValidation(receipt); err == nil {
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
 			t.Fatal("a route this call resolved as direct was authorized to publish by a stale PR-route deferral")
 		}
 	})
@@ -204,7 +206,8 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
-		if err := requireWorktreeMergePublishedValidation(receipt); err == nil {
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
 			t.Fatal("already-published carve-out fired for a call resolved as direct")
 		}
 	})
@@ -215,7 +218,8 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
-		if err := requireWorktreeMergePublishedValidation(receipt); err != nil {
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
 			t.Fatalf("already-published carve-out was refused on the PR route: %v", err)
 		}
 	})
@@ -226,8 +230,25 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed, Revision: receipt.Candidate.SHA}
 		receipt.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA}
-		if err := requireWorktreeMergePublishedValidation(receipt); err != nil {
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
 			t.Fatalf("genuinely validated exact identity was refused: %v", err)
+		}
+	})
+
+	// Finding X1 (red-team follow-up): a receipt whose PR-route deferral was
+	// recorded by an earlier call must NOT authorize a publish on THIS call
+	// when this call's own plan no longer permits deferring (--allow-unfenced
+	// or --validate-locally), even though the route and candidate SHA still
+	// match exactly.
+	t.Run("X1: a matching PR-route deferral does not authorize publish when this call's plan forbids deferring", func(t *testing.T) {
+		receipt := base
+		receipt.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRoutePullRequest}
+		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
+		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
+		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
+		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+			t.Fatal("a stale deferral was accepted even though this call's plan forbids deferring")
 		}
 	})
 }
@@ -248,7 +269,8 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 			Route: WorktreeMergeRoutePullRequest, CandidateSHA: "dddddddddddddddddddddddddddddddddddddddd",
 		},
 	}
-	reusable, err := preparedValidationStillValid(receipt)
+	plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
+	reusable, err := preparedValidationStillValid(receipt, plan)
 	if err != nil || !reusable {
 		t.Fatalf("preparedValidationStillValid(deferred receipt) = (%t, %v), want (true, nil)", reusable, err)
 	}
@@ -256,7 +278,7 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 	// A deferral for a different candidate SHA (stale) must not be reused.
 	stale := receipt
 	stale.Candidate.SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	reusable, err = preparedValidationStillValid(stale)
+	reusable, err = preparedValidationStillValid(stale, plan)
 	if err != nil || reusable {
 		t.Fatalf("preparedValidationStillValid(stale deferred receipt) = (%t, %v), want (false, nil)", reusable, err)
 	}
@@ -265,9 +287,19 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 	// not be reused either.
 	direct := receipt
 	direct.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRouteDirect}
-	reusable, err = preparedValidationStillValid(direct)
+	directPlan := worktreeMergeValidationPlan{Route: direct.Route, Defer: false}
+	reusable, err = preparedValidationStillValid(direct, directPlan)
 	if err != nil || reusable {
 		t.Fatalf("preparedValidationStillValid(direct-route call, PR deferral) = (%t, %v), want (false, nil)", reusable, err)
+	}
+
+	// Finding X1: even on the PR route with a matching candidate SHA, a
+	// deferral must not be reused when THIS call's own plan forbids
+	// deferring (--allow-unfenced or --validate-locally on the resume).
+	noLongerDeferring := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
+	reusable, err = preparedValidationStillValid(receipt, noLongerDeferring)
+	if err != nil || reusable {
+		t.Fatalf("preparedValidationStillValid(X1: plan.Defer=false) = (%t, %v), want (false, nil)", reusable, err)
 	}
 }
 
@@ -307,5 +339,224 @@ func TestApplyOrDeferWorktreeMergeValidationRecordsDeferralWithoutRunningLocally
 	}
 	if receipt.BaselineValidation.Status != "" {
 		t.Fatalf("deferred validation unexpectedly recorded a baseline validation: %+v", receipt.BaselineValidation)
+	}
+}
+
+// TestResolveWorktreeMergeValidationPlanForcesLocalValidationForAllowUnfencedOrValidateLocally
+// covers finding X1's scenarios A, B, and C at the plan-resolution level:
+// AllowUnfenced tells ciwait it may accept an unfenced or unreadable policy
+// as a merge gate — exactly the guarantee deferral relies on — so a call
+// made with either --allow-unfenced (A, B) or --validate-locally (C) must
+// never defer, even against an otherwise-eligible authoritative fenced
+// policy.
+func TestResolveWorktreeMergeValidationPlanForcesLocalValidationForAllowUnfencedOrValidateLocally(t *testing.T) {
+	installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+		`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+	baseline, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "main", WorktreeMergeRoutePullRequest, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !baseline.Defer {
+		t.Fatalf("baseline plan (no --allow-unfenced, no --validate-locally) did not defer: %+v", baseline)
+	}
+
+	// Scenario A/B: --allow-unfenced (as a flag on this call, or inherited
+	// from a previously recorded receipt.AllowUnfenced) must force local
+	// validation even against this same eligible policy.
+	unfenced, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "main", WorktreeMergeRoutePullRequest, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unfenced.Defer {
+		t.Fatalf("X1 A/B: --allow-unfenced unexpectedly deferred validation: %+v", unfenced)
+	}
+
+	// Scenario C: --validate-locally must force local validation too.
+	validateLocally, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "main", WorktreeMergeRoutePullRequest, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validateLocally.Defer {
+		t.Fatalf("X1 C: --validate-locally unexpectedly deferred validation: %+v", validateLocally)
+	}
+}
+
+// TestWorktreeMergeValidationPlanHolderResolvesRouteExactlyOnce is the minor
+// finding #3 memo test (sneat-dev/wb#591 red-team follow-up): every
+// LandWorktreeMerge validation site and the publish guard share one
+// worktreeMergeValidationPlanHolder, and must trigger exactly one real
+// network resolution per call no matter how many times resolve is invoked
+// on it (M7, B1). One resolution issues exactly five `gh` calls — two for
+// ResolveWorktreeMergeRoute (the branch policy summary, then the active
+// branch rules) and three for worktreeMergeValidationDeferralEligible's own
+// targetBranchRequiredChecks (the branch policy summary again, the classic
+// required-status-checks detail, and the active branch rules again); five
+// resolve calls issuing anything more than that one resolution's own five
+// calls means it re-resolved instead of memoizing.
+func TestWorktreeMergeValidationPlanHolderResolvesRouteExactlyOnce(t *testing.T) {
+	const callsPerResolution = 5
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "calls")
+	script := "#!/bin/sh\nset -eu\n" +
+		"echo \"$*\" >>\"$WB_TEST_CALL_COUNTER\"\n" +
+		"case \"$*\" in\n" +
+		"  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\\n' '{\"protected\":true,\"protection\":{\"required_pull_request_reviews\":{},\"required_status_checks\":{}}}' ;;\n" +
+		"  'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks') printf '%s\\n' '{\"strict\":true,\"contexts\":[\"CI\"],\"checks\":[]}' ;;\n" +
+		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' '[]' ;;\n" +
+		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_CALL_COUNTER", counter)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	holder := &worktreeMergeValidationPlanHolder{}
+	for i := 0; i < 5; i++ {
+		if _, err := holder.resolve(context.Background(), "acme/app", "main", WorktreeMergeRoutePullRequest, false, false); err != nil {
+			t.Fatalf("resolve #%d failed: %v", i, err)
+		}
+	}
+	raw, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := len(strings.Split(strings.TrimSpace(string(raw)), "\n"))
+	if calls != callsPerResolution {
+		t.Fatalf("gh was invoked %d times across 5 holder.resolve calls, want exactly %d (one resolution): %s", calls, callsPerResolution, string(raw))
+	}
+}
+
+// TestApplyRecordedWorktreeMergeRouteBeforeFirstResolve is the minor finding
+// #1 regression test (sneat-dev/wb#591 red-team follow-up): a receipt that
+// already recorded an explicit route earlier in its own history (before
+// ever publishing a pull request, so retainWorktreeMergeLandIntent's own
+// PullRequest-gated recording never ran) must still have that recorded
+// route honored on a resume whose options.Route is left at its "auto"
+// default, rather than resolving auto's own policy from scratch.
+func TestApplyRecordedWorktreeMergeRouteBeforeFirstResolve(t *testing.T) {
+	receipt := WorktreeMergeReceipt{Route: WorktreeMergeRouteDecision{Requested: WorktreeMergeRoutePullRequest}}
+	options := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto}
+	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&receipt, &options)
+	if options.Route != WorktreeMergeRoutePullRequest {
+		t.Fatalf("options.Route = %q, want the recorded pr route to be applied", options.Route)
+	}
+
+	// An explicit non-auto request on THIS call must never be overridden by
+	// history.
+	explicit := WorktreeMergeReceipt{Route: WorktreeMergeRouteDecision{Requested: WorktreeMergeRoutePullRequest}}
+	explicitOptions := WorktreeMergeLandOptions{Route: WorktreeMergeRouteDirect}
+	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&explicit, &explicitOptions)
+	if explicitOptions.Route != WorktreeMergeRouteDirect {
+		t.Fatalf("options.Route = %q, want an explicit --route direct on this call to win over recorded history", explicitOptions.Route)
+	}
+
+	// No recorded history leaves options.Route untouched.
+	fresh := WorktreeMergeReceipt{}
+	freshOptions := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto}
+	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&fresh, &freshOptions)
+	if freshOptions.Route != WorktreeMergeRouteAuto {
+		t.Fatalf("options.Route = %q, want auto to remain when there is no recorded history", freshOptions.Route)
+	}
+}
+
+// TestMissingOrUnexecutedRequiredChecksBlocksSkippedOrNeutralRequiredCheck is
+// the finding X2 regression test: a required check that GitHub itself
+// counts as satisfied while never actually running ("skipped" or "neutral")
+// must not satisfy a deferred candidate's required-check policy, even
+// though the ordinary (non-deferred) `pr land` path keeps trusting a
+// registered name regardless of conclusion.
+func TestMissingOrUnexecutedRequiredChecksBlocksSkippedOrNeutralRequiredCheck(t *testing.T) {
+	required := []RequiredRemoteCheck{{Name: "CI"}}
+
+	skipped := []RemoteCheck{{Name: "check-run:CI", Bucket: "skipping", Conclusion: "skipped"}}
+	if missing := missingOrUnexecutedRequiredChecks(skipped, required, false); len(missing) != 0 {
+		t.Fatalf("ordinary (non-deferred) mode treated a registered skipped required check as missing: %v", missing)
+	}
+	if missing := missingOrUnexecutedRequiredChecks(skipped, required, true); len(missing) == 0 {
+		t.Fatal("X2: a skipped required check satisfied the deferral's strict required-check check")
+	}
+
+	neutral := []RemoteCheck{{Name: "check-run:CI", Bucket: "skipping", Conclusion: "neutral"}}
+	if missing := missingOrUnexecutedRequiredChecks(neutral, required, true); len(missing) == 0 {
+		t.Fatal("X2: a neutral required check satisfied the deferral's strict required-check check")
+	}
+
+	success := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "success"}}
+	if missing := missingOrUnexecutedRequiredChecks(success, required, true); len(missing) != 0 {
+		t.Fatalf("a genuinely successful required check was blocked by the strict required-check check: %v", missing)
+	}
+
+	// A commit-status-derived check carries no Conclusion at all; it must
+	// still count as executed under the strict check.
+	status := []RemoteCheck{{Name: "status:CI", Bucket: "pass"}}
+	if missing := missingOrUnexecutedRequiredChecks(status, required, true); len(missing) != 0 {
+		t.Fatalf("a commit-status required check was blocked by the strict required-check check: %v", missing)
+	}
+}
+
+// TestCheckRunBucketTreatsNeutralAsSkipping covers the checkRunBucket change
+// backing finding X2: "neutral" must join "skipped" in the "skipping"
+// bucket (rather than "pass") so a strict, deferral-aware caller can tell
+// them apart from a genuine "success" via RemoteCheck.Conclusion, while the
+// ordinary pass/fail overall-check loop (which treats "pass" and "skipping"
+// identically) is unaffected.
+func TestCheckRunBucketTreatsNeutralAsSkipping(t *testing.T) {
+	if bucket := checkRunBucket("completed", "neutral"); bucket != "skipping" {
+		t.Fatalf("checkRunBucket(completed, neutral) = %q, want skipping", bucket)
+	}
+	if bucket := checkRunBucket("completed", "skipped"); bucket != "skipping" {
+		t.Fatalf("checkRunBucket(completed, skipped) = %q, want skipping", bucket)
+	}
+	if bucket := checkRunBucket("completed", "success"); bucket != "pass" {
+		t.Fatalf("checkRunBucket(completed, success) = %q, want pass", bucket)
+	}
+}
+
+// TestLandWorktreeMergePullRequestDeferredValidationWaitsOnFakeCI is the
+// minor finding #3 end-to-end deferral test (sneat-dev/wb#591 red-team
+// follow-up): a candidate prepared on the pull-request route against an
+// authoritative, non-empty, server-fenced required-check policy defers
+// local validation, and a subsequent land call still publishes, waits on
+// (fake) CI through the shared engine, and merges — never silently skipping
+// the wait itself just because local validation was deferred.
+func TestLandWorktreeMergePullRequestDeferredValidationWaitsOnFakeCI(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "deferred-e2e-source", "feature/deferred-e2e", "deferred-e2e.txt", "e2e\n")
+	installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+		`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+		Model: "test-model", AgentRuntime: "test", Route: WorktreeMergeRoutePullRequest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ValidationDeferral == nil {
+		t.Fatalf("prepare did not defer validation, so this test would not exercise the deferred-landing path: %+v", receipt)
+	}
+
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil {
+		t.Fatalf("landing a deferred candidate through the shared engine failed: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded && landed.Status != WorktreeMergeComplete {
+		t.Fatalf("landed receipt status = %s, want landed or complete: %+v", landed.Status, landed)
+	}
+	if landed.Validation.Status != quality.StatusSkipped {
+		t.Fatalf("landed receipt lost its deferred validation status: %+v", landed.Validation)
+	}
+	if landed.ValidationDeferral == nil {
+		t.Fatalf("landed receipt lost its validation_deferral: %+v", landed)
+	}
+	log := gh.ghLog(t)
+	if !strings.Contains(log, "api --method PUT repos/acme/app/pulls/41/merge") {
+		t.Fatalf("gh log did not show the shared engine actually waiting on and merging the deferred candidate:\n%s", log)
 	}
 }
