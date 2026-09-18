@@ -97,7 +97,20 @@ directory yields two nodes with one ID; `single-live-session` detects this.
 #### REQ: peer-is-persistent-state
 
 The hub MUST keep one durable peer record per peer, keyed by the hub-issued
-peer ID (the existing `MachineID`). The record holds:
+peer ID (the existing `MachineID`). It is split into documents with separate
+writers, so that no writer can overwrite another writer's field:
+
+- a **trust** document, written only by admin operations;
+- a **statistics** document, written by the persisters;
+- the existing per-machine **queue-state** document, written only inside the
+  store's enqueue, acknowledge and reset transactions. It carries the
+  queued-work count.
+
+Every write is a field merge inside a transaction. The count is changed only
+for queue documents read as present in that same transaction, and the janitor
+recomputes it.
+
+Together the three documents hold:
 
 - display name and owning identity;
 - the bound node ID;
@@ -139,9 +152,10 @@ with mode 0600. The token is never retrievable later.
   always refused.
 - Invite is refused while the hub's store engine is `memory`.
 
-The peer credential carries only the peer scopes: `peer:session`,
-`repository_events:poll` and `repository_events:ack`. It cannot read or
-publish machine snapshots.
+The peer credential carries only the `peer:session` scope. The session polls
+and acknowledges on the peer's behalf. A peer token is refused on the HTTP
+long-poll, ack and snapshot routes, so it can never open a second consumer of
+its own queue.
 
 `wb peers join <hub-url>` MUST read the token from stdin or `--token-file`,
 verify it by completing a `hello`/`welcome` exchange on the session route,
@@ -172,12 +186,20 @@ proof, because tunnels and proxies deliver there.
   self-hosted hub; the hosted instance keeps it with its OAuth viewer.
 - **The dashboard** gets an admin session through
   `wb dashboard --admin`. That command obtains a single-use code over the
-  owner RPC, valid for 60 seconds, and opens `<dashboard>/admin/login?code=…`.
-  The daemon exchanges the code for an `HttpOnly`, `SameSite=Strict` session
-  cookie that expires after 12 hours. Admin HTTP routes require that cookie,
-  an `Origin` equal to the page's origin, and a JSON content type.
+  owner RPC, valid for 60 seconds. It prints the login URL for the loopback
+  address and, when configured, for the hub's public URL, and opens a browser
+  only on a desktop session.
+- **Admin login.** The code travels in the query string of
+  `/workbench/admin/login` because it is single-use and short-lived. The daemon
+  exchanges it for a session cookie that is `HttpOnly`, `SameSite=Strict`,
+  expires after 12 hours, and is named after the listen port so that two
+  daemons on one host keep separate sessions.
+- **Admin HTTP routes** require that cookie, an `Origin` equal to the page's
+  origin, and a JSON content type.
 - **Remote access** works through any path to the dashboard: an SSH port
-  forward, or the operator's proxy if it passes these routes.
+  forward, or the operator's proxy. The VM's Caddy edge passes
+  `/workbench/admin/login` and the peers admin POST routes behind its existing
+  basic auth, for the admin user only. It keeps refusing every other write.
 
 #### REQ: peer-management-commands
 
@@ -227,7 +249,9 @@ Before accepting the WebSocket, the hub MUST refuse any of the following:
 - an unsupported protocol version;
 - more than 64 live sessions in total;
 - a source address that has had more than 10 failed authentications in the
-  last minute.
+  last minute. The source is the socket peer, or the first `X-Forwarded-For`
+  hop when the socket peer is in `hub.trusted_proxies`. Behind a proxy, a
+  per-socket limit would otherwise be global.
 
 The existing HTTP long poll stays available for the hosted instance and for
 the hub's own machine.
@@ -264,8 +288,10 @@ unchanged in shape:
    `stale-cursor-reset`.
 
 An unknown message type, an oversized frame or a malformed message closes the
-session with a protocol-error code. A `poll` sent before the reset exchange
-completes is answered `reset_required`.
+session with a protocol-error code. While a reset is required, the hub
+answers every `poll` and every `ack` with `reset_required`. The receiver's
+reset hook then clears any persisted pending acknowledgement before it runs
+the reset.
 
 #### REQ: heartbeat-and-liveness
 
@@ -287,9 +313,10 @@ refused, reset or a VPN change.
 - **Blocked:** a `blocked` refusal keeps the node redialing with a 5-minute
   cap, so a hub-side `unblock` brings it back without any action on the
   laptop.
-- **Terminal codes:** `unsupported-protocol` and `duplicate-node` stop
-  redialing until the daemon restarts or the operator runs `wb peers unblock`
-  on the laptop.
+- **`duplicate-node`:** the node keeps redialing with a 15-minute cap, so one
+  copy keeps working while the operator notices the report.
+- **Terminal code:** `unsupported-protocol` stops redialing until the daemon
+  restarts or the operator runs `wb peers unblock` on the laptop.
 
 Every refusal and terminal code is reported in `wb peers get` and
 `wb daemon status`.
@@ -301,9 +328,12 @@ A hub MUST keep at most one live session per peer.
 - A new session with the bound node ID supersedes the old one, which is
   closed with `superseded`. This is the common case after sleep, when the old
   TCP connection is half-open.
-- More than 3 supersedes within 60 seconds means two live nodes share one
-  identity, for example a copied state directory. The hub then closes the
-  session with the terminal `duplicate-node` code and narrates it.
+- A supersede counts as a conflict only when the old session answered a pong
+  within the last 10 seconds, which a half-open connection cannot do. More
+  than 3 conflicts within 60 seconds means two live nodes share one identity,
+  for example a copied state directory. The hub then closes the session with
+  `duplicate-node` and narrates it. A laptop on flapping Wi-Fi only ever
+  supersedes dead sessions, so it never trips this.
 - A session whose node ID differs from the bound node ID is refused with
   `node-mismatch`, which the downstream treats like `blocked` for redial
   purposes.
@@ -325,11 +355,19 @@ changes.
 
 #### REQ: journal-epoch
 
-The store MUST hold a random journal ID, created with the sequence. `welcome`
-carries it, and the downstream node stores it next to its cursor. If the
-journal IDs differ, or the presented cursor is above the global sequence (a
-store rebuilt or rolled back), the hub requires a reset instead of delivering
-from that cursor.
+The store MUST hold a random journal ID. It is created with the sequence, or
+inside a transaction on the first start of a hub that predates it. `welcome`
+carries the ID, and the downstream node stores it next to its cursor.
+
+A cursor, or an ack without a receipt, that is above the machine's stored
+acknowledged sequence means the store went backwards, for example a restored
+directory. A differing journal ID means the store was replaced. In either
+case the hub requires a reset instead of delivering from that cursor:
+
+- **On the session,** the hub sends `reset_required`.
+- **On the HTTP long poll** (the hub's own machine), the hub answers
+  `409 reset_required`. The existing receiver then adopts the hub's
+  acknowledged cursor and runs the same heads comparison.
 
 #### REQ: at-least-once-and-idempotent
 
@@ -350,7 +388,8 @@ Delivery is at-least-once.
 
 #### REQ: hub-side-coalescing
 
-In the enqueue transaction, a new default-branch event for a peer MUST replace
+In the enqueue transaction, a new default-branch event for a peer (never for
+a hosted non-peer machine) MUST replace
 that peer's still-queued default-branch event for the same repository and ref
 (tracked by a per-peer index document). The replaced event's pending-refresh
 record is removed with it. A rename is an ordering barrier: nothing coalesces
@@ -360,6 +399,11 @@ peer's inventory plus renames, not by time offline.
 Replacing an event that was already delivered but not yet acknowledged is
 safe: the newer event supersedes it, and the old receipt still acknowledges by
 its own IDs.
+
+The per-peer work in one enqueue transaction is about 6 writes, so an enqueue
+fans out to at most 64 peers, the session cap. That stays under Firestore's
+500-write transaction limit. Other transactions (janitor, reset,
+acknowledgement cleanup) are chunked to at most 100 writes.
 
 #### REQ: persist-then-notify
 
@@ -400,9 +444,10 @@ On start and then hourly, a hub in webhook mode MUST do the following:
 
 1. List the App's webhook deliveries of the last 72 hours through the GitHub
    App API.
-2. Select the deliveries whose latest attempt failed, and redeliver each one
-   once.
-3. Record each redelivered ID so it is never redelivered twice.
+2. Select the deliveries whose latest attempt failed, and redeliver each one.
+3. Record each redelivery attempt. A delivery is retried again on later
+   sweeps while its latest attempt still fails, up to 3 attempts, and is then
+   narrated as abandoned.
 
 Redelivered events deduplicate by delivery ID as usual. Each redelivery is
 narrated.
@@ -423,9 +468,15 @@ The hub MUST bound every collection that grows with events or peers:
 - **Deduplication markers** older than 14 days are pruned. The markers also
   carry the event and its type, which makes them a 14-day detailed event
   history.
+- **Coalescing index documents** are deleted with the queue document they
+  point to.
+- **Leftover queue documents:** a janitor pass deletes any queue, pending or
+  index document at or below the acknowledged sequence, which also finishes a
+  chunked `reset_ack` delete that crashed midway.
 - **Oversized queues:** a peer queue that still exceeds 10,000 documents
   (renames only, in practice) is dropped in chunks, and the peer's
-  `reset_pending` is set.
+  `reset_pending` is set. A non-peer machine has no reset path, so its queue
+  is never dropped: an oversized one is only narrated as a warning.
 - **Blocked peers** receive no events at enqueue.
 - **Heads** are pruned when no peer inventory has listed the repository for
   90 days.
@@ -444,8 +495,10 @@ transaction that enqueues a default-branch or rename event. The state is the
 canonical identity, the default ref, the target object ID, the event's
 occurrence time and its sequence.
 
-- A head only moves forward: an event whose occurrence time is older than the
-  stored one does not replace it.
+- The last committed event wins. Commit timestamps are author-controlled and
+  a force-push can move a branch backwards, so they are not trusted for
+  ordering. A stale head costs at most one extra fetch, because fetch always
+  runs.
 - A rename moves the record to the new identity and records the previous
   identity as an alias.
 
@@ -636,10 +689,6 @@ reason:
 - **A queryable detailed-history API.** The 14-day history is stored in the
   deduplication markers and not yet exposed; a future consumer adds a read
   route.
-- **Admin from the public dashboard behind basic auth.** The VM's Caddy edge
-  refuses every write by design. Admin works through `wb dashboard --admin`
-  over an SSH port forward, or through an edge route the operator opens for
-  `/v0/workbench/peers/*` and `/workbench/admin/login`.
 - **Mesh routing, several upstreams per node, key-pair or mTLS
   authentication.** The peer record and scopes leave room for all three.
 
@@ -702,12 +751,15 @@ Tests run with a fake clock and a fault-injecting dialer. They cover:
 - **Wake:** a simulated wake triggers an immediate redial.
 - **Blocked redial:** a `blocked` refusal redials with a 5-minute cap.
 - **Supersede:** a second session supersedes the first.
-- **Duplicate node:** 4 supersedes within 60 seconds end in `duplicate-node`,
-  which stops redialing.
+- **Duplicate node:** 4 conflicting supersedes within 60 seconds (old sessions
+  still answering pongs) end in `duplicate-node` with a 15-minute redial cap.
+  Rapid redials over a dead link never trip it.
 - **Node mismatch:** refused.
 - **Oversized frame:** closes with a protocol error.
-- **Poll before reset:** a `poll` sent before a required reset gets
+- **Before a reset:** a `poll` or an `ack` sent before a required reset gets
   `reset_required`.
+- **Rate-limit key:** the failed-auth limit keys on the trusted-proxy
+  forwarded address.
 
 ### AC: journal-resume-without-loss
 
@@ -726,9 +778,16 @@ Each of these runs as its own test:
 After each, every event is in the local queue exactly once, the cursor equals
 the last acknowledged batch, and the receiver keeps making progress.
 
-The journal-ID tests replace the store with a fresh one under the same URL,
-and separately present a cursor above the head; both yield a reset, never
-silent skipping.
+The epoch tests cover a store replaced under the same URL, a store restored
+from an older copy, and a cursor above the stored acknowledged sequence.
+Each yields a reset, never silent skipping, on the session and on the HTTP
+long poll alike.
+
+A peer token is refused on the HTTP long poll.
+
+Concurrency tests run `block` against the statistics persister, and a reset
+against an acknowledgement. Trust is never reverted, and the queued-work
+count matches a recount.
 
 The live and backpressure tests show:
 
@@ -755,7 +814,8 @@ Retention:
 
 Heads:
 
-- An older push delivered after a newer one leaves the newer head in place.
+- The head always equals the last committed event, including a force-push to
+  an older commit.
 
 Reset and reconciliation:
 
@@ -788,8 +848,8 @@ field, and any field outside the privacy allowlist.
 **Requirements:** peer-connectivity#req:missed-webhook-recovery
 
 Against a fake GitHub App API listing three failed deliveries and one
-successful one, the hub redelivers exactly the three, and redelivers none of
-them again on the next run. The resulting events deduplicate against any that
+successful one, the hub redelivers exactly the three. A delivery whose
+redelivery also fails is retried on later sweeps, up to 3 attempts. The resulting events deduplicate against any that
 had already arrived.
 
 ### AC: counters-and-rates

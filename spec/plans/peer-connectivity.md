@@ -106,9 +106,15 @@ be tried on the real VM.
 - **Give the VM hub a single supervised owner (sneat-dev/wb#546).** Today a
   detached daemon holds port 8766 while `wb-daemon.service` is failed, and a
   malformed comment line in the unit file needs fixing.
-- **Add the Caddy route on the VM.** `/v0/workbench/peers/connect` needs no
-  basic auth, because the daemon authenticates it. The owner is recorded in a
-  Caddyfile comment, as the existing routes are.
+- **Add the Caddy routes on the VM.**
+  - `/v0/workbench/peers/connect` needs no basic auth, because the daemon
+    authenticates it.
+  - `/workbench/admin/login` and `POST /v0/workbench/peers/*/{disconnect,block,unblock}`
+    go behind the existing basic auth, admin user only. The daemon also
+    requires its own admin cookie, Origin and content type.
+
+  The owner is recorded in a Caddyfile comment, as the existing routes are.
+  The Caddy routes land with Task 7.
 
 ## Tasks
 
@@ -425,14 +431,45 @@ feature"):
   is its own feature. The envelope reserves the shape.
 - **A read API over the detailed history.** The data is kept for 14 days, and
   the API waits for a consumer.
-- **Admin through the public basic-auth dashboard on the VM.** The edge
-  refuses writes by design, so admin goes through an SSH port forward, or an
-  edge route the operator opens.
 - **A 100% coverage requirement on `hub/`.** Nothing enforces it, so the claim
   was removed rather than added as a new gate.
 - **Caddy WebSocket timeouts.** Not changed in the design: Caddy does not
   time out upgraded connections by default, and the node's reconnect covers
   any edge that does. Task 8 verifies it on the real edge.
+
+### Verification pass (aa2d5691)
+
+The Opus reviewer re-checked the revision and found nothing blocking. It
+found four serious new defects, all fixed:
+
+- **N1: enqueue could exceed the transaction write limit.** The per-peer
+  write count now caps fan-out at 64 peers, and hosted non-peer machines are
+  never coalesced.
+- **N2: several writers shared the peer record.** It is split into trust,
+  statistics and queue-state documents, with transactional merges and a
+  janitor recount.
+- **N3: flapping Wi-Fi tripped `duplicate-node`.** A supersede counts only
+  when the old session was still answering pongs, and `duplicate-node` now
+  redials on a 15-minute cap instead of being terminal.
+- **N4: the epoch missed a restore.** Any cursor, or receipt-less ack, above
+  the stored acknowledged sequence now forces a reset, and the HTTP long poll
+  returns `409 reset_required`.
+
+Minor fixes:
+
+- N5: `ack` also gets `reset_required`.
+- N6: redelivery retries up to 3 attempts across sweeps.
+- N7: the failed-auth limit keys on the trusted-proxy forwarded address.
+- N8: heads use last-committed-wins.
+- N9: the login URL is printed, and the cookie is named per port.
+- N10: peer tokens are session-only.
+- N11: only peer queues are dropped.
+
+Two retention gaps are closed: index documents and leftover documents at or
+below the ack.
+
+Its recommendation to open the VM edge for the admin routes was taken, so
+admin from the dashboard now works on the real VM.
 
 ## Risks
 
