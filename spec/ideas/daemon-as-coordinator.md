@@ -92,6 +92,39 @@ That second row is the honest limit, and it is unchanged by any of this. For
 those sessions the mechanisms remain the ones already shipped: the session
 blocks on `wb wait`, or WB acts on its own for work whose owner is gone.
 
+### Verified, not assumed
+
+Both mechanisms were tested on 2026-09-18 against a live idle session.
+
+**MCP server notifications do not wake an idle session.** A minimal MCP server
+returned immediately from a tool call, then emitted `notifications/claude/channel`,
+`notifications/message`, `notifications/tools/list_changed` and
+`notifications/resources/updated` sixty seconds later. The server's own log
+confirms all four were sent. The session, observed externally as `idle`, never
+responded; three minutes on it answered a human question from its own context
+rather than reporting a pong.
+
+**`herdr agent prompt` from another session does wake it**, in about one second:
+
+```text
+❯ PONG from another session at 13:30:12. This prompt was sent by a different
+  Claude session via 'herdr agent prompt' while you were idle...
+● WOKEN AT 13:30:13
+```
+
+The wake was confirmed without human observation: `herdr agent wait <pane>
+--until working` returned `agent_status: working`, and the agent reached `done`
+after replying.
+
+**The injected prompt renders with the `❯` prefix — identical to the human's own
+input.** So the authority concern in this document is not a inference from the
+protocol; it is what the terminal shows. A message WB injects through `prompt`
+*is* the founder speaking, as far as the receiving agent can tell.
+
+That makes the `send-keys` / `prompt` split the actual safety boundary rather
+than a stylistic preference, and it is why the binding set below must be
+enumerated in code.
+
 ### The transport is already solved, by herdr
 
 The routes below were weighed before establishing what the founder actually
