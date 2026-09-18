@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1084,6 +1085,19 @@ func TestMigrateRelocatesFinishedCheckoutAndLeavesActiveTaskInPlace(t *testing.T
 	if _, err := os.Stat(finishedWorktree); !os.IsNotExist(err) {
 		t.Fatalf("finished task checkout must no longer sit at its pre-migration path: err=%v", err)
 	}
+	// Regression: a relocated checkout's own .worktree.md marker must name
+	// its final relocated path, not the intermediate (post-clone-move,
+	// pre-relocation) path -- found on a real machine on 2026-09-18.
+	markerContents, err := os.ReadFile(filepath.Join(finishedReloc.Destination, ".worktree.md"))
+	if err != nil {
+		t.Fatalf("relocated checkout marker missing: %v", err)
+	}
+	if !strings.Contains(string(markerContents), finishedReloc.Destination) {
+		t.Fatalf("relocated checkout marker does not name its final path %s:\n%s", finishedReloc.Destination, markerContents)
+	}
+	if strings.Contains(string(markerContents), clone.Destination+string(filepath.Separator)+".worktrees") {
+		t.Fatalf("relocated checkout marker still names its intermediate pre-relocation path:\n%s", markerContents)
+	}
 
 	hostClone, found := findMigrateClone(report, "dal-go/already-host")
 	if !found || hostClone.Status != "already_done" || len(hostClone.Relocations) != 1 {
@@ -1274,5 +1288,53 @@ func TestMigrateUndoReversesRelocationAndRemovesEmptyTaskDirectory(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".worktrees")); err != nil {
 		t.Fatalf("<root>/.worktrees itself must survive: %v", err)
+	}
+}
+
+// TestMigrateIncludeTaskLiftsOnlyTheLiveClaimRefusal covers
+// REQ: clone-migration-include-active-tasks at the package level: an unknown
+// --include-task name is a usage error before anything moves, and a known
+// one lifts only the live-claim refusal for that task, planning the clone
+// with a reason naming the inclusion.
+func TestMigrateIncludeTaskLiftsOnlyTheLiveClaimRefusal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "included", "acme/included")
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "included.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	if _, err := worktrees.Create(context.Background(), []string{"acme/included"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-included", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/included.git")
+
+	if _, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"no-such-task"}}); err == nil {
+		t.Fatal("an unknown --include-task name must fail the run before anything moves")
+	}
+	var unknownTask *UnknownIncludeTaskError
+	if _, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"no-such-task"}}); !errors.As(err, &unknownTask) || unknownTask.Task != "no-such-task" {
+		t.Fatalf("err = %v, want *UnknownIncludeTaskError naming no-such-task", err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("an unknown --include-task must move nothing: %v", err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-included"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/included")
+	if !found || clone.Status != "planned" || !strings.Contains(clone.Reason, "included: active task t-included") {
+		t.Fatalf("clone = %+v, want planned naming the inclusion", clone)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-included"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedClone, found := findMigrateClone(applied, "acme/included")
+	if !found || appliedClone.Status != "done" {
+		t.Fatalf("apply clone = %+v, want done", appliedClone)
 	}
 }

@@ -131,6 +131,8 @@ func newLayoutMigrateCmd() *cobra.Command {
 	var (
 		format, reportDir, undoID string
 		apply, clonesOnly         bool
+		includeTasks              []string
+		includeActiveTasks        bool
 	)
 	command := &cobra.Command{
 		Use:   "migrate [owner/repository...]",
@@ -153,6 +155,17 @@ in progress, or a live Work Log claim holds it or a linked worktree.
 Uncommitted changes are never a refusal reason. The command exits with the
 findings code whenever any clone is skipped or fails.
 
+Pass --include-task <task> (repeatable) or --include-active-tasks to lift only
+the live-claim refusal, for the named tasks or for every active task. Every
+other refusal (a busy process, a parked session, a Git operation in progress,
+and the destination-exists check) still applies, including the re-check just
+before each move. An --include-task name matching no live claim in any
+resolved home is a usage error before anything moves. When an included
+clone moves, its claim's relocation intent and receipt are recorded so land,
+guard and cleanup resolve it at its new path; an included active task's
+in-clone checkout moves and repoints with its clone but is not relocated to
+the store, since relocation stays limited to finished tasks.
+
 After moving clones, this is also the one command for the unified layout: it
 relocates every managed task checkout whose placement differs from the
 machine's store-mode placement, by calling the existing
@@ -173,12 +186,18 @@ clone moves they depend on.`,
 				return err
 			}
 			report, err := layout.Migrate(cmd.Context(), projectsRoot, layout.MigrateOptions{
-				Repositories: args,
-				Apply:        apply,
-				ClonesOnly:   clonesOnly,
-				UndoID:       undoID,
+				Repositories:       args,
+				Apply:              apply,
+				ClonesOnly:         clonesOnly,
+				UndoID:             undoID,
+				IncludeTasks:       includeTasks,
+				IncludeActiveTasks: includeActiveTasks,
 			})
 			if err != nil {
+				var unknownTask *layout.UnknownIncludeTaskError
+				if errors.As(err, &unknownTask) {
+					return &exitError{code: exitUsage, message: err.Error()}
+				}
 				// A manifest-write failure returns the partial report built
 				// so far alongside the error: what was already recorded and
 				// moved before the write failed must still reach the
@@ -210,6 +229,8 @@ clone moves they depend on.`,
 	command.Flags().BoolVar(&apply, "apply", false, "move eligible clones (default is dry-run)")
 	command.Flags().BoolVar(&clonesOnly, "clones-only", false, "move clones and repoint worktrees only; skip relocating managed task checkouts")
 	command.Flags().StringVar(&undoID, "undo", "", "reverse the clones a previous --apply's manifest <id> recorded as done")
+	command.Flags().StringArrayVar(&includeTasks, "include-task", nil, "lift the live-claim refusal for this task (repeatable); an unknown task is a usage error")
+	command.Flags().BoolVar(&includeActiveTasks, "include-active-tasks", false, "lift the live-claim refusal for every active task")
 	command.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "write layout-migrate.md/.yaml/.json to this directory")
 	return command

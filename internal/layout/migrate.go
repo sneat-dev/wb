@@ -36,7 +36,61 @@ type MigrateOptions struct {
 	ClonesOnly bool
 	// UndoID reverses a previously completed manifest instead of migrating.
 	UndoID string
-	Now    func() time.Time
+	// IncludeTasks names tasks whose live Work Log claim must not refuse
+	// their clone's move. A name matching no live claim in any resolved
+	// home is a usage error before anything moves.
+	IncludeTasks []string
+	// IncludeActiveTasks lifts the live-claim refusal for every task, not
+	// only the ones IncludeTasks names.
+	IncludeActiveTasks bool
+	Now                func() time.Time
+}
+
+// UnknownIncludeTaskError reports that an --include-task name matches no
+// live Work Log claim in any home Migrate resolves for the root. Migrate
+// returns it before anything moves, so a typo cannot silently include
+// nothing.
+type UnknownIncludeTaskError struct {
+	Task string
+}
+
+func (err *UnknownIncludeTaskError) Error() string {
+	return fmt.Sprintf("--include-task %q matches no live Work Log claim in any resolved home", err.Task)
+}
+
+// migrateInclude is the resolved --include-task/--include-active-tasks
+// selection: which tasks' live-claim refusal is lifted this run.
+type migrateInclude struct {
+	tasks     map[string]bool
+	allActive bool
+}
+
+func (include migrateInclude) matches(task string) bool {
+	return include.allActive || include.tasks[task]
+}
+
+// resolveMigrateInclude validates IncludeTasks against every live Work Log
+// claim Migrate can see across every resolved home, before anything moves.
+func resolveMigrateInclude(root string, options MigrateOptions) (migrateInclude, error) {
+	include := migrateInclude{tasks: map[string]bool{}, allActive: options.IncludeActiveTasks}
+	if len(options.IncludeTasks) == 0 {
+		return include, nil
+	}
+	claims, err := worktrees.ListActiveClaimSummaries(root, "")
+	if err != nil {
+		return migrateInclude{}, err
+	}
+	known := make(map[string]bool, len(claims))
+	for _, claim := range claims {
+		known[claim.Task] = true
+	}
+	for _, task := range options.IncludeTasks {
+		if !known[task] {
+			return migrateInclude{}, &UnknownIncludeTaskError{Task: task}
+		}
+		include.tasks[task] = true
+	}
+	return include, nil
 }
 
 // MigrateWorktree is one linked worktree a clone move repoints.
@@ -192,6 +246,13 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 	if !worktrees.BusyProcessCheckSupported {
 		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
 	}
+	// Validated before the migration lock and before anything moves, in
+	// both a dry run and --apply: a typo in --include-task must fail the
+	// whole run with a usage error, never silently include nothing.
+	include, includeErr := resolveMigrateInclude(root, options)
+	if includeErr != nil {
+		return MigrateReport{}, includeErr
+	}
 	if options.Apply {
 		lock, lockErr := acquireMigrationLock(root)
 		if lockErr != nil {
@@ -307,7 +368,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 	var manifestPath string
 	planned := make([]MigrateClone, 0, len(candidates))
 	for _, cand := range candidates {
-		clone := planLegacyClone(ctx, root, cand.path, cand.ownerName, cand.repoName)
+		clone := planLegacyClone(ctx, root, cand.path, cand.ownerName, cand.repoName, include)
 		planned = append(planned, clone)
 	}
 
@@ -332,7 +393,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 				continue
 			}
 			now := options.Now()
-			applyOneClone(ctx, root, &planned[index], now)
+			applyOneClone(ctx, root, &planned[index], now, include)
 			if manifest != nil {
 				updateManifestClone(manifest, planned[index], now)
 				if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
@@ -437,7 +498,7 @@ func busyProcessUnsupportedNote() string {
 // planLegacyClone evaluates one legacy clone for the refusal reasons the
 // Feature names, returning it either "planned" (eligible to migrate) or
 // "skipped" with the reason.
-func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string) MigrateClone {
+func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string, include migrateInclude) MigrateClone {
 	slug := ownerName + "/" + repoName
 	clone := MigrateClone{Repository: slug, Source: path}
 	address, err := OriginAddress(ctx, path)
@@ -480,12 +541,16 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
 		worktreePaths = append(worktreePaths, worktree.Source)
 	}
-	if reason := refuseClone(ctx, root, slug, path, worktreePaths); reason != "" {
+	reason, includedTask := refuseClone(ctx, root, slug, path, worktreePaths, include)
+	if reason != "" {
 		clone.Status = "skipped"
 		clone.Reason = reason
 		return clone
 	}
 	clone.Status = "planned"
+	if includedTask != "" {
+		clone.Reason = fmt.Sprintf("included: active task %s", includedTask)
+	}
 	return clone
 }
 
@@ -503,48 +568,65 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 // from under a running session. Only the relocation-specific conditions
 // (task lock held, relocation destination exists) leave a single checkout
 // in place while its clone still migrates; see relocateClones.
-func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string) string {
+// refuseClone returns a non-empty reason when clonePath (or one of
+// worktreePaths) must refuse to move, and separately the name of a task
+// whose live-claim refusal was lifted by include (matching neither reason
+// nor a genuine refusal): a clone is planned only because of that
+// inclusion, and the caller names it.
+func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string, include migrateInclude) (reason, includedTask string) {
 	if reason, err := worktrees.GitOperationInProgress(ctx, clonePath); err != nil {
-		return "cannot inspect Git state: " + err.Error()
+		return "cannot inspect Git state: " + err.Error(), ""
 	} else if reason != "" {
-		return reason
+		return reason, ""
 	}
 	for _, worktree := range worktreePaths {
 		if reason, err := worktrees.GitOperationInProgress(ctx, worktree); err != nil {
-			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error()
+			return "linked worktree " + worktree + ": cannot inspect Git state: " + err.Error(), ""
 		} else if reason != "" {
-			return "linked worktree " + worktree + ": " + reason
+			return "linked worktree " + worktree + ": " + reason, ""
 		}
 	}
-	if claim := liveClaimReason(root, slug); claim != "" {
-		return claim
+	claimReason, claimIncludedTask := liveClaimReason(root, slug, include)
+	if claimReason != "" {
+		return claimReason, ""
 	}
 	paths := append([]string{clonePath}, worktreePaths...)
 	if parked := worktrees.ParkedSessionReason(root, paths); parked != "" {
-		return parked
+		return parked, ""
 	}
 	if worktrees.BusyProcessCheckSupported {
 		if busy := worktrees.BusyProcessReason(paths); busy != "" {
-			return busy
+			return busy, ""
 		}
 	}
-	return ""
+	return "", claimIncludedTask
 }
 
-func liveClaimReason(root, slug string) string {
+// liveClaimReason reports the live-claim refusal reason for slug, unless
+// every live claim on it is included by include, in which case it returns
+// the (first) included task's name instead of a refusal: a clone with two
+// active claims where only one is included still refuses on the other.
+func liveClaimReason(root, slug string, include migrateInclude) (reason, includedTask string) {
 	claims, err := worktrees.ListActiveClaimSummaries(root, "")
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for _, claim := range claims {
-		if strings.EqualFold(claim.Repository, slug) {
-			return fmt.Sprintf("a live Work Log claim (task %q) holds this clone or a linked worktree", claim.Task)
+		if !strings.EqualFold(claim.Repository, slug) {
+			continue
 		}
+		if include.matches(claim.Task) {
+			if includedTask == "" {
+				includedTask = claim.Task
+			}
+			continue
+		}
+		return fmt.Sprintf("a live Work Log claim (task %q) holds this clone or a linked worktree", claim.Task), ""
 	}
-	return ""
+	return "", includedTask
 }
 
-func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now time.Time) {
+func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now time.Time, include migrateInclude) {
 	// Re-derive the worktree list and remote immediately before moving,
 	// rather than trusting the plan computed earlier in this run: a legacy
 	// worktree could have been added, removed, or re-registered since. This
@@ -565,7 +647,7 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	// Re-run every refusal check immediately before moving, not only at plan
 	// time: a claim, a Git operation, or a parked session can all appear in
 	// the time between planning the whole run and reaching this one clone.
-	if reason := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths); reason != "" {
+	if reason, _ := refuseClone(ctx, root, clone.Repository, clone.Source, worktreePaths, include); reason != "" {
 		clone.Status = "skipped"
 		clone.Reason = "refused immediately before move: " + reason
 		return
@@ -717,6 +799,13 @@ func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, ch
 		relocation.Status = "planned"
 	case outcome.Applied:
 		relocation.Status = "done"
+		// RelocateCheckout's own move-repair-verify-receipt journal does not
+		// regenerate the checkout's .worktree.md marker; without this, a
+		// relocated checkout's marker keeps naming the intermediate,
+		// pre-relocation path (found on a real machine on 2026-09-18: a
+		// finished task's marker named the host-level-but-not-yet-relocated
+		// path after its clone move, not its final relocated path).
+		regenerateMarkers(root, destination)
 	default:
 		relocation.Status = "failed"
 		relocation.Reason = "relocation did not complete"
@@ -861,7 +950,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 					clone.Relocations = append(clone.Relocations, migReloc)
 					continue
 				}
-				if reason := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil); reason != "" {
+				if reason, _ := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil, migrateInclude{}); reason != "" {
 					migReloc.Status, migReloc.Reason = "skipped", "refused immediately before relocation reversal: "+reason
 					clone.Relocations = append(clone.Relocations, migReloc)
 					relocationsOK = false
@@ -937,7 +1026,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		for _, worktree := range entry.Worktrees {
 			currentWorktreePaths = append(currentWorktreePaths, worktree.Destination)
 		}
-		if reason := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths); reason != "" {
+		if reason, _ := refuseClone(ctx, root, entry.Repository, entry.Destination, currentWorktreePaths, migrateInclude{}); reason != "" {
 			clone.Status = "skipped"
 			clone.Reason = "refused immediately before move back: " + reason
 			report.Clones = append(report.Clones, clone)

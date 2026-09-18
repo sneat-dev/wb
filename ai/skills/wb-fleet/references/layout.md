@@ -65,6 +65,20 @@ reason — the rename preserves them, and neither is an unborn `HEAD` (a
 repository with no commit yet). The command exits with the findings code
 whenever any clone is skipped or fails.
 
+`--include-task <task>` (repeatable) and `--include-active-tasks` each lift
+only the live-Work-Log-claim refusal — for the named tasks, or for every
+active task. Every other refusal above still applies to an included clone,
+including the re-check just before its move. An `--include-task` name that
+matches no live claim in any home WB resolves is a usage error before
+anything moves, so a typo cannot silently include nothing. The dry run marks
+a clone planned only because of an inclusion with a reason like `included:
+active task <task>`. When an included clone moves, its claim's relocation
+intent and receipt are recorded (the same journal a finished task's
+relocation uses), so `land`, `guard` and `cleanup` resolve it at its new
+path. An included active task's in-clone checkout moves and repoints with
+its clone but is not relocated to the store — relocation stays limited to
+finished tasks (see below).
+
 After moving clones (and for every clone already at the host level, moved
 this run or earlier), `migrate` relocates each managed task checkout whose
 placement differs from the store-mode placement — one checkout at a time, by

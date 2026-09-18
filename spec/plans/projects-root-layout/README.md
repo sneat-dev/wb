@@ -243,7 +243,7 @@ relocated. Repository-local store mode leaves in-clone checkouts where they are.
 **Id:** task-12
 **Verifies:** projects-root-layout#ac:migrate-includes-named-active-tasks
 **Depends-On:** task-11
-**Status:** queued
+**Status:** complete
 
 Let the operator lift only the live-claim refusal of `wb layout migrate`, per
 task or for all tasks. Unknown task names are a usage error. The busy-process,
