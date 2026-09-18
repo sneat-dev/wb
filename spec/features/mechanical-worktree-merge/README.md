@@ -186,9 +186,25 @@ and neither source nor canonical checkout changes.
 ### AC: combined-command-walks-the-whole-journey
 
 Given a conflict-free source and a test GitHub adapter, when bare `merge` runs,
-then it prepares, validates, lands, verifies the exact remote target, performs
-the requested canonical synchronization and cleanup, and terminates without a
+then it prepares, validates unless the pull-request route defers to
+authoritative CI, lands, verifies the exact remote target, performs the
+requested canonical synchronization and cleanup, and terminates without a
 manual Git or GitHub step.
+
+### AC: pr-route-defers-local-validation-to-authoritative-ci
+
+Given a call that resolves the pull-request route and a target whose
+required-check policy was read authoritatively, is non-empty, and is fenced by
+a server-enforced strict up-to-date policy, local candidate validation does
+not run: the receipt records a `validation_deferral` naming the route, the
+exact candidate SHA, and the reason, and `validation.status` is `skipped`.
+Every validation site in the call, and the publish/landing guard that follows
+them, honor this single per-call route decision — a route this call resolves
+as `pr` cannot authorize a publish under a route a later call resolves as
+`direct`. An unfenced policy, an unreadable policy (including a conservative
+`auto` fallback to the pull-request route), or zero required checks each keep
+validation local. `--validate-locally` forces local validation regardless of
+route.
 
 ### AC: dependent-agent-can-use-phase-one-without-waiting
 

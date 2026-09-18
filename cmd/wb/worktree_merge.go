@@ -25,6 +25,7 @@ type worktreeMergeFlags struct {
 	progress                               bool
 	stopBeforeMerge                        bool
 	allowSaturatedHost                     bool
+	validateLocally                        bool
 	timeout                                time.Duration
 	prepareTimeout                         time.Duration
 	checkTimeout                           time.Duration
@@ -1180,6 +1181,13 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional overall prepare deadline; zero keeps the existing behavior")
 		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "optional logical validation-check deadline; zero keeps the existing behavior")
 		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "optional process-isolated Go test shard-attempt deadline; zero keeps the existing behavior")
+		if !land {
+			// A standalone prepare has no later `land` call to resolve the
+			// route: it must decide for itself whether local validation may be
+			// deferred to the pull-request route's authoritative CI. See
+			// resolveWorktreeMergeValidationPlan and sneat-dev/wb#591.
+			command.Flags().StringVar(&flags.route, "route", "auto", "merge route (decides whether local validation may be deferred to the pull-request route's authoritative CI): auto, direct, or pr")
+		}
 	}
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
@@ -1193,6 +1201,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().StringVar(&flags.format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
 	command.Flags().BoolVar(&flags.allowSaturatedHost, "allow-saturated-host", false, "admit candidate validation even when the host's load average exceeds the admission.load_floor in wb.yaml (default: 2x runtime.NumCPU()); the check is disabled automatically in CI (CI=true/GITHUB_ACTIONS=true) and can be disabled or overridden with WB_ADMISSION_LOAD_FLOOR (0 disables, a positive number sets the floor)")
+	command.Flags().BoolVar(&flags.validateLocally, "validate-locally", false, "always run local candidate validation, even when the pull-request route's authoritative, non-empty, server-fenced required-check policy would otherwise defer it to CI")
 	addLandingLaneTakeoverFlag(command, &flags.takeOverLane)
 	command.Flags().StringVar(&flags.laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
 }
@@ -1229,13 +1238,15 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
 		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission,
+		Route: orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally,
 		Lane: landingLaneGuardRequest("wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}
 }
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter, admission *orchestrate.WorktreeMergeHostLoadAdmission, errOut io.Writer) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, AllowUnfenced: flags.allowUnfenced, OnFailure: flags.onFailure,
-		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
+		ValidateLocally: flags.validateLocally,
+		Timeout:         flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            landingLaneGuardRequest("wb worktree merge land", flags.laneReason, flags.takeOverLane),
 		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission, CheckoutUpdated: lifecycleCheckoutUpdated(errOut)}
@@ -1243,21 +1254,36 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 
 // hostLoadCheckSkippable reports whether a land/resume step for receipt will
 // neither run local CPU-heavy validation nor push a fresh candidate, so
-// gating it on host load would only refuse work that cannot add load. Two
-// shapes qualify: a receipt already complete (nothing left to do), and a
-// receipt whose exact candidate SHA is already published in an open pull
-// request and already validated (only remote observation/merge is left).
-// Every other status — preparing, validation_failed, checks_pending, a
-// stale-candidate published receipt, etc. — still re-validates or otherwise
-// does CPU-heavy work locally, so the check still applies to it.
+// gating it on host load would only refuse work that cannot add load. Four
+// shapes qualify: a receipt already complete (nothing left to do); a receipt
+// whose exact candidate SHA is already published in an open pull request and
+// already validated (only remote observation/merge is left); a receipt whose
+// exact candidate SHA was deferred to the pull-request route's authoritative
+// CI (sneat-dev/wb#591) rather than validated locally at all; and a receipt
+// whose candidate was just advanced by an engine-driven server-side update
+// (TargetRefreshes), where the published head is already the current
+// candidate SHA and only remote observation/merge is left. Every other
+// status — preparing, validation_failed, checks_pending, a stale-candidate
+// published receipt, etc. — still re-validates or otherwise does CPU-heavy
+// work locally, so the check still applies to it.
 func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt) bool {
 	if receipt.Status == orchestrate.WorktreeMergeComplete {
 		return true
 	}
-	return strings.TrimSpace(receipt.PullRequest) != "" &&
-		receipt.ValidationIdentity != nil &&
+	if strings.TrimSpace(receipt.PullRequest) == "" || receipt.Candidate.SHA == "" {
+		return false
+	}
+	if deferral := receipt.ValidationDeferral; deferral != nil &&
+		deferral.Route == orchestrate.WorktreeMergeRoutePullRequest &&
+		deferral.CandidateSHA == receipt.Candidate.SHA &&
+		receipt.Validation.Status == quality.StatusSkipped {
+		return true
+	}
+	if len(receipt.TargetRefreshes) > 0 && receipt.PublishedCandidateSHA == receipt.Candidate.SHA {
+		return true
+	}
+	return receipt.ValidationIdentity != nil &&
 		receipt.ValidationIdentity.CandidateSHA == receipt.Candidate.SHA &&
-		receipt.Candidate.SHA != "" &&
 		receipt.Validation.Status == quality.StatusPassed
 }
 

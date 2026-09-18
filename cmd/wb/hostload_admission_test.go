@@ -232,6 +232,43 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 	if hostLoadCheckSkippable(stalePublished) {
 		t.Error("published receipt whose validation identity no longer matches the candidate must still be gated")
 	}
+
+	// sneat-dev/wb#591: a receipt whose exact candidate SHA was deferred to
+	// the pull-request route's authoritative CI (never validated locally at
+	// all) has nothing left to run locally either.
+	deferred := orchestrate.WorktreeMergeReceipt{
+		Status:      orchestrate.WorktreeMergePublished,
+		PullRequest: "https://github.com/acme/app/pull/1",
+		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("c", 40)},
+		Validation:  quality.VerificationReport{Status: quality.StatusSkipped},
+		ValidationDeferral: &orchestrate.WorktreeMergeValidationDeferral{
+			Route: orchestrate.WorktreeMergeRoutePullRequest, CandidateSHA: strings.Repeat("c", 40),
+		},
+	}
+	if !hostLoadCheckSkippable(deferred) {
+		t.Error("PR-route-deferred receipt must skip the host-load check")
+	}
+
+	staleDeferred := deferred
+	staleDeferred.Candidate = orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("d", 40)}
+	if hostLoadCheckSkippable(staleDeferred) {
+		t.Error("a deferral for a candidate SHA that no longer matches must still be gated")
+	}
+
+	// A receipt just advanced by an engine-driven server-side update-branch
+	// merge (TargetRefreshes) has already had its published head moved to
+	// the current candidate SHA by GitHub; only remote observation/merge is
+	// left, so it must also skip the check.
+	engineUpdated := orchestrate.WorktreeMergeReceipt{
+		Status:                orchestrate.WorktreeMergeChecksPending,
+		PullRequest:           "https://github.com/acme/app/pull/1",
+		Candidate:             orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("e", 40)},
+		PublishedCandidateSHA: strings.Repeat("e", 40),
+		TargetRefreshes:       []orchestrate.WorktreeMergeTargetRefresh{{NewCandidateSHA: strings.Repeat("e", 40)}},
+	}
+	if !hostLoadCheckSkippable(engineUpdated) {
+		t.Error("engine-updated receipt whose published head matches the candidate must skip the host-load check")
+	}
 }
 
 // TestWorktreeMergeResumeOfCompleteReceiptProceedsUnderSaturatedLoad exercises

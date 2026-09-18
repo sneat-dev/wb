@@ -6249,7 +6249,8 @@
                 "--shard-attempt-timeout",
                 "--take-over-lane",
                 "--target",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Identical root-level alias for `wb worktree land`, built from the exact same constructor: same flags, same help text, same exit codes.",
@@ -13004,7 +13005,8 @@
                 "--shard-attempt-timeout",
                 "--take-over-lane",
                 "--target",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default.",
@@ -14178,7 +14180,8 @@
                 "--shard-attempt-timeout",
                 "--take-over-lane",
                 "--target",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
@@ -15068,13 +15071,15 @@
                 "--retry",
                 "--route",
                 "--take-over-lane",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
                 "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested",
                 "For an already-published candidate whose target advanced, merges the new target into the published head (recording a target_refreshes entry), re-validates the exact resulting candidate, and fast-forward pushes the same PR branch instead of refusing to rewrite it; a merge conflict reports the conflicting paths without pushing",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated \u2014 nothing left to re-validate locally. Also applies to merge resume."
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, recorded on host_load_admission. Skipped when the receipt is already complete, already validated at its exact candidate SHA, or that SHA was deferred to the pull-request route's CI. Also applies to merge resume.",
+                "Resolves the route once per call; on the pull-request route, with an authoritative, non-empty, server-fenced required-check policy, defers local validation to that CI (records a validation_deferral, validation.status skipped); --validate-locally forces local validation"
               ]
             }
           ],
@@ -15154,13 +15159,16 @@
                 "--provider",
                 "--rebatch-receipt",
                 "--retry",
+                "--route",
                 "--shard-attempt-timeout",
                 "--take-over-lane",
                 "--target",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
-                "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, reports stage and validation progress on stderr when requested, and persists a resumable receipt",
+                "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result unless the pull-request route defers to authoritative CI, reports stage and validation progress on stderr when requested, and persists a resumable receipt",
+                "Resolves the route from --route (default auto) so a standalone prepare can decide, the same way land/resume do, whether local validation may be deferred to the pull-request route's authoritative CI; --validate-locally forces local validation regardless of route",
                 "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing",
                 "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at).",
                 "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR",
@@ -15461,7 +15469,8 @@
                 "--route",
                 "--stop-before-merge",
                 "--take-over-lane",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
@@ -15577,7 +15586,8 @@
                 "--retry",
                 "--route",
                 "--take-over-lane",
-                "--timeout"
+                "--timeout",
+                "--validate-locally"
               ],
               "modes": [
                 "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route",
