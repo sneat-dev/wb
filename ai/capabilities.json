@@ -6778,6 +6778,7 @@
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
                 "Auto-merge is armed before any wait, so the pull request lands even if the invoking process, session or host dies; a failed check refuses the invocation but never disarms, because CI is the gate and a pushed fix lands once the required checks pass. --no-auto-merge opts out",
                 "A candidate behind the target is brought up to date through GitHub update-branch with the observed head as expected_head_sha, then its checks are waited on again inside one --timeout budget, repeating when the target moves mid-wait; a conflicting update refuses with update-branch-conflict, and --no-update-branch refuses a behind candidate instead",
+                "After each successful update-branch, a local WB worktree holding the PR's head branch is fast-forwarded to the new head, best effort: clean and an ancestor of it is fast-forwarded and recorded on local_sync, otherwise it is left untouched with a note; never blocks the landing",
                 "Exit 0 landed, 1 the work is not ready, 2 a guard refused; --format json emits the envelope with refusal_code, sanctioned_command, evidence and the saved-call figures"
               ]
             }
