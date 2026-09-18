@@ -18,6 +18,14 @@ type ToolCall struct {
 	ToolName      string          `json:"tool_name"`
 	CWD           string          `json:"cwd"`
 	ToolInput     json.RawMessage `json:"tool_input"`
+	// AgentID identifies the subagent that issued this call. Claude Code
+	// sends it only from a subagent, never from the main thread (wb#637), so
+	// its mere presence is the "is this a subagent?" signal the rewrite's
+	// WB_AGENT_ID stamp relies on, and it feeds the provenance fields wb#631
+	// writes into every WB record.
+	AgentID string `json:"agent_id"`
+	// ToolUseID identifies this exact tool call.
+	ToolUseID string `json:"tool_use_id"`
 }
 
 // toolInput holds the tool-specific keys the guard understands. Claude Code
@@ -39,6 +47,14 @@ type Decision struct {
 	Deny bool
 	// Reason is the message shown to the agent, empty unless Deny.
 	Reason string
+	// RewriteCommand, when non-empty, is the Bash command Claude Code should
+	// run instead of the one it proposed — either heavy validation rewritten
+	// into `wb run --` (wb#637, founder decision 2026-09-18: rewrite, not
+	// refuse, inside a managed worktree), a WB_AGENT_ID/WB_TOOL_USE_ID export
+	// prefixed onto a call that invokes wb, or both together. Every other
+	// tool_input field the caller sent is carried through unchanged; see
+	// WriteDecision.
+	RewriteCommand string
 }
 
 // Options configures Inspect.
@@ -71,10 +87,11 @@ func Inspect(call ToolCall, options Options) (decision Decision) {
 		// shape, leaves every field empty and therefore allows.
 		_ = json.Unmarshal(call.ToolInput, &input)
 	}
+	if call.ToolName == "Bash" {
+		return inspectBashCall(call, input, options)
+	}
 	var result *finding
 	switch {
-	case call.ToolName == "Bash":
-		result = inspectBash(input.Command, call.CWD, options.ProjectsRoot)
 	case call.ToolName == "Agent" || call.ToolName == "Task":
 		// "Task" is the harness's earlier/alternate name for the same
 		// subagent-dispatch tool; both are judged identically.
@@ -86,6 +103,36 @@ func Inspect(call ToolCall, options Options) (decision Decision) {
 		return Decision{}
 	}
 	return Decision{Deny: true, Reason: refusal(*result)}
+}
+
+// inspectBashCall judges one Bash call, then applies wb#637's rewrite and
+// subagent-ID stamp on top of an allow.
+//
+// A finding that is not a governed-validation match (a canonical-clone write,
+// a hook bypass, a `gh pr merge`, ...) still denies exactly as before — the
+// founder's rewrite decision covers only CPU-heavy validation inside a
+// managed worktree. A governed-validation finding is never denied: inspectBash
+// only ever produces one when managedWorktree(workingDirectory) is already
+// true (see bash.go), so this path is unconditional once that finding exists.
+func inspectBashCall(call ToolCall, input toolInput, options Options) Decision {
+	command := input.Command
+	rewritten := command
+	changed := false
+	if result := inspectBash(command, call.CWD, options.ProjectsRoot); result != nil {
+		if len(result.GovernedCommand) == 0 {
+			return Decision{Deny: true, Reason: refusal(*result)}
+		}
+		rewritten = rewriteGoverned(command)
+		changed = true
+	}
+	if stamped := stampSubagentID(rewritten, call.AgentID, call.ToolUseID); stamped != rewritten {
+		rewritten = stamped
+		changed = true
+	}
+	if !changed {
+		return Decision{}
+	}
+	return Decision{RewriteCommand: rewritten}
 }
 
 // isFileWriteTool names the tools that write the file they point at.
@@ -127,6 +174,11 @@ func inspectFileTool(input toolInput, projectsRoot string) *finding {
 // refusal writes the message the agent reads. It has to carry the remedy, not
 // just the rule: a refusal an agent cannot act on becomes a refusal it works
 // around.
+//
+// A finding carrying GovernedCommand never reaches here: inspectBashCall
+// rewrites that case into `wb run --` instead of denying it (wb#637, founder
+// decision 2026-09-18), so this function only ever renders the canonical-
+// clone wording or a policy's own self-quoting Message.
 func refusal(result finding) string {
 	// Message is set by policies that are not about a canonical-clone write —
 	// missing-model dispatch, hook bypass, auto-tagging, a literal report
@@ -135,9 +187,6 @@ func refusal(result finding) string {
 	// canonical-clone wording below assumes.
 	if result.Message != "" {
 		return result.Message
-	}
-	if len(result.GovernedCommand) > 0 {
-		return governedCommandRefusal(result)
 	}
 	slug := result.Location.Slug()
 	if slug == "" {
@@ -156,48 +205,28 @@ func refusal(result finding) string {
 	return message.String()
 }
 
-func governedCommandRefusal(result finding) string {
-	var message strings.Builder
-	message.WriteString("CPU-heavy validation in a managed worktree must run through WB.\n")
-	fmt.Fprintf(&message, "Refused: %s.\n\n", result.Detail)
-	message.WriteString("This gives the operation a durable ID and timing receipt, and lets WB queue\n")
-	message.WriteString("or coalesce equivalent work when several agents share a constrained machine.\n")
-	message.WriteString("Run: wb run --")
-	for _, word := range result.GovernedCommand {
-		message.WriteByte(' ')
-		message.WriteString(shellQuote(word))
-	}
-	message.WriteByte('\n')
-	message.WriteString("Run gofmt or Prettier directly after edits; they are intentionally not queued.\n")
-	return message.String()
-}
-
-func shellQuote(value string) string {
-	if value != "" && strings.IndexFunc(value, func(character rune) bool {
-		return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-", character)
-	}) < 0 {
-		return value
-	}
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
 // hookResponse is the PreToolUse response document.
 //
-// Only a deny is ever written. An explicit "allow" would suppress the
-// permission prompt the user would otherwise see, turning a guard meant to add
-// a check into one that removes one, so an allow is silence.
+// A deny is the historical shape: an explicit "allow" would ordinarily
+// suppress the permission prompt the user would otherwise see, turning a
+// guard meant to add a check into one that removes one, so silence has always
+// been how this guard allows a call. The one deliberate exception is a
+// rewrite (wb#637): Claude Code has no channel for "run this instead" other
+// than an explicit allow carrying updatedInput, so a rewrite must be written,
+// never silent.
 type hookResponse struct {
 	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput"`
 }
 
 type hookSpecificOutput struct {
-	HookEventName            string `json:"hookEventName"`
-	PermissionDecision       string `json:"permissionDecision"`
-	PermissionDecisionReason string `json:"permissionDecisionReason"`
+	HookEventName            string          `json:"hookEventName"`
+	PermissionDecision       string          `json:"permissionDecision"`
+	PermissionDecisionReason string          `json:"permissionDecisionReason,omitempty"`
+	UpdatedInput             json.RawMessage `json:"updatedInput,omitempty"`
 }
 
-// WriteDecision emits the response Claude Code reads, and reports whether
-// anything was written.
+// WriteDecision emits the response Claude Code reads for one tool call, and
+// reports whether anything was written.
 //
 // The decision travels as JSON on stdout with a zero exit status, never as
 // exit code 2. Exit code 2 is Claude Code's other blocking channel, and WB
@@ -206,16 +235,30 @@ type hookSpecificOutput struct {
 // call on the machine with cobra's usage text as the reason. Carrying the
 // decision in the document instead makes "WB said nothing" mean "allow",
 // which is the only safe default for a guard on this path.
-func WriteDecision(out io.Writer, decision Decision) (bool, error) {
-	if !decision.Deny {
+//
+// toolInput is the call's own original tool_input, verbatim JSON. A rewrite
+// merges decision.RewriteCommand into it as "command" and carries every other
+// field — description, timeout, run_in_background, and anything this guard
+// does not otherwise know about — through unchanged (wb#637).
+func WriteDecision(out io.Writer, decision Decision, toolInput json.RawMessage) (bool, error) {
+	var output hookSpecificOutput
+	switch {
+	case decision.Deny:
+		output = hookSpecificOutput{
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       "deny",
+			PermissionDecisionReason: decision.Reason,
+		}
+	case decision.RewriteCommand != "":
+		output = hookSpecificOutput{
+			HookEventName:      "PreToolUse",
+			PermissionDecision: "allow",
+			UpdatedInput:       mergeUpdatedCommand(toolInput, decision.RewriteCommand),
+		}
+	default:
 		return false, nil
 	}
-	response := hookResponse{HookSpecificOutput: hookSpecificOutput{
-		HookEventName:            "PreToolUse",
-		PermissionDecision:       "deny",
-		PermissionDecisionReason: decision.Reason,
-	}}
-	encoded, err := json.Marshal(response)
+	encoded, err := json.Marshal(hookResponse{HookSpecificOutput: output})
 	if err != nil {
 		return false, err
 	}
@@ -223,6 +266,26 @@ func WriteDecision(out io.Writer, decision Decision) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// mergeUpdatedCommand returns original with its "command" key replaced by
+// command, decoding original as a generic object so every field this guard
+// does not itself model still survives the round trip — the same reasoning
+// mergeAgentHookSettings documents for the settings file this guard is
+// registered from. A non-object or malformed original degrades to an object
+// holding only "command": a rewrite that drops an unknown field is still far
+// safer than one that fails to write at all.
+func mergeUpdatedCommand(original json.RawMessage, command string) json.RawMessage {
+	fields := map[string]any{}
+	if len(original) > 0 {
+		_ = json.Unmarshal(original, &fields)
+	}
+	fields["command"] = command
+	if encoded, err := json.Marshal(fields); err == nil {
+		return encoded
+	}
+	encoded, _ := json.Marshal(map[string]string{"command": command})
+	return encoded
 }
 
 // DecodeToolCall reads a PreToolUse payload. A payload that is not valid JSON,

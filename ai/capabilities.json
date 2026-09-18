@@ -4966,7 +4966,9 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
-                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Rewrites CPU-heavy validation run directly in a WB-managed worktree into wb run -- ... instead of refusing it (wb#637): a simple command keeps its own text verbatim after wb run --, a compound command (&&, ;, a pipeline, a subshell, a loop) is wrapped whole in a POSIX-quoted sh -c payload. Outside a managed worktree, and for a call already under wb run --, nothing changes.",
+                "When the payload carries agent_id (sent only from a subagent) and the Bash command itself invokes wb, prefixes export WB_AGENT_ID=<agent_id> WB_TOOL_USE_ID=<tool_use_id>; onto it, feeding the provenance fields wb#631 stamps onto claims, fleet events, wb run events, and wait records. Both IDs are validated against a safe charset before interpolation; an unsafe or absent agent_id drops the whole prefix.",
+                "A rewrite is written as an explicit PreToolUse allow carrying updatedInput.command, the guard's one exception to writing only a deny; every other tool_input field the call sent is carried through unchanged.",
                 "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
                 "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
                 "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth); through the shell's brace expansion of any word (gh pr {merge,} 1); and whatever the letter case of the program name (Gh pr merge 1 runs gh on macOS).",
@@ -5030,7 +5032,27 @@
             },
             {
               "path": "internal/agentguard/agentguard_test.go",
-              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "name": "TestManagedWorktreeRewritesGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestWbRunCommandIsNeverRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestSubagentWBCallGetsTheIDPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestMainThreadWBCallGetsNoPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestOtherToolInputFieldsArePreservedAcrossARewrite",
               "kind": "unit"
             },
             {

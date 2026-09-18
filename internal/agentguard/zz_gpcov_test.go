@@ -1027,11 +1027,6 @@ func TestGpCovRefusalWordingFallbacks(t *testing.T) {
 			t.Fatalf("refusal is missing %q:\n%s", expected, message)
 		}
 	}
-
-	governed := refusal(finding{Detail: "go test ./...", GovernedCommand: []string{"go", "test", "./..."}})
-	if !strings.Contains(governed, "wb run -- go test ./...") {
-		t.Fatalf("governed refusal = %q, want the quoted command", governed)
-	}
 }
 
 // TestGpCovFileToolIgnoresUnresolvablePaths pins that a Write naming a path
@@ -1058,7 +1053,7 @@ func (gpCovFailingWriter) Write([]byte) (int, error) {
 // TestGpCovWriteDecisionReportsWriterFailure pins that a deny whose JSON
 // cannot be delivered is reported as an error rather than silently lost.
 func TestGpCovWriteDecisionReportsWriterFailure(t *testing.T) {
-	written, err := WriteDecision(gpCovFailingWriter{}, Decision{Deny: true, Reason: "refused"})
+	written, err := WriteDecision(gpCovFailingWriter{}, Decision{Deny: true, Reason: "refused"}, nil)
 	if err == nil {
 		t.Fatal("WriteDecision hid a writer failure")
 	}

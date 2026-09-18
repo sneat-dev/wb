@@ -1043,3 +1043,99 @@ func containsWord(words []string, target string) bool {
 	}
 	return false
 }
+
+// rewriteGoverned returns the command a governed-validation call should run
+// instead of the one it was given, so it is measured, coalesced, and
+// scheduled through `wb run --` (wb#637, founder decision 2026-09-18: rewrite
+// inside a managed worktree, not refuse).
+//
+// A command splitSegments reads as exactly one simple command keeps its own
+// text byte-for-byte after "wb run --": `go test ./...` becomes exactly
+// `wb run -- go test ./...`, the shape the acceptance test pins, and nothing
+// about quoting or word order that the caller wrote is disturbed.
+//
+// A compound command — anything splitSegments reads as more than one simple
+// command (`&&`, `;`, a pipeline, a subshell, a loop, ...) — is wrapped whole
+// in a POSIX-quoted `sh -c` payload instead. Rewriting only the one segment
+// inspectBash matched would silently drop the rest of the line (a `cd`, a
+// `&&`-chained cleanup) that the caller's command relied on running together;
+// re-emitting the matched segment from its already-unquoted Words would also
+// lose whatever quoting the caller actually wrote. Wrapping the whole,
+// untouched command text in `sh -c` keeps it running exactly as given, while
+// still routing the entire call through wb run.
+func rewriteGoverned(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if len(splitSegments(trimmed)) <= 1 {
+		return "wb run -- " + trimmed
+	}
+	return "wb run -- sh -c " + posixSingleQuote(trimmed)
+}
+
+// posixSingleQuote wraps value in single quotes, closing and reopening the
+// quoting around any single quote value itself contains — the one escape a
+// POSIX shell accepts inside single quotes. Unlike shellQuote (used only for
+// a refusal message's individual, already-split words), this always quotes:
+// value here is a whole command line that must survive as one shell word
+// no matter what it contains.
+func posixSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// safeProvenanceID is the charset WB_AGENT_ID/WB_TOOL_USE_ID must clear
+// before stampSubagentID interpolates either into a rewritten shell command.
+// It matches internal/provenance.SafeID; duplicated here rather than
+// imported so this scanner keeps its own dependency-free, independently
+// auditable read path (see claimOwnerFile's doc for the same reasoning) and
+// so a value this guard will shell out is validated by code this package
+// alone owns.
+var safeProvenanceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// bashInvokesWB reports whether any top-level segment of command runs the wb
+// binary directly, skipping only a leading VAR=value assignment. It
+// deliberately does not walk through sudo/env/time/wb's own `wb run --`
+// unwrapping the way stripCommandPrefixes does elsewhere in this file: those
+// exist to find the REAL program a wrapper runs, while this exists to answer
+// a narrower question — does the caller's own command literally say "wb"? — so
+// a rewritten `wb run -- ...` command (which stripCommandPrefixes would
+// unwrap past "wb" to see "go" or "sh") is still recognised as invoking wb.
+// Missing an indirect invocation (`sudo wb ...`) fails open: no stamp, never
+// a wrongful one.
+func bashInvokesWB(command string) bool {
+	for _, current := range splitSegments(command) {
+		words := current.Words
+		for len(words) > 0 && isEnvironmentAssignment(words[0]) {
+			words = words[1:]
+		}
+		if len(words) == 0 {
+			continue
+		}
+		if programName(words[0]) == "wb" {
+			return true
+		}
+	}
+	return false
+}
+
+// stampSubagentID prefixes command with an export of the subagent identity a
+// PreToolUse payload declared, so every wb call the command makes can
+// attribute the WB record it writes to the exact subagent and tool call that
+// ran it (wb#631's provenance fields). It only ever adds the prefix when
+// command itself invokes wb (see bashInvokesWB): stamping a command that
+// never calls wb would export environment nothing reads.
+//
+// Both IDs are validated against safeProvenanceID before they are ever
+// interpolated into a shell command. An unsafe or absent agentID drops the
+// whole prefix — a record this guard cannot trust is safer omitted than
+// quoted. An unsafe toolUseID drops only itself; agentID alone is still
+// useful provenance.
+func stampSubagentID(command, agentID, toolUseID string) string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || !safeProvenanceID.MatchString(agentID) || !bashInvokesWB(command) {
+		return command
+	}
+	prefix := "export WB_AGENT_ID=" + agentID
+	if toolUseID = strings.TrimSpace(toolUseID); toolUseID != "" && safeProvenanceID.MatchString(toolUseID) {
+		prefix += " WB_TOOL_USE_ID=" + toolUseID
+	}
+	return prefix + "; " + command
+}

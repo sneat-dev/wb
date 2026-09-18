@@ -274,6 +274,106 @@ func TestWorkLogClaimPrefersLiveCreatingSessionOverCallerValue(t *testing.T) {
 	}
 }
 
+// TestWorkLogClaimCarriesProvenanceFieldsFromEnv is wb#631's acceptance
+// test: a claim created with CLAUDE_CODE_SESSION_ID, WB_AGENT_ID and
+// WB_TOOL_USE_ID set carries all three plus wb_version.
+func TestWorkLogClaimCarriesProvenanceFieldsFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-abc123")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "high")
+	t.Setenv("WB_AGENT_ID", "agent-42")
+	t.Setenv("WB_TOOL_USE_ID", "toolu_01ABC")
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "provenance-task", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "provenance-task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{EffortID: "provenance-task", RunID: "run", Model: "unknown"}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := outcome.claim
+	if claim.HarnessSessionID != "sess-abc123" || claim.Harness != "claude-code" || claim.EffortLevel != "high" ||
+		claim.AgentID != "agent-42" || claim.ToolUseID != "toolu_01ABC" {
+		t.Fatalf("claim did not carry every declared provenance field: %+v", claim)
+	}
+	if claim.WBVersion == "" {
+		t.Fatal("claim WBVersion must never be empty")
+	}
+}
+
+// TestWorkLogClaimWithoutEnvHasNoProvenanceFieldsExceptWBVersion is the other
+// half of wb#631's acceptance test: a claim created with nothing declared
+// carries no invented identity. WBVersion is the one field this writer
+// always sets — see recordWorkLogWithHooks' own comment on wbprovenance.
+func TestWorkLogClaimWithoutEnvHasNoProvenanceFieldsExceptWBVersion(t *testing.T) {
+	for _, name := range []string{"CLAUDE_CODE_SESSION_ID", "AI_AGENT", "CLAUDE_EFFORT", "WB_AGENT_ID", "WB_TOOL_USE_ID"} {
+		t.Setenv(name, "")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "no-provenance-task", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "no-provenance-task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{EffortID: "no-provenance-task", RunID: "run", Model: "unknown"}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := outcome.claim
+	if claim.HarnessSessionID != "" || claim.Harness != "" || claim.EffortLevel != "" || claim.ToolUseID != "" {
+		t.Fatalf("claim invented a provenance field with nothing declared: %+v", claim)
+	}
+	if claim.WBVersion == "" {
+		t.Fatal("claim WBVersion must never be empty")
+	}
+}
+
+// TestReadingAnOldVersionClaimStillDecodes proves a claim written before
+// wb#631 — no provenance keys at all — still decodes cleanly, with every new
+// field simply empty. The new fields are additive and omitempty, so no
+// schema version bump was needed for them.
+func TestReadingAnOldVersionClaimStillDecodes(t *testing.T) {
+	legacy := `{
+		"version": 1,
+		"effort_id": "old-task",
+		"run_id": "run",
+		"claim_id": "claim-old",
+		"task": "old-task",
+		"repository": "acme/app",
+		"worktree": "/tmp/worktree",
+		"branch": "old-task",
+		"base": "main",
+		"base_sha": "` + strings.Repeat("a", 40) + `",
+		"lifecycle": "active",
+		"recorded_at": "2026-01-01T00:00:00Z",
+		"model": "unknown"
+	}`
+	var claim workLogClaim
+	if err := json.Unmarshal([]byte(legacy), &claim); err != nil {
+		t.Fatalf("a pre-wb#631 claim failed to decode: %v", err)
+	}
+	if claim.HarnessSessionID != "" || claim.Harness != "" || claim.EffortLevel != "" ||
+		claim.AgentID != "" || claim.ToolUseID != "" || claim.WBVersion != "" {
+		t.Fatalf("an old-version claim produced non-empty provenance fields: %+v", claim)
+	}
+	if claim.Version != 1 || claim.ClaimID != "claim-old" {
+		t.Fatalf("the old claim's own fields were disturbed: %+v", claim)
+	}
+}
+
 func TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile(t *testing.T) {
 	worktree := t.TempDir()
 	worktree, err := filepath.EvalSymlinks(worktree)

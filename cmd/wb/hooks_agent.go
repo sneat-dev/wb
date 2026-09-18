@@ -76,8 +76,27 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     (an explicit 'agent.autoTags: true' in '.wb/hooks.yaml', or a
     strongo/cicd reusable workflow with no 'disable-version-bumping: true').
     See lessons l3/l11.
-  - Governed heavy validation: refuses 'go test'/'golangci-lint'/etc. run
-    directly inside a managed worktree instead of through 'wb run --'.
+  - Governed heavy validation: rewrites 'go test'/'golangci-lint'/etc. run
+    directly inside a managed worktree into 'wb run -- ...' instead of
+    refusing it (wb#637, founder decision 2026-09-18). A simple command keeps
+    its own text verbatim after 'wb run --'; a compound command ('&&', ';',
+    a pipeline, a subshell, a loop, ...) is wrapped whole in a POSIX-quoted
+    'sh -c' payload so the rest of the line still runs together. Outside a
+    managed worktree, and for a call already under 'wb run --', nothing
+    changes. This is the guard's one exception to "only a deny is ever
+    written": Claude Code has no channel for "run this instead" other than an
+    explicit allow carrying 'updatedInput', so the rewrite is written, not
+    silent, and every other 'tool_input' field the call carried
+    (description, timeout, run_in_background, ...) passes through unchanged.
+  - Subagent-ID stamp: when the PreToolUse payload carries 'agent_id' (Claude
+    Code sends it only from a subagent) and the Bash command itself invokes
+    'wb', prefixes 'export WB_AGENT_ID=<agent_id> WB_TOOL_USE_ID=<tool_use_id>;'
+    onto it, so every WB record that call's 'wb' invocation writes carries
+    the subagent and tool-call identity (wb#631's provenance fields). Both
+    IDs are validated against a compact safe charset before they are ever
+    interpolated into the rewritten command; an unsafe or absent agent_id
+    drops the whole prefix. A main-thread call (no 'agent_id') is never
+    stamped.
   - Missing model (Agent/Task tool): refuses a subagent dispatch that names
     no 'model'. See lesson l49.
   - Literal report path (Agent/Task tool): refuses a dispatch prompt that
@@ -198,11 +217,9 @@ Install it with 'wb hooks agent install'.`,
 				defer func() { _ = file.Close() }()
 				reader = file
 			}
-			decision := agentguard.Inspect(
-				agentguard.DecodeToolCall(reader),
-				agentguard.Options{ProjectsRoot: projectsRoot},
-			)
-			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision); err != nil {
+			call := agentguard.DecodeToolCall(reader)
+			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot})
+			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision, call.ToolInput); err != nil {
 				return nil
 			}
 			return nil

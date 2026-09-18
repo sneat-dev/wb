@@ -61,8 +61,18 @@ PreToolUse payload on stdin and carries these policies:
   explicit `agent.autoTags: true` in `.wb/hooks.yaml` (or the global
   `git_hooks:` policy), or a `strongo/cicd` reusable workflow with no
   `disable-version-bumping: true` beside it.
-- **Governed heavy validation** — redirects CPU-heavy validation inside a
-  WB-managed worktree to the governed command gateway (see below).
+- **Governed heavy validation** — rewrites `go test`/`golangci-lint`/etc. run
+  directly inside a managed worktree into `wb run -- …` instead of refusing
+  it (wb#637, founder decision 2026-09-18: rewrite, not refuse). See below.
+- **Subagent-ID stamp** — when the payload carries `agent_id` (Claude Code
+  sends it only from a subagent, never the main thread) and the Bash command
+  itself invokes `wb`, prefixes `export WB_AGENT_ID=<agent_id>
+  WB_TOOL_USE_ID=<tool_use_id>;` onto it, so every WB record that `wb`
+  invocation writes carries the subagent and tool-call identity (feeds the
+  provenance fields wb#631 stamps onto claims, fleet events, `wb run` events,
+  and wait records). Both IDs are validated against a compact safe charset
+  before they are ever interpolated into the rewritten command; an unsafe or
+  absent `agent_id` drops the whole prefix.
 - **Missing model** (`Agent`/`Task` tool) — refuses a subagent dispatch that
   names no `model`; an omitted model silently inherits the parent's.
 - **Literal report path** (`Agent`/`Task` tool) — refuses a dispatch prompt
@@ -193,19 +203,35 @@ shell construct it cannot model, and a WB too old to know the subcommand all
 allow the call. It leaves `git fetch`, `git merge --ff-only`, `git status`, and
 `git log` alone inside a canonical clone.
 
-Inside a WB-managed worktree, the same hook redirects CPU-heavy validation to
-the governed command gateway. Agents run `go test`, `go vet`, `go build`, and
-common Node/Rust test, build, lint, and E2E commands as:
+Inside a WB-managed worktree, the same hook rewrites CPU-heavy validation into
+the governed command gateway instead of refusing it. An agent's own `go test`,
+`go vet`, `go build`, and common Node/Rust test, build, lint, and E2E commands
+are silently substituted for the equivalent `wb run --` call — Claude Code
+runs `wb run -- go test ./internal/worktrees` even though the agent typed
+`go test ./internal/worktrees`. A simple command keeps its own text verbatim
+after `wb run --`; a compound command (`&&`, `;`, a pipeline, a subshell, a
+loop, …) is wrapped whole in a POSIX-quoted `sh -c` payload instead, so the
+rest of the line still runs together:
 
-```sh
-wb run -- go test ./internal/worktrees
+```
+go test ./internal/worktrees        → wb run -- go test ./internal/worktrees
+cd internal && go test ./runlog     → wb run -- sh -c 'cd internal && go test ./runlog'
 ```
 
 That boundary gives validation an operation ID and privacy-safe timing receipt,
 and lets a local scheduler queue or coalesce it. Run `gofmt` and Prettier
 directly on edited files; immediate formatting is deliberately outside the
 queue. Unmanaged worktrees and human shells are unaffected because this is an
-agent PreToolUse policy, not a shell wrapper.
+agent PreToolUse policy, not a shell wrapper, and a call already under
+`wb run --` is left untouched.
+
+A rewrite (governed or the subagent-ID stamp) is the guard's one exception to
+"only a deny is ever written": it emits an explicit PreToolUse `allow` with
+`updatedInput.command` set to the substituted command, carrying every other
+`tool_input` field the call sent (`description`, `timeout`,
+`run_in_background`, …) through unchanged. Claude Code has no other channel
+for "run this instead" — a deny would only refuse the call, not replace it —
+and silence would run the original, ungoverned command.
 
 Rehearse a decision against a saved payload without a pipe:
 

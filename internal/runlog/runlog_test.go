@@ -67,6 +67,57 @@ func TestRecorderWritesPrivacySafeLifecycleEvents(t *testing.T) {
 	}
 }
 
+// TestBeginStampsProvenanceFromEnv is wb#631's `wb run` half of the
+// acceptance test: the requested event Begin writes carries every declared
+// provenance field plus wb_version, and Finish's terminal event — a copy of
+// the same recorder.event — carries it through too.
+func TestBeginStampsProvenanceFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-run-1")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "low")
+	t.Setenv("WB_AGENT_ID", "agent-9")
+	t.Setenv("WB_TOOL_USE_ID", "toolu_3")
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := exec.Command("git", "init", "-b", "main")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	manifest := worktrees.Manifest{
+		Version: 1, EffortID: "provenance", EffortKind: worktrees.EffortKindFeature,
+		Repository: "acme/app", Worktree: root, Branch: "provenance", Base: "main",
+		BaseSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC(),
+		RunID: "run-1", ClaimID: strings.Repeat("b", 64), Provenance: worktrees.ProvenanceCreated,
+	}
+	if err := worktrees.WriteManifest(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+	recorder, err := Begin(root, []string{"go", "test", "./..."}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Finish(0, time.Millisecond, time.Millisecond, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	events, err := Read(recorder.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	for _, event := range events {
+		if event.HarnessSessionID != "sess-run-1" || event.Harness != "claude-code" || event.EffortLevel != "low" ||
+			event.AgentID != "agent-9" || event.ToolUseID != "toolu_3" || event.WBVersion == "" {
+			t.Fatalf("event did not carry every provenance field: %+v", event)
+		}
+	}
+}
+
 func TestRecorderDoesNotCreateStateOutsideManagedWorktree(t *testing.T) {
 	root := t.TempDir()
 	recorder, err := Begin(root, []string{"git", "status"}, time.Now())
