@@ -61,7 +61,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
 | `agent dispatch`, `status`, `await`, `list`, `logs`, `stop` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
-| `layout audit`, `layout clean` | yes | rejected | rejected | yes |
+| `layout audit`, `layout clean`, `layout migrate` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |

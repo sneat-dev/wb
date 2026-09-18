@@ -208,7 +208,7 @@ common harnesses. Add or refresh the `ai/capabilities.json` row and the
 **Id:** task-10
 **Verifies:** projects-root-layout#ac:migrate-plans-then-moves-and-repoints, projects-root-layout#ac:migrate-skips-unsafe-clones, projects-root-layout#ac:migrate-is-reversible
 **Depends-On:** task-2, task-6
-**Status:** queued
+**Status:** complete
 
 Add `wb layout migrate [owner/repo...] [--apply] [--undo <id>]` beside `audit`
 and `clean`, implemented in `internal/layout` on the existing `repopath`

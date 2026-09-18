@@ -18,8 +18,9 @@ func newLayoutCmd() *cobra.Command {
 		Short: "Audit and clean local clone placement under --projects-root",
 		Long: `Inspect whether local clones follow {host}/{owner}/{repository} under --projects-root.
 
-  wb layout audit   report top-level, misowned, bad-host, and ok checkouts
-  wb layout clean   remove safe top-level duplicates (dry-run by default)
+  wb layout audit     report top-level, misowned, bad-host, and ok checkouts
+  wb layout clean     remove safe top-level duplicates (dry-run by default)
+  wb layout migrate   move legacy {owner}/{repository} clones to {host}/{owner}/{repository}
 
 Canonical fleet members are {host}/{owner}/{repository} directories with a real
 .git directory, where {host} is the literal forge hostname. A first-level entry
@@ -30,6 +31,7 @@ worktrees are ignored.`,
 	}
 	command.AddCommand(newLayoutAuditCmd())
 	command.AddCommand(newLayoutCleanCmd())
+	command.AddCommand(newLayoutMigrateCmd())
 	return command
 }
 
@@ -122,6 +124,92 @@ removable top-level clone.`,
 	command.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "write layout-clean.md/.yaml/.json to this directory")
 	return command
+}
+
+func newLayoutMigrateCmd() *cobra.Command {
+	var (
+		format, reportDir, undoID string
+		apply                     bool
+	)
+	command := &cobra.Command{
+		Use:   "migrate [owner/repository...]",
+		Short: "Move legacy clones to the host-level layout and repoint their worktrees",
+		Long: `Move each canonical clone found at the legacy <root>/{owner}/{repository}
+placement to <root>/{host}/{owner}/{repository}, taking {host} from the
+clone's origin remote. With no arguments every legacy clone under the root is
+covered; name owner/repository arguments to migrate only those.
+
+Dry-run by default: prints the planned source and destination of every clone
+and every linked worktree it would repoint. Pass --apply to move. A clone
+already at the host level is reported done and left untouched, so an
+interrupted or partial migration is completed by running the same command
+again.
+
+A clone is skipped, with a finding naming the reason, when it has no usable
+origin, its origin owner/repository differs from its path, its origin host is
+not a valid directory name, its destination already exists, a Git operation is
+in progress, or a live Work Log claim holds it or a linked worktree.
+Uncommitted changes are never a refusal reason. The command exits with the
+findings code whenever any clone is skipped or fails.
+
+--apply writes a manifest under <root>/.wb/layout-migrations/<id>/ before its
+first move; pass --undo <id> to reverse every clone that manifest records as
+done.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
+				return err
+			}
+			report, err := layout.Migrate(cmd.Context(), projectsRoot, layout.MigrateOptions{
+				Repositories: args,
+				Apply:        apply,
+				UndoID:       undoID,
+			})
+			if err != nil {
+				return err
+			}
+			if reportDir != "" {
+				if err := writeLayoutMigrateReports(reportDir, report); err != nil {
+					return err
+				}
+			}
+			if err := writeLayoutOutput(cmd, format, report.Markdown(), report); err != nil {
+				return err
+			}
+			if layout.MigrateFailed(report) {
+				return &exitError{
+					code:    exitFindings,
+					message: "layout migrate reported findings; see the plan above",
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "move eligible clones (default is dry-run)")
+	command.Flags().StringVar(&undoID, "undo", "", "reverse the clones a previous --apply's manifest <id> recorded as done")
+	command.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "write layout-migrate.md/.yaml/.json to this directory")
+	return command
+}
+
+func writeLayoutMigrateReports(directory string, report layout.MigrateReport) error {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(directory, "layout-migrate.md"), []byte(report.Markdown()), 0o644); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(report)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(directory, "layout-migrate.yaml"), raw, 0o644); err != nil {
+		return err
+	}
+	raw, err = json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(directory, "layout-migrate.json"), append(raw, '\n'), 0o644)
 }
 
 func writeLayoutOutput(cmd *cobra.Command, format, markdown string, value any) error {
