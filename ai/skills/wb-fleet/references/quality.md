@@ -7,7 +7,23 @@ wb coverage .
 wb verify . --checks lint,test,build
 wb check . --profile ci
 wb deadcode
+wb disk
 ```
+
+`wb disk` answers where WB's bytes are and how much room is left. It reports two
+figures per category, because one would mislead: what removing a category would
+actually reclaim, and what its trees appear to hold. Git worktrees share objects
+with their canonical clone and pnpm hard-links every store entry into every
+consumer, so apparent size promises a reclaim deleting cannot deliver — on this
+fleet the node package store showed 12.8 GB apparent against 4.0 GB reclaimable.
+
+```sh
+wb disk                    # full accounting, exits 1 on findings
+wb disk --skip-sizes       # headroom and roots only, no tree walk
+```
+
+It reports; it never deletes. Retiring a worktree is `wb worktree gc`, which
+knows what still holds unlanded work.
 
 `wb deadcode` answers a question the other three cannot: does every mechanism
 still have a caller on a path that runs? A missing feature is loud — nothing
