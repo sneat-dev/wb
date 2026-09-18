@@ -264,13 +264,13 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		t.Fatal("a receipt with no recorded validators could not be fingerprinted")
 	}
 	valid.ValidationIdentity = &identity
-	if ok, err := preparedValidationStillValid(valid); err != nil || !ok {
+	if ok, err := preparedValidationStillValid(valid, worktreeMergeValidationPlan{}); err != nil || !ok {
 		t.Fatalf("exact passed validation = %t, err %v", ok, err)
 	}
 	drifted := valid
 	drifted.Sources = append([]WorktreeMergeSource(nil), valid.Sources...)
 	drifted.Sources[0].SHA = strings.Repeat("e", 40)
-	if ok, err := preparedValidationStillValid(drifted); err != nil || ok {
+	if ok, err := preparedValidationStillValid(drifted, worktreeMergeValidationPlan{}); err != nil || ok {
 		t.Fatalf("source drift = %t, err %v", ok, err)
 	}
 	for _, test := range []struct {
@@ -291,7 +291,7 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		t.Run(test.name, func(t *testing.T) {
 			candidate := valid
 			test.mutate(&candidate)
-			if ok, err := preparedValidationStillValid(candidate); err != nil || ok {
+			if ok, err := preparedValidationStillValid(candidate, worktreeMergeValidationPlan{}); err != nil || ok {
 				t.Fatalf("invalid receipt = %t, err %v", ok, err)
 			}
 		})

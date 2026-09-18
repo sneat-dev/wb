@@ -136,8 +136,17 @@ type AppliedFileReporter[T any] interface {
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
 type RemoteCheck struct {
-	Name       string `json:"name" yaml:"name"`
-	Bucket     string `json:"bucket" yaml:"bucket"`
+	Name   string `json:"name" yaml:"name"`
+	Bucket string `json:"bucket" yaml:"bucket"`
+	// Conclusion is the raw GitHub check-run/workflow-run conclusion (e.g.
+	// "success", "skipped", "neutral", "failure"), kept alongside Bucket so a
+	// strict deferral-satisfaction check (sneat-dev/wb#591 red-team finding
+	// X2) can tell an actually-executed pass ("success") apart from a check
+	// that never ran ("skipped" or "neutral") even though checkRunBucket
+	// treats both the same as an ordinary "skipping" pass for the overall
+	// pass/fail loop. Empty for a commit-status-derived check, which has no
+	// conclusion.
+	Conclusion string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
 	Link       string `json:"link,omitempty" yaml:"link,omitempty"`
 	AppID      int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 	CheckRunID int64  `json:"check_run_id,omitempty" yaml:"check_run_id,omitempty"`
@@ -199,6 +208,19 @@ type PullRequestWaitOptions struct {
 	// CheckPollInterval. The no-applicable-checks receipt and any reread
 	// after fingerprint churn always wait the full CheckPollInterval.
 	StableRereadDelay time.Duration
+	// RequireExecutedRequiredChecks demands that every required check on the
+	// exact head actually ran to a real conclusion — not "skipped" or
+	// "neutral" — before this wait reports terminal pass (sneat-dev/wb#591
+	// red-team finding X2). A required check that GitHub itself counts as
+	// satisfied while never actually running (a path-filtered or
+	// conditionally-skipped job) must not silently satisfy a candidate whose
+	// local validation was deferred to CI: an aggregate/gate required check
+	// (e.g. a repository's own "Required checks passed" check) is unaffected,
+	// since ITS OWN conclusion is what is inspected, not the sub-jobs it
+	// gates. Ordinary (non-deferred) waits leave this false and keep their
+	// existing behavior of trusting a registered name regardless of
+	// conclusion.
+	RequireExecutedRequiredChecks bool
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress          func(PullRequestWaitProgress)

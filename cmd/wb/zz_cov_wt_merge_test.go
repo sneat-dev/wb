@@ -334,7 +334,7 @@ func TestCwWtMergeHostLoadCheckSkippableBranches(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := hostLoadCheckSkippable(testCase.receipt); got != testCase.want {
+			if got := hostLoadCheckSkippable(testCase.receipt, false, ""); got != testCase.want {
 				t.Fatalf("hostLoadCheckSkippable(%+v) = %t, want %t", testCase.receipt, got, testCase.want)
 			}
 		})

@@ -434,7 +434,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			// unrelated, already-finished lane for no reason. See
 			// hostLoadCheckSkippable.
 			var admission *orchestrate.WorktreeMergeHostLoadAdmission
-			if peeked, peekErr := orchestrate.PeekWorktreeMergeReceipt(projectsRoot, args[0]); peekErr != nil || !hostLoadCheckSkippable(peeked) {
+			if peeked, peekErr := orchestrate.PeekWorktreeMergeReceipt(projectsRoot, args[0]); peekErr != nil || !hostLoadCheckSkippable(peeked, flags.validateLocally, orchestrate.WorktreeMergeRoute(flags.route)) {
 				var err error
 				admission, err = checkHostLoadAdmission(flags)
 				if err != nil {
@@ -1266,9 +1266,18 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 // status — preparing, validation_failed, checks_pending, a stale-candidate
 // published receipt, etc. — still re-validates or otherwise does CPU-heavy
 // work locally, so the check still applies to it.
-func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt) bool {
+//
+// validateLocally and requestedRoute are this call's own --validate-locally
+// and --route flags (minor finding, sneat-dev/wb#591 red-team follow-up):
+// either one forces a real local validation run regardless of any deferral
+// recorded on the receipt, so this call is never skippable when either is
+// set.
+func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt, validateLocally bool, requestedRoute orchestrate.WorktreeMergeRoute) bool {
 	if receipt.Status == orchestrate.WorktreeMergeComplete {
 		return true
+	}
+	if validateLocally || requestedRoute == orchestrate.WorktreeMergeRouteDirect {
+		return false
 	}
 	if strings.TrimSpace(receipt.PullRequest) == "" || receipt.Candidate.SHA == "" {
 		return false
