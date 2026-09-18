@@ -176,6 +176,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newDeadcodeCmd(), rootGroupQuality),
 		groupedRootCommand(newDiskCmd(), rootGroupMaintain),
 		groupedRootCommand(newCICmd(), rootGroupQuality),
+		groupedRootCommand(newWaitCmd(), rootGroupAgent),
 		groupedRootCommand(newHooksCmd(), rootGroupQuality),
 		groupedRootCommand(newDepsCmd(), rootGroupChange),
 		groupedRootCommand(newMigrateCmd(), rootGroupChange),

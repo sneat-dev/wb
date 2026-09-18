@@ -10780,6 +10780,127 @@
       "notes": "The JSON form is intended for provenance checks and automation."
     },
     {
+      "id": "wb.wait.pr",
+      "feature_refs": [
+        "spec/ideas/delegated-waiting-and-agent-wake.md"
+      ],
+      "since": "unreleased",
+      "notes": "A report-only waiter, deliberately not merge evidence: it holds no verdict, takes no landing lane, and never merges. `wb pr land` remains the verb that waits for checks and then lands; `wb ci wait` remains the exact-head receipt primitive. This exists because waiting on a pull request previously required discovering its base branch and exact head SHA first, so agents hand-rolled `gh` polling loops instead. Every target costs roughly four GitHub reads per observation, so the default interval is chosen against the authenticated API budget rather than against responsiveness.",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb wait pr",
+              "flags": [
+                "--format",
+                "--interval",
+                "--json",
+                "--slice",
+                "--until"
+              ],
+              "modes": [
+                "Waits one bounded slice for one or more pull requests named as owner/repository#number or a pull request URL, resolving each target's base branch and exact head itself",
+                "Settles only when every target satisfies the condition, so a noisy target cannot end the wait while a quiet one is still pending",
+                "--until checks-settled treats a head whose checks have all finished, or a pull request no longer open, as settled",
+                "--until changed settles when the head, open state, draft flag, mergeable state, or set of check outcomes differs from the first observation",
+                "--until closed settles when the pull request is merged or closed, regardless of checks",
+                "A transient GitHub read keeps its target pending; only an authoritative failure reports the target as an error, and an errored target never settles",
+                "Pending exits 1 and prints exact resume arguments naming only the targets that are still pending"
+              ]
+            }
+          ],
+          "limitation": "Reports only; it never merges, and it is not merge evidence. Conditions beyond checks, state and head movement \u2014 a review submitted, changes requested, or a new comment \u2014 are not observed."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb wait pr --help",
+              "contains": [
+                "owner/repository#number",
+                "checks-settled",
+                "never merges",
+                "starve the quiet target",
+                "transient GitHub read",
+                "no head SHA has to be discovered"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "# WB merge",
+              "examples": [
+                "wb wait pr sneat-dev/wb#581 --until checks-settled"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRSettlesOnlyWhenEveryTargetIsTerminal",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRPendingResumesOnlyTheUnsettledTargets",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRChangedComparesOnlyActionableFacts",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRClosedIgnoresChecks",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRTransientReadStaysPendingRatherThanErroring",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRErroredTargetNeverSettles",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRDeduplicatesRepeatedTargets",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRRejectsUnusableInvocations",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRReadsGitHubForARealTarget",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_test.go",
+              "name": "TestWaitPRResumeLineQuotesSelectorsForAShell",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      }
+    },
+    {
       "id": "wb.worker.connect",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md"

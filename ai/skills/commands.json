@@ -112,6 +112,9 @@
     "version": [
       "wb-install"
     ],
+    "wait": [
+      "wb-merge"
+    ],
     "worker": [
       "wb-daemon",
       "wb-run"
