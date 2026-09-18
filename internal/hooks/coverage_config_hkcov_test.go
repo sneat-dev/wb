@@ -42,7 +42,6 @@ func TestHkCovLoadPolicyRejectsANonRepositoryPath(t *testing.T) {
 func TestHkCovLoadPolicyRejectsMalformedExplicitConfigs(t *testing.T) {
 	repo := initRepo(t)
 	isolateEnvironment(t)
-	dir := t.TempDir()
 	cases := []struct {
 		name    string
 		content string
@@ -61,7 +60,12 @@ func TestHkCovLoadPolicyRejectsMalformedExplicitConfigs(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(dir, "hooks.yaml")
+			// Each subtest gets its own directory: all nine run in parallel
+			// with each other, and every one previously joined the SAME
+			// shared dir with the same literal "hooks.yaml" name, so they
+			// raced writing and reading each other's content -- a logic
+			// race over file I/O that -race cannot see.
+			path := filepath.Join(t.TempDir(), "hooks.yaml")
 			mustWrite(t, path, test.content)
 			_, err := LoadPolicy(repo, path)
 			if err == nil || !strings.Contains(err.Error(), test.want) {

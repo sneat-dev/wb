@@ -94,8 +94,12 @@ func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// These three subtests are not independent: they share one store and
+	// two consumer worktrees, and the second explicitly re-creates state
+	// the first removed ("Re-create the state the previous subtest
+	// removed" below), so they must run in declaration order, not in
+	// parallel with each other.
 	t.Run("a stream name filter skips other streams", func(t *testing.T) {
-		t.Parallel()
 		engine := &Engine{Store: store}
 		result, err := engine.Run(ctx, Options{Undo: true, Stream: "other"})
 		if err != nil || result.Failed() {
@@ -110,7 +114,6 @@ func TestLgCovUndoFiltersAndSkippedOutcome(t *testing.T) {
 	})
 
 	t.Run("a consumer filter skips every non-matching record", func(t *testing.T) {
-		t.Parallel()
 		// Re-create the state the previous subtest removed.
 		lgCovWriteGoWork(t, consumerB, library)
 		engine := &Engine{Store: store}
