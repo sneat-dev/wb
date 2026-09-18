@@ -39,9 +39,12 @@ func syncLocalWorktreeAfterUpdateBranch(ctx context.Context, options PullRequest
 // fastForwardWorktreeToUpdatedHead brings a local WB worktree that has
 // branch checked out into fast-forward alignment with updatedHead, a head a
 // server-side update-branch (or an equivalent server-side advance) just
-// produced. It mirrors the shape worktree_merge_pr_land.go's
-// fastForwardWorktreeMergeCandidateBranch uses for the `wb worktree merge`
-// PR route, so the two can later be folded into one shared helper.
+// produced. It is the one shared helper both this route and the
+// `wb worktree merge` PR route's own update-branch/adopt paths
+// (worktree_merge.go's advancePublishedWorktreeMergeCandidate,
+// worktree_merge_pr_land.go's adoptWorktreeMergeUpdateBranchAdvance and
+// adoptServerUpdatedWorktreeMergeHead) use to fast-forward a local
+// candidate worktree onto a server-recorded advance.
 //
 // It never resets, stashes, rebases, or discards anything. Every obstacle —
 // no worktree, a dirty tree, HEAD not on branch, local commits the remote

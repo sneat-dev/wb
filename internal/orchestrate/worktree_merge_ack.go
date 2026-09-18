@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +175,15 @@ type WorktreeMergePreparedRebatch struct {
 	Replacement            WorktreeMergeCandidate `json:"replacement"`
 	Sources                []WorktreeMergeSource  `json:"sources"`
 	RecordedAt             time.Time              `json:"recorded_at"`
+	// ClosedPullRequest names the superseded original candidate's own pull
+	// request when this rebatch closed it (red-team finding M6): a
+	// published-unlanded original has very likely already armed GitHub
+	// auto-merge (the PR-land engine arms it before any check wait), and
+	// leaving it open would let GitHub land the superseded content
+	// alongside this replacement the moment its checks — or a later
+	// update-branch — go green. Empty when the original never published a
+	// pull request, so there was nothing to close.
+	ClosedPullRequest string `json:"closed_pull_request,omitempty"`
 }
 
 // WorktreeMergeLandedFailureAcknowledgement is a separate, append-only
@@ -613,9 +623,7 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	preparedOrAcknowledgedCollision := receipt.Phase == WorktreeMergePhasePrepare && receipt.PullRequest == "" &&
 		receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" &&
 		(receipt.Status == WorktreeMergePrepared || (collisionAcknowledged && receipt.Status == WorktreeMergePreparing))
-	publishedUnlanded := receipt.Phase == WorktreeMergePhaseLand &&
-		(receipt.Status == WorktreeMergeChecksFailed || receipt.Status == WorktreeMergePublished) &&
-		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA && receipt.LandingSHA == ""
+	publishedUnlanded := worktreeMergeReceiptPublishedUnlanded(receipt)
 	if (!preparedOrAcknowledgedCollision && !publishedUnlanded) || receipt.LandingSHA != "" ||
 		receipt.Repository != repository || receipt.Target != target ||
 		receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
@@ -773,12 +781,62 @@ func persistPreparedWorktreeMergeRebatch(path string, rebatch WorktreeMergePrepa
 // append-only acknowledgement with the atomic writer above.
 var persistPreparedWorktreeMergeRebatchForPrepare = persistPreparedWorktreeMergeRebatch
 
-func ensurePreparedWorktreeMergeRebatch(rebatch *WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) error {
+// worktreeMergeReceiptPublishedUnlanded reports whether receipt is an
+// unlanded candidate that already published a pull request for its exact
+// current head: the land phase, a checks-failed or published-handoff status,
+// an open pull request naming this exact candidate, and no landing yet.
+func worktreeMergeReceiptPublishedUnlanded(receipt WorktreeMergeReceipt) bool {
+	return receipt.Phase == WorktreeMergePhaseLand &&
+		(receipt.Status == WorktreeMergeChecksFailed || receipt.Status == WorktreeMergePublished) &&
+		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA && receipt.LandingSHA == ""
+}
+
+// closeSupersededWorktreeMergePullRequest retires a superseded original
+// candidate's own pull request (red-team finding M6). It never disarms
+// auto-merge on a red result — that stays forbidden — this is retirement of
+// a candidate a rebatch has already replaced, so its armed auto-merge cannot
+// land it alongside the replacement.
+func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pullRequest string) error {
+	numberText, err := PullRequestNumber(pullRequest)
+	if err != nil {
+		return fmt.Errorf("resolve superseded pull request number: %w", err)
+	}
+	number, err := strconv.Atoi(numberText)
+	if err != nil {
+		return fmt.Errorf("parse superseded pull request number %q: %w", numberText, err)
+	}
+	remote := githubSourcePullRequestRemote{}
+	if err := remote.close(ctx, repository, number); err != nil {
+		return err
+	}
+	// GitHub's close call on a pull request that was merged before this
+	// call reached it succeeds without error - a merged PR reports "closed"
+	// too, and PATCH state=closed on it is a harmless no-op rather than a
+	// refusal. That would let a rebatch believe an armed, already-landed
+	// candidate had been retired when it was actually merged. Re-read and
+	// require both closed and not merged before trusting the close.
+	view, readErr := ReadPullRequest(ctx, repository, numberText)
+	if readErr != nil {
+		return fmt.Errorf("verify superseded pull request %s was closed, not merged: %w", pullRequest, readErr)
+	}
+	if view.Merged || strings.EqualFold(view.State, "merged") {
+		return fmt.Errorf("superseded pull request %s was merged before it could be closed as superseded; a rebatch must not proceed past an already-landed candidate", pullRequest)
+	}
+	if !strings.EqualFold(view.State, "closed") {
+		return fmt.Errorf("superseded pull request %s did not close (state is %s)", pullRequest, view.State)
+	}
+	return nil
+}
+
+func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMergePreparedRebatch, replacement *WorktreeMergeReceipt) error {
 	if rebatch == nil {
 		return errors.New("prepared rebatch evidence is required")
 	}
+	if replacement == nil {
+		return errors.New("prepared rebatch replacement receipt is required")
+	}
 	path := rebatchPath(rebatch.ReceiptPath)
-	complete := completePreparedWorktreeMergeRebatch(*rebatch, replacement)
+	complete := completePreparedWorktreeMergeRebatch(*rebatch, *replacement)
 	original, err := readWorktreeMergeReceipt(rebatch.ReceiptPath)
 	if err != nil {
 		return err
@@ -787,9 +845,30 @@ func ensurePreparedWorktreeMergeRebatch(rebatch *WorktreeMergePreparedRebatch, r
 		if existing.ReplacementReceiptPath != replacement.ReceiptPath || existing.Replacement != replacement.Candidate || !sameWorktreeMergeSources(existing.Sources, replacement.Sources) {
 			return fmt.Errorf("prepared rebatch acknowledgement %s binds different replacement evidence", path)
 		}
+		if existing.ClosedPullRequest != "" && replacement.SupersededPullRequest != existing.ClosedPullRequest {
+			replacement.SupersededPullRequest = existing.ClosedPullRequest
+			if persistErr := persistWorktreeMergeReceipt(*replacement); persistErr != nil {
+				return persistErr
+			}
+		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	// M6: close the superseded original's pull request BEFORE writing the
+	// append-only acknowledgement. A closure failure refuses the rebatch
+	// rather than proceeding with a live stale candidate whose auto-merge
+	// may already be armed — this is retirement of a replaced candidate,
+	// never disarm-on-red, which stays forbidden.
+	if worktreeMergeReceiptPublishedUnlanded(original) {
+		if closeErr := closeSupersededWorktreeMergePullRequest(ctx, original.Repository, original.PullRequest); closeErr != nil {
+			return fmt.Errorf("close superseded pull request %s before rebatch: %w", original.PullRequest, closeErr)
+		}
+		complete.ClosedPullRequest = original.PullRequest
+		replacement.SupersededPullRequest = original.PullRequest
+		if persistErr := persistWorktreeMergeReceipt(*replacement); persistErr != nil {
+			return persistErr
+		}
 	}
 	return persistPreparedWorktreeMergeRebatchForPrepare(path, complete)
 }
@@ -818,9 +897,7 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	preparedOrAcknowledgedCollision := receipt.Phase == WorktreeMergePhasePrepare && receipt.PullRequest == "" &&
 		receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" &&
 		(receipt.Status == WorktreeMergePrepared || (collisionAcknowledged && receipt.Status == WorktreeMergePreparing))
-	publishedUnlanded := receipt.Phase == WorktreeMergePhaseLand &&
-		(receipt.Status == WorktreeMergeChecksFailed || receipt.Status == WorktreeMergePublished) &&
-		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA && receipt.LandingSHA == ""
+	publishedUnlanded := worktreeMergeReceiptPublishedUnlanded(receipt)
 	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
 		rebatch.ReceiptSHA256 != receiptHash || (!preparedOrAcknowledgedCollision && !publishedUnlanded) || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||

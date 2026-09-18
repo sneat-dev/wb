@@ -65,6 +65,37 @@ merge-queue policy. PR text comes from the exact candidate commits. Both routes
 wait for exact-head evidence, verify the fetched remote target receipt, and
 fast-forward a clean canonical checkout already on the target.
 
+Once a candidate is published on the PR route, the exact-head wait and the
+merge itself are driven by the same engine `wb pr land` uses
+(`awaitLandablePullRequest` / `mergeOrAdoptAutoMerge`), not a bespoke
+wait-then-`gh pr merge` sequence. GitHub auto-merge is armed on the published
+head before the wait starts, unless arming would bypass a guard (rewriting the
+branch, or the target having no server-enforced strict up-to-date policy
+without `--allow-unfenced`) — see `AutoMergeArmed` on the receipt. If the
+target advances while checks are pending, WB asks GitHub's own
+`update-branch` endpoint to merge the target into the published head — a
+different mechanism from the pre-publish `target_refreshes` refresh described
+above, which WB drives locally before a candidate is published. Every
+successful update-branch merge advances the receipt's `TargetSHA` to that
+merge's own target-side parent (and records the same before/after pair in
+`target_refreshes`) *before* the local candidate worktree is fast-forwarded —
+a dirty or missing worktree never blocks recording that the update already
+happened server-side. Getting this wrong would make WB attribute every pull
+request main absorbed in the meantime to this candidate's own landing. If WB
+was not present when GitHub performed the update-branch merge (a crash, a
+kill, or a lost connection), `resume` adopts it from the pull request's
+current head alone once it proves that head's first parent is the recorded
+candidate, its second parent is an ancestor of the current remote target, and
+its tree matches an ordinary merge of the two — never merely because the head
+changed. A landed pull request is accepted as this candidate's landing
+whatever exact head GitHub reports having merged (a foreign push while
+auto-merge was armed, or an update-branch this receipt never got to record),
+provided that head is proven to descend from the recorded candidate: resume
+never strands an already-landed change behind a conflict receipt merely
+because its recorded head is stale. `MergedBy` on the receipt names "github
+auto-merge" when GitHub performed the merge without a WB invocation waiting
+on it.
+
 Cleanup is opt-in with `--cleanup` and occurs only after the remote receipt,
 post-target checks, and required canonical synchronization. On interruption,
 run the receipt's exact `resume_args`. A landed failure retains before/after
@@ -148,7 +179,16 @@ source by ancestry. Candidate/ref drift, a closed or merged PR, target rewind
 or divergence, and landed candidates remain refusals. The replacement starts
 from the freshly fetched target and its append-only acknowledgement records
 both target SHAs; the original receipt and candidate stay unchanged. An
-unpublished prepared receipt still requires an unchanged target.
+unpublished prepared receipt still requires an unchanged target. Because the
+PR route now arms GitHub auto-merge (see above), a rebatch that replaced a
+published candidate closes the superseded pull request itself
+(`gh api --method PATCH .../pulls/{n} -f state=closed`) before the
+acknowledgement is persisted, and records it as `ClosedPullRequest` on the
+acknowledgement and `SupersededPullRequest` on the replacement receipt — an
+armed old PR left open could otherwise land its now-stale candidate alongside
+the replacement. If closing fails, the rebatch refuses rather than proceed;
+this is retirement of a superseded PR, not the disarm-on-red that stays
+forbidden.
 
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but

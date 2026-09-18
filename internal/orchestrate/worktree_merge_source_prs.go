@@ -67,6 +67,16 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 	delete(heads, receipt.Candidate.SHA)
 	result := make([]string, 0, len(heads))
 	for head := range heads {
+		// A merge commit's second parent that is already an ancestor of
+		// (or equal to) receipt.TargetSHA is an intermediate target tip
+		// from history that predates this landing, not a source PR THIS
+		// candidate absorbed - report it and reconcileAbsorbedSourcePullRequests
+		// would go looking for, and close, an unrelated already-merged
+		// pull request that happens to sit in the target's own ancestry.
+		alreadyInTarget, ancestorErr := isMergeAncestor(ctx, repository, head, receipt.TargetSHA)
+		if ancestorErr == nil && alreadyInTarget {
+			continue
+		}
 		result = append(result, head)
 	}
 	sort.Strings(result)
