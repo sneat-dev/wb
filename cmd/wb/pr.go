@@ -26,6 +26,7 @@ func newPRLandCmd() *cobra.Command {
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
+	var noUpdateBranch, noAutoMerge bool
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
 		Short: "Verify, land, and tidy up after one pull request",
@@ -59,6 +60,25 @@ those commits land as their own commits, in order, with the rest squashed into
 one aggregated commit that records the reason. Each kept commit must build on
 its own; one that does not is refused, naming a smaller set, because a commit
 that does not build is not a place anyone can bisect to.
+
+AUTO-MERGE IS ARMED FIRST. Before waiting on anything, wb arms GitHub
+auto-merge with the chosen merge method and WB's own commit message, pinned to
+the head it observed, so the pull request lands even if this process, its
+session or its host dies while the checks run — provided the target does not
+move again first: GitHub does not bring a behind branch up to date by itself,
+so a pull request left behind waits for the next 'wb pr land'. CI is the gate: a
+failed check refuses this invocation but auto-merge stays armed, so whoever
+pushes the fix gets it landed as soon as the required checks pass. Put any gate
+that must hold (an AI review, say) in the CI workflow. --no-auto-merge opts out.
+
+BEHIND IS NOT A REFUSAL. On a target that requires branches to be up to date, a
+candidate behind the target is brought up to date through GitHub's
+update-branch (with the observed head as a compare-and-swap), and the checks are
+waited on again, inside one --timeout budget. A target that moves again while
+the checks run is caught up again. Auto-merge is not armed where it would skip
+one of this verb's guards: with --keep-commits, or on a target without a strict
+up-to-date policy unless --allow-unfenced is explicit. A conflicting update refuses with
+update-branch-conflict. --no-update-branch refuses a behind candidate instead.
 
 REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,
 package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — lands on
@@ -133,6 +153,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Reason:              reason,
 				AllowUnfenced:       allowUnfenced,
 				Slice:               totalTimeout,
+				NoUpdateBranch:      noUpdateBranch,
+				NoAutoMerge:         noAutoMerge,
 				CheckPollInterval:   pollInterval,
 				Progress:            progress.report,
 				OperationProgress:   progress.operationReporter("pr land"),
@@ -179,6 +201,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; required with --keep-commits")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
+	command.Flags().BoolVar(&noUpdateBranch, "no-update-branch", false, "refuse a candidate that is behind the target instead of bringing it up to date")
+	command.Flags().BoolVar(&noAutoMerge, "no-auto-merge", false, "do not arm GitHub auto-merge; a wait that runs out of budget leaves the pull request for someone to land later")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")

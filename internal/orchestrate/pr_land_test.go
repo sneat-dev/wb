@@ -48,6 +48,11 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	// The fake GitHub commits in the remote itself (update-branch, another
+	// landing advancing main), so it needs an identity of its own: a CI runner
+	// has no global one to fall back on.
+	runEngineGit(t, remote, "config", "user.name", "WB Test")
+	runEngineGit(t, remote, "config", "user.email", "wb@example.test")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +169,7 @@ case "$*" in
     fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
-    printf '{"number":7,"state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
+    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
       "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
@@ -185,7 +190,8 @@ case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
     printf '%s\n' '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}' ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
-    printf '%s\n' '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}' ;;
+    if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
+    printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
   'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" ;;
@@ -200,6 +206,13 @@ case "$*" in
     ref="${4#*git/refs/heads/}"
     git --git-dir="$WB_LAND_REMOTE" update-ref -d "refs/heads/$ref" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100')
+    if [ -f "$S/advance-on-checks" ]; then
+      # Another landing reaches main while this candidate's checks run.
+      rm -f "$S/advance-on-checks"
+      tip=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)
+      next=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$tip^{tree}")" -p "$tip" -m "landed mid-wait")
+      git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$next"
+    fi
     printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")" ;;
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
@@ -217,6 +230,9 @@ case "$*" in
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' \
       "$status" "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$left")" "$(git --git-dir="$WB_LAND_REMOTE" merge-base "$left" "$right" 2>/dev/null || git --git-dir="$WB_LAND_REMOTE" rev-parse "$left")" ;;
   'api --method PUT repos/acme/app/pulls/7/merge'*)
+    if [ "$(cat "$S/merged")" = true ]; then
+      printf '{"message":"Pull Request is not mergeable"}\n'; exit 1
+    fi
     requested=""
     for arg in "$@"; do
       case "$arg" in sha=*) requested="${arg#sha=}" ;; esac
@@ -229,6 +245,47 @@ case "$*" in
     printf 'true' >"$S/merged"
     printf 'closed' >"$S/pr-state"
     printf '{"sha":"%s","merged":true,"message":"Pull Request successfully merged"}\n' "$requested" ;;
+  'api graphql'*)
+    # Auto-merge is armed and withdrawn through GraphQL. The fixture records
+    # that it was asked, so a test can assert arming without a real GitHub.
+    case "$*" in
+      *enablePullRequestAutoMerge*)
+        if [ -f "$S/auto-merge-unavailable" ]; then
+          printf '{"errors":[{"message":"Pull request Auto merge is not allowed for this repository"}]}\n' >&2
+          exit 1
+        fi
+        printf 'armed' >"$S/auto-merge"
+        printf '%s' "$*" >"$S/auto-merge-args"
+        if [ -f "$S/github-merges-on-arm" ]; then
+          # GitHub merging the moment it is armed on an already-green head:
+          # the race a real auto-merge wins against WB's confirming poll.
+          git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$(cat "$S/head")"
+          printf 'true' >"$S/merged"
+          printf 'closed' >"$S/pr-state"
+        fi
+        printf '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-09-18T00:00:00Z"}}}}}\n' ;;
+      *) echo "unexpected graphql: $*" >&2; exit 2 ;;
+    esac ;;
+  'api --method PUT repos/acme/app/pulls/7/update-branch'*)
+    if [ -f "$S/update-conflict" ]; then
+      printf '{"message":"merge conflict between base and head"}\n' >&2; exit 1
+    fi
+    expected=""
+    for arg in "$@"; do
+      case "$arg" in expected_head_sha=*) expected="${arg#expected_head_sha=}" ;; esac
+    done
+    if [ "$expected" != "$(cat "$S/head")" ]; then
+      printf '{"message":"expected head sha didn'"'"'t match current head ref"}\n' >&2; exit 1
+    fi
+    # Move the branch onto main, exactly as GitHub would, and publish the new
+    # head so the verb re-reads a different SHA.
+    git --git-dir="$WB_LAND_REMOTE" fetch . refs/heads/main >/dev/null 2>&1 || true
+    merged=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$(cat "$S/head")^{tree}")" \
+      -p "$(cat "$S/head")" -p "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" -m "Merge main into feature")
+    git --git-dir="$WB_LAND_REMOTE" update-ref "refs/heads/$(cat "$S/head-ref" 2>/dev/null || echo feature)" "$merged"
+    printf '%s' "$merged" >"$S/head"
+    printf 'updated' >"$S/update-branch"
+    printf '{"message":"Updating pull request branch.","url":"https://api.github.com/repos/acme/app/pulls/7"}\n' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
@@ -936,6 +993,9 @@ func TestLandReportsAFindingWhenTheWorktreeCannotBeRetired(t *testing.T) {
 	}
 	if fixture.readState(t, "merged") != "false" {
 		t.Fatal("the refusal must happen before the merge, while refusing is still free")
+	}
+	if fixtureHasMarker(fixture, "auto-merge") {
+		t.Fatal("auto-merge was armed before the cleanup pre-flight refused; GitHub would merge it anyway")
 	}
 	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
 		t.Fatalf("a refused landing must leave the worktree alone: %v", statErr)
