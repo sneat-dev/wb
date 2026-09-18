@@ -10855,6 +10855,154 @@
       "notes": "The JSON form is intended for provenance checks and automation."
     },
     {
+      "id": "wb.wait.agent",
+      "feature_refs": [
+        "spec/ideas/delegated-waiting-and-agent-wake.md"
+      ],
+      "since": "unreleased",
+      "notes": "The verb-first spelling of `wb agent await`. It is built from the same constructor, so the two spellings are one implementation and cannot drift; a receipt produced through either is the same receipt. The older spelling keeps working. This exists because WB spelled waiting three ways with nothing listing them together, and an agent cannot choose a verb it never sees. Behaviour, limits and evidence are exactly those of `wb agent await`; see wb.agent.await.",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb wait agent",
+              "flags": [
+                "--format",
+                "--json",
+                "--to",
+                "--wait-timeout"
+              ],
+              "modes": [
+                "Runs the identical implementation as `wb agent await`, which remains available",
+                "Accepts the same flags and produces the same result and exit codes as that command"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb wait agent --help",
+              "contains": [
+                "without polling",
+                "never claims success",
+                "one SSH connection"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "# WB merge",
+              "examples": [
+                "wb wait agent agt-0123456789abcdef"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbSpellingsReachTheSameImplementation",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbListsEveryKindItCanWaitFor",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      }
+    },
+    {
+      "id": "wb.wait.checks",
+      "feature_refs": [
+        "spec/ideas/delegated-waiting-and-agent-wake.md"
+      ],
+      "since": "unreleased",
+      "notes": "The verb-first spelling of `wb ci wait`. It is built from the same constructor, so the two spellings are one implementation and cannot drift; a receipt produced through either is the same receipt. The older spelling keeps working. This exists because WB spelled waiting three ways with nothing listing them together, and an agent cannot choose a verb it never sees. Behaviour, limits and evidence are exactly those of `wb ci wait`; see wb.ci.wait.",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb wait checks",
+              "flags": [
+                "--format",
+                "--head",
+                "--interval",
+                "--json",
+                "--pr",
+                "--repo",
+                "--slice",
+                "--target"
+              ],
+              "modes": [
+                "Runs the identical implementation as `wb ci wait`, which remains available",
+                "Accepts the same flags and produces the same result and exit codes as that command"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb wait checks --help",
+              "contains": [
+                "never ten",
+                "detached watcher",
+                "terminal reread"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "# WB merge",
+              "examples": [
+                "wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbSpellingsReachTheSameImplementation",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbListsEveryKindItCanWaitFor",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      }
+    },
+    {
       "id": "wb.wait.list",
       "feature_refs": [
         "spec/ideas/delegated-waiting-and-agent-wake.md"
@@ -10935,6 +11083,78 @@
               "path": "internal/waitregistry/registry_test.go",
               "name": "TestListNeverDeletesAndPruneRemovesOnlyStale",
               "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      }
+    },
+    {
+      "id": "wb.wait.operation",
+      "feature_refs": [
+        "spec/ideas/delegated-waiting-and-agent-wake.md"
+      ],
+      "since": "unreleased",
+      "notes": "The verb-first spelling of `wb daemon operation wait`. It is built from the same constructor, so the two spellings are one implementation and cannot drift; a receipt produced through either is the same receipt. The older spelling keeps working. This exists because WB spelled waiting three ways with nothing listing them together, and an agent cannot choose a verb it never sees. Behaviour, limits and evidence are exactly those of `wb daemon operation wait`; see wb.daemon.operation.wait.",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb wait operation",
+              "flags": [
+                "--after-cursor",
+                "--format",
+                "--json",
+                "--progress",
+                "--progress-file",
+                "--timeout"
+              ],
+              "modes": [
+                "Runs the identical implementation as `wb daemon operation wait`, which remains available",
+                "Accepts the same flags and produces the same result and exit codes as that command"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb wait operation --help",
+              "contains": [
+                "terminal state"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "# WB merge",
+              "examples": [
+                "wb wait operation op-0123456789abcdef"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbSpellingsReachTheSameImplementation",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/wait_verb_test.go",
+              "name": "TestWaitVerbListsEveryKindItCanWaitFor",
+              "kind": "integration"
             }
           ],
           "limitation": null

@@ -60,16 +60,30 @@ the case worth seeing, because nothing is watching for that event any more.
 
 ### Which waiting verb
 
-| Situation | Verb |
-|---|---|
-| Wait for checks, then land the PR | `wb pr land <owner/repo#n>` |
-| Just tell me when a PR moves | `wb wait pr <owner/repo#n>...` |
-| Merge evidence for an exact head SHA | `wb ci wait --repo … --head …` |
-| A dispatched agent run finishing | `wb agent await <agent-id>` |
-| A durable daemon operation finishing | `wb daemon operation wait <id>` |
+`wb wait --help` lists everything WB can wait for. One place, so there is
+nothing to remember:
 
-Run any of them as a background command: the wait is bounded, so it terminates
-and the harness resumes you with the result.
+| Situation | Verb | Older spelling |
+|---|---|---|
+| Wait for checks, then land the PR | `wb pr land <owner/repo#n>` | — |
+| Just tell me when a PR moves | `wb wait pr <owner/repo#n>...` | — |
+| Merge evidence for an exact head SHA | `wb wait checks --repo … --head …` | `wb ci wait` |
+| A dispatched agent run finishing | `wb wait agent <agent-id>` | `wb agent await` |
+| A durable daemon operation finishing | `wb wait operation <id>` | `wb daemon operation wait` |
+| What am I waiting for right now? | `wb wait list` | — |
+
+```sh
+wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json
+wb wait agent agt-0123456789abcdef
+wb wait operation op-0123456789abcdef
+```
+
+The older spellings still work and run the same code — they are the same
+command reached by a different name, not a copy. Prefer the verb-first form in
+new work so the next reader finds the rest of the family.
+
+Note which is which: `wb wait checks` is the authoritative exact-head receipt
+used as merge evidence. `wb wait pr` reports and is **not** merge evidence.
 
 ## Fast path
 
