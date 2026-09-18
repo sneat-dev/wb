@@ -37,6 +37,14 @@ func (adapter depsCovRuntimeAdapter) inspect(context.Context, string, string, Ta
 	return adapter.depsCovRuntimeInspectDecisions, adapter.depsCovRuntimeInspectErr
 }
 
+// inspectWorkingTree replays the same scripted inspection as inspect. These
+// runtime tests drive exactSetHandler, which chooses between the two by route
+// and does not vary the decisions it expects back, so a second script would add
+// a knob no test here sets and could drift out of step with the first.
+func (adapter depsCovRuntimeAdapter) inspectWorkingTree(context.Context, string, Target, Options) ([]Decision, error) {
+	return adapter.depsCovRuntimeInspectDecisions, adapter.depsCovRuntimeInspectErr
+}
+
 func (adapter depsCovRuntimeAdapter) apply(context.Context, string, Target, Options) ([]Decision, error) {
 	return adapter.depsCovRuntimeApplyDecisions, adapter.depsCovRuntimeApplyErr
 }

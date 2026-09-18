@@ -169,12 +169,25 @@ type exactSetHandler struct {
 
 func (handler exactSetHandler) Inspect(ctx context.Context, canonical, base string, _ orchestrate.Repository) (orchestrate.Assessment[[]Decision], error) {
 	decisions, err := handler.adapter.inspect(ctx, canonical, base, handler.target, handler.options)
+	return exactSetAssessment(decisions, err, base)
+}
+
+// InspectWorkingTree plans an explicit managed-worktree request from the
+// checkout's live manifest bytes, including staged and unstaged edits. This
+// is deliberately separate from Inspect, whose canonical Git-tree view is
+// the right authority for isolated dependency campaigns.
+func (handler exactSetHandler) InspectWorkingTree(ctx context.Context, worktree string, _ orchestrate.Repository) (orchestrate.Assessment[[]Decision], error) {
+	decisions, err := handler.adapter.inspectWorkingTree(ctx, worktree, handler.target, handler.options)
+	return exactSetAssessment(decisions, err, "the supplied worktree")
+}
+
+func exactSetAssessment(decisions []Decision, err error, source string) (orchestrate.Assessment[[]Decision], error) {
 	assessment := orchestrate.Assessment[[]Decision]{Metadata: decisions}
 	if err != nil {
 		return assessment, err
 	}
 	if len(decisions) == 0 {
-		assessment.Reason = fmt.Sprintf("dependency absent on %s", base)
+		assessment.Reason = fmt.Sprintf("dependency absent on %s", source)
 		return assessment, nil
 	}
 	assessment.Applicable = true
@@ -194,6 +207,24 @@ func (handler exactSetHandler) Inspect(ctx context.Context, canonical, base stri
 
 func (handler exactSetHandler) Apply(ctx context.Context, worktree string, _ orchestrate.Repository) ([]Decision, error) {
 	return handler.adapter.apply(ctx, worktree, handler.target, handler.options)
+}
+
+func (exactSetHandler) AppliedFiles(decisions []Decision) []string {
+	files := make(map[string]bool)
+	for _, decision := range decisions {
+		switch decision.Action {
+		case "updated", "lockfile_regenerated":
+			if decision.File != "" {
+				files[decision.File] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(files))
+	for file := range files {
+		result = append(result, file)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (handler exactSetHandler) ValidatePublishable(_ context.Context, worktree string, _ orchestrate.Repository) error {
