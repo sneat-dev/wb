@@ -94,11 +94,33 @@ The session then banners what it has accepted —
 So the harness calls an unvetted injecting channel *dangerous* for precisely the
 reason this document does: injected messages carry session authority.
 
-**Consequence for WB.** A WB daemon channel cannot simply be an MCP server
-operators point at, because every agent would then have to run with
-`--dangerously-load-development-channels` permanently enabled — disabling a
-safety gate fleet-wide to gain a notification. It has to ship as an allowlisted
-plugin channel, or not use this transport.
+**Consequence for WB.** An earlier draft of this paragraph said the `server:`
+route would mean "disabling a safety gate fleet-wide". That overstated it, and
+the correction matters because it changes the argument from a safety one to a
+convenience one.
+
+`--dangerously-load-development-channels` takes its own `<servers...>`
+allowlist, so it enables specific named channels rather than switching
+protection off. It then prompts interactively:
+
+> WARNING: Loading development channels […] is for local channel development
+> only. Do not use this option to run channels you have **downloaded off the
+> internet**.
+
+So the gate's stated concern is running *untrusted code* as a channel, not
+receiving untrusted *content* through one. A WB daemon channel is first-party
+software already installed on the machine, which is precisely the local case
+the flag exists for.
+
+The real cost of the `server:` route is therefore narrower: an interactive
+confirmation on every invocation — awkward for agents started
+non-interactively — plus an allowlist entry per machine. That is an argument
+for eventually shipping WB as an allowlisted plugin channel, but a convenience
+argument, not a safety one.
+
+**The content risk is unaffected by any of this.** Whichever transport is used,
+a message that injects directly into a session arrives with session authority,
+so the closed-vocabulary rule below stands on its own.
 
 ### The constraint that follows
 
@@ -183,8 +205,9 @@ No provider prose. Details are fetched, never pushed.
   defence and must be enforced in WB. The "inject directly in this session"
   wording suggests it cannot, but this has not been tested.
 - What does publishing WB as an allowlisted plugin channel actually require?
-  That is now on the critical path, since the `server:` route costs every
-  operator a permanently disabled safety gate.
+  Worth knowing, though the `server:` route is workable meanwhile: its cost is
+  a per-invocation confirmation and a per-machine allowlist entry, not a
+  disabled protection.
 - Does the binding set need an override, for when the founder wants a session to
   proceed anyway?
 - Should delivery be per-session or per-effort? A session dies; an effort does
