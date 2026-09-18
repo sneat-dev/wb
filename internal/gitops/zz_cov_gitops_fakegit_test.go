@@ -5,11 +5,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// stubPullSleep replaces the retry-backoff seam with a no-op for the
+// duration of the test, so retry-exhaustion paths run at full speed while
+// still exercising every attempt Pull would otherwise wait between.
+func stubPullSleep(t *testing.T) {
+	t.Helper()
+	original := pullSleep
+	pullSleep = func(time.Duration) {}
+	t.Cleanup(func() { pullSleep = original })
+}
 
 // Pull retries a transport failure and returns success once a later attempt
 // gets through, so one dropped SSH handshake does not fail a whole sync.
 func TestLgCovPullRetriesTransientFailureThenSucceeds(t *testing.T) {
+	stubPullSleep(t)
 	state := filepath.Join(t.TempDir(), "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
@@ -45,6 +57,7 @@ exit 1
 // Once the five attempts are exhausted the last transport error is returned, so
 // the caller can report the real failure instead of a silent success.
 func TestLgCovPullReturnsLastErrorAfterExhaustingRetries(t *testing.T) {
+	stubPullSleep(t)
 	state := filepath.Join(t.TempDir(), "attempts")
 	t.Setenv("LGCOV_PULL_STATE", state)
 
@@ -102,6 +115,7 @@ exit 1
 // The unpushed-work probe is built from several git calls; each failure must be
 // surfaced rather than silently reported as "no unpushed work".
 func TestLgCovUnpushedWorkSurfacesGitFailures(t *testing.T) {
+	t.Parallel()
 	headRef := "refs/heads/main\t0123456789012345678901234567890123456789\t\t"
 
 	t.Run("remote ref probe fails", func(t *testing.T) {
@@ -184,6 +198,7 @@ exit 0
 }
 
 func TestLgCovUnpushableBranchesErrorsOutsideRepository(t *testing.T) {
+	t.Parallel()
 	if _, err := unpushableBranches(t.TempDir()); err == nil {
 		t.Fatal("unpushableBranches outside a git repository should error")
 	}
@@ -206,6 +221,7 @@ exit 0
 	}
 
 	t.Run("rev-list fails", func(t *testing.T) {
+		t.Parallel()
 		lgCovTrackingGit(t, "exit 1")
 		got, err := Tracking(t.TempDir())
 		if err != nil {
@@ -228,6 +244,7 @@ exit 0
 		{name: "non-numeric behind", body: `echo "1 y"; exit 0`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			lgCovTrackingGit(t, tc.body)
 			if _, err := Tracking(t.TempDir()); err == nil {
 				t.Fatalf("Tracking with rev-list output %q should error", tc.body)
@@ -239,6 +256,7 @@ exit 0
 // Status composes git status, git stash list, and the unpushed probe; a failure
 // in any of them must be returned, not flattened into an empty-looking status.
 func TestLgCovStatusSurfacesGitFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("status fails", func(t *testing.T) {
 		lgCovGitIdentity(t)
 		if _, err := Status(t.TempDir()); err == nil {
@@ -277,6 +295,7 @@ exit 0
 // AddCommit returns an error when it cannot tell whether anything was staged,
 // and when the commit itself fails, instead of reporting an idempotent no-op.
 func TestLgCovAddCommitSurfacesGitFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("staged diff fails", func(t *testing.T) {
 		lgCovFakeGit(t, `
 case "$1" in
@@ -337,6 +356,7 @@ exit 0
 }
 
 func TestLgCovLocalStateErrorsOutsideRepository(t *testing.T) {
+	t.Parallel()
 	if _, _, err := LocalState(t.TempDir()); err == nil {
 		t.Fatal("LocalState outside a git repository should error")
 	}

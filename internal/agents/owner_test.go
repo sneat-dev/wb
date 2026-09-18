@@ -174,6 +174,7 @@ func TestRunOwnerRecordsASuccessfulRun(t *testing.T) {
 }
 
 func TestRunOwnerRecordsFailureTimeoutAndUnfinishedTurns(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		task      string
@@ -367,6 +368,7 @@ func TestRunOwnerRunsToCompletionWithoutABound(t *testing.T) {
 }
 
 func TestBoundedLogCapsGrowthWithoutFailingTheWriter(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	file, err := os.Create(path)
 	if err != nil {
@@ -422,12 +424,14 @@ func TestRunOwnerSurvivesAMissingFinalMessage(t *testing.T) {
 }
 
 func TestExitCodeOfToleratesAProcessThatNeverStarted(t *testing.T) {
+	t.Parallel()
 	if code := exitCodeOf(&exec.Cmd{}); code != nil {
 		t.Fatalf("exitCodeOf on a process that never started = %v, want nil", *code)
 	}
 }
 
 func TestSummarizeLogToleratesAMissingLog(t *testing.T) {
+	t.Parallel()
 	if summary := summarizeLog(filepath.Join(t.TempDir(), "absent.jsonl")); summary.TurnCompleted || summary.Usage != nil {
 		t.Fatalf("a missing log must yield an empty summary: %#v", summary)
 	}
@@ -519,6 +523,14 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group termination is POSIX-only")
 	}
+	// The real stopGrace exists to give a well-behaved worker time to exit on
+	// its own; this test's whole point is a worker that never will, so
+	// shrinking the grace (and its poll interval) only removes dead wall-clock
+	// time, it never changes what is exercised: StopRun still polls, still
+	// times the grace period out, and still escalates to SIGKILL.
+	originalGrace, originalPoll := stopGrace, stopPollInterval
+	stopGrace, stopPollInterval = 200*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { stopGrace, stopPollInterval = originalGrace, originalPoll })
 	directory := t.TempDir()
 	path := filepath.Join(directory, HarnessCodex)
 	// The loop keeps the shell itself alive: a bare `sleep` would be killed by
@@ -584,6 +596,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 }
 
 func TestStopRunRefusesARunWithNoLiveWorker(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	if err := store.Create(record); err != nil {
@@ -602,6 +615,7 @@ func TestStopRunRefusesARunWithNoLiveWorker(t *testing.T) {
 }
 
 func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the detached owner uses a POSIX session")
 	}
@@ -631,6 +645,7 @@ func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
 }
 
 func TestProcessAliveIsFalseForNonsensePIDs(t *testing.T) {
+	t.Parallel()
 	for _, pid := range []int{0, -1, -9999} {
 		if processAlive(pid) {
 			t.Fatalf("processAlive(%d) = true", pid)
@@ -642,6 +657,7 @@ func TestProcessAliveIsFalseForNonsensePIDs(t *testing.T) {
 }
 
 func TestTerminateOwnerIgnoresAnAlreadyGoneProcessGroup(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are a POSIX concept")
 	}
