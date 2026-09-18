@@ -62,6 +62,45 @@ Three consequences, all different from the earlier draft:
   re-establishing context. Taken to its limit the earlier claim drives cost to
   zero, which is its own refutation.
 
+### The first lever is `W̄` itself, and it is a setting
+
+The cost law above treats `W̄` as a property of the harness. It is not — it is a
+number you choose, and choosing it badly is the single largest line on the bill.
+
+Measured across 24 session transcripts on this machine: **mean context per turn
+is ~500K tokens, and cache reads are 80–85% of weighted cost in every expensive
+session.** The cause is documented, not mysterious. On a model with a 1M context
+window the default auto-compact threshold is about **967K tokens**, so a session
+of several thousand turns compacts two or three times in total. The prefix
+spends most of its life near the ceiling, and every turn pays to re-read it.
+
+The threshold is directly configurable — `autoCompactWindow` in settings, or
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the environment. It is capped at the
+model's real context window, so it binds on 1M-window models and silently does
+nothing on a 200K one. Sonnet 5 runs at 1M unconditionally on the direct API, so
+this reaches the long Sonnet implementation sessions, which are the most
+expensive ones measured, not only the Opus ones.
+
+Set to 400K on 2026-09-18. That drops mean context per turn from ~500K to
+roughly 220K and takes about half off the dominant term, for no code.
+
+This supersedes an explicit rejection in an earlier draft, which is recorded
+below under Alternatives Considered. The rejection reasoned that compaction
+"attacks prefix size, not turn count". That was true and beside the point: when
+the prefix is a 500K multiplier on every one of several thousand turns, prefix
+size *is* the bill. The second half of the rejection — that compaction is lossy
+where judgement lives — is a real cost, but it is smaller here than it looks,
+because the state that must survive is already on disk by construction:
+worktrees, WB manifests and work logs, SpecScore artifacts. Keeping that state
+durable and re-readable is what the rest of this strategy is for.
+
+It is not free, and the honest failure mode is that an over-tight window makes
+the orchestrator re-read files it has already read, converting a cache read into
+a fresh read plus an output. That is why the window was set to 400K rather than
+the 200K that would maximise the arithmetic saving, and why the next step is
+measurement — `/context` in a long session, and the cache-read line in usage —
+before tightening further.
+
 One mechanism the earlier draft added and this one removes: cache-expiry misses.
 A turn that blocks longer than the cache TTL would pay a cache *write* rather
 than a read. But the harness in use here runs a **1-hour** TTL, not the 5-minute
@@ -219,15 +258,21 @@ Three constraints make that safe rather than merely cheap:
 
 ## Alternatives Considered
 
-- **Wait for bigger context windows or cheaper orchestrator models.** Rejected as
-  a strategy: the cost is quadratic in turns, so a larger window postpones the
-  ceiling without changing the curve. A cheaper orchestrator is actively worse —
-  brief quality is the main determinant of worker retries, and retries are the
-  expensive failure mode.
-- **Compact or summarise the orchestrator's context aggressively.** Rejected as
-  the primary lever: it attacks prefix size, not turn count, and it is lossy
-  exactly where judgement lives. It is a useful backstop and already happens
-  implicitly; it is not a strategy.
+- **Wait for bigger context windows or cheaper orchestrator models.** Rejected,
+  and a bigger window is worse than neutral: the default compaction threshold
+  tracks the window, so a larger window raises `W̄` and every turn pays more to
+  re-read it. A window is only a benefit once its compaction threshold is set
+  deliberately rather than inherited. A cheaper orchestrator is separately
+  wrong — brief quality is the main determinant of worker retries, and retries
+  are the expensive failure mode.
+- **Compact or summarise the orchestrator's context aggressively.** *Rejected in
+  an earlier draft, and that rejection was wrong.* It read: "it attacks prefix
+  size, not turn count, and it is lossy exactly where judgement lives. It is a
+  useful backstop and already happens implicitly; it is not a strategy." The
+  first clause is true and irrelevant — prefix size is 80–85% of the bill — and
+  "already happens implicitly" was the actual error: it happens at a default
+  threshold of ~967K, which is the problem, not the mitigation. Capping the
+  compaction window is now the first lever, above.
 - **Cap orchestrator turns inside WB.** Rejected on its own: a cap without
   somewhere to put the work truncates an effort mid-flight, and
   [agent-lane-verbs](agent-lane-verbs.md) records that stopping after
@@ -287,7 +332,6 @@ exists to stop trusting.
 ## Not Doing (and Why)
 
 - Adding a `--follow` live-tail mode to `wb agent dispatch` — dispatch is detached by contract, the worker's `events.jsonl` is already append-only and tailable locally, and if a live mode is ever justified it belongs additively on `wb agent logs`, attachable to any run at any time
-- Compaction or summarisation of orchestrator context as the primary lever — it reduces prefix size rather than turn count, and is lossy where judgement matters
 - Judging whether a worker's diff is correct inside WB — WB reports observed process facts; correctness stays SpecScore's or the caller's decision
 - Teaching WB what a review, an acceptance criterion or a verdict is — phases carry exit codes and artifact paths, nothing more, so WB stays useful with no spec tree present
 - Making WB depend on SpecScore, or SpecScore depend on WB — either coupling costs the standalone case on both sides
@@ -297,7 +341,8 @@ exists to stop trusting.
 
 | Tier | Assumption | How to validate |
 |------|------------|-----------------|
-| Must-be-true | Turn count, not payload size, dominates orchestrator cost, so removing turns has a super-linear payoff | Regress recorded `cost-state` totals against turn count and against total tool-output bytes across past sessions; the quadratic-in-turns term should dominate |
+| Must-be-true | Capping the compaction window lowers total cost without a matching rise in re-read work — the orchestrator does not simply re-fetch what it compacted away | Compare mean context per turn and cache-read tokens before and after the 400K cap over comparable sessions, and count turns that re-read a file already read earlier in the same session |
+| Must-be-true | Turn count and payload size both matter, and turn removal pays off linearly rather than super-linearly | Regress recorded `cost-state` totals against turn count and against mean context per turn; a linear-in-turns model with prefix size as multiplier should fit, and the quadratic term should not be needed |
 | Must-be-true | A bounded receipt of WB-observed facts is sufficient for an orchestrator to accept or reject a delegated task without reading the diff or transcript | Run delegated tasks to completion on receipt alone, and record every case where the orchestrator had to open raw evidence anyway, and why |
 | Should-be-true | Total fleet cost falls, rather than moving from the orchestrator to workers and reviewers | Compare end-to-end cost per landed PR, counting worker, reviewer and retry runs, before and after — not orchestrator cost alone |
 | Should-be-true | Machine-checkable preconditions, including consumer ordering read from `wb deps`, can decide worker-side landing safely with no unsupervised conflict resolution on a shared target | Count holds versus auto-lands over a sample; confirm no auto-land involved a non-trivial merge, and no provider auto-landed ahead of an unlanded consumer the graph knew about |
