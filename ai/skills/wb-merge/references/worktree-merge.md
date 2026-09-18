@@ -179,7 +179,16 @@ source by ancestry. Candidate/ref drift, a closed or merged PR, target rewind
 or divergence, and landed candidates remain refusals. The replacement starts
 from the freshly fetched target and its append-only acknowledgement records
 both target SHAs; the original receipt and candidate stay unchanged. An
-unpublished prepared receipt still requires an unchanged target.
+unpublished prepared receipt still requires an unchanged target. Because the
+PR route now arms GitHub auto-merge (see above), a rebatch that replaced a
+published candidate closes the superseded pull request itself
+(`gh api --method PATCH .../pulls/{n} -f state=closed`) before the
+acknowledgement is persisted, and records it as `ClosedPullRequest` on the
+acknowledgement and `SupersededPullRequest` on the replacement receipt — an
+armed old PR left open could otherwise land its now-stale candidate alongside
+the replacement. If closing fails, the rebatch refuses rather than proceed;
+this is retirement of a superseded PR, not the disarm-on-red that stays
+forbidden.
 
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but

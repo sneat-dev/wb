@@ -32,7 +32,18 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 }
 
 func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, string, error) {
-	view, err := ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
+	// The shared engine (awaitLandablePullRequest / mergeOrAdoptAutoMerge)
+	// path-builds every GraphQL/REST call it issues from this identity
+	// directly - it never re-parses it the way ReadPullRequest/PullRequestNumber
+	// callers do. `wb pr land` always hands it a bare number for exactly this
+	// reason; receipt.PullRequest is the pull request's full HTML URL, so it
+	// must be reduced to the bare number here, once, before it is threaded
+	// through.
+	number, numberErr := PullRequestNumber(receipt.PullRequest)
+	if numberErr != nil {
+		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("resolve published pull request number: %w", numberErr))
+	}
+	view, err := ReadPullRequest(ctx, receipt.Repository, number)
 	if err != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("read published pull request: %w", err))
 	}
@@ -56,7 +67,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 	landOptions := PullRequestLandOptions{
 		Repository:          receipt.Repository,
-		PullRequest:         receipt.PullRequest,
+		PullRequest:         number,
 		ProjectsRoot:        options.ProjectsRoot,
 		MergeMethod:         method,
 		MergeMethodExplicit: true,
@@ -71,7 +82,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 
 	evidence := map[string]string{}
-	updatedView, waited, autoMergeArmed, mergedByGitHub, updateRefusal, err := awaitLandablePullRequest(ctx, landOptions, view, receipt.PullRequest, title, body, evidence)
+	updatedView, waited, autoMergeArmed, mergedByGitHub, updateRefusal, err := awaitLandablePullRequest(ctx, landOptions, view, number, title, body, evidence)
 	receipt.AutoMergeArmed = receipt.AutoMergeArmed || autoMergeArmed
 	if err != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, err)
@@ -99,7 +110,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 
 	head := updatedView.Head.SHA
-	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, receipt.PullRequest, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
+	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
 	if mergeErr != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, mergeErr)
 	}

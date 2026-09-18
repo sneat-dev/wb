@@ -239,6 +239,12 @@ type WorktreeMergeReceipt struct {
 	// invocation's own merge write — "github auto-merge" when armed
 	// auto-merge landed it while WB was waiting, resuming, or absent.
 	MergedBy string `json:"merged_by,omitempty"`
+	// SupersededPullRequest names a prior candidate's own pull request that
+	// a rebatch replacing it closed (red-team finding M6), so its armed
+	// auto-merge could not land it alongside this replacement. Empty when
+	// this candidate is not a rebatch replacement of a published-unlanded
+	// original.
+	SupersededPullRequest string `json:"superseded_pull_request,omitempty"`
 	// RebatchOf binds this candidate to an immutable prepared receipt whose
 	// source set was safely expanded. The old receipt is never rewritten.
 	RebatchOf           string                   `json:"rebatch_of,omitempty"`
@@ -527,7 +533,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 					}
 					return existing, ancestorErr
 				}
-				if err := ensurePreparedWorktreeMergeRebatch(rechecked, current); err != nil {
+				if err := ensurePreparedWorktreeMergeRebatch(ctx, rechecked, &current); err != nil {
 					return existing, err
 				}
 				return current, nil
@@ -912,7 +918,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		return receipt, err
 	}
 	if rebatch != nil {
-		if err := ensurePreparedWorktreeMergeRebatch(rebatch, receipt); err != nil {
+		if err := ensurePreparedWorktreeMergeRebatch(ctx, rebatch, &receipt); err != nil {
 			return receipt, err
 		}
 	}

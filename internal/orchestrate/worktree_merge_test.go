@@ -3178,6 +3178,118 @@ func TestPrepareWorktreeMergeRebatchesExactOpenChecksFailedReceipt(t *testing.T)
 	}
 }
 
+// TestPrepareWorktreeMergeRebatchClosesSupersededPullRequest proves red-team
+// finding M6: rebatching a published-unlanded candidate (one whose PR-land
+// engine wait has already very likely armed GitHub auto-merge) must close
+// that candidate's own pull request, so its armed auto-merge cannot land it
+// alongside the replacement. Disarm-on-red stays forbidden — this is
+// retirement of a superseded candidate, not a reaction to a red check.
+func TestPrepareWorktreeMergeRebatchClosesSupersededPullRequest(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "close-pr-rebatch-first", "feature/close-pr-rebatch-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "close-pr-rebatch-second", "feature/close-pr-rebatch-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	// Published-unlanded with an armed-auto-merge-shaped status: the PR-land
+	// engine arms auto-merge before it ever waits for checks, so reaching
+	// checks_failed already implies the pull request's auto-merge is armed.
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	first.AutoMergeArmed = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	closedLog := filepath.Join(t.TempDir(), "closed-pr.log")
+	t.Setenv("WB_TEST_CLOSED_PR_LOG", closedLog)
+
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.SupersededPullRequest != "41" {
+		t.Fatalf("replacement receipt did not record the closed superseded pull request: %+v", replacement)
+	}
+	closedCalls, readErr := os.ReadFile(closedLog)
+	if readErr != nil || !strings.Contains(string(closedCalls), "pulls/41") {
+		t.Fatalf("superseded pull request was not closed: err=%v calls=%q", readErr, string(closedCalls))
+	}
+	rebatch, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebatch.ClosedPullRequest != "41" {
+		t.Fatalf("rebatch acknowledgement did not record the closed pull request: %+v", rebatch)
+	}
+
+	// Resuming (recovering) the same rebatch must not attempt to close the
+	// pull request a second time.
+	if err := os.Remove(closedLog); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePreparedWorktreeMergeRebatch(context.Background(), &WorktreeMergePreparedRebatch{ReceiptPath: first.ReceiptPath}, &replacement); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(closedLog); !os.IsNotExist(statErr) {
+		t.Fatalf("re-ensuring an already-closed rebatch re-invoked the close call: statErr=%v", statErr)
+	}
+}
+
+// TestPrepareWorktreeMergeRebatchRefusesWhenClosingTheSupersededPullRequestFails
+// proves the other half of M6: the rebatch must refuse — never silently
+// proceed with a live stale candidate — when closing its pull request fails.
+func TestPrepareWorktreeMergeRebatchRefusesWhenClosingTheSupersededPullRequestFails(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "close-pr-fail-first", "feature/close-pr-fail-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "close-pr-fail-second", "feature/close-pr-fail-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	t.Setenv("WB_TEST_CLOSE_PR_FAIL", "1")
+
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "close superseded pull request") {
+		t.Fatalf("rebatch with a failing pull-request closure = %v, want a refusal naming the closure", err)
+	}
+	if current, readErr := os.ReadFile(first.ReceiptPath); readErr != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("original receipt changed despite refused rebatch: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(rebatchPath(first.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatal("a refused rebatch left behind an acknowledgement")
+	}
+}
+
 func TestPrepareWorktreeMergeRebatchesExactOpenPublishedPendingReceipt(t *testing.T) {
 	fixture := newEngineFixture(t)
 	firstSource := createMergeSource(t, fixture, "pending-rebatch-first", "feature/pending-rebatch-first", "first.txt", "first\n")
@@ -3707,6 +3819,13 @@ case "$*" in
   'api --paginate repos/acme/app/commits/'*'/pulls'|'api repos/acme/app/commits/'*'/pulls?per_page=100 --include') printf '%s\n' '[]' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
     printf '{"number":41,"state":"%s","merged":%s,"draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "${WB_TEST_PR_STATE:-open}" "${WB_TEST_PR_MERGED:-false}" "$WB_TEST_CANDIDATE_SHA" ;;
+  'api --method PATCH repos/acme/app/pulls/'*' -f state=closed')
+    if [ -n "${WB_TEST_CLOSE_PR_FAIL:-}" ]; then
+      echo '{"message":"Validation Failed"}' >&2
+      exit 1
+    fi
+    printf '%s\n' "$*" >>"${WB_TEST_CLOSED_PR_LOG:-/dev/null}"
+    printf '{"number":41,"state":"closed"}\n' ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
