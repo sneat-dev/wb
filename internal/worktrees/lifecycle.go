@@ -920,6 +920,11 @@ type cleanupWorktreeHandle struct {
 	parentPath string
 	parentName string
 	parent     *os.File
+	// parentContainer is the directory descriptor that holds parentName —
+	// the task directory itself for the legacy <task>/<owner>/<repository>
+	// layout, or the opened <host> directory for the host-level
+	// <task>/<host>/<owner>/<repository> layout. It defaults to task.task.
+	parentContainer *os.File
 	// closeParent means the parent is a WB-owned <task>/<owner> directory to
 	// retire once empty — see removeEmptyParent. ownParent means this handle
 	// opened parent itself and must close its descriptor regardless; the two
@@ -930,6 +935,16 @@ type cleanupWorktreeHandle struct {
 	ownParent    bool
 	worktreePath string
 	worktree     *os.File
+	// ancestor, when set, is the opened <task>/<host> directory the
+	// host-level layout nests <owner> under. It is always opened by this
+	// handle and always closed by it. closeAncestor mirrors closeParent one
+	// level further out: once <owner> is retired empty, <host> is checked
+	// and retired too if it is now empty as well — see removeEmptyParent.
+	ancestor          *os.File
+	ancestorName      string
+	ancestorPath      string
+	ancestorContainer *os.File
+	closeAncestor     bool
 }
 
 func (handle *cleanupWorktreeHandle) validate() error {
@@ -940,6 +955,9 @@ func (handle *cleanupWorktreeHandle) validate() error {
 		if err := handle.task.validate(); err != nil {
 			return err
 		}
+	}
+	if handle.ancestor != nil && !directoryStillMatches(handle.ancestorPath, handle.ancestor) {
+		return fmt.Errorf("cleanup worktree ancestor path changed: %s", handle.ancestorPath)
 	}
 	if !directoryStillMatches(handle.parentPath, handle.parent) {
 		return fmt.Errorf("cleanup worktree parent path changed: %s", handle.parentPath)
@@ -983,7 +1001,24 @@ func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(s
 	// replacement, a symlink swapped in, ...) is likewise left untouched —
 	// this is a best-effort housekeeping step, never grounds to fail a
 	// cleanup transaction whose branch and worktree removal already applied.
-	_ = unix.Unlinkat(int(handle.task.task.Fd()), handle.parentName, unix.AT_REMOVEDIR)
+	container := handle.parentContainer
+	if container == nil {
+		container = handle.task.task
+	}
+	removeErr := unix.Unlinkat(int(container.Fd()), handle.parentName, unix.AT_REMOVEDIR)
+	if removeErr != nil || !handle.closeAncestor {
+		return nil
+	}
+	// The host-level layout nests <owner> one level under <host>. <owner> was
+	// just retired empty above, so <host> may now be empty too — reauthorize
+	// it the same way and retire it as well, best-effort, exactly as above. A
+	// sibling <owner> still present under the same <host> (another repository
+	// or task sharing the host) leaves AT_REMOVEDIR refusing with ENOTEMPTY,
+	// which is silently accepted here just like the owner-level removal.
+	if !directoryStillMatches(handle.ancestorPath, handle.ancestor) {
+		return nil
+	}
+	_ = unix.Unlinkat(int(handle.ancestorContainer.Fd()), handle.ancestorName, unix.AT_REMOVEDIR)
 	return nil
 }
 
@@ -993,6 +1028,9 @@ func (handle *cleanupWorktreeHandle) close() {
 	}
 	if handle.ownParent && handle.parent != nil {
 		_ = handle.parent.Close()
+	}
+	if handle.ancestor != nil {
+		_ = handle.ancestor.Close()
 	}
 }
 
@@ -5641,6 +5679,50 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		handle.closeParent = true
 		handle.ownParent = true
 		repository = parts[1]
+	case 3:
+		// The host-level layout wb worktree create writes:
+		// <task>/<host>/<owner>/<repository>. host is validated with the
+		// same forge-hostname predicate every other central-store code path
+		// uses for this level (branch_config.go, lifecycle_backlog.go,
+		// worktrees.go) — it also accepts an explicit port, which
+		// validSafeSegment's charset does not — and owner/repository keep
+		// the exact same validators and no-follow, descriptor-anchored
+		// opens the 2-segment case already uses.
+		if !repopath.IsForgeHost(parts[0]) || !validSafeSegment(parts[1]) || !validRepositorySegment(parts[2]) {
+			return nil, fmt.Errorf("invalid cleanup worktree hierarchy %s", relative)
+		}
+		hostFD, err := unix.Openat(int(task.task.Fd()), parts[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return nil, fmt.Errorf("open cleanup worktree host %s without following links: %w", parts[0], err)
+		}
+		host := os.NewFile(uintptr(hostFD), "wb-cleanup-worktree-host")
+		if host == nil {
+			_ = unix.Close(hostFD)
+			return nil, fmt.Errorf("wrap cleanup worktree host %s", parts[0])
+		}
+		handle.ancestor = host
+		handle.ancestorName = parts[0]
+		handle.ancestorPath = filepath.Join(task.taskPath, parts[0])
+		handle.ancestorContainer = task.task
+		handle.closeAncestor = true
+		ownerFD, err := unix.Openat(hostFD, parts[1], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			handle.close()
+			return nil, fmt.Errorf("open cleanup worktree parent %s without following links: %w", parts[1], err)
+		}
+		parent := os.NewFile(uintptr(ownerFD), "wb-cleanup-worktree-parent")
+		if parent == nil {
+			_ = unix.Close(ownerFD)
+			handle.close()
+			return nil, fmt.Errorf("wrap cleanup worktree parent %s", parts[1])
+		}
+		handle.parent = parent
+		handle.parentPath = filepath.Join(task.taskPath, parts[0], parts[1])
+		handle.parentName = parts[1]
+		handle.parentContainer = host
+		handle.closeParent = true
+		handle.ownParent = true
+		repository = parts[2]
 	default:
 		return nil, fmt.Errorf("cleanup worktree %s has unsupported hierarchy", result.WorktreeDir)
 	}
