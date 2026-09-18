@@ -176,11 +176,18 @@ legacy `<root>/<org>/<repo>` placement to `<root>/<host>/<org>/<repo>`, taking
 every legacy clone under the root; with arguments, only the named repositories.
 It MUST be a dry run by default, printing the planned source and destination of
 every clone and every linked worktree it would repoint, and MUST act only with
-`--apply`. A clone already at the host level MUST be reported as done and left
-untouched, so an interrupted or partial migration is completed by running the
-same command again. The move MUST be a same-filesystem rename that refuses to
-replace an existing destination; a cross-device move MUST be refused, never
-degraded to a copy.
+`--apply`. A clone already at the host level MUST be re-verified — its worktree
+registry has no missing or prunable entry and every registered worktree's
+common directory resolves to its `.git` — before being reported as done and
+left untouched; one whose registration is broken (a directory rename outside
+WB, or an earlier migration interrupted before repair) MUST be repaired and
+reported `repaired`, or reported `failed` naming what is still wrong, never
+silently reported done. This is how an interrupted or partial migration is
+completed by running the same command again. The move MUST be a
+same-filesystem rename that refuses to replace an existing destination; a
+cross-device move MUST be refused, never degraded to a copy. An unborn `HEAD`
+(a freshly initialized repository with no commit yet) MUST NOT be a refusal
+reason, because a rename is exactly as safe for it as for any other worktree.
 
 #### REQ: clone-migration-refusals
 
@@ -188,10 +195,15 @@ A clone MUST be skipped, with a finding naming the reason, and the command MUST
 exit with the findings code when any of these hold: it has no usable `origin`;
 the `origin` owner/repository differs from its path; the `origin` host is not a
 valid directory name; the destination already exists; a Git operation is in
-progress (an index lock, or a merge, rebase, cherry-pick or revert state); or a
-live Work Log claim holds the clone or any of its linked worktrees. Uncommitted
-changes MUST NOT be a refusal reason, because a rename preserves them. The
-remaining clones MUST still be migrated.
+progress, or cannot be inspected (an index lock, or a merge, rebase,
+cherry-pick or revert state); a live Work Log claim holds the clone or any of
+its linked worktrees — checked across every home WB resolves for the root, not
+only its current write home, since a claim recorded under a retired legacy
+home is still a live task; or an un-picked-up parked session (one saved by `wb
+session park` and not yet resumed) names the clone or one of its linked
+worktrees as a member worktree. Uncommitted changes MUST NOT be a refusal
+reason, because a rename preserves them. The remaining clones MUST still be
+migrated.
 
 #### REQ: clone-migration-repoints-worktrees
 
@@ -203,9 +215,14 @@ entry and that every worktree's common directory is the clone's new `.git`; a
 clone that fails verification MUST be reported as failed, not done. WB MUST
 regenerate the `.worktree.md` marker of the clone and of each linked worktree,
 and MUST update the WB records that locate an active task's canonical clone or
-checkout so guard, inventory, land and cleanup work at the new path. Append-only
-historical receipts MUST NOT be rewritten. Migration MUST NOT move a checkout
-out of the clone: relocating checkouts to the central store remains
+checkout so guard, inventory, land and cleanup work at the new path: for each
+moved worktree that carries an active Work Log claim, WB records a relocation
+intent before the move and a completion receipt after it is verified — the
+same append-only relocation-receipt journal `wb worktree relocate` and a
+repository transfer use — so a claim's immutable, frozen `Worktree` path
+resolves through that journal to its current location. Append-only historical
+records (claims, receipts) MUST NOT be rewritten. Migration MUST NOT move a
+checkout out of the clone: relocating checkouts to the central store remains
 [`relocation-targets-store`](#req-relocation-targets-store).
 
 #### REQ: clone-migration-manifest-and-undo

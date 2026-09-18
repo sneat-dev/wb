@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -387,5 +389,113 @@ func TestGitOperationInProgressDetectsEveryMarker(t *testing.T) {
 		if err := os.RemoveAll(path); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestMigrateSkipsACloneWithAnUnPickedUpParkedSession covers reviewer
+// BLOCKING #2's second refusal: a parked session (`wb session park`) that has
+// not yet been resumed binds one of its member worktrees to an exact active
+// Work Log claim and custody record. Migrating that worktree's clone out from
+// under it before the session resumes would leave that binding pointing at a
+// location it no longer describes, so it must refuse instead.
+func TestMigrateSkipsACloneWithAnUnPickedUpParkedSession(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "parked", "acme/parked")
+
+	parkID, err := sessionpark.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := sessionpark.NewStore(filepath.Join(root, ".wb", "parked-sessions"))
+	now := time.Now().UTC()
+	bundle := sessionpark.Bundle{
+		SchemaVersion:   sessionpark.SchemaVersion,
+		ParkedSessionID: parkID,
+		Source: session.Record{
+			PID: 1234, WBSessionID: "wbs-source", Machine: "machine-1", Runtime: "codex", StartedAt: now,
+		},
+		Continuation: "continue here",
+		ParkedAt:     now,
+		Worktrees: []sessionpark.Worktree{
+			{
+				Repository: "acme/parked", CanonicalDir: canonical, WorktreeDir: canonical,
+				Branch: "main", Head: strings.Repeat("a", 40),
+			},
+		},
+	}
+	if _, err := store.Create(bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/parked"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/parked")
+	if !found || clone.Status != "skipped" || !strings.Contains(clone.Reason, "parked session") {
+		t.Fatalf("clone with an un-picked-up parked session = %+v, want skipped naming the parked session", clone)
+	}
+}
+
+// TestMigrateRepairsAStrandedAlreadyAtDestinationClone covers reviewer
+// BLOCKING #3: a clone that reached its host-level path outside a full,
+// verified ApplyCloneMove (a manual rename, or an earlier migration
+// interrupted after the directory move but before `git worktree repair`)
+// must not be silently reported already_done while its linked worktree is
+// unusable. Migrate must detect the broken registration, repair it, and
+// report the clone as `repaired` — and a subsequent run must then see it as
+// genuinely `already_done`.
+func TestMigrateRepairsAStrandedAlreadyAtDestinationClone(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "dal-go", "dalgo", "dal-go/dalgo")
+	external := filepath.Join(root, "worktrees", "t1", "dal-go", "dalgo")
+	if err := os.MkdirAll(filepath.Dir(external), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, canonical, "git", "worktree", "add", "-b", "t1", external)
+
+	destination := filepath.Join(root, "github.com", "dal-go", "dalgo")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a half-done move: the clone directory itself was renamed to its
+	// host-level destination, but the worktree registry was never repaired, so
+	// the clone's own records still point at the old (now nonexistent) path
+	// and the external worktree's Git administration still resolves to it.
+	if err := os.Rename(canonical, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatal("stranded worktree fixture must still exist on disk")
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "dal-go/dalgo")
+	if !found || clone.Status != "repaired" {
+		t.Fatalf("stranded clone = %+v, want status repaired", clone)
+	}
+	if err := worktrees.VerifyClonePlacement(context.Background(), destination, []string{external}); err != nil {
+		t.Fatalf("clone must be genuinely repaired: %v", err)
+	}
+
+	// initRemoteClone leaves a sibling "-seed" checkout under the same legacy
+	// owner directory with no usable origin, which the scan (correctly)
+	// reports skipped; restrict to the repository under test so that
+	// unrelated fixture noise doesn't fail this assertion.
+	again, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"dal-go/dalgo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found = findMigrateClone(again, "dal-go/dalgo")
+	if !found || clone.Status != "already_done" {
+		t.Fatalf("re-run after repair = %+v, want already_done", clone)
+	}
+	if MigrateFailed(again) {
+		t.Fatal("a repaired-then-verified clone must not be reported as a finding")
 	}
 }

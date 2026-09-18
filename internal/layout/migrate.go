@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -46,9 +48,13 @@ type MigrateClone struct {
 	Source      string            `json:"source"`
 	Destination string            `json:"destination"`
 	Worktrees   []MigrateWorktree `json:"worktrees,omitempty"`
-	// Status is one of: planned, done, already_done, skipped, failed, reversed.
+	// Status is one of: planned, done, already_done, repaired, skipped,
+	// failed, reversed.
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
+	// Head is the clone's own HEAD at plan time, carried through to the
+	// undo manifest. It is not part of the report's public JSON shape.
+	Head string `json:"-"`
 }
 
 // MigrateReport is the result of one wb layout migrate run.
@@ -155,10 +161,20 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			if !wanted.matches(slug) {
 				continue
 			}
-			report.Clones = append(report.Clones, MigrateClone{
-				Repository: slug, Source: path, Destination: path,
-				Status: "already_done", Reason: "already at the host-level path",
-			})
+			clone := MigrateClone{Repository: slug, Source: path, Destination: path}
+			status, reconcileErr := worktrees.ReconcileClonePlacement(ctx, path)
+			switch {
+			case reconcileErr != nil:
+				clone.Status = "failed"
+				clone.Reason = reconcileErr.Error()
+			case status == "repaired":
+				clone.Status = "repaired"
+				clone.Reason = "worktree registration was stranded after an earlier or partial move; repaired in place"
+			default:
+				clone.Status = "already_done"
+				clone.Reason = "already at the host-level path"
+			}
+			report.Clones = append(report.Clones, clone)
 		}
 	}
 
@@ -219,10 +235,20 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 			if planned[index].Status != "planned" {
 				continue
 			}
-			applyOneClone(ctx, root, &planned[index], options.Now())
+			now := options.Now()
+			applyOneClone(ctx, root, &planned[index], now)
 			if manifest != nil {
-				updateManifestClone(manifest, planned[index])
-				_ = writeManifest(manifestPath, manifest)
+				updateManifestClone(manifest, planned[index], now)
+				if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+					// The manifest is the durable audit/undo record; a run
+					// that cannot keep it up to date must stop rather than
+					// keep moving clones it can no longer account for. What
+					// was already recorded and applied stays in report so the
+					// caller is not left blind about it.
+					report.Clones = append(report.Clones, planned...)
+					report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
+					return report, fmt.Errorf("record migration manifest outcome for %s: %w", planned[index].Repository, writeErr)
+				}
 			}
 		}
 		invalidateLocalIndex(root)
@@ -251,6 +277,11 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Reason = fmt.Sprintf("origin owner/repository %s does not match clone path %s", address.Slug(), slug)
 		return clone
 	}
+	if address.Host == "" {
+		clone.Status = "skipped"
+		clone.Reason = "origin remote does not identify a forge host"
+		return clone
+	}
 	destination := filepath.Join(root, address.Host, address.Org, address.Repo)
 	clone.Destination = destination
 	if _, statErr := os.Lstat(destination); statErr == nil {
@@ -277,10 +308,15 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		if worktree.Source == path {
 			// The clone's own entry in its worktree registry; already
 			// accounted for by Source/Destination above.
+			clone.Head = worktree.Head
 			continue
 		}
 		clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
-		if reason, err := worktrees.GitOperationInProgress(ctx, worktree.Source); err == nil && reason != "" {
+		if reason, err := worktrees.GitOperationInProgress(ctx, worktree.Source); err != nil {
+			clone.Status = "skipped"
+			clone.Reason = "linked worktree " + worktree.Source + ": cannot inspect Git state: " + err.Error()
+			return clone
+		} else if reason != "" {
 			clone.Status = "skipped"
 			clone.Reason = "linked worktree " + worktree.Source + ": " + reason
 			return clone
@@ -291,8 +327,74 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 		clone.Reason = claim
 		return clone
 	}
+	paths := []string{path}
+	for _, worktree := range clone.Worktrees {
+		paths = append(paths, worktree.Source)
+	}
+	if parked := parkedSessionReason(root, paths); parked != "" {
+		clone.Status = "skipped"
+		clone.Reason = parked
+		return clone
+	}
 	clone.Status = "planned"
 	return clone
+}
+
+// parkedSessionReason reports, across every wbhome-resolved home for root,
+// whether any un-picked-up (parked, not yet resumed) session bundle names a
+// worktree under one of paths — the clone itself or one of its linked
+// worktrees. A parked session's bundle binds a worktree to an exact active
+// Work Log claim and custody record (see session_park_local.go); migrating
+// the clone out from under it before the session resumes would leave that
+// binding pointing at a path that no longer holds what it recorded.
+func parkedSessionReason(root string, paths []string) string {
+	resolution, err := wbhome.Resolve(root)
+	if err != nil {
+		return ""
+	}
+	seen := make(map[string]bool, len(resolution.Read))
+	for _, layout := range resolution.Read {
+		home := filepath.Clean(layout.Home)
+		if home == "" || seen[home] {
+			continue
+		}
+		seen[home] = true
+		storeRoot := filepath.Join(home, sessionpark.SourceDirName)
+		entries, readErr := os.ReadDir(storeRoot)
+		if readErr != nil {
+			continue
+		}
+		store := sessionpark.NewStore(storeRoot)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			state, loadErr := store.Load(entry.Name())
+			if loadErr != nil || state.Status != sessionpark.StatusParked {
+				continue
+			}
+			for _, member := range state.Bundle.Worktrees {
+				for _, path := range paths {
+					if underPath(member.CanonicalDir, path) || underPath(member.WorktreeDir, path) {
+						return fmt.Sprintf("an un-picked-up parked session (%s) references %s", state.Bundle.ParkedSessionID, path)
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// underPath reports whether candidate is path itself or nested under it.
+func underPath(candidate, path string) bool {
+	if candidate == "" || path == "" {
+		return false
+	}
+	candidate, path = filepath.Clean(candidate), filepath.Clean(path)
+	if candidate == path {
+		return true
+	}
+	return strings.HasPrefix(candidate, path+string(filepath.Separator))
 }
 
 func liveClaimReason(root, slug string) string {
@@ -309,11 +411,44 @@ func liveClaimReason(root, slug string) string {
 }
 
 func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now time.Time) {
-	_, err := worktrees.ApplyCloneMove(ctx, clone.Source, clone.Destination)
+	// Re-derive the worktree list and remote immediately before moving,
+	// rather than trusting the plan computed earlier in this run: a legacy
+	// worktree could have been added, removed, or re-registered since. This
+	// also gives RecordCloneMoveRelocationIntents the current HeadSHA per
+	// worktree, which MigrateWorktree does not carry.
+	plan, err := worktrees.PlanCloneMove(ctx, clone.Source, clone.Destination)
+	if err != nil {
+		clone.Status = "failed"
+		clone.Reason = "cannot re-verify linked worktrees immediately before move: " + err.Error()
+		return
+	}
+	pending, intentErr := worktrees.RecordCloneMoveRelocationIntents(root, plan.Worktrees, now)
+	if intentErr != nil {
+		clone.Status = "failed"
+		clone.Reason = intentErr.Error()
+		return
+	}
+	result, err := worktrees.ApplyCloneMove(ctx, clone.Source, clone.Destination)
 	if err != nil {
 		clone.Status = "failed"
 		clone.Reason = err.Error()
 		return
+	}
+	if err := worktrees.FinalizeCloneMoveRelocationReceipts(pending, now); err != nil {
+		// The clone has already moved and been verified; a claim's location
+		// resolution falling back to its frozen path is the only consequence
+		// of a receipt failure here, so this is reported, not treated as a
+		// failed move.
+		clone.Reason = "moved, but recording the relocation receipt failed: " + err.Error()
+	}
+	// Use the fresh worktree list ApplyCloneMove actually verified, rather
+	// than the plan-time list computed earlier in this run.
+	clone.Worktrees = nil
+	for _, worktree := range result.Worktrees {
+		if worktree.Source == clone.Source {
+			continue
+		}
+		clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
 	}
 	regenerateMarkers(root, clone.Destination)
 	for _, worktree := range clone.Worktrees {
@@ -321,8 +456,6 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	}
 	removeEmptyLegacyOwner(filepath.Dir(clone.Source))
 	clone.Status = "done"
-	clone.Reason = ""
-	_ = now
 }
 
 func regenerateMarkers(root, path string) {
@@ -435,7 +568,7 @@ func createMigrationManifest(root string, clones []MigrateClone, now time.Time) 
 	for _, clone := range clones {
 		entry := manifestClone{
 			Repository: clone.Repository, Source: clone.Source, Destination: clone.Destination,
-			Status: "planned",
+			Head: clone.Head, Status: "planned",
 		}
 		entry.Worktrees = append(entry.Worktrees, clone.Worktrees...)
 		manifest.Clones = append(manifest.Clones, entry)
@@ -447,22 +580,35 @@ func createMigrationManifest(root string, clones []MigrateClone, now time.Time) 
 	return manifest, path, nil
 }
 
-func updateManifestClone(manifest *migrationManifest, outcome MigrateClone) {
+func updateManifestClone(manifest *migrationManifest, outcome MigrateClone, now time.Time) {
 	for index := range manifest.Clones {
 		if manifest.Clones[index].Source == outcome.Source && manifest.Clones[index].Destination == outcome.Destination {
 			manifest.Clones[index].Status = outcome.Status
 			manifest.Clones[index].Reason = outcome.Reason
+			manifest.Clones[index].CompletedAt = &now
 			return
 		}
 	}
 }
 
+// writeManifest writes manifest to path atomically: a temp file in the same
+// directory (so the rename is same-filesystem) followed by a rename, so a
+// reader — or a process crash mid-write — never observes a half-written
+// manifest.
 func writeManifest(path string, manifest *migrationManifest) error {
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o644)
+	temp := path + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := os.WriteFile(temp, append(raw, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		_ = os.Remove(temp)
+		return err
+	}
+	return nil
 }
 
 func readManifest(path string) (*migrationManifest, error) {

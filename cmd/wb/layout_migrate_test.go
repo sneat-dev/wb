@@ -1,15 +1,73 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+// runWBHomeIsolated runs the built wb binary exactly like runWB, except with
+// HOME (and so the retired legacy $HOME/.wb state directory) redirected to a
+// private, empty per-call directory instead of this machine's real one.
+//
+// `wb layout migrate` reads live Work Log claims across every home WB
+// resolves, including that legacy one (see
+// internal/worktrees.ListActiveClaimSummaries), and a fixture repository name
+// in this suite can otherwise coincidentally collide with a real claim this
+// machine's fleet has recorded there, making the test's outcome depend on
+// ambient state instead of the fixture. This is a dedicated helper, not a
+// change to the shared runWB/runWBIn used across this package's other CLI
+// suites, because some of those specifically exercise behavior that depends
+// on HOME being genuinely absent or genuinely present.
+func runWBHomeIsolated(t *testing.T, args ...string) smokeResult {
+	t.Helper()
+	binary := buildWB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), smokeDeadline)
+	defer cancel()
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+
+	home := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Stdin = devNull
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	command.Env = append(os.Environ(), "TERM=dumb", "HOME="+home,
+		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
+		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com")
+
+	runErr := command.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("wb %s did not exit within %s", strings.Join(args, " "), smokeDeadline)
+	}
+
+	result := smokeResult{stdout: stdout.String(), stderr: stderr.String()}
+	var exitErr *exec.ExitError
+	switch {
+	case runErr == nil:
+		result.exitCode = 0
+	case errors.As(runErr, &exitErr):
+		result.exitCode = exitErr.ExitCode()
+	default:
+		t.Fatalf("wb %s: %v", strings.Join(args, " "), runErr)
+	}
+	return result
+}
 
 // migrateReportJSON is the subset of layout.MigrateReport this suite decodes.
 type migrateReportJSON struct {
@@ -69,7 +127,7 @@ func TestLayoutMigratePlansThenMovesAndRepoints(t *testing.T) {
 	destination := filepath.Join(root, "github.com", "dal-go", "dalgo")
 	destinationNested := filepath.Join(destination, ".worktrees", "t1")
 
-	dry := runWB(t, "layout", "migrate", "--projects-root", root, "--format", "json")
+	dry := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--format", "json")
 	if dry.exitCode != exitOK {
 		t.Fatalf("dry-run exit = %d, want ok; stderr=%s stdout=%s", dry.exitCode, dry.stderr, dry.stdout)
 	}
@@ -88,7 +146,7 @@ func TestLayoutMigratePlansThenMovesAndRepoints(t *testing.T) {
 		t.Fatalf("dry run plan worktrees = %+v, want 2", plan.Clones[index].Worktrees)
 	}
 
-	applied := runWB(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
+	applied := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
 	if applied.exitCode != exitOK {
 		t.Fatalf("apply exit = %d, want ok; stderr=%s stdout=%s", applied.exitCode, applied.stderr, applied.stdout)
 	}
@@ -125,12 +183,12 @@ func TestLayoutMigratePlansThenMovesAndRepoints(t *testing.T) {
 		}
 	}
 
-	audit := runWB(t, "layout", "audit", "--projects-root", root, "--format", "json")
+	audit := runWBHomeIsolated(t, "layout", "audit", "--projects-root", root, "--format", "json")
 	if audit.exitCode != exitOK {
 		t.Fatalf("layout audit after migrate = %d, stderr=%s", audit.exitCode, audit.stderr)
 	}
 
-	again := runWB(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
+	again := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
 	if again.exitCode != exitOK {
 		t.Fatalf("second apply exit = %d, want ok; stderr=%s", again.exitCode, again.stderr)
 	}
@@ -202,7 +260,7 @@ func TestLayoutMigrateSkipsUnsafeClones(t *testing.T) {
 	}
 	runGit(t, claimedPath, "remote", "set-url", "origin", "git@github.com:acme/claimed.git")
 
-	result := runWB(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
+	result := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
 	if result.exitCode != exitFindings {
 		t.Fatalf("apply exit = %d, want findings; stderr=%s stdout=%s", result.exitCode, result.stderr, result.stdout)
 	}
@@ -250,7 +308,7 @@ func TestLayoutMigrateIsReversible(t *testing.T) {
 	nested := filepath.Join(legacy, ".worktrees", "t1")
 	runGit(t, legacy, "worktree", "add", "-b", "t1", nested)
 
-	applied := runWB(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
+	applied := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--apply", "--format", "json")
 	if applied.exitCode != exitOK {
 		t.Fatalf("apply exit = %d; stderr=%s", applied.exitCode, applied.stderr)
 	}
@@ -263,7 +321,7 @@ func TestLayoutMigrateIsReversible(t *testing.T) {
 		t.Fatal("apply must have moved the clone")
 	}
 
-	undone := runWB(t, "layout", "migrate", "--projects-root", root, "--undo", report.ManifestID, "--apply", "--format", "json")
+	undone := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--undo", report.ManifestID, "--apply", "--format", "json")
 	if undone.exitCode != exitOK {
 		t.Fatalf("undo exit = %d, want ok; stderr=%s stdout=%s", undone.exitCode, undone.stderr, undone.stdout)
 	}

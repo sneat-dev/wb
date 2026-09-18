@@ -43,15 +43,22 @@ Git has registered against it — one inside the clone (which moves with it) and
 one anywhere else (which is repointed in place) alike. Dry-run by default; pass
 `--apply` to move. With no arguments every legacy clone under the root is
 covered; name `owner/repository` arguments to migrate only those. A clone
-already at the host level is reported `already_done` and left untouched, so an
-interrupted or repeated `--apply` finishes the job.
+already at the host level is re-verified — its worktree registration must have
+no missing or prunable entry — before being reported `already_done` and left
+untouched; a stranded one found broken (a manual rename, or an earlier
+migration interrupted before repair) is repaired and reported `repaired`, or
+`failed` naming what is still wrong. This is how an interrupted or repeated
+`--apply` finishes the job.
 
 A clone is `skipped`, with a reason, when it has no usable origin, its origin
 owner/repository differs from its path, its origin host is not a valid
 directory name, its destination already exists, a Git operation (merge,
-rebase, cherry-pick, revert, or a held index lock) is in progress, or a live
-Work Log claim holds it or a linked worktree. Uncommitted changes are never a
-refusal reason — the rename preserves them. The command exits with the
+rebase, cherry-pick, revert, or a held index lock) is in progress or cannot be
+inspected, a live Work Log claim holds it or a linked worktree (checked across
+every home WB resolves, including a retired legacy one), or an un-picked-up
+`wb session park` bundle names it or a linked worktree as a member. Uncommitted
+changes are never a refusal reason — the rename preserves them, and neither is
+an unborn `HEAD` (a repository with no commit yet). The command exits with the
 findings code whenever any clone is skipped or fails.
 
 `--apply` writes a manifest under `<root>/.wb/layout-migrations/<id>/` before

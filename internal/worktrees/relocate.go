@@ -685,6 +685,28 @@ type workLogRelocationResolution struct {
 }
 
 func latestRelocationResolution(home string, claim workLogClaim, destination string) (workLogRelocationResolution, error) {
+	resolution, err := resolveRelocationChain(home, claim)
+	if err != nil {
+		return workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}, err
+	}
+	if resolution.receipt == nil || resolution.worktree != filepath.Clean(destination) {
+		return workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}, nil
+	}
+	return resolution, nil
+}
+
+// resolveRelocationChain walks every completed relocation receipt for claim,
+// oldest first, and returns where the claim's worktree and repository
+// currently are — following the chain from claim.Worktree (the immutable,
+// frozen path recorded at claim creation) through every verified move since.
+// Unlike latestRelocationResolution it does not require the caller to already
+// know the current location: a caller resolving "where is this claim's
+// worktree right now" (as opposed to "does it match this one candidate
+// destination") uses this directly.
+//
+// It returns claim.Worktree/claim.Repository unchanged, with no error, when
+// no relocation was ever recorded for this claim.
+func resolveRelocationChain(home string, claim workLogClaim) (workLogRelocationResolution, error) {
 	resolution := workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}
 	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {
@@ -719,9 +741,6 @@ func latestRelocationResolution(home string, claim workLogClaim, destination str
 		copy := receipt
 		resolution.receipt = &copy
 		resolution.receiptPath = journal.paths[receipt.OperationID+"/receipt"]
-	}
-	if resolution.receipt == nil || resolution.worktree != filepath.Clean(destination) {
-		return workLogRelocationResolution{repository: claim.Repository, worktree: filepath.Clean(claim.Worktree)}, nil
 	}
 	return resolution, nil
 }

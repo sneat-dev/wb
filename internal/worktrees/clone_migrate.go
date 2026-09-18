@@ -2,10 +2,14 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // CloneMoveWorktree is one linked worktree of a canonical clone being moved,
@@ -83,8 +87,11 @@ func ApplyCloneMove(ctx context.Context, source, destination string) (CloneMoveR
 		sourcePaths = append(sourcePaths, worktree.Source)
 	}
 	rollback := func(cause error) error {
-		if _, moveBackErr := moveRenameDirectory(destination, source, nil); moveBackErr == nil {
-			_, _ = git(ctx, source, append([]string{"worktree", "repair"}, sourcePaths...)...)
+		if _, moveBackErr := moveRenameDirectory(destination, source, nil); moveBackErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore clone to %s after failed move: %w", source, moveBackErr))
+		}
+		if _, repairErr := git(ctx, source, append([]string{"worktree", "repair"}, sourcePaths...)...); repairErr != nil {
+			return errors.Join(cause, fmt.Errorf("repair worktree registration at %s after rollback: %w", source, repairErr))
 		}
 		return cause
 	}
@@ -133,6 +140,141 @@ func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths [
 		}
 		if _, err := gitRawOutput(ctx, path, "status"); err != nil {
 			return fmt.Errorf("git status failed in %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// ReconcileClonePlacement checks that a clone already at its expected location
+// is actually intact — its worktree registry has no missing or prunable entry
+// and every registered worktree's common Git directory resolves to this
+// clone's `.git` — and, if not, repairs it with `git worktree repair` before
+// re-checking once. It returns "verified" when the clone was already correct,
+// "repaired" when a repair fixed it, or an error naming exactly what is still
+// wrong when it could not be repaired.
+//
+// This exists because a clone can reach its destination path outside a full,
+// verified `ApplyCloneMove` — a manual `mv`, or an interrupted earlier
+// migration that renamed the directory but never repaired the worktree
+// registry — and reporting such a clone `already_done` without checking would
+// hide a stranded, broken placement behind a success status.
+func ReconcileClonePlacement(ctx context.Context, clonePath string) (string, error) {
+	paths, err := registeredWorktreePaths(ctx, clonePath)
+	if err != nil {
+		return "", fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
+	}
+	if err := VerifyClonePlacement(ctx, clonePath, paths); err == nil {
+		return "verified", nil
+	}
+	if _, err := git(ctx, clonePath, append([]string{"worktree", "repair"}, paths...)...); err != nil {
+		return "", fmt.Errorf("repair worktree registration for %s: %w", clonePath, err)
+	}
+	paths, err = registeredWorktreePaths(ctx, clonePath)
+	if err != nil {
+		return "", fmt.Errorf("list worktree registration for %s after repair: %w", clonePath, err)
+	}
+	if err := VerifyClonePlacement(ctx, clonePath, paths); err != nil {
+		return "", fmt.Errorf("clone at %s is stranded: %w", clonePath, err)
+	}
+	return "repaired", nil
+}
+
+// registeredWorktreePaths lists every worktree Git has registered against
+// clonePath other than the clone's own entry.
+func registeredWorktreePaths(ctx context.Context, clonePath string) ([]string, error) {
+	out, err := gitRawOutput(ctx, clonePath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	self := filepath.Clean(clonePath)
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		path, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if clean := filepath.Clean(path); clean != self {
+			paths = append(paths, clean)
+		}
+	}
+	return paths, nil
+}
+
+// cloneMoveRelocationEntry pairs one worktree of a clone move with the
+// durable relocation intent recorded for it, so the receipt appended after
+// the move can be bound to the exact home and claim the intent was recorded
+// against.
+type cloneMoveRelocationEntry struct {
+	home        string
+	claim       workLogClaim
+	intent      *workLogRelocationIntent
+	destination string
+}
+
+// RecordCloneMoveRelocationIntents finds the active Work Log claim for every
+// worktree named in moves whose Source differs from its Destination —
+// searching every home wbhome.Resolve reports for projectsRoot, since a claim
+// recorded before the projects-root layout existed still lives under a
+// retired legacy home — and records a durable relocation intent for each one
+// it finds, before the clone physically moves. A worktree whose Source equals
+// its Destination (registered outside the clone; only its Git administration
+// is repaired) needs no intent: its claim's frozen path already matches.
+//
+// This is the same relocation-receipt journal RelocateRepository and `wb
+// worktree relocate` use: a claim's Worktree field is an immutable absolute
+// path frozen at claim-creation time, and repo-local worktree discovery
+// (lifecycle.go) resolves a claim's current location by following this
+// journal rather than comparing against that frozen path directly. Recording
+// an intent here, and a receipt once the move is verified, is what lets that
+// resolution — and so `wb worktree land`'s claim-authority check — keep
+// working after a clone migration moves the checkout.
+//
+// The repository identity does not change during a clone-placement
+// migration, so this uses the plain (non-repository) relocation record shape
+// — the same one `wb worktree relocate` uses for a placement-mode change —
+// rather than the "repository" record type RelocateRepository uses, which
+// requires the destination repository to actually differ from the source.
+func RecordCloneMoveRelocationIntents(projectsRoot string, moves []CloneMoveWorktree, now time.Time) ([]cloneMoveRelocationEntry, error) {
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	var entries []cloneMoveRelocationEntry
+	for _, move := range moves {
+		if filepath.Clean(move.Source) == filepath.Clean(move.Destination) {
+			continue
+		}
+		for _, layout := range resolution.Read {
+			home := filepath.Clean(layout.Home)
+			if home == "" {
+				continue
+			}
+			claim, _, _, claimErr := activeWorkLogClaim(home, move.Source)
+			if claimErr != nil {
+				continue
+			}
+			intent, _, intentErr := appendRelocationIntent(home, claim, move.Source, move.Destination, "local", move.Head, relocationPlacementRecord{}, now)
+			if intentErr != nil {
+				return entries, fmt.Errorf("record clone-move relocation intent for %s: %w", move.Source, intentErr)
+			}
+			entries = append(entries, cloneMoveRelocationEntry{home: home, claim: claim, intent: intent, destination: move.Destination})
+			break
+		}
+	}
+	return entries, nil
+}
+
+// FinalizeCloneMoveRelocationReceipts appends the completion receipt for
+// every intent RecordCloneMoveRelocationIntents recorded, once the clone move
+// is verified. Called after ApplyCloneMove succeeds; entries recorded for a
+// move that was rolled back are deliberately left as pending intents (the
+// same recovery shape `wb worktree relocate` leaves an interrupted move in),
+// since nothing ever resolves a claim's location from an intent alone — only
+// a receipt does.
+func FinalizeCloneMoveRelocationReceipts(entries []cloneMoveRelocationEntry, now time.Time) error {
+	for _, entry := range entries {
+		if _, _, err := appendRelocationReceipt(entry.home, entry.claim, entry.intent, now); err != nil {
+			return fmt.Errorf("record clone-move relocation receipt for %s: %w", entry.destination, err)
 		}
 	}
 	return nil
