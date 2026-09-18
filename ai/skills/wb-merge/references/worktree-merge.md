@@ -36,11 +36,23 @@ only stdout payload, while stage transitions, check observations, elapsed time,
 and the next bounded poll stay visible on stderr. `--non-interactive` alone
 keeps terminal-only progress disabled.
 
-Prepare validates the candidate first. When every configured candidate check
-passes, the receipt says the target baseline was not needed. When a candidate
-check fails, WB validates the exact target snapshot and permits only equivalent
-pre-existing failures. Repositories may declare safe process-isolated Go test
-packages in `.wb/quality.yaml`; merge validation consumes that tracked policy.
+Prepare validates the candidate first — unless this call resolves the
+pull-request route and the target's required-check policy is authoritative,
+non-empty, and fenced by a server-enforced strict up-to-date policy, in which
+case local validation is deferred to that CI instead of running twice (once
+locally, once again in CI): the receipt records a `validation_deferral`
+(route, exact candidate SHA, reason) and `validation.status` is `skipped`.
+`land`/`resume` resolve the route once per call and reuse that same decision
+for every validation site in the call and for the publish/landing guard that
+follows them, so a route resolved as `pr` and deferred can never be published
+on a route a later call resolves as `direct` — pass `--route direct` (or let
+an unprotected target resolve `auto` to `direct`) to force it. `--validate-locally`
+restores the old unconditional behavior for one call. When every configured
+candidate check passes, the receipt says the target baseline was not needed.
+When a candidate check fails, WB validates the exact target snapshot and
+permits only equivalent pre-existing failures. Repositories may declare safe
+process-isolated Go test packages in `.wb/quality.yaml`; merge validation
+consumes that tracked policy.
 
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA

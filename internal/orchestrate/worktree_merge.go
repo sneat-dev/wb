@@ -119,6 +119,23 @@ type WorktreeMergeTargetRefresh struct {
 	NewCandidateSHA      string    `json:"new_candidate_sha"`
 }
 
+// WorktreeMergeValidationDeferral records that local candidate validation was
+// deferred rather than run, because this call resolved the pull-request route
+// and the target's required-check policy was read authoritatively, is
+// non-empty, and is fenced by a server-enforced strict up-to-date policy (see
+// worktreeMergeValidationDeferralEligible). CandidateSHA pins the deferral to
+// the exact candidate it was recorded for: an advance past this SHA (a
+// further commit, a rebase, a target refresh) makes the deferral stale, and
+// every guard that consults it (requireWorktreeMergePublishedValidation,
+// preparedValidationStillValid, hostLoadCheckSkippable) requires an exact
+// match. See sneat-dev/wb#591.
+type WorktreeMergeValidationDeferral struct {
+	Route        WorktreeMergeRoute `json:"route"`
+	CandidateSHA string             `json:"candidate_sha"`
+	Reason       string             `json:"reason"`
+	RecordedAt   time.Time          `json:"recorded_at"`
+}
+
 type WorktreeMergeSourcePullRequestReconciliation struct {
 	Number       int       `json:"number"`
 	URL          string    `json:"url"`
@@ -195,33 +212,37 @@ type WorktreeMergeHostLoadAdmission struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                                 `json:"schema_version"`
-	ID                    string                              `json:"id"`
-	Lane                  string                              `json:"lane"`
-	Phase                 WorktreeMergePhase                  `json:"phase"`
-	Status                WorktreeMergeStatus                 `json:"status"`
-	Repository            string                              `json:"repository"`
-	Target                string                              `json:"target"`
-	TargetSHA             string                              `json:"target_sha"`
-	Sources               []WorktreeMergeSource               `json:"sources"`
-	Candidate             WorktreeMergeCandidate              `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt         `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt         `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision          `json:"route,omitempty"`
-	PullRequest           string                              `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                              `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                              `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                              `json:"landing_sha,omitempty"`
-	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
-	LocalSync             string                              `json:"local_sync,omitempty"`
-	Validation            quality.VerificationReport          `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
-	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
-	ValidationTimeouts    *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
-	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
-	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
-	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
-	Cleanup               bool                                `json:"cleanup_requested"`
+	SchemaVersion         int                         `json:"schema_version"`
+	ID                    string                      `json:"id"`
+	Lane                  string                      `json:"lane"`
+	Phase                 WorktreeMergePhase          `json:"phase"`
+	Status                WorktreeMergeStatus         `json:"status"`
+	Repository            string                      `json:"repository"`
+	Target                string                      `json:"target"`
+	TargetSHA             string                      `json:"target_sha"`
+	Sources               []WorktreeMergeSource       `json:"sources"`
+	Candidate             WorktreeMergeCandidate      `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision  `json:"route,omitempty"`
+	PullRequest           string                      `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                      `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                      `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                      `json:"landing_sha,omitempty"`
+	CanonicalSync         string                      `json:"canonical_sync,omitempty"`
+	LocalSync             string                      `json:"local_sync,omitempty"`
+	Validation            quality.VerificationReport  `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport  `json:"baseline_validation,omitempty"`
+	// ValidationDeferral is set exactly when local validation was skipped for
+	// the pull-request route rather than run. See
+	// WorktreeMergeValidationDeferral.
+	ValidationDeferral *WorktreeMergeValidationDeferral    `json:"validation_deferral,omitempty"`
+	ValidationIdentity *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
+	ValidationTimeouts *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
+	Checks             PullRequestWaitResult               `json:"checks,omitempty"`
+	PushGate           *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
+	ForwardRepairs     []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
+	Cleanup            bool                                `json:"cleanup_requested"`
 	// AllowUnfenced is monotonic landing intent: an interrupted resume keeps
 	// the explicit approval to rely on observed exact-head checks when the
 	// target has no server-enforced strict up-to-date fence.
@@ -277,6 +298,12 @@ type WorktreeMergeLandOptions struct {
 	OnFailure     string
 	Timeout       time.Duration
 	Retry         int
+	// ValidateLocally forces the old unconditional behavior: local candidate
+	// validation always runs, even when this call resolves the pull-request
+	// route and its target's authoritative required-check policy would
+	// otherwise be eligible for a validation deferral. See
+	// worktreeMergeValidationDeferralEligible and sneat-dev/wb#591.
+	ValidateLocally bool
 	// PrepareTimeout bounds recovery of an interrupted preparing receipt.
 	// It does not apply after the candidate has reached prepared state.
 	PrepareTimeout time.Duration
@@ -327,6 +354,14 @@ type WorktreeMergePrepareOptions struct {
 	Provider     string
 	Timeout      time.Duration
 	Retry        int
+	// Route lets a caller decide the merge route before preparing (and
+	// therefore before deciding whether local validation may be deferred to
+	// the pull-request route's authoritative CI). Empty resolves as auto, the
+	// same default LandWorktreeMerge uses.
+	Route WorktreeMergeRoute
+	// ValidateLocally forces local candidate validation during prepare even
+	// when the pull-request route would otherwise be eligible to defer it.
+	ValidateLocally bool
 	// PrepareTimeout bounds one prepare invocation. Zero leaves preparation
 	// unbounded apart from the existing command timeout.
 	PrepareTimeout time.Duration
@@ -901,10 +936,17 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	// Validate both the exact target baseline and the integrated candidate.
+	// Validate both the exact target baseline and the integrated candidate,
+	// unless this call resolves the pull-request route and the target's
+	// authoritative required-check policy is eligible to defer it (M7: "the
+	// standalone prepare also counts", sneat-dev/wb#591).
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally)
+	if planErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+	}
 	checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+	if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, validationErr)
 	}
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
@@ -1063,6 +1105,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return LandWorktreeMerge(ctx, options)
 		}
 	}
+	// Resolve the route, and whether local validation may be deferred to it,
+	// exactly ONCE for this call — but LAZILY, on first actual use below,
+	// rather than eagerly here. A network round trip (and its conservative
+	// fallback for an explicit --route direct against an unreadable policy,
+	// which is a hard refusal — see conservativeWorktreeMergePRRoute) must
+	// never fire on a path that itself fails before reaching any validation
+	// site or the publish guard (e.g. a target-drift rebase conflict caught
+	// below): that would refuse work for a reason this call never needed to
+	// reach. Every validation site below and the publish/landing guard that
+	// follows them share planHolder, so whichever of them runs first performs
+	// the one resolution and every later one reuses it (M7, B1:
+	// sneat-dev/wb#591).
+	planHolder := &worktreeMergeValidationPlanHolder{}
 	if receipt.Candidate.SHA == "" {
 		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 		if recoverErr != nil {
@@ -1071,7 +1126,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if recovered {
 			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+			if planErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+			}
+			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				// Keep retry truthful: the resolved head is present in the
 				// validation report, but it is not a prepared candidate until
 				// that validation succeeds. A later resume must recover and
@@ -1108,12 +1167,16 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+		if planErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+		}
 		validationContext := ctx
 		cancelValidation := func() {}
 		if options.PrepareTimeout > 0 {
 			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
 		}
-		validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+		validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
 		cancelValidation()
 		if validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("interrupted candidate validation failed: %w", validationErr))
@@ -1161,12 +1224,16 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+		if planErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+		}
 		validationContext := ctx
 		cancelValidation := func() {}
 		if options.PrepareTimeout > 0 {
 			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
 		}
-		validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+		validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
 		cancelValidation()
 		if validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed validation_failed candidate re-validation failed: %w", validationErr))
@@ -1198,7 +1265,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("advanced conflict candidate %s is %s without a completed exact validation", receipt.Candidate.SHA, receipt.Status))
 		}
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+		if planErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+		}
+		if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("advanced conflict candidate validation failed: %w", validationErr))
 		}
 		receipt.Status = WorktreeMergePrepared
@@ -1393,7 +1464,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_refreshed_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+			if planErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+			}
+			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after refreshing published candidate to target %s: %w", remoteTarget, validationErr))
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_refreshed_candidate", progress.Completed, string(receipt.Validation.Status))
@@ -1430,12 +1505,27 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_rebased_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+			if planErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+			}
+			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr))
 			}
 		}
 	}
 	if options.StopBeforeMerge {
+		// StopBeforeMerge requires the pull-request route (checked at the top
+		// of this function), so resolving the plan here and stamping
+		// receipt.Route before the reuse check lets preparedValidationStillValid
+		// recognize a matching PR-route deferral from an earlier call in this
+		// same receipt's history, without waiting for the later route
+		// resolution/publish guard below.
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+		if planErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+		}
+		receipt.Route = plan.Route
 		reusable, identityErr := preparedValidationStillValid(receipt)
 		if identityErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
@@ -1443,7 +1533,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if !reusable {
 			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
 			}
 			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
@@ -1452,10 +1542,15 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 
-	decision, err := ResolveWorktreeMergeRoute(ctx, receipt.Repository, receipt.Target, options.Route)
-	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	// Reuse the route this call already resolved ONCE, above, rather than
+	// re-querying GitHub: every validation site in this call and this
+	// publish/landing guard must observe the same decision (M7, B1:
+	// sneat-dev/wb#591).
+	plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+	if planErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
 	}
+	decision := plan.Route
 	if decision.Route == WorktreeMergeRouteUnsupported {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("unsupported target policy: %s", decision.Reason))
 	}
@@ -1490,7 +1585,13 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		identityMismatch := identity == nil || identity.CandidateSHA != receipt.Candidate.SHA
 		needsRevalidation := receipt.Status == WorktreeMergeValidationFailed ||
 			receipt.Validation.Revision != receipt.Candidate.SHA || identityMismatch
-		publishedAtCurrentSHA := receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
+		// Finding B1 (sneat-dev/wb#591): this carve-out is proven safe only by
+		// the push gate and PR-route CI checks that ran after publishing at
+		// this exact SHA. It must not fire on a route THIS call resolved as
+		// direct — that includes a resume that flips from a prior PR-route
+		// deferral to `--route direct` (scenario g), which must validate.
+		publishedAtCurrentSHA := decision.Route == WorktreeMergeRoutePullRequest &&
+			receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
 		if needsRevalidation && !publishedAtCurrentSHA {
 			if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
 				storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
@@ -1518,12 +1619,16 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			}
 			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally)
+			if planErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+			}
 			validationContext := ctx
 			cancelValidation := func() {}
 			if options.PrepareTimeout > 0 {
 				validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
 			}
-			validationErr := validateWorktreeMergeCandidate(validationContext, &receipt, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
+			validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
 			cancelValidation()
 			if validationErr != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed land-phase candidate re-validation failed: %w", validationErr))
@@ -3276,6 +3381,114 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 // candidate cannot regress a red target, so the expensive target snapshot is
 // evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
+// worktreeMergeValidationPlan is resolved exactly once per LandWorktreeMerge
+// (and per PrepareWorktreeMerge) call and then threaded through every
+// validation site in that call (see applyOrDeferWorktreeMergeValidation),
+// instead of each site independently deciding whether to skip local
+// validation. Route is also the single decision every publish/landing
+// transition in the same call reuses (see requireWorktreeMergePublishedValidation),
+// so a route resolved as "pr" and deferred cannot be silently published on a
+// route later resolved as "direct" within a different call — see red-team
+// finding B1 (sneat-dev/wb#591).
+type worktreeMergeValidationPlan struct {
+	Route  WorktreeMergeRouteDecision
+	Defer  bool
+	Reason string
+}
+
+// resolveWorktreeMergeValidationPlan resolves the merge route once and
+// decides whether this call may defer local candidate validation to the
+// pull-request route's authoritative CI. It never defers when validateLocally
+// is set (the --validate-locally escape hatch) or when the resolved route is
+// not the pull-request route.
+// worktreeMergeValidationPlanHolder memoizes one resolveWorktreeMergeValidationPlan
+// call across every validation site and the publish/landing guard in a single
+// LandWorktreeMerge invocation, resolved lazily on first use (see the "resolve
+// once, lazily" note in LandWorktreeMerge). It is not safe for concurrent use;
+// LandWorktreeMerge is not itself concurrent.
+type worktreeMergeValidationPlanHolder struct {
+	resolved bool
+	plan     worktreeMergeValidationPlan
+	err      error
+}
+
+func (h *worktreeMergeValidationPlanHolder) resolve(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally bool) (worktreeMergeValidationPlan, error) {
+	if !h.resolved {
+		h.plan, h.err = resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally)
+		h.resolved = true
+	}
+	return h.plan, h.err
+}
+
+func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally bool) (worktreeMergeValidationPlan, error) {
+	decision, err := ResolveWorktreeMergeRoute(ctx, repository, target, requestedRoute)
+	if err != nil {
+		return worktreeMergeValidationPlan{}, err
+	}
+	plan := worktreeMergeValidationPlan{Route: decision}
+	if validateLocally || decision.Route != WorktreeMergeRoutePullRequest {
+		return plan, nil
+	}
+	eligible, reason := worktreeMergeValidationDeferralEligible(ctx, repository, target)
+	plan.Defer, plan.Reason = eligible, reason
+	return plan, nil
+}
+
+// worktreeMergeValidationDeferralEligible reports whether the pull-request
+// route may defer local candidate validation to CI (red-team finding B2). It
+// requires the target's required-check policy to have been read
+// authoritatively (never under an AllowUnfenced fallback), to be non-empty,
+// and to be fenced by a server-enforced strict up-to-date policy. Any of an
+// unreadable policy, zero required checks, or an unfenced policy keeps
+// validation local.
+func worktreeMergeValidationDeferralEligible(ctx context.Context, repository, target string) (bool, string) {
+	checks, freshness, reason := targetBranchRequiredChecks(ctx, repository, target, true)
+	if reason != "" {
+		return false, fmt.Sprintf("required-check policy for %s is unreadable, so validation stays local: %s", target, reason)
+	}
+	if len(checks) == 0 {
+		return false, fmt.Sprintf("target %s has no required status checks, so validation stays local", target)
+	}
+	if freshness == "" {
+		return false, fmt.Sprintf("target %s has no server-enforced strict up-to-date fence, so validation stays local", target)
+	}
+	return true, fmt.Sprintf("target %s has an authoritative, non-empty, server-fenced required-check policy (%s); the pull-request route defers local validation to it", target, freshness)
+}
+
+// applyOrDeferWorktreeMergeValidation is the single choke point every
+// validation site in LandWorktreeMerge and PrepareWorktreeMerge calls through.
+// When plan defers, it records a WorktreeMergeValidationDeferral and marks
+// receipt.Validation as skipped instead of running the local suite; otherwise
+// it runs validateWorktreeMergeCandidate exactly as before. Callers that need
+// receipt.Route current with plan.Route for a downstream guard within the
+// same call (finding B1) stamp it themselves at their own call site — see the
+// StopBeforeMerge block and the route-resolution/publish-guard step in
+// LandWorktreeMerge — rather than this shared helper doing it unconditionally,
+// which would also touch PrepareWorktreeMerge's unrelated re-preparation path.
+func applyOrDeferWorktreeMergeValidation(ctx context.Context, receipt *WorktreeMergeReceipt, plan worktreeMergeValidationPlan, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration, reporter progress.Reporter) error {
+	// Deliberately does not stamp receipt.Route: LandWorktreeMerge's own
+	// route-resolution/publish-guard step does that once for the whole call
+	// (see the "resolve_route" progress step), and PrepareWorktreeMerge must
+	// never overwrite a receipt's previously recorded landing Route with a
+	// value freshly re-resolved for an unrelated re-preparation (observed by
+	// TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail).
+	if !plan.Defer {
+		return validateWorktreeMergeCandidate(ctx, receipt, timeout, retry, checkTimeout, shardAttemptTimeout, reporter)
+	}
+	receipt.Validation = quality.VerificationReport{
+		Repository: receipt.Repository, Path: "git:" + receipt.Candidate.SHA, Revision: receipt.Candidate.SHA,
+		WorkspaceClean: true, Status: quality.StatusSkipped,
+		Results: []quality.VerificationEntry{{Status: quality.StatusSkipped, Detail: plan.Reason}},
+	}
+	receipt.BaselineValidation = quality.VerificationReport{}
+	receipt.ValidationIdentity = nil
+	receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{
+		Route: plan.Route.Route, CandidateSHA: receipt.Candidate.SHA, Reason: plan.Reason, RecordedAt: time.Now().UTC(),
+	}
+	reportWorktreeMergeProgress(reporter, "validate_candidate", progress.Completed, "skipped: "+plan.Reason)
+	return nil
+}
+
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout, shardAttemptTimeout time.Duration, reporter progress.Reporter) error {
 	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
 		Timeout: timeout, Retry: retry, CheckTimeout: checkTimeout, ShardAttemptTimeout: shardAttemptTimeout,
@@ -3402,10 +3615,26 @@ func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMerg
 // this function, on an already-landed target commit, and is unaffected by
 // it.
 func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt) error {
-	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" &&
-		receipt.PublishedCandidateSHA == receipt.Candidate.SHA &&
-		receipt.Status != WorktreeMergeValidationFailed {
-		return nil
+	// Finding B1 (sneat-dev/wb#591): an exact PR-route deferral, or the
+	// already-published carve-out below it, must never authorize a publish
+	// on a route this call did NOT resolve as the pull-request route.
+	// receipt.Route is kept current with the route resolved for this exact
+	// call (see applyOrDeferWorktreeMergeValidation and the route resolution
+	// in LandWorktreeMerge), so a receipt that deferred validation under a
+	// PR-route call and is later resumed with --route direct falls through
+	// to the ordinary validated-identity check below and must re-validate.
+	if receipt.Route.Route == WorktreeMergeRoutePullRequest {
+		if deferral := receipt.ValidationDeferral; deferral != nil &&
+			deferral.Route == WorktreeMergeRoutePullRequest &&
+			deferral.CandidateSHA == receipt.Candidate.SHA &&
+			receipt.Validation.Status == quality.StatusSkipped {
+			return nil
+		}
+		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" &&
+			receipt.PublishedCandidateSHA == receipt.Candidate.SHA &&
+			receipt.Status != WorktreeMergeValidationFailed {
+			return nil
+		}
 	}
 	identity := receipt.ValidationIdentity
 	if receipt.Status != WorktreeMergeValidationFailed &&
@@ -3420,6 +3649,12 @@ func requireWorktreeMergePublishedValidation(receipt WorktreeMergeReceipt) error
 }
 
 func preparedValidationStillValid(receipt WorktreeMergeReceipt) (bool, error) {
+	if deferral := receipt.ValidationDeferral; receipt.Status == WorktreeMergePrepared && deferral != nil &&
+		receipt.Route.Route == WorktreeMergeRoutePullRequest && deferral.Route == WorktreeMergeRoutePullRequest &&
+		deferral.CandidateSHA == receipt.Candidate.SHA && receipt.Validation.Status == quality.StatusSkipped &&
+		receipt.Validation.Revision == receipt.Candidate.SHA {
+		return true, nil
+	}
 	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||
 		receipt.Validation.Revision != receipt.Candidate.SHA || !receipt.Validation.WorkspaceClean ||
 		receipt.ValidationIdentity == nil {
