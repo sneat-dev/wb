@@ -199,9 +199,13 @@ progress, or cannot be inspected (an index lock, or a merge, rebase,
 cherry-pick or revert state); a live Work Log claim holds the clone or any of
 its linked worktrees — checked across every home WB resolves for the root, not
 only its current write home, since a claim recorded under a retired legacy
-home is still a live task; or an un-picked-up parked session (one saved by `wb
-session park` and not yet resumed) names the clone or one of its linked
-worktrees as a member worktree. On an OS that exposes live process working
+home is still a live task. A parked session (one saved by `wb session park`
+and not yet resumed) that names the clone or one of its linked worktrees MUST
+NOT by itself refuse the clone: resume resolves members by identity, per
+[`park-and-resume-agent-sessions#req:resume-resolves-members-by-identity`](../park-and-resume-agent-sessions/README.md),
+and for each parked member worktree that the move changes, migrate MUST record
+a relocation receipt keyed by that member's Work Log reference, so resume
+finds it at its new path. On an OS that exposes live process working
 directories (Linux, via `/proc`), a clone MUST also be skipped when a
 readable process's current working directory is inside the clone or one of
 its linked worktrees, naming the PID and the command in the reason; a process

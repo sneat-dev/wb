@@ -169,7 +169,7 @@ each checkout's placement alongside its task identity.
 
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
-**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10, task-11, task-12
+**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10, task-11, task-12, task-13
 **Status:** blocked
 
 **Blocked by:** the operator deferred this one-off machine migration until the
@@ -251,6 +251,23 @@ parked-session and Git-operation checks still apply. Included claims get
 relocation receipts, so the task resolves at its new path. Also regenerate a
 relocated checkout's `.worktree.md` after the relocation: the vm1 test on
 2026-09-18 left it naming the pre-relocation path.
+
+### Task 13: Parked sessions resolve members by identity; migrate stops refusing them
+
+**Id:** task-13
+**Verifies:** park-and-resume-agent-sessions#ac:resume-survives-a-layout-migration
+**Depends-On:** task-12
+**Status:** queued
+
+Parked-session resume identifies each member by repository, branch and Work Log
+reference, and resolves the canonical clone through `repopath` and moved
+checkouts through relocation receipts, instead of comparing the stored absolute
+`canonical_dir`, `worktree_dir` and `worktrees_root`
+(`internal/worktrees/session_park_local.go`, `acquire`). Migrate drops the
+parked-session clone refusal and records a relocation receipt for each parked
+member worktree it moves. On vm1 on 2026-09-18 this refusal was the only thing
+keeping dal-go/dalgo, dalgo2firestore, dalgo2sql and dalgo2sqlite from
+migrating.
 
 ## Open Questions
 
