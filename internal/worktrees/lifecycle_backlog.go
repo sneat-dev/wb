@@ -531,7 +531,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 			worktree.close()
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, removeErr)
 		}
-		parentErr := worktree.removeEmptyParent(nil)
+		parentErr := worktree.removeEmptyParent(nil, nil)
 		worktree.close()
 		if parentErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, parentErr)

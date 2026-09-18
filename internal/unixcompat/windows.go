@@ -32,10 +32,13 @@ const (
 	LOCK_NB             = 4
 	LOCK_UN             = 8
 	AT_SYMLINK_NOFOLLOW = 0
-	AT_REMOVEDIR        = 0
-	F_GETFD             = 1
-	F_SETFD             = 2
-	FD_CLOEXEC          = 1
+	// AT_REMOVEDIR must be a distinct, nonzero bit: Unlinkat below tests
+	// flags&AT_REMOVEDIR to decide whether the target must be a directory or
+	// must not be one, and a zero value would make that test always false.
+	AT_REMOVEDIR = 0x200
+	F_GETFD      = 1
+	F_SETFD      = 2
+	FD_CLOEXEC   = 1
 )
 
 var EEXIST = os.ErrExist
@@ -196,7 +199,18 @@ func Mkdirat(dirfd int, name string, mode uint32) error {
 	return os.Mkdir(filepath.Join(pathOf(dirfd), name), os.FileMode(mode))
 }
 func Unlinkat(dirfd int, name string, flags int) error {
-	return os.Remove(filepath.Join(pathOf(dirfd), name))
+	path, err := resolveDirectoryEntryPath(pathOf(dirfd), name)
+	if err != nil {
+		return err
+	}
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		return statErr
+	}
+	if err := validateUnlinkatTarget(info, flags); err != nil {
+		return err
+	}
+	return os.Remove(path)
 }
 func Linkat(olddirfd int, oldname string, newdirfd int, newname string, flags int) error {
 	return os.Link(filepath.Join(pathOf(olddirfd), oldname), filepath.Join(pathOf(newdirfd), newname))

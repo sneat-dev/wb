@@ -564,6 +564,12 @@ type CleanupOptions struct {
 	// is atomically retired. It proves a successor cannot be unlinked by a
 	// stale verify-then-remove sequence.
 	afterCleanupParentAuthorization func(parent string)
+	// afterCleanupOwnerRetirement is a test-only seam for the host-level
+	// layout, immediately after <owner> is retired empty and before <host>
+	// is reauthorized and retired in turn. It proves a same-path <host>
+	// substitution racing in right here is caught by removeEmptyParent's
+	// descriptor-anchored check rather than removed as if unchanged.
+	afterCleanupOwnerRetirement func(ancestor string)
 	// afterResumeInterruptedLock models a successor or early failure after
 	// recovery acquired the exact stale descriptor. Cleanup must preserve the
 	// lock until an eligible cleanup transaction owns it.
@@ -968,7 +974,7 @@ func (handle *cleanupWorktreeHandle) validate() error {
 	return nil
 }
 
-func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(string)) error {
+func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(string), afterOwnerRetirement func(string)) error {
 	if !handle.closeParent {
 		return nil // Legacy <task>/<repository> layout has no owner directory.
 	}
@@ -1005,17 +1011,32 @@ func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(s
 	if container == nil {
 		container = handle.task.task
 	}
+	// When the host-level layout nests <owner> under <host>, the removal
+	// below reaches <owner> through the already-opened <host> descriptor
+	// (container == handle.ancestor). Reauthorize that ancestor one more
+	// time immediately before it is used, so a substitution racing in
+	// between this handle's open and this removal is surfaced rather than
+	// acted on.
+	if handle.closeAncestor && !directoryStillMatches(handle.ancestorPath, handle.ancestor) {
+		return fmt.Errorf("cleanup worktree ancestor path changed before owner removal: %s", handle.ancestorPath)
+	}
 	removeErr := unix.Unlinkat(int(container.Fd()), handle.parentName, unix.AT_REMOVEDIR)
 	if removeErr != nil || !handle.closeAncestor {
 		return nil
+	}
+	if afterOwnerRetirement != nil {
+		afterOwnerRetirement(handle.ancestorPath)
 	}
 	// The host-level layout nests <owner> one level under <host>. <owner> was
 	// just retired empty above, so <host> may now be empty too — reauthorize
 	// it the same way and retire it as well, best-effort, exactly as above. A
 	// sibling <owner> still present under the same <host> (another repository
-	// or task sharing the host) leaves AT_REMOVEDIR refusing with ENOTEMPTY,
+	// sharing the host) leaves AT_REMOVEDIR refusing with ENOTEMPTY,
 	// which is silently accepted here just like the owner-level removal.
-	if !directoryStillMatches(handle.ancestorPath, handle.ancestor) {
+	// The check is descriptor-anchored to <task> rather than path-only, so a
+	// same-path replacement of <host> between this handle's open and this
+	// removal is caught rather than removed as if it were still the original.
+	if !directoryEntryStillMatches(handle.task.task, handle.ancestorName, handle.ancestor) {
 		return nil
 	}
 	_ = unix.Unlinkat(int(handle.ancestorContainer.Fd()), handle.ancestorName, unix.AT_REMOVEDIR)
@@ -2963,7 +2984,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				}
 				outcome.Results[index].BranchDeleted = true
 			}
-			if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization); err != nil {
+			if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization, normalized.afterCleanupOwnerRetirement); err != nil {
 				closeCanonical()
 				worktree.close()
 				return err

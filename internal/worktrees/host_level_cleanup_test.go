@@ -8,6 +8,20 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 )
 
+// openFileDescriptorCount reports how many file descriptors this process
+// currently holds open, via /proc/self/fd. It skips the calling test on any
+// platform where that directory does not exist (this repository's CI runs
+// this suite on ubuntu-latest only, but the skip keeps a local run on
+// another OS from failing for an unrelated reason).
+func openFileDescriptorCount(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skipf("file descriptor accounting requires /proc/self/fd: %v", err)
+	}
+	return len(entries)
+}
+
 // newHostLevelCleanupTaskFixture acquires a bare cleanup task descriptor
 // rooted at a fresh temp directory, the same low-level entry point Cleanup
 // itself uses (acquireCleanupTaskAtOrCreate), without any Git or Work Log
@@ -85,7 +99,7 @@ func TestCleanupRetiresHostLevelWorktreeAndBothEmptyAncestors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := handle.removeEmptyParent(nil); err != nil {
+	if err := handle.removeEmptyParent(nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +138,7 @@ func TestCleanupLeavesNonEmptyHostLevelSiblingsIntact(t *testing.T) {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		if err := handle.removeEmptyParent(nil); err != nil {
+		if err := handle.removeEmptyParent(nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -263,5 +277,147 @@ func TestHostLevelSegmentValidatorsRefuseTraversalEmptyAndSeparatorSegments(t *t
 	}
 	if validSafeSegment("github.com:8443") {
 		t.Fatal("validSafeSegment's charset has no colon; a port-hosted forge level must go through repopath.IsForgeHost instead")
+	}
+}
+
+// TestCleanupHostSwapBetweenOwnerAndHostRemovalIsCaught proves
+// removeEmptyParent's descriptor-anchored check on the <host> removal (#606
+// item 2): a same-path substitution of <host> racing in between <owner>'s
+// retirement and <host>'s own reauthorization must leave the substitute
+// directory untouched rather than removed as if it were still the original.
+// The afterCleanupOwnerRetirement seam this test uses is the "hook between
+// the owner and host steps" #606 asked for.
+func TestCleanupHostSwapBetweenOwnerAndHostRemovalIsCaught(t *testing.T) {
+	task := newHostLevelCleanupTaskFixture(t)
+	repoPath := filepath.Join(task.taskPath, "github.com", "acme", "app")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: repoPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.close()
+	if err := os.Remove(repoPath); err != nil {
+		t.Fatal(err)
+	}
+
+	hostPath := filepath.Join(task.taskPath, "github.com")
+	parkedHost := hostPath + "-parked"
+	sentinel := "swapped in\n"
+	hookRan := false
+	if err := handle.removeEmptyParent(nil, func(ancestor string) {
+		hookRan = true
+		if ancestor != hostPath {
+			t.Fatalf("owner-retirement hook ancestor = %s, want %s", ancestor, hostPath)
+		}
+		if renameErr := os.Rename(hostPath, parkedHost); renameErr != nil {
+			t.Fatalf("park original host directory: %v", renameErr)
+		}
+		if mkdirErr := os.Mkdir(hostPath, 0o755); mkdirErr != nil {
+			t.Fatalf("substitute host directory: %v", mkdirErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(hostPath, "keep.txt"), []byte(sentinel), 0o600); writeErr != nil {
+			t.Fatalf("write substituted host sentinel: %v", writeErr)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !hookRan {
+		t.Fatal("afterCleanupOwnerRetirement hook never ran")
+	}
+	// The owner directory itself must still have been retired: only the host
+	// swap that raced in afterward is what removeEmptyParent must refuse to
+	// touch.
+	ownerDir := filepath.Join(hostPath, "acme")
+	if _, statErr := os.Stat(ownerDir); !os.IsNotExist(statErr) {
+		t.Fatalf("owner directory %s was not retired before the host swap: %v", ownerDir, statErr)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(hostPath, "keep.txt")); readErr != nil || string(content) != sentinel {
+		t.Fatalf("substituted host directory was removed instead of left alone: %v", readErr)
+	}
+}
+
+// TestCleanupWorktreeHandleValidateFailsOnChangedAncestor proves validate()
+// itself, not just removeEmptyParent, notices a <host> substituted at the
+// same path after the handle opened it.
+func TestCleanupWorktreeHandleValidateFailsOnChangedAncestor(t *testing.T) {
+	task := newHostLevelCleanupTaskFixture(t)
+	repoPath := filepath.Join(task.taskPath, "github.com", "acme", "app")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: repoPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.close()
+
+	if err := handle.validate(); err != nil {
+		t.Fatalf("freshly opened handle failed validation: %v", err)
+	}
+
+	hostPath := filepath.Join(task.taskPath, "github.com")
+	parkedHost := hostPath + "-parked"
+	if err := os.Rename(hostPath, parkedHost); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(hostPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handle.validate(); err == nil {
+		t.Fatal("validate() succeeded despite a same-path ancestor substitution")
+	}
+}
+
+// TestOpenCleanupWorktreeHostLevelLeavesNoFdLeakOnOwnerOpenError proves an
+// open error at the owner level — after the host descriptor is already
+// held — still closes that host descriptor rather than leaking it.
+func TestOpenCleanupWorktreeHostLevelLeavesNoFdLeakOnOwnerOpenError(t *testing.T) {
+	task := newHostLevelCleanupTaskFixture(t)
+	hostPath := filepath.Join(task.taskPath, "github.com")
+	if err := os.MkdirAll(hostPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// "acme" is a plain file, not a directory, so the owner-level Openat
+	// (O_DIRECTORY) fails once the host descriptor is already open.
+	if err := os.WriteFile(filepath.Join(hostPath, "acme"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before := openFileDescriptorCount(t)
+	if _, err := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{
+		WorktreeDir: filepath.Join(hostPath, "acme", "app"),
+	}}); err == nil {
+		t.Fatal("opening a worktree through a file masquerading as the owner directory succeeded")
+	}
+	after := openFileDescriptorCount(t)
+	if after != before {
+		t.Fatalf("owner-level open-error path leaked file descriptors: before=%d after=%d", before, after)
+	}
+}
+
+// TestOpenCleanupWorktreeHostLevelLeavesNoFdLeakOnRepositoryOpenError proves
+// an open error at the repository level — after both the host and owner
+// descriptors are already held — still closes both rather than leaking
+// either.
+func TestOpenCleanupWorktreeHostLevelLeavesNoFdLeakOnRepositoryOpenError(t *testing.T) {
+	task := newHostLevelCleanupTaskFixture(t)
+	ownerPath := filepath.Join(task.taskPath, "github.com", "acme")
+	if err := os.MkdirAll(ownerPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// "app" does not exist: the final Openat fails with ENOENT after both
+	// the host and owner descriptors are already open.
+	before := openFileDescriptorCount(t)
+	if _, err := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{
+		WorktreeDir: filepath.Join(ownerPath, "app"),
+	}}); err == nil {
+		t.Fatal("opening a nonexistent repository directory succeeded")
+	}
+	after := openFileDescriptorCount(t)
+	if after != before {
+		t.Fatalf("repository-level open-error path leaked file descriptors: before=%d after=%d", before, after)
 	}
 }
