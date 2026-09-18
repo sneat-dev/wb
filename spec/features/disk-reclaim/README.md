@@ -14,75 +14,67 @@ status: Draft
 ## Summary
 
 `wb disk reclaim` gives back the bytes `wb disk` reports, planning by default
-and deleting only under `--apply`. It trims the Go build cache oldest-first to
-a budget, removes temporary directories whose owner is provably gone, prunes
-package stores, collects WB state through its existing collectors, and
-retires finished worktrees through `wb worktree gc`. The daemon runs a safe
-subset on a fixed cadence when free space is below a configured floor. Two
-root causes are handled at the source: whether `-trimpath` lets worktrees
-share Go cache entries, and tests that leave scratch behind.
+and deleting only under `--apply`: an oldest-first Go cache trim to a budget,
+temporary directories whose owner is provably gone, package stores, WB state,
+and finished worktrees. The daemon runs a safe subset below a free-space
+floor. Two root causes are handled at source: `-trimpath` cache sharing, and
+tests that leave scratch behind.
 
 ## Problem
 
 The founder: "Should we build in disk space cleanup into wb?" (yes) —
 "25GB of build cache feels wrong." — "Should tests cleanup after themselves?"
 
-On 2026-09-18 the main agent VM reached 99% (1.8 GB free), a day after an
-earlier incident at 101 MB free. The Go build cache was 25 GB: one shared
-`GOCACHE`, but the main module's packages include their absolute directory in
-the cache key without `-trimpath`, so each worktree path may cache its own
-copy, and Go trims only entries unused for 5 days. The temporary directory
-held 377 `wb-*` directories (6.3 GB), 67 `go-build*` work directories left by
-killed Go processes (2.7 GB), and 1.9 GB of `Test*` directories left by
-killed test binaries. The `internal/layout` `TestMain` leak was fixed in
-#641; `wb-go-test-shards-*` still leak when `wb run` is killed. `wb disk`
-measures but cannot reclaim. The deleting verbs that exist (`wb worktree gc`,
-`wb cleanup`, `wb layout clean`, `wb hooks lifecycle gc`) retire checkouts,
-clones and receipts; none touches caches or temporary directories.
+On 2026-09-18 the main agent VM reached 99% (1.8 GB free). The shared Go
+build cache was 25 GB: without `-trimpath` the main module's packages key on
+their absolute directory, so each worktree may cache its own copy, and Go
+trims only entries unused for 5 days. The temporary directory held 6.3 GB of
+`wb-*`, 2.7 GB of `go-build*` left by killed Go processes and 1.9 GB of
+`t.TempDir` directories left by killed test binaries (the `internal/layout`
+leak was fixed in #641; `wb-go-test-shards-*` still leak when `wb run` is
+killed). `wb disk` cannot reclaim, and the deleting verbs (`wb worktree gc`,
+`wb cleanup`, `wb layout clean`, `wb hooks lifecycle gc`) touch no caches or
+temporary directories.
 
 ## Behavior
 
 ### REQ: plan-by-default
 
-Without `--apply` the command MUST NOT delete, move or modify anything,
-including the worktree heartbeat (it is exempt as `wb version` is); delegated
-collectors run in their planning form only, and a collector without a
-side-effect-free planning form reports `not-planned`. It reports per category
-the candidates, their reclaim bytes (the `wb disk` single-walk accounting, so
-shared content is not double-counted), and why each is deleted or kept. With
-`--apply` it also reports reclaimed bytes and free space before and after.
-Exit `0`: nothing to reclaim, or every planned deletion applied; `1`:
-candidates remain in plan mode, or any deletion failed; `2`: usage, including
-an unparsable `--budget` or a `--min-age` below its floor.
+Without `--apply` nothing is deleted, moved or modified, including the
+worktree heartbeat (exempt as `wb version` is); delegated collectors run only
+in a side-effect-free planning form, else report `not-planned`. Per category
+it reports candidates, reclaim bytes (`wb disk`'s single-walk accounting) and
+why each is deleted or kept; `--apply` adds reclaimed bytes and free space
+before and after. Exit `0`: nothing to reclaim, or all applied; `1`:
+candidates remain in plan mode, or a deletion failed; `2`: usage, including an
+unparsable `--budget` or a `--min-age` below its floor.
 
 ### REQ: categories
 
 | Category | Candidates | Method |
 |---|---|---|
 | `go-build-cache` | entry files of `go env GOCACHE` | oldest-first trim to `--budget` (default `disk.go_build_cache.budget`, 10 GiB) |
-| `scratch` | temp-directory entries `wb-*`, `wb/<task>`, `go-build*`, `Test*` | REQ: scratch-ownership |
+| `scratch` | temp-directory entries `wb-*`, `wb/<task>`, `go-build*`, `t.TempDir` shapes | REQ: scratch-ownership |
 | `node-package-store` | the pnpm store; the npm cache | `pnpm store prune` and `npm cache verify`, each skipped with `skipped: busy` while any `pnpm`/`npm` process runs |
-| `wb-state` | lifecycle receipts; session records of exited processes | `wb hooks lifecycle gc`, `wb session prune`, with their own protections |
+| `wb-state` | lifecycle receipts; session records of exited processes | `wb hooks lifecycle gc`; `wb session prune` (no planning form, so `not-planned` in plan mode) |
 | `worktrees` | WB-managed checkouts | `wb worktree gc` with default flags, never `--allow-residue` |
 | `lifecycle-artifacts` | executor artifacts in worktrees, over budget | oldest last-receipt first; never a canonical checkout, a checkout with a pending or running execution, or a checkout claimed by a live lane |
 
-The Go module cache, Work Logs and fleet events are report-only (the first
-costs network to refill; the others await open decision 5). A `.worktrees/`
-directory inside a canonical clone is the legitimate store in
-`repository-local` mode; in central mode, one holding no worktree registered
-with Git is reported as `unregistered-checkout-store` and never deleted.
+The Go module cache, Work Logs and fleet events are report-only (network to
+refill; open decision 5). A `.worktrees/` inside a canonical clone is the
+store in `repository-local` mode; in central mode, one holding no registered
+worktree is reported as `unregistered-checkout-store`, never deleted.
 
 ### REQ: go-cache-trim-is-safe
 
-Go refreshes an entry's modification time on use only when it is older than
-one hour, and passes cache paths directly to compile and link, so deleting an
-entry a running build will read causes a hard build error, not a miss. The
-trim MUST therefore delete only `-a` and `-d` entry files, oldest
-modification time first, never one modified within `--min-age`, stopping as
-soon as the cache is within budget, leaving `README`, `trim.txt` and the
-directory tree intact. `--min-age` defaults to 24 h and MUST be at least
-1 h plus `disk.go_build_cache.max_build` (default 1 h); a smaller value is a
-usage error.
+Go refreshes an entry's modification time only when it is over an hour old,
+and hands cache paths straight to compile and link, so deleting an entry a
+running build will read is a hard error, not a miss. The trim MUST delete only
+`-a`/`-d` entry files, oldest first, never one modified within `--min-age`
+(default 24 h; at least 1 h plus `disk.go_build_cache.max_build`, default
+1 h, else a usage error), stopping once within budget and leaving `README`,
+`trim.txt` and the tree intact. If only newer entries remain, it reports
+`budget-unreachable` with the excess bytes, a finding (exit `1`).
 
 ### REQ: scratch-ownership
 
@@ -94,53 +86,53 @@ A scratch directory MAY be removed only when, checked in order:
    exclusive `flock` (on Windows, an exclusive open) for its lifetime, and
    reclaim can acquire that lock: it was released, so the owner is gone. This
    holds across PID namespaces. `wb run` MUST create and hold such a lock in
-   every shard and scratch directory it creates;
+   every shard and scratch directory it creates and pass the locked
+   descriptor to its children (`ExtraFiles`), so the lock outlives a killed
+   `wb run` while any child still runs;
 3. it has no owner record, no file inside it was modified within
    `--older-than` (default 72 h), no live or parked task's claim, manifest or
    worktree references its path, and, on Linux, no process has its working
    directory or an open file under it. These are reported as `ownerless`.
 
-`go-build*` and `Test*` directories are always rule 3. A directory whose lock
-is held MUST be kept regardless of age.
+`go-build*` and `t.TempDir` directories (`Test<Name><digits>` holding
+numbered subdirectories) are always rule 3. Only entries the invoking user
+owns are candidates; others are listed as `foreign-owner` and never raise the
+exit code. A directory whose lock is held is kept regardless of age.
 
 ### REQ: tests-clean-up
 
-Tests in the wb repository MUST leave the temporary directory as they found
-it: per-test scratch through `t.TempDir()`, and `TestMain` scratch removed
-before `os.Exit`. CI MUST run `go test ./...` with `TMPDIR` set to a fresh
-empty directory and fail, listing the leftovers, if it is not empty
+wb's tests MUST leave the temporary directory as they found it (`t.TempDir()`;
+`TestMain` scratch removed before `os.Exit`). CI MUST run `go test ./...`
+under a fresh empty `TMPDIR` and fail, listing leftovers, if it is not empty
 afterwards. `wb run` MUST remove its shard directories on normal exit and on
-`SIGINT`/`SIGTERM`; a `SIGKILL` leak is covered by scratch-ownership rule 2.
+`SIGINT`/`SIGTERM`; `SIGKILL` is covered by scratch-ownership rule 2.
 
 ### REQ: trimpath-investigation
 
-Before changing Go flags, WB MUST record a measurement of the bytes a second
-worktree adds to a shared `GOCACHE` for the real gate workload (`wb check
---profile ci`: tests with coverage, vet, build), with and without
-`-trimpath`, and whether that suite passes with it. The standard library and
-module-cache dependencies are shared either way; only the main module's
-packages can differ. Tests that locate files through `runtime.Caller` (today
-only `cmd/wb/module_archive_test.go`) MUST first be made independent of
-absolute paths. If `-trimpath` cuts the second worktree's added bytes by at
-least half and the suite passes, `wb run` and `wb check` MUST append
-`-trimpath` to `GOFLAGS` (never replacing a user's value) for Go build and
-test commands; otherwise the measurement is recorded here and nothing
-changes.
+Before changing Go flags, WB MUST record the bytes a second worktree adds to
+a shared `GOCACHE` for the gate workload (`wb check --profile ci`), with and
+without `-trimpath`, and whether that suite passes with it (only the main
+module's packages can differ). Tests locating files through `runtime.Caller`
+(today only `cmd/wb/module_archive_test.go`) MUST first stop depending on
+absolute paths. If `-trimpath` at least halves the added bytes and the suite
+passes, it is adopted machine-wide by a machine-setup item appending it to
+`go env GOFLAGS` (never replacing a user's value); setting it only in
+`wb run`/`wb check` would keep two cache-key variants of every package.
 
 ### REQ: daemon-auto-reclaim
 
-The trusted user `wb.yaml` gains `disk.minimum_available` (share of the
-volume; default 0.10, also `wb disk`'s default for `--minimum-available`),
-`disk.auto_reclaim` (`on|off`, default `on`) and `disk.check_interval`
-(default 10 m). The daemon MUST check free space at that interval; below the
-floor it runs the safe subset — `go-build-cache`, `scratch` rules 1 and 2,
-and `wb-state` lifecycle receipts — at most once per hour, never
+`wb.yaml` gains `disk.minimum_available` (default 0.10, also `wb disk`'s
+`--minimum-available` default), `disk.auto_reclaim` (default `on`) and
+`disk.check_interval` (default 10 m). At that interval the daemon checks free
+space and, below the floor, runs at most once per hour the safe subset:
+`go-build-cache`, `scratch` rules 1 and 2, lifecycle receipts; never
 `worktrees`, `node-package-store`, `lifecycle-artifacts` or rule-3 scratch.
-`wb disk reclaim --auto` runs exactly that subset and rate limit, so it is
-testable without waiting. Each run appends a receipt (trigger, free before,
+`wb disk reclaim --auto` runs exactly that subset and rate limit. Each run appends a receipt (trigger, free before,
 bytes per category, free after) under `<projects-root>/.wb/disk/receipts/`,
-including runs that reclaimed nothing. A failed run, or free space still
-below the floor, is a finding in `wb daemon status` and `wb disk`.
+including runs that reclaimed nothing; a check skipped by the rate limit
+writes no receipt, and `--auto` reports `skipped: rate-limited`, exit `0`. A
+failed run, or free space still below the floor, is a finding in
+`wb daemon status` and `wb disk`.
 
 ### REQ: machine-readable-output
 
@@ -191,11 +183,14 @@ runs concurrently three times
 **Given** `wb-go-test-shards-A` whose lock a running `wb run` holds (mtime
 older than 72 h), the same run inside a separate PID namespace for
 `wb-go-test-shards-B`, `wb-go-test-shards-C` whose owner was killed with
-`SIGKILL`, `wb/parked-task` untouched for 5 days but claimed by a parked
-task, and a `go-build123` untouched for 5 days
+`SIGKILL` with no surviving child, `wb-go-test-shards-D` whose `wb run` was
+killed while its `go test` child still runs, `wb/parked-task` untouched for
+5 days but claimed by a parked task, a `go-build123` untouched for 5 days,
+and a `go-build456` owned by another user
 **When** the user runs `wb disk reclaim --category scratch --apply`
-**Then** A, B and `wb/parked-task` remain; C and `go-build123` are removed,
-the latter reported `ownerless`; exit is `0`.
+**Then** A, B, D and `wb/parked-task` remain; C and `go-build123` are
+removed, the latter reported `ownerless`; `go-build456` is listed as
+`foreign-owner`; exit is `0`.
 
 ### AC: interrupted-run-cleans-shards
 
@@ -278,15 +273,28 @@ holding no registered worktree
 **When** the user runs `wb disk reclaim --apply`
 **Then** it is untouched and reported as `unregistered-checkout-store`.
 
+## Delivery Slices
+
+Each slice is one PR with the ACs named.
+
+0. The `-trimpath` measurement and the fresh-`TMPDIR` CI guard —
+   trimpath-measured, test-leak-guard-fails-ci.
+1. `wb disk reclaim` with `go-build-cache` and rule-3 `scratch` only —
+   plan-changes-nothing (those categories), go-cache-trimmed-to-budget,
+   concurrent-build-survives-trim, failed-deletion-exits-1.
+2. The `wb run` lock and signal cleanup — interrupted-run-cleans-shards,
+   scratch-owners-respected.
+3. Delegated categories — delegated-categories, checkout-stores-never-deleted.
+4. Daemon auto-reclaim — daemon-reclaims-below-floor,
+   failed-auto-reclaim-is-visible.
+
 ## Open Questions
 
-- **Go cache budget.** 10 GiB is a placeholder; after `-trimpath` the working
-  set may be far smaller. A share of the volume instead?
-- **Work Log and fleet-event retention (open decision 5).** Report-only until
-  decided.
-- **Rule-3 scratch in automatic runs.** Excluded today. If ownerless leaks
-  persist once `wb-owner.lock` ships, may the daemon remove rule-3 scratch
-  older than 7 days below the floor?
+- The 10 GiB Go cache budget is a placeholder; should it be a share of the
+  volume, measured after `-trimpath`?
+- Work Log and fleet-event retention is open decision 5 (report-only).
+- May the daemon remove rule-3 scratch older than 7 days below the floor if
+  ownerless leaks persist after `wb-owner.lock` ships?
 
 ---
 *This document follows the https://specscore.md/feature-specification*

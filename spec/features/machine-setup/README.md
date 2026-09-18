@@ -8,168 +8,149 @@ status: Draft
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/machine-setup?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/machine-setup?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/machine-setup?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/machine-setup?op=request-change) |
 **Status:** Draft
 **Source Ideas:** —
-**Depends On:** [Install](../install/README.md), [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md), [Code Index Freshness](../code-index-freshness/README.md)
+**Depends On:** [Install](../install/README.md), [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md), [Code Index Freshness](../code-index-freshness/README.md), [strongo/cli-helpers catalog](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/cli-install?op=explore) (new entry fields)
 **Related:** [Expert Tool Routing](../expert-tool-routing/README.md) (delivered by `skills:*`, `selector:*`, `agent-guard:*`)
 
 ## Summary
 
 `wb setup` makes any Linux, macOS or Windows machine an efficient agent
-machine with one idempotent command, and `wb setup --check` reports every way
-the machine has drifted from that state, without network access. It owns no
-installation, hook, or skill behavior of its own: each item delegates to the
-existing expert command (`wb install`/`wb upgrade`, `wb hooks install`,
-`wb hooks agent install`, `wb hooks lifecycle backfill`, `wb skills sync`),
-and every tool-specific value is data the tool's catalog entry declares. Its
-contribution is the **inventory**, resolved per machine and checked or
-converged in one pass.
-
-## Synopsis
-
-```
-wb setup --check                  # read-only drift report; no network; exit 1 on drift
-wb setup --dry-run --format json  # full plan with a diff per write; writes nothing
-wb setup                          # converge every item that does not overwrite foreign config
-wb setup --overwrite lifecycle:code-index    # accept the shown diff for one exact item id
-wb setup --prefer codegrapher=/opt/tools/codegrapher  # pick one copy when none is on PATH
-```
+machine with one idempotent command; `wb setup --check` reports drift from
+that state without network access. It owns no installation, hook or skill
+behavior: each item delegates to an existing command, and every tool-specific
+value except wb's own minimum versions is data the tool's cli-helpers catalog
+entry declares. Its contribution is the **inventory**, resolved per machine
+and checked or converged in one pass.
 
 ## Problem
 
 The 2026-09-18 SDLC logging-gap analysis found the efficient path missing on
-the main agent VM: the wb pre-tool-use guard was not registered, so 92% of
-heavy commands bypassed `wb run` admission; no lifecycle executor was
-configured, so the most-used canonical clones had no code index and 3,015
-symbol greps ran against 0 codegrapher analysis calls in a week; and
-`.codegraph/` was not ignored, so the one index created (134 MB) tripped wb's
-`dirty-worktree` refusals. Each piece has a WB command. Nothing lists the
-pieces, so a new or changed machine silently loses them. The founder's ask:
-"make sure we have a script or wb command to configure any machine."
+the main agent VM: the wb guard was not registered (92% of heavy commands
+bypassed `wb run` admission); no lifecycle executor was configured, so the
+most-used canonical clones had no code index and 3,015 symbol greps ran
+against 0 codegrapher analysis calls in a week; `.codegraph/` was not
+ignored, so the one index created (134 MB) tripped `dirty-worktree`
+refusals. Each piece has a WB command; nothing lists them. The founder: "make
+sure we have a script or wb command to configure any machine."
 
-**Why `wb setup`, not `wb install`:** the Install Feature forbids wb from
-adding behavior to the cli-helpers binding
-(install#req:library-provided-behavior). Setup composes several commands, the
-shape of [`wb cleanup`](../cleanup-orchestration/README.md). `wb doctor` reads
-as report-only; `setup` names check and convergence and sits beside
-`install`, `upgrade` and `skills`.
+**Why `wb setup`, not `wb install`:** the Install Feature forbids adding
+behavior to the cli-helpers binding (install#req:library-provided-behavior).
+Setup composes commands, as [`wb cleanup`](../cleanup-orchestration/README.md)
+does; `wb doctor` reads as report-only.
 
 ## Behavior
 
 ### REQ: item-inventory
 
-`wb setup` MUST evaluate this ordered set of items, each with a stable `id`.
-`<cli>` ranges over catalog CLIs the catalog marks relevant to wb (today
-`specscore`, `codegrapher`, `cover100`); a per-CLI item exists only when that
-CLI's catalog entry declares the data it needs:
+`wb setup` MUST evaluate this ordered set of items, each with a stable `id`
+(`--only <prefix>,…` limits a run to matching ids). `<cli>` ranges over
+catalog CLIs marked relevant to wb (today `specscore`, `codegrapher`,
+`cover100`). A per-CLI item other than `cli:` exists only when that catalog
+entry declares its data; until the catalog fields ship, those items are
+absent and a single `catalog-fields-missing` note says so.
 
 | Id | Desired state | Delegates to |
 |---|---|---|
-| `cli:<cli>` | installed; apply mode upgrades to latest; `--check` compares with wb's minimum-version table | `wb install` / `wb upgrade` |
-| `git-hooks` | the `lifecycle` profile ([Code Index Freshness](../code-index-freshness/README.md)) installed in every canonical clone in scope; other profiles untouched | `wb hooks install` / `repair` |
-| `lifecycle:<executor>` | the executor template the catalog entry declares, plus a `checkout-updated` binding for the repositories in scope | the lifecycle config writer |
-| `backfill:<executor>` | the in-scope canonical clones indexed at least once | `wb hooks lifecycle backfill --apply` |
-| `gitignore:<cli>` | the ignore globs the catalog entry declares, in the global Git excludes file | a line-append writer |
-| `selector:<cli>` | the `test_selection` executor the catalog entry declares, for `wb check --changed` | the lifecycle config writer |
-| `agent-guard:<harness>` | the wb pre-tool-use guard registered for each present harness that supports it | `wb hooks agent install` |
-| `skills:<cli>` | CLI-matched Agent Skills in every present harness | `wb skills sync`, or the skill-sync argv the catalog entry declares |
-| `harness-settings` | only settings with a recorded decision | a JSON-merge writer |
-| `daemon` | report only: supervised and ready | none |
+| `cli:<cli>` | installed; apply upgrades to latest; `--check` compares with the minimum-version table | `wb install` / `wb upgrade` |
+| `git-hooks` | managed shims current in every canonical clone in scope, with the profiles `wb hooks install` selects by default | `wb hooks install` / `repair` |
+| `lifecycle:<executor>` | the declared executor template and a `checkout-updated` binding for the scope | lifecycle config writer |
+| `backfill:<executor>` | in-scope canonical clones indexed at least once | `wb hooks lifecycle backfill --apply` |
+| `gitignore:<cli>` | the declared ignore globs in the global Git excludes file | line-append writer |
+| `selector:<cli>` | the declared test selector as `check.test_selection` in `wb.yaml` | config writer |
+| `agent-guard:<harness>` | the wb pre-tool-use guard registered, with the matcher its nudge setting implies | `wb hooks agent install` |
+| `skills:<cli>` | CLI-matched Agent Skills in every present harness | `wb skills sync`, or the declared skill-sync argv |
+| `harness-settings` | only settings with a recorded decision | JSON-merge writer |
+| `daemon` | report only: supervised and ready, from its state file | none |
 
 WB code MUST NOT name any fleet CLI other than wb
-(trusted-repository-update-hooks#req:catalog-declared-templates); the
-templates, globs and skill-sync argv are fields of the cli-helpers catalog
-entry. Repository content MUST NOT enable items; `--only <prefix>,…` limits
-a run to matching ids. Minimum versions are data shipped in wb
-(`ai/setup/minimums.yaml`); a CLI without a row has no minimum.
+(trusted-repository-update-hooks#req:catalog-declared-templates). The one
+exception is the minimum-version table (`ai/setup/minimums.yaml`), which
+records wb's own dependency on a CLI, not the CLI's behavior; a CLI without a
+row has no minimum. Repository content MUST NOT enable items.
 
 ### REQ: scope-and-backfill
 
-The repositories in scope are `setup.repositories` (include/exclude globs of
-canonical identities) in the trusted user `wb.yaml`, defaulting to every
-canonical clone under the projects root. `git-hooks` MUST install only the
-`lifecycle` profile; it MUST NOT add the `worktree` profile, whose pre-commit
-refuses commits, unless `setup.git_hooks.profiles` names it. `backfill`
-MUST enqueue at most `setup.backfill.limit` (default 10) never-indexed clones,
-most recently fetched first, at background priority under CPU admission
-(code-index-freshness#req:background-execution); the rest are indexed on
-their next checkout move and reported as `never` meanwhile.
+The scope is `setup.repositories` (include/exclude globs of canonical
+identities) in the trusted user `wb.yaml`, defaulting to every canonical
+clone under the projects root. `git-hooks` MUST NOT write any hooks-policy
+key: it leaves profile selection exactly as `wb hooks install` sets it (today
+`worktree`, and `lifecycle` once Code Index Freshness ships), and its item
+detail names each installed profile's effect, including that `worktree`
+refuses commits outside managed worktrees and how to opt out. `backfill`
+MUST call `wb hooks lifecycle backfill --apply --only-never --order recent
+--limit <setup.backfill.limit>` (new flags; default limit 10). When the
+executor's `priority: background` cannot be written (see version-skew), the
+backfill is deferred with it rather than run at normal priority.
 
 ### REQ: per-machine-resolution
 
 Every path an item writes MUST be resolved on the machine running it:
 
-- an executor's `run:` path is the absolute path of the copy the install
-  library selects: the first on `PATH`, as `wb install` reports it. Other
-  copies are reported as `shadowed` notes, which never raise the exit code;
-- only when no copy is on `PATH` and several exist, items that write a path
-  report `ambiguous`, write nothing, and name the remedy
-  (`--prefer <cli>=<path>`, or remove a copy); the selected path MUST pass
+- an executor's `run:` path is the copy the install library selects, the
+  first on `PATH`; other copies are `shadowed` notes that never raise the
+  exit code. Only when no copy is on `PATH` and several exist do path-writing
+  items report `ambiguous`, write nothing, and name the remedy
+  (`--prefer <cli>=<path>`). The path MUST pass
   trusted-repository-update-hooks#req:generic-executors before it is written;
 - the global excludes file is `git config --global core.excludesFile` when
   set, else `$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`
   (`%USERPROFILE%\.config\git\ignore` on Windows);
-- harness settings follow the harness's own resolution (`$CLAUDE_CONFIG_DIR`,
-  then `~/.claude/settings.json`).
+- harness settings follow the harness's own resolution.
 
 ### REQ: version-skew
 
 `wb setup` MUST write `hooks.version: 2` keys
-(trusted-repository-update-hooks#req:version-2-extensions) only when every wb
-that may read the config supports version 2: the running binary, the daemon's
-executable as `wb daemon status` reports it, every `wb` on `PATH`, and
-`WB_EXECUTABLE` when set. Otherwise it MUST write a version-1 config without
-those keys and report the item `deferred-version-skew`, naming each older
-executable and the remedy (`wb upgrade wb`, restart the daemon).
+(trusted-repository-update-hooks#req:version-2-extensions) only when every
+executable that reads that config supports them: the PATH-first `wb` (as the
+hook shims resolve it), `WB_EXECUTABLE` when set, and the daemon's recorded
+executable read from its state file without contacting the daemon. Support
+means the version `<exe> version --format json` reports is a release at or
+above a constant compiled into wb; a development, unparsable or missing
+version is unsupported. Otherwise setup writes a version-1 config and reports
+`deferred-version-skew`, naming each older executable and its remedy.
+Shadowed `wb` copies are notes, never inputs.
 
 ### REQ: check-is-offline-and-read-only
 
-`wb setup --check` and `--dry-run` MUST NOT write any file (including
-receipts and the worktree heartbeat, from which they are exempt as `wb
-version` is). `--check` MUST NOT open a network connection or start a process
-that does; it reports each item as `ok`, `drift`, `missing`, `conflict`,
-`ambiguous`, `blocked`, `deferred-version-skew`, `pending-decision`,
-`unsupported` or `not-checked`, with upgrade availability `not-checked`.
+`--check` and `--dry-run` MUST NOT write any file, including receipts and the
+worktree heartbeat (exempt as `wb version` is). `--check` MUST NOT open a
+network connection; the only processes it starts are local version probes of
+wb executables and catalog CLIs, run with each CLI's declared offline
+environment when the catalog declares one. States: `ok`, `drift`, `missing`,
+`conflict`, `ambiguous`, `blocked`, `deferred-version-skew`,
+`pending-decision`, `unsupported`, `not-checked` (upgrade availability).
 
 ### REQ: converge-idempotently
 
-`wb setup` MUST bring every `drift` and `missing` item to its desired state
-and be idempotent: a second run on a converged machine writes nothing,
-including no receipt. Invoking it without `--check`/`--dry-run` is the
-confirmation for every delegated command (it passes their `--yes`); it never
-prompts. Items run in inventory order; a failed item MUST NOT stop
-independent items, and dependent items report `blocked` with the blocker's id.
+`wb setup` MUST converge every `drift` and `missing` item and be idempotent:
+a second run on a converged machine writes nothing, not even a receipt.
+Running it is the confirmation for delegated commands (it passes `--yes`); it
+never prompts. Items run in order; a failed item does not stop independent
+items; dependants report `blocked` with the blocker's id.
 
 ### REQ: never-overwrite-foreign-config
 
-An item MUST only add content it owns or replace content it previously wrote
-and recorded. A change that would modify or remove content WB did not write
-MUST be reported as `conflict` with a unified diff and not written, unless the
-invocation names that exact id in `--overwrite`. Writes MUST be atomic
-(temp file, fsync, rename) and write through a symlinked config to its
-target, never replacing the link; each write keeps the previous content as
-`<file>.wb-setup.<timestamp>.bak`, retaining the newest five.
+An item MUST only add content it owns or replace content it recorded writing.
+Any other change is a `conflict` with a unified diff, not written unless
+`--overwrite <exact id>` names it. Writes are atomic, go through a symlinked
+config to its target without replacing the link, and keep the previous
+content as `<file>.wb-setup.<timestamp>.bak` (newest five retained).
 
 ### REQ: machine-local-state
 
-Everything setup reads or writes is machine-local and MUST NOT be published
-by `wb remote publish`, a hub, or a fleet event: executable paths, harness
-settings, `wb.yaml`, the excludes file, and the receipt. A receipt is written
-only when a run changed something, to
-`<projects-root>/.wb/setup/receipts/<timestamp>.json` with mode `0600`. A
-fleet event MAY record item ids and states only.
+Nothing setup reads or writes may be published by `wb remote publish`, a hub
+or a fleet event, except item ids and states in a fleet event. A receipt is
+written only when a run changed something, to
+`<projects-root>/.wb/setup/receipts/<timestamp>.json`, mode `0600`.
 
 ### REQ: output-contract
 
-Text output prints one line per item (`<state>  <id>  <detail>`) and a
-summary. `--format json` emits
+Text: one line per item (`<state>  <id>  <detail>`) and a summary. JSON:
 `{"version":1,"os","arch","mode":"check|dry-run|apply","items":[{"id","state","detail","notes","diff","blocked_by"}],"summary":{"<state>":n}}`.
-Exit `0` when every item is `ok` or converged; `1` when any item is `drift`,
-`missing`, `conflict`, `ambiguous`, `blocked`, `deferred-version-skew` or
-failed; `2` for usage errors. `pending-decision`, `unsupported`,
-`not-checked` and `shadowed` notes never raise the exit code.
-
-### REQ: platform-parity
-
-It MUST run on Linux, macOS and Windows; an unsupported item reports why.
+Exit `0` when every item is `ok` or converged; `1` for `drift`, `missing`,
+`conflict`, `ambiguous`, `blocked`, `deferred-version-skew` or a failure; `2`
+for usage. `pending-decision`, `unsupported`, `not-checked` and notes never
+raise it. It MUST run on Linux, macOS and Windows; an unsupported item says
+why.
 
 ## Acceptance Criteria
 
@@ -177,14 +158,14 @@ It MUST run on Linux, macOS and Windows; an unsupported item reports why.
 
 **Requirements:** machine-setup#req:item-inventory, machine-setup#req:converge-idempotently, machine-setup#req:scope-and-backfill
 
-**Given** a machine with wb installed, no fleet CLIs, no `hooks:` section, an
-empty excludes file, no registered guard, no recorded settings decision, and
-3 canonical clones without managed hooks
-**When** the user runs `wb setup --format json`, then commits in one clone
-**Then** it exits `0`; each item reports `ok`, `pending-decision` or
-`unsupported`; `harness-settings` is `pending-decision` and the settings file
-gains no `cleanupPeriodDays`; all 3 clones have a queued or completed
-backfill; only `lifecycle` shims are installed and the commit is not refused;
+**Given** a machine with wb installed and the catalog fields shipped, no fleet
+CLIs, no `hooks:` section, an empty excludes file, no registered guard, no
+recorded settings decision, and 3 canonical clones without managed hooks
+**When** the user runs `wb setup --format json`
+**Then** it exits `0`; items report `ok`, `pending-decision` or
+`unsupported`; no `cleanupPeriodDays` key is written; the 3 clones have a
+queued or completed backfill; the hooks policy files are byte-identical; the
+`git-hooks` detail names the installed profiles and the `worktree` opt-out;
 a following `wb setup --check` exits `0`.
 
 ### AC: second-run-writes-nothing
@@ -201,12 +182,13 @@ modification time, no receipt is written, and every item reports `ok`.
 **Requirements:** machine-setup#req:check-is-offline-and-read-only
 
 **Given** a converged Linux machine whose excludes file lost the codegrapher
-catalog entry's `.codegraph/` glob
+entry's declared glob, and a running daemon
 **When** the user runs `strace -f -e trace=connect wb setup --check --format json`
-from outside any worktree, and separately from inside a worktree
-**Then** both exit `1` with `gitignore:codegrapher` as `drift`; the trace shows
-no `connect` to an `AF_INET` or `AF_INET6` address; no file changes,
-including the worktree's heartbeat.
+from outside any worktree, and again from inside one
+**Then** both exit `1` with `gitignore:codegrapher` as `drift`; the trace has
+no `connect` to an `AF_INET`/`AF_INET6` address or to the daemon's socket;
+no file changes, including the heartbeat. On macOS and Windows, the same
+command with networking disabled produces the same output.
 
 ### AC: path-resolved-per-machine
 
@@ -215,19 +197,19 @@ including the worktree's heartbeat.
 **Given** two machines with codegrapher first on `PATH` at
 `~/.local/bin/codegrapher` and `/opt/homebrew/bin/codegrapher`
 **When** `wb setup` runs on each
-**Then** each `wb.yaml` names its own absolute path, and
-`wb hooks lifecycle check` exits `0` on both.
+**Then** each `wb.yaml` names its own path and `wb hooks lifecycle check`
+exits `0` on both.
 
 ### AC: shadowed-copy-is-a-note
 
-**Requirements:** machine-setup#req:per-machine-resolution
+**Requirements:** machine-setup#req:per-machine-resolution, machine-setup#req:version-skew
 
-**Given** specscore first on `PATH` at `~/.local/bin/specscore` and a second
-copy in `~/go/bin` off `PATH`; separately, codegrapher only in two
-directories, neither on `PATH`
+**Given** specscore first on `PATH` with a second copy off `PATH`; an older
+`wb` shadowed behind the PATH-first one; and, separately, codegrapher only in
+two directories, neither on `PATH`
 **When** the user runs `wb setup --format json` in each case
-**Then** the first reports `cli:specscore` `ok` with a `shadowed` note and
-does not raise the exit code; the second reports `ambiguous` for the
+**Then** the first reports `cli:specscore` `ok` and the lifecycle item not
+deferred, each with a `shadowed` note; the second reports `ambiguous` for
 path-writing items, names `--prefer`, writes nothing for them and exits `1`;
 rerunning with `--prefer codegrapher=<path>` converges.
 
@@ -241,19 +223,19 @@ rerunning with `--prefer codegrapher=<path>` converges.
 `wb setup --overwrite lifecycle:code-index`
 **Then** the first reports `conflict` with a diff, leaves the file
 byte-identical and exits `1`; the second applies exactly that diff through
-the symlink, which remains a symlink, and leaves a timestamped backup.
+the symlink, which stays a symlink, and leaves a timestamped backup.
 
 ### AC: version-skew-deferred
 
-**Requirements:** machine-setup#req:version-skew
+**Requirements:** machine-setup#req:version-skew, machine-setup#req:scope-and-backfill
 
-**Given** a running daemon whose executable is a wb release without
-version-2 support
-**When** the user runs `wb setup`
-**Then** `wb.yaml` contains no version-2 key, the lifecycle item reports
-`deferred-version-skew` naming the daemon executable, running that
-executable as `<daemon-wb> hooks lifecycle check` still exits `0`, and the
-command exits `1`.
+**Given** a daemon whose recorded executable is a wb release below the
+version-2 constant, and separately `WB_EXECUTABLE` pointing at a development
+build
+**When** the user runs `wb setup` in each case
+**Then** `wb.yaml` contains no version-2 key, no backfill is queued, the
+lifecycle and backfill items report `deferred-version-skew` naming that
+executable, `<that exe> hooks lifecycle check` exits `0`, and setup exits `1`.
 
 ### AC: nothing-published
 
@@ -261,8 +243,8 @@ command exits `1`.
 
 **Given** a converged machine configured for `wb remote publish`
 **When** the user publishes and inspects the published record
-**Then** it holds no path, setting, excludes content or receipt; the local
-receipt has mode `0600`.
+**Then** it holds no path, setting, excludes content or receipt; the receipt
+has mode `0600`.
 
 ### AC: usage-errors
 
@@ -271,29 +253,43 @@ receipt has mode `0600`.
 **Given** an installed wb
 **When** the user runs `wb setup --only nosuchitem`, then
 `wb setup --check --overwrite gitignore:codegrapher`
-**Then** both exit `2` before any read of harness settings or any write, each
-naming the offending flag.
+**Then** both exit `2` before any read of harness settings or any write,
+each naming the offending flag.
 
 ### AC: no-tool-names-in-code
 
 **Requirements:** machine-setup#req:item-inventory
 
 **Given** the wb source tree
-**When** `grep -rniE 'codegrapher|specscore|cover100' --include='*.go' internal/setup cmd/wb/setup*.go` runs, excluding tests
+**When** `grep -rniE 'codegrapher|specscore|cover100'` runs over non-test Go files in `internal/setup` and `cmd/wb/setup*.go`
 **Then** it finds no match.
+
+## Delivery Slices
+
+Each slice is one PR and ships with the ACs named.
+
+1. `cli:*`, `agent-guard:*`, `skills:` via `wb skills sync`, `daemon` from
+   its state file; no catalog dependency — check-is-offline,
+   second-run-writes-nothing, shadowed-copy-is-a-note (first case),
+   usage-errors, nothing-published, and expert-tool-routing's
+   efficient-path-drift-reported.
+2. After the cli-helpers catalog fields ship: `lifecycle:` as a version-1,
+   canonical-only executor, `gitignore:`, `git-hooks` —
+   path-resolved-per-machine, foreign-config-not-overwritten,
+   no-tool-names-in-code, shadowed-copy-is-a-note (second case).
+3. Version skew, version-2 keys and `backfill:` — version-skew-deferred,
+   fresh-machine-converges. `selector:` follows `wb check --changed`.
 
 ## Open Questions
 
-- **Harness settings.** Only recorded decisions are applied. Pending from the
-  2026-09-18 analysis: decision 1 (transcript retention, 90 days) and
-  decision 7 (the nudge; see [Expert Tool Routing](../expert-tool-routing/README.md)).
-  Decision 2 (guard rewrites rather than refuses) is decided; #637 is open,
-  implemented in PR #645. Where are decisions recorded so setup can read them:
-  a `setup.decisions` block in `wb.yaml`?
-- **Catalog fields.** The executor template, ignore globs, test-selection
-  template and skill-sync argv need new fields in the cli-helpers catalog
-  (strongo/cli-helpers). Until they exist, those items report `unsupported`.
-- **golangci-lint** is not in the catalog (wb's gates run a pinned `go run`);
+- **Harness settings.** Pending decisions from the 2026-09-18 analysis:
+  decision 1 (transcript retention) and decision 7 (the nudge). Decision 2
+  (rewrite rather than refuse) is decided; #637 is open, implemented in PR
+  #645. Where are decisions recorded for setup to read: `setup.decisions`?
+- **Catalog fields** (executor template, ignore globs, test selector,
+  skill-sync argv, offline environment) need a strongo/cli-helpers release
+  and a wb bump; this is on the critical path for slices 2 and 3.
+- golangci-lint is not in the catalog (wb's gates run a pinned `go run`);
   specscore has no skill-sync verb. Should either change?
 
 ---

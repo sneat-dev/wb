@@ -18,10 +18,9 @@ WB emits `checkout-updated` when a Git hook fires for a move (merge, pull,
 commit, rebase, amend, branch checkout) or a WB verb moves a checkout. The
 existing trusted lifecycle runner executes the user's configured indexer,
 coalesced, at background priority, under CPU admission, and never in Git's
-path. Freshness is reported by `wb fleet status` from lifecycle receipts, so
-WB stays tool-agnostic. Moves that fire no Git hook (`git reset`,
-`git update-ref`, `git am`) are not emitted; they show as `stale` until the
-next emitting move.
+path. `wb fleet status` reports freshness from receipts, so WB stays
+tool-agnostic. Moves that fire no Git hook (`git reset`, `git update-ref`,
+`git am`) show as `stale` or `diverged` until the next emitting move.
 
 ## Problem
 
@@ -48,17 +47,20 @@ until worktree indexing is decided.
 
 ### REQ: git-hook-emission
 
-A new managed hook profile, `lifecycle`, MUST install `post-merge`,
-`post-checkout`, `post-commit` and `post-rewrite` shims through
-`wb hooks install`. Each calls
-`wb hooks lifecycle notify --hook <name> -- <git hook args>`, which resolves
-the checkout, its canonical identity, the old SHA and the new `HEAD`, and
-enqueues `checkout-updated` with cause `git:<hook>`. The old SHA is
-`post-checkout`'s first argument, `ORIG_HEAD` for `post-merge`, the first
-parent of `HEAD` for `post-commit` (empty for a root commit), and the first
-`post-rewrite` stdin pair's old SHA. `post-checkout` emits only for branch
-checkouts (third argument `1`) that changed `HEAD`. Excluding the profile
-(`profiles.exclude: [lifecycle]`) is visible to `wb hooks check`.
+A new built-in hook profile, `lifecycle`, MUST be selected by default by
+`wb hooks install`, as `worktree` is, so enabling it writes no hooks-policy
+key an older wb could not decode. It installs `post-merge`, `post-checkout`,
+`post-commit` and `post-rewrite` shims whose profile step runs
+`wb hooks lifecycle notify --hook <name> -- <git hook args>`. `notify`
+resolves the checkout, its canonical identity, the old SHA and the new
+`HEAD`, and enqueues `checkout-updated` with cause `git:<hook>`. The old SHA
+is advisory: `post-checkout`'s first argument, `ORIG_HEAD` for `post-merge`,
+the first parent of `HEAD` for `post-commit` (empty for a root commit; not
+the pre-move `HEAD` during amend or rebase), the first `post-rewrite` stdin
+pair's old SHA. `post-checkout` emits only for branch checkouts (third
+argument `1`) that changed `HEAD`. Opting out (`profiles.exclude:
+[lifecycle]`) is the user's own policy write and is visible to
+`wb hooks check`.
 
 ### REQ: verb-emission
 
@@ -71,17 +73,19 @@ suppress the duplicate its own Git child would raise through the shim
 ### REQ: never-blocks-git
 
 For `post-merge`, `post-checkout`, `post-commit` and `post-rewrite`, every
-managed shim, including the existing `worktree` profile's `post-checkout`,
-MUST exit `0` when its executable resolver fails (wb not found, not absolute,
-not trusted): it prints the warning to stderr instead of the current
-`exit 1`, because a non-zero `post-checkout` becomes `git checkout`'s own
-status. `pre-commit` and `pre-push` keep failing closed. `notify` MUST exit
-`0` in every case, MUST be exempt from the worktree heartbeat and the
-invoked-command record (as `wb version` is), MUST NOT claim unseen lifecycle
-warnings, and performs at most one write: the durable enqueue, only when a
-binding matches. Its own failures are recorded as a lifecycle warning for
-`wb hooks lifecycle status`. Budget: 50 ms at p95, measured by
-`wb hooks measure`.
+managed shim, including the `worktree` profile's `post-checkout`, MUST map
+any non-zero status — a resolver failure (wb not found, not absolute, not
+trusted), a policy-load failure, or a failing step — to a stderr warning and
+exit `0`, as the worktree-guard template already does for its own step,
+because a non-zero `post-checkout` becomes `git checkout`'s status.
+`pre-commit` and `pre-push` keep failing closed. `wb hooks run` for those four
+hooks, and `wb hooks lifecycle notify`, MUST be exempt from the worktree
+heartbeat and the invoked-command record (as `wb version` is); `notify` MUST
+exit `0` and MUST NOT claim unseen lifecycle warnings. With no matching
+binding, nothing is written. With one, the only writes are the parent
+Feature's enqueue-and-wake (queue entry, worker lock and health record) and,
+on failure, one lifecycle warning. Budget: 50 ms at p95 for the whole shim,
+measured by `wb hooks measure`.
 
 ### REQ: background-execution
 
@@ -118,11 +122,13 @@ artifacts of every matched checkout as category `lifecycle-artifacts` (kind
 
 For every checkout with a matching binding, `wb fleet status` and
 `wb fleet stats` MUST report per executor: `fresh` (latest successful
-receipt's new SHA equals `HEAD`), `stale` (older, with commits behind),
-`pending` (queued or running), `failed`, or `never`, from receipts only; WB
-MUST NOT open an executor's artifacts. JSON:
-`lifecycle: [{executor, state, receipt_sha, head_sha, behind}]`. A stale or
-failed executor on a canonical clone counts as attention.
+receipt's new SHA equals `HEAD`), `stale` (it is an ancestor of `HEAD`;
+`behind` counts commits), `diverged` (it is not an ancestor, as after
+`git reset` or a force-moved branch), `pending` (queued or running),
+`failed`, or `never`, from receipts only; WB MUST NOT open an executor's
+artifacts. JSON: `lifecycle: [{executor, state, receipt_sha, head_sha,
+behind}]`. A stale, diverged or failed executor on a canonical clone counts
+as attention.
 
 ## Interaction with Other Features
 
@@ -157,7 +163,7 @@ checks out another branch, rebases 5 commits, runs
 **Then** the commit, branch checkout and rebase each produce exactly one
 execution with `causes[]` including `git:post-commit`, `git:post-checkout`
 and `git:post-rewrite`; the file checkout and the reset produce none, and
-after the reset the executor reports `stale`.
+after the reset the executor reports `diverged`.
 
 ### AC: root-commit-has-empty-old-sha
 
@@ -180,12 +186,12 @@ commit as new SHA.
 
 **Requirements:** code-index-freshness#req:never-blocks-git
 
-**Given** the `lifecycle` and `worktree` profiles installed, and in three runs
-respectively: an executor that sleeps 60 s, an unreadable `wb.yaml`, and `wb`
-absent from `PATH` with `WB_EXECUTABLE` unset
+**Given** the `lifecycle` and `worktree` profiles installed, and in four runs
+respectively: an executor that sleeps 60 s, an unreadable `wb.yaml`, an
+invalid hooks policy, and `wb` absent from `PATH` with `WB_EXECUTABLE` unset
 **When** the user runs `git checkout other-branch` in each
 **Then** `git checkout` exits `0` and returns within 1 s each time; the third
-prints the resolver warning on stderr; with `wb` restored,
+and fourth print a warning on stderr; with `wb` restored,
 `wb hooks lifecycle status` reports the configuration failure.
 
 ### AC: notify-writes-at-most-the-enqueue
@@ -195,7 +201,8 @@ prints the resolver warning on stderr; with `wb` restored,
 **Given** the profile installed in a worktree and no matching binding
 **When** the user commits
 **Then** no file under the projects root's `.wb` directory, the XDG state
-directory, or the worktree's `.wb` changes, including the heartbeat.
+directory, or the worktree's `.wb` changes, including the heartbeat; with a
+matching binding, only the queue entry, worker lock and health record change.
 
 ### AC: verbs-emit-once
 
@@ -249,6 +256,21 @@ with `{"state":"stale","receipt_sha":"A","head_sha":"B","behind":3}`.
 **Given** the wb source tree
 **When** `grep -rli codegrapher internal/lifecyclehooks internal/hooks internal/disk` runs over non-test Go files
 **Then** it finds no match.
+
+## Delivery Slices
+
+Each slice is one PR and ships with the ACs named.
+
+1. Freshness in `wb fleet status`, which is all option 0 needs —
+   wb-stays-tool-agnostic and the staleness half of
+   budget-and-staleness-visible.
+2. The `lifecycle` profile, the post-* exit-0 mapping and `notify` —
+   git-pull-refreshes, each-git-move-emits, root-commit-has-empty-old-sha,
+   git-never-blocked-or-failed, notify-writes-at-most-the-enqueue.
+3. Version-2 fields, admission, checkout kinds, the artifacts budget and verb
+   emission — burst-coalesces, background-priority-and-admission,
+   existing-bindings-unchanged, verbs-emit-once, the budget half of
+   budget-and-staleness-visible.
 
 ## Open Questions
 

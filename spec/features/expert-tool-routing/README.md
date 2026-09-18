@@ -13,14 +13,12 @@ status: Draft
 
 ## Summary
 
-Agents reach for the cheapest tool that answers the job at hand because the
-message reaches them from several angles: a one-line principle, a job-to-tool
-router shipped as data, skill descriptions in the words agents think in, a
-nudge at the moment of use, a `Tools:` block when work starts, WB verbs that
-call the expert tool themselves, and an efficient path that is always
-present. Adoption is measured. WB owns the router data and the mechanism; the
-normative rule and its enforcement tier live in the operator's rules
-repository, outside wb.
+Agents use the cheapest tool for the job because the message arrives from
+several angles: a one-line principle, a job-to-tool router shipped as data,
+trigger-phrase skill descriptions, a point-of-use nudge, a `Tools:` block when
+work starts, WB verbs that call the expert tool themselves, and an efficient
+path that is always present. Adoption is measured. WB owns the router data
+and the mechanism; the normative rule lives in a rules repository outside wb.
 
 ## Problem
 
@@ -36,24 +34,22 @@ The 2026-09-18 SDLC logging-gap analysis measured, over one week:
 | `.go` Reads with no `limit` | 867 of 1,947 (45%) |
 | heavy commands governed by `wb run` | 7.7% of `go test`, 1.2% of `golangci-lint` |
 
-One symbol lookup on wb: `grep` plus a whole-file Read is about 20,230
-tokens; `codegrapher callers` about 120; `codegrapher query` about 50. A rule
-index read is 24.5 KB; `specscore rule show` is 1.2 KB. Each avoided turn
-saves about 0.21–0.26M context tokens (estimate). The causes are independent:
-no instruction named codegrapher; a prescribed `specscore rule info` prints
-help and exits `0` (specscore-cli #215); the codegrapher skill lacks trigger
-phrases (codegrapher #48); no index existed where agents work;
-`codegrapher node` fails in wb (codegrapher #47); the guard was not
-registered. One instruction line fixes none of the others.
+A symbol lookup on wb by `grep` plus a whole-file Read costs about 20,230
+tokens; `codegrapher callers` about 120. A rule index read is 24.5 KB;
+`specscore rule show` 1.2 KB. Each avoided turn saves about 0.21–0.26M
+context tokens (estimate). The causes are independent — no instruction named
+codegrapher; `specscore rule info` prints help and exits `0`
+(specscore-cli #215); weak skill triggers (codegrapher #48); no index where
+agents work; `codegrapher node` fails in wb (codegrapher #47); an
+unregistered guard — so one instruction line fixes none of the others.
 
 ## Behavior
 
 ### REQ: principle-pointer
 
-The wb entry skill (`ai/skills/wb/SKILL.md`) MUST contain one line stating
-the principle — "each niche has an expert tool; use the cheapest tool that
-answers the job; see the router" — linking to the router reference in the
-same skill. No wb skill or doc may link to a non-public repository.
+`ai/skills/wb/SKILL.md` MUST state in one line "each niche has an expert
+tool; use the cheapest tool that answers the job", linking to the router
+reference. No wb skill or doc may link to a non-public repository.
 
 ### REQ: router-table
 
@@ -79,7 +75,7 @@ the lifecycle executor whose freshness gates the row. Minimum rows:
 The `-p <canonical clone>` fallback answers for the base branch, not the
 worktree's edits. A row whose tool is not installed is marked unavailable in
 JSON, never omitted. `wb commands --routes --format markdown` prints the table
-alone, for pasting into briefs.
+alone, for pasting into briefs (`markdown` is a new `wb commands` format).
 
 ### REQ: trigger-phrase-descriptions
 
@@ -93,8 +89,11 @@ Other tools' skills are tracked by issue (codegrapher #48).
 
 `wb hooks agent pre-tool-use` MUST support an expert-tool nudge behind
 `agent_guard.nudges.expert_tools: off|on` in the trusted user `wb.yaml`,
-default `off` (open decision 7). When on, `wb hooks agent install` adds `Grep`
-to the guard's matcher. For a Bash `grep`/`rg`, or a native `Grep` call, whose
+default `off` (open decision 7). The key lives in `wb.yaml`, whose top level
+is not strictly decoded, rather than in the strictly decoded hooks policy's
+`agent:` section, so an older wb ignores it. It changes the guard's matcher
+(on adds `Grep`), so it takes effect through `wb hooks agent install`, and
+machine-setup's `agent-guard` item reports drift when they disagree. For a Bash `grep`/`rg`, or a native `Grep` call, whose
 pattern is identifier-shaped, in a repository where a routed row's executor
 is `fresh` in the checkout or in its canonical clone, the guard MUST emit only
 `hookSpecificOutput.additionalContext` naming the row (with `-p <canonical
@@ -118,14 +117,22 @@ state (for example `codegrapher: canonical index fresh at <sha>; use -p
 
 ### REQ: verbs-use-experts-internally
 
-`wb check` gains `--changed`, valid with every profile (`fast`, `full`,
-`ci`). With it, Go test packages MAY be narrowed by a trusted user-configured
-`test_selection` executor (stdin: changed paths; stdout: JSON package list),
-written by machine-setup's `selector:<cli>` item from catalog data. WB MUST
-fall back to full package scope, stating why, when the selecting executor's
-freshness is not `fresh`, the executor fails or times out, or it returns
-nothing. The receipt records `selection: graph|full` and the reason. CI keeps
-full scope.
+`wb check` gains `--changed` for one repository with any profile (`fast`,
+`full`, `ci`); with `--fleet` it is a usage error. Changed paths are the
+union of working-tree changes (staged, unstaged, untracked) and commits since
+the merge-base with `origin/<base>`, where `<base>` is the worktree's
+recorded base branch, else the default branch. Go test packages MAY be
+narrowed by `check.test_selection` in the trusted user `wb.yaml`
+(`{run, args, timeout, gated_by: <lifecycle executor>}`), written by
+machine-setup's `selector:<cli>` item. It lives outside `hooks:`, so it is
+not a lifecycle executor and not versioned with it; `run` passes the trust
+checks of trusted-repository-update-hooks#req:generic-executors. Contract:
+stdin, changed paths one per line; stdout, a JSON array of Go package
+patterns; exit `0`. WB MUST fall back to full scope, stating why, when the
+`gated_by` executor is not `fresh` in this checkout, or the selector fails,
+times out or returns nothing. JSON output and `check.yaml` (under
+`--report-dir`) record `selection: graph|full` and the reason. CI keeps full
+scope.
 
 ### REQ: efficient-path-is-easy
 
@@ -148,14 +155,12 @@ evidence. It records counts only, never transcript text.
 
 ## Rules-repository follow-ups (not wb requirements)
 
-Tracked in the operator's rules repository, outside wb:
-
-- create `rule:use-the-expert-tool` holding the principle and cost table,
-  starting at tier Stated with this Feature's extractor as its measurement;
-- add a "Tools" section to the brief template and its pre-dispatch
-  checklist, filled from `wb commands --routes --format markdown`;
-- replace the prescribed `specscore rule info` with `specscore rule show` in
-  agent instructions, and add a codegrapher trigger line.
+- Create `rule:use-the-expert-tool` (principle and cost table), tier Stated,
+  measured by this Feature's extractor.
+- Add a "Tools" section to the brief template and pre-dispatch checklist,
+  filled from `wb commands --routes --format markdown`.
+- Replace `specscore rule info` with `specscore rule show` in agent
+  instructions; add a codegrapher trigger line.
 
 ## Acceptance Criteria
 
@@ -247,10 +252,10 @@ the `-p` path; the text output ends with a `Tools:` block of at most 5 lines.
 **Given** a `test_selection` executor and a change to
 `internal/orchestrate/ciwait.go`
 **When** the agent runs `wb check --profile fast --changed --format json`
-with the executor `fresh`, then `stale`
-**Then** the first receipt records `selection: graph` testing only
+with the `gated_by` executor `fresh`, then `stale`, then adds `--fleet`
+**Then** the first output records `selection: graph` testing only
 `./internal/orchestrate`; the second records `selection: full` with reason
-`index-stale`; each exits with the tests' own result.
+`index-stale`; each exits with the tests' own result; the third exits `2`.
 
 ### AC: efficient-path-drift-reported
 
@@ -270,14 +275,26 @@ and a 10:1 threshold
 **Then** the adoption section names `rule:use-the-expert-tool` with per-row
 counts and contains no transcript text.
 
+## Delivery Slices
+
+Each slice is one PR and ships with the ACs named.
+
+1. Router data and docs, the principle pointer, `routes[]` and `--routes`,
+   the trigger-phrase test — principle-pointer-present, router-searchable,
+   skill-trigger-guard.
+2. After code-index-freshness slice 1 — create-names-tools.
+3. After #640 lands — adoption-names-the-rule.
+4. After decision 7 — nudge-off-by-default, nudge-is-context-only-and-once,
+   no-nudge-without-fresh-index, followed-is-recorded.
+5. `wb check --changed` — graph-selection-falls-back.
+6. efficient-path-drift-reported ships with machine-setup slice 1.
+
 ## Open Questions
 
-- **Nudges (open decision 7).** May the guard add the nudge, once per session
-  per repository per row, never blocking? Recommendation: yes, once the
+- **Nudges (open decision 7).** Recommendation: allow them once the
   canonical-index fallback ships, so a nudge never points at a missing index.
-- **Adoption threshold.** 10:1 is a placeholder until a week with an index.
-- Should `wb check --changed` selection also run in CI once its recall is
-  proven, as the graph-assisted idea proposes?
+- The 10:1 adoption threshold is a placeholder; should `--changed` selection
+  run in CI once its recall is proven?
 
 ---
 *This document follows the https://specscore.md/feature-specification*
