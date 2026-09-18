@@ -244,9 +244,11 @@ perform that move through the same implementation as `wb worktree relocate`
 (task lock, descriptor-anchored no-replace move, Git repair, registration
 verification, relocation receipt), so the two commands cannot diverge. The dry
 run MUST list each planned relocation with its source and destination. A
-checkout MUST be left in place, with a finding naming the reason, when any
-clone refusal condition holds for it, when its task lock is held, or when the
-destination exists; the clone it belongs to is still migrated. A linked worktree
+checkout MUST be left in place, with a finding naming the reason, when its
+task lock is held or its relocation destination exists; the clone it belongs
+to is still migrated. Every clone refusal condition in
+[`clone-migration-refusals`](#req-clone-migration-refusals) still skips the
+whole clone, including all of its checkouts, in every mode. A linked worktree
 with no WB task identity MUST be repointed but never relocated, and MUST be
 listed in the report as unmanaged. In repository-local store mode a checkout
 already at `<canonical>/.worktrees/<task>` MUST NOT be moved, per

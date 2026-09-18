@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestRelocateMovesManagedSharedWorktreeToLocalAndPreservesClaim(t *testing.T) {
@@ -119,5 +122,78 @@ func TestRelocateRefusesExternalAndDirtyWorktrees(t *testing.T) {
 	}
 	if eligible, reason := relocationEligibility(ListResult{Clean: false}); eligible || reason == "" {
 		t.Fatalf("dirty relocation eligibility = %t, %q", eligible, reason)
+	}
+}
+
+// TestReverseRelocationRestoresClaimResolution proves ReverseRelocation
+// appends to the same Work Log relocation journal Relocate does (an intent
+// before the move, a receipt after it verifies): after relocating a checkout
+// and then reversing that exact relocation, the claim's resolved current
+// location (resolveRelocationChain, walking every completed relocation
+// receipt from the claim's immutable frozen path) is back at the original
+// path — not just the checkout's physical directory, which a bare move
+// would also restore, but the claim's own durable record of where it is.
+func TestReverseRelocationRestoresClaimResolution(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "reverse-relocation", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// newGitFixture selects repository-local store mode, so Create placed
+	// this in-clone; switch to the central default so there is a shared
+	// destination to relocate to and back from.
+	original := created[0].WorktreeDir
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "worktrees.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := Relocate(context.Background(), RelocateOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "reverse-relocation", To: "shared", Apply: true,
+	})
+	if err != nil || len(applied.Results) != 1 || !applied.Results[0].Applied {
+		t.Fatalf("relocate = %#v, err=%v", applied, err)
+	}
+	relocated := applied.Results[0].Destination
+	if _, err := os.Stat(relocated); err != nil {
+		t.Fatalf("relocated checkout missing: %v", err)
+	}
+
+	resolution, err := wbhome.Resolve(fixture.projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := resolution.Write.Home
+	claim, _, _, err := activeWorkLogClaim(home, relocated)
+	if err != nil {
+		t.Fatalf("claim lookup before reversal: %v", err)
+	}
+
+	if err := ReverseRelocation(context.Background(), fixture.projectsRoot, fixture.canonical, relocated, original, time.Now().UTC()); err != nil {
+		t.Fatalf("reverse relocation: %v", err)
+	}
+	if _, err := os.Stat(original); err != nil {
+		t.Fatalf("original path not restored: %v", err)
+	}
+	if _, err := os.Stat(relocated); !os.IsNotExist(err) {
+		t.Fatalf("relocated path still exists: %v", err)
+	}
+
+	resolved, err := resolveRelocationChain(home, claim)
+	if err != nil {
+		t.Fatalf("resolve relocation chain: %v", err)
+	}
+	if filepath.Clean(resolved.worktree) != filepath.Clean(original) {
+		t.Fatalf("resolved worktree = %q, want %q (the claim's own record, not just the directory)", resolved.worktree, original)
+	}
+
+	if _, err := Guard(context.Background(), original, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard after reversal: %v", err)
 	}
 }

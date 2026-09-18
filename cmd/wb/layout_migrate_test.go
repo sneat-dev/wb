@@ -297,6 +297,7 @@ func TestLayoutMigrateSkipsUnsafeClones(t *testing.T) {
 		"acme/mismatch": "owner",
 		"acme/occupied": "destination",
 		"acme/rebasing": "rebase",
+		"acme/claimed":  "claim",
 	}
 	for repository, wantSubstring := range expectSkipped {
 		index, found := findMigrateClone(report, repository)
@@ -313,17 +314,6 @@ func TestLayoutMigrateSkipsUnsafeClones(t *testing.T) {
 		if _, err := os.Stat(clone.Source); err != nil {
 			t.Fatalf("%s must be left in place: %v", repository, err)
 		}
-	}
-	// A live Work Log claim confined to a linked worktree no longer refuses
-	// the whole clone (projects-root-layout#req:migration-relocates-managed-worktrees):
-	// the clone still migrates and its claimed checkout relocates to the
-	// store alongside it.
-	claimedIndex, found := findMigrateClone(report, "acme/claimed")
-	if !found || report.Clones[claimedIndex].Status != "done" {
-		t.Fatalf("acme/claimed = %+v, want done", report.Clones[claimedIndex])
-	}
-	if relocations := report.Clones[claimedIndex].Relocations; len(relocations) != 1 || relocations[0].Status != "done" {
-		t.Fatalf("acme/claimed relocations = %+v, want one done relocation", relocations)
 	}
 	index, found := findMigrateClone(report, "acme/clean")
 	if !found || report.Clones[index].Status != "done" {
@@ -446,48 +436,74 @@ func TestLayoutMigrateUndoPrintsPartialReportOnManifestWriteFailure(t *testing.T
 // remote get rewritten to the conceptual forge URL migrate keys off of.
 func dalgoFetchableFixture(t *testing.T, root string) (legacy string) {
 	t.Helper()
-	legacy = filepath.Join(root, "dal-go", "dalgo")
+	return dalgoFetchableFixtureAt(t, root, filepath.Join(root, "dal-go", "dalgo"))
+}
+
+// dalgoFetchableFixtureAt is dalgoFetchableFixture, generalized to clone
+// directly at an arbitrary path -- in particular, directly at the host-level
+// destination a migrated clone would occupy, so a test can exercise the
+// "already at the host level, moved by this run or earlier" clone class
+// (REQ: migration-relocates-managed-worktrees) without migrate having to move
+// anything first.
+func dalgoFetchableFixtureAt(t *testing.T, root, clonePath string) string {
+	t.Helper()
 	origin := filepath.Join(root, "dalgo-origin.git")
-	runGit(t, root, "init", "--bare", "-b", "main", origin)
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+	if _, statErr := os.Stat(origin); statErr != nil {
+		runGit(t, root, "init", "--bare", "-b", "main", origin)
+	}
+	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, filepath.Dir(legacy), "clone", origin, "dalgo")
-	runGit(t, legacy, "config", "user.email", "wb@example.test")
-	runGit(t, legacy, "config", "user.name", "WB Test")
-	if err := os.WriteFile(filepath.Join(legacy, "README.md"), []byte("dal-go/dalgo\n"), 0o644); err != nil {
+	runGit(t, filepath.Dir(clonePath), "clone", origin, filepath.Base(clonePath))
+	runGit(t, clonePath, "config", "user.email", "wb@example.test")
+	runGit(t, clonePath, "config", "user.name", "WB Test")
+	if err := os.WriteFile(filepath.Join(clonePath, "README.md"), []byte("dal-go/dalgo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, legacy, "add", ".")
-	runGit(t, legacy, "commit", "-m", "init")
-	runGit(t, legacy, "push", "-u", "origin", "main")
-	return legacy
+	runGit(t, clonePath, "add", ".")
+	runGit(t, clonePath, "commit", "-m", "init")
+	runGit(t, clonePath, "push", "-u", "origin", "main")
+	return clonePath
 }
 
 // TestLayoutMigrateRelocatesManagedWorktrees encodes
-// projects-root-layout#ac:migrate-relocates-managed-worktrees: after the
-// clone moves, migrate relocates every managed task checkout whose placement
-// differs from the machine's current store-mode placement, by calling the
-// existing `wb worktree relocate` implementation, and leaves an unmanaged
-// linked worktree repointed only. It also proves the undo round trip
-// reverses relocations before the clone move they depend on.
+// projects-root-layout#ac:migrate-relocates-managed-worktrees: migrate
+// relocates every managed task checkout whose placement differs from the
+// machine's current store-mode placement, by calling the existing `wb
+// worktree relocate` implementation, and leaves an unmanaged linked worktree
+// repointed only. It also proves the undo round trip reverses relocations.
+//
+// This exercises the "clone already at the host level, moved by this run or
+// earlier" class the REQ names, not a clone this run moves: under the
+// restored clone-migration-refusals semantics (a live Work Log claim on the
+// clone OR any of its linked worktrees refuses the whole clone, in every
+// mode — see TestLayoutMigrateSkipsUnsafeClones and the "clones-only"
+// subtest below), a checkout with a genuinely active claim can never be
+// relocated through the full pipeline while its clone is itself a candidate
+// this run moves, because the same live claim that makes Relocate eligible
+// also always trips the clone-level refusal first. A clone already sitting
+// at its host-level destination is never a move candidate, so refuseClone is
+// never consulted for it, and relocateClones's later, per-checkout Relocate
+// call is reachable. The fixture places the clone directly at its
+// destination for exactly this reason.
 //
 // t1 stands in for the AC's in-clone managed checkout: it is created while
 // repository-local store mode is selected, landing inside the clone exactly
-// like `<root>/dal-go/dalgo/.worktrees/t1`. t2 stands in for the AC's
-// external managed checkout at a placement the machine no longer points to:
-// it is created against a configured store root outside the projects root,
-// then the machine's configuration is reset to today's default central
-// store before migrate runs — the same "placement differs from today's
-// config" condition a genuine `~/.wb/worktrees/...` legacy checkout has,
-// reached through the public Create/config surface rather than by hand
-// constructing a Work Log claim.
+// like `<destination>/.worktrees/t1`. t2 stands in for the AC's external
+// managed checkout at a placement the machine no longer points to: it is
+// created against a configured store root outside the projects root, then
+// the machine's configuration is reset to today's default central store
+// before migrate runs — the same "placement differs from today's config"
+// condition a genuine `~/.wb/worktrees/...` legacy checkout has, reached
+// through the public Create/config surface rather than by hand constructing
+// a Work Log claim.
 func TestLayoutMigrateRelocatesManagedWorktrees(t *testing.T) {
 	// Not t.Parallel(): this test uses t.Setenv (XDG_CONFIG_HOME) to select
 	// store mode at each Create call, which testing forbids alongside
 	// t.Parallel.
 	root := t.TempDir()
-	legacy := dalgoFetchableFixture(t, root)
+	destination := filepath.Join(root, "github.com", "dal-go", "dalgo")
+	dalgoFetchableFixtureAt(t, root, destination)
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -524,14 +540,13 @@ func TestLayoutMigrateRelocatesManagedWorktrees(t *testing.T) {
 	}
 
 	unmanaged := filepath.Join(root, "adopted-elsewhere")
-	runGit(t, legacy, "worktree", "add", "-b", "adopted", unmanaged)
+	runGit(t, destination, "worktree", "add", "-b", "adopted", unmanaged)
 
 	// The fetchable local origin above was only needed for Create's own
 	// verification; repoint it to the conceptual GitHub identity migrate
 	// keys the host level off of, now that every claim already exists.
-	runGit(t, legacy, "remote", "set-url", "origin", "git@github.com:dal-go/dalgo.git")
+	runGit(t, destination, "remote", "set-url", "origin", "git@github.com:dal-go/dalgo.git")
 
-	destination := filepath.Join(root, "github.com", "dal-go", "dalgo")
 	t1Destination := filepath.Join(root, ".worktrees", "t1", "github.com", "dal-go", "dalgo")
 	t2Destination := filepath.Join(root, ".worktrees", "t2", "github.com", "dal-go", "dalgo")
 	unmanagedDestination := unmanaged
@@ -542,8 +557,8 @@ func TestLayoutMigrateRelocatesManagedWorktrees(t *testing.T) {
 	}
 	plan := decodeMigrateReport(t, dry.stdout)
 	planIndex, found := findMigrateClone(plan, "dal-go/dalgo")
-	if !found || plan.Clones[planIndex].Status != "planned" {
-		t.Fatalf("dry run plan = %+v, want planned", plan.Clones)
+	if !found || plan.Clones[planIndex].Status != "already_done" {
+		t.Fatalf("dry run plan = %+v, want already_done", plan.Clones)
 	}
 	for _, task := range []string{"t1", "t2"} {
 		if relIndex, found := findRelocation(plan.Clones[planIndex], task); !found || plan.Clones[planIndex].Relocations[relIndex].Status != "planned" {
@@ -560,8 +575,8 @@ func TestLayoutMigrateRelocatesManagedWorktrees(t *testing.T) {
 		t.Fatal("apply did not record a manifest id")
 	}
 	cloneIndex, found := findMigrateClone(report, "dal-go/dalgo")
-	if !found || report.Clones[cloneIndex].Status != "done" {
-		t.Fatalf("apply clone = %+v, want done", report.Clones)
+	if !found || report.Clones[cloneIndex].Status != "already_done" {
+		t.Fatalf("apply clone = %+v, want already_done", report.Clones)
 	}
 	clone := report.Clones[cloneIndex]
 	for task, want := range map[string]string{"t1": t1Destination, "t2": t2Destination} {
@@ -647,34 +662,46 @@ func TestLayoutMigrateRelocatesManagedWorktrees(t *testing.T) {
 		}
 	})
 
+	// t1 and t2's Work Log claims are still active (this test never finishes
+	// either task), and restoring clone-migration-refusals in full (fix 1
+	// above) makes that refusal symmetric: migrateUndo re-runs refuseClone
+	// immediately before reversing each relocation, exactly as it does before
+	// moving a clone forward, and a live claim on the repository refuses a
+	// relocation reversal for precisely the same reason it refuses a forward
+	// move -- reversing it would pull the checkout out from under whatever is
+	// still using it. So undo here must refuse both relocations and leave
+	// every checkout exactly where migrate put it; TestReverseRelocationRestoresClaimResolution
+	// (internal/worktrees/relocate_test.go) is what proves ReverseRelocation's
+	// own journal-writing behavior once a claim is no longer live.
 	undone := runWBHomeIsolated(t, "layout", "migrate", "--projects-root", root, "--undo", report.ManifestID, "--apply", "--format", "json")
-	if undone.exitCode != exitOK {
-		t.Fatalf("undo exit = %d; stderr=%s stdout=%s", undone.exitCode, undone.stderr, undone.stdout)
+	if undone.exitCode != exitFindings {
+		t.Fatalf("undo exit = %d, want findings; stderr=%s stdout=%s", undone.exitCode, undone.stderr, undone.stdout)
 	}
 	undoReport := decodeMigrateReport(t, undone.stdout)
 	undoIndex, found := findMigrateClone(undoReport, "dal-go/dalgo")
-	if !found || undoReport.Clones[undoIndex].Status != "reversed" {
-		t.Fatalf("undo clone = %+v, want reversed", undoReport.Clones)
+	if !found || undoReport.Clones[undoIndex].Status != "skipped" ||
+		!strings.Contains(undoReport.Clones[undoIndex].Reason, "could not be reversed") {
+		t.Fatalf("undo clone = %+v, want skipped naming the unreversed relocations", undoReport.Clones)
 	}
-	if _, err := os.Stat(legacy); err != nil {
-		t.Fatal("undo must restore the legacy clone path")
+	for _, task := range []string{"t1", "t2"} {
+		relIndex, found := findRelocation(undoReport.Clones[undoIndex], task)
+		if !found || undoReport.Clones[undoIndex].Relocations[relIndex].Status != "skipped" ||
+			!strings.Contains(strings.ToLower(undoReport.Clones[undoIndex].Relocations[relIndex].Reason), "claim") {
+			t.Fatalf("undo relocations = %+v, want %s skipped naming the live claim", undoReport.Clones[undoIndex].Relocations, task)
+		}
 	}
-	t1Source := filepath.Join(legacy, ".worktrees", "t1")
-	// t2 was created against the clone's still-legacy, two-level on-disk
-	// address (before this run's clone move), so its pre-relocation store
-	// path has no host segment — only relocateClones's own later placement
-	// resolution, computed after the clone reached the host level, does.
-	t2Source := filepath.Join(externalStore, "t2", "dal-go", "dalgo")
-	if _, err := os.Stat(t1Source); err != nil {
-		t.Fatalf("undo must restore t1 to its pre-relocation path: %v", err)
+	// Nothing moved: the refusal must leave every checkout exactly where the
+	// forward migrate run put it.
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatal("the clone must remain at its host-level path")
 	}
-	if _, err := os.Stat(t2Source); err != nil {
-		t.Fatalf("undo must restore t2 to its pre-relocation path: %v", err)
+	if _, err := os.Stat(t1Destination); err != nil {
+		t.Fatalf("undo must leave t1's live-claimed relocation in place: %v", err)
 	}
-	if _, err := os.Stat(t1Destination); !os.IsNotExist(err) {
-		t.Fatalf("undo must remove t1 from its relocated path, err=%v", err)
+	if _, err := os.Stat(t2Destination); err != nil {
+		t.Fatalf("undo must leave t2's live-claimed relocation in place: %v", err)
 	}
-	for _, checkout := range []string{legacy, t1Source, t2Source} {
+	for _, checkout := range []string{destination, t1Destination, t2Destination} {
 		gitOutput(t, checkout, "status", "--porcelain=v1")
 	}
 }
