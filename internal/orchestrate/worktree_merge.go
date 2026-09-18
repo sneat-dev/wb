@@ -1747,6 +1747,28 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *Worktr
 	if head == receipt.Candidate.SHA {
 		return false, nil
 	}
+	// Red-team finding B1: a server-side update-branch advance can persist
+	// its new Candidate.SHA (M3's persist-first ordering) and then have its
+	// best-effort local fast-forward fail or never run at all (a crash, a
+	// kill, a dirty/missing worktree at the time). The worktree is then
+	// left at the OLD candidate the update replaced - behind, not diverged
+	// - and every later resume must recover that fast-forward rather than
+	// judge the worktree's stale HEAD as a conflicting advance.
+	//
+	// The proof that HEAD is an ancestor of the recorded candidate comes
+	// from the receipt's own append-only TargetRefreshes history
+	// (worktreeMergeCandidateAdvanceRecorded), not a local `git merge-base`:
+	// the recorded candidate's object may never have been fetched into this
+	// worktree at all when the advance was only recorded server side, so a
+	// local ancestry check would fail on a missing object even though the
+	// descent genuinely holds. fastForwardWorktreeMergeCandidateBranch
+	// fetches the candidate branch before fast-forwarding onto it.
+	if worktreeMergeCandidateAdvanceRecorded(*receipt, head, receipt.Candidate.SHA) {
+		if err := fastForwardWorktreeMergeCandidateBranch(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); err != nil {
+			return false, fmt.Errorf("fast-forward worktree left behind a recorded update-branch advance: %w", err)
+		}
+		return false, nil
+	}
 	if receipt.PublishedCandidateSHA == "" {
 		return false, fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head)
 	}
@@ -2012,11 +2034,18 @@ func conflictCandidateAdvanceNeedsValidation(receipt WorktreeMergeReceipt) (bool
 	targetMatches := ack.ReceiptTargetSHA == receipt.TargetSHA && ack.CurrentTargetSHA == receipt.TargetSHA ||
 		worktreeMergeTargetAdvanceRecorded(receipt, ack.ReceiptTargetSHA, receipt.TargetSHA) &&
 			worktreeMergeTargetAdvanceRecorded(receipt, ack.CurrentTargetSHA, receipt.TargetSHA)
+	// The same tolerance applies to the candidate side (red-team finding
+	// M2): one or more recorded server-side update-branch advances since
+	// this acknowledgement was taken must not be mistaken for a mismatch
+	// either. worktreeMergeCandidateAdvanceRecorded walks every hop
+	// TargetRefreshes records, not just a single one.
+	candidateMatches := ack.AdvancedCandidateSHA == receipt.Candidate.SHA ||
+		worktreeMergeCandidateAdvanceRecorded(receipt, ack.AdvancedCandidateSHA, receipt.Candidate.SHA)
 	if ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane ||
 		ack.Repository != receipt.Repository || ack.Target != receipt.Target || !targetMatches ||
 		!sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
 		ack.OriginalCandidate.Task != receipt.Candidate.Task || ack.OriginalCandidate.Worktree != receipt.Candidate.Worktree ||
-		ack.OriginalCandidate.Branch != receipt.Candidate.Branch || ack.AdvancedCandidateSHA != receipt.Candidate.SHA {
+		ack.OriginalCandidate.Branch != receipt.Candidate.Branch || !candidateMatches {
 		return false, fmt.Errorf("conflict-candidate advance %s does not match the current receipt", ack.AcknowledgementPath)
 	}
 	if receipt.Status == WorktreeMergePrepared {
@@ -2717,10 +2746,18 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 			// already-landed change behind a conflict receipt (red-team
 			// finding M4). It still has to be OUR candidate that landed,
 			// not an unrelated head, so the descent is proven, not assumed.
-			descendsFromCandidate, descentErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, view.HeadRefOID)
-			if descentErr != nil || !descendsFromCandidate {
-				if descentErr == nil {
-					descentErr = fmt.Errorf("pull-request head %s does not match exact candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
+			//
+			// This proof is asked of GitHub's own compare API, not the
+			// local worktree's git objects: GitHub deletes a merged pull
+			// request's source branch by default, and a foreign push may
+			// never have been fetched locally at all, so a local
+			// `git merge-base --is-ancestor` would fail on a missing
+			// object even when the descent genuinely holds.
+			descendsFromCandidate, descentReason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID)
+			if !descendsFromCandidate {
+				descentErr := fmt.Errorf("pull-request head %s does not match exact candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
+				if descentReason != "" {
+					descentErr = fmt.Errorf("%w: %s", descentErr, descentReason)
 				}
 				return "", false, descentErr
 			}

@@ -3,7 +3,6 @@ package orchestrate
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
 )
@@ -62,10 +61,7 @@ func awaitLandablePullRequest(
 	}
 	deadline := waitDeadline(options)
 	for {
-		remaining := time.Until(deadline)
-		if options.Now != nil {
-			remaining = deadline.Sub(options.Now())
-		}
+		remaining := remainingWaitBudget(options, deadline)
 		// A budget no longer than one poll cannot observe anything; it is
 		// spent, and spent is pending, not an error.
 		if remaining <= pollInterval {

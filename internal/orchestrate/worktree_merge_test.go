@@ -2725,6 +2725,80 @@ func TestResumeWorktreeMergeAdvancesResolvedConflictCandidateDescendant(t *testi
 	}
 }
 
+// TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates
+// proves red-team finding M-B: the earlier M2 fix only tolerated a SINGLE
+// recorded server-side update-branch advance between a conflict-candidate
+// acknowledgement's snapshot and the receipt's current target/candidate —
+// a straight equality check against ack.AdvancedCandidateSHA, or a single
+// TargetRefreshes hop, still failed after a SECOND update landed on top of
+// the first. worktreeMergeTargetAdvanceRecorded/worktreeMergeCandidateAdvanceRecorded
+// must walk the whole TargetRefreshes chain, however many hops it takes.
+func TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "mb-two-updates-source", "feature/mb-two-updates", "mb-two-updates.txt", "mb\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Take the conflict-candidate acknowledgement snapshot at the receipt's
+	// ORIGINAL target/candidate — before either update-branch advance.
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackPath := conflictCandidateAdvancePath(receipt.ReceiptPath)
+	ack := WorktreeMergeConflictCandidateAdvance{
+		SchemaVersion: worktreeMergeConflictCandidateAdvanceSchemaVersion, Status: "conflict_candidate_advanced",
+		ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: ackPath, ReceiptSHA256: receiptHash,
+		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
+		ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: receipt.TargetSHA, OriginalCandidate: receipt.Candidate,
+		AdvancedCandidateSHA: receipt.Candidate.SHA, ClaimBaseSHA: "claim-base",
+		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = conflictCandidateAdvanceID(ack)
+	if err := persistConflictCandidateAdvance(ackPath, ack); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain TWO recorded server-side update-branch advances onto the
+	// receipt, each hop's "previous" being the prior hop's "new" — exactly
+	// what two successive update-branch merges during one PR-land wait
+	// record via TargetRefreshes.
+	firstNewTarget := receipt.TargetSHA + "-t1"
+	firstNewCandidate := receipt.Candidate.SHA + "-c1"
+	secondNewTarget := receipt.TargetSHA + "-t2"
+	secondNewCandidate := receipt.Candidate.SHA + "-c2"
+	receipt.TargetRefreshes = append(receipt.TargetRefreshes,
+		WorktreeMergeTargetRefresh{
+			RecordedAt: time.Now().UTC(), PreviousTargetSHA: receipt.TargetSHA, NewTargetSHA: firstNewTarget,
+			PreviousCandidateSHA: receipt.Candidate.SHA, NewCandidateSHA: firstNewCandidate,
+		},
+		WorktreeMergeTargetRefresh{
+			RecordedAt: time.Now().UTC(), PreviousTargetSHA: firstNewTarget, NewTargetSHA: secondNewTarget,
+			PreviousCandidateSHA: firstNewCandidate, NewCandidateSHA: secondNewCandidate,
+		},
+	)
+	receipt.TargetSHA = secondNewTarget
+	receipt.Candidate.SHA = secondNewCandidate
+	// Isolate the target/candidate matching logic under test from the
+	// unrelated "has a matching successful validation" branch this
+	// function also takes when receipt.Status is WorktreeMergePrepared:
+	// WorktreeMergePreparing makes it return the chain-match verdict
+	// directly instead.
+	receipt.Status = WorktreeMergePreparing
+
+	needsValidation, err := conflictCandidateAdvanceNeedsValidation(receipt)
+	if err != nil {
+		t.Fatalf("two chained recorded update-branch advances were not tolerated: %v", err)
+	}
+	if !needsValidation {
+		t.Fatalf("a still-preparing receipt with a matching acknowledgement should still need validation")
+	}
+}
+
 func TestAdvanceResolvedConflictCandidateRefusesUnsafeEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -3290,6 +3364,68 @@ func TestPrepareWorktreeMergeRebatchRefusesWhenClosingTheSupersededPullRequestFa
 	}
 }
 
+// TestPrepareWorktreeMergeRebatchRefusesWhenSupersededPullRequestWasMergedBeforeClose
+// proves red-team finding M-C: GitHub's close call on a pull request that
+// was merged before it reached the API succeeds without error — a merged
+// pull request reports "closed" too, and PATCH state=closed on it is a
+// harmless no-op, not a refusal. Closing must re-read the pull request and
+// require both closed AND not merged; an already-merged superseded
+// candidate must refuse the rebatch, naming the merged pull request,
+// never proceed past an already-landed change.
+func TestPrepareWorktreeMergeRebatchRefusesWhenSupersededPullRequestWasMergedBeforeClose(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "merged-before-close-first", "feature/merged-before-close-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "merged-before-close-second", "feature/merged-before-close-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	first.AutoMergeArmed = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+	closedLog := filepath.Join(t.TempDir(), "closed-pr.log")
+	t.Setenv("WB_TEST_CLOSED_PR_LOG", closedLog)
+	// The pull request reads open and unmerged right up until the close
+	// call itself: GitHub merges it in the window between the rebatch's
+	// earlier checks and the close reaching the API. The close itself
+	// still succeeds — exactly the harmless no-op GitHub reports for a
+	// pull request that was merged before the close reached it — but the
+	// post-close re-read this closes (M-C) must see it merged.
+	t.Setenv("WB_TEST_MERGE_ON_CLOSE", "1")
+
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "41") || !strings.Contains(err.Error(), "merged") {
+		t.Fatalf("rebatch over a pull request merged before its close = %v, want a refusal naming pull request 41 as merged", err)
+	}
+	closedCalls, readErr := os.ReadFile(closedLog)
+	if readErr != nil || !strings.Contains(string(closedCalls), "pulls/41") {
+		t.Fatalf("close was never attempted before the post-close verification: err=%v calls=%q", readErr, string(closedCalls))
+	}
+	if current, readErr := os.ReadFile(first.ReceiptPath); readErr != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("original receipt changed despite a refused rebatch: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(rebatchPath(first.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatal("a refused rebatch left behind an acknowledgement")
+	}
+}
+
 func TestPrepareWorktreeMergeRebatchesExactOpenPublishedPendingReceipt(t *testing.T) {
 	fixture := newEngineFixture(t)
 	firstSource := createMergeSource(t, fixture, "pending-rebatch-first", "feature/pending-rebatch-first", "first.txt", "first\n")
@@ -3818,13 +3954,35 @@ case "$*" in
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls'|'api repos/acme/app/commits/'*'/pulls?per_page=100 --include') printf '%s\n' '[]' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
-    printf '{"number":41,"state":"%s","merged":%s,"draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "${WB_TEST_PR_STATE:-open}" "${WB_TEST_PR_MERGED:-false}" "$WB_TEST_CANDIDATE_SHA" ;;
+    state="${WB_TEST_PR_STATE:-open}"
+    if [ -f "${WB_TEST_PR_STATE_FILE:-/nonexistent}" ]; then state="$(cat "$WB_TEST_PR_STATE_FILE")"; fi
+    merged="${WB_TEST_PR_MERGED:-false}"
+    if [ -f "${WB_TEST_PR_MERGED_FILE:-/nonexistent}" ]; then merged="$(cat "$WB_TEST_PR_MERGED_FILE")"; fi
+    printf '{"number":41,"state":"%s","merged":%s,"draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$state" "$merged" "$WB_TEST_CANDIDATE_SHA" ;;
   'api --method PATCH repos/acme/app/pulls/'*' -f state=closed')
     if [ -n "${WB_TEST_CLOSE_PR_FAIL:-}" ]; then
       echo '{"message":"Validation Failed"}' >&2
       exit 1
     fi
     printf '%s\n' "$*" >>"${WB_TEST_CLOSED_PR_LOG:-/dev/null}"
+    # Closing genuinely flips the pull request's observed state for every
+    # later read in this test - a re-read that still saw "open" after a
+    # successful close would be a fixture lie, not a faithful GitHub
+    # simulation - UNLESS the test itself already pinned WB_TEST_PR_STATE
+    # to simulate a pull request that was merged (and thus already
+    # reports "closed") before this close call ever reached it.
+    if [ -z "${WB_TEST_PR_STATE:-}" ]; then
+      printf 'closed' >"${WB_TEST_PR_STATE_FILE:?WB_TEST_PR_STATE_FILE must be set}"
+    fi
+    # WB_TEST_MERGE_ON_CLOSE simulates GitHub merging the pull request in
+    # the window between this rebatch's earlier open-and-unmerged read and
+    # this close call reaching the API: the close itself still succeeds
+    # (a merged pull request reports "closed" too), but it never actually
+    # retired an open candidate - the post-close verification this closes
+    # (red-team finding M-C) must catch it on its OWN re-read, not here.
+    if [ -n "${WB_TEST_MERGE_ON_CLOSE:-}" ]; then
+      printf 'true' >"${WB_TEST_PR_MERGED_FILE:?WB_TEST_PR_MERGED_FILE must be set}"
+    fi
     printf '{"number":41,"state":"closed"}\n' ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
@@ -3835,6 +3993,8 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_TEST_PR_STATE_FILE", filepath.Join(t.TempDir(), "pr-state"))
+	t.Setenv("WB_TEST_PR_MERGED_FILE", filepath.Join(t.TempDir(), "pr-merged"))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

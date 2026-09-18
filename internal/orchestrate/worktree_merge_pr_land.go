@@ -85,6 +85,16 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	updatedView, waited, autoMergeArmed, mergedByGitHub, updateRefusal, err := awaitLandablePullRequest(ctx, landOptions, view, number, title, body, evidence)
 	receipt.AutoMergeArmed = receipt.AutoMergeArmed || autoMergeArmed
 	if err != nil {
+		// A transient GitHub read failure - including one the headUpdated
+		// hook's own pullRequestCommitParents call surfaces while recording
+		// an update-branch advance - is not a verdict on the candidate. It
+		// must leave the receipt pending and retryable, not Conflict, the
+		// same way every other transient read in this area (ciwait.go) is
+		// treated as "ask again", not "judged".
+		if IsTransientReadFailure(err) {
+			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+				fmt.Errorf("%w; resume with wb worktree merge resume %s", err, receipt.ReceiptPath))
+		}
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, err)
 	}
 	if updateRefusal != nil {
@@ -110,6 +120,17 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 
 	head := updatedView.Head.SHA
+	// Every ordinary path that advances head during the wait (the
+	// headUpdated hook, on a server-side update-branch) already records the
+	// new value onto receipt.Candidate.SHA before returning here. If head
+	// still does not match what the receipt names, something advanced it
+	// that this landing never recorded (red-team finding M-A): refuse
+	// rather than merge a head the receipt does not name.
+	if head != "" && head != receipt.Candidate.SHA {
+		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict,
+			fmt.Errorf("published pull request head advanced to %s during the wait without being recorded on the receipt (still %s); resume with wb worktree merge resume %s",
+				head, receipt.Candidate.SHA, receipt.ReceiptPath))
+	}
 	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
 	if mergeErr != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, mergeErr)
@@ -380,13 +401,51 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, receipt *WorktreeM
 // because the snapshot's target no longer matches — the receipt's own
 // append-only history proves why it changed.
 func worktreeMergeTargetAdvanceRecorded(receipt WorktreeMergeReceipt, from, to string) bool {
+	return worktreeMergeRefreshChainAdvances(receipt.TargetRefreshes, from, to, func(refresh WorktreeMergeTargetRefresh) (string, string) {
+		return refresh.PreviousTargetSHA, refresh.NewTargetSHA
+	})
+}
+
+// worktreeMergeCandidateAdvanceRecorded is worktreeMergeTargetAdvanceRecorded's
+// counterpart for the candidate side of the same TargetRefreshes entries:
+// it proves receipt.Candidate.SHA advanced from `from` to `to` through one
+// or more recorded server-side update-branch merges (red-team finding M2 -
+// a snapshot taken before ANY number of update-branch advances, not just
+// one, must still be recognized as legitimate history rather than a
+// mismatch).
+func worktreeMergeCandidateAdvanceRecorded(receipt WorktreeMergeReceipt, from, to string) bool {
+	return worktreeMergeRefreshChainAdvances(receipt.TargetRefreshes, from, to, func(refresh WorktreeMergeTargetRefresh) (string, string) {
+		return refresh.PreviousCandidateSHA, refresh.NewCandidateSHA
+	})
+}
+
+// worktreeMergeRefreshChainAdvances walks receipt.TargetRefreshes as a chain
+// of (previous -> new) hops - following however many recorded advances it
+// takes, not just the first or the last - to prove `from` reaches `to`.
+// `pair` selects which of TargetRefresh's two parallel (target, candidate)
+// hop pairs to walk.
+func worktreeMergeRefreshChainAdvances(refreshes []WorktreeMergeTargetRefresh, from, to string, pair func(WorktreeMergeTargetRefresh) (string, string)) bool {
 	if from == to {
 		return true
 	}
-	for _, refresh := range receipt.TargetRefreshes {
-		if refresh.PreviousTargetSHA == from && refresh.NewTargetSHA == to {
+	current := from
+	visited := map[string]bool{current: true}
+	for {
+		advanced := false
+		for _, refresh := range refreshes {
+			previous, next := pair(refresh)
+			if previous == current && !visited[next] {
+				current = next
+				advanced = true
+				break
+			}
+		}
+		if !advanced {
+			return false
+		}
+		if current == to {
 			return true
 		}
+		visited[current] = true
 	}
-	return false
 }

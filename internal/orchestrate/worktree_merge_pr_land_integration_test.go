@@ -493,10 +493,15 @@ func TestResumeWorktreeMergePullRequestUpdateRecordedContinues(t *testing.T) {
 }
 
 // TestResumeWorktreeMergePullRequestForeignPushThenGitHubMergeIsLanded
-// covers M4: a foreign push moved the candidate worktree's local branch
-// pointer away from the receipt's recorded head (so a naive comparison
-// would call it a conflict), but GitHub itself already merged the exact
-// recorded candidate. Resume must report landed, not conflict.
+// covers red-team findings M4/M-A: a foreign push (never made through this
+// receipt's own flow, and never fetched into the candidate worktree) landed
+// a genuinely new commit on the candidate branch, GitHub merged that exact
+// foreign head, and GitHub then deleted the candidate branch the way it
+// deletes a merged pull request's source branch by default. The M4 descent
+// check must prove the merged head descends from the recorded candidate via
+// the GitHub compare API — not a local `git merge-base`, which would fail
+// outright on a deleted branch whose head was never fetched locally at all.
+// Resume must report landed, not conflict.
 func TestResumeWorktreeMergePullRequestForeignPushThenGitHubMergeIsLanded(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "foreign-push-source", "feature/foreign-push", "foreign-push.txt", "foreign\n")
@@ -514,18 +519,42 @@ func TestResumeWorktreeMergePullRequestForeignPushThenGitHubMergeIsLanded(t *tes
 	if err != nil {
 		t.Fatalf("publish-only stop failed: %+v %v", published, err)
 	}
-	// GitHub merges the exact recorded candidate.
+	// A genuine foreign push: a THROWAWAY clone (never published.Candidate.Worktree,
+	// and never fetched into it) pushes one more real commit onto the
+	// candidate branch. This is not a commit this receipt's own flow ever
+	// produced or recorded.
+	foreignClone := t.TempDir()
+	runEngineGit(t, fixture.githubDir, "clone", fixture.repository.CloneURL, foreignClone)
+	runEngineGit(t, foreignClone, "config", "user.name", "Foreign Pusher")
+	runEngineGit(t, foreignClone, "config", "user.email", "foreign@example.test")
+	runEngineGit(t, foreignClone, "checkout", published.Candidate.Branch)
+	writeEngineFile(t, filepath.Join(foreignClone, "foreign-push-extra.txt"), "pushed by someone else\n")
+	runEngineGit(t, foreignClone, "add", "foreign-push-extra.txt")
+	runEngineGit(t, foreignClone, "commit", "-m", "a foreign push WB never made or recorded")
+	foreignHead := strings.TrimSpace(runEngineGit(t, foreignClone, "rev-parse", "HEAD"))
+	runEngineGit(t, foreignClone, "push", "origin", published.Candidate.Branch)
+	gh.writeState(t, "head", foreignHead)
+
+	// GitHub merges the exact foreign head, then deletes the branch — the
+	// default for a merged pull request's source branch.
 	runEngineGit(t, fixture.canonical, "checkout", "main")
+	runEngineGit(t, fixture.canonical, "fetch", "origin", published.Candidate.Branch)
 	runEngineGit(t, fixture.canonical, "merge", "--ff-only", "origin/"+published.Candidate.Branch)
 	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	runEngineGit(t, fixture.canonical, "push", "origin", "--delete", published.Candidate.Branch)
 	gh.writeState(t, "merged", "true")
 	gh.writeState(t, "pr-state", "CLOSED")
 	gh.writeState(t, "merged-by", "github-actions")
 
+	// published.Candidate.Worktree never fetched the foreign push or the
+	// delete: its local object database has neither the foreign head nor
+	// (after the delete) any remote ref for the branch at all, exactly the
+	// state a local `git merge-base` cannot reason about.
+
 	options := wmEngineLandOptions(fixture, published.ReceiptPath)
 	landed, err := ResumeWorktreeMerge(context.Background(), options)
 	if err != nil {
-		t.Fatalf("resume after a foreign push and a GitHub-side merge did not land: receipt=%+v err=%v", landed, err)
+		t.Fatalf("resume after a foreign push, a GitHub-side merge, and branch deletion did not land: receipt=%+v err=%v", landed, err)
 	}
 	if landed.Status != WorktreeMergeLanded {
 		t.Fatalf("landed receipt status = %s, want landed_cleanup_pending: %+v", landed.Status, landed)
@@ -693,5 +722,132 @@ func TestResumeWorktreeMergePullRequestDoesNotAdoptAMismatchedTreeAsUpdateBranch
 	}
 	if notAdopted.Candidate.SHA == mismatchedSHA {
 		t.Fatalf("mismatched-tree head was adopted onto the receipt: %+v", notAdopted)
+	}
+}
+
+// setUpWorktreeMergeB1CrashState publishes a candidate, then simulates the
+// exact B1 crash window: an update-branch advance was recorded onto the
+// receipt (persist-first ordering, M3) but its best-effort local
+// fast-forward never happened — a crash, a kill, a dirty worktree at the
+// time. The candidate worktree is left checked out at the OLD candidate
+// (P) while the receipt, and the PR's real head, both name the NEW
+// candidate (U). It returns the receipt (still naming U) and U itself.
+func setUpWorktreeMergeB1CrashState(t *testing.T, fixture engineFixture, gh *wmEngineGH, published WorktreeMergeReceipt) (WorktreeMergeReceipt, string) {
+	t.Helper()
+	previousCandidateSHA := published.Candidate.SHA
+	previousTargetSHA := published.TargetSHA
+
+	// Perform the update-branch merge in a THROWAWAY clone, never in
+	// published.Candidate.Worktree itself — that worktree must stay at the
+	// old candidate P, exactly as a crashed fast-forward would leave it.
+	clone := t.TempDir()
+	runEngineGit(t, fixture.githubDir, "clone", fixture.repository.CloneURL, clone)
+	runEngineGit(t, clone, "config", "user.name", "WB Test")
+	runEngineGit(t, clone, "config", "user.email", "wb@example.test")
+	runEngineGit(t, clone, "checkout", published.Candidate.Branch)
+	runEngineGit(t, clone, "merge", "--no-ff", "-m", "merge main", "origin/main")
+	newCandidateSHA := strings.TrimSpace(runEngineGit(t, clone, "rev-parse", "HEAD"))
+	runEngineGit(t, clone, "push", "origin", published.Candidate.Branch)
+	newTargetSHA := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "refs/heads/main"))
+
+	published.TargetRefreshes = append(published.TargetRefreshes, WorktreeMergeTargetRefresh{
+		RecordedAt: time.Now().UTC(), PreviousTargetSHA: previousTargetSHA, NewTargetSHA: newTargetSHA,
+		PreviousCandidateSHA: previousCandidateSHA, NewCandidateSHA: newCandidateSHA,
+	})
+	published.TargetSHA = newTargetSHA
+	published.Candidate.SHA = newCandidateSHA
+	published.PublishedCandidateSHA = newCandidateSHA
+	if err := persistWorktreeMergeReceipt(published); err != nil {
+		t.Fatal(err)
+	}
+	gh.writeState(t, "head", newCandidateSHA)
+
+	// The candidate worktree itself is left exactly where it was before the
+	// advance — still at P — which is the crash state this test exists for.
+	if got := strings.TrimSpace(runEngineGit(t, published.Candidate.Worktree, "rev-parse", "HEAD")); got != previousCandidateSHA {
+		t.Fatalf("setup broke its own precondition: worktree HEAD = %s, want the pre-advance candidate %s", got, previousCandidateSHA)
+	}
+	return published, newCandidateSHA
+}
+
+// TestResumeWorktreeMergePullRequestRecoversB1CrashWithPROpen covers
+// red-team finding B1: a receipt persisted at the new candidate U while the
+// worktree is left at the old candidate P (a crashed or failed best-effort
+// fast-forward), with the pull request still open at exact head U. Resume
+// must fast-forward the worktree and land, not report Conflict.
+func TestResumeWorktreeMergePullRequestRecoversB1CrashWithPROpen(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "b1-open-source", "feature/b1-open", "b1-open.txt", "b1 open\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("publish-only stop failed: %+v %v", published, err)
+	}
+	crashed, newCandidateSHA := setUpWorktreeMergeB1CrashState(t, fixture, gh, published)
+	// The PR stays open at exact head U — gh's "head" state already reports
+	// it via setUpWorktreeMergeB1CrashState.
+
+	options := wmEngineLandOptions(fixture, crashed.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil {
+		t.Fatalf("resume did not recover the B1 crash state (PR open): receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded {
+		t.Fatalf("landed receipt status = %s, want landed_cleanup_pending: %+v", landed.Status, landed)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, crashed.Candidate.Worktree, "rev-parse", "HEAD")); got != newCandidateSHA {
+		t.Fatalf("candidate worktree was not fast-forwarded past the B1 crash: got=%s want=%s", got, newCandidateSHA)
+	}
+}
+
+// TestResumeWorktreeMergePullRequestRecoversB1CrashWithPRMerged covers B1's
+// second required case named in the brief: the same persisted-at-U,
+// worktree-left-at-P crash state, but GitHub already merged the pull
+// request at exact head U while WB was away. Resume must still fast-forward
+// and land, not report Conflict on a change GitHub already landed.
+func TestResumeWorktreeMergePullRequestRecoversB1CrashWithPRMerged(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "b1-merged-source", "feature/b1-merged", "b1-merged.txt", "b1 merged\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("publish-only stop failed: %+v %v", published, err)
+	}
+	crashed, newCandidateSHA := setUpWorktreeMergeB1CrashState(t, fixture, gh, published)
+	// GitHub already merged the exact new candidate U while WB was away.
+	runEngineGit(t, fixture.canonical, "checkout", "main")
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", "origin/"+crashed.Candidate.Branch)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	gh.writeState(t, "merged", "true")
+	gh.writeState(t, "pr-state", "CLOSED")
+
+	options := wmEngineLandOptions(fixture, crashed.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil {
+		t.Fatalf("resume did not recover the B1 crash state (PR merged): receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded {
+		t.Fatalf("landed receipt status = %s, want landed_cleanup_pending: %+v", landed.Status, landed)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, crashed.Candidate.Worktree, "rev-parse", "HEAD")); got != newCandidateSHA {
+		t.Fatalf("candidate worktree was not fast-forwarded past the B1 crash: got=%s want=%s", got, newCandidateSHA)
 	}
 }

@@ -486,13 +486,17 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		updateRefusal  *landRefusal
 	)
 	view, waited, result.AutoMergeArmed, mergedByGitHub, updateRefusal, err = awaitLandablePullRequest(ctx, options, view, number, subject, body, result.Evidence)
+	// Record the exact head this attempt last observed on every path - the
+	// refusal and error returns below included - so a caller reading the
+	// result can see what it landed against even when the attempt did not
+	// finish landing.
+	result.HeadSHA = view.Head.SHA
 	if err != nil {
 		return result, err
 	}
 	if updateRefusal != nil {
 		return mergeRefusal(result, *updateRefusal), nil
 	}
-	result.HeadSHA = view.Head.SHA
 
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
@@ -583,7 +587,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			PullRequest:       number,
 			Target:            view.Base.Ref,
 			AllowUnfenced:     options.AllowUnfenced,
-			Slice:             time.Until(waitDeadline(options)),
+			Slice:             remainingWaitBudget(options, waitDeadline(options)),
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,
 			OperationProgress: options.OperationProgress,

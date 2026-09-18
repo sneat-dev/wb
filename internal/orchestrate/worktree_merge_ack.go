@@ -805,7 +805,27 @@ func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pu
 	if err != nil {
 		return fmt.Errorf("parse superseded pull request number %q: %w", numberText, err)
 	}
-	return githubSourcePullRequestRemote{}.close(ctx, repository, number)
+	remote := githubSourcePullRequestRemote{}
+	if err := remote.close(ctx, repository, number); err != nil {
+		return err
+	}
+	// GitHub's close call on a pull request that was merged before this
+	// call reached it succeeds without error - a merged PR reports "closed"
+	// too, and PATCH state=closed on it is a harmless no-op rather than a
+	// refusal. That would let a rebatch believe an armed, already-landed
+	// candidate had been retired when it was actually merged. Re-read and
+	// require both closed and not merged before trusting the close.
+	view, readErr := ReadPullRequest(ctx, repository, numberText)
+	if readErr != nil {
+		return fmt.Errorf("verify superseded pull request %s was closed, not merged: %w", pullRequest, readErr)
+	}
+	if view.Merged || strings.EqualFold(view.State, "merged") {
+		return fmt.Errorf("superseded pull request %s was merged before it could be closed as superseded; a rebatch must not proceed past an already-landed candidate", pullRequest)
+	}
+	if !strings.EqualFold(view.State, "closed") {
+		return fmt.Errorf("superseded pull request %s did not close (state is %s)", pullRequest, view.State)
+	}
+	return nil
 }
 
 func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMergePreparedRebatch, replacement *WorktreeMergeReceipt) error {
