@@ -117,7 +117,7 @@ func TestSanitizeFailureFindingTextStripsControlCharacters(t *testing.T) {
 // (unicode.Cf, Zl, Zp) alongside the ASCII control range.
 func TestSanitizeFailureFindingTextDropsInvisibleUnicode(t *testing.T) {
 	t.Parallel()
-	got := sanitizeFailureFindingText("left​right next end")
+	got := sanitizeFailureFindingText("left\u200bright\u2028next\u2029end")
 	if got != "leftrightnextend" {
 		t.Fatalf("sanitizeFailureFindingText = %q, want invisible separators dropped", got)
 	}

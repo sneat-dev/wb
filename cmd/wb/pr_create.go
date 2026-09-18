@@ -168,7 +168,7 @@ wb pr create --format json`,
 			// whatever the task's own original prompt names as a suggestion,
 			// leaving --closes as the only thing that acts on it.
 			if suggested := suggestedClosesFromWorktreePrompt(command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
-				fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
 					formatSuggestedIssues(suggested))
 			}
 			var landOptions *orchestrate.PullRequestLandOptions
