@@ -208,19 +208,6 @@ type PullRequestWaitOptions struct {
 	// CheckPollInterval. The no-applicable-checks receipt and any reread
 	// after fingerprint churn always wait the full CheckPollInterval.
 	StableRereadDelay time.Duration
-	// RequireExecutedRequiredChecks demands that every required check on the
-	// exact head actually ran to a real conclusion — not "skipped" or
-	// "neutral" — before this wait reports terminal pass (sneat-dev/wb#591
-	// red-team finding X2). A required check that GitHub itself counts as
-	// satisfied while never actually running (a path-filtered or
-	// conditionally-skipped job) must not silently satisfy a candidate whose
-	// local validation was deferred to CI: an aggregate/gate required check
-	// (e.g. a repository's own "Required checks passed" check) is unaffected,
-	// since ITS OWN conclusion is what is inspected, not the sub-jobs it
-	// gates. Ordinary (non-deferred) waits leave this false and keep their
-	// existing behavior of trusting a registered name regardless of
-	// conclusion.
-	RequireExecutedRequiredChecks bool
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress          func(PullRequestWaitProgress)

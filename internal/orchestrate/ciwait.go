@@ -233,7 +233,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
-		missingRequired := missingOrUnexecutedRequiredChecks(checks, requiredChecks, options.RequireExecutedRequiredChecks)
+		missingRequired := missingRequiredChecks(checks, requiredChecks)
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
@@ -314,7 +314,7 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 			}
-			if missingRequired = missingOrUnexecutedRequiredChecks(checks, requiredChecks, options.RequireExecutedRequiredChecks); len(missingRequired) > 0 {
+			if missingRequired = missingRequiredChecks(checks, requiredChecks); len(missingRequired) > 0 {
 				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
 				return pendingCommitWaitResult(result), nil
 			}
@@ -546,8 +546,12 @@ func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCh
 }
 
 // remoteCheckExecuted reports whether check reflects a real run rather than
-// GitHub's own "skipped"/"neutral" not-really-run conclusions (finding X2).
-// A commit-status-derived check carries no Conclusion at all and is treated
+// GitHub's own "skipped"/"neutral" not-really-run conclusions. It no longer
+// gates the wait itself (round 3 of sneat-dev/wb#591's red-team follow-up
+// removed that strict mode — see missingRequiredChecks below); it now backs
+// only the non-blocking deferred-validation-check-skipped finding the
+// worktree-merge PR route records on its candidate/PR phase. A
+// commit-status-derived check carries no Conclusion at all and is treated
 // as executed: the commit-status API has no skip concept.
 func remoteCheckExecuted(check RemoteCheck) bool {
 	switch check.Conclusion {
@@ -558,14 +562,16 @@ func remoteCheckExecuted(check RemoteCheck) bool {
 	}
 }
 
-// missingOrUnexecutedRequiredChecks reports every required check absent
-// from checks. When requireExecuted is set (finding X2), a required check is
-// not satisfied merely by a registered name — a match whose own conclusion
-// was "skipped" or "neutral" is treated the same as a required check that
-// never registered at all, so the deferral path must not accept it.
-// Ordinary, non-deferred waits pass requireExecuted=false and keep their
-// prior behavior of trusting a registered name regardless of conclusion.
-func missingOrUnexecutedRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck, requireExecuted bool) []string {
+// missingRequiredChecks reports every required check absent from checks,
+// matched by name (and GitHub App ID, when the expectation names one),
+// regardless of the matching check's own conclusion — including "skipped"
+// or "neutral". GitHub branch protection's own evaluation is the gate for
+// what "satisfied" means, including under a deferred-validation PR-route
+// candidate; WB no longer second-guesses it here (round 3 of
+// sneat-dev/wb#591's red-team follow-up reverted the round-2 strict mode,
+// which broke on real-world skip patterns — see remoteCheckExecuted's own
+// comment for what replaced it).
+func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck) []string {
 	observed := make(map[string][]RemoteCheck, len(checks))
 	for _, check := range checks {
 		name := strings.TrimSpace(check.Name)
@@ -579,14 +585,10 @@ func missingOrUnexecutedRequiredChecks(checks []RemoteCheck, required []Required
 	for _, expectation := range required {
 		matched := false
 		for _, check := range observed[expectation.Name] {
-			if expectation.IntegrationID != 0 && check.AppID != expectation.IntegrationID {
-				continue
+			if expectation.IntegrationID == 0 || check.AppID == expectation.IntegrationID {
+				matched = true
+				break
 			}
-			if requireExecuted && !remoteCheckExecuted(check) {
-				continue
-			}
-			matched = true
-			break
 		}
 		if !matched {
 			label := expectation.Name
@@ -597,6 +599,40 @@ func missingOrUnexecutedRequiredChecks(checks []RemoteCheck, required []Required
 		}
 	}
 	return missing
+}
+
+// skippedOrNeutralRequiredChecks reports the names of every required check
+// (matched by name and, when the expectation names one, GitHub App ID) whose
+// matching observed check concluded "skipped" or "neutral" rather than
+// actually running. It never affects landability — GitHub branch
+// protection's own evaluation is the gate (missingRequiredChecks above) —
+// it only backs the non-blocking "deferred-validation-check-skipped" finding
+// the worktree-merge PR route records on its candidate/PR phase for a
+// receipt whose local validation was deferred to CI (sneat-dev/wb#591 round
+// 3 red-team follow-up).
+func skippedOrNeutralRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck) []string {
+	observed := make(map[string][]RemoteCheck, len(checks))
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		name = strings.TrimPrefix(name, "check-run:")
+		name = strings.TrimPrefix(name, "status:")
+		if name != "" {
+			observed[name] = append(observed[name], check)
+		}
+	}
+	names := make([]string, 0)
+	for _, expectation := range required {
+		for _, check := range observed[expectation.Name] {
+			if expectation.IntegrationID != 0 && check.AppID != expectation.IntegrationID {
+				continue
+			}
+			if !remoteCheckExecuted(check) {
+				names = append(names, expectation.Name)
+			}
+			break
+		}
+	}
+	return names
 }
 
 // requiredChecksReceipt combines classic branch protection, every active
@@ -1553,16 +1589,9 @@ func checkRunBucket(status, conclusion string) string {
 		return "pending"
 	}
 	switch conclusion {
-	case "success":
+	case "success", "neutral":
 		return "pass"
-	case "skipped", "neutral":
-		// "neutral" joins "skipped" here (finding X2, sneat-dev/wb#591 red-team
-		// follow-up): both mean the check itself never actually validated
-		// anything, which RemoteCheck.Conclusion preserves for a strict,
-		// deferral-aware caller to tell apart from a genuine "success". The
-		// overall pass/fail loop treats "pass" and "skipping" identically, so
-		// this reclassification does not change ordinary (non-deferred) wait
-		// behavior.
+	case "skipped":
 		return "skipping"
 	case "cancelled", "timed_out", "action_required":
 		return "cancel"

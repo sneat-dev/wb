@@ -30,6 +30,33 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 	return receipt, "", err
 }
 
+// recordDeferredValidationCheckSkippedFinding is round 3's non-blocking
+// replacement for round 2's strict required-check gating (sneat-dev/wb#591
+// red-team follow-up, findings B1/B2). It runs only here, on the
+// candidate/PR phase's own wait result — never on waitForWorktreeMergeChecks'
+// post-target phase, which does not call it — and only when receipt's local
+// validation was deferred to CI. It never refuses a landing and never
+// lengthens a wait: it only records, for a human or a later audit, which
+// required check(s) concluded "skipped" or "neutral" instead of actually
+// running on the head GitHub itself judged landable.
+func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, waited PullRequestWaitResult) {
+	if receipt.ValidationDeferral == nil {
+		return
+	}
+	skipped := skippedOrNeutralRequiredChecks(waited.Checks, waited.RequiredChecks)
+	if len(skipped) == 0 {
+		return
+	}
+	receipt.Findings = append(receipt.Findings, WorktreeMergeFinding{
+		Code: WorktreeMergeFindingDeferredValidationCheckSkipped,
+		Message: fmt.Sprintf(
+			"candidate validation was deferred to CI, and required check(s) %s concluded skipped or neutral instead of actually running; GitHub branch protection judged the head landable anyway",
+			strings.Join(skipped, ", "),
+		),
+		Checks: skipped,
+	})
+}
+
 func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, string, error) {
 	// The shared engine (awaitLandablePullRequest / mergeOrAdoptAutoMerge)
 	// path-builds every GraphQL/REST call it issues from this identity
@@ -75,10 +102,6 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		CheckPollInterval:   options.CheckPollInterval,
 		OperationProgress:   options.Progress,
 		Lane:                options.Lane,
-		// Finding X2 (sneat-dev/wb#591 red-team follow-up): a receipt whose
-		// local validation was deferred to CI must have its required checks
-		// actually run before the shared engine reports it landable.
-		RequireExecutedRequiredChecks: receipt.ValidationDeferral != nil,
 		headUpdated: func(previous, updated string) error {
 			return adoptWorktreeMergeUpdateBranchAdvance(ctx, &receipt, previous, updated)
 		},
@@ -105,6 +128,14 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			fmt.Errorf("%s; resume with wb worktree merge resume %s", updateRefusal.reason, receipt.ReceiptPath))
 	}
 	receipt.Checks = waited
+	// Round 3 (sneat-dev/wb#591 red-team follow-up): a deferred candidate's
+	// required checks are never re-judged here — GitHub branch protection's
+	// own evaluation is the gate, exactly as for any other candidate. This
+	// only records a non-blocking finding, on the candidate/PR phase this
+	// wait itself observed, never on the later post-target phase (see
+	// waitForWorktreeMergeChecks in worktree_merge.go, which does not call
+	// this helper).
+	recordDeferredValidationCheckSkippedFinding(&receipt, waited)
 	if waited.Status != PullRequestWaitPassed && !mergedByGitHub {
 		status := WorktreeMergeChecksFailed
 		reason := fmt.Errorf("exact-head checks failed: %s", waited.Reason)

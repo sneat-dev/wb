@@ -136,6 +136,24 @@ type WorktreeMergeValidationDeferral struct {
 	RecordedAt   time.Time          `json:"recorded_at"`
 }
 
+// WorktreeMergeFindingDeferredValidationCheckSkipped is the finding code
+// recordDeferredValidationCheckSkippedFinding records: a required check on
+// the landed PR-route head concluded "skipped" or "neutral" instead of
+// actually running, on a candidate whose own local validation was deferred
+// to CI (sneat-dev/wb#591 round 3 red-team follow-up). It is informational
+// only — GitHub branch protection's own evaluation is what decided the
+// candidate was landable, and this finding never refuses a landing or
+// lengthens a wait.
+const WorktreeMergeFindingDeferredValidationCheckSkipped = "deferred-validation-check-skipped"
+
+// WorktreeMergeFinding is one non-blocking observation recorded on a
+// receipt. See WorktreeMergeReceipt.Findings.
+type WorktreeMergeFinding struct {
+	Code    string   `json:"code"`
+	Message string   `json:"message"`
+	Checks  []string `json:"checks,omitempty"`
+}
+
 type WorktreeMergeSourcePullRequestReconciliation struct {
 	Number       int       `json:"number"`
 	URL          string    `json:"url"`
@@ -236,13 +254,18 @@ type WorktreeMergeReceipt struct {
 	// ValidationDeferral is set exactly when local validation was skipped for
 	// the pull-request route rather than run. See
 	// WorktreeMergeValidationDeferral.
-	ValidationDeferral *WorktreeMergeValidationDeferral    `json:"validation_deferral,omitempty"`
-	ValidationIdentity *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
-	ValidationTimeouts *WorktreeMergeValidationTimeouts    `json:"validation_timeouts,omitempty"`
-	Checks             PullRequestWaitResult               `json:"checks,omitempty"`
-	PushGate           *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
-	ForwardRepairs     []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
-	Cleanup            bool                                `json:"cleanup_requested"`
+	ValidationDeferral *WorktreeMergeValidationDeferral `json:"validation_deferral,omitempty"`
+	ValidationIdentity *WorktreeMergeValidationIdentity `json:"validation_identity,omitempty"`
+	ValidationTimeouts *WorktreeMergeValidationTimeouts `json:"validation_timeouts,omitempty"`
+	// Findings are non-blocking observations recorded alongside an otherwise
+	// successful outcome (sneat-dev/wb#591 round 3 red-team follow-up): they
+	// never cause a refusal and never lengthen a wait. See
+	// WorktreeMergeFinding and recordDeferredValidationCheckSkippedFinding.
+	Findings       []WorktreeMergeFinding              `json:"findings,omitempty"`
+	Checks         PullRequestWaitResult               `json:"checks,omitempty"`
+	PushGate       *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
+	ForwardRepairs []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
+	Cleanup        bool                                `json:"cleanup_requested"`
 	// AllowUnfenced is monotonic landing intent: an interrupted resume keeps
 	// the explicit approval to rely on observed exact-head checks when the
 	// target has no server-enforced strict up-to-date fence.
@@ -2775,12 +2798,6 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 		AllowUnfenced: options.AllowUnfenced,
 		Slice:         slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
 		OperationProgress: options.Progress,
-		// Finding X2 (sneat-dev/wb#591 red-team follow-up): a candidate whose
-		// local validation was deferred to CI must have its required checks
-		// actually run — a "skipped" or "neutral" conclusion on a required
-		// check does not satisfy the deferral, so this wait must not treat
-		// it as terminal pass.
-		RequireExecutedRequiredChecks: receipt.ValidationDeferral != nil,
 	})
 	stopLaneHeartbeat()
 	if err != nil {
@@ -3516,6 +3533,48 @@ func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target 
 	eligible, reason := worktreeMergeValidationDeferralEligible(ctx, repository, target)
 	plan.Defer, plan.Reason = eligible, reason
 	return plan, nil
+}
+
+// PeekWorktreeMergeValidationDeferral cheaply resolves the merge route for
+// not-yet-prepared source worktrees and reports whether this call's local
+// candidate validation will be deferred to the pull-request route's
+// authoritative CI, reusing the exact same resolveWorktreeMergeValidationPlan
+// logic RunWorktreeMerge itself applies once a receipt exists. It performs
+// only source inspection and remote route/required-check-policy reads --
+// never a CPU-heavy local validation run -- so a caller deciding whether to
+// gate a not-yet-started merge on host load can learn the answer without
+// paying for the validation it is trying to avoid gating on (Minor 10,
+// sneat-dev/wb#591 round 3 red-team follow-up: the combined `wb worktree
+// land`/`wb land` used to check host load before it could know validation
+// would be deferred).
+func PeekWorktreeMergeValidationDeferral(ctx context.Context, projectsRoot string, sources []string, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool) (bool, error) {
+	projectsRoot, err := filepath.Abs(strings.TrimSpace(projectsRoot))
+	if err != nil || strings.TrimSpace(projectsRoot) == "" {
+		return false, fmt.Errorf("projects root is required")
+	}
+	if len(sources) == 0 {
+		return false, fmt.Errorf("at least one source worktree is required")
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		canonicalProbe, probeErr := canonicalForMergeSource(ctx, sources[0])
+		if probeErr != nil {
+			return false, fmt.Errorf("resolve source canonical clone: %w", probeErr)
+		}
+		target, probeErr = gitops.DefaultBranch(canonicalProbe)
+		if probeErr != nil {
+			return false, fmt.Errorf("resolve remote default branch: %w", probeErr)
+		}
+	}
+	_, repository, _, err := inspectWorktreeMergeSources(ctx, projectsRoot, sources, target)
+	if err != nil {
+		return false, err
+	}
+	plan, err := resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced)
+	if err != nil {
+		return false, err
+	}
+	return plan.Defer, nil
 }
 
 // worktreeMergeValidationDeferralEligible reports whether the pull-request

@@ -167,10 +167,6 @@ func awaitLandablePullRequest(
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,
 			OperationProgress: options.OperationProgress,
-			// Finding X2 (sneat-dev/wb#591 red-team follow-up): under
-			// deferral, a required check that concluded "skipped" or
-			// "neutral" must not count as satisfied.
-			RequireExecutedRequiredChecks: options.RequireExecutedRequiredChecks,
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(updatedView.Head.SHA), 0, 0)
 		// This wait can run the remaining budget in one call: keep the lane's

@@ -141,7 +141,7 @@ func TestOrchCovMissingRequiredChecksLabelsProducerPinnedExpectations(t *testing
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := missingOrUnexecutedRequiredChecks(checks, test.required, false)
+			got := missingRequiredChecks(checks, test.required)
 			if strings.Join(got, ",") != strings.Join(test.want, ",") {
 				t.Fatalf("missing = %v, want %v", got, test.want)
 			}

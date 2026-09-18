@@ -206,13 +206,21 @@ as `pr` cannot authorize a publish under a route a later call resolves as
 validation local. `--validate-locally` and `--allow-unfenced` each force local
 validation for THIS call regardless of route or any deferral recorded by an
 earlier call: a stale deferral is re-validated locally, never silently
-accepted, before that call publishes or merges. A deferred candidate's wait
-still demands that every required check on the exact head actually ran to a
-real conclusion — CI is the gate, so GitHub's own required-check policy is
-trusted as the suite even when it is a single aggregate or path-scoped gate
-check, but a required check GitHub itself counts as satisfied while never
-actually running (`skipped` or `neutral`) does not satisfy the deferral; WB
-validates locally or refuses rather than merging on a suite that never ran.
+accepted, before that call publishes or merges. A standalone
+`wb worktree merge prepare` (no later `land` call of its own to resolve the
+route) validates locally by default for the same reason — dependent agents
+consume its exact candidate SHA directly — unless this call itself passes
+`--route pr`. A deferred candidate's wait never re-judges its required
+checks: CI's required checks, as GitHub branch protection evaluates them,
+are the gate, exactly as for any other candidate, including when a required
+check is a single aggregate or path-scoped gate check. A required check that
+GitHub itself counts as satisfied while never actually running (`skipped` or
+`neutral`) still lands — GitHub branch protection judged the head landable —
+but the candidate/PR phase records a non-blocking
+`deferred-validation-check-skipped` finding naming it, on both the text
+output and the receipt/JSON; it never refuses and never waits longer because
+of it, and it is never evaluated again on the later post-target phase. Pass
+`--validate-locally` to force a real local run instead of deferring.
 
 ### AC: dependent-agent-can-use-phase-one-without-waiting
 

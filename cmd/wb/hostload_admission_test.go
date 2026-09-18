@@ -201,22 +201,22 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 		},
 		Validation: quality.VerificationReport{Status: quality.StatusPassed},
 	}
-	if !hostLoadCheckSkippable(validated, false, "") {
+	if !hostLoadCheckSkippable(validated, false, false, "") {
 		t.Error("published + validated-for-exact-candidate receipt must skip the host-load check")
 	}
 
 	complete := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeComplete}
-	if !hostLoadCheckSkippable(complete, false, "") {
+	if !hostLoadCheckSkippable(complete, false, false, "") {
 		t.Error("complete receipt must skip the host-load check")
 	}
 
 	validationFailed := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeValidationFailed}
-	if hostLoadCheckSkippable(validationFailed, false, "") {
+	if hostLoadCheckSkippable(validationFailed, false, false, "") {
 		t.Error("validation_failed receipt must still be gated by the host-load check")
 	}
 
 	preparing := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergePreparing}
-	if hostLoadCheckSkippable(preparing, false, "") {
+	if hostLoadCheckSkippable(preparing, false, false, "") {
 		t.Error("preparing receipt must still be gated by the host-load check")
 	}
 
@@ -229,7 +229,7 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 		},
 		Validation: quality.VerificationReport{Status: quality.StatusPassed},
 	}
-	if hostLoadCheckSkippable(stalePublished, false, "") {
+	if hostLoadCheckSkippable(stalePublished, false, false, "") {
 		t.Error("published receipt whose validation identity no longer matches the candidate must still be gated")
 	}
 
@@ -245,13 +245,13 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 			Route: orchestrate.WorktreeMergeRoutePullRequest, CandidateSHA: strings.Repeat("c", 40),
 		},
 	}
-	if !hostLoadCheckSkippable(deferred, false, "") {
+	if !hostLoadCheckSkippable(deferred, false, false, "") {
 		t.Error("PR-route-deferred receipt must skip the host-load check")
 	}
 
 	staleDeferred := deferred
 	staleDeferred.Candidate = orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("d", 40)}
-	if hostLoadCheckSkippable(staleDeferred, false, "") {
+	if hostLoadCheckSkippable(staleDeferred, false, false, "") {
 		t.Error("a deferral for a candidate SHA that no longer matches must still be gated")
 	}
 
@@ -266,7 +266,7 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 		PublishedCandidateSHA: strings.Repeat("e", 40),
 		TargetRefreshes:       []orchestrate.WorktreeMergeTargetRefresh{{NewCandidateSHA: strings.Repeat("e", 40)}},
 	}
-	if !hostLoadCheckSkippable(engineUpdated, false, "") {
+	if !hostLoadCheckSkippable(engineUpdated, false, false, "") {
 		t.Error("engine-updated receipt whose published head matches the candidate must skip the host-load check")
 	}
 
@@ -274,17 +274,38 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 	// or --route direct on THIS call always runs a heavy local validation
 	// pass next, regardless of any deferral or already-validated identity
 	// recorded on the receipt, so it must never be skippable.
-	if hostLoadCheckSkippable(deferred, true, "") {
+	if hostLoadCheckSkippable(deferred, true, false, "") {
 		t.Error("--validate-locally on this call must never be skippable, even for an otherwise-deferred receipt")
 	}
-	if hostLoadCheckSkippable(deferred, false, orchestrate.WorktreeMergeRouteDirect) {
+	if hostLoadCheckSkippable(deferred, false, false, orchestrate.WorktreeMergeRouteDirect) {
 		t.Error("--route direct on this call must never be skippable, even for an otherwise-deferred receipt")
 	}
-	if hostLoadCheckSkippable(validated, true, "") {
+	if hostLoadCheckSkippable(validated, true, false, "") {
 		t.Error("--validate-locally on this call must never be skippable, even for an already-validated receipt")
 	}
-	if !hostLoadCheckSkippable(validated, false, orchestrate.WorktreeMergeRouteAuto) {
+	if !hostLoadCheckSkippable(validated, false, false, orchestrate.WorktreeMergeRouteAuto) {
 		t.Error("an explicit --route auto (the CLI default) must not change the otherwise-skippable outcome")
+	}
+}
+
+// TestHostLoadCheckSkippableAllowUnfencedNeverSkippable is the Minor 10
+// regression from the sneat-dev/wb#591 round 3 red-team follow-up:
+// --allow-unfenced on this call tells ciwait it may accept an unfenced or
+// unreadable required-check policy as a merge gate, which forces a real
+// local validation run just like --validate-locally or --route direct, so
+// it was missing from hostLoadCheckSkippable's never-skippable list.
+func TestHostLoadCheckSkippableAllowUnfencedNeverSkippable(t *testing.T) {
+	deferred := orchestrate.WorktreeMergeReceipt{
+		Status:      orchestrate.WorktreeMergePublished,
+		PullRequest: "https://github.com/acme/app/pull/1",
+		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("c", 40)},
+		Validation:  quality.VerificationReport{Status: quality.StatusSkipped},
+		ValidationDeferral: &orchestrate.WorktreeMergeValidationDeferral{
+			Route: orchestrate.WorktreeMergeRoutePullRequest, CandidateSHA: strings.Repeat("c", 40),
+		},
+	}
+	if hostLoadCheckSkippable(deferred, false, true, "") {
+		t.Error("--allow-unfenced on this call must never be skippable, even for an otherwise-deferred receipt")
 	}
 }
 
