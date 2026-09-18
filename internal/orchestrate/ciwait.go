@@ -1344,11 +1344,26 @@ func githubActionsRunAndJob(rawURL string) (runID, jobID string, ok bool) {
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	for index := 0; index+4 < len(parts); index++ {
-		if parts[index] == "actions" && parts[index+1] == "runs" && parts[index+3] == "job" && parts[index+2] != "" && parts[index+4] != "" {
+		if parts[index] == "actions" && parts[index+1] == "runs" && parts[index+3] == "job" && decimalID(parts[index+2]) && decimalID(parts[index+4]) {
 			return parts[index+2], parts[index+4], true
 		}
 	}
 	return "", "", false
+}
+
+// decimalID reports whether a run or job id is plain ASCII digits. The ids
+// end up in a command WB tells an agent to run, and url.Parse has already
+// decoded the path, so anything else could smuggle shell syntax in.
+func decimalID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func failedJobLogExcerpt(raw string, maximumLines int) string {

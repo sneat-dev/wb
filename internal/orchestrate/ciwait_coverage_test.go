@@ -208,6 +208,9 @@ func TestOrchCovGitHubActionsRunAndJobAcceptsOnlyActionsJobLinks(t *testing.T) {
 		{input: "https://github.com/acme/app/actions/runs//job/2"},
 		{input: "https://github.com/acme/app/actions/runs/1/job/"},
 		{input: "https://github.com/acme/app/checks/1"},
+		{input: "https://github.com/acme/app/actions/runs/1;curl%20x/job/2"},
+		{input: "https://github.com/acme/app/actions/runs/1/job/2%60id%60"},
+		{input: "https://github.com/acme/app/actions/runs/abc/job/2"},
 		{input: "://missing-protocol"},
 	} {
 		runID, jobID, ok := githubActionsRunAndJob(test.input)
