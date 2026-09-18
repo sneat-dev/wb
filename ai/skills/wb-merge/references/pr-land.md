@@ -41,7 +41,11 @@ On a target that requires branches to be up to date, a candidate behind the
 target is updated through GitHub's update-branch (observed head as
 compare-and-swap) and its checks are waited on again, all inside one `--timeout`
 budget — repeated if the target moves mid-wait. So after another PR lands, rerun
-`wb pr land`; do not merge main by hand.
+`wb pr land`; do not merge main by hand. When a local WB worktree has the PR's
+head branch checked out, each successful update-branch also fast-forwards it
+to the new head, best effort: a clean worktree ends up there with `LocalSync`
+recording it, and a dirty or diverged one is left untouched with a note
+explaining why, so a follow-up commit is not rejected as non-fast-forward.
 
 Auto-merge is **not** armed when doing so would skip one of this verb's guards:
 with `--keep-commits` (WB merges a rebuilt branch), or on a target without a
