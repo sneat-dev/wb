@@ -1367,6 +1367,17 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 	return layouts, nil
 }
 
+// The dispositions a repository-root ("unscoped local") stage can carry. They
+// are named because three files agree on them: listCanonicalLocalLayout assigns
+// them, retireEmptyUnscopedLocalStages acts on them, and summarizeGC counts
+// them. A literal that drifts in one of the three silently stops the sweep
+// being planned, applied, or reported.
+const (
+	dispositionUnscopedLocalStage             = "unscoped_local_stage"
+	dispositionEmptyUnscopedLocalRetiredStage = "empty_unscoped_local_retired_stage"
+	dispositionRetiredEmptyUnscopedLocalStage = "retired_empty_unscoped_local_stage"
+)
+
 func listCanonicalLocalLayout(
 	ctx context.Context,
 	projectsRoot, home string,
@@ -1408,12 +1419,12 @@ func listCanonicalLocalLayout(
 			// blocking an unrelated task's rename or cleanup.
 			if artifact.State == "staging" || !artifact.Eligible {
 				artifact.Eligible = false
-				artifact.Disposition = "unscoped_local_stage"
+				artifact.Disposition = dispositionUnscopedLocalStage
 				artifact.Reason = "canonical local sibling stage has no task lock identity; preserve it until its owning task recovery is explicit"
 				rootArtifacts = append(rootArtifacts, artifact)
 			} else {
-				artifact.Disposition = "empty_unscoped_local_retired_stage"
-				artifact.Reason = "empty retired canonical local sibling stage is terminal residue; no task cleanup action is authorized"
+				artifact.Disposition = dispositionEmptyUnscopedLocalRetiredStage
+				artifact.Reason = "empty retired canonical local sibling stage is terminal residue; no task cleanup owns it, so wb worktree gc --apply removes it directly"
 			}
 			artifacts = append(artifacts, artifact)
 			continue
