@@ -37,6 +37,61 @@ turn rather than queueing for one.
 So WB *can* initiate. The question stops being "is it possible" and becomes
 "what may it say, and with what authority".
 
+### How Synchestra actually does it: stdin, not channels
+
+The founder's recollection was that a remote-control MCP server injects messages
+that wake a session. The mechanism turns out to be different, and better
+documented. Synchestra's own design record rejects channels explicitly:
+
+> **Stdin pipe, not channel notifications**: Claude Code only processes
+> `notifications/claude/channel` when the MCP server is loaded via the
+> undocumented `--channels` flag, not via `--mcp-config`. Rather than depend on
+> undocumented behavior, we send messages directly to stdin via stream-json
+> input format.
+
+Its runner spawns Claude and keeps the pipe:
+
+```go
+cmd = sm.execCommand("claude",
+    "--dangerously-skip-permissions",
+    "-p",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--mcp-config", ".mcp.json",
+)
+```
+
+with a retained `stdinPipe`, and `POST /sessions/{id}/messages` writing to it.
+Its comment notes that `-p` "skips the workspace trust dialog and enables piped
+I/O" — so `-p` with `--input-format stream-json` is not print-and-exit but a
+long-lived bidirectional session that ends when stdin closes.
+
+Two consequences follow, and the second is the important one.
+
+**Prefer stdin over channels.** `--input-format stream-json` is the supported
+programmatic interface; `--channels` is a research preview behind an
+undocumented flag, and a `server:` channel additionally needs
+`--dangerously-load-development-channels` plus a confirmation. Synchestra
+weighed exactly this and chose stdin.
+
+**The coordinator must own the process.** Writing to a session's stdin requires
+holding that pipe, which means the daemon *launched* it. This is not "push into
+a session someone else started" — it is "the coordinator is the session's
+parent". It sidesteps the idle-wake problem entirely, because a pipe you hold is
+always writable.
+
+So WB's reach divides cleanly:
+
+| Session | WB can initiate? |
+|---|---|
+| launched by the daemon | **yes** — write to its stdin |
+| launched by a human at a terminal | **no** — no pipe, no channel, no wake |
+
+That second row is the honest limit, and it is unchanged by any of this. For
+those sessions the mechanisms remain the ones already shipped: the session
+blocks on `wb wait`, or WB acts on its own for work whose owner is gone.
+
 ### Why this matters beyond notification
 
 Several open problems collapse into one if the daemon can speak to sessions:
