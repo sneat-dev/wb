@@ -2465,6 +2465,94 @@ machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
 
+### Running the daemon under a supervisor
+
+`daemon serve` detects whether a process supervisor started it — systemd sets
+`INVOCATION_ID`, launchd sets `XPC_SERVICE_NAME` — and records the result in
+its own lifecycle state. `wb daemon status` reports it as
+`supervisor=systemd|launchd|none`. This is what lets `wb daemon restart` and
+the self-update after-update hook hand a supervised daemon back to its
+supervisor instead of starting a detached replacement behind it: when the
+running daemon is supervised, those paths stop it and then wait (bounded,
+with progress) for the supervisor's own replacement to report ready under the
+new executable, rather than spawning one themselves. `wb daemon start` refuses
+outright when the runtime's last recorded owner is a supervisor and nothing is
+alive to hand off from — restart it through that supervisor instead
+([#617](https://github.com/sneat-dev/wb/issues/617), recurrence of
+[#546](https://github.com/sneat-dev/wb/issues/546)).
+
+The canonical systemd user unit:
+
+```ini
+# ~/.config/systemd/user/wb-daemon.service
+[Unit]
+Description=WB daemon
+
+[Service]
+ExecStart=%h/go/bin/wb daemon serve --listen 127.0.0.1:8766
+Restart=always
+RestartSec=5s
+# Without a start-limit interval, a daemon that keeps failing to bind (for
+# example because something else already holds the port) restarts forever
+# every 5s. StartLimitIntervalSec bounds that: after StartLimitBurst failures
+# inside the interval, systemd stops restarting it and the unit is left
+# `failed`, which is itself the signal that something is wrong.
+StartLimitIntervalSec=300
+StartLimitBurst=12
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now wb-daemon.service
+systemctl --user status wb-daemon.service
+systemctl --user restart wb-daemon.service   # hands the daemon a new executable
+```
+
+The equivalent launchd agent on macOS:
+
+```xml
+<!-- ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.sneat.wb.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/go/bin/wb</string>
+    <string>daemon</string>
+    <string>serve</string>
+    <string>--listen</string>
+    <string>127.0.0.1:8766</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/YOU/.wb/runtime/daemon.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/.wb/runtime/daemon.log</string>
+</dict></plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist
+launchctl kickstart -k gui/$(id -u)/dev.sneat.wb.daemon   # hands the daemon a new executable
+```
+
+`wb daemon start`/`wb daemon restart` already write and re-bootstrap this
+exact plist on macOS (`KeepAlive` is launchd's own `Restart=always`), so a Mac
+developer never installs it by hand; the unit above is the shape they
+produce. No equivalent installer writes the systemd unit yet — install it by
+hand as shown, with `ExecStart` naming the same `wb` binary `wb daemon
+start` would use.
+
+**Known limit:** `wb daemon status`'s double-owner check (the shape of #617 —
+a live, unsupervised daemon fighting a supervisor for the same runtime) does
+not query systemd or launchd for a specific unit's existence or failure
+state; naming and reaching that unit portably has no general implementation
+here. On Linux it instead compares the daemon's self-recorded supervisor
+against its actual parent process (`/proc/<pid>/status`'s `PPid`); on macOS
+and Windows this comparison is not implemented and is reported as unknown.
+
 ## Bench hub
 
 `hub/` is the server side of bench: the GitHub App, OAuth, installation,

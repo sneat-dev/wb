@@ -184,6 +184,63 @@ with `WB_HOME`. An explicitly supplied lifecycle state path MUST remain accepted
 for compatibility, and its presence MUST be reported, because a pinned path is
 the shape that caused both observed failures.
 
+#### REQ: supervisor-is-recorded-at-startup
+
+At `daemon serve` startup, the process MUST detect whether a supervisor
+started it — systemd (`INVOCATION_ID` set, with `SYSTEMD_EXEC_PID` recorded
+when the unit names it) or launchd (`XPC_SERVICE_NAME` set to a job label,
+not the literal `"0"`) — through an injectable environment seam, and MUST
+record the result (`none`, `systemd`, or `launchd`) in its own lifecycle
+record. Detection MUST run in the process a supervisor actually started:
+only that process observes the variables a supervisor sets before it execs
+its child ([#617](https://github.com/sneat-dev/wb/issues/617)).
+
+#### REQ: status-reports-the-recorded-supervisor
+
+`wb daemon status` MUST report the managed daemon's recorded supervisor as
+`supervisor=systemd|launchd|none`, in both text and JSON, for every record —
+including one written before this field existed, which MUST be reported as
+`none` rather than left blank or guessed at.
+
+#### REQ: restart-hands-off-to-a-live-supervisor
+
+Every path that stops a running daemon in order to start its replacement —
+`wb daemon restart`, the self-update after-update hook, and `wb daemon
+start`'s executable-handoff branch — MUST consult the running daemon's
+recorded supervisor before choosing how to bring the replacement up. When it
+is `none`, the existing detached-start behavior is unchanged. When it is
+`systemd` or `launchd`, the path MUST stop the running process and then wait,
+bounded and with progress, for the supervisor's own replacement process to
+report ready under the new executable's provenance, an unrecycled process
+generation, and an owned health check — and MUST NOT start a detached
+daemon of its own while waiting or after the bound is reached. A bound
+reached without the supervisor's replacement becoming ready MUST be reported
+as a distinct, actionable condition and exit with a non-success code, never
+silently fall back to a detached start ([#617](https://github.com/sneat-dev/wb/issues/617), recurrence of [#546](https://github.com/sneat-dev/wb/issues/546)).
+
+#### REQ: detached-start-is-refused-under-a-supervisor
+
+`wb daemon start` MUST refuse to launch a detached process when the runtime's
+last recorded state names a supervisor (`systemd` or `launchd`) and no live
+process of this build is already being handed off from. The refusal MUST name
+the recorded supervisor and say to restart the daemon through it, rather than
+through `wb daemon start`.
+
+#### REQ: double-owner-state-is-detected
+
+`wb daemon status` MUST attempt to detect the double-owner state in which a
+live, otherwise-healthy daemon of this home recorded `supervisor=none` at its
+own startup while something about its actual, currently-running process
+disagrees — evidence that a supervisor may exist for this runtime and be
+racing this unsupervised process for it. Confirming a *specific* supervisor
+unit's existence and failure state is not required to satisfy this
+requirement when doing so has no portable implementation: a narrower,
+best-effort comparison between the recorded supervisor and independently
+observed evidence about the running process's actual parent is an acceptable
+implementation, provided its platform coverage and its limits — including any
+platform on which it can only report "unknown" — are documented where the
+comparison is implemented and in the change that introduces it.
+
 ## Acceptance Criteria
 
 ### AC: runtime-moves-with-the-home (verifies REQ:runtime-home-is-the-resolved-wb-home, REQ:runtime-path-is-reported-and-stable)
@@ -248,6 +305,44 @@ Scenario: A supervisor unit is written
 Given a machine on which a supervisor owns the daemon
 When WB writes that unit
 Then the unit carries the projects root and, where set, the explicit `WB_HOME`, and it does not carry the daemon's runtime directory or any path derived from a home resolved at install time
+
+### AC: supervisor-is-detected-and-reported (verifies REQ:supervisor-is-recorded-at-startup, REQ:status-reports-the-recorded-supervisor)
+
+Scenario: A systemd-started daemon records and reports it
+Given `daemon serve` starts with `INVOCATION_ID` set in its environment
+When `wb daemon status` runs against that daemon's lifecycle record
+Then it reports `supervisor=systemd`
+
+Scenario: A daemon predating this field reports none
+Given a lifecycle record with no recorded supervisor
+When `wb daemon status` runs
+Then it reports `supervisor=none`
+
+### AC: a-supervised-restart-hands-off-not-doubles (verifies REQ:restart-hands-off-to-a-live-supervisor)
+
+Scenario: A supervised daemon is restarted
+Given a running daemon whose lifecycle record names a supervisor
+When `wb daemon restart` (or the self-update after-update hook) runs
+Then the running process is stopped, no detached replacement is started, and the command waits for a process matching the new executable's provenance to report ready before succeeding
+
+Scenario: The supervisor does not bring the daemon back
+Given a stopped, supervised daemon whose supervisor does not restart it within the bound
+When the restart path's wait expires
+Then it reports the timeout as a distinct condition, exits with a non-success code, and has started no detached daemon of its own
+
+### AC: a-detached-start-is-refused-under-a-supervisor (verifies REQ:detached-start-is-refused-under-a-supervisor)
+
+Scenario: `wb daemon start` is run while a supervisor owns the runtime
+Given a lifecycle record whose last recorded supervisor is `systemd` or `launchd`, and no live process to hand off from
+When `wb daemon start` runs
+Then it refuses, names the recorded supervisor, and says to restart through it instead
+
+### AC: a-double-owner-is-flagged-when-observable (verifies REQ:double-owner-state-is-detected)
+
+Scenario: A live daemon's actual parent disagrees with what it recorded
+Given a live, otherwise-healthy daemon of this home whose recorded supervisor is `none`, and independently observed evidence that its actual parent process is a supervisor
+When `wb daemon status` runs
+Then it reports the disagreement as a distinct condition, naming both what was recorded and what was observed
 
 ## Non-goals
 
