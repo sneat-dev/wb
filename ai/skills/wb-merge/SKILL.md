@@ -8,10 +8,20 @@ description: Mechanically land one or many compatible completed WB branches/work
 ## Waiting for something to happen
 
 **Asynchronous waiting rule.** Do not write an ad-hoc polling loop for pull
-request, CI, agent, or operation state that WB already observes. Use the WB verb
-and run it as a background command when other work can continue. Fall back to
-polling the provider directly only when WB cannot express the condition, and
-report that gap rather than normalising the workaround.
+request, CI, agent, or operation state that WB already observes. Use the WB verb.
+Fall back to polling the provider directly only when WB cannot express the
+condition, and report that gap rather than normalising the workaround.
+
+**Run it in the foreground unless you have queued work.** A foreground wait
+renders in the harness like any other command, with a live elapsed timer, so a
+human can see that the session is waiting rather than stopped — and can move it
+to the background themselves when they would rather the agent kept working.
+Choosing background up front takes that decision away and makes the wait
+invisible unless someone goes looking for it.
+
+Background it only when there is genuinely other work to do meanwhile, or when
+the wait exceeds the harness's foreground ceiling (about ten minutes). Fleet CI
+runs in roughly eight, so most single waits fit in the foreground.
 
 ```sh
 wb wait pr sneat-dev/wb#581 --until checks-settled
