@@ -8,7 +8,6 @@ import (
 )
 
 func TestWtLifeCovPrepareWorktreeDestinationPlansDirectAndOwnedLayouts(t *testing.T) {
-	t.Parallel()
 	operationRoot := t.TempDir()
 	operationDirectory := wtLifeCovOpenDirectory(t, operationRoot)
 
@@ -61,7 +60,6 @@ func TestWtLifeCovPrepareWorktreeDestinationPlansDirectAndOwnedLayouts(t *testin
 }
 
 func TestWtLifeCovPrepareWorktreeDestinationRefusesRedirectedOperation(t *testing.T) {
-	t.Parallel()
 	operationRoot := t.TempDir()
 	operationDirectory := wtLifeCovOpenDirectory(t, operationRoot)
 	moved := operationRoot + "-moved"
@@ -75,7 +73,6 @@ func TestWtLifeCovPrepareWorktreeDestinationRefusesRedirectedOperation(t *testin
 }
 
 func TestWtLifeCovPrepareWorktreeDestinationRefusesUnsafeOwnerAndRepository(t *testing.T) {
-	t.Parallel()
 	operationRoot := t.TempDir()
 	operationDirectory := wtLifeCovOpenDirectory(t, operationRoot)
 	if err := os.WriteFile(filepath.Join(operationRoot, "owner-file"), []byte("x"), 0o600); err != nil {
@@ -202,7 +199,6 @@ func TestWtLifeCovDirectoryExistsNoFollowClassifiesDestinations(t *testing.T) {
 }
 
 func TestWtLifeCovRequireAbsentNoFollowChildClassifiesEntries(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	directory := wtLifeCovOpenDirectory(t, root)
 	if err := requireAbsentNoFollowChild(int(directory.Fd()), "absent"); err != nil {
@@ -230,7 +226,6 @@ func TestWtLifeCovRequireAbsentNoFollowChildClassifiesEntries(t *testing.T) {
 }
 
 func TestWtLifeCovDuplicateDirectoryDescriptorRejectsUnusableInput(t *testing.T) {
-	t.Parallel()
 	if _, err := duplicateDirectoryDescriptor(nil, "wb-test"); err == nil ||
 		!strings.Contains(err.Error(), "directory descriptor is unavailable") {
 		t.Fatalf("nil directory error = %v", err)

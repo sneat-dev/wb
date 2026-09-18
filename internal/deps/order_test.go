@@ -95,7 +95,6 @@ func TestPlanOrderedLayersIgnoresLayeredRepositoriesOutsideTheSelection(t *testi
 }
 
 func TestRunOrderedLayersBlocksLaterLayersAfterAFailedLayer(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	base := newBumpRepository(t, root, githubDir, "base", "module example.com/base\n\ngo 1.24\n")
@@ -142,7 +141,6 @@ func TestRunOrderedLayersBlocksLaterLayersAfterAFailedLayer(t *testing.T) {
 }
 
 func TestRunOrderedLayersProcessesOneSelectedLayerInProviderFirstOrder(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	base := newBumpRepository(t, root, githubDir, "base", "module example.com/base\n\ngo 1.24\n")
@@ -196,7 +194,6 @@ func TestRunOrderedLayersProcessesOneSelectedLayerInProviderFirstOrder(t *testin
 // names or directory layout. The alphabetically first repository declares the
 // module the other two require, so name order and dependency order disagree.
 func TestRunDerivesOrderFromDeclaredModulesNotNames(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	zebra := newBumpRepository(t, root, githubDir, "zebra", "module example.com/zebra\n\ngo 1.24\n")
@@ -230,7 +227,6 @@ func TestRunDerivesOrderFromDeclaredModulesNotNames(t *testing.T) {
 }
 
 func TestRunWithoutOrderReportsNoLayerPlan(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	zebra := newBumpRepository(t, root, githubDir, "zebra", "module example.com/zebra\n\ngo 1.24\n")
@@ -250,7 +246,6 @@ func TestRunWithoutOrderReportsNoLayerPlan(t *testing.T) {
 }
 
 func TestRunRejectsDependencyOrderForEcosystemsWithoutAModuleGraph(t *testing.T) {
-	t.Parallel()
 	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}
 	_, err := Run(context.Background(), target, []Repository{{Slug: "acme/app"}}, Options{
 		GitHubDir: t.TempDir(), DryRun: true, Order: true,

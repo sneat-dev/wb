@@ -151,7 +151,6 @@ func TestIsAncestorMemoizesBothVerdicts(t *testing.T) {
 }
 
 func TestValidBranchMemoizesVerdictPerName(t *testing.T) {
-	t.Parallel()
 	name := "memo-probe-" + t.Name()
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })
@@ -171,7 +170,6 @@ func TestValidBranchMemoizesVerdictPerName(t *testing.T) {
 }
 
 func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
-	t.Parallel()
 	name := "cancel-probe-" + t.Name()
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })
@@ -185,7 +183,6 @@ func TestValidBranchDoesNotMemoizeACancelledContext(t *testing.T) {
 }
 
 func TestValidBranchDoesNotMemoizeFailure(t *testing.T) {
-	t.Parallel()
 	name := "invalid..branch"
 	validBranchMemo.Delete(name)
 	t.Cleanup(func() { validBranchMemo.Delete(name) })

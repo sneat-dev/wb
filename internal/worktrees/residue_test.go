@@ -206,7 +206,6 @@ func TestCleanupStillFailsWhenGitRefusedTheRemoval(t *testing.T) {
 // followed, and a directory that denies the unlink until WB grants itself
 // write permission on it.
 func TestRemoveDirectoryContentsAtClearsNestedReadOnlyResidue(t *testing.T) {
-	t.Parallel()
 	requireUnprivilegedResidueTest(t)
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "keep.txt"), []byte("keep\n"), 0o644); err != nil {

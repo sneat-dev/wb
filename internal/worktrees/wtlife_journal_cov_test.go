@@ -765,7 +765,6 @@ func TestWtLifeCovEnsureJournalExcludeReportsUnusableGitInfo(t *testing.T) {
 }
 
 func TestWtLifeCovEnsureJournalExcludeReportsUnreadableExclude(t *testing.T) {
-	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	exclude := filepath.Join(worktree, ".git", "info", "exclude")
 	if err := os.RemoveAll(exclude); err != nil {

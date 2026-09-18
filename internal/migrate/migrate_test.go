@@ -8,7 +8,6 @@ import (
 )
 
 func TestBuildPlanRewritesGoStructurally(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "example.go")
 	const source = `package example
@@ -104,7 +103,6 @@ func localMember(record local) int {
 }
 
 func TestBuildPlanTextReplaceSupportsPythonAndTypeScript(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	python := filepath.Join(dir, "client.py")
 	typescript := filepath.Join(dir, "client.ts")
@@ -135,7 +133,6 @@ func TestBuildPlanTextReplaceSupportsPythonAndTypeScript(t *testing.T) {
 }
 
 func TestApplyRefusesStalePlan(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "example.py")
 	requireWrite(t, path, "old\n")

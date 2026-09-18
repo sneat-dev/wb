@@ -747,7 +747,6 @@ func TestDepsCovBumpCoreOperationPrefixAndWavePromptDefaultToGoAndSortEvents(t *
 
 func TestDepsCovBumpCoreRunBumpRecordsVerificationPolicyAndRefusesAHeldLock(t *testing.T) {
 	t.Run("verification policy is recorded for a dry run", func(t *testing.T) {
-		t.Parallel()
 		githubDir, repositories := depsCovGoDryRunFleet(t)
 		options := depsCovDryRunBumpOptions(githubDir)
 		options.Verify = true
@@ -823,7 +822,6 @@ func TestDepsCovBumpCoreRunBumpResumesCompletedAndRefusesMismatchedReports(t *te
 }
 
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	options := depsCovDryRunBumpOptions(githubDir)
 	seed := depsCovSeedEvents()
@@ -860,7 +858,6 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) 
 }
 
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -881,7 +878,6 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *
 }
 
 func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	provider := newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n")
@@ -901,7 +897,6 @@ func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.
 }
 
 func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -919,7 +914,6 @@ func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
 }
 
 func TestDepsCovBumpCoreRunBumpSurfacesAStaleEventRefreshFailure(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	sentinel := errors.New("registry unavailable")
 	options := depsCovDryRunBumpOptions(githubDir)
@@ -1133,7 +1127,6 @@ func depsCovStaleThenFreshCarrierRelease() func(context.Context, string) (Publis
 }
 
 func TestDepsCovBumpCoreRunBumpPlansWithoutWaitingOnAStaleCarrierInDryRun(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovNpmCarrierFleet(t)
 	report, err := RunBump(context.Background(),
 		[]ReleaseEvent{{Dependency: "@acme/provider", Version: "2.0.0", Source: "explicit"}},
@@ -1208,7 +1201,6 @@ func depsCovPublishedCarrierFleet(t *testing.T) (string, []Repository) {
 }
 
 func TestDepsCovBumpCoreRunBumpCompletesWhenEveryConsumerAlreadyCarriesTheRelease(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovPublishedCarrierFleet(t)
 	report, err := RunBump(context.Background(), depsCovSeedEvents(), repositories, BumpOptions{
 		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 1, ParallelExplicit: true, DryRun: true},
@@ -1323,7 +1315,6 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhileParkingCampaigns(t *te
 	carrierSeed := []ReleaseEvent{{Dependency: "@acme/provider", Version: "2.0.0", Source: "explicit"}}
 
 	t.Run("dry-run carrier park", func(t *testing.T) {
-		t.Parallel()
 		githubDir, repositories := depsCovNpmCarrierFleet(t)
 		sentinel := errors.New("persist planned carrier failed")
 		recorder := &depsCovPersist{sentinel: sentinel}

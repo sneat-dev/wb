@@ -160,7 +160,6 @@ func TestWtLogCovDefaultRenameReportDir(t *testing.T) {
 }
 
 func TestWtLogCovWriteRenameReport(t *testing.T) {
-	t.Parallel()
 	reportDir := filepath.Join(t.TempDir(), "reports")
 	options := RenameOptions{ReportDir: reportDir, OldTask: "old", NewTask: "new", Base: "main", DeleteOldBranch: true, Apply: true}
 	path, err := writeRenameReport(options, time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC), "apply",

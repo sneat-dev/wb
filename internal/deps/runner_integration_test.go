@@ -301,7 +301,6 @@ func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
 }
 
 func TestRunSkipsArchivedRepositoryWithoutCloning(t *testing.T) {
-	t.Parallel()
 	githubDir := t.TempDir()
 	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}
 	report, err := Run(context.Background(), target, []Repository{{Slug: "acme/retired", Archived: true}}, Options{

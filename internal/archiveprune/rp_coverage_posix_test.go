@@ -141,7 +141,6 @@ func TestRPCovCleanAuthorizedUntrackedRefusesADeletionThatFails(t *testing.T) {
 }
 
 func TestRPCovCleanAuthorizedUntrackedReportsAnUnwritableFinalReceipt(t *testing.T) {
-	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	mustWriteFile(t, filepath.Join(f.canonical, "untracked.txt"), "delete me\n")

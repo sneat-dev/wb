@@ -526,7 +526,6 @@ func TestCentralStoreRootIsTheProjectsRootStore(t *testing.T) {
 // layout, a legacy clone keeps the two-level suffix, and an address that is not
 // a safe relative clone path is refused rather than joined.
 func TestStoreModeHelpersUnderstandTheHostLevel(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		relative string
 		ok       bool

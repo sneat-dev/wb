@@ -261,7 +261,6 @@ func TestClean_ApplyRequiresExplicitUntrackedDeletionAuthority(t *testing.T) {
 }
 
 func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) {
-	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -462,7 +461,6 @@ func TestClean_RefusesUnpushedTag(t *testing.T) {
 // task against this repository open, even if its worktree directory no
 // longer exists.
 func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
-	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -494,7 +492,6 @@ func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
 // A terminal claim for the same repository must not block anything: the task
 // is finished, and every other check still has to pass on its own.
 func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
-	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")
@@ -521,7 +518,6 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 }
 
 func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
-	t.Parallel()
 	f := newFixture(t, "acme", "widgets")
 	f.archived()
 	home := filepath.Join(f.projectsRoot, ".wb")

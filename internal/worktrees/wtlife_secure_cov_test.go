@@ -107,7 +107,6 @@ func wtLifeCovTrustedGit(t *testing.T) string {
 // ---------------------------------------------------------------------------
 
 func TestWtLifeCovSecureStageHelperReportsHeldDirectory(t *testing.T) {
-	t.Parallel()
 	_, stage, descriptor := wtLifeCovStage(t)
 	result := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, []string{secureStagePathArgument})
 	if result.exitCode != 0 {
@@ -120,7 +119,6 @@ func TestWtLifeCovSecureStageHelperReportsHeldDirectory(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
-	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 	cases := []struct {
 		name       string
@@ -159,7 +157,6 @@ func TestWtLifeCovSecureStageHelperRejectsMissingStageDescriptor(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperChecksContainment(t *testing.T) {
-	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 
 	inside := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, []string{secureStageCheckArgument, operationRoot})
@@ -174,7 +171,6 @@ func TestWtLifeCovSecureStageHelperChecksContainment(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRunsGitFromHeldStage(t *testing.T) {
-	t.Parallel()
 	operationRoot, stage, descriptor := wtLifeCovStage(t)
 	marker := filepath.Join(operationRoot, "ran.txt")
 	script := wtLifeCovScript(t, "git-stub.sh", "printf 'stub-output\\n'\nprintf 'ran' > \"$WT_LIFECOV_MARKER\"\nexit 0\n")
@@ -207,7 +203,6 @@ func TestWtLifeCovSecureStageHelperRunsGitFromHeldStage(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperPropagatesCommandFailure(t *testing.T) {
-	t.Parallel()
 	operationRoot, _, descriptor := wtLifeCovStage(t)
 
 	failing := wtLifeCovScript(t, "git-stub.sh", "printf 'boom\\n' >&2\nexit 7\n")

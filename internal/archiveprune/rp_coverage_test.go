@@ -115,7 +115,6 @@ func TestRPCovEvaluateFailsClosedWhenAnyCheckCannotBeCompleted(t *testing.T) {
 	})
 
 	t.Run("work log claims unreadable", func(t *testing.T) {
-		t.Parallel()
 		f := newFixture(t, "acme", "widgets")
 		f.archived()
 		// The claim scan reads the fixture root's own state home now, so an

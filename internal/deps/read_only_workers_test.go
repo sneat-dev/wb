@@ -237,7 +237,6 @@ func TestCaptureReleaseBaselinesObservesModulesConcurrently(t *testing.T) {
 }
 
 func TestRunBumpPersistsExplicitParallelAuthority(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{

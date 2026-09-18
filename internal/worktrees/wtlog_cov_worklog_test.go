@@ -423,7 +423,6 @@ func TestWtLogCovPrivateDirectoryHelpers(t *testing.T) {
 }
 
 func TestWtLogCovAtomicReadWriteHelpers(t *testing.T) {
-	t.Parallel()
 	directory, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

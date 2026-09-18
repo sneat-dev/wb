@@ -68,7 +68,6 @@ func TestMigCovPreflightRepositoryCollectsCycleBootstraps(t *testing.T) {
 }
 
 func TestMigCovApplyRepositorySourcesWritesPerModuleReports(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n")
 	writeCampaignFile(t, filepath.Join(root, "app.go"), "package app\n\nconst Value = \"old\"\n")

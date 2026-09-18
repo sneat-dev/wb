@@ -70,7 +70,6 @@ func TestWaitForGoReleaseRequiresVersionNewerThanBaseline(t *testing.T) {
 }
 
 func TestRunBumpDryRunPlansOnlyDirectConsumers(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -96,7 +95,6 @@ func TestRunBumpDryRunPlansOnlyDirectConsumers(t *testing.T) {
 }
 
 func TestRunBumpPersistsGraphDiscoveryProgress(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -132,7 +130,6 @@ func TestRunBumpPersistsGraphDiscoveryProgress(t *testing.T) {
 }
 
 func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -167,7 +164,6 @@ func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
 }
 
 func TestRunBumpDefersDiamondSinkToAvoidDuplicateCI(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -637,7 +633,6 @@ func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
 }
 
 func TestRunBumpReturnsPersistenceFailureBeforeDiscovery(t *testing.T) {
-	t.Parallel()
 	want := errors.New("disk full")
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}, nil, BumpOptions{
 		Options: Options{GitHubDir: t.TempDir(), DryRun: true},
@@ -649,7 +644,6 @@ func TestRunBumpReturnsPersistenceFailureBeforeDiscovery(t *testing.T) {
 }
 
 func TestRunBumpResumeRequiresPersistedReport(t *testing.T) {
-	t.Parallel()
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}, nil, BumpOptions{
 		Options: Options{GitHubDir: t.TempDir(), Resume: true},
 	})
@@ -707,7 +701,6 @@ func TestBumpReportRoundTrip(t *testing.T) {
 // planned; the broken one must show up as a discovery skip, not silently
 // vanish.
 func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	adapter := newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -814,7 +807,6 @@ func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOw
 // acme/widgets vs. old-org/widgets-copy production shape), so the conflict
 // is resolved and recorded as a warning instead of aborting.
 func TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -857,7 +849,6 @@ func TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity(t *testing.T) {
 // github.com) module path are NOT a stale-duplicate-clone pattern, and this
 // must still abort the bump rather than guess a resolution.
 func TestRunBumpFailsForGenuinelyUnrelatedModuleCollision(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{

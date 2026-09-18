@@ -42,7 +42,6 @@ func wtLifeCovTerminalReport(task, repository string, generatedAt time.Time, app
 }
 
 func TestWtLifeCovValidateTerminalCleanupReportsRejectsEveryInconsistency(t *testing.T) {
-	t.Parallel()
 	base := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
 	write := func(t *testing.T, report cleanupReport) string {
 		t.Helper()

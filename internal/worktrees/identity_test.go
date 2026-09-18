@@ -54,7 +54,6 @@ func TestIdentityFromEnvRejectsAMalformedPID(t *testing.T) {
 }
 
 func TestAgentComposition(t *testing.T) {
-	t.Parallel()
 	cases := []struct {
 		name        string
 		runtime, id string
@@ -67,7 +66,6 @@ func TestAgentComposition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got := AgentIdentity{Runtime: tc.runtime, AgentID: tc.id}.Agent()
 			if got != tc.want {
 				t.Fatalf("Agent() = %q, want %q", got, tc.want)

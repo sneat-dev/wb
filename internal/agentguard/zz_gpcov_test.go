@@ -479,10 +479,6 @@ func TestGpCovReadAutoTagsFlags(t *testing.T) {
 		t.Fatal("readGlobalAutoTagsFlag(\"\") reported a value")
 	}
 
-	directory := t.TempDir()
-	repoConfig := filepath.Join(directory, "hooks.yaml")
-	globalConfig := filepath.Join(directory, "wb.yaml")
-
 	cases := []struct {
 		name    string
 		content string
@@ -497,9 +493,12 @@ func TestGpCovReadAutoTagsFlags(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run("repository config: "+testCase.name, func(t *testing.T) {
 			t.Parallel()
-			if testCase.content == "" {
-				_ = os.Remove(repoConfig)
-			} else {
+			// Each subtest gets its own directory and config path: all five
+			// run in parallel with each other, and a shared path written and
+			// removed from concurrently is a logic race -race cannot see
+			// (it is file I/O, not a memory access).
+			repoConfig := filepath.Join(t.TempDir(), "hooks.yaml")
+			if testCase.content != "" {
 				writeFile(t, repoConfig, testCase.content)
 			}
 			value, ok := readAutoTagsFlag(repoConfig)
@@ -520,6 +519,9 @@ func TestGpCovReadAutoTagsFlags(t *testing.T) {
 	for _, testCase := range globalCases {
 		t.Run("global policy: "+testCase.name, func(t *testing.T) {
 			t.Parallel()
+			// Each subtest gets its own directory and config path for the
+			// same reason as the repository-config cases above.
+			globalConfig := filepath.Join(t.TempDir(), "wb.yaml")
 			writeFile(t, globalConfig, testCase.content)
 			value, ok := readGlobalAutoTagsFlag(globalConfig)
 			gpCovAssertOptionalBool(t, "readGlobalAutoTagsFlag", value, ok, testCase.want)

@@ -15,7 +15,6 @@ import (
 // synced, and a handle that is no longer valid reports the failure instead of
 // pretending the flush happened.
 func TestTailCovSyncDirectoryFlushesAnOpenFile(t *testing.T) {
-	t.Parallel()
 	directory := t.TempDir()
 
 	handle, err := os.Open(directory)
@@ -39,7 +38,6 @@ func TestTailCovSyncDirectoryFlushesAnOpenFile(t *testing.T) {
 // on the file case an atomic writer actually uses before renaming it into
 // place: the bytes are visible to an independent reader after the sync.
 func TestTailCovSyncDirectoryFlushesFileContent(t *testing.T) {
-	t.Parallel()
 	path := filepath.Join(t.TempDir(), "staged.tmp")
 	handle, err := os.OpenFile(path, O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)
 	if err != nil {

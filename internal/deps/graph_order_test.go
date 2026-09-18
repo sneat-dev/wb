@@ -14,7 +14,6 @@ import (
 // fixture cannot catch: a shortest-path layering would put the top repository
 // in layer 1 instead of layer 8.
 func TestRepositoryOrderLayersNineLevelFleet(t *testing.T) {
-	t.Parallel()
 	graph := nineLevelGraphFixture()
 	order := graph.RepositoryOrder()
 	if len(order.Layers) != 9 {
@@ -63,7 +62,6 @@ func TestRepositoryOrderLayersNineLevelFleet(t *testing.T) {
 }
 
 func TestRepositoryOrderGroupsCycleIntoOneLayerAndNamesThePath(t *testing.T) {
-	t.Parallel()
 	graph := Graph{
 		Repositories: []GraphRepository{
 			{Slug: "acme/base"}, {Slug: "acme/a"}, {Slug: "acme/b"}, {Slug: "acme/consumer"},
@@ -107,7 +105,6 @@ func TestRepositoryOrderGroupsCycleIntoOneLayerAndNamesThePath(t *testing.T) {
 }
 
 func TestRepositoryOrderKeepsIsolatedRepositoriesInTheFirstLayer(t *testing.T) {
-	t.Parallel()
 	graph := Graph{
 		Repositories: []GraphRepository{{Slug: "acme/solo"}, {Slug: "acme/multi"}},
 		Requirements: []GraphRequirement{
@@ -125,7 +122,6 @@ func TestRepositoryOrderKeepsIsolatedRepositoriesInTheFirstLayer(t *testing.T) {
 }
 
 func TestGraphFromGoFleetPublishesReleaseOrderInReports(t *testing.T) {
-	t.Parallel()
 	discovered := goFleetGraph{
 		modules: map[string]goFleetModule{
 			"example.com/provider": {Path: "example.com/provider", Repository: "acme/provider", Manifest: "go.mod"},

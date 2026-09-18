@@ -99,7 +99,6 @@ func TestDepsCovGraphsNormalizeGraphDependencies(t *testing.T) {
 }
 
 func TestDepsCovGraphsBuildGraphRejectsInvalidOptions(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	if _, err := BuildGraph(ctx, nil, GraphOptions{Ecosystem: "maven"}); err == nil || !strings.Contains(err.Error(), "supports only the go and npm ecosystems") {
 		t.Fatalf("unknown ecosystem error = %v", err)
@@ -753,7 +752,6 @@ func TestDepsCovGraphsPendingCarriersBlockTargets(t *testing.T) {
 }
 
 func TestDepsCovGraphsBuildGraphNpmSortsDiscoveryEvidence(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	deadA := seedUnreadableCanonicalRepository(t, fixture, "dead-a", map[string]string{
@@ -826,7 +824,6 @@ func TestDepsCovGraphsBuildGraphNpmSortsDiscoveryEvidence(t *testing.T) {
 }
 
 func TestDepsCovGraphsBuildGraphNpmFailsOnUnparseableRootManifest(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	broken := seedGraphRepository(t, fixture, "bad-pkg", "main", map[string]string{
@@ -841,7 +838,6 @@ func TestDepsCovGraphsBuildGraphNpmFailsOnUnparseableRootManifest(t *testing.T) 
 }
 
 func TestDepsCovGraphsBuildGraphGoSortsDiscoveryEvidence(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	healthy := seedGraphRepository(t, fixture, "healthy", "main", map[string]string{
@@ -907,7 +903,6 @@ func TestDepsCovGraphsBuildGraphGoSortsDiscoveryEvidence(t *testing.T) {
 }
 
 func TestDepsCovGraphsBuildGraphGoResolvesDuplicateModuleDeclarations(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	seed := func(name, module string) string {
@@ -940,7 +935,6 @@ func TestDepsCovGraphsBuildGraphGoResolvesDuplicateModuleDeclarations(t *testing
 }
 
 func TestDepsCovGraphsBuildGraphGoSortsSameRepositoryManifests(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	twin := seedGraphRepository(t, fixture, "twin", "main", map[string]string{
@@ -972,7 +966,6 @@ func TestDepsCovGraphsBuildGraphGoSortsSameRepositoryManifests(t *testing.T) {
 }
 
 func TestDepsCovGraphsGraphFromFleetTieBreakers(t *testing.T) {
-	t.Parallel()
 	goRequirement := func(version, repository, module, manifest string) goFleetRequirement {
 		return goFleetRequirement{Dependency: "example.com/x", Version: version, Repository: repository, ConsumerModule: module, Manifest: manifest}
 	}
@@ -1205,7 +1198,6 @@ func TestDepsCovGraphsProjectionSubtitlesAndStatuses(t *testing.T) {
 }
 
 func TestDepsCovGraphsOrderForRepositoriesAndPlanOrderedLayers(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	if _, err := orderForRepositories(ctx, nil, Target{Ecosystem: EcosystemNPM}, orchestrate.Options{GitHubDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "only for the go ecosystem") {
 		t.Fatalf("non-Go ordering error = %v", err)

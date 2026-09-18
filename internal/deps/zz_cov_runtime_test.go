@@ -566,7 +566,6 @@ func TestDepsCovRuntimeExactSetHandlerPullRequestBodyPerValidationMode(t *testin
 }
 
 func TestDepsCovRuntimeRunRejectsUnsupportedEcosystem(t *testing.T) {
-	t.Parallel()
 	_, err := Run(context.Background(),
 		Target{Ecosystem: Ecosystem("cargo"), Dependency: "serde", Version: "1.0.0"},
 		nil, Options{GitHubDir: t.TempDir(), DryRun: true})
@@ -576,7 +575,6 @@ func TestDepsCovRuntimeRunRejectsUnsupportedEcosystem(t *testing.T) {
 }
 
 func TestDepsCovRuntimeRunSurfacesOptionAndRefErrors(t *testing.T) {
-	t.Parallel()
 	if _, err := Run(context.Background(), Target{Ecosystem: EcosystemGo, Dependency: "example.com/mod", Version: "v1.0.0"}, nil, Options{}); err == nil || !strings.Contains(err.Error(), "GitHub directory is required") {
 		t.Fatalf("error = %v, want the normalized-options refusal", err)
 	}
@@ -593,7 +591,6 @@ func TestDepsCovRuntimeRunSurfacesOptionAndRefErrors(t *testing.T) {
 }
 
 func TestDepsCovRuntimeRunRecordsVerificationAndFailure(t *testing.T) {
-	t.Parallel()
 	report, err := Run(context.Background(),
 		Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"},
 		[]Repository{{Slug: "not-a-repository-slug", Path: filepath.Join(t.TempDir(), "app")}},
@@ -1098,7 +1095,6 @@ func TestDepsCovRuntimeFirstScopeReasonsBoundsAndFallback(t *testing.T) {
 }
 
 func TestDepsCovRuntimeDeriveLatestReleaseEventsDefaultsEcosystemAndSurfacesGraphErrors(t *testing.T) {
-	t.Parallel()
 	_, _, err := DeriveLatestReleaseEvents(context.Background(), nil, []string{"@acme/*"}, BumpOptions{})
 	if err == nil || !strings.Contains(err.Error(), "GitHub directory is required") {
 		t.Fatalf("error = %v, want the graph build's own failure", err)
