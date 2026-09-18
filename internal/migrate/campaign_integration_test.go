@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCampaignReportsAllApplyPhasesWithZeroBasedLayers(t *testing.T) {
@@ -92,7 +93,9 @@ func TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean(t *testing.T) {
 	if !strings.Contains(string(goMod), "replace github.com/acme/provider => "+filepath.ToSlash(relativeProvider)) {
 		t.Fatalf("consumer go.mod does not use an isolated campaign replacement:\n%s", goMod)
 	}
-	assertGitClean(t, filepath.Join(test.githubDir, "acme", "consumer"))
+	// The canonical clone is wherever the campaign resolved it — the literal
+	// host level for a new clone, the legacy flat path when one already exists.
+	assertGitClean(t, consumer.CanonicalDir)
 	if source, err := os.ReadFile(filepath.Join(test.sourceRoot, "consumer.go")); err != nil || strings.Contains(string(source), "new-provider") {
 		t.Fatalf("source root was changed: %v\n%s", err, source)
 	}
@@ -138,7 +141,9 @@ func TestCampaignUsesConfiguredSharedRootAndKeepsRegisteredResumePath(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(resolvedShared, test.spec.ID, "acme", "consumer")
+	// The central store embeds the canonical clone's literal host level, so a
+	// campaign checkout is <shared>/<task>/{host}/{org}/{repo}.
+	want := filepath.Join(resolvedShared, test.spec.ID, "github.com", "acme", "consumer")
 	if consumer.WorktreeDir != want {
 		t.Fatalf("configured campaign worktree = %q, want %q", consumer.WorktreeDir, want)
 	}
@@ -470,10 +475,13 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	t.Setenv("GIT_COMMITTER_NAME", "WB Test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "wb@example.test")
 	root := t.TempDir()
-	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
-	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
-	// ~/.wb; a hermetic test must not write there.
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github", ".wb"))
+	// Scope WB_PROJECTS_ROOT to this fixture's own projects root. Without
+	// this, a call that passes no root would resolve to the developer's real
+	// default root; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github"))
+	// Pin the machine-local worktrees configuration too, so the campaign's
+	// store mode is this fixture's default and never the developer's own file.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	remotes := filepath.Join(root, "remotes")
 	providerSource := filepath.Join(root, "source", "provider")
 	consumerSource := filepath.Join(root, "source", "consumer")
@@ -498,13 +506,28 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	}
 }
 
+// campaignFixtureWorktree resolves the checkout path through the same
+// machine-local placement policy the campaign itself uses, so the fixture
+// follows the configured store mode instead of assuming one layout.
 func campaignFixtureWorktree(t *testing.T, fixture campaignIntegrationFixture, repository string) string {
 	t.Helper()
-	canonical, err := filepath.EvalSymlinks(filepath.Join(fixture.githubDir, "acme", repository))
+	resolved, err := worktrees.CanonicalRepositoryPath(fixture.githubDir, "acme/"+repository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(canonical, ".worktrees", fixture.spec.ID)
+	canonical, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement, err := worktrees.ResolveUserWorktreePlacement(fixture.githubDir, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := placement.Path(fixture.spec.ID, "acme/"+repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeCampaignFile(t *testing.T, path, contents string) {

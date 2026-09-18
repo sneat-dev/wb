@@ -204,8 +204,7 @@ func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 	})
 
 	t.Run("an override inline on the exact call is honoured and recorded", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("WB_HOME", home)
+		home := filepath.Join(projectsRoot, ".wb")
 		command := `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="wb worktree land refuses this exact receipt, sneat-dev/wb#999" gh pr merge 1041 --admin`
 		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": command})
 		code, stdout, stderr := runAgentHook(t, projectsRoot, payload)
@@ -227,8 +226,7 @@ func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 	})
 
 	t.Run("an override via env is honoured the same way", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("WB_HOME", home)
+		home := filepath.Join(projectsRoot, ".wb")
 		command := `env WB_AGENTGUARD_ALLOW_GH_PR_MERGE="reason via env, sneat-dev/wb#999" gh pr merge 1041`
 		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": command})
 		code, stdout, stderr := runAgentHook(t, projectsRoot, payload)

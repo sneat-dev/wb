@@ -207,9 +207,8 @@ func TestSessionListNoSessionsSkipsScan(t *testing.T) {
 // production wiring itself — not just the join logic — is proven to degrade
 // cleanly when there is simply nothing to find.
 func TestSessionListWithRealWorktreesLister(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
 	projectsRoot := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, projectsRoot)
 	dir := t.TempDir()
 	registerTestSession(t, dir, os.Getpid())
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -344,7 +343,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			return mergeRefusal(result, landRefusal{
 				code:    LandRefusalLandingLaneHeld,
 				reason:  laneErr.Error(),
-				command: "wb session request-handoff " + conflict.Record.Owner.WBSessionID,
+				command: "wb session recall " + conflict.Record.Owner.WBSessionID,
 			}), nil
 		}
 		return result, laneErr
@@ -604,7 +603,14 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Completed, shortMergeRevision(landed.MergeCommitSHA), 0, 0)
 
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Started, view.Base.Ref+"@"+shortMergeRevision(landed.MergeCommitSHA), 0, 0)
-	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(options.Repository))
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, options.Repository)
+	if canonicalErr != nil {
+		result.Outcome = LandFindings
+		result.RefusalCode = LandRefusalCanonicalSync
+		result.Reason = canonicalErr.Error()
+		result.SanctionedCommand = "wb sync --filter " + options.Repository
+		return withSavings(result), nil
+	}
 	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0, options.CheckoutUpdated)
 	if err != nil {
 		result.Outcome = LandFindings

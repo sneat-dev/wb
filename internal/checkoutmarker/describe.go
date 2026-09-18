@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agentguard"
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // Inspection is a described checkout together with the exclude file that keeps
@@ -73,7 +74,7 @@ func describeCanonical(location agentguard.Location, projectsRoot, baseBranch, v
 	// clone reached once as <projects-root>/owner/name and once as the
 	// physical path Git reports produces two different markers, and a fleet
 	// sweep rewrites the file on every run forever.
-	checkoutPath := filepath.Join(projectsRoot, location.Owner, location.Repository)
+	checkoutPath := filepath.Join(projectsRoot, location.Host, location.Owner, location.Repository)
 	return Inspection{
 		Descriptor: Descriptor{
 			Kind:          KindCanonical,
@@ -110,7 +111,7 @@ func describeWorktree(location agentguard.Location, options DescribeOptions, bas
 			// or /private/…. The marker is read by people and agents who know
 			// the clone by the path they type, so state it in the projects-root
 			// form rather than the one the filesystem happens to resolve to.
-			canonicalPath = filepath.Join(options.ProjectsRoot, canonicalLocation.Owner, canonicalLocation.Repository)
+			canonicalPath = filepath.Join(options.ProjectsRoot, canonicalLocation.Host, canonicalLocation.Owner, canonicalLocation.Repository)
 		}
 	}
 	task, worktreesRoot := taskCoordinates(location.Root, canonicalPhysicalPath, repository)
@@ -205,6 +206,14 @@ func taskCoordinates(root, canonicalPath, repository string) (task, worktreesRoo
 	ownerDirectory := filepath.Dir(repositoryDirectory)
 	if filepath.Base(root) != name || filepath.Base(repositoryDirectory) != owner {
 		return "", ""
+	}
+	// The central store interposes the literal host level between the task and
+	// the owner: <store-root>/<task>/{host}/<owner>/<repository>. Reading the
+	// owner directory's base as the task would state the host as the task and
+	// drop a level from the store root.
+	if repopath.IsForgeHost(filepath.Base(ownerDirectory)) {
+		taskDirectory := filepath.Dir(ownerDirectory)
+		return filepath.Base(taskDirectory), filepath.Dir(taskDirectory)
 	}
 	return filepath.Base(ownerDirectory), filepath.Dir(ownerDirectory)
 }

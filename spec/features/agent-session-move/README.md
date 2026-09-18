@@ -169,10 +169,10 @@ existing source-local applied handoff path MUST NOT be used for this transfer.
 `wb session send <wb-session-id>` MUST deliver a durable typed message through
 the courier recorded in the handoff receipt, append it to the target session's
 inbox, and safely paste it into the recorded tmux session without interpreting
-message text as shell syntax. `wb session request-handoff <wb-session-id>` MUST
-send the standard typed request to hand control back, preserving the lineage
-and reply target. Delivery MUST return a message receipt or an actionable
-failure.
+message text as shell syntax. `wb session recall <wb-session-id>` (alias
+`wb session request-handoff`) MUST send the standard typed request to return
+control, preserving the lineage and reply target. Delivery MUST return a message
+receipt or an actionable failure.
 
 ### Failure and optimization boundaries
 

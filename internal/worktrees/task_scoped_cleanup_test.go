@@ -12,8 +12,8 @@ import (
 
 func TestTaskScopedLocalLayoutSkipsUnrelatedRepositories(t *testing.T) {
 	projects := t.TempDir()
-	home := filepath.Join(t.TempDir(), ".wb")
-	t.Setenv(wbhome.EnvOverride, home)
+	home := filepath.Join(projects, ".wb")
+	t.Setenv(wbhome.EnvOverride, projects)
 	task := "requested-task"
 	target := filepath.Join(projects, "acme", "app")
 	unrelated := filepath.Join(projects, "other", "repo")

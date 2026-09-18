@@ -217,7 +217,7 @@ exit 30
 }
 
 func TestCIWaitFailedTerminalCheckUsesAnnotationsBeforeUnavailableLogs(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -1252,7 +1252,7 @@ fi
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// Sharded package tests are separate processes. Isolate WB's private state
 	// too, so a concurrent shard cannot supply or replace observer evidence.
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -59,6 +59,36 @@ func (goAdapter) inspect(ctx context.Context, repositoryDir, base string, target
 	return decisions, nil
 }
 
+func (goAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	modules, err := goManifests(worktree, target.Dependency)
+	if err != nil {
+		return nil, err
+	}
+	decisions := make([]Decision, 0, len(modules))
+	for _, module := range modules {
+		decision := Decision{
+			Dependency: target.Dependency, Ecosystem: EcosystemGo, File: module.relative, Selector: "require:" + target.Dependency, BeforeRef: module.version, BeforeVersion: module.version,
+			TargetVersion: target.Version, ResolvedRef: target.Version,
+			AfterRef: target.Version, AfterVersion: target.Version,
+		}
+		if comparableDowngrade(module.version, target.Version) && !options.AllowDowngrade {
+			decision.Action = "blocked_downgrade"
+			decision.Reason = fmt.Sprintf("target %s is lower than observed version %s; use --allow-downgrade", target.Version, module.version)
+			decisions = append(decisions, decision)
+			return decisions, fmt.Errorf("%s: %s", module.relative, decision.Reason)
+		}
+		if module.version == target.Version {
+			decision.Action = "unchanged"
+			decision.Reason = "requirement already declares the exact target version"
+		} else {
+			decision.Action = "planned"
+			decision.Reason = "existing Go requirement will be set with official Go tooling"
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
+
 func (goAdapter) apply(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
 	modules, err := goManifests(worktree, target.Dependency)
 	if err != nil {
@@ -151,11 +181,15 @@ func goManifests(root, dependency string) ([]goManifest, error) {
 		if entry.Name() != "go.mod" {
 			return nil
 		}
-		contents, err := os.ReadFile(path)
+		relative, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(root, path)
+		relative = filepath.ToSlash(relative)
+		if ignoredManifestPath(relative) {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -164,7 +198,7 @@ func goManifests(root, dependency string) ([]goManifest, error) {
 			return err
 		}
 		if found {
-			manifests = append(manifests, goManifest{dir: filepath.Dir(path), relative: filepath.ToSlash(relative), version: version})
+			manifests = append(manifests, goManifest{dir: filepath.Dir(path), relative: relative, version: version})
 		}
 		return nil
 	})

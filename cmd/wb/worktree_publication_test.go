@@ -79,7 +79,7 @@ func TestWorktreeGuardPublishedConfirmsAPushedWorktree(t *testing.T) {
 func newPublicationWorktree(t *testing.T, task string) (string, string) {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	remote := filepath.Join(root, "remote.git")

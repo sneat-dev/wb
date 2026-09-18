@@ -91,3 +91,36 @@ func Modified() bool {
 func Date() string {
 	return resolved.Date
 }
+
+// jsonUndeterminedVersion is the fleet-wide `version --json` contract's own
+// undetermined-version placeholder (cli-install#req:version-json-contract:
+// "version | ... dev when the build cannot determine it"). It deliberately
+// differs from Unknown, wb's own text-banner placeholder ("unknown") that
+// `wb version` and `wb --version` print and that self-update's undetermined
+// list in cmd/wb/selfupdate.go matches against: JSON() translates on the way
+// out, the same direction resolve() already translates strongobuildinfo's
+// own "dev" fallback into Unknown on the way in, so neither surface has to
+// change to satisfy the other's convention.
+const jsonUndeterminedVersion = "dev"
+
+// JSON returns the resolved build identity as the fleet-wide `version --json`
+// contract type (github.com/strongo/buildinfo.VersionJSON), the one exported
+// shape a probing host's cliinstall status prober decodes
+// (cli-install#req:version-json-contract in strongo/cli-helpers: "The writer
+// and the reader MUST share one exported Go type"). It performs no I/O
+// (cli-install#req:version-json-side-effect-free): resolved is computed once
+// at package init, and Version() folds in any test-only Set override the
+// same way the "wb version" text banner already does, so the two surfaces
+// can never disagree about which version this binary is — except for the
+// undetermined placeholder spelling itself, which JSON() alone translates to
+// the contract's "dev" (see jsonUndeterminedVersion); the text banner keeps
+// printing Unknown ("unknown") unchanged.
+func JSON() strongobuildinfo.VersionJSON {
+	j := resolved.JSON()
+	v := Version()
+	if v == Unknown {
+		v = jsonUndeterminedVersion
+	}
+	j.Version = v
+	return j
+}

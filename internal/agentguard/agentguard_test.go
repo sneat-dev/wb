@@ -1093,14 +1093,14 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 		}
 	})
 	t.Run("a direct inline override is recorded and allows the call", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("WB_HOME", home)
+		// WB_HOME is a decoy: state derives from the projects root.
+		t.Setenv("WB_HOME", t.TempDir())
 		command := ghPrMergeOverrideEnv + `="wb worktree land refuses this exact receipt, escalating to sneat-dev/wb#999" gh pr merge 1041 --admin`
 		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if decision.Deny {
 			t.Fatalf("a non-empty inline override still refused the call:\n%s", decision.Reason)
 		}
-		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		recorded, err := os.ReadFile(filepath.Join(repositories.ProjectsRoot, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl"))
 		if err != nil {
 			t.Fatalf("read the override record: %v", err)
 		}
@@ -1111,14 +1111,14 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 		}
 	})
 	t.Run("an override via env is honoured the same way", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("WB_HOME", home)
+		// WB_HOME is a decoy: state derives from the projects root.
+		t.Setenv("WB_HOME", t.TempDir())
 		command := "env " + ghPrMergeOverrideEnv + `="reason via env, sneat-dev/wb#999" gh pr merge 1041`
 		decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 		if decision.Deny {
 			t.Fatalf("an env-prefixed override still refused the call:\n%s", decision.Reason)
 		}
-		recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+		recorded, err := os.ReadFile(filepath.Join(repositories.ProjectsRoot, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl"))
 		if err != nil {
 			t.Fatalf("read the override record: %v", err)
 		}
@@ -1148,13 +1148,13 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 	}
 	for _, testCase := range honoured {
 		t.Run("an override "+testCase.name+" is honoured and recorded", func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("WB_HOME", home)
+			// WB_HOME is a decoy: state derives from the projects root.
+			t.Setenv("WB_HOME", t.TempDir())
 			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if decision.Deny {
 				t.Fatalf("Inspect(%q) refused a call carrying an exported override:\n%s", testCase.command, decision.Reason)
 			}
-			recorded, err := os.ReadFile(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl"))
+			recorded, err := os.ReadFile(filepath.Join(repositories.ProjectsRoot, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl"))
 			if err != nil {
 				t.Fatalf("read the override record: %v", err)
 			}
@@ -1171,13 +1171,16 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 	}
 	for _, command := range notExported {
 		t.Run("an override the shell never exports is refused and not recorded: "+command, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("WB_HOME", home)
+			// WB_HOME is a decoy: state derives from the projects root.
+			t.Setenv("WB_HOME", t.TempDir())
+			recordPath := filepath.Join(repositories.ProjectsRoot, ".wb", "agentguard", "gh-pr-merge-overrides.jsonl")
+			before, _ := os.ReadFile(recordPath)
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 				t.Fatalf("Inspect(%q) honoured an override the shell never puts in gh's environment", command)
 			}
-			if _, err := os.Stat(filepath.Join(home, "agentguard", "gh-pr-merge-overrides.jsonl")); !os.IsNotExist(err) {
-				t.Fatalf("a refused call left an override record (stat error: %v)", err)
+			after, _ := os.ReadFile(recordPath)
+			if string(after) != string(before) {
+				t.Fatalf("a refused call left an override record for %q", command)
 			}
 		})
 	}
@@ -1683,5 +1686,41 @@ func TestBraceExpansions(t *testing.T) {
 	}
 	if got := len(braceExpandWords(many, maxBraceExpansions)); got > maxBraceExpansions {
 		t.Fatalf("braceExpandWords produced %d lines, want at most %d", got, maxBraceExpansions)
+	}
+}
+
+// TestClassifyProtectsACanonicalCloneAtTheLiteralHostLevel encodes
+// projects-root-layout#ac:clone-path-inverts-to-url at the write-guard
+// boundary: <root>/{host}/{owner}/{repository} is a WB canonical clone, so a
+// write into it is refused exactly as for the legacy two-level placement. A
+// clone the guard called foreign would be silently writable.
+func TestClassifyProtectsACanonicalCloneAtTheLiteralHostLevel(t *testing.T) {
+	projectsRoot := t.TempDir()
+	canonical := filepath.Join(projectsRoot, "github.com", "sneat-co", "backstage")
+	if err := os.MkdirAll(filepath.Join(canonical, ".git"), 0o755); err != nil {
+		t.Fatalf("create the host-level canonical clone: %v", err)
+	}
+
+	got := Classify(projectsRoot, filepath.Join(canonical, "spec", "lessons", "x.md"))
+	if got.Kind != KindCanonical {
+		t.Fatalf("Classify(host-level canonical) = %q, want %q", got.Kind, KindCanonical)
+	}
+	if got.Host != "github.com" || got.Slug() != "sneat-co/backstage" {
+		t.Fatalf("location = %+v, want host github.com and slug sneat-co/backstage", got)
+	}
+	if protected := Classify(projectsRoot, filepath.Join(canonical, ".git", "config")); protected.Kind != KindCanonical {
+		t.Fatalf("a path inside the clone's .git = %q, want %q", protected.Kind, KindCanonical)
+	}
+	// The forge host level itself is not a repository coordinate.
+	if level := Classify(projectsRoot, filepath.Join(projectsRoot, "github.com")); level.Kind != KindUnknown {
+		t.Fatalf("Classify(host level) = %q, want %q", level.Kind, KindUnknown)
+	}
+	// A first-level entry that is not a literal hostname stays unmanaged.
+	legacy := filepath.Join(projectsRoot, "sneat-co", "backstage")
+	if err := os.MkdirAll(filepath.Join(legacy, ".git"), 0o755); err != nil {
+		t.Fatalf("create the legacy canonical clone: %v", err)
+	}
+	if legacyLocation := Classify(projectsRoot, legacy); legacyLocation.Kind != KindCanonical || legacyLocation.Host != "" {
+		t.Fatalf("Classify(legacy canonical) = %+v, want canonical with no host", legacyLocation)
 	}
 }

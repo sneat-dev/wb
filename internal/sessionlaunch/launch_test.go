@@ -235,8 +235,8 @@ func TestPreflightLocalDistinguishesMissingTmuxAndHarness(t *testing.T) {
 
 func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(root, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", root)
 	request := completeLaunchTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(home, sessionmove.DirName))
 	raw, err := sessionmove.EncodeRequest(request)
@@ -348,8 +348,8 @@ func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testi
 // target worktree either.
 func TestRunPrivateLauncherReadsPrivateHandoverForNewStyleRequestsWithoutTouchingTheWorktree(t *testing.T) {
 	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	t.Setenv("WB_HOME", home)
+	home := filepath.Join(root, ".wb")
+	t.Setenv("WB_PROJECTS_ROOT", root)
 	request := completeLaunchTestRequest(t)
 	handoverContent := "private handover\n"
 	request.HandoverPath = ""

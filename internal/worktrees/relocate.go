@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/gitremote"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -64,21 +65,39 @@ type RelocateOutcome struct {
 // path through which an active claim is corroborated. The claim itself retains
 // the original checkout path as historical identity evidence.
 type workLogRelocationIntent struct {
-	Version               int       `json:"version"`
-	Type                  string    `json:"type"`
-	OperationID           string    `json:"operation_id"`
-	ClaimID               string    `json:"claim_id"`
-	Task                  string    `json:"task"`
-	Repository            string    `json:"repository"`
-	Branch                string    `json:"branch"`
-	HeadSHA               string    `json:"head_sha"`
-	Source                string    `json:"source"`
-	Destination           string    `json:"destination"`
+	Version     int    `json:"version"`
+	Type        string `json:"type"`
+	OperationID string `json:"operation_id"`
+	ClaimID     string `json:"claim_id"`
+	Task        string `json:"task"`
+	Repository  string `json:"repository"`
+	Branch      string `json:"branch"`
+	HeadSHA     string `json:"head_sha"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	// DestinationRoot and DestinationRelative record the destination relative
+	// to the placement root that produced it: the central store root for
+	// --to=shared, the repository-local <canonical>/.worktrees root for
+	// --to=local. The absolute Destination stays the historical fact, while the
+	// relative pair keeps the receipt interpretable after the store root is
+	// reconfigured — a receipt written before the reconfigure still names where
+	// its checkout sits below whatever root is configured later. Both are empty
+	// together for a record that is not placement-relative.
+	DestinationRoot       string    `json:"destination_root,omitempty"`
+	DestinationRelative   string    `json:"destination_relative,omitempty"`
 	To                    string    `json:"to"`
 	SourceRepository      string    `json:"source_repository,omitempty"`
 	DestinationRepository string    `json:"destination_repository,omitempty"`
 	RemoteURL             string    `json:"remote_url,omitempty"`
 	At                    time.Time `json:"at"`
+}
+
+// relocationPlacementRecord is the root-relative half of a relocation
+// destination. The zero value records nothing, which is what every relocation
+// that is not a managed worktree move supplies.
+type relocationPlacementRecord struct {
+	Root     string
+	Relative string
 }
 
 // workLogRelocationReceipt is written only after Git has registered the new
@@ -184,12 +203,12 @@ func planRelocation(ctx context.Context, home string, options RelocateOptions, e
 		return result, nil
 	}
 	result.ClaimID = claim.ClaimID
-	placement, err := ResolveUserWorktreePlacement(entry.CanonicalDir)
+	placement, err := ResolveUserWorktreePlacement(options.ProjectsRoot, entry.CanonicalDir)
 	if err != nil {
 		return result, err
 	}
 	if options.To == "shared" && placement.RepositoryLocal {
-		result.Reason = "--to=shared requires worktrees.root in the user worktrees configuration"
+		result.Reason = "--to=shared needs a shared checkout store, but the machine-local worktrees configuration selects repository-local store mode"
 		return result, nil
 	}
 	if options.To == "local" {
@@ -268,14 +287,30 @@ func applyRelocation(ctx context.Context, home string, options RelocateOptions, 
 		}
 		return fmt.Errorf("recheck relocation destination %s: %w", result.Destination, statErr)
 	}
-	if err := prepareRelocationDestination(ctx, refreshed, claim.BaseSHA, result.Destination, options.To); err != nil {
+	// destinationRoot is the worktrees root the destination sits below and
+	// relative is the destination's repository suffix below its task directory
+	// (<host>/<org>/<repository>, or the legacy <org>/<repository>), so the
+	// host level is handled without assuming a fixed depth.
+	destinationRelative, relativeErr := canonicalRelativeAddress(ctx, options.ProjectsRoot, refreshed.CanonicalDir)
+	if relativeErr != nil {
+		return relativeErr
+	}
+	destinationRoot := relocationDestinationRoot(result.Destination, destinationRelative, options.To)
+	if err := prepareRelocationDestination(ctx, refreshed, claim.BaseSHA, result.Destination, destinationRelative, options.To); err != nil {
 		return err
 	}
-	intent, _, err := appendRelocationIntent(home, claim, result.WorktreeDir, result.Destination, options.To, result.HeadSHA, options.Now().UTC())
+	// Record the destination relative to the root that produced it, so the
+	// receipt still names the checkout after `worktrees.root` is reconfigured.
+	placementRelative, placementErr := filepath.Rel(destinationRoot, result.Destination)
+	if placementErr != nil || placementRelative == "." || strings.HasPrefix(placementRelative, "..") {
+		placementRelative = ""
+	}
+	intent, _, err := appendRelocationIntent(home, claim, result.WorktreeDir, result.Destination, options.To, result.HeadSHA,
+		relocationPlacementRecord{Root: destinationRoot, Relative: placementRelative}, options.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("record relocation intent before moving %s: %w", refreshed.Repository, err)
 	}
-	move, err := moveWorktree(ctx, refreshed.CanonicalDir, relocationDestinationRoot(result.Destination, options.To), refreshed.WorktreeDir, result.Destination, worktreeMoveHooks{})
+	move, err := moveWorktree(ctx, refreshed.CanonicalDir, destinationRoot, refreshed.WorktreeDir, result.Destination, worktreeMoveHooks{})
 	result.Repaired = move.Repaired
 	if err != nil {
 		return err
@@ -322,14 +357,23 @@ func finalizeInterruptedRelocation(home string, options RelocateOptions, entry L
 	return nil
 }
 
-func relocationDestinationRoot(destination, to string) string {
+// relocationDestinationRoot returns the worktrees root a relocation
+// destination sits below. relative is the destination's repository suffix below
+// its task directory, which carries the literal host level in central mode; a
+// legacy two-level suffix keeps working.
+func relocationDestinationRoot(destination, relative, to string) string {
 	if to == "local" {
 		return filepath.Dir(destination)
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(destination)))
+	suffix := string(filepath.Separator) + filepath.FromSlash(relative)
+	taskPath, trimmed := strings.CutSuffix(destination, suffix)
+	if !trimmed {
+		return filepath.Dir(filepath.Dir(filepath.Dir(destination)))
+	}
+	return filepath.Dir(taskPath)
 }
 
-func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA, destination, to string) error {
+func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA, destination, relative, to string) error {
 	if to == "local" {
 		canonical, err := openCanonicalRepository(entry.CanonicalDir)
 		if err != nil {
@@ -346,29 +390,40 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 		}
 		return requireAbsentNoFollowChild(int(directory.Fd()), filepath.Base(destination))
 	}
-	root, err := openAbsoluteDirectoryNoFollow(filepath.Dir(filepath.Dir(filepath.Dir(destination))), true)
+	suffix := string(filepath.Separator) + filepath.FromSlash(relative)
+	taskPath, trimmed := strings.CutSuffix(destination, suffix)
+	if !trimmed {
+		return fmt.Errorf("shared relocation destination %s has no repository suffix below its task", destination)
+	}
+	rootPath, task := filepath.Dir(taskPath), filepath.Base(taskPath)
+	root, err := openAbsoluteDirectoryNoFollow(rootPath, true)
 	if err != nil {
 		return fmt.Errorf("open shared relocation root: %w", err)
 	}
 	defer func() { _ = root.Close() }()
-	if !directoryStillMatches(filepath.Dir(filepath.Dir(filepath.Dir(destination))), root) {
-		return fmt.Errorf("shared relocation root changed: %s", filepath.Dir(filepath.Dir(filepath.Dir(destination))))
+	if !directoryStillMatches(rootPath, root) {
+		return fmt.Errorf("shared relocation root changed: %s", rootPath)
 	}
-	owner := filepath.Base(filepath.Dir(destination))
-	task := filepath.Base(filepath.Dir(filepath.Dir(destination)))
+	if !validSafeSegment(task) {
+		return fmt.Errorf("shared relocation destination has an invalid task segment %q", task)
+	}
 	taskFD, err := openOrCreateNoFollowDirectory(int(root.Fd()), task)
 	if err != nil {
 		return err
 	}
 	taskDir := os.NewFile(uintptr(taskFD), "wb-relocate-task")
+	if taskDir == nil {
+		_ = unix.Close(taskFD)
+		return fmt.Errorf("wrap relocation task directory")
+	}
 	defer func() { _ = taskDir.Close() }()
-	ownerFD, err := openOrCreateNoFollowDirectory(int(taskDir.Fd()), owner)
+	parent, repository := splitCloneRelative(relative)
+	parentDirectory, _, err := openRelativeParentDirectory(taskDir, taskPath, parent)
 	if err != nil {
 		return err
 	}
-	ownerDir := os.NewFile(uintptr(ownerFD), "wb-relocate-owner")
-	defer func() { _ = ownerDir.Close() }()
-	return requireAbsentNoFollowChild(int(ownerDir.Fd()), filepath.Base(destination))
+	defer func() { _ = parentDirectory.Close() }()
+	return requireAbsentNoFollowChild(int(parentDirectory.Fd()), repository)
 }
 
 func relocationOperationID(claimID, source, destination, head string, at time.Time) (string, error) {
@@ -456,6 +511,7 @@ func sameRelocationBinding(intent workLogRelocationIntent, receipt workLogReloca
 		intent.Repository == receipt.Repository && intent.Branch == receipt.Branch && intent.HeadSHA == receipt.HeadSHA &&
 		intent.To == receipt.To && filepath.Clean(intent.Source) == filepath.Clean(receipt.Source) &&
 		filepath.Clean(intent.Destination) == filepath.Clean(receipt.Destination) &&
+		intent.DestinationRoot == receipt.DestinationRoot && intent.DestinationRelative == receipt.DestinationRelative &&
 		intent.SourceRepository == receipt.SourceRepository && intent.DestinationRepository == receipt.DestinationRepository &&
 		intent.RemoteURL == receipt.RemoteURL
 }
@@ -470,6 +526,16 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 		record.To != "local" && record.To != "shared" && record.To != "repository" && record.To != workLogRelocationLegacyCheckout || !canonicalRelocationPath(record.Source) ||
 		!canonicalRelocationPath(record.Destination) || record.At.IsZero() {
 		return errors.New("record identity is incomplete or does not match immutable claim")
+	}
+	if (record.DestinationRoot == "") != (record.DestinationRelative == "") {
+		return errors.New("relocation destination placement record is incomplete")
+	}
+	if record.DestinationRoot != "" {
+		if !canonicalRelocationPath(record.DestinationRoot) || filepath.IsAbs(record.DestinationRelative) ||
+			filepath.Clean(record.DestinationRelative) != record.DestinationRelative ||
+			filepath.Join(record.DestinationRoot, record.DestinationRelative) != filepath.Clean(record.Destination) {
+			return errors.New("relocation destination placement record does not describe its destination")
+		}
 	}
 	if record.To == "repository" || record.To == workLogRelocationLegacyCheckout {
 		if _, _, err := splitRepository(record.SourceRepository); err != nil {
@@ -516,11 +582,11 @@ func matchingPendingIntent(journal relocationJournal, claim workLogClaim, source
 	return found, journal.paths[found.OperationID+"/intent"], nil
 }
 
-func appendRelocationIntent(home string, claim workLogClaim, source, destination, to, head string, at time.Time) (*workLogRelocationIntent, string, error) {
-	return appendRelocationIntentForRepository(home, claim, source, destination, to, head, "", "", "", at)
+func appendRelocationIntent(home string, claim workLogClaim, source, destination, to, head string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
+	return appendRelocationIntentForRepository(home, claim, source, destination, to, head, "", "", "", placement, at)
 }
 
-func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, at time.Time) (*workLogRelocationIntent, string, error) {
+func appendRelocationIntentForRepository(home string, claim workLogClaim, source, destination, to, head, sourceRepository, destinationRepository, remoteURL string, placement relocationPlacementRecord, at time.Time) (*workLogRelocationIntent, string, error) {
 	run, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {
 		return nil, "", err
@@ -550,6 +616,10 @@ func appendRelocationIntentForRepository(home string, claim workLogClaim, source
 	intent := &workLogRelocationIntent{Version: 1, Type: workLogRelocationIntentType, OperationID: operationID, ClaimID: claim.ClaimID, Task: claim.Task,
 		Repository: claim.Repository, Branch: claim.Branch, HeadSHA: head, Source: filepath.Clean(source), Destination: filepath.Clean(destination), To: to,
 		SourceRepository: sourceRepository, DestinationRepository: destinationRepository, RemoteURL: remoteURL, At: at}
+	if placement.Root != "" && placement.Relative != "" {
+		intent.DestinationRoot = filepath.Clean(placement.Root)
+		intent.DestinationRelative = placement.Relative
+	}
 	name := relocationIntentName(claim.ClaimID, operationID)
 	if err := writeJSONImmutableAt(receipts, name, intent, true); err != nil {
 		return nil, "", err

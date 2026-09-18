@@ -169,8 +169,14 @@ func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
 			return worktrees.RepositoryRelocateResult{Eligible: true, Applied: true}, nil
 		},
 		sync: func(_ context.Context, repo discover.Repo, root string, _, _ bool) fleetsync.Result {
-			if repo.Path != newPath || repo.CloneURL != "git@github.com:acme/new-app.git" || root != projects {
-				t.Fatalf("sync input = %+v, root=%q", repo, root)
+			// The canonical resolver states the physical path, so the
+			// expectation resolves this fixture's temporary root the same way.
+			wantPath, evalErr := filepath.EvalSymlinks(newPath)
+			if evalErr != nil {
+				t.Fatal(evalErr)
+			}
+			if repo.Path != wantPath || repo.CloneURL != "git@github.com:acme/new-app.git" || root != projects {
+				t.Fatalf("sync input = %+v, root=%q, want path %q", repo, root, wantPath)
 			}
 			return fleetsync.Result{Status: fleetsync.Pulled}
 		},
@@ -252,7 +258,7 @@ func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", filepath.Join(projects, ".wb"))
+	t.Setenv("WB_PROJECTS_ROOT", projects)
 	remoteRoot := filepath.Join(t.TempDir(), "remotes")
 	oldRemote := filepath.Join(remoteRoot, "acme", "old-app.git")
 	newRemote := filepath.Join(remoteRoot, "acme", "new-app.git")

@@ -632,10 +632,14 @@ func newSessionReceiveFixture(t *testing.T) *sessionReceiveFixture {
 	t.Helper()
 	neutralizeGitSigning(t)
 	root := t.TempDir()
-	home := filepath.Join(root, ".wb")
-	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
 	t.Setenv(wbhome.EnvMigrationCompat, "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	// The session-receive suite was written against the repository-local
+	// layout: pin the machine-local store mode explicitly. The central default
+	// is covered by store_mode_test.go.
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 	remote := filepath.Join(root, "remotes", "acme", "app.git")
 	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
 		t.Fatal(err)

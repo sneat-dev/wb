@@ -18,7 +18,7 @@ func TestValidationCacheReusesOnlyIntactExactEvidence(t *testing.T) {
 	write("go.mod", "module example.test/cache\n\ngo 1.26\n")
 	write("go.sum", "example.test/dep v1.0.0 h1:test\n")
 	checks := []Check{CheckLint, CheckTest, CheckBuild, CheckSpec}
-	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks)
+	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestValidationCacheRejectsEvidenceFromDifferentValidator(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := []Check{CheckSpec}
-	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks)
+	key, err := NewValidationCacheKey("example/cache", "0123456789012345678901234567890123456789", root, "wb-revision", checks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

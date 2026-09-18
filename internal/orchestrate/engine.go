@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -186,13 +187,25 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = "repository is archived"
 		return nil
 	}
-	owner, name, err := splitRepository(repository.Slug)
+	if _, _, err := splitRepository(repository.Slug); err != nil {
+		return failResult(result, err)
+	}
+	managedInput, err := managedInputWorktree(ctx, repository.Path, repository.Slug, options)
 	if err != nil {
 		return failResult(result, err)
 	}
+	if managedInput != nil && (options.Commit || options.Push || options.PR || options.Merge) {
+		return failResult(result, fmt.Errorf("cannot publish from supplied managed worktree %s; run deps set without --commit, --push, --pr, or --merge", managedInput.Path))
+	}
 	canonical := repository.Path
-	if canonical == "" {
-		canonical = filepath.Join(options.GitHubDir, owner, name)
+	if managedInput != nil {
+		canonical = managedInput.CanonicalDir
+	} else if canonical == "" {
+		resolved, resolveErr := CanonicalClonePath(options.GitHubDir, repository)
+		if resolveErr != nil {
+			return failResult(result, resolveErr)
+		}
+		canonical = resolved
 	}
 	result.CanonicalDir = canonical
 	phase("sync")
@@ -208,7 +221,16 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	result.Ref = resolvedBase.Ref
 	base := "origin/" + resolvedBase.Ref
 	phase("inspect")
-	assessment, err := handler.Inspect(ctx, canonical, base, repository)
+	assessment := Assessment[T]{}
+	if managedInput != nil {
+		if inspector, ok := handler.(InPlaceInspector[T]); ok {
+			assessment, err = inspector.InspectWorkingTree(ctx, managedInput.Path, repository)
+		} else {
+			assessment, err = handler.Inspect(ctx, managedInput.Path, "HEAD", repository)
+		}
+	} else {
+		assessment, err = handler.Inspect(ctx, canonical, base, repository)
+	}
 	result.Metadata = assessment.Metadata
 	if err != nil {
 		return failResult(result, err)
@@ -228,26 +250,44 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = assessment.Reason
 		return nil
 	}
-	home, err := wbhome.EnsureRoot(options.GitHubDir)
-	if err != nil {
-		return failResult(result, err)
-	}
-	worktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
-	if err != nil {
-		return failResult(result, err)
-	}
-	result.WorktreeDir = worktree
-	result.Branch = options.Branch
-	phase("prepare_worktree")
-	created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
-	if err != nil {
-		return failResult(result, err)
-	}
-	if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+	worktree := ""
+	if managedInput != nil {
+		worktree = managedInput.Path
+		result.WorktreeDir = worktree
+		result.Branch = managedInput.Branch
+	} else {
+		home, err := wbhome.EnsureRoot(options.GitHubDir)
+		if err != nil {
+			return failResult(result, err)
+		}
+		_, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+		if err != nil {
+			return failResult(result, err)
+		}
+		worktree, err = placement.Path(options.Operation, repository.Slug)
+		if err != nil {
+			return failResult(result, err)
+		}
+		result.WorktreeDir = worktree
+		result.Branch = options.Branch
+		phase("prepare_worktree")
+		created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+			created.Close()
+			return failResult(result, err)
+		}
 		created.Close()
-		return failResult(result, err)
 	}
-	created.Close()
+	var beforeApply map[string]string
+	if managedInput != nil {
+		beforeApply, err = worktreeStatus(ctx, worktree, options)
+		if err != nil {
+			return failResult(result, err)
+		}
+	}
 	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
@@ -259,7 +299,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 			return failResult(result, fmt.Errorf("publishability validation failed: %w", err))
 		}
 	}
-	result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	if managedInput != nil {
+		result.ChangedFiles, err = changedFilesSince(ctx, worktree, beforeApply, handler, metadata, options)
+	} else {
+		result.ChangedFiles, err = changedFiles(ctx, worktree, options)
+	}
 	if err != nil {
 		return failResult(result, err)
 	}
@@ -350,6 +394,58 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	return nil
 }
 
+// managedInputWorktree accepts only an existing WB-managed linked worktree as
+// an in-place mutation target. In particular, a Git gitdir file is not itself
+// authority for a common directory: Guard verifies its no-follow/registry
+// relationship with the expected canonical repository before this caller can
+// fetch from or mutate either checkout.
+func managedInputWorktree(ctx context.Context, path, repository string, options Options) (*worktrees.GuardResult, error) {
+	if path == "" {
+		return nil, nil
+	}
+	root, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // Preserve EnsureCanonical's clone-on-missing behavior.
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied repository path %s: %w", path, err)
+	}
+	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
+		return nil, fmt.Errorf("supplied repository path %s must be a non-symlink directory", path)
+	}
+	gitEntry, err := os.Lstat(filepath.Join(path, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect supplied Git entry for %s: %w", path, err)
+	}
+	if gitEntry.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("supplied Git entry for %s must not be a symbolic link", path)
+	}
+	if gitEntry.IsDir() {
+		return nil, nil
+	}
+	if !gitEntry.Mode().IsRegular() {
+		return nil, fmt.Errorf("supplied Git entry for %s must be a directory or regular gitdir file", path)
+	}
+	guard, err := worktrees.Guard(ctx, path, worktrees.GuardOptions{ProjectsRoot: options.GitHubDir, Base: options.Ref})
+	if err != nil {
+		return nil, fmt.Errorf("verify supplied managed worktree %s: %w", path, err)
+	}
+	if guard.Kind != "linked" {
+		return nil, fmt.Errorf("supplied Git gitdir file %s is not a linked worktree", path)
+	}
+	expected, err := worktrees.CanonicalRepositoryPath(options.GitHubDir, repository)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(guard.CanonicalDir) != filepath.Clean(expected) {
+		return nil, fmt.Errorf("supplied managed worktree %s belongs to %s, not %s", path, guard.CanonicalDir, expected)
+	}
+	return &guard, nil
+}
+
 // ResolvedBase is the git ref EnsureCanonical verified exists in a
 // repository's canonical clone. Every remaining lifecycle stage for this
 // repository — graph inspection, worktree creation, and any eventual pull
@@ -379,10 +475,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 			return ResolvedBase{}, err
 		}
-		cloneURL := repository.CloneURL
-		if cloneURL == "" {
-			cloneURL = "https://github.com/" + repository.Slug + ".git"
-		}
+		cloneURL := cloneURLFor(repository)
 		if _, _, err := runCommand(ctx, options.Timeout, 0, filepath.Dir(canonical), "git", "clone", "--quiet", cloneURL, canonical); err != nil {
 			return ResolvedBase{}, err
 		}
@@ -499,7 +592,7 @@ func operationWorktreePath(ctx context.Context, canonical, repository string, op
 		return "", worktrees.WorktreePlacement{}, "", false, err
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
-	placement, err := worktrees.ResolveWorktreePlacement(ctx, canonical, baseSHA)
+	placement, err := worktrees.ResolveWorktreePlacement(ctx, options.GitHubDir, canonical, baseSHA)
 	if err != nil {
 		return "", worktrees.WorktreePlacement{}, "", false, err
 	}
@@ -556,7 +649,7 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 			return nil, fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
 		}
 	}
-	return worktrees.CreateWorktreeAtPlacement(ctx, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
+	return worktrees.CreateWorktreeAtPlacement(ctx, options.GitHubDir, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
 }
 
 // recordWorktreeManifest gives every worktree this engine creates the WB
@@ -657,11 +750,50 @@ func isASCIIAlphanumeric(character byte) bool {
 }
 
 func changedFiles(ctx context.Context, worktree string, options Options) ([]string, error) {
+	status, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, 0, len(status))
+	for path := range status {
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func changedFilesSince[T any](ctx context.Context, worktree string, before map[string]string, handler Handler[T], metadata T, options Options) ([]string, error) {
+	after, err := worktreeStatus(ctx, worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]bool)
+	for path, status := range after {
+		if before[path] != status {
+			files[path] = true
+		}
+	}
+	if reporter, ok := handler.(AppliedFileReporter[T]); ok {
+		for _, path := range reporter.AppliedFiles(metadata) {
+			if path != "" {
+				files[filepath.ToSlash(path)] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(files))
+	for path := range files {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func worktreeStatus(ctx context.Context, worktree string, options Options) (map[string]string, error) {
 	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
 	if err != nil {
 		return nil, err
 	}
-	var files []string
+	files := make(map[string]string)
 	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if len(entry) < 4 {
 			continue
@@ -670,7 +802,7 @@ func changedFiles(ctx context.Context, worktree string, options Options) ([]stri
 		if arrow := strings.LastIndex(path, " -> "); arrow >= 0 {
 			path = path[arrow+4:]
 		}
-		files = append(files, filepath.ToSlash(path))
+		files[filepath.ToSlash(path)] = entry[:2]
 	}
 	return files, nil
 }
@@ -790,6 +922,38 @@ func failResult[T any](result *Result[T], err error) error {
 	result.Status = "failed"
 	result.Reason = err.Error()
 	return fmt.Errorf("%s: %w", result.Repository, err)
+}
+
+// cloneURLFor is the URL a repository is cloned from. When discovery supplied
+// none, GitHub is the only forge WB can name for a bare owner/repository slug,
+// so that is the fallback — and it is the single place the fallback is written,
+// because the clone destination is derived from the same URL.
+func cloneURLFor(repository Repository) string {
+	if repository.CloneURL != "" {
+		return repository.CloneURL
+	}
+	return "https://github.com/" + repository.Slug + ".git"
+}
+
+// CanonicalClonePath resolves one repository's canonical clone below githubDir.
+//
+// An existing clone is used where it is — the literal host level first, then the
+// legacy two-level placement — so a caller never creates a second copy beside a
+// clone the machine already has. When no clone exists the destination is the
+// literal host level the clone URL names, which is where `wb sync` and
+// orchestrate place a new one. It is a thin typed wrapper over the one
+// resolution every package shares.
+func CanonicalClonePath(githubDir string, repository Repository) (string, error) {
+	return worktrees.CanonicalRepositoryPathForURL(githubDir, repository.Slug, cloneURLFor(repository))
+}
+
+// canonicalClonePath is where a repository's canonical clone belongs below
+// githubDir: <githubDir>/{host}/{owner}/{repository} when the clone URL names a
+// literal forge hostname, and the legacy <githubDir>/{owner}/{repository} when
+// it does not. The host comes from the same URL EnsureCanonical would clone
+// from, so it is never invented and the two can never disagree.
+func canonicalClonePath(githubDir, owner, name, cloneURL string) string {
+	return repopath.FromCloneURL(cloneURL, owner, name).Path(githubDir)
 }
 
 func splitRepository(slug string) (string, string, error) {

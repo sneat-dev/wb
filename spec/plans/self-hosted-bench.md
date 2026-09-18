@@ -58,7 +58,7 @@ ingitdb, openvaultdb; default ingitdb under `~/.wb/hub`), `github.token_file`,
 `dal.DB` per engine (dalgo2memory, dalgo2ingitdb, dalgo2openvaultdb) and
 wrap it with `api/githubapp/dalgostore`. When `hub:` is present,
 `wb daemon serve` mounts `hub.NewHandler` under `/v0/workbench/` and the
-embedded `hub/web` dist under `/bench/` next to the existing `/api/v1/`
+embedded `hub/web` dist under `/workbench/` next to the existing `/api/v1/`
 routes; without it nothing changes. Embed `hub/web/dist` with `go:embed`
 behind a build that tolerates an absent dist by serving a one-line "not
 built" page. Enrol the local machine against the local hub on first start
@@ -69,7 +69,7 @@ mode returns one fixed identity. Refuse a non-loopback listen address while
 no identity provider is configured. `wb daemon status` reports engine,
 listen address and whether the hub is mounted. Tests: config parsing and
 defaults, engine selection, handler mounting, enrolment idempotence, the
-refusal, and a serve-and-fetch test that reads `/bench/dashboard/` and
+refusal, and a serve-and-fetch test that reads `/workbench/dashboard/` and
 `/v0/workbench/github/status` from the loopback server.
 
 ### Task 2: Polling ingester and console narration

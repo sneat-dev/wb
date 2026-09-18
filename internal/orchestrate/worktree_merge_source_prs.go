@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 const absorbedSourcePRCommentMarker = "<!-- wb:absorbed-source-pr -->"
@@ -29,7 +29,11 @@ func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot strin
 	if receipt == nil || receipt.LandingSHA == "" || receipt.Repository == "" {
 		return nil
 	}
-	heads, err := absorbedSourceHeads(ctx, filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository)), *receipt, timeout, retry)
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return fmt.Errorf("resolve canonical clone for absorbed source heads: %w", canonicalErr)
+	}
+	heads, err := absorbedSourceHeads(ctx, canonical, *receipt, timeout, retry)
 	if err != nil {
 		return fmt.Errorf("discover absorbed source heads: %w", err)
 	}

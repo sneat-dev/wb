@@ -563,7 +563,7 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		if branchErr != nil {
 			return RenameOutcome{}, branchErr
 		}
-		placement, placementErr := ResolveWorktreePlacement(ctx, entry.CanonicalDir, baseRevision)
+		placement, placementErr := ResolveWorktreePlacement(ctx, normalized.ProjectsRoot, entry.CanonicalDir, baseRevision)
 		if placementErr != nil {
 			return RenameOutcome{}, placementErr
 		}
@@ -857,8 +857,7 @@ func firstRenameReason(plans []renamePlan) string {
 // created branch. The WB_HOME task lock is held by Rename; this function only
 // prepares the physical parent that owns this repository's checkout.
 func applyRename(ctx context.Context, home string, options RenameOptions, plan *renamePlan) (returnErr error) {
-	owner, repository, err := splitRepository(plan.entry.Repository)
-	if err != nil {
+	if _, _, err := splitRepository(plan.entry.Repository); err != nil {
 		return err
 	}
 
@@ -933,7 +932,7 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 		plan.result.OldRemoteDeleted = true
 	}
 
-	if err := prepareRenamePhysicalDestination(ctx, options.NewTask, owner, repository, plan); err != nil {
+	if err := prepareRenamePhysicalDestination(ctx, options.NewTask, plan); err != nil {
 		return err
 	}
 
@@ -1016,7 +1015,7 @@ func applyRename(ctx context.Context, home string, options RenameOptions, plan *
 // placement has no task directory: the checkout itself is the task child.
 // Shared placement retains the historical task/owner hierarchy, but its lock
 // still belongs to WB_HOME and is held by Rename.
-func prepareRenamePhysicalDestination(ctx context.Context, task, owner, repository string, plan *renamePlan) error {
+func prepareRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
 	if plan.destinationLocal {
 		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
 		if err != nil {
@@ -1034,6 +1033,20 @@ func prepareRenamePhysicalDestination(ctx context.Context, task, owner, reposito
 		return requireAbsentNoFollowChild(int(root.Fd()), task)
 	}
 
+	// The destination's relative shape below the shared root is
+	// <task>/<host>/<owner>/<repository> in the central store, or the legacy
+	// <task>/<owner>/<repository>. Derive the parent path from the destination
+	// the plan already resolved rather than assuming a fixed depth.
+	relative, err := filepath.Rel(filepath.Clean(plan.destinationRoot), filepath.Clean(plan.result.NewWorktreeDir))
+	if err != nil {
+		return fmt.Errorf("resolve shared rename destination: %w", err)
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	if len(parts) < 2 || parts[0] != task {
+		return fmt.Errorf("shared rename destination %s is not below its task directory", plan.result.NewWorktreeDir)
+	}
+	parent := filepath.ToSlash(filepath.Join(parts[1 : len(parts)-1]...))
+	repository := parts[len(parts)-1]
 	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
 	if err != nil {
 		return fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
@@ -1052,17 +1065,12 @@ func prepareRenamePhysicalDestination(ctx context.Context, task, owner, reposito
 		return fmt.Errorf("wrap shared rename task destination")
 	}
 	defer func() { _ = taskDirectory.Close() }()
-	ownerFD, err := openOrCreateNoFollowDirectory(int(taskDirectory.Fd()), owner)
+	parentDirectory, _, err := openRelativeParentDirectory(taskDirectory, filepath.Join(plan.destinationRoot, task), parent)
 	if err != nil {
-		return fmt.Errorf("create shared rename owner destination: %w", err)
+		return fmt.Errorf("create shared rename destination parent: %w", err)
 	}
-	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-rename-shared-owner")
-	if ownerDirectory == nil {
-		_ = unix.Close(ownerFD)
-		return fmt.Errorf("wrap shared rename owner destination")
-	}
-	defer func() { _ = ownerDirectory.Close() }()
-	return requireAbsentNoFollowChild(ownerFD, repository)
+	defer func() { _ = parentDirectory.Close() }()
+	return requireAbsentNoFollowChild(int(parentDirectory.Fd()), repository)
 }
 
 // preflightRenamePhysicalDestination proves every target root is usable

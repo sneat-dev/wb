@@ -178,9 +178,12 @@ jobs:
     # command below bounded, but leave enough room for runner variance as the
     # integration suite grows.
     # The repository-owned .wb/quality.yaml defines every process-isolated
-    # package. Keep setup and failure diagnostic upload outside the inner
-    # 20-minute budget so a timeout still leaves evidence.
-    timeout-minutes: 25
+    # package. internal/orchestrate is not process-isolated, so its single
+    # unsharded binary is now the wall-clock long pole: it alone runs for well
+    # over 15 minutes. The inner deadline and this job budget were raised to
+    # cover it, while keeping setup and failure diagnostic upload outside the
+    # inner budget so a timeout still leaves evidence.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -194,10 +197,10 @@ jobs:
           go run ./cmd/wb coverage .
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=58
+          --minimum=88
           --format json
           --non-interactive
-          --timeout 20m
+          --timeout 35m
       - name: Upload coverage diagnostics on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7

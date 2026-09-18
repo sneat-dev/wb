@@ -26,6 +26,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // Kind classifies the Git checkout that encloses a path.
@@ -36,6 +38,7 @@ const (
 	// could not be established. It is always allowed.
 	KindUnknown Kind = "unknown"
 	// KindCanonical is a primary checkout sitting exactly at
+	// <projects-root>/{host}/<owner>/<repository>, or at the legacy
 	// <projects-root>/<owner>/<repository>: a WB canonical clone, which must
 	// stay clean because every linked worktree in the fleet is cut from it.
 	KindCanonical Kind = "canonical"
@@ -55,7 +58,10 @@ type Location struct {
 	Kind Kind
 	// Root is the enclosing checkout's root directory, empty for KindUnknown.
 	Root string
-	// Owner and Repository are set only for KindCanonical.
+	// Host, Owner and Repository are set only for KindCanonical. Host is the
+	// literal forge hostname the clone sits under, and is empty for the legacy
+	// two-level <projects-root>/<owner>/<repository> placement.
+	Host       string
 	Owner      string
 	Repository string
 }
@@ -103,11 +109,11 @@ func Classify(projectsRoot, path string) Location {
 	if !primary {
 		return Location{Kind: KindLinked, Root: root}
 	}
-	owner, repository, managed := canonicalCoordinates(projectsRoot, root)
+	host, owner, repository, managed := canonicalCoordinates(projectsRoot, root)
 	if !managed {
 		return Location{Kind: KindForeign, Root: root}
 	}
-	return Location{Kind: KindCanonical, Root: root, Owner: owner, Repository: repository}
+	return Location{Kind: KindCanonical, Root: root, Host: host, Owner: owner, Repository: repository}
 }
 
 // enclosingCheckout walks up from path and reports the first directory holding
@@ -134,13 +140,15 @@ func enclosingCheckout(path string) (root string, primary bool, found bool) {
 }
 
 // canonicalCoordinates reports whether root is exactly
-// <projects-root>/<owner>/<repository>.
+// <projects-root>/<owner>/<repository> or the host-qualified
+// <projects-root>/{host}/<owner>/<repository>. The returned host is empty for
+// the legacy two-level placement, which this fleet still uses.
 //
-// Requiring that exact shape is deliberate. A primary checkout anywhere else
-// is not something WB manages, and refusing writes there would block work the
-// guard has no standing to judge — a temporary fixture repository under
-// /tmp, most of all, which every WB test suite creates.
-func canonicalCoordinates(projectsRoot, root string) (owner, repository string, ok bool) {
+// Requiring one of those exact shapes is deliberate. A primary checkout
+// anywhere else is not something WB manages, and refusing writes there would
+// block work the guard has no standing to judge — a temporary fixture
+// repository under /tmp, most of all, which every WB test suite creates.
+func canonicalCoordinates(projectsRoot, root string) (host, owner, repository string, ok bool) {
 	roots := pathVariants(root)
 	for _, candidate := range pathVariants(projectsRoot) {
 		for _, resolved := range roots {
@@ -149,13 +157,19 @@ func canonicalCoordinates(projectsRoot, root string) (owner, repository string, 
 				continue
 			}
 			parts := strings.Split(filepath.ToSlash(relative), "/")
+			if len(parts) == 3 {
+				if !repopath.IsForgeHost(parts[0]) {
+					continue
+				}
+				host, parts = parts[0], parts[1:]
+			}
 			if len(parts) != 2 || !validOwnerSegment(parts[0]) || !validRepositorySegment(parts[1]) {
 				continue
 			}
-			return parts[0], parts[1], true
+			return host, parts[0], parts[1], true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // pathVariants returns the forms of a directory that a comparison must accept.

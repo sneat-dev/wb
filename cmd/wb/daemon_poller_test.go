@@ -149,7 +149,7 @@ func TestHubDeliveryMarkerIsOptional(t *testing.T) {
 // Task 2: the declaration supplies polling and interval, and the live health
 // endpoint supplies what only the serving process knows.
 func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	configPath := memoryHubConfig(t)
 	deps.hubConfigPath = func() string { return configPath }
@@ -340,7 +340,7 @@ func TestDaemonServeAcceptsQuietAndStartNeverPassesIt(t *testing.T) {
 		t.Fatal("wb daemon serve has no --quiet")
 	}
 
-	root := t.TempDir()
+	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	var launched []string
 	previousStart := deps.start
@@ -371,6 +371,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
 	previousRoot := projectsRoot
 	projectsRoot = root
 	t.Cleanup(func() { projectsRoot = previousRoot })
@@ -389,7 +390,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	command.SetErr(&stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(command, deps, address, daemon.Store{Path: daemonStatePath(root)}, "owner-token", true, false)
+		served <- serveDashboard(command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

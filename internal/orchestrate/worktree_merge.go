@@ -1261,7 +1261,10 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		if receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out" {
 			reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, receipt.Target+"@"+shortMergeRevision(receipt.LandingSHA))
-			canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
+			canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
+			if canonicalErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, canonicalErr)
+			}
 			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry, options.CheckoutUpdated)
 			if err != nil {
 				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
@@ -1671,7 +1674,10 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return failed, failure
 	}
 
-	canonical := filepath.Join(options.ProjectsRoot, filepath.FromSlash(receipt.Repository))
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, canonicalErr)
+	}
 	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, canonical)
 	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry, options.CheckoutUpdated)
 	if err != nil {
@@ -1762,7 +1768,10 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
 		return false, fmt.Errorf("receipted candidate worktree or branch does not match WB Guard")
 	}
-	expectedCanonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	expectedCanonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return false, canonicalErr
+	}
 	guardCanonical := guard.CanonicalDir
 	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
 		expectedCanonical = resolved
@@ -1856,7 +1865,10 @@ func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projects
 	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
 		return false, errors.New("receipted conflict candidate worktree or branch does not match WB Guard")
 	}
-	expectedCanonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	expectedCanonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return false, canonicalErr
+	}
 	guardCanonical := guard.CanonicalDir
 	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
 		expectedCanonical = resolved
@@ -3023,7 +3035,10 @@ func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, project
 // the worktree terminalization; local and origin branch absence independently
 // prove the remaining branch-retirement part of cleanup.
 func requireTerminalCleanupBranchesAbsent(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, expectations []worktrees.TerminalWorkLogExpectation, timeout time.Duration, retry int) error {
-	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if canonicalErr != nil {
+		return canonicalErr
+	}
 	for _, expectation := range expectations {
 		if expectation.Branch == receipt.Target {
 			return fmt.Errorf("terminal cleanup recovery refuses receipt task %s because its branch is the target %s", expectation.Task, receipt.Target)
@@ -3417,7 +3432,7 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
 	}
 	checks := []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}
-	cacheKey, err := quality.NewValidationCacheKeyWithValidators(repository, targetSHA, snapshot, buildinfo.Revision(), checks, validationCacheValidatorSHAs(checks))
+	cacheKey, err := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), checks, validationCacheValidatorSHAs(checks))
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("fingerprint target validation baseline: %w", err)
 	}
@@ -3618,7 +3633,14 @@ func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candid
 var (
 	goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
 	goCoverageCommandShardsPattern  = regexp.MustCompile(`\s+\([0-9]+\s+process-isolated shards for [^)]*\)$`)
+	// A raw-output section header: either the unsharded group or one package
+	// path, optionally carrying its scheduler shard placement.
+	goCoveragePlacementHeaderPattern = regexp.MustCompile(`^\[(unsharded packages|[^\[\] \t]+)(\s+shard\s+[0-9]+/[0-9]+)?\]$`)
 )
+
+// goCoverageTimeoutIdentity is the failure identity of a group that ran out of
+// time instead of failing a named test.
+const goCoverageTimeoutIdentity = "timed out"
 
 func normalizeGoCoverageCommand(command string) string {
 	return goCoverageCommandShardsPattern.ReplaceAllString(command, " (<process-isolated shards>)")
@@ -3635,9 +3657,17 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 		return identities
 	}
 	index := detail[indexStart+len(failureIndexHeader):]
-	if rawOutput := strings.Index(index, rawOutputHeader); rawOutput >= 0 {
-		index = index[:rawOutput]
+	rawOutput := ""
+	if raw := strings.Index(index, rawOutputHeader); raw >= 0 {
+		rawOutput = index[raw+len(rawOutputHeader):]
+		index = index[:raw]
 	}
+	// A test-binary timeout kills the group wherever it happens to be, so the
+	// test it names is incidental: the same pre-existing timeout names a
+	// different test, or none at all, on the next run. Collapse a timed-out
+	// placement to one identity so a repeated timeout is recognised as the
+	// baseline failure it is instead of reading as a newly introduced one.
+	timedOut := goCoverageTimedOutPlacements(rawOutput)
 	for _, rawLine := range strings.Split(index, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if !strings.HasPrefix(line, "- [") {
@@ -3653,9 +3683,30 @@ func goCoverageFailureIdentities(detail string) map[string]struct{} {
 		if placement == "" || testName == "" {
 			continue
 		}
+		if _, ok := timedOut[placement]; ok {
+			testName = goCoverageTimeoutIdentity
+		}
 		identities[placement+"\x00"+testName] = struct{}{}
 	}
 	return identities
+}
+
+// goCoverageTimedOutPlacements reports which check placements recorded a
+// test-binary timeout in WB's coverage raw output.
+func goCoverageTimedOutPlacements(rawOutput string) map[string]struct{} {
+	placements := make(map[string]struct{})
+	placement := ""
+	for _, rawLine := range strings.Split(rawOutput, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if goCoveragePlacementHeaderPattern.MatchString(line) {
+			placement = goCoverageShardPlacementPattern.ReplaceAllString(strings.Trim(line, "[]"), "")
+			continue
+		}
+		if placement != "" && strings.Contains(line, "timed out after") {
+			placements[placement] = struct{}{}
+		}
+	}
+	return placements
 }
 
 // matchSpecScoreBaselineFailure treats the exact violation identity set as the

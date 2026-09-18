@@ -102,6 +102,8 @@ wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
+wb install [name...]         # list/install sibling fleet CLIs relevant to wb
+wb upgrade [name...]         # upgrade installed fleet CLIs, including wb itself
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
@@ -110,13 +112,13 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--projects-root P` | `~/projects` | Root dir holding `{org}/{repo}` clones. |
+| `--projects-root P` | `~/projects` | Root dir holding `{host}/{org}/{repo}` clones (the first level is the literal forge hostname). |
 | `--filter S` | — | Only process repos whose `org/name` contains `S`. |
 | `--org O` | — | Query an additional GitHub owner (repeatable); before `sync`, it has the same restricting selection as command-local `sync --org`. |
 
 ### `wb worktree` — isolated feature branches
 
-Keep canonical clones at `<projects-root>/<owner>/<repository>` clean when
+Keep canonical clones at `<projects-root>/<host>/<org>/<repository>` clean when
 possible, but never mutate one to make it eligible for creation. WB leaves its
 currently checked-out branch, index, and working tree untouched while it
 creates every feature branch in its managed worktree location:
@@ -140,11 +142,33 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. By default, a worktree is created at
-`<canonical-repository>/.worktrees/<task>`. `WB_HOME` remains the private
-authority for Work Logs, task locks, receipts, and reports; setting it never
-changes the default checkout placement. To use one shared checkout root across
-repositories, set a user-only root in `~/.config/wb/worktrees.yaml`:
+contains active local work. By default, a worktree is created in the central
+store at `<root>/.worktrees/<task>/<host>/<org>/<repository>`, where `<root>` is
+the projects root: the task is the first level, so every checkout of a
+multi-repository task stays together, and a search scoped to one task, one host,
+one org, or one repository is expressible as a path. `<host>` is the canonical
+clone's literal forge hostname: its own on-disk host level when it has one, and
+otherwise the host named by its `origin` remote — so a clone still at the legacy
+`<root>/<org>/<repository>` path is placed below its forge without the clone
+moving. A clone whose origin names no forge (a local remote) keeps the two-level
+`<org>/<repository>` suffix. Private state lives at
+`<root>/.wb`. To place a checkout inside its own canonical clone instead — for a
+deployment whose sandbox grants only a single repository directory — select the
+repository-local store mode in `~/.config/wb/worktrees.yaml`:
+
+```yaml
+version: 1
+worktrees:
+  store: repository-local
+```
+
+That mode creates the checkout at `<canonical-repository>/.worktrees/<task>`,
+sharing the canonical clone's own Git exclude, and changes no task's claim,
+branch, or Work Log identity. The store mode and, in central mode, the store
+root are machine-local user policy: a repository-tracked `.wb/worktrees.yaml`
+may configure branch naming, but an attempt to select or override the mode or
+the store root is rejected with an error naming the user-only configuration
+path. In central mode `worktrees.root` optionally overrides the store root:
 
 ```yaml
 version: 1
@@ -153,17 +177,39 @@ worktrees:
 ```
 
 WB expands `~` and creates that checkout at
-`<root>/<task>/<owner>/<repository>`. The root must be absolute after
-expansion; repository policy can configure branch naming but cannot choose a
-checkout root. The account running WB therefore needs access to both its
-`WB_HOME` state and the selected checkout root. New
+`<root>/<task>/<host>/<org>/<repository>`. The root must be absolute after
+expansion. New
 work never silently falls back to the historic `<projects-root>/.wb` directory;
-existing linked worktrees governed by the same `WB_HOME` remain discoverable
-and manageable during migration, and WB never relocates them merely because the
-default changed. WB adds a local
+existing linked worktrees remain discoverable
+and manageable during migration, and a configuration change never moves, hides,
+or re-selects an existing checkout. WB adds a local
 Git exclude for the untracked `.worktrees/` directory so Git status stays
 clean; scanners and build tools that do not honor Git excludes must still avoid
 that directory deliberately.
+#### Writable paths
+
+The projects root is the sandbox workspace root the common agent harnesses
+expect: a harness that grants write access to `<root>` already grants WB
+everything it needs, because state and — in central mode — the checkout store
+are direct children of it. WB declares that set, preflights it before its first
+mutation, and fails with a diagnostic naming the unwritable path and its role
+rather than reporting a bare `operation not permitted`:
+
+- `<root>/.wb` — private state: claims, locks, Work Logs, reports;
+- `<root>/.worktrees` — central-mode checkouts. Declared only when central mode
+  is selected, because repository-local mode keeps each checkout inside its own
+  canonical clone;
+- `<canonical>/.git` — Git writes `gitdir`, `commondir`, `HEAD`, `index`,
+  `logs`, `refs`, `ORIG_HEAD` and `COMMIT_EDITMSG` there when it registers,
+  repairs or removes a linked checkout, even though WB otherwise only reads the
+  clone;
+- the platform temporary area.
+
+The diagnostic offers three remedies: widen the sandbox workspace to `<root>`,
+add the named path as an allowed writable root, or select repository-local
+store mode. Reading never requires write permission: no read path issues a
+metadata write on a descriptor it opened read-only.
+
 Existing branches and worktrees are rejected unless `--resume` is explicit.
 
 Resume recovers the registered branch and active Work Log claim before reading
@@ -219,7 +265,7 @@ stays redacted; `log sync` remains offline until Synchestra is configured.
 
 `log finalize --report <path>` (or `--report-stdin`) attaches an agent's
 completion report; `--apply` copies it into the private Work Log store under
-`WB_HOME` (never source Git, capped at 1 MiB) and records `terminal_result`,
+`<root>/.wb` (never source Git, capped at 1 MiB) and records `terminal_result`,
 `terminal_message`, `finalized_at`, and `report_path` on the sealed terminal.
 A lead session reads that a lane finished, and where its report lives,
 through `wb worktree list --finalized`/`--not-finalized` or
@@ -564,7 +610,7 @@ Reconciles `~/projects/{org}/{repo}` with GitHub:
 - archived, missing → nothing
 
 `wb sync` is currently the only WB creator for canonical
-`<projects-root>/<owner>/<repository>` clones. A deterministic read-only audit
+`<projects-root>/<host>/<org>/<repository>` clones. A deterministic read-only audit
 and admission guard for top-level/misowned clones is planned, not implemented;
 WB cannot intercept an arbitrary external `git clone`, so agents must not
 clone directly below `<projects-root>/<repository>`.
@@ -945,8 +991,9 @@ linked-worktree debt outside managed tasks.
 
 ### `wb layout` — clone placement under projects-root
 
-Canonical clones live at `{projects-root}/{owner}/{repository}` with a real
-`.git` directory. Audit is read-only; clean is dry-run unless `--apply`.
+Canonical clones live at `{projects-root}/{host}/{org}/{repository}` — the first
+level is the literal forge hostname — with a real `.git` directory. Audit is
+read-only; clean is dry-run unless `--apply`.
 
 ```sh
 wb layout audit
@@ -1025,9 +1072,10 @@ wb deps bump go --fleet \
 
 Canonical clones remain untouched, including dirty clones. WB fetches
 `origin/<ref>` (`main` by default) and creates branches with a checkout at
-`<canonical-repository>/.worktrees/<operation>` by default. A user-only
-`worktrees.root` setting selects `<root>/<operation>/<org>/<repo>` instead;
-`WB_HOME` still holds private lifecycle state. Without publication
+`<root>/.worktrees/<operation>/<host>/<org>/<repo>` by default; a
+repository-local mode places the checkout at
+`<canonical-repository>/.worktrees/<operation>` instead. Private lifecycle
+state lives at `<root>/.wb` in both modes. Without publication
 flags, verified changes remain in those local worktrees. `--push` implies
 `--commit`; `--pr` implies push and commit; and `--merge` implies all prior
 stages. Local lint, test, and build checks are enabled by default; use
@@ -1978,8 +2026,9 @@ non-executable shims; `--json` makes its result consumable by CI or Backstage.
 Managed shims also preserve the absolute `--projects-root` and resolved WB
 home used at installation, so worktree guards remain correct when Git invokes
 them from a non-default projects hierarchy. A shim installed from the normal
-default home remains migration-compatible with legacy linked worktrees; an
-explicit `WB_HOME` remains isolated.
+default root remains migration-compatible with legacy linked worktrees, and a
+shim that still pins the retired `WB_HOME` keeps working: the variable selects
+nothing, and state always derives from `--projects-root`.
 
 The managed shim does not retain the executable path used by `hooks install`
 or `hooks repair`. At hook runtime it prefers `WB_EXECUTABLE`, otherwise
@@ -2295,6 +2344,67 @@ blocking on input when no terminal is attached and `--yes` was not given, so
 scripts and agents driving wb never hang. wb publishes no Windows build, so
 the self-replace path is macOS/Linux only; a Windows host reaching it refuses
 with a clear message instead of attempting a swap it has no asset for.
+
+### `wb install` — install sibling fleet CLIs
+
+`wb install` is a different command from `wb self-update`: it installs *other*
+fleet CLIs relevant to wb (`specscore`, `codegrapher`, `cover100`), not wb
+itself.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement reuse the
+identical `github.com/strongo/cli-helpers` machinery `wb self-update` binds,
+applied to a fleet-wide catalog (`github.com/strongo/cli-helpers/cliinstall`)
+instead of wb's own release. Both commands resolve wb's release identity from
+the same compiled-in catalog entry, so they can never disagree about how wb
+itself is installed. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused before any confirmation, network request
+or write, and exit `2` — wb's usage code, since the invocation itself was
+rejected before any work started — naming the valid catalog ids where
+relevant; every other failure reports through wb's ordinary `1` (findings)
+exit code. Every message carries an exact `install: ` prefix, never
+`self-update: `.
+
+### `wb upgrade` — upgrade installed fleet CLIs, including wb itself
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI to its latest release, named ones or all of
+them with `--all`, including wb itself.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb
+wb upgrade --check                  # same report; exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade --format json            # machine-readable report/result
+```
+
+`wb self-update` is exactly `wb upgrade wb`: upgrade configures wb as a
+target from the SAME `selfupdate.Config` and after-update hook (daemon
+restart, skills re-sync) self-update's own command configures, so the two
+can never disagree about the outcome for wb itself. `upgrade` gets no
+`update` alias (only `self-update` keeps one), and wb is always upgraded
+last in a batch, after every other named target, because its after-update
+hook restarts the daemon. An unknown target, an invalid `--format`, or
+`--all` combined with names exit `2`, exactly as `install`'s own usage
+refusals do; every other failure reports through wb's ordinary `1`
+(findings) exit code — including "an upgrade is available" under an
+explicit `--check`, which wb folds into the same code rather than reserving
+a fourth one (the bare, no-argument report is different: it never checks
+for an available upgrade at all and exits `0` unless a lookup itself
+failed). Every message carries an exact `upgrade: ` prefix, never
+`install: `/`self-update: ` — including the permission remedy, which names
+upgrade's own Homebrew cask-upgrade command rather than install's
+cask-install command.
 
 ### `wb skills` — install WB's Agent Skills into a harness
 

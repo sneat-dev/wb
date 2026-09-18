@@ -29,7 +29,7 @@ func writeHookEvents(t *testing.T, path string, events []hooks.Event) {
 // recorded durations for the stream-branch push and the other-branch push, and
 // prices the saving from the measured average.
 func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
-	t.Setenv("WB_HOME", t.TempDir())
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	now := time.Now().UTC()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	writeHookEvents(t, path, []hooks.Event{
@@ -93,8 +93,9 @@ func TestHookReportsDoNotCreateRuntimeState(t *testing.T) {
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	wbHome := filepath.Join(t.TempDir(), "wb-home")
-	t.Setenv("WB_HOME", wbHome)
+	previousRoot := projectsRoot
+	projectsRoot = filepath.Join(t.TempDir(), "projects")
+	t.Cleanup(func() { projectsRoot = previousRoot })
 
 	for _, name := range []string{"metrics", "measure"} {
 		t.Run(name, func(t *testing.T) {
@@ -108,8 +109,8 @@ func TestHookReportsDoNotCreateRuntimeState(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := os.Stat(wbHome); !os.IsNotExist(err) {
-				t.Fatalf("read-only report created WB_HOME state: %v", err)
+			if _, err := os.Stat(filepath.Join(projectsRoot, ".wb")); !os.IsNotExist(err) {
+				t.Fatalf("read-only report created WB state: %v", err)
 			}
 		})
 	}

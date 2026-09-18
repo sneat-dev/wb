@@ -9,13 +9,15 @@ import (
 )
 
 // orphanFixture builds a projects root with one canonical clone and lets a test
-// add linked worktrees wherever it likes, which is how the three real layout
+// add linked worktrees wherever it likes, which is how the real layout
 // generations are reproduced.
 type orphanFixture struct {
 	t            *testing.T
 	root         string
 	projectsRoot string
 	home         string
+	store        string
+	legacyHome   string
 	canonical    string
 }
 
@@ -25,11 +27,14 @@ func newOrphanFixture(t *testing.T) *orphanFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	userHome := filepath.Join(root, "home")
 	fixture := &orphanFixture{
 		t:            t,
 		root:         root,
 		projectsRoot: filepath.Join(root, "projects"),
-		home:         filepath.Join(root, "home", ".wb"),
+		home:         filepath.Join(root, "projects", ".wb"),
+		store:        filepath.Join(root, "projects", ".worktrees"),
+		legacyHome:   filepath.Join(userHome, ".wb"),
 		canonical:    filepath.Join(root, "projects", "acme", "app"),
 	}
 	if err := os.MkdirAll(fixture.canonical, 0o755); err != nil {
@@ -42,12 +47,13 @@ func newOrphanFixture(t *testing.T) *orphanFixture {
 	// A local origin/main ref stands in for the remote target, which is what
 	// "already landed" is measured against.
 	gitTest(t, fixture.canonical, "update-ref", "refs/remotes/origin/main", "HEAD")
-	t.Setenv("WB_HOME", fixture.home)
+	t.Setenv("WB_PROJECTS_ROOT", fixture.projectsRoot)
+	t.Setenv("HOME", userHome)
 	return fixture
 }
 
 // addWorktree creates a linked worktree at an arbitrary path so a test can
-// place it in the current home, the legacy hierarchy, or outside both.
+// place it in the state store, repository-locally, or outside both.
 func (fixture *orphanFixture) addWorktree(path, branch string, commit bool) string {
 	fixture.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -90,17 +96,19 @@ func findOrphan(report OrphanReport, branch string) (OrphanWorktree, bool) {
 // home would miss the 489 worktrees that live elsewhere.
 func TestOrphansSeeEveryLayoutGeneration(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "current-effort", "acme", "app"), "current-effort", true)
-	fixture.addWorktree(filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy-effort", "acme", "app"), "legacy-effort", true)
+	fixture.addWorktree(filepath.Join(fixture.store, "current-effort", "acme", "app"), "current-effort", true)
+	fixture.addWorktree(filepath.Join(fixture.legacyHome, "worktrees", "legacy-effort", "acme", "app"), "legacy-effort", true)
+	fixture.addWorktree(filepath.Join(fixture.canonical, ".worktrees", "local-effort"), "local-effort", true)
 	fixture.addWorktree(filepath.Join(fixture.root, "elsewhere", "app-external"), "external-effort", true)
 
 	report := fixture.report(t, time.Now().UTC())
-	if report.Totals.Worktrees != 3 {
-		t.Fatalf("expected all three layouts discovered, got %d: %+v", report.Totals.Worktrees, report.Totals.ByLayout)
+	if report.Totals.Worktrees != 4 {
+		t.Fatalf("expected all four layouts discovered, got %d: %+v", report.Totals.Worktrees, report.Totals.ByLayout)
 	}
 	for branch, layout := range map[string]string{
 		"current-effort":  LayoutCurrent,
 		"legacy-effort":   LayoutLegacy,
+		"local-effort":    LayoutLocal,
 		"external-effort": LayoutExternal,
 	} {
 		worktree, ok := findOrphan(report, branch)
@@ -117,8 +125,8 @@ func TestOrphansSeeEveryLayoutGeneration(t *testing.T) {
 // for branches whose commits already exist in the remote target.
 func TestOrphansRecommendRemovalOnlyForLandedWork(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	landed := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "landed", "acme", "app"), "landed", false)
-	unmerged := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "unmerged", "acme", "app"), "unmerged", true)
+	landed := fixture.addWorktree(filepath.Join(fixture.store, "landed", "acme", "app"), "landed", false)
+	unmerged := fixture.addWorktree(filepath.Join(fixture.store, "unmerged", "acme", "app"), "unmerged", true)
 	_ = landed
 
 	// Idle for a month, so recency cannot be what protects the unmerged one.
@@ -142,7 +150,7 @@ func TestOrphansRecommendRemovalOnlyForLandedWork(t *testing.T) {
 // how the branch relates to the target.
 func TestOrphansNeverRecommendRemovingUncommittedWork(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	path := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "dirty", "acme", "app"), "dirty-effort", false)
+	path := fixture.addWorktree(filepath.Join(fixture.store, "dirty", "acme", "app"), "dirty-effort", false)
 	if err := os.WriteFile(filepath.Join(path, "unsaved.txt"), []byte("work in progress\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -164,9 +172,9 @@ func TestOrphansNeverRecommendRemovingUncommittedWork(t *testing.T) {
 // that is the case filesystem nesting would have made destructive.
 func TestOrphanFamiliesGroupLexicallyAndStayConservative(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "feature", "acme", "app"), "feature", false)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "feature.task-one", "acme", "app"), "feature.task-one", false)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "feature.task-two", "acme", "app"), "feature.task-two", true)
+	fixture.addWorktree(filepath.Join(fixture.store, "feature", "acme", "app"), "feature", false)
+	fixture.addWorktree(filepath.Join(fixture.store, "feature.task-one", "acme", "app"), "feature.task-one", false)
+	fixture.addWorktree(filepath.Join(fixture.store, "feature.task-two", "acme", "app"), "feature.task-two", true)
 
 	report := fixture.report(t, time.Now().UTC())
 	var family *OrphanFamily
@@ -196,8 +204,8 @@ func TestOrphanFamiliesGroupLexicallyAndStayConservative(t *testing.T) {
 // to guess instead.
 func TestOrphansPreferManifestIdentityAndLabelReconstruction(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	withManifest := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "declared", "acme", "app"), "declared", false)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "guessed", "acme", "app"), "guessed", false)
+	withManifest := fixture.addWorktree(filepath.Join(fixture.store, "declared", "acme", "app"), "declared", false)
+	fixture.addWorktree(filepath.Join(fixture.store, "guessed", "acme", "app"), "guessed", false)
 
 	manifest := newCreatedManifest("declared")
 	manifest.Repository = "acme/app"
@@ -226,7 +234,7 @@ func TestOrphansPreferManifestIdentityAndLabelReconstruction(t *testing.T) {
 // Triage must be safe to run against a fleet with live agents at any moment.
 func TestOrphansMutateNothing(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	path := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "untouched", "acme", "app"), "untouched", true)
+	path := fixture.addWorktree(filepath.Join(fixture.store, "untouched", "acme", "app"), "untouched", true)
 	if err := os.WriteFile(filepath.Join(path, "keep.txt"), []byte("do not touch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +257,7 @@ func TestOrphansMutateNothing(t *testing.T) {
 // One unreadable directory must never hide the rest of the fleet.
 func TestOrphansReportUnscannedRatherThanFailing(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "visible", "acme", "app"), "visible", true)
+	fixture.addWorktree(filepath.Join(fixture.store, "visible", "acme", "app"), "visible", true)
 
 	blocked := filepath.Join(fixture.projectsRoot, "blocked")
 	if err := os.MkdirAll(blocked, 0o000); err != nil {
@@ -326,7 +334,7 @@ func TestCleanupPrefixIsNotParentage(t *testing.T) {
 // the same state when interrupted and resumed.
 func TestBackfillIsDryByDefaultAdditiveAndIdempotent(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	path := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "legacy-effort", "acme", "app"), "legacy-effort", true)
+	path := fixture.addWorktree(filepath.Join(fixture.store, "legacy-effort", "acme", "app"), "legacy-effort", true)
 	if err := os.WriteFile(filepath.Join(path, "in-progress.txt"), []byte("uncommitted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +388,7 @@ func TestBackfillIsDryByDefaultAdditiveAndIdempotent(t *testing.T) {
 // `git worktree prune` is the remedy.
 func TestBackfillSkipsRegistrationsWithNoWorkingTree(t *testing.T) {
 	fixture := newOrphanFixture(t)
-	path := fixture.addWorktree(filepath.Join(fixture.home, "worktrees", "vanished", "acme", "app"), "vanished", true)
+	path := fixture.addWorktree(filepath.Join(fixture.store, "vanished", "acme", "app"), "vanished", true)
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatal(err)
 	}

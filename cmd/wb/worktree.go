@@ -93,13 +93,18 @@ immutable Work Log claim. The default is a dry run. Pass --apply only after
 reviewing the exact source and destination paths.
 
 --to=local moves a managed checkout to <canonical>/.worktrees/<task>.
---to=shared moves it to the configured user worktrees.root; it refuses when no
-shared root is configured. Changing that configuration never moves or hides an
-existing checkout. WB inventories every managed layout through the Git worktree
-registry and active claims, then rechecks the clean state, ownership lock,
-branch/head, source, and destination under the task lock immediately before
-the descriptor-anchored no-replace move. Git registration is repaired and
-verified before an append-only relocation receipt is recorded.
+--to=shared moves it to the central checkout store — <root>/.worktrees when no
+worktrees.root is configured, which is the default — and refuses when the
+machine-local store mode is repository-local, because that mode has no shared
+root to move into. The destination embeds the canonical clone's literal host
+level. Changing the store configuration never moves or hides an existing
+checkout; the relocation receipt records the destination relative to the root
+that produced it, so it still names the checkout after a later reconfigure.
+WB inventories every managed layout through the Git worktree registry and
+active claims, then rechecks the clean state, ownership lock, branch/head,
+source, and destination under the task lock immediately before the
+descriptor-anchored no-replace move. Git registration is repaired and verified
+before an append-only relocation receipt is recorded.
 
 Adopted external worktrees are reported but are never moved by this command.
 Use --filter to select repositories within a coordinated task. --format=json
@@ -786,8 +791,8 @@ func newWorktreeLogFinalizeCmd() *cobra.Command {
 
 --report <path> or --report-stdin attaches an agent's full completion report
 (Markdown, typically) to the sealed terminal. WB copies the body into the
-private Work Log store under WB_HOME -- never into source Git -- at a
-deterministic path, and records report_path, terminal_result,
+private Work Log store under the WB state directory -- never into source Git --
+at a deterministic path, and records report_path, terminal_result,
 terminal_message, and finalized_at on the terminal and its outbox receipt.
 'wb worktree list'/'summary'/'log show' then let a lead session read that a
 lane finished and where its report lives without agreeing on an arbitrary
@@ -880,7 +885,7 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 	var apply, force bool
 	command := &cobra.Command{
 		Use:   "archive [worktree-path]",
-		Short: "Archive a finalized local journal into WB_HOME",
+		Short: "Archive a finalized local journal into the WB state directory",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -900,7 +905,7 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 			return encodeLogVerbResult(command, format, result)
 		},
 	}
-	command.Flags().BoolVar(&apply, "apply", false, "copy .wb/local into WB_HOME/worklogs")
+	command.Flags().BoolVar(&apply, "apply", false, "copy .wb/local into <root>/.wb/worklogs")
 	command.Flags().BoolVar(&force, "force", false, "override terminal/seven-day gates")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
@@ -1156,20 +1161,39 @@ func newWorktreeCreateCmd() *cobra.Command {
 
 WB reads even a dirty or off-base canonical clone without switching or updating any local branch, index, or working tree. It fetches the exact requested base
 from origin, then creates each worktree from that verified commit. By default the
-checkout is created at:
+checkout is created in the central store at:
 
-  <canonical-repository>/.worktrees/<task>
+  <root>/.worktrees/<task>/<host>/<org>/<repository>
 
-To select a shared checkout root, set ~/.config/wb/worktrees.yaml:
+where <root> is the projects root, so every checkout of a multi-repository task
+stays together. <host> is the canonical clone's literal forge hostname: its own
+on-disk host level when it has one, otherwise the host named by its origin
+remote, so a clone still at the legacy <root>/<org>/<repository> path is placed
+below its forge without moving. A clone whose origin names no forge (a local
+remote) keeps the <org>/<repository> suffix. To place the checkout inside its own
+canonical clone instead — for a deployment whose sandbox grants only a single
+repository directory — select the repository-local store mode in
+~/.config/wb/worktrees.yaml:
+
+  version: 1
+  worktrees:
+    store: repository-local
+
+That creates <canonical-repository>/.worktrees/<task>. The store mode and, in
+central mode, the store root are machine-local user policy: a repository-tracked
+.wb/worktrees.yaml may configure branch naming but may not select or override
+either, and an attempt to do so is rejected. In central mode worktrees.root
+optionally overrides the store root:
 
   version: 1
   worktrees:
     root: /absolute/shared/root
 
-That creates <root>/<task>/<owner>/<repository>. WB_HOME remains the private
-authority for Work Logs, locks, and receipts; setting $WB_HOME does not change
-the default checkout location. Existing legacy worktrees remain guardable,
-listable, and cleanable during migration.
+which creates <root>/<task>/<host>/<org>/<repository>. The private WB state
+directory at <root>/.wb remains the authority for Work Logs, locks, and
+receipts; WB_HOME is retired, so setting it changes nothing. Existing legacy
+worktrees remain guardable, listable, and cleanable during migration, and a
+configuration change never moves, hides, or re-selects them.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
@@ -1182,8 +1206,8 @@ Changing run or agent provenance requires an audited handoff instead of
 silently replacing the claim.
 
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
-into the private Work Log under WB_HOME before any worktree is created; prompt
-text never enters the worktree projection, source Git, or normal output.
+into the private Work Log under <root>/.wb before any worktree is created;
+prompt text never enters the worktree projection, source Git, or normal output.
 
 Optionally pass --summary with one short, non-sensitive line that describes
 the task for cross-machine overlap checks. It is stored immutably with the
@@ -1192,7 +1216,7 @@ credentials, or customer data into it.
 
 Pass --original-prompt-file - to supply the prompt on stdin instead of a path.
 WB reads stdin once, in memory, and writes the private 0600 archive itself
-under WB_HOME; no caller-owned staging file ever exists, so two concurrent
+under <root>/.wb; no caller-owned staging file ever exists, so two concurrent
 invocations cannot archive each other's prompt by racing on a shared path.
 Empty or whitespace-only stdin is refused, and the bytes are never echoed
 back to stdout, stderr, or argv.
@@ -1347,7 +1371,7 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().StringVar(&taskSummary, "summary", "", "optional short non-sensitive task summary for overlap checks; never prompt text or credentials")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under the WB state directory only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -1395,8 +1419,12 @@ func newWorktreeGuardCmd() *cobra.Command {
 
 A canonical clone is valid only when it is clean and on the base branch. A
 linked checkout is valid only when it uses a non-base branch and either lives
-at <wb-home>/worktrees/<task>/<owner>/<repository> (see 'wb worktree create
---help' for how <wb-home> is resolved) or carries an active Work Log claim
+in the central store at
+<root>/.worktrees/<task>/<host>/<owner>/<repository> (or the legacy
+<root>/.worktrees/<task>/<owner>/<repository>), lives in
+<canonical>/.worktrees/<task> under the repository-local store mode, or carries
+an active Work
+Log claim
 from 'wb worktree adopt --apply' — adoption's whole point is never relocating
 the checkout, so that one case is resolved from its claim instead of its path.
 
@@ -2374,7 +2402,7 @@ required to remove anything.`,
 	command.Flags().BoolVar(&resumeInterrupted, "resume-interrupted", false, "recover only this named task's proven-dead interrupted lock before cleanup")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged remote branch when applying")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum age of a merged pull request (0 disables)")
-	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <projects-root>/.wb/reports/worktree-cleanup/<timestamp>)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&supersededBy, "superseded-by", "", "use an explicit trusted-reviewer receipt to retire an intentionally superseded split branch")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -2599,9 +2627,9 @@ for an explicit audit record.`,
 	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required with --apply: readable non-empty file containing the new exact prompt; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required with --apply: readable non-empty file containing the new exact prompt; archived under the WB state directory only")
 	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
-	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <projects-root>/.wb/reports/worktree-rename/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMutationAdmissionFlags(command)
 	return command
@@ -2667,9 +2695,13 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 			}
 		}
 		age := worktreeAgeLabel(result)
+		placement := result.Placement
+		if placement == "" {
+			placement = "unknown"
+		}
 		line := fmt.Sprintf(
-			"%s  %s  %s  %s  owner=%s  age=%s  %s",
-			result.Task, result.Repository, branch, state, result.Owner, age, pr,
+			"%s  %s  %s  %s  placement=%s  owner=%s  age=%s  %s",
+			result.Task, result.Repository, branch, state, placement, result.Owner, age, pr,
 		)
 		if result.TerminalResult != "" {
 			report := result.ReportPath

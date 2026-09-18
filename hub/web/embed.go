@@ -11,6 +11,7 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -27,7 +28,31 @@ var Dist embed.FS
 // MountPath is where the dashboard is served. The Astro build hard-codes it
 // as the site base, so every asset URL in the emitted HTML already starts
 // here and the pages need no rewriting.
-const MountPath = "/bench/"
+const MountPath = "/workbench/"
+
+// hostedDashboardOrigin is the origin the Astro build bakes into every API
+// URL it emits: the data-endpoint attributes in its HTML and the scope switch
+// in its JS chunks. A self-hosted hub serves that same API at /v0/workbench/
+// on the very listener that serves this page, and authorizes it with a fixed
+// local viewer, so the browser must call it same-origin and no configuration
+// is needed. The hosted deployment at sneat.work is unaffected because it
+// does not use this handler.
+const hostedDashboardOrigin = "https://wb-github-app.sneat.dev"
+
+// rewriteHostedOrigin strips hostedDashboardOrigin from emitted HTML and
+// JavaScript, leaving the root-absolute paths the local hub answers. The
+// rewrite happens at serve time rather than only in the Astro source because
+// the origin is baked into both the pages and their JS chunks. It replaces
+// only that exact literal, so other hosts the build names — such as the
+// canonical sneat.work URL — are untouched. The origin is never derived from
+// the request Host header: the local API is same-origin by construction.
+func rewriteHostedOrigin(name string, content []byte) []byte {
+	switch contentType(name) {
+	case "text/html; charset=utf-8", "text/javascript; charset=utf-8":
+		return bytes.ReplaceAll(content, []byte(hostedDashboardOrigin), nil)
+	}
+	return content
+}
 
 // dashboardIndex is the page the journey in spec/features/self-hosted-bench
 // opens; its presence is what tells Handler the dist is real rather than a
@@ -89,7 +114,7 @@ func handlerFor(files fs.FS, built bool) http.Handler {
 			return
 		}
 		writer.Header().Set("Content-Type", contentType(name))
-		_, _ = writer.Write(content)
+		_, _ = writer.Write(rewriteHostedOrigin(name, content))
 	}))
 }
 

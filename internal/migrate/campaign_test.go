@@ -128,7 +128,7 @@ func TestCampaignLockRefusesSymlinkAndHardLinkRemnants(t *testing.T) {
 
 func setupCampaignLockTest(t *testing.T) string {
 	t.Helper()
-	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	return t.TempDir()
 }
 

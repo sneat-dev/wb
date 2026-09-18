@@ -1,6 +1,6 @@
 ---
 name: wb-install
-description: Install, update, and verify the WB CLI and its build provenance. Use when wb is missing, a required command or flag is unavailable, or a task requires the exact build produced by a merged GitHub revision.
+description: Install, update, and verify the WB CLI and its build provenance, and install or upgrade sibling fleet CLIs (specscore, codegrapher, cover100) relevant to wb via `wb install`/`wb upgrade`. Use when wb is missing, a required command or flag is unavailable, a task requires the exact build produced by a merged GitHub revision, or the task is to install or upgrade wb itself (`wb self-update`) or a related fleet CLI.
 ---
 
 # WB install
@@ -76,3 +76,62 @@ the install method is ambiguous, it refuses rather than guessing — fall back
 to the `go install` recipe above in that case. `--check --format json` gives
 a machine-readable verdict (`up_to_date`, `update_available`, or
 `undetermined`) for scripts that need to branch on it without parsing text.
+
+## Installing sibling fleet CLIs
+
+`wb install` is a different command from everything above: it installs
+*other* fleet CLIs relevant to wb (currently `specscore`, `codegrapher`, and
+`cover100`), consistently with how wb itself was installed, rather than
+updating wb's own binary.
+
+```sh
+wb install                        # list fleet CLIs relevant to wb, with live status
+wb install --all                  # list every catalog CLI, not just wb's relevant set
+wb install specscore              # show details/relevance/plan for specscore, confirm once, install it
+wb install specscore --dry-run    # report the plan without installing anything
+wb install specscore --yes        # skip the confirmation prompt
+wb install nosuchcli               # refused before any confirmation, network request, or write
+wb install --format json          # machine-readable listing/result
+```
+
+Detection, release resolution, checksum verification and placement are the
+same shared machinery `wb self-update` uses
+(`github.com/strongo/cli-helpers`), applied to a fleet-wide catalog instead
+of wb's own release. An unrecognized name, an invalid `--format`, or `--all`
+combined with names are all refused up front — before any confirmation,
+network request, or write — with the list of valid catalog ids where
+relevant, and exit `2` (usage: the invocation itself was rejected); every
+other failure is reported as a wb `findings` exit (1), never a fourth code.
+Every message carries an exact `install: ` prefix.
+
+## Upgrading installed fleet CLIs
+
+`wb upgrade` is the fleet-wide counterpart to `wb self-update`: it brings
+every *installed* catalog CLI — named ones, or all of them with `--all` —
+to its latest release, including wb itself. `wb self-update` and
+`wb upgrade wb` reach the identical outcome, because upgrade configures wb
+as a target from the SAME release identity and after-update hook self-update
+does.
+
+```sh
+wb upgrade                          # read-only report over every installed catalog CLI, plus wb; never modifies
+wb upgrade --check                  # same report, but exits findings when an upgrade is available
+wb upgrade --all                    # upgrade every installed catalog CLI, plus wb, after one confirmation
+wb upgrade specscore                # upgrade just specscore, confirm once
+wb upgrade specscore --dry-run      # report the plan without upgrading anything
+wb upgrade specscore --yes          # skip the confirmation prompt
+wb upgrade wb                       # exactly `wb self-update`: same Config, same after-update hook
+wb upgrade nosuchcli                # refused before any confirmation, network request, or write
+wb upgrade --all --format json      # machine-readable report/result
+```
+
+There is no `update` alias on `upgrade` (only `self-update` keeps one); wb
+is always upgraded last in a batch, after every other named target, because
+its after-update hook restarts the daemon and re-syncs skills. An unknown
+target, an invalid `--format`, or `--all` combined with names exit `2`,
+exactly like `install`'s own usage refusals; every other failure exits `1`,
+including "an upgrade is available" under an explicit `--check` (the bare,
+no-argument report never checks for that and exits `0` unless a lookup
+itself failed). Every message carries an exact `upgrade: ` prefix, and a
+permission failure names upgrade's own Homebrew cask-upgrade command, not
+install's cask-install command.

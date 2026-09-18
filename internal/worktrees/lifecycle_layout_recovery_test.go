@@ -60,7 +60,7 @@ func TestListRetainsClaimedSharedWorktreeAfterUserRootChanges(t *testing.T) {
 
 func TestFleetInventoryReportsLocalStageAndBlocksItsPhysicalTask(t *testing.T) {
 	fixture := newGitFixture(t)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configureFixtureRepositoryLocalWorktrees(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "local-stage", WorkLog: WorkLogOptions{Model: "unknown"},
 	})

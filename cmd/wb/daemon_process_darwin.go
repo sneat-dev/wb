@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 const daemonLaunchdLabel = "dev.sneat.wb.daemon"
@@ -100,7 +102,19 @@ func launchdPlistBytes(executable string, args []string, logPath string) []byte 
 		_ = xml.EscapeText(&body, []byte(argument))
 		body.WriteString("</string>")
 	}
-	body.WriteString("</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/>")
+	body.WriteString("</array>")
+	// launchd starts a job with a minimal environment, so an explicit projects
+	// root has to travel in the unit or the daemon would resolve the default
+	// root instead. This is the *input* the operator chose, not a path resolved
+	// at install time: the daemon still derives its own state and runtime
+	// directory at startup, so a later root move cannot leave this unit pointing
+	// at an abandoned directory.
+	if home := strings.TrimSpace(os.Getenv(wbhome.EnvOverride)); home != "" {
+		body.WriteString("<key>EnvironmentVariables</key><dict>")
+		writeString(wbhome.EnvOverride, home)
+		body.WriteString("</dict>")
+	}
+	body.WriteString("<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>")
 	writeString("ProcessType", "Background")
 	writeString("StandardOutPath", logPath)
 	writeString("StandardErrorPath", logPath)

@@ -52,7 +52,10 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 	relocated := false
 	if event.Reason == repositoryevent.ReasonRepositoryRenamed {
 		oldOwner, oldName := repositoryParts(event.PreviousRepository)
-		oldPath := filepath.Join(processor.ProjectsRoot, oldOwner, oldName)
+		oldPath, pathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, oldOwner+"/"+oldName)
+		if pathErr != nil {
+			return out, pathErr
+		}
 		branch := strings.TrimPrefix(event.Ref, "refs/heads/")
 		relocationOptions := worktrees.RepositoryRelocateOptions{
 			ProjectsRoot: processor.ProjectsRoot, SourceRepository: strings.TrimPrefix(event.PreviousRepository, "github.com/"),
@@ -84,7 +87,10 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 			return out, err
 		} else {
 			owner, name := repositoryParts(event.Repository)
-			destination := filepath.Join(processor.ProjectsRoot, owner, name)
+			destination, destinationPathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, owner+"/"+name)
+			if destinationPathErr != nil {
+				return out, destinationPathErr
+			}
 			if info, destinationErr := os.Stat(destination); destinationErr == nil && info.IsDir() {
 				finalize := processor.finalizeRelocation
 				if finalize == nil {
@@ -99,7 +105,10 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 		}
 	}
 	owner, name := repositoryParts(event.Repository)
-	path := filepath.Join(processor.ProjectsRoot, owner, name)
+	path, pathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, owner+"/"+name)
+	if pathErr != nil {
+		return out, pathErr
+	}
 	info, statErr := os.Stat(path)
 	if statErr == nil {
 		if !info.IsDir() {

@@ -21,17 +21,19 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	for _, placement := range []struct {
 		name   string
 		shared bool
+		local  bool
 	}{
-		{name: "repository-local-default"},
+		{name: "central-default"},
+		{name: "repository-local", local: true},
 		{name: "explicit-shared-root", shared: true},
 	} {
 		t.Run(placement.name, func(t *testing.T) {
-			testPreviousReleaseWorktreeUpgrade(t, placement.shared)
+			testPreviousReleaseWorktreeUpgrade(t, placement.shared, placement.local)
 		})
 	}
 }
 
-func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement bool) {
+func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement, localPlacement bool) {
 	t.Helper()
 	binary := buildWB(t)
 	root := t.TempDir()
@@ -50,10 +52,10 @@ func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement bool) {
 	if sharedPlacement {
 		sharedRoot = filepath.Join(root, "shared-worktrees")
 		mustUpgradeWrite(t, filepath.Join(home, ".config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
-	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		t.Fatal(err)
+	} else if localPlacement {
+		// Pin the repository-local mode; the unconfigured case is the central
+		// default this table also covers.
+		mustUpgradeWrite(t, filepath.Join(home, ".config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 	}
 
 	upgradeGit(t, root, nil, "init", "--bare", "--initial-branch=main", remote)
@@ -81,27 +83,35 @@ func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement bool) {
 	if created.exitCode != exitOK {
 		t.Fatalf("candidate create failed: %s", created.stderr)
 	}
+	resolvedProjects, resolveErr := filepath.EvalSymlinks(projects)
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
 	worktree := filepath.Join(resolvedCanonical, ".worktrees", "upgrade")
-	if sharedPlacement {
+	switch {
+	case sharedPlacement:
 		resolvedSharedParent, resolveErr := filepath.EvalSymlinks(filepath.Dir(sharedRoot))
 		if resolveErr != nil {
 			t.Fatal(resolveErr)
 		}
 		worktree = filepath.Join(resolvedSharedParent, filepath.Base(sharedRoot), "upgrade", "acme", "app")
+	case !localPlacement:
+		// The central store puts the task first and the literal host level
+		// below it; this legacy clone has no host level.
+		worktree = filepath.Join(resolvedProjects, ".worktrees", "upgrade", "acme", "app")
 	}
 	if !strings.Contains(created.stdout, worktree) {
 		t.Fatalf("candidate create did not use selected worktree root %s:\n%s", worktree, created.stdout)
 	}
-	if strings.Contains(created.stdout, filepath.Join(projects, ".wb")) {
-		t.Fatalf("candidate create silently reused legacy home:\n%s", created.stdout)
+	if strings.Contains(created.stdout, filepath.Join(projects, ".wb", "worktrees")) {
+		t.Fatalf("candidate create silently reused the state home for checkouts:\n%s", created.stdout)
 	}
 	common := filepath.Join(canonical, ".git", "wb-hooks")
 	refreshed, err := os.ReadFile(filepath.Join(common, "pre-commit"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(refreshed), "export WB_HOME='"+filepath.Join(resolvedHome, ".wb")+"'") ||
-		!strings.Contains(string(refreshed), "WB_HOME_MIGRATION_COMPAT='"+filepath.Join(resolvedHome, ".wb")+"'") {
+	if !strings.Contains(string(refreshed), "export WB_HOME='"+filepath.Join(resolvedProjects, ".wb")+"'") {
 		checked := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "hooks", "check", canonical)
 		t.Fatalf("candidate did not refresh previous-release hook home:\n%s\ncheck exit=%d stdout=%s stderr=%s", refreshed, checked.exitCode, checked.stdout, checked.stderr)
 	}
@@ -315,6 +325,7 @@ func wbUpgradeEnv(home string) []string {
 		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
 		"WB_HOME=",
 		"WB_HOME_MIGRATION_COMPAT=",
+		"WB_PROJECTS_ROOT=",
 	}
 }
 

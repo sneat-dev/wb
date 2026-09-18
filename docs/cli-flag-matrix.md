@@ -50,13 +50,16 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `hooks lifecycle backfill` | yes | yes | rejected | yes |
 | `hooks lifecycle check`, `status`, `resume`, `retry`, `gc` | rejected | rejected | rejected | yes |
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
+| `deadcode` | rejected | rejected | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
 | `fleet prs` | rejected | rejected | yes | yes |
 | `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
-| `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
+| `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` (`pickup` alias), `recall` (`request-handoff` alias), `send`, `receive-message` | yes | rejected | rejected | yes |
+| `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
+| `agent dispatch`, `status`, `await`, `list`, `logs`, `stop` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
@@ -75,7 +78,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
-| `version`, `self-update` | rejected | rejected | rejected | yes |
+| `version`, `self-update`, `install`, `upgrade` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
 | hidden `skills hook run` | rejected | rejected | rejected | yes |
 | `commands` | rejected | rejected | rejected | yes |
@@ -93,10 +96,12 @@ a general force flag.
 ## Precedence and non-interactive contract
 
 - `--projects-root` overrides the default `<home>/projects` for the selected
-  invocation. `WB_HOME` separately controls WB-managed worktree/journal state;
-  it does not change clone discovery. CI audit, coverage, verify, and check
-  consume it only with `--fleet`; status consumes it only in no-path default
-  fleet mode. Supplying it with a direct repository path is rejected.
+  invocation. It is the single root: WB-managed state lives at `<root>/.wb` and
+  the checkout store at `<root>/.worktrees`. `WB_HOME` is retired — it selects
+  nothing, and WB warns on stderr naming the value it ignored. CI audit,
+  coverage, verify, and check consume `--projects-root` only with `--fleet`;
+  status consumes it only in no-path default fleet mode. Supplying it with a
+  direct repository path is rejected.
   `wb fleet` / `overview` / `stats` / `status` always consume `--projects-root`
   and `--filter`. `wb repo status` rejects both because it targets one path.
 - Root `--org` is consumed only by fleet commands that query owners. For sync,
@@ -150,7 +155,9 @@ independent of `--format` / `--json`; failure receipts retain error details.
 Unspecified validation limits retain the persisted values. `worktree merge`,
 `worktree land`, `merge land`, `merge resume`, and `merge revert` accept `--allow-unfenced`;
 the approval is persisted in the merge receipt through post-merge verification
-and later resumes. It permits unavailable branch-policy authority while both
-pull-request and target phases continue to require stable exact-head check
-observations. Prepare does not accept the flag because it performs no remote
-landing or CI-fence decision.
+and later resumes. It permits unavailable branch-policy authority, and it makes
+an empty observed check set with no enumerated required checks terminal for a
+pull-request candidate as well as a direct target, so a repository with no CI at
+all lands instead of polling until the slice deadline; both phases still require
+stable exact-head check observations whenever checks exist. Prepare does not
+accept the flag because it performs no remote landing or CI-fence decision.

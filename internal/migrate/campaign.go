@@ -27,6 +27,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -347,8 +348,11 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 		}
 		repo := repositories[repository]
 		if repo == nil {
-			canonical := filepath.Join(options.GitHubDir, owner, name)
-			placement, placementErr := worktrees.ResolveUserWorktreePlacement(canonical)
+			canonical, canonicalErr := campaignCanonicalPath(options.GitHubDir, owner, name, repository)
+			if canonicalErr != nil {
+				return nil, canonicalErr
+			}
+			placement, placementErr := worktrees.ResolveUserWorktreePlacement(options.GitHubDir, canonical)
 			if placementErr != nil {
 				return nil, placementErr
 			}
@@ -424,7 +428,10 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 	if err != nil {
 		return "", err
 	}
-	canonical := filepath.Join(options.GitHubDir, owner, name)
+	canonical, canonicalErr := campaignCanonicalPath(options.GitHubDir, owner, name, repository)
+	if canonicalErr != nil {
+		return "", canonicalErr
+	}
 	if _, err := os.Stat(canonical); os.IsNotExist(err) {
 		return sourceRoot, nil
 	} else if err != nil {
@@ -454,7 +461,9 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 
 func (c *campaign) apply() error {
 	defer c.syncReport()
-	if err := runRepositoriesParallel(c.repos, c.options.Parallel, c.progressAction("prepare", 0, c.repos, prepareCampaignRepository)); err != nil {
+	if err := runRepositoriesParallel(c.repos, c.options.Parallel, c.progressAction("prepare", 0, c.repos, func(repo *campaignRepository) error {
+		return prepareCampaignRepository(repo, c.options.GitHubDir)
+	})); err != nil {
 		return err
 	}
 	moduleRoots := map[string]string{}
@@ -1249,7 +1258,7 @@ func (c *campaign) syncReport() {
 	}
 }
 
-func prepareCampaignRepository(repo *campaignRepository) error {
+func prepareCampaignRepository(repo *campaignRepository, githubDir string) error {
 	if _, err := os.Stat(repo.canonical); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(repo.canonical), 0o755); err != nil {
 			return err
@@ -1294,11 +1303,11 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 	if _, err := runIn(repo.canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+repo.branch); err == nil {
 		return fmt.Errorf("campaign branch already exists in %s: %s", repo.canonical, repo.branch)
 	}
-	placement, placementErr := worktrees.ResolveWorktreePlacement(context.Background(), repo.canonical, baseRevision)
+	placement, placementErr := worktrees.ResolveWorktreePlacement(context.Background(), githubDir, repo.canonical, baseRevision)
 	if placementErr != nil {
 		return placementErr
 	}
-	created, createErr := worktrees.CreateWorktreeAtPlacement(context.Background(), repo.canonical, placement, campaignTaskFromBranch(repo.branch), repo.owner+"/"+repo.name, repo.branch, repo.ref, baseRevision)
+	created, createErr := worktrees.CreateWorktreeAtPlacement(context.Background(), githubDir, repo.canonical, placement, campaignTaskFromBranch(repo.branch), repo.owner+"/"+repo.name, repo.branch, repo.ref, baseRevision)
 	if createErr != nil {
 		return createErr
 	}
@@ -1306,6 +1315,42 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 	repo.report.WorktreeDir = created.Path
 	created.Close()
 	return nil
+}
+
+// campaignCanonicalPath resolves the canonical clone for one GitHub module
+// coordinate.
+//
+// A clone that already exists is used where it is — the literal host level
+// first, then the legacy two-level placement — so a migration never creates a
+// second copy of a repository this machine already has, and resume finds the
+// worktree registered against it. When no clone exists yet the new one is
+// placed at the literal host level the module path names, matching `wb sync`
+// and orchestrate; writing it flat would recreate the layout the host level
+// replaced.
+func campaignCanonicalPath(githubDir, owner, name, repository string) (string, error) {
+	resolved, err := worktrees.CanonicalRepositoryPathForURL(githubDir, owner+"/"+name, "https://"+repository+".git")
+	if err != nil {
+		return "", err
+	}
+	if resolved == legacyClonePath(githubDir, owner, name) {
+		return resolved, nil
+	}
+	if _, statErr := os.Stat(resolved); statErr == nil {
+		return resolved, nil
+	}
+	// No clone exists at the resolved host level. A directory at the legacy
+	// placement still stays visible — the campaign reports it as the mis-shaped
+	// canonical it is rather than quietly creating a second clone beside it.
+	if info, statErr := os.Stat(legacyClonePath(githubDir, owner, name)); statErr == nil && info.IsDir() {
+		return legacyClonePath(githubDir, owner, name), nil
+	}
+	return resolved, nil
+}
+
+// legacyClonePath is the two-level placement a repository has when nothing
+// names its forge.
+func legacyClonePath(githubDir, owner, name string) string {
+	return repopath.Address{Org: owner, Repo: name}.Path(githubDir)
 }
 
 func campaignTaskFromBranch(branch string) string {
@@ -1477,19 +1522,18 @@ func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
 // treating an unregistered directory under a configured shared root as a
 // campaign checkout eligible for deletion.
 func campaignRegisteredWorktrees(githubDir, branch string) ([]string, error) {
-	owners, err := os.ReadDir(githubDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
+	// Owner directories are read through the literal host level when one is
+	// present, so a campaign whose clones landed at
+	// <githubDir>/{host}/{owner}/{repository} is still found — including by
+	// cleanup, which would otherwise report nothing removed. A fleet still on
+	// the legacy two-level placement is read in place.
+	owners, unreadable := repopath.Owners(githubDir)
+	if len(unreadable) > 0 {
+		return nil, fmt.Errorf("read canonical clone directories for campaign cleanup: %s", strings.Join(unreadable, "; "))
 	}
 	var worktrees []string
 	for _, owner := range owners {
-		if !owner.IsDir() || owner.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		repositories, readErr := os.ReadDir(filepath.Join(githubDir, owner.Name()))
+		repositories, readErr := os.ReadDir(owner.Path)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -1497,7 +1541,7 @@ func campaignRegisteredWorktrees(githubDir, branch string) ([]string, error) {
 			if !repository.IsDir() || repository.Type()&os.ModeSymlink != 0 {
 				continue
 			}
-			canonical := filepath.Join(githubDir, owner.Name(), repository.Name())
+			canonical := filepath.Join(owner.Path, repository.Name())
 			info, statErr := os.Stat(filepath.Join(canonical, ".git"))
 			if errors.Is(statErr, os.ErrNotExist) {
 				continue

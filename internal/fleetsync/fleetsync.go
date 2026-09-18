@@ -10,12 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -384,7 +384,12 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 			res.Status = Cloned
 			return res
 		}
-		dest := filepath.Join(projectsRoot, repo.Org, repo.Name)
+		// The clone belongs where its own URL says: <root>/{host}/{org}/{repo}
+		// when the URL names a literal forge hostname, and the legacy
+		// <root>/{org}/{repo} when it does not (a local path remote). Writing a
+		// flat duplicate of a repository that already sits at the host level is
+		// exactly what this must not do — see ScanLocal, which now finds it.
+		dest := repopath.FromCloneURL(repo.CloneURL, repo.Org, repo.Name).Path(projectsRoot)
 		if err := gitops.Clone(repo.CloneURL, dest); err != nil {
 			res.Status = Failed
 			res.Err = err

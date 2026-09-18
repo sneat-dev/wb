@@ -227,20 +227,23 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		result.RequiredChecksAuthority = authority
 		result.TargetFreshnessAuthority = freshnessAuthority
 		result.PolicyAuthorityUnavailable = policyUnavailable
-		missingRequired := missingRequiredChecks(checks, requiredChecks)
-		if options.PullRequest != "" && !pending && len(checks) == 0 && len(requiredChecks) == 0 {
-			return failedCommitWaitResult(result, "pull-request route observed an authoritative empty required-check policy and no GitHub checks for the exact head; rerun with --route direct because a PR route cannot authorize a no-check candidate"), nil
-		}
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
+		missingRequired := missingRequiredChecks(checks, requiredChecks)
 		// A direct target can truthfully have no applicable CI at all (for
 		// example, a docs-only repository or a path-filtered workflow). GitHub's
 		// complete check-run/status APIs plus the enumerated empty policy are an
-		// authoritative receipt in that case. PR mode fails explicitly above
-		// instead of returning a repeatable checks_pending slice with no route
-		// that could ever make it terminal.
-		noApplicableChecks := options.PullRequest == "" && len(checks) == 0 && len(requiredChecks) == 0
+		// authoritative receipt in that case. PR mode deliberately never takes
+		// this route on its own: without a server-enforced strict freshness fence
+		// an empty check set cannot be told apart from CI that has not registered
+		// yet, so it demands a nonempty observed set. An explicit
+		// --allow-unfenced gives up that fence, and then the empty receipt is
+		// authoritative for a candidate too. Without this a repository that has
+		// no CI at all can only poll until its slice deadline and report
+		// checks_pending on every landing.
+		noApplicableChecks := len(checks) == 0 && len(requiredChecks) == 0 &&
+			(options.PullRequest == "" || options.AllowUnfenced)
 		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
 			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
@@ -343,12 +346,12 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
 			} else if options.PullRequest != "" && result.PolicyAuthorityUnavailable != "" {
 				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the pull-request base, exact candidate head, target containment, and observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication"
+			} else if noApplicableChecks {
+				result.Reason = "GitHub's required-check policy was enumerated as empty, complete check-run and status receipts registered no checks, and that no-applicable-check receipt stayed unchanged across a bounded stable reread"
 			} else if options.PullRequest != "" {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, and the observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication; server-side target freshness was intentionally not required because this path does not merge"
 			} else if result.PolicyAuthorityUnavailable != "" {
 				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the exact remote target head and observed GitHub check set stayed terminal across a bounded stable reread"
-			} else if noApplicableChecks {
-				result.Reason = "GitHub's required-check policy was enumerated as empty, complete check-run and status receipts registered no checks, and that no-applicable-check receipt stayed unchanged across a bounded stable reread"
 			} else {
 				result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the exact remote target's observed check set stayed terminal across a bounded stable reread"
 			}

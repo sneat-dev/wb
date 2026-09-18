@@ -10,26 +10,38 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func TestStreamWorktreesPlansLocalAndConfiguredSharedPaths(t *testing.T) {
+func TestStreamWorktreesPlansCentralLocalAndConfiguredSharedPaths(t *testing.T) {
 	projectsRoot := t.TempDir()
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	adapter := streamWorktrees{projectsRoot: projectsRoot}
 
+	central, err := adapter.PlannedWorktree("stream-paths", "acme/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCentral := filepath.Join(projectsRoot, ".worktrees", "stream-paths", "acme", "app")
+	if central != wantCentral {
+		t.Fatalf("central planned path = %q, want %q", central, wantCentral)
+	}
+
+	configPath := filepath.Join(configHome, "wb", "worktrees.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	local, err := adapter.PlannedWorktree("stream-paths", "acme/app")
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantLocal := filepath.Join(projectsRoot, "acme", "app", ".worktrees", "stream-paths")
 	if local != wantLocal {
-		t.Fatalf("local planned path = %q, want %q", local, wantLocal)
+		t.Fatalf("repository-local planned path = %q, want %q", local, wantLocal)
 	}
 
 	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
-	configPath := filepath.Join(configHome, "wb", "worktrees.yaml")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  root: "+sharedRoot+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

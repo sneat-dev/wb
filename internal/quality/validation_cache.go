@@ -40,16 +40,17 @@ type validationCacheRecord struct {
 	Digest string             `json:"digest"`
 }
 
-// NewValidationCacheKey fingerprints repository-local policy and module
-// manifests. The caller supplies the exact target revision and WB revision.
-func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check) (ValidationCacheKey, error) {
-	return NewValidationCacheKeyWithValidators(repository, targetRevision, root, wbRevision, checks, nil)
-}
-
-// NewValidationCacheKeyWithValidators fingerprints repository-local policy,
-// module manifests, and the executable digests used by external validators.
-// The caller supplies the exact target revision and WB revision.
-func NewValidationCacheKeyWithValidators(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string) (ValidationCacheKey, error) {
+// NewValidationCacheKey fingerprints repository-local policy, module manifests,
+// and the executable digests used by external validators. The caller supplies
+// the exact target revision and WB revision, and passes nil validatorSHAs when
+// no external validator participates.
+//
+// One constructor rather than two: the original signature was kept alongside a
+// WithValidators variant that delegated to it, and `wb deadcode` immediately
+// reported the original as unreachable once the only caller moved. A dead
+// wrapper beside a live near-identical function is a reliable way to have the
+// wrong one called later.
+func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string) (ValidationCacheKey, error) {
 	key := ValidationCacheKey{
 		Repository: repository, TargetRevision: targetRevision,
 		Checks: append([]Check(nil), checks...), WBRevision: wbRevision,

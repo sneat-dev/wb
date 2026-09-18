@@ -218,7 +218,17 @@ func sessionMemberPath(t *testing.T, projectsRoot, resumeID, repository string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(canonical, ".worktrees", "session-"+resumeID)
+	// Resolve the same machine-local placement policy the receiver uses, so the
+	// expected path follows the configured store mode.
+	placement, err := worktrees.ResolveUserWorktreePlacement(projectsRoot, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := placement.Path("session-"+resumeID, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func assertPreparedParkedMember(t *testing.T, projectsRoot, path string, request sessionpark.RemoteRequest, member sessionpark.RemoteMember, record session.Record) {

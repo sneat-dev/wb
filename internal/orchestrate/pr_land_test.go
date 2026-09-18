@@ -36,7 +36,7 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 		files = []string{"go.sum"}
 	}
 	root := t.TempDir()
-	t.Setenv("WB_HOME", filepath.Join(root, ".wb"))
+	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(root, "projects"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	projects := filepath.Join(root, "projects")

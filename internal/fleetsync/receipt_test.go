@@ -15,18 +15,18 @@ import (
 
 func receiptHome(t *testing.T) string {
 	t.Helper()
-	home, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", home)
-	return home
+	t.Setenv("WB_PROJECTS_ROOT", root)
+	return filepath.Join(root, ".wb")
 }
 
 func TestWriteRemovalReceiptRecordsWhatWasRemoved(t *testing.T) {
 	home := receiptHome(t)
 	created := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
-	path, err := writeRemovalReceipt("/p", RemovalReceipt{
+	path, err := writeRemovalReceipt(filepath.Dir(home), RemovalReceipt{
 		SchemaVersion: removalReceiptSchemaVersion,
 		Phase:         PhasePlanned,
 		Repository:    "owner/old-repo",
@@ -68,7 +68,7 @@ func TestRemovalReceiptPhaseUpdateRewritesTheSameFile(t *testing.T) {
 		SchemaVersion: removalReceiptSchemaVersion, Phase: PhasePlanned,
 		Repository: "owner/r", ClonePath: "/p/owner/r", CreatedAt: created,
 	}
-	path, err := writeRemovalReceipt("/p", receipt)
+	path, err := writeRemovalReceipt(filepath.Dir(home), receipt)
 	if err != nil {
 		t.Fatal(err)
 	}

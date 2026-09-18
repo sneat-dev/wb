@@ -131,8 +131,8 @@ func normalizeBranchListOptions(options BranchListOptions) (BranchListOptions, e
 	if options.Base == "" {
 		options.Base = "main"
 	}
-	if !validBranch(context.Background(), options.Base) {
-		return BranchListOptions{}, fmt.Errorf("invalid base branch %q", options.Base)
+	if err := branchValidationError(context.Background(), "base branch", options.Base); err != nil {
+		return BranchListOptions{}, err
 	}
 	if options.Scope == "" {
 		options.Scope = BranchScopeLocal
@@ -806,6 +806,6 @@ func classifyRemotePullRequestGate(ctx context.Context, repository discover.Repo
 			cache[ref.SHA] = pullRequests
 		}
 	}
-	open, _ := matchingPullRequests(pullRequests, repository.Slug(), entry.Base, ref.SHA)
+	open, _ := matchingPullRequests(pullRequests, repository.Slug(), entry.Base, ref.Name, ref.SHA)
 	entry.OpenPullRequest = open
 }

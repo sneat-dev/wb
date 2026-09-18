@@ -1,12 +1,14 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/repopath"
 	"gopkg.in/yaml.v3"
 )
 
@@ -182,17 +184,40 @@ func (s Source) Locate(repoRoot string, searchRoots []string) (string, error) {
 		return candidate, nil
 	case SourceFleet:
 		var tried []string
+		var locateFailure error
 		for _, root := range searchRoots {
-			candidate := filepath.Join(root, s.Owner, s.Repo, filepath.FromSlash(s.Path))
+			// A canonical clone lives at <root>/<host>/<org>/<repo> on a
+			// host-level fleet and at <root>/<org>/<repo> before the host level
+			// existed. Locate reports which placement this root actually holds
+			// instead of assuming the flat one, so a fleet policy reference
+			// resolves below its forge rather than at a path that never existed.
+			//
+			// An unresolvable root does not abort the search: the remaining
+			// roots may hold the policy, and the operator-facing remedy below is
+			// more useful than the resolver's ambiguity message — a
+			// `--policy` reference has no syntax for a host-qualified owner.
+			address, locateErr := repopath.Locate(root, s.Owner, s.Repo)
+			if locateErr != nil {
+				if locateFailure == nil {
+					locateFailure = locateErr
+				}
+				tried = append(tried, root)
+				continue
+			}
+			candidate := filepath.Join(address.Path(root), filepath.FromSlash(s.Path))
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
 			}
 			tried = append(tried, candidate)
 		}
 		sort.Strings(tried)
-		return "", fmt.Errorf(
+		message := fmt.Sprintf(
 			"policy %s is not available locally (looked in: %s).\nClone %s/%s, or pass --policy with a path or https URL",
 			s.Raw, strings.Join(tried, ", "), s.Owner, s.Repo)
+		if locateFailure != nil {
+			message += "\n" + locateFailure.Error()
+		}
+		return "", errors.New(message)
 	default:
 		return "", fmt.Errorf("policy reference %s must be fetched, not located", s.Raw)
 	}
