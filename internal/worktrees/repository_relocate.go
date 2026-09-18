@@ -444,9 +444,18 @@ func repositoryRelocateWorktrees(ctx context.Context, source, destination string
 			}
 			mapped = filepath.Join(destination, relative)
 		}
+		// An unborn HEAD (no commit yet — a freshly initialized repository
+		// with nothing committed) is not a refusal: a directory rename moves
+		// it exactly as safely as any other worktree. head stays "" for it;
+		// callers that need to verify a specific commit survived the move
+		// (RelocateRepository's remote-head check) already require real
+		// history to exist for other reasons.
 		head, headErr := git(ctx, path, "rev-parse", "HEAD")
 		if headErr != nil {
-			return nil, headErr
+			if _, unbornErr := git(ctx, path, "symbolic-ref", "--quiet", "HEAD"); unbornErr != nil {
+				return nil, headErr
+			}
+			head = ""
 		}
 		entries = append(entries, repositoryRelocateWorktree{source: path, destination: mapped, head: head})
 	}

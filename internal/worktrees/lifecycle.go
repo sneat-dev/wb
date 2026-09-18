@@ -1315,11 +1315,22 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 				if json.Unmarshal(raw, &claim) != nil || claim.Lifecycle != "active" || (claim.Task != task && claim.EffortID != task) || claim.Worktree == "" {
 					continue
 				}
+				// claim.Worktree is the immutable path frozen at claim
+				// creation. A clone-placement migration (wb layout migrate)
+				// or a repository relocate can move it since; resolve the
+				// current location through the same relocation-receipt
+				// journal RelocateRepository and `wb worktree relocate`
+				// record, so a claim recorded before such a move is not
+				// silently skipped here.
+				resolved, resolveErr := resolveRelocationChain(home, claim)
+				if resolveErr != nil {
+					continue
+				}
 				// The claim's repository identity resolves to the clone that
 				// actually exists, host level first, so a clone that has
 				// adopted <root>/{host}/{owner}/{repository} is recognized
 				// here and a legacy one keeps resolving to its own path.
-				canonicalDir, splitErr := CanonicalRepositoryPath(projectsRoot, claim.Repository)
+				canonicalDir, splitErr := CanonicalRepositoryPath(projectsRoot, resolved.repository)
 				if splitErr != nil {
 					continue
 				}
@@ -1329,7 +1340,7 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 				// canonical-local root is still proven by the repository
 				// identity and the exact parent layout; the physical task
 				// name is resolved later from its manifest.
-				if filepath.Clean(filepath.Dir(claim.Worktree)) != filepath.Clean(expected) || seen[expected] {
+				if filepath.Clean(filepath.Dir(resolved.worktree)) != filepath.Clean(expected) || seen[expected] {
 					continue
 				}
 				if info, statErr := os.Stat(expected); statErr != nil || !info.IsDir() {

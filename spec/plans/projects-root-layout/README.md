@@ -19,7 +19,8 @@ retired; the store gains a central default plus a repository-local mode; and WB
 declares and preflights the paths it needs writable. The work spans the path
 resolver (`internal/wbhome`), the worktree subsystem (`internal/worktrees`,
 including the existing `relocate` verb), the daemon's runtime derivation, the
-layout auditor (`cmd/wb/layout.go`), and a one-off migration of this machine.
+layout auditor (`cmd/wb/layout.go`), a `wb layout migrate` verb for legacy
+clones, and the migration of this machine.
 
 ## Approach
 
@@ -42,12 +43,13 @@ constraints:
    Amending them earlier would make the spec tree describe a system that does
    not exist, so task 7 is gated on tasks 1–3 and 6.
 
-The migration (task 8) is deliberately last and deliberately one-off. There are
-no external operators to keep compatible, and the previous relocation
-demonstrated that provenance is not recoverable after a move — so the migration
-plans against a captured manifest, uses the existing `wb worktree relocate`
-verb for checkouts rather than a bespoke script, and verifies zero stale Git
-registrations before it reports success.
+The migration of this machine (task 8) is deliberately last, and it runs a verb
+rather than a script (task 10): any operator adopting WB on existing checkouts
+needs the same move, and the previous relocation demonstrated that provenance
+is not recoverable after a move — so `wb layout migrate` plans against a
+captured manifest, repoints linked worktrees with Git's own repair, and verifies
+zero stale Git registrations before it reports a clone done; task checkouts
+still move with the existing `wb worktree relocate` verb.
 
 `wb worktree relocate` is already implemented and already specifies plan/apply,
 task locking, descriptor-anchored no-replace move, Git repair, append-only
@@ -167,7 +169,7 @@ each checkout's placement alongside its task identity.
 
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
-**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7
+**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10
 **Status:** blocked
 
 **Blocked by:** the operator deferred this one-off machine migration until the
@@ -176,10 +178,10 @@ down. Running it now would move canonical clones and task checkouts out from
 under live sessions. Tasks 1-7 and 9 land the behaviour and the dry-runnable
 plan; this task is the only one that touches this machine.
 
-One-off migration of the operator's machine, since there are no external
-operators to keep compatible. Capture a manifest of every canonical clone and
-managed checkout before touching anything, then: move the clones to
-`<root>/github.com/<org>/<repo>`; relocate task checkouts with
+Migration of the operator's machine, run with the task-10 verb rather than a
+bespoke script. `wb layout migrate` (dry run, then `--apply`) captures the
+manifest, moves the clones to `<root>/github.com/<org>/<repo>` and repoints
+their linked worktrees; then relocate task checkouts with
 `wb worktree relocate --to=shared` rather than a bespoke script; regenerate the
 hook shims that pin `WB_HOME`; update the daemon's launchd plist and the
 harness configuration files that hardcode `~/.wb/...` paths; and verify zero
@@ -200,6 +202,27 @@ including the fact that the root is the sandbox workspace root expected by the
 common harnesses. Add or refresh the `ai/capabilities.json` row and the
 `docs/cli-flag-matrix.md` line for every changed command leaf, as
 `cmd/wb/skills_test.go` requires.
+
+### Task 10: `wb layout migrate` — move legacy clones and repoint worktrees
+
+**Id:** task-10
+**Verifies:** projects-root-layout#ac:migrate-plans-then-moves-and-repoints, projects-root-layout#ac:migrate-skips-unsafe-clones, projects-root-layout#ac:migrate-is-reversible
+**Depends-On:** task-2, task-6
+**Status:** complete
+
+Add `wb layout migrate [owner/repo...] [--apply] [--undo <id>]` beside `audit`
+and `clean`, implemented in `internal/layout` on the existing `repopath`
+host-level resolution and the no-replace move primitive `wb worktree relocate`
+already uses. The verb exists for any operator adopting WB on existing
+checkouts, not only for this machine. Per clone: refuse the unsafe cases the
+Feature lists, rename the clone to its host-level path, run `git worktree
+repair` with every linked worktree's post-move path, verify the worktree list
+and each worktree's common directory, regenerate `.worktree.md` markers, update
+the WB records that locate active tasks, and append the outcome to the manifest
+under `<root>/.wb/layout-migrations/<id>/`. Remove emptied legacy owner
+directories, invalidate the cached repository-path index, and report when the
+daemon needs a restart. Tests build real Git repositories with in-clone and
+external linked worktrees.
 
 ## Open Questions
 

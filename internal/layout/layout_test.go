@@ -6,7 +6,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
+
+func TestMain(m *testing.M) {
+	testenv.IsolateProcess()
+	// This package's migrate tests read Work Log claims across every
+	// wbhome-resolved home, including the retired legacy $HOME/.wb, and must
+	// not see this machine's real fleet state (a fixture repository name can
+	// coincidentally collide with a real claim recorded there). Redirect HOME
+	// to a private, empty directory for this package's test binary only; a
+	// test that deliberately exercises legacy-home behavior overrides it
+	// again with its own t.Setenv("HOME", ...), which always wins for that
+	// test. This is scoped to this package deliberately: internal/worktrees'
+	// own tests exercise a dropped-HOME subprocess path whose expected
+	// behavior depends on the real ambient HOME being genuinely absent, so
+	// the same redirection must not apply there.
+	if home, err := os.MkdirTemp("", "wb-layout-test-home-*"); err == nil {
+		if resolved, err := filepath.EvalSymlinks(home); err == nil {
+			home = resolved
+		}
+		_ = os.Setenv("HOME", home)
+	}
+	os.Exit(m.Run())
+}
 
 func TestAuditDetectsTopLevelAndMisowned(t *testing.T) {
 	t.Parallel()

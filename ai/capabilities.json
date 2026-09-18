@@ -6436,6 +6436,81 @@
       "notes": "Default is dry-run. Misowned clones are never removed by clean."
     },
     {
+      "id": "wb.layout.migrate",
+      "feature_refs": [
+        "spec/features/projects-root-layout/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb layout migrate",
+              "flags": [
+                "--apply",
+                "--format",
+                "--report-dir",
+                "--undo"
+              ],
+              "modes": [
+                "Dry-runs or moves legacy {owner}/{repository} clones to {host}/{owner}/{repository}, repointing every linked worktree; --undo <id> reverses a previous apply's manifest."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb layout migrate --help",
+              "contains": [
+                "--apply",
+                "--undo"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/layout.md",
+              "marker": "# Clone layout",
+              "examples": [
+                "wb layout migrate --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/layout_migrate_test.go",
+              "name": "TestLayoutMigratePlansThenMovesAndRepoints",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/layout_migrate_test.go",
+              "name": "TestLayoutMigrateSkipsUnsafeClones",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/layout_migrate_test.go",
+              "name": "TestLayoutMigrateIsReversible",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Default is dry-run. A clone already at the host level is reported done and left untouched. Refuses no-origin, owner-mismatch, bad-host, occupied-destination, in-progress-Git-operation, and live-Work-Log-claim clones; uncommitted changes are never a refusal. --apply writes a manifest under <root>/.wb/layout-migrations/<id>/ that --undo <id> reverses."
+    },
+    {
       "id": "wb.migrate",
       "feature_refs": [],
       "since": "existing",
