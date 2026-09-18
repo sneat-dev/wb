@@ -858,7 +858,15 @@ func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destinat
 	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
 		return fmt.Errorf("prepare relocation-reversal destination parent: %w", err)
 	}
-	if _, err := moveWorktree(ctx, canonicalDir, filepath.Dir(destination), destination, source, worktreeMoveHooks{}); err != nil {
+	// filepath.Dir(source), not filepath.Dir(destination): moveWorktree's
+	// worktreesRoot argument must bound the NEW path (here, source, the
+	// restoration target) so the secure Git helper's write-capability root
+	// covers where `worktree repair` must write the restored checkout's
+	// .git file. Every other moveWorktree caller bounds its own new path
+	// the same way; this reversal path had it backwards, which only
+	// surfaced where Landlock actually confines the child (CI), not on a
+	// machine where the secure Git capability is unavailable.
+	if _, err := moveWorktree(ctx, canonicalDir, filepath.Dir(source), destination, source, worktreeMoveHooks{}); err != nil {
 		return err
 	}
 	if _, _, err := appendRelocationReceipt(home, claim, intent, now); err != nil {
