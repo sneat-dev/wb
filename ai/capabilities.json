@@ -6850,7 +6850,7 @@
               "path": "ai/skills/wb-fleet/references/peers.md",
               "marker": "# Connect a peer",
               "examples": [
-                "wb peers invite laptop --token-file /tmp/laptop.token"
+                "wb peers invite laptop --token-file ~/.wb/credentials/laptop.token"
               ]
             }
           ],
