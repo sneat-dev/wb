@@ -17,6 +17,7 @@ func newPRCmd() *cobra.Command {
 		Use:   "pr",
 		Short: "Land and inspect pull requests as one deterministic operation",
 	}
+	command.AddCommand(newPRCreateCmd())
 	command.AddCommand(newPRLandCmd())
 	return command
 }

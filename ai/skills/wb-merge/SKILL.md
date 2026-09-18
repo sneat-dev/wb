@@ -66,11 +66,19 @@ nothing to remember:
 | Situation | Verb | Older spelling |
 |---|---|---|
 | Wait for checks, then land the PR | `wb pr land <owner/repo#n>` | — |
+| Open a PR for this worktree | `wb pr create` | — |
+| Commit, push, open and land in one call | `wb pr create --add … -m … --land` | — |
 | Just tell me when a PR moves | `wb wait pr <owner/repo#n>...` | — |
 | Merge evidence for an exact head SHA | `wb wait checks --repo … --head …` | `wb ci wait` |
 | A dispatched agent run finishing | `wb wait agent <agent-id>` | `wb agent await` |
 | A durable daemon operation finishing | `wb wait operation <id>` | `wb daemon operation wait` |
 | What am I waiting for right now? | `wb wait list` | — |
+
+Since `wb pr land` (#598, v0.143.0), it arms GitHub auto-merge before waiting
+and never disarms it on a red check, because CI is the gate, not this verb. A
+PR that is behind its target is brought up to date through update-branch
+rather than refused. After another PR lands ahead of yours, rerun `wb pr
+land` — it re-arms and waits again; never merge `main` by hand to catch up.
 
 ```sh
 wb wait checks --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json

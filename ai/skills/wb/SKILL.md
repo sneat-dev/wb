@@ -1,6 +1,6 @@
 ---
 name: wb
-description: Entry point for the WB CLI. Start work with `wb create <task> <owner/repository>...`, finish it with `wb worktree land`/`wb land` (one call per repository) or `wb pr land` for an open pull request — never `gh pr merge`. Routes to the specific wb-* skill (wb-worktrees, wb-merge, wb-fleet, wb-hooks, wb-deps, wb-ci, wb-branches, wb-streams, ...) for the task at hand.
+description: Entry point for the WB CLI. Start work with `wb create <task> <owner/repository>...`, finish it with `wb worktree land`/`wb land` (one call per repository), `wb pr create` to open (or commit, push, open, and land in one call) a single worktree's pull request, or `wb pr land` for an already-open one — never `gh pr create`/`gh pr merge`. Routes to the specific wb-* skill (wb-worktrees, wb-merge, wb-fleet, wb-hooks, wb-deps, wb-ci, wb-branches, wb-streams, ...) for the task at hand.
 ---
 
 # WB
@@ -10,11 +10,13 @@ Two verbs bound almost every agent session:
 ```sh
 wb create <task> <owner/repository>...   # start isolated work; one task, every repository it touches
 wb worktree land <worktree>...           # finish it — one call per repository
+wb pr create --add <paths> -m "…" --land --approved-by <review>  # one worktree: commit, push, open, and land
+wb pr create --commit-staged -m "…"      # or --commit-all; open the pull request without landing it yet
 wb pr land <owner/repo#n>                # land an already-open pull request with no local worktree
 ```
 
-Never hand-roll `gh pr merge`, a manual ancestry check, `git push --delete`, or
-manual `wb worktree cleanup` — see rule `land-with-wb-verb`
+Never hand-roll `gh pr create`, `gh pr merge`, a manual ancestry check,
+`git push --delete`, or manual `wb worktree cleanup` — see rule `land-with-wb-verb`
 (`sneat-co/backstage`). A task spanning several repositories is still ONE task
 (`wb worktree create <task> owner/repo1 owner/repo2 ...`), never one
 separately-named task per repository — but it lands with one
