@@ -100,6 +100,20 @@ refuses drift, symlinks, and traversal, records the durable itemized receipt,
 and then allows the normal archive prune. It is not a cache-name exception or
 a general force flag.
 
+## `layout migrate` command flags
+
+`--include-task <task>` (repeatable) and `--include-active-tasks` each lift
+only the live-Work-Log-claim refusal — for the named tasks, or for every
+active task. Task names are matched exactly (case-sensitive). Every other
+refusal (a busy process, a parked session, a Git operation in progress, an
+occupied destination) still applies, including the re-check immediately
+before each clone's move. An `--include-task` name that matches no live
+claim in any resolved home is a usage error before anything moves. A clone
+planned only because of an inclusion names the included task in its dry-run
+reason. `--apply` records which tasks an inclusion covered in its manifest;
+`--undo` honours exactly those and refuses `--include-task`/
+`--include-active-tasks` passed alongside it as a usage error.
+
 ## Precedence and non-interactive contract
 
 - `--projects-root` overrides the default `<home>/projects` for the selected

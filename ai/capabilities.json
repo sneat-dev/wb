@@ -6451,11 +6451,13 @@
                 "--apply",
                 "--clones-only",
                 "--format",
+                "--include-active-tasks",
+                "--include-task",
                 "--report-dir",
                 "--undo"
               ],
               "modes": [
-                "Dry-runs or moves legacy {owner}/{repository} clones to {host}/{owner}/{repository}, repointing every linked worktree, then relocates every managed task checkout to its store-mode placement via `wb worktree relocate`; --clones-only skips relocation; --undo <id> reverses a previous apply's manifest, including its relocations."
+                "Dry-runs or moves legacy {owner}/{repository} clones to {host}/{owner}/{repository}, repointing every linked worktree, then relocates every managed task checkout to its store-mode placement via `wb worktree relocate`; --clones-only skips relocation; --undo <id> reverses a previous apply's manifest, including its relocations. --include-task <task> (repeatable) or --include-active-tasks lifts only the live-claim refusal, for named tasks or every active task; every other refusal still applies."
               ]
             }
           ],
@@ -6469,6 +6471,8 @@
               "contains": [
                 "--apply",
                 "--clones-only",
+                "--include-active-tasks",
+                "--include-task",
                 "--undo"
               ]
             }
@@ -6510,12 +6514,27 @@
               "path": "cmd/wb/layout_migrate_test.go",
               "name": "TestLayoutMigrateRelocatesManagedWorktrees",
               "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/layout_migrate_include_test.go",
+              "name": "TestLayoutMigrateIncludesNamedActiveTasks",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/layout_migrate_include_test.go",
+              "name": "TestLayoutMigrateIncludeUnknownTaskIsUsageError",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/layout_migrate_include_test.go",
+              "name": "TestLayoutMigrateIncludeActiveTasksStillSkipsBusyCheckout",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Default is dry-run. A clone already at the host level is reported done and left untouched. Refuses no-origin, owner-mismatch, bad-host, occupied-destination, in-progress-Git-operation, and live-Work-Log-claim clones; uncommitted changes are never a refusal. --apply writes a manifest under <root>/.wb/layout-migrations/<id>/ that --undo <id> reverses, including any relocations, which are reversed before the clone moves they depend on. After moving clones it relocates every managed task checkout whose placement differs from the store-mode placement by calling `wb worktree relocate`; --clones-only skips that step. Repository-local store mode leaves in-clone checkouts where they are, and a linked worktree with no WB task identity is repointed only and reported unmanaged."
+      "notes": "Default is dry-run. A clone already at the host level is reported done and left untouched. Refuses no-origin, owner-mismatch, bad-host, occupied-destination, in-progress-Git-operation, and live-Work-Log-claim clones; uncommitted changes are never a refusal. --include-task (repeatable, exact match) or --include-active-tasks lifts only the live-claim refusal; every other refusal still applies; an unknown task name is a usage error before anything moves. An included clone's relocation intent/receipt is recorded; its active in-clone checkout moves and repoints, reported moved-with-clone (not a finding). --apply's manifest records which tasks were included; --undo honours exactly those and refuses --include-task/--include-active-tasks. It also relocates managed task checkouts to the store-mode placement via `wb worktree relocate`; --clones-only skips that. Unmanaged worktrees are repointed only; a relocated marker names its final path."
     },
     {
       "id": "wb.migrate",

@@ -169,7 +169,7 @@ each checkout's placement alongside its task identity.
 
 **Id:** task-8
 **Verifies:** projects-root-layout#ac:existing-placements-remain-operable, projects-root-layout#ac:wb-home-ignored-with-diagnostic
-**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10, task-11
+**Depends-On:** task-1, task-2, task-3, task-4, task-5, task-6, task-7, task-10, task-11, task-12
 **Status:** blocked
 
 **Blocked by:** the operator deferred this one-off machine migration until the
@@ -237,6 +237,20 @@ the `wb worktree relocate` implementation, not a copy of it. Add `--clones-only`
 to skip relocation. Relocations appear in the dry run and in the manifest, and
 `--undo` reverses them. Unmanaged worktrees are repointed and reported, never
 relocated. Repository-local store mode leaves in-clone checkouts where they are.
+
+### Task 12: `--include-task` / `--include-active-tasks`, and markers after relocation
+
+**Id:** task-12
+**Verifies:** projects-root-layout#ac:migrate-includes-named-active-tasks
+**Depends-On:** task-11
+**Status:** complete
+
+Let the operator lift only the live-claim refusal of `wb layout migrate`, per
+task or for all tasks. Unknown task names are a usage error. The busy-process,
+parked-session and Git-operation checks still apply. Included claims get
+relocation receipts, so the task resolves at its new path. Also regenerate a
+relocated checkout's `.worktree.md` after the relocation: the vm1 test on
+2026-09-18 left it naming the pre-relocation path.
 
 ## Open Questions
 
