@@ -248,6 +248,17 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 	if receipt == nil {
 		return fmt.Errorf("worktree-merge PR-land hook called with no receipt")
 	}
+	// Minor 3 (review round on #614): the engine hands this hook whatever
+	// head it itself last observed as "previous" - it must be exactly the
+	// head this receipt already holds as its candidate. If it is not, this
+	// call was never about advancing OUR recorded candidate at all (a stale
+	// hook closure, a receipt reused across an unrelated retry, and so on),
+	// and adopting "updated" as this receipt's own advance would silently
+	// substitute a head this receipt never held. Refuse rather than adopt.
+	if previous != receipt.Candidate.SHA {
+		return fmt.Errorf("update-branch hook called with previous head %s but the receipt holds candidate %s; refusing to adopt an advance from a head this receipt did not hold",
+			shortMergeRevision(previous), shortMergeRevision(receipt.Candidate.SHA))
+	}
 	parents, err := pullRequestCommitParents(ctx, receipt.Repository, updated)
 	if err != nil {
 		return fmt.Errorf("read update-branch merge commit parents: %w", err)
@@ -264,7 +275,19 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 	// recorded as a trusted advance merely because its two parents happen to
 	// match the shape this function checks for. Any failure to positively
 	// verify is a refusal, not a silent adoption.
-	if !verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated) {
+	proved, proofErr := verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, previous, newTarget, updated)
+	if proofErr != nil {
+		// Minor 5 (review round on #614): a transient GitHub read failure
+		// while computing the proof (here, only commitTreeSHA's fallback
+		// read can produce one - see verifyUpdateBranchMergeProof) is not a
+		// verdict that the merge is unproven; it is a blip WB never
+		// observed. Surface it unflattened so the caller's own
+		// IsTransientReadFailure check (worktree_merge_pr_land.go's
+		// landWorktreeMergePullRequest) classifies this as ChecksPending
+		// and retryable, never Conflict.
+		return fmt.Errorf("verify update-branch merge commit %s: %w", shortMergeRevision(updated), proofErr)
+	}
+	if !proved {
 		return fmt.Errorf("update-branch merge commit %s does not prove an ordinary merge of candidate %s and target %s; refusing to adopt it as an advance",
 			shortMergeRevision(updated), shortMergeRevision(previous), receipt.Target)
 	}
@@ -315,16 +338,28 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 // target, and that headSHA's tree exactly matches the tree
 // `git merge-tree --write-tree` would produce for those two parents.
 //
-// Both M3 (adoptWorktreeMergeUpdateBranchAdvance, trusting a live
-// update-branch merge before persisting it) and M-A
+// Minor 4 (review round on #614): this proof runs on exactly two call
+// sites, both in this file - M3 (adoptWorktreeMergeUpdateBranchAdvance,
+// trusting a live update-branch merge before persisting it) and M-A
 // (adoptServerUpdatedWorktreeMergeHead, trusting a resumed receipt's stale
-// head) share this exact proof, so a crafted force-push landing a head that
-// merely LOOKS like an update-branch merge (right parent shape, wrong
-// content) cannot be adopted as a trusted advance by either path.
+// head) - never on the plain `wb pr land` route's own update-branch success
+// path (pr_land_engine.go's non-headUpdated branch, which only calls
+// syncLocalWorktreeAfterUpdateBranch). That is deliberate, not a gap: the
+// plain route never persists a receipt that later code trusts for
+// merge-provenance decisions (an absorbed-source-PR walk, a target-SHA
+// advance) the way a worktree-merge receipt does - fastForwardWorktreeToUpdatedHead
+// is a best-effort local sync only, and a wrong or missing fast-forward
+// there is never treated as authoritative by anything downstream. So a
+// crafted force-push landing a head that merely LOOKS like an update-branch
+// merge (right parent shape, wrong content) cannot be adopted as a trusted
+// advance by either of the two paths that DO trust one.
 //
-// It never returns an error for "not proved" - only false - so callers do
-// not need to distinguish an unreadable repository from a genuine mismatch;
-// both mean "do not trust this as an advance".
+// It returns an error only for a transient GitHub read failure it cannot
+// tell apart from a genuine mismatch without retrying (see Minor 5 below);
+// every other kind of "could not prove it" - an unreadable repository, a
+// missing worktree, a real mismatch - returns (false, nil), and callers do
+// not need to distinguish those from each other: all of them mean "do not
+// trust this as an advance" on their own.
 //
 // Red-team finding M4: GitHub commonly deletes a pull request's branch the
 // moment it merges. Fetching by branch NAME then fails outright, even though
@@ -334,10 +369,19 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 // already local, and fall back to reading its tree from the commits API
 // (commitTreeSHA) rather than failing "not proved" merely because the branch
 // name no longer resolves.
-func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) bool {
+//
+// Minor 5 (review round on #614): that commitTreeSHA fallback is the one
+// GitHub API read in this function (every other step is local git or a
+// plain `git fetch`). A transient failure there - a 502/503/504, a
+// secondary rate limit, or a signal-killed `gh` attempt, exhausted after
+// every in-process retry - is not a verdict that the merge is unproven; it
+// is a blip WB never observed. That case alone returns (false, err) with err
+// satisfying IsTransientReadFailure, so a caller can tell "ask again" apart
+// from "refuse" instead of both collapsing into the same false.
+func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
 	worktree = strings.TrimSpace(worktree)
 	if worktree == "" {
-		return false
+		return false, nil
 	}
 	headLocal := commitExistsLocally(ctx, worktree, headSHA)
 	if !headLocal && strings.TrimSpace(branch) != "" {
@@ -352,31 +396,34 @@ func verifyUpdateBranchMergeProof(ctx context.Context, worktree, branch, target,
 	}
 	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, worktree, target)
 	if fetchErr != nil {
-		return false
+		return false, nil
 	}
 	targetAncestor, ancestorErr := isMergeAncestor(ctx, worktree, targetParent, remoteTarget)
 	if ancestorErr != nil || !targetAncestor {
-		return false
+		return false, nil
 	}
 	writtenTree, treeErr := runGit(ctx, worktree, "merge-tree", "--write-tree", candidateSHA, targetParent)
 	if treeErr != nil {
-		return false
+		return false, nil
 	}
 	var headTree string
 	if headLocal {
 		tree, headTreeErr := runGit(ctx, worktree, "show", "-s", "--format=%T", headSHA)
 		if headTreeErr != nil {
-			return false
+			return false, nil
 		}
 		headTree = tree
 	} else {
 		tree, treeErr := commitTreeSHA(ctx, repository, headSHA)
 		if treeErr != nil {
-			return false
+			if IsTransientReadFailure(treeErr) {
+				return false, treeErr
+			}
+			return false, nil
 		}
 		headTree = tree
 	}
-	return strings.TrimSpace(writtenTree) == strings.TrimSpace(headTree)
+	return strings.TrimSpace(writtenTree) == strings.TrimSpace(headTree), nil
 }
 
 // commitExistsLocally reports whether sha's commit object is already
@@ -438,7 +485,16 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, receipt *WorktreeM
 	if strings.TrimSpace(receipt.Candidate.Worktree) == "" {
 		return false, nil
 	}
-	if !verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA) {
+	// This resume path is deliberately best-effort end to end (see the
+	// function doc above): the transient-vs-definitive distinction
+	// verifyUpdateBranchMergeProof's error return exists for is Minor 5's
+	// concern for the LIVE landing hook (adoptWorktreeMergeUpdateBranchAdvance),
+	// which must not turn a retryable blip into a hard Conflict. Here, any
+	// failure - transient or not - already falls through to "leave it for
+	// the ordinary drift/conflict handling to judge", so the error is
+	// intentionally discarded rather than given special treatment.
+	proved, _ := verifyUpdateBranchMergeProof(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, receipt.Repository, receipt.Candidate.SHA, parents[1], view.Head.SHA)
+	if !proved {
 		// Not an ordinary merge of our candidate and the target: leave it
 		// for the ordinary drift/conflict handling to judge.
 		return false, nil

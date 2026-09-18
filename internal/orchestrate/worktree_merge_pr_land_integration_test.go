@@ -134,6 +134,18 @@ case "$*" in
     # the commit is not yet reachable locally (a deleted branch, for
     # example) so a deleted PR branch does not block proving an
     # update-branch merge's tree.
+    #
+    # Minor 5 (review round on #614): WB_TEST_COMMIT_TREE_TRANSIENT, when its
+    # marker file exists, simulates this one read failing transiently on
+    # every attempt (a saturated host, never a "not found") so the
+    # in-process retry budget genuinely exhausts and
+    # verifyUpdateBranchMergeProof's caller sees IsTransientReadFailure(err)
+    # - proving the failure is surfaced as retryable, never flattened into
+    # an ordinary "not proved".
+    if [ -f "${WB_TEST_COMMIT_TREE_TRANSIENT:-/nonexistent}" ]; then
+      echo "gh: connection reset by peer" >&2
+      exit 1
+    fi
     sha="${2#*git/commits/}"
     tree=$(git --git-dir="$WB_TEST_REMOTE" show -s --format=%T "$sha" 2>/dev/null || true)
     if [ -z "$tree" ]; then printf '{"message":"Not Found"}\n'; exit 1; fi
