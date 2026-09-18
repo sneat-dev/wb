@@ -92,6 +92,59 @@ That second row is the honest limit, and it is unchanged by any of this. For
 those sessions the mechanisms remain the ones already shipped: the session
 blocks on `wb wait`, or WB acts on its own for work whose owner is gone.
 
+### A third route, already built: tmux paste
+
+WB does not have to own the process to write to a session. `internal/sessionmessage`
+already injects arbitrary bytes into a tmux pane:
+
+```go
+client.run(ctx, []string{"load-buffer", "-b", name, "-"}, raw, …)
+client.run(ctx, []string{"paste-buffer", "-b", name, "-t", paneID}, …)
+```
+
+This primitive is fully general. The restrictions found earlier — predecessor,
+successor, completed handoff receipt — belong to `sessionmessenger` one layer
+above, not to the injection. And `wb session register --tmux-name` already
+records the pane.
+
+So a `wb claude` wrapper is not required. Wrapping an interactive session means
+proxying a PTY — resize, signals, escape sequences — which is reimplementing a
+terminal multiplexer beside the one already in use, and couples the session's
+lifetime to WB's.
+
+| | tmux paste | `wb claude` wrapper | daemon-spawned stdin |
+|---|---|---|---|
+| Built today | **yes** | no | no |
+| Works outside tmux | no | yes | yes |
+| PTY handling | none | full proxy | none |
+| Session survives WB exiting | yes | no | no |
+| Human keeps their terminal | yes | wrapped | no TUI at all |
+
+### The newline is the authority boundary
+
+`paste-buffer` is indistinguishable from the human typing. Not "a message
+attributed to the user" — literally keystrokes in their prompt. Anything WB
+injects therefore carries the founder's authority by construction, which is the
+sharpest form of the risk this document is about.
+
+That yields a control stronger than any vocabulary rule, because it is
+mechanical rather than promised:
+
+> **Whether the injected text ends with a newline decides whether WB informed
+> or commanded.**
+
+- Pasted **without** a trailing newline, the text sits in the prompt. The human
+  reads it and chooses. WB has informed.
+- Pasted **with** a newline, it is submitted. WB has acted as the human.
+
+This maps onto the advisory/binding split proposed below, but enforces it in the
+mechanism instead of trusting the sender. A coordinator that never appends a
+newline cannot command, whatever its message says and whatever an attacker
+managed to get into it.
+
+The binding set — a landing-lane conflict — is then the only case that may
+submit, and that set should be enumerated in code rather than configurable.
+
 ### Why this matters beyond notification
 
 Several open problems collapse into one if the daemon can speak to sessions:
