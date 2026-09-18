@@ -19,6 +19,90 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  go-scope:
+    name: Decide Go validation scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.decide.outputs.required }}
+    steps:
+      # Everything Go builds, embeds or reads in tests from its own paths. A
+      # pull request that touches none of it (spec/, docs/ prose, hub/web
+      # sources, …) skips Go validation and runs only go-contract-inputs, which
+      # covers the inputs no path list can: spec/ files named by
+      # ai/capabilities.json, agents/ prose, and every tracked file name that
+      # enters the Go module archive. Only pull requests are scoped, and a
+      # scoped run publishes no validation receipt, so the merge to main always
+      # validates in full.
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            required:
+              - '**/*.go'
+              - '**/go.mod'
+              - '**/go.sum'
+              - 'go.work'
+              - 'go.work.sum'
+              - 'vendor/**'
+              - 'cmd/**'
+              - 'internal/**'
+              - 'api/**'
+              - 'ai/**'
+              - 'agents/**'
+              - 'skills'
+              - 'hub/web/dist/**'
+              - 'proto/**'
+              - 'examples/**'
+              - '.wb/**'
+              - '.github/**'
+              - '.claude-plugin/**'
+              - '.codex-plugin/**'
+              - 'docs/cli-flag-matrix.md'
+              - 'README.md'
+              - '.goreleaser.yml'
+              - '.golangci.*'
+              - '.gitattributes'
+      - name: Decide
+        id: decide
+        if: github.event_name == 'pull_request'
+        env:
+          FILTERED: ${{ steps.changes.outputs.required }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -eu
+          case "$FILTERED" in
+            true|false) ;;
+            *) echo "Go scope filter returned '$FILTERED', want true or false" >&2; exit 1 ;;
+          esac
+          # GitHub lists at most 3000 files of a pull request; beyond that the
+          # filter cannot see every path, so validate.
+          if [ "$FILTERED" = true ] || [ "$CHANGED_FILES" -ge 3000 ]; then
+            echo required=true >> "$GITHUB_OUTPUT"
+          else
+            echo required=false >> "$GITHUB_OUTPUT"
+          fi
+
+  go-contract-inputs:
+    name: Check non-Go contract inputs
+    needs: go-scope
+    if: github.event_name == 'pull_request' && needs.go-scope.outputs.required == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test the Go contracts over non-Go files
+        run: >-
+          go test ./cmd/wb -count=1
+          -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract)$'
+
   windows-scope:
     name: Decide native Windows coverage
     runs-on: ubuntu-latest
@@ -103,8 +187,10 @@ jobs:
 
   source:
     name: Check formatting and dependencies
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -129,8 +215,10 @@ jobs:
 
   static:
     name: Build and vet
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -148,8 +236,10 @@ jobs:
 
   lint:
     name: Lint (golangci-lint)
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -171,8 +261,10 @@ jobs:
 
   coverage:
     name: Tests and coverage (8 shards)
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -219,8 +311,10 @@ jobs:
 
   race:
     name: Race tests
-    needs: [release-eligibility, validation-reuse]
-    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
+    needs: [release-eligibility, validation-reuse, go-scope]
+    if: >-
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -249,9 +343,10 @@ jobs:
 
   windows:
     name: Native Windows compile and test
-    needs: [windows-scope, validation-reuse]
+    needs: [windows-scope, validation-reuse, go-scope]
     if: >-
       needs.windows-scope.outputs.required == 'true' &&
+      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: windows-latest
     timeout-minutes: 8
@@ -285,7 +380,7 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, source, static, lint, coverage, race, windows]
+    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -294,6 +389,10 @@ jobs:
           ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
           REUSE_RESULT: ${{ needs.validation-reuse.outputs.reuse }}
           REUSE_JOB_RESULT: ${{ needs.validation-reuse.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          GO_SCOPE_RESULT: ${{ needs.go-scope.result }}
+          GO_REQUIRED: ${{ needs.go-scope.outputs.required }}
+          CONTRACT_RESULT: ${{ needs.go-contract-inputs.result }}
           SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -306,7 +405,28 @@ jobs:
             echo "Validation reuse decision concluded: $REUSE_JOB_RESULT" >&2
             exit 1
           fi
-          if [ "$REUSE_RESULT" = "true" ]; then
+          if [ "$GO_SCOPE_RESULT" != "success" ]; then
+            echo "Go validation scope decision concluded: $GO_SCOPE_RESULT" >&2
+            exit 1
+          fi
+          spec_only=false
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            case "$GO_REQUIRED" in
+              true) ;;
+              false) spec_only=true ;;
+              *) echo "Go validation scope is '$GO_REQUIRED', want true or false" >&2; exit 1 ;;
+            esac
+          fi
+          if [ "$spec_only" = "true" ]; then
+            expected_contract=success
+          else
+            expected_contract=skipped
+          fi
+          if [ "$CONTRACT_RESULT" != "$expected_contract" ]; then
+            echo "Required check 'Non-Go contract inputs' concluded: $CONTRACT_RESULT; expected $expected_contract" >&2
+            exit 1
+          fi
+          if [ "$REUSE_RESULT" = "true" ] || [ "$spec_only" = "true" ]; then
             expected=skipped
           else
             expected=success
@@ -330,6 +450,8 @@ jobs:
           fi
           if [ "$REUSE_RESULT" = "true" ]; then
             echo "Reused exact trusted pull-request validation."
+          elif [ "$spec_only" = "true" ]; then
+            echo "No Go-relevant file changed; Go validation was not required."
           else
             echo "All required checks passed. This job only combines their results."
           fi
@@ -338,8 +460,10 @@ jobs:
     name: Publish validation receipt
     # `test` deliberately accepts skipped optional jobs. Use !cancelled() so
     # GitHub evaluates this result instead of propagating an ancestor skip.
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' }}
-    needs: test
+    # A Go-scoped-out pull request validated nothing, so it must not let the
+    # main push reuse it.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' }}
+    needs: [test, go-scope]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
