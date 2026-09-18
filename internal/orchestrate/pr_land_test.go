@@ -461,10 +461,10 @@ func TestLandRefusesADraftAndAFailedCheck(t *testing.T) {
 	}
 	// #600: the finding must name the failing check. This fixture's mocked
 	// check-run carries no annotation and no Actions run/job link, so the
-	// finding falls back to the check name alone ("CI") rather than
+	// finding falls back to the quoted check name alone ("CI") rather than
 	// fabricating a diagnosis line.
-	if !strings.Contains(result.Reason, "CI") {
-		t.Fatalf("reason must name the failing check: %q", result.Reason)
+	if !strings.HasSuffix(result.Reason, `; "check-run:CI"`) {
+		t.Fatalf("reason must end with the quoted failing check name: %q", result.Reason)
 	}
 	if fixture.readState(t, "merged") != "false" {
 		t.Fatal("a red pull request must not merge")

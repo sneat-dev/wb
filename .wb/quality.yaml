@@ -24,6 +24,7 @@ go_test:
     # `wb coverage` failed in the profile-merge/report step after every
     # shard succeeded, and commandError preferring command output over the
     # underlying error masked the real cause; that was fixed by #575
-    # (a5f3ea091e19). A full unsharded local run of this package under wb's
-    # own CPU admission now passes clean.
+    # (a5f3ea091e19). This re-enables it on that basis; the sharded
+    # `wb coverage` run itself is unverified here and is proved (or not) by
+    # this change's own CI coverage job.
     - ./internal/orchestrate

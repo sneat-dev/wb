@@ -43,9 +43,11 @@ func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
 func TestSummarizeCheckFailuresNamesOneFailingCheck(t *testing.T) {
 	t.Parallel()
 	got := summarizeCheckFailures([]CIFailureDetail{
-		{Check: "Lint (golangci-lint)", Excerpt: "internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)"},
+		{Check: "Lint (golangci-lint)", Annotations: []CIFailureAnnotation{
+			{Path: "internal/orchestrate/pr_land.go", StartLine: 749, Message: "ineffectual assignment (ineffassign)"},
+		}},
 	})
-	want := "Lint (golangci-lint): internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)"
+	want := `"Lint (golangci-lint)": "internal/orchestrate/pr_land.go:749: ineffectual assignment (ineffassign)"`
 	if got != want {
 		t.Fatalf("summarizeCheckFailures = %q, want %q", got, want)
 	}
@@ -81,46 +83,83 @@ func TestSummarizeCheckFailuresCapsSeveralFailingChecks(t *testing.T) {
 
 // TestFailureFindingLineFallsBackToCheckNameAlone pins #600: with no
 // annotation and no job-log excerpt available, the finding names only the
-// check, never a fabricated diagnosis.
+// check, never a fabricated diagnosis. The name is still quoted, so an empty
+// diagnosis cannot be mistaken for an unquoted trailing name.
 func TestFailureFindingLineFallsBackToCheckNameAlone(t *testing.T) {
 	t.Parallel()
 	got := failureFindingLine(CIFailureDetail{Check: "Deploy (staging)"})
-	if got != "Deploy (staging)" {
-		t.Fatalf("failureFindingLine = %q, want the bare check name", got)
+	if got != `"Deploy (staging)"` {
+		t.Fatalf("failureFindingLine = %q, want the quoted bare check name", got)
 	}
 }
 
 // TestSanitizeFailureFindingTextStripsControlCharacters pins #600: provider
 // text reaches a finding sanitized, never interpreted. A tab becomes a
-// space; other control characters (including an escape sequence a naive
-// terminal print could act on) are dropped outright.
+// space; other control characters are dropped outright; and an ANSI escape
+// sequence is removed as a whole unit, not just its leading ESC byte, so no
+// visible escape-code junk like "[31m" survives.
 func TestSanitizeFailureFindingTextStripsControlCharacters(t *testing.T) {
 	t.Parallel()
 	got := sanitizeFailureFindingText("go\tvet\x1b[31mfailed\x00 here\r\n")
 	if strings.ContainsAny(got, "\t\x1b\x00\r\n") {
 		t.Fatalf("sanitized text retained a control character: %q", got)
 	}
+	if strings.Contains(got, "[31m") {
+		t.Fatalf("sanitized text retained ANSI escape-code junk: %q", got)
+	}
 	if !strings.Contains(got, "go vet") || !strings.Contains(got, "failed here") {
 		t.Fatalf("sanitized text lost its content: %q", got)
 	}
 }
 
-// TestFirstFailureFindingLinePrefersAnnotationsThenActionsErrorMarker pins
-// #600's source preference: a GitHub check-run annotation first, then the
-// job log's own "##[error]" marker line, over an arbitrary log line.
-func TestFirstFailureFindingLinePrefersAnnotationsThenActionsErrorMarker(t *testing.T) {
+// TestSanitizeFailureFindingTextDropsInvisibleUnicode pins the format,
+// line-separator, and paragraph-separator classes the minor review named
+// (unicode.Cf, Zl, Zp) alongside the ASCII control range.
+func TestSanitizeFailureFindingTextDropsInvisibleUnicode(t *testing.T) {
 	t.Parallel()
-	t.Run("annotation wins over excerpt", func(t *testing.T) {
+	got := sanitizeFailureFindingText("left​right next end")
+	if got != "leftrightnextend" {
+		t.Fatalf("sanitizeFailureFindingText = %q, want invisible separators dropped", got)
+	}
+}
+
+// TestFirstFailureFindingLinePrefersAnnotationsThenGoTestThenActionsErrorMarker
+// pins #600's source preference: a GitHub check-run annotation first
+// (rendered as "path:line: message" so a lint finding keeps its file and
+// line), then the job log's last go-test "--- FAIL"/"FAIL" line, then its
+// "##[error]" marker line, over an arbitrary log line.
+func TestFirstFailureFindingLinePrefersAnnotationsThenGoTestThenActionsErrorMarker(t *testing.T) {
+	t.Parallel()
+	t.Run("annotation renders as path:line: message and wins over excerpt", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{
+			Annotations: []CIFailureAnnotation{{Path: "internal/pkg/thing.go", StartLine: 42, Message: "broke"}},
+			Excerpt:     "##[error]excerpt message",
+		})
+		if got != "internal/pkg/thing.go:42: broke" {
+			t.Fatalf("firstFailureFindingLine = %q, want the rendered annotation", got)
+		}
+	})
+	t.Run("an annotation with no path or line renders its bare message", func(t *testing.T) {
 		t.Parallel()
 		got := firstFailureFindingLine(CIFailureDetail{
 			Annotations: []CIFailureAnnotation{{Message: "annotation message"}},
-			Excerpt:     "##[error]excerpt message",
 		})
 		if got != "annotation message" {
-			t.Fatalf("firstFailureFindingLine = %q, want the annotation", got)
+			t.Fatalf("firstFailureFindingLine = %q, want the bare annotation message", got)
 		}
 	})
-	t.Run("##[error] marker wins over an arbitrary line", func(t *testing.T) {
+	t.Run("the last go-test FAIL line wins over an earlier ##[error] line", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{
+			Excerpt: "##[error]process completed with a nonzero code\n--- FAIL: TestSomething (0.01s)\nFAIL\tgithub.com/acme/app\t0.02s",
+		})
+		// sanitizeFailureFindingText turns each tab into a space.
+		if got != "FAIL github.com/acme/app 0.02s" {
+			t.Fatalf("firstFailureFindingLine = %q, want the last FAIL line", got)
+		}
+	})
+	t.Run("##[error] marker wins over an arbitrary line when no FAIL line exists", func(t *testing.T) {
 		t.Parallel()
 		got := firstFailureFindingLine(CIFailureDetail{
 			Excerpt: "some unrelated build noise\n##[error]internal/pkg/thing.go:10: broke\nmore noise",
@@ -142,6 +181,53 @@ func TestFirstFailureFindingLinePrefersAnnotationsThenActionsErrorMarker(t *test
 			t.Fatalf("firstFailureFindingLine = %q, want empty", got)
 		}
 	})
+}
+
+// TestUsefulCheckRunAnnotationIgnoresNoticesAndTheGenericExitCodeAnnotation
+// pins #600's annotation filter: a "notice" (e.g. the ubuntu-latest runner
+// migration notice every job on this fleet currently carries) and GitHub's
+// own generic ".github"-path "Process completed with exit code N." are both
+// never useful on their own, so a check-run whose only annotations are these
+// falls back to the job log instead of reporting them as the failure. A real
+// lint or test finding remains useful.
+func TestUsefulCheckRunAnnotationIgnoresNoticesAndTheGenericExitCodeAnnotation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value githubCheckRunAnnotation
+		want  bool
+	}{
+		{"notice is ignored", githubCheckRunAnnotation{Level: "notice", Path: "x.go", StartLine: 1, Message: "The ubuntu-latest runner image is being migrated"}, false},
+		{"generic exit-code-only failure at .github is ignored", githubCheckRunAnnotation{Level: "failure", Path: ".github", StartLine: 1, Message: "Process completed with exit code 1."}, false},
+		{"generic exit-code message elsewhere is still ignored", githubCheckRunAnnotation{Level: "failure", Path: "somewhere.go", StartLine: 1, Message: "Process completed with exit code 2."}, false},
+		{"a real lint finding is useful", githubCheckRunAnnotation{Level: "failure", Path: "internal/orchestrate/pr_land.go", StartLine: 749, Message: "ineffectual assignment (ineffassign)"}, true},
+		{"a warning-level finding is useful", githubCheckRunAnnotation{Level: "warning", Path: "internal/orchestrate/pr_land.go", StartLine: 10, Message: "deprecated API"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := usefulCheckRunAnnotation(tt.value); got != tt.want {
+				t.Errorf("usefulCheckRunAnnotation(%+v) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStripFailedJobLogLinePrefixRemovesJobStepTimestampColumns pins #600's
+// log-fallback fix: gh run view --log-failed prefixes every line with
+// "<job>\t<step>\t<timestamp> ", and that prefix must not dominate the
+// rendered excerpt.
+func TestStripFailedJobLogLinePrefixRemovesJobStepTimestampColumns(t *testing.T) {
+	t.Parallel()
+	got := stripFailedJobLogLinePrefix("Lint (golangci-lint)\tgolangci-lint\t2026-09-18T19:00:00.1234567Z ##[error]internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)")
+	want := "##[error]internal/orchestrate/pr_land.go:749:4: ineffectual assignment (ineffassign)"
+	if got != want {
+		t.Fatalf("stripFailedJobLogLinePrefix = %q, want %q", got, want)
+	}
+	// A line that does not carry the job/step/timestamp shape is returned
+	// unchanged rather than mangled.
+	if got := stripFailedJobLogLinePrefix("no tabs here"); got != "no tabs here" {
+		t.Fatalf("stripFailedJobLogLinePrefix = %q, want unchanged", got)
+	}
 }
 
 // TestTruncateFailureFindingTextCapsLength pins #600's per-line cap.

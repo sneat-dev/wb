@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -1132,6 +1134,34 @@ type githubCheckRunAnnotation struct {
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
 	Message   string `json:"message"`
+	Level     string `json:"annotation_level"`
+}
+
+// processCompletedAnnotationMessage matches GitHub's own generic job-level
+// annotation ("Process completed with exit code 1."), which every failed
+// Actions job carries regardless of what actually failed. It is never useful
+// on its own: keeping it would mean a checks-failed finding never reaches the
+// real cause (a lint line, a test line) that a caller needs.
+var processCompletedAnnotationMessage = regexp.MustCompile(`^Process completed with exit code \d+\.$`)
+
+// usefulCheckRunAnnotation reports whether an annotation is worth keeping.
+// GitHub's terminal check-run endpoint reports every Actions job's own
+// generic "the process exited nonzero" annotation at path ".github" — not a
+// source location — alongside real ones (a lint finding, a failed test's
+// file and line). A "notice" (e.g. the ubuntu-latest runner-image migration
+// notice every job on this fleet currently carries) is never the failure
+// either.
+func usefulCheckRunAnnotation(value githubCheckRunAnnotation) bool {
+	if value.Level == "notice" {
+		return false
+	}
+	if strings.TrimSpace(value.Path) == ".github" {
+		return false
+	}
+	if processCompletedAnnotationMessage.MatchString(strings.TrimSpace(value.Message)) {
+		return false
+	}
+	return true
 }
 
 // failedCheckDetails obtains one compact failed-step tail for each failed
@@ -1203,8 +1233,16 @@ func failedCheckAnnotations(ctx context.Context, repository string, checkRunID i
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("decode check-run annotations: %w", err)
 	}
-	annotations := make([]CIFailureAnnotation, 0, min(len(raw), maxFailedCheckAnnotations))
+	// failure-level annotations are collected before warning-level ones (a
+	// stable partition, not a full sort, so annotations from the same
+	// producer keep GitHub's own relative order), because a caller reading
+	// only the first annotation must see the failure, not an incidental
+	// warning that happened to be reported first.
+	var failures, warnings []CIFailureAnnotation
 	for _, value := range raw {
+		if !usefulCheckRunAnnotation(value) {
+			continue
+		}
 		path := compactFailureAnnotation(value.Path, maxFailureAnnotationPath)
 		message := compactFailureAnnotation(value.Message, maxFailureAnnotationText)
 		if path == "" || value.StartLine <= 0 || message == "" {
@@ -1216,10 +1254,15 @@ func failedCheckAnnotations(ctx context.Context, repository string, checkRunID i
 			continue
 		}
 		seen[key] = true
-		annotations = append(annotations, annotation)
-		if len(annotations) == maxFailedCheckAnnotations {
-			break
+		if value.Level == "warning" {
+			warnings = append(warnings, annotation)
+		} else {
+			failures = append(failures, annotation)
 		}
+	}
+	annotations := append(failures, warnings...)
+	if len(annotations) > maxFailedCheckAnnotations {
+		annotations = annotations[:maxFailedCheckAnnotations]
 	}
 	return annotations, nil
 }
@@ -1251,7 +1294,7 @@ func failedJobLogExcerpt(raw string, maximumLines int) string {
 	lines := strings.Split(strings.TrimSpace(raw), "\n")
 	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(stripFailedJobLogLinePrefix(strings.TrimSpace(line)))
 		if line != "" {
 			filtered = append(filtered, redactFailedJobLogLine(line))
 		}
@@ -1260,6 +1303,26 @@ func failedJobLogExcerpt(raw string, maximumLines int) string {
 		filtered = append([]string{"… earlier failed-job log lines omitted …"}, filtered[len(filtered)-maximumLines:]...)
 	}
 	return strings.Join(filtered, "\n")
+}
+
+// stripFailedJobLogLinePrefix removes the "<job>\t<step>\t<timestamp> "
+// prefix `gh run view --log-failed` puts on every line, so an excerpt shows
+// the message rather than mostly-repeated job/step columns and a timestamp.
+// A line that does not match this shape (no such invocation is guaranteed to
+// produce it, and the caller must not assume it did) is returned unchanged.
+func stripFailedJobLogLinePrefix(line string) string {
+	rest := line
+	if fields := strings.SplitN(line, "\t", 3); len(fields) == 3 {
+		rest = fields[2]
+	} else {
+		return line
+	}
+	if index := strings.IndexByte(rest, ' '); index >= 0 {
+		if _, err := time.Parse(time.RFC3339Nano, rest[:index]); err == nil {
+			return rest[index+1:]
+		}
+	}
+	return rest
 }
 
 func redactFailedJobLogLine(line string) string {
@@ -1321,36 +1384,77 @@ func summarizeCheckFailures(details []CIFailureDetail) string {
 }
 
 // failureFindingLine names one failed check and, where available, its first
-// diagnosis line. The check name itself comes from GitHub and is sanitized
-// like every other provider-sourced text here; it is never interpreted.
+// diagnosis line, both `strconv.Quote`d so provider text stays visibly
+// delimited data: it can never be misread as part of WB's own "resume
+// with …" guidance appended around this text by a caller.
 func failureFindingLine(detail CIFailureDetail) string {
 	name := sanitizeFailureFindingText(detail.Check)
 	if name == "" {
 		name = "(unnamed check)"
 	}
+	name = truncateFailureFindingText(name)
 	if line := firstFailureFindingLine(detail); line != "" {
-		return name + ": " + line
+		return strconv.Quote(name) + ": " + strconv.Quote(line)
 	}
-	return name
+	return strconv.Quote(name)
 }
 
-// firstFailureFindingLine prefers GitHub's own deduplicated annotation
-// message (the terminal check-run endpoint WB already reads for landing
-// receipts), then the job log excerpt's first "##[error]" line, then the
-// excerpt's first nonblank line at all. All three are provider text: this
-// only sanitizes and bounds it, never parses it as anything but a string.
+// firstFailureFindingLine prefers GitHub's own deduplicated annotation (the
+// terminal check-run endpoint WB already reads for landing receipts),
+// rendered as "path:line: message" so a lint finding keeps its file and
+// line; then the job log excerpt's last "--- FAIL"/"FAIL" line (a go test
+// failure marker, which is a more specific pointer than an arbitrary line
+// near it); then the excerpt's first "##[error]" line; then its first
+// nonblank line at all. Every source here is provider text: this only
+// formats, sanitizes, and bounds it, never parses it as anything but a
+// string.
 func firstFailureFindingLine(detail CIFailureDetail) string {
 	for _, annotation := range detail.Annotations {
 		if message := sanitizeFailureFindingText(annotation.Message); message != "" {
-			return truncateFailureFindingText(message)
+			line := message
+			if path := sanitizeFailureFindingText(annotation.Path); path != "" && annotation.StartLine > 0 {
+				line = fmt.Sprintf("%s:%d: %s", path, annotation.StartLine, message)
+			}
+			return truncateFailureFindingText(line)
 		}
 	}
 	lines := strings.Split(detail.Excerpt, "\n")
+	if line := lastMatchingExcerptLine(lines, goTestFailureLine); line != "" {
+		return truncateFailureFindingText(line)
+	}
 	if line := firstNonblankExcerptLine(lines, "##[error]"); line != "" {
 		return truncateFailureFindingText(line)
 	}
 	if line := firstNonblankExcerptLine(lines, ""); line != "" {
 		return truncateFailureFindingText(line)
+	}
+	return ""
+}
+
+// goTestFailureLineMarker matches Go's own test-failure lines: a subtest's
+// "--- FAIL: Name (0.00s)" or the package summary's bare "FAIL" or
+// "FAIL\tpackage\t0.01s". Either is a far more specific pointer than an
+// arbitrary log line near it.
+var goTestFailureLineMarker = regexp.MustCompile(`^(--- FAIL\b|FAIL\b)`)
+
+func goTestFailureLine(line string) bool {
+	return goTestFailureLineMarker.MatchString(line)
+}
+
+// lastMatchingExcerptLine returns the LAST excerpt line satisfying match,
+// skipping the "earlier lines omitted" placeholder failedJobLogExcerpt
+// inserts. The last such line, not the first, because a job can retry or
+// report several failures and the final one is closest to what actually
+// stopped the run.
+func lastMatchingExcerptLine(lines []string, match func(string) bool) string {
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if line == "" || line == "… earlier failed-job log lines omitted …" || !match(line) {
+			continue
+		}
+		if sanitized := sanitizeFailureFindingText(line); sanitized != "" {
+			return sanitized
+		}
 	}
 	return ""
 }
@@ -1382,17 +1486,25 @@ func firstNonblankExcerptLine(lines []string, marker string) string {
 	return ""
 }
 
-// sanitizeFailureFindingText strips control characters from provider text
-// before it reaches a finding. The text is a GitHub-sourced check name,
-// annotation message, or job-log line: display data, never a template or a
-// command, so this only removes characters a terminal or a JSON encoder
-// could not render safely - it never rewrites or interprets the content.
+// ansiEscapeSequence matches a terminal control sequence (CSI, e.g.
+// "\x1b[31m", or OSC, e.g. "\x1b]0;title\x07"): a single stray control
+// character strip leaves the rest of the sequence ("[31m") behind as
+// visible junk, so the whole sequence is removed as one unit first.
+var ansiEscapeSequence = regexp.MustCompile(`\x1b(\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(\x07|\x1b\\))`)
+
+// sanitizeFailureFindingText strips terminal escape sequences and control,
+// format, and line/paragraph-separator characters from provider text before
+// it reaches a finding. The text is a GitHub-sourced check name, annotation
+// message, or job-log line: display data, never a template or a command, so
+// this only removes characters a terminal or a JSON encoder could not render
+// safely - it never rewrites or interprets the content.
 func sanitizeFailureFindingText(text string) string {
+	text = ansiEscapeSequence.ReplaceAllString(text, "")
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r == '\t':
 			return ' '
-		case unicode.IsControl(r):
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r):
 			return -1
 		default:
 			return r

@@ -150,7 +150,8 @@ file is not mechanical, and is refused until a review is recorded.
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `update-branch-conflict` | the candidate is behind and updating it conflicts; auto-merge stays armed | resolve the conflict on the branch, push, rerun `wb pr land …` |
-| `checks-pending` / `checks-failed` | exit 1, not a refusal: the work is not ready | fix the failure, or rerun to keep waiting |
+| `checks-pending` | exit 1, not a refusal: the work is not ready | run the printed resume command in the background, not in the foreground - it carries a `--timeout` budget (at least 45 minutes) above the harness's ~10-minute foreground ceiling, and every flag the original invocation used (`--no-auto-merge`, `--allow-unfenced`, `--approved-by`, `--keep-commits`/`--reason`) |
+| `checks-failed` | exit 1, not a refusal: a check is red | the finding names the failing check(s) and their first error line; the sanctioned command opens the failing job (or its log) directly, not the PR page |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |
 | `cleanup-blocked-live-link` | a worktree still holds a live local dependency link | `wb deps propagate local … --undo`, or land with `--keep` |
 

@@ -328,9 +328,38 @@ func TestLandChecksPendingResumeCarriesATimeoutFloor(t *testing.T) {
 	if result.RefusalCode != LandRefusalChecksPending {
 		t.Fatalf("refusal = %s, want %s: %s", result.RefusalCode, LandRefusalChecksPending, result.Reason)
 	}
-	want := "wb pr land " + options.Repository + "#" + "7" + " --timeout 45m"
+	// --keep (this fixture's default) and --no-auto-merge (set by this test)
+	// are both carried through: resuming without them would silently revert
+	// behavior the original invocation explicitly chose.
+	want := "wb pr land " + options.Repository + "#" + "7" + " --timeout 45m --keep --no-auto-merge"
 	if result.SanctionedCommand != want {
 		t.Fatalf("checks-pending resume command = %q, want %q", result.SanctionedCommand, want)
+	}
+	if !strings.Contains(result.Reason, "run the resume command in the background") {
+		t.Fatalf("reason must say to run the resume command in the background: %q", result.Reason)
+	}
+}
+
+// TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted pins #584: the
+// resume command must reproduce every flag that changed this invocation's
+// behavior - --timeout, --no-auto-merge, --allow-unfenced, --approved-by,
+// --keep-commits/--reason - with free-text values `strconv.Quote`d (this
+// function's existing convention for --reason/--subject/--approved-by) so a
+// review string containing a space or a quote cannot break the printed
+// command or be misread as a second flag.
+func TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted(t *testing.T) {
+	t.Parallel()
+	got := pullRequestLandResumeCommand(PullRequestLandOptions{
+		Repository:    "acme/app",
+		NoAutoMerge:   true,
+		AllowUnfenced: true,
+		ApprovedBy:    `review with a space and a " quote`,
+		KeepCommits:   []string{"abc123", "def456"},
+		Reason:        "kept for audit",
+	}, "9", "45m")
+	want := `wb pr land acme/app#9 --timeout 45m --no-auto-merge --allow-unfenced --keep-commits abc123,def456 --reason "kept for audit" --approved-by "review with a space and a \" quote"`
+	if got != want {
+		t.Fatalf("pullRequestLandResumeCommand = %q, want %q", got, want)
 	}
 }
 

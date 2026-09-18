@@ -111,7 +111,13 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			if autoMergeArmed {
 				note = "; auto-merge is armed, so this lands without WB once checks pass"
 			}
-			reason = fmt.Errorf("exact-head checks remain pending: %s%s; resume with wb worktree merge resume %s", waited.Reason, note, receipt.ReceiptPath)
+			// #584: carry the same --timeout floor `wb pr land`'s own
+			// checks-pending resume does. Re-running the identical
+			// invocation that just timed out, with no larger budget, gets
+			// another bite of the same slice and cannot converge; a budget
+			// this large belongs in the background, not a foreground wait.
+			reason = fmt.Errorf("exact-head checks remain pending: %s%s; resume in the background with wb worktree merge resume %s --timeout %s",
+				waited.Reason, note, receipt.ReceiptPath, prLandResumeTimeoutFlag(options.Timeout))
 		case !options.AllowUnfenced && strings.Contains(waited.Reason, "strict up-to-date fence"):
 			reason = fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", waited.Reason, receipt.ReceiptPath)
 		default:

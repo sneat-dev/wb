@@ -302,16 +302,22 @@ func TestOrchCovPullRequestLandResumeCommandCarriesEveryOption(t *testing.T) {
 		Reason:      `has "quotes"`, Subject: "the subject",
 		ApprovedBy: "reviewer@example.test",
 	}
-	got := pullRequestLandResumeCommand(options, "7")
+	got := pullRequestLandResumeCommand(options, "7", "")
 	want := `wb pr land acme/app#7 --merge-method squash --keep --allow-unfenced ` +
 		`--keep-commits aaa111,bbb222 --reason "has \"quotes\"" --subject "the subject" ` +
 		`--approved-by "reviewer@example.test"`
 	if got != want {
 		t.Fatalf("resume command =\n%s\nwant\n%s", got, want)
 	}
-	bare := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7")
+	bare := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7", "")
 	if bare != "wb pr land acme/app#7" {
 		t.Fatalf("bare resume command = %q", bare)
+	}
+	// #584: the checks-pending resume additionally carries a --timeout floor,
+	// printed first so the budget is the first thing a caller sees.
+	withTimeout := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app"}, "7", "45m")
+	if withTimeout != "wb pr land acme/app#7 --timeout 45m" {
+		t.Fatalf("timeout-carrying resume command = %q", withTimeout)
 	}
 }
 
