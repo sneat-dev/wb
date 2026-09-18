@@ -149,12 +149,24 @@ func TestFirstFailureFindingLinePrefersAnnotationsThenGoTestThenActionsErrorMark
 			t.Fatalf("firstFailureFindingLine = %q, want the bare annotation message", got)
 		}
 	})
-	t.Run("the last go-test FAIL line wins over an earlier ##[error] line", func(t *testing.T) {
+	t.Run("the last --- FAIL: line wins over a later bare FAIL package line", func(t *testing.T) {
 		t.Parallel()
 		got := firstFailureFindingLine(CIFailureDetail{
 			Excerpt: "##[error]process completed with a nonzero code\n--- FAIL: TestSomething (0.01s)\nFAIL\tgithub.com/acme/app\t0.02s",
 		})
-		// sanitizeFailureFindingText turns each tab into a space.
+		// A subtest's own "--- FAIL: Name" line names the actual failing
+		// test, so it outranks the package summary's bare "FAIL" line even
+		// though that line comes later in the excerpt (#600 round 3, minor
+		// 9). sanitizeFailureFindingText turns each tab into a space.
+		if got != "--- FAIL: TestSomething (0.01s)" {
+			t.Fatalf("firstFailureFindingLine = %q, want the --- FAIL: line", got)
+		}
+	})
+	t.Run("the last bare FAIL line wins over an earlier ##[error] line when no --- FAIL: line exists", func(t *testing.T) {
+		t.Parallel()
+		got := firstFailureFindingLine(CIFailureDetail{
+			Excerpt: "##[error]process completed with a nonzero code\nFAIL\tgithub.com/acme/app\t0.02s",
+		})
 		if got != "FAIL github.com/acme/app 0.02s" {
 			t.Fatalf("firstFailureFindingLine = %q, want the last FAIL line", got)
 		}

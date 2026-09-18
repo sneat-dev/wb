@@ -877,44 +877,20 @@ func manualPullRequestMergeCommand(repository, number, method string) string {
 
 // checksFailedSanctionedCommand names the command that shows the actual
 // failure (#600), rather than the PR page, which shows nothing about which
-// check or job failed: the first failing job's own URL when GitHub gave WB
-// one, else a gh command that fetches its log by run ID, else - a
-// third-party check run WB could resolve neither a job link nor a run ID
-// for - the previous PR-page fallback.
+// check or job failed. SanctionedCommand must be a runnable command, never a
+// bare URL: a check run's Link is a GitHub Actions job URL, but a commit
+// status's Link is the provider-controlled TargetURL, which is not
+// necessarily one, and is never safe to print as "the command" (#584 round
+// 3, minor 8). So this only ever returns a gh invocation, built from a
+// GitHub Actions run/job URL when the first failing check's Link parses as
+// one, else the previous PR-page fallback.
 func checksFailedSanctionedCommand(details []CIFailureDetail, repository, number string) string {
-	if len(details) == 0 {
-		return "gh pr view " + number + " --repo " + repository + " --web"
-	}
-	first := details[0]
-	if first.JobURL != "" {
-		return first.JobURL
-	}
-	if runID := runIDFromActionsRunURL(first.RunURL); runID != "" {
-		return "gh run view " + runID + " --repo " + repository + " --log-failed"
-	}
-	return "gh pr view " + number + " --repo " + repository + " --web"
-}
-
-// runIDFromActionsRunURL extracts the run ID from a URL of the shape
-// CIFailureDetail.RunURL is built with (".../actions/runs/<id>"). An
-// unrecognized shape yields "" so the caller falls back rather than
-// building a command around a wrong value.
-func runIDFromActionsRunURL(rawURL string) string {
-	const marker = "/actions/runs/"
-	index := strings.LastIndex(rawURL, marker)
-	if index < 0 {
-		return ""
-	}
-	id := rawURL[index+len(marker):]
-	if id == "" {
-		return ""
-	}
-	for _, digit := range id {
-		if digit < '0' || digit > '9' {
-			return ""
+	if len(details) > 0 {
+		if runID, jobID, ok := githubActionsRunAndJob(details[0].JobURL); ok {
+			return "gh run view " + runID + " --job " + jobID + " --repo " + repository + " --log-failed"
 		}
 	}
-	return id
+	return "gh pr view " + number + " --repo " + repository + " --web"
 }
 
 // recommendedPRLandResumeTimeout is the budget named on a checks-pending

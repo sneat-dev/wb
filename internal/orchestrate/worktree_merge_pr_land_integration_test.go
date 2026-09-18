@@ -442,6 +442,17 @@ func TestLandWorktreeMergePullRequestChecksPendingKeepsAutoMergeArmed(t *testing
 	if !pending.AutoMergeArmed {
 		t.Fatalf("receipt did not record AutoMergeArmed while checks were pending: %+v", pending)
 	}
+	// #584 round 3: this wait's slice is hard-capped at 8 minutes regardless
+	// of --timeout, so the resume advice must not claim a --timeout budget
+	// larger than that (inaccurate advice, unlike `wb pr land`'s own
+	// checks-pending resume). It must say plainly that each resume only
+	// advances by one more capped slice.
+	if strings.Contains(pending.Failure, "--timeout") {
+		t.Fatalf("checks-pending failure must not print an inaccurate --timeout budget: %q", pending.Failure)
+	}
+	if !strings.Contains(pending.Failure, "capped at 8m") {
+		t.Fatalf("checks-pending failure must say each resume observes one more capped slice: %q", pending.Failure)
+	}
 }
 
 // TestLandWorktreeMergePullRequestUpdateConflictGivesConflictWithResumeGuidance

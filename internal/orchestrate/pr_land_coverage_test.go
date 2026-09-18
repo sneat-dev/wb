@@ -620,3 +620,40 @@ func TestOrchCovPreflightLandingCleanupRefusesAnUnreadableInventory(t *testing.T
 		t.Fatalf("unreadable inventory refusal = %+v", refusal)
 	}
 }
+
+func TestOrchCovChecksFailedSanctionedCommandBuildsAGHCommandFromAnActionsJobURL(t *testing.T) {
+	t.Parallel()
+	got := checksFailedSanctionedCommand([]CIFailureDetail{
+		{Check: "CI", JobURL: "https://github.com/acme/app/actions/runs/123/job/456"},
+	}, "acme/app", "7")
+	want := "gh run view 123 --job 456 --repo acme/app --log-failed"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
+	}
+}
+
+func TestOrchCovChecksFailedSanctionedCommandNeverEmitsAProviderURL(t *testing.T) {
+	t.Parallel()
+	// A commit status's Link is the provider-controlled TargetURL, which is
+	// not necessarily a GitHub Actions job URL (#584 round 3, minor 8). The
+	// sanctioned command must never be a bare URL.
+	got := checksFailedSanctionedCommand([]CIFailureDetail{
+		{Check: "sonar", JobURL: "https://sonar.example.test/dashboard?id=acme_app"},
+	}, "acme/app", "7")
+	want := "gh pr view 7 --repo acme/app --web"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "http") {
+		t.Fatalf("checksFailedSanctionedCommand must never be a bare URL: %q", got)
+	}
+}
+
+func TestOrchCovChecksFailedSanctionedCommandFallsBackWhenThereAreNoDetails(t *testing.T) {
+	t.Parallel()
+	got := checksFailedSanctionedCommand(nil, "acme/app", "7")
+	want := "gh pr view 7 --repo acme/app --web"
+	if got != want {
+		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
+	}
+}

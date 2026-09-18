@@ -1480,7 +1480,10 @@ func firstFailureFindingLine(detail CIFailureDetail) string {
 		}
 	}
 	lines := strings.Split(detail.Excerpt, "\n")
-	if line := lastMatchingExcerptLine(lines, goTestFailureLine); line != "" {
+	if line := lastMatchingExcerptLine(lines, goTestSubtestFailureLine); line != "" {
+		return truncateFailureFindingText(line)
+	}
+	if line := lastMatchingExcerptLine(lines, goTestPackageFailureLine); line != "" {
 		return truncateFailureFindingText(line)
 	}
 	if line := firstNonblankExcerptLine(lines, "##[error]"); line != "" {
@@ -1492,14 +1495,23 @@ func firstFailureFindingLine(detail CIFailureDetail) string {
 	return ""
 }
 
-// goTestFailureLineMarker matches Go's own test-failure lines: a subtest's
-// "--- FAIL: Name (0.00s)" or the package summary's bare "FAIL" or
-// "FAIL\tpackage\t0.01s". Either is a far more specific pointer than an
-// arbitrary log line near it.
-var goTestFailureLineMarker = regexp.MustCompile(`^(--- FAIL\b|FAIL\b)`)
+// goTestSubtestFailureLineMarker matches a subtest's own failure line,
+// "--- FAIL: Name (0.00s)". This names the actual test that failed, so it
+// outranks the package summary's bare "FAIL" line below even when that
+// summary line comes later in the excerpt (#600 round 3, minor 9).
+var goTestSubtestFailureLineMarker = regexp.MustCompile(`^--- FAIL\b`)
 
-func goTestFailureLine(line string) bool {
-	return goTestFailureLineMarker.MatchString(line)
+func goTestSubtestFailureLine(line string) bool {
+	return goTestSubtestFailureLineMarker.MatchString(line)
+}
+
+// goTestPackageFailureLineMarker matches the package summary's bare "FAIL"
+// or "FAIL\tpackage\t0.01s" line: a fallback for when no subtest failure
+// line ("--- FAIL: ...") is present in the excerpt at all.
+var goTestPackageFailureLineMarker = regexp.MustCompile(`^FAIL\b`)
+
+func goTestPackageFailureLine(line string) bool {
+	return goTestPackageFailureLineMarker.MatchString(line)
 }
 
 // lastMatchingExcerptLine returns the LAST excerpt line satisfying match,
