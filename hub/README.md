@@ -108,15 +108,21 @@ it lists the App's webhook deliveries of the last 72 hours through the App
 API and redelivers every one whose latest attempt failed. A delivery whose
 redelivery also fails is retried up to three times, spaced at least an hour
 apart, before being narrated abandoned and never touched again — except
-while there is no evidence the operator's own endpoint is reachable at all
-(nothing in the window has succeeded more recently than that delivery's
-last attempt), in which case the daemon keeps asking GitHub to redeliver it
-every hour forever without spending one of those three attempts, so an
-outage longer than three hours cannot exhaust the budget on its own. The
-Advanced tab's manual redeliver is the recourse once a delivery has been
-abandoned. Redelivered events arrive at the normal webhook route and
-deduplicate by delivery ID exactly like any other delivery, so nothing else
-needs to know a redelivery happened.
+while there is no evidence the operator's own endpoint is answering at all
+(nothing in the window — a success, or an application-level rejection such
+as 401 or 503, but not a gateway or tunnel non-answer — has been answered
+more recently than that delivery's last attempt), in which case the daemon
+keeps asking GitHub to redeliver it every hour without spending one of
+those three attempts, so an outage longer than three hours cannot exhaust
+the budget on its own. That does not mean forever, though: the 72-hour
+window is measured from each delivery's own first attempt, not its latest
+one, so a delivery the hub never answers at all is still abandoned once 72
+hours have passed since it first arrived — narrated "abandoned: older than
+72h" — which bounds an unreachable endpoint to at most about 72 uncounted
+redeliveries per delivery. The Advanced tab's manual redeliver is the
+recourse once a delivery has been abandoned. Redelivered events arrive at
+the normal webhook route and deduplicate by delivery ID exactly like any
+other delivery, so nothing else needs to know a redelivery happened.
 
 Each redelivery and each abandonment is narrated as `redeliver`. A sweep
 that could not reach GitHub is narrated as one failed line and retried

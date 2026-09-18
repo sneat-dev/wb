@@ -34,10 +34,19 @@ type WebhookRedeliveryRecord struct {
 	// LastAttemptAt is when this record was last written, whether by a
 	// redelivery or by being marked abandoned. It is the retention clock.
 	LastAttemptAt time.Time `firestore:"last_attempt_at"`
+	// FirstDeliveredAt is the delivered_at of this GUID's earliest attempt
+	// this hub has seen, set once when the record is first created and never
+	// overwritten after. Because every uncounted redelivery creates a new
+	// attempt with a fresh delivered_at, the GUID's own latest attempt never
+	// ages out of the App API's listing on its own; the 72-hour bound in
+	// spec/features/peer-connectivity/README.md is measured from this field,
+	// not from LastAttemptAt, so an unreachable endpoint cannot keep a GUID
+	// alive forever.
+	FirstDeliveredAt time.Time `firestore:"first_delivered_at"`
 }
 
 func (record WebhookRedeliveryRecord) valid() bool {
-	return strings.TrimSpace(record.GUID) != "" && record.Attempts >= 0 && !record.LastAttemptAt.IsZero()
+	return strings.TrimSpace(record.GUID) != "" && record.Attempts >= 0 && !record.LastAttemptAt.IsZero() && !record.FirstDeliveredAt.IsZero()
 }
 
 // WebhookRedeliveryStore persists the missed-webhook recovery sweep's memory,

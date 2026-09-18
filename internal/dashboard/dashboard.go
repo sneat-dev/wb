@@ -84,6 +84,12 @@ type HubRedeliverySweep struct {
 	LastSweepAt *time.Time `json:"last_sweep_at,omitempty"`
 	Redelivered int        `json:"redelivered"`
 	Abandoned   int        `json:"abandoned"`
+	// Uncounted is how many redeliver calls the last pass made without
+	// evidence the operator's endpoint is answering at all, so they were not
+	// spent against the 3-attempt limit. A sustained non-zero value is what
+	// makes an ongoing outage visible even though nothing is being
+	// abandoned for it.
+	Uncounted int `json:"uncounted"`
 	// LastFailureAt and LastFailureClass are sticky: they report the most
 	// recent failure even after a later sweep succeeds, so an operator can
 	// tell "this has failed before" from a snapshot taken well afterward.

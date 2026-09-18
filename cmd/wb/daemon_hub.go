@@ -101,6 +101,7 @@ func (mount *hubMount) health(ctx context.Context) dashboard.HubHealth {
 		status := sweeper.Status()
 		value.WebhookRedelivery = &dashboard.HubRedeliverySweep{
 			LastSweepAt: status.LastSweepAt, Redelivered: status.Redelivered, Abandoned: status.Abandoned,
+			Uncounted:     status.Uncounted,
 			LastFailureAt: status.LastFailureAt, LastFailureClass: status.LastFailureClass,
 		}
 	}

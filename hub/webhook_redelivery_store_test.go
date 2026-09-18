@@ -13,7 +13,7 @@ import (
 )
 
 func testRedeliveryRecord(guid string, at time.Time) WebhookRedeliveryRecord {
-	return WebhookRedeliveryRecord{GUID: guid, Attempts: 1, LastAttemptAt: at}
+	return WebhookRedeliveryRecord{GUID: guid, Attempts: 1, LastAttemptAt: at, FirstDeliveredAt: at}
 }
 
 // TestWebhookRedeliveryStoreRoundTripsListsAndDeletes is the sweep's whole
@@ -34,7 +34,7 @@ func TestWebhookRedeliveryStoreRoundTripsListsAndDeletes(t *testing.T) {
 	if err := store.SaveWebhookRedelivery(ctx, testRedeliveryRecord("guid-1", at)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveWebhookRedelivery(ctx, WebhookRedeliveryRecord{GUID: "guid-2", Attempts: 3, Abandoned: true, LastAttemptAt: at}); err != nil {
+	if err := store.SaveWebhookRedelivery(ctx, WebhookRedeliveryRecord{GUID: "guid-2", Attempts: 3, Abandoned: true, LastAttemptAt: at, FirstDeliveredAt: at}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestWebhookRedeliveryStoreRefusesWhatTheSweepCouldNotHaveWritten(t *testing
 		planted WebhookRedeliveryRecord
 	}{
 		{"missing timestamp", WebhookRedeliveryRecord{GUID: "guid-1", Attempts: 1}},
-		{"keyed under another guid", WebhookRedeliveryRecord{GUID: "guid-other", Attempts: 1, LastAttemptAt: at}},
+		{"keyed under another guid", WebhookRedeliveryRecord{GUID: "guid-other", Attempts: 1, LastAttemptAt: at, FirstDeliveredAt: at}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			backend := newFirestoreMemoryBackend()

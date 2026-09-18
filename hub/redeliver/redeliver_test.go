@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,11 @@ func generateTestAppPrivateKeyPEM() []byte {
 type fakeStore struct {
 	mu      sync.Mutex
 	records map[string]hub.WebhookRedeliveryRecord
+	// saveLog is every record ever passed to SaveWebhookRedelivery, in call
+	// order, for a test that needs to prove a pre-save happened before some
+	// other event and was later rolled back, not merely check the final
+	// state.
+	saveLog []hub.WebhookRedeliveryRecord
 
 	loadErr, saveErr, listErr, deleteErr error
 }
@@ -68,7 +74,20 @@ func (store *fakeStore) SaveWebhookRedelivery(_ context.Context, record hub.Webh
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.records[record.GUID] = record
+	store.saveLog = append(store.saveLog, record)
 	return nil
+}
+
+func (store *fakeStore) saves(guid string) []hub.WebhookRedeliveryRecord {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var out []hub.WebhookRedeliveryRecord
+	for _, record := range store.saveLog {
+		if record.GUID == guid {
+			out = append(out, record)
+		}
+	}
+	return out
 }
 
 func (store *fakeStore) ListWebhookRedeliveries(context.Context) ([]hub.WebhookRedeliveryRecord, error) {
@@ -271,7 +290,13 @@ func (api *fakeGitHubAppAPI) server() *httptest.Server {
 				result = override
 			}
 			api.nextID++
-			api.attempts = append(api.attempts, fakeDelivery{id: api.nextID, guid: guid, deliveredAt: api.now(), redelivery: true, statusCode: result, event: event})
+			// +1ns: a real redelivery is answered strictly after the sweep's
+			// own "now" that triggered it (the request has to travel and come
+			// back), so this fake's own evidence must not tie with the
+			// LastAttemptAt the sweep saved using that same "now" moment.
+			// Without this, a GUID could never count its own latest attempt
+			// as evidence of itself.
+			api.attempts = append(api.attempts, fakeDelivery{id: api.nextID, guid: guid, deliveredAt: api.now().Add(time.Nanosecond), redelivery: true, statusCode: result, event: event})
 		}
 		writer.WriteHeader(http.StatusAccepted)
 	})
@@ -530,17 +555,19 @@ func TestSweepStopsOnceAGUIDSucceeds(t *testing.T) {
 	}
 }
 
-// TestNoEvidenceRedeliversWithoutSpendingAnAttempt is S1(b): with nothing in
-// the 72-hour window ever succeeding, the sweep still asks GitHub to
-// redeliver every sweep (the delivery may succeed) but must never spend a
-// counted attempt, and must narrate "not counted" exactly once per sweep,
-// not once per GUID.
+// TestNoEvidenceRedeliversWithoutSpendingAnAttempt is S1(a)'s other half: a
+// gateway/tunnel non-answer (502 here; 530 is covered separately) is never
+// evidence of anything, including of itself, so with nothing else in the
+// 72-hour window ever answered, the sweep still asks GitHub to redeliver
+// every sweep (the delivery may succeed) but must never spend a counted
+// attempt, and must narrate the reworded uncounted line exactly once per
+// sweep, not once per GUID.
 func TestNoEvidenceRedeliversWithoutSpendingAnAttempt(t *testing.T) {
 	start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	clock := newSteppingClock(start)
 	api := newFakeGitHubAppAPI(clock.Now)
-	api.seed("guid-down-1", "push", 500, start.Add(-1*time.Minute))
-	api.seed("guid-down-2", "push", 500, start.Add(-2*time.Minute))
+	api.seed("guid-down-1", "push", http.StatusBadGateway, start.Add(-1*time.Minute))
+	api.seed("guid-down-2", "push", http.StatusBadGateway, start.Add(-2*time.Minute))
 	server := api.server()
 	defer server.Close()
 
@@ -570,7 +597,7 @@ func TestNoEvidenceRedeliversWithoutSpendingAnAttempt(t *testing.T) {
 
 	uncounted := 0
 	for _, line := range *lines {
-		if line.Action == "endpoint unreachable; not counted" {
+		if line.Action == "no answer from the hub since the last attempt; not counted" {
 			uncounted++
 		}
 		if strings.Contains(line.Action, "redelivered") || strings.Contains(line.Action, "abandoned") {
@@ -579,6 +606,185 @@ func TestNoEvidenceRedeliversWithoutSpendingAnAttempt(t *testing.T) {
 	}
 	if uncounted != 4 {
 		t.Fatalf("uncounted lines = %d, want exactly 1 per sweep (4)", uncounted)
+	}
+	status := sweeper.Status()
+	if status.Uncounted != 2 {
+		t.Fatalf("status.Uncounted = %d, want 2 (the last sweep's own uncounted redeliver calls)", status.Uncounted)
+	}
+}
+
+// TestAnsweredStatusCountsAsEvidenceAndAbandonsAfterThreeAttempts is S1(a):
+// an application-level rejection the hub itself produced — 401 (a rotated
+// webhook secret) or 503 (an unrecognized installation) — is reachability
+// evidence just as a 2xx is, including a GUID's own latest attempt as
+// evidence of itself. That closes the loophole the review found: a hub that
+// answers every delivery with one of these now counts attempts and abandons
+// after three, rather than retrying forever uncounted.
+func TestAnsweredStatusCountsAsEvidenceAndAbandonsAfterThreeAttempts(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+			clock := newSteppingClock(start)
+			api := newFakeGitHubAppAPI(clock.Now)
+			api.seed("guid-rejected", "push", status, start.Add(-1*time.Minute))
+			api.redeliverOutcome["guid-rejected"] = status
+			server := api.server()
+			defer server.Close()
+
+			store := newFakeStore()
+			narrateFn, lines := recordingNarrate()
+			sweeper := New(Options{
+				Client: server.Client(), APIBaseURL: server.URL,
+				AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+				Store: store, Now: clock.Now, Interval: time.Hour, Narrate: narrateFn,
+			})
+
+			for pass := 1; pass <= 3; pass++ {
+				sweeper.Sweep(background())
+				record, found := store.get("guid-rejected")
+				if !found || record.Attempts != pass {
+					t.Fatalf("pass %d: record = %+v, found=%t, want Attempts=%d", pass, record, found, pass)
+				}
+				if pass < 3 && record.Abandoned {
+					t.Fatalf("pass %d: abandoned too early", pass)
+				}
+				clock.Advance(time.Hour)
+			}
+			if got := len(api.redeliveredIDs()); got != 3 {
+				t.Fatalf("redeliver calls = %d, want exactly 3 (each one counted)", got)
+			}
+
+			// A fourth sweep: already at MaxAttempts, so this abandons without
+			// another GitHub call.
+			sweeper.Sweep(background())
+			if got := len(api.redeliveredIDs()); got != 3 {
+				t.Fatalf("redeliver calls after the abandon pass = %d, want still 3", got)
+			}
+			record, found := store.get("guid-rejected")
+			if !found || !record.Abandoned || record.Attempts != MaxAttempts {
+				t.Fatalf("record after 3 answered attempts = %+v, found=%t, want abandoned at MaxAttempts", record, found)
+			}
+			for _, line := range *lines {
+				if strings.Contains(line.Action, "not counted") {
+					t.Fatalf("an answered status must never be narrated as uncounted: %+v", line)
+				}
+			}
+		})
+	}
+}
+
+// TestGatewayStatusesDoNotCountAsAnswered is S1(a)'s boundary: 502 and 530
+// (Cloudflare's own "no origin to reach" extension status) are gateway/tunnel
+// non-answers, not evidence the operator's own endpoint said anything at all,
+// so a GUID stuck behind either one is never counted and never abandoned by
+// MaxAttempts (only by the 72-hour age bound in a separate test).
+func TestGatewayStatusesDoNotCountAsAnswered(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, 530} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+			clock := newSteppingClock(start)
+			api := newFakeGitHubAppAPI(clock.Now)
+			api.seed("guid-tunnel-down", "push", status, start.Add(-1*time.Minute))
+			api.redeliverOutcome["guid-tunnel-down"] = status
+			server := api.server()
+			defer server.Close()
+
+			store := newFakeStore()
+			sweeper := New(Options{
+				Client: server.Client(), APIBaseURL: server.URL,
+				AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+				Store: store, Now: clock.Now, Interval: time.Hour,
+			})
+			for pass := 1; pass <= 4; pass++ {
+				sweeper.Sweep(background())
+				record, found := store.get("guid-tunnel-down")
+				if !found || record.Attempts != 0 || record.Abandoned {
+					t.Fatalf("pass %d: record = %+v, found=%t, want Attempts=0 and never abandoned", pass, record, found)
+				}
+				clock.Advance(time.Hour)
+			}
+			if got := len(api.redeliveredIDs()); got != 4 {
+				t.Fatalf("redeliver calls = %d, want 4 (one per sweep, still uncounted)", got)
+			}
+		})
+	}
+}
+
+// TestUncountedGUIDIsAbandonedAfterSeventyTwoHoursSinceFirstDelivery is
+// S1(b): a GUID the hub never answers keeps getting a fresh delivered_at on
+// every redelivery, so its own latest attempt never ages out of the 72-hour
+// listing window on its own. FirstDeliveredAt is what bounds it: once 72
+// hours have passed since the GUID's first-ever attempt, it is abandoned
+// outright, even though its latest attempt (and LastAttemptAt) are fresh.
+func TestUncountedGUIDIsAbandonedAfterSeventyTwoHoursSinceFirstDelivery(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	firstDeliveredAt := now.Add(-73 * time.Hour)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	// The GUID's latest attempt is recent (inside the 72h listing window),
+	// modeling an uncounted redelivery an hour ago that itself went
+	// unanswered (a gateway non-answer, so it is still not evidence).
+	api.seed("guid-forever-down", "push", http.StatusBadGateway, now.Add(-30*time.Minute))
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	// A prior sweep already recorded this GUID: attempts never counted
+	// (Attempts stays 0), but FirstDeliveredAt was captured on first sight
+	// and never overwritten since.
+	store.records["guid-forever-down"] = hub.WebhookRedeliveryRecord{
+		GUID: "guid-forever-down", Attempts: 0, LastAttemptAt: now.Add(-time.Hour), FirstDeliveredAt: firstDeliveredAt,
+	}
+
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: func() time.Time { return now }, Interval: time.Hour, Narrate: narrateFn,
+	})
+	sweeper.Sweep(background())
+
+	if got := len(api.redeliveredIDs()); got != 0 {
+		t.Fatalf("redeliver calls = %d, want 0: an aged-out GUID is abandoned without asking GitHub again", got)
+	}
+	record, found := store.get("guid-forever-down")
+	if !found || !record.Abandoned || record.FirstDeliveredAt != firstDeliveredAt {
+		t.Fatalf("record = %+v, found=%t, want abandoned with FirstDeliveredAt preserved", record, found)
+	}
+	abandoned := 0
+	for _, line := range *lines {
+		if line.Action == "abandoned: older than 72h" {
+			abandoned++
+		}
+	}
+	if abandoned != 1 {
+		t.Fatalf("abandon-by-age lines = %d, want exactly 1", abandoned)
+	}
+}
+
+// TestPruneRemovesAnAgeAbandonedRecordAfterSevenDays proves the 72h-age
+// abandonment path still feeds the same 7-day retention clock as every other
+// record: LastAttemptAt is what prune reads, and the age-abandon save sets
+// it to "now", not to the (much older) FirstDeliveredAt.
+func TestPruneRemovesAnAgeAbandonedRecordAfterSevenDays(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	store.records["long-gone"] = hub.WebhookRedeliveryRecord{
+		GUID: "long-gone", Attempts: 0, Abandoned: true,
+		LastAttemptAt: now.Add(-8 * 24 * time.Hour), FirstDeliveredAt: now.Add(-8*24*time.Hour - 73*time.Hour),
+	}
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: func() time.Time { return now },
+	})
+	sweeper.Sweep(background())
+
+	if _, found := store.get("long-gone"); found {
+		t.Fatal("prune must remove a record abandoned by age once 7 days have passed since its last write")
 	}
 }
 
@@ -630,6 +836,47 @@ func TestPerDeliveryRejectionCountsAbandonsAndContinues(t *testing.T) {
 	}
 }
 
+// TestUncountedPathNarratesAGithubRejectionToo is minor item 4: on the
+// uncounted path (no reachability evidence), GitHub rejecting the redeliver
+// call outright (400/404/422) must be narrated exactly as it would be on the
+// counted path, not silently discarded, even though the call is not spent
+// against MaxAttempts.
+func TestUncountedPathNarratesAGithubRejectionToo(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	// A gateway non-answer: no reachability evidence at all.
+	api.seed("guid-gone-and-unreachable", "push", http.StatusBadGateway, now.Add(-1*time.Hour))
+	api.redeliverStatus = http.StatusUnprocessableEntity
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: func() time.Time { return now }, Interval: time.Hour, Narrate: narrateFn,
+	})
+	sweeper.Sweep(background())
+
+	record, found := store.get("guid-gone-and-unreachable")
+	if !found || record.Attempts != 0 {
+		t.Fatalf("record = %+v, found=%t, want Attempts=0: the uncounted path never spends one", record, found)
+	}
+	rejected := 0
+	for _, line := range *lines {
+		if strings.Contains(line.Action, "rejected") {
+			rejected++
+			if strings.Contains(line.Action, "not counted") == false {
+				t.Fatalf("uncounted rejection line = %q, want it to say it was not counted", line.Action)
+			}
+		}
+	}
+	if rejected != 1 {
+		t.Fatalf("narrated %d uncounted rejection lines, want exactly 1", rejected)
+	}
+}
+
 // TestSystemicFailureAbortsTheSweep is the other half of S2: a redeliver
 // call answered with a systemic status (403) aborts the rest of the sweep,
 // leaving the next GUID untouched for the next pass.
@@ -669,11 +916,16 @@ func TestSystemicFailureAbortsTheSweep(t *testing.T) {
 	}
 }
 
-// TestAttemptIsSavedBeforeTheRedeliverCall is M2: a crash between the save
-// and GitHub's answer must never be able to grant a fourth real attempt.
-// This sweep's redeliver call is made to fail outright (a systemic error),
-// and the store must already show the attempt spent regardless.
-func TestAttemptIsSavedBeforeTheRedeliverCall(t *testing.T) {
+// TestAttemptIsSavedBeforeTheRedeliverCallThenRolledBackOnSystemicFailure
+// covers both M2 and minor item 1 together, because they are two halves of
+// the same save sequence: M2 pre-saves the spent attempt before the GitHub
+// call so a real process crash between the save and the answer can never
+// grant a fourth real attempt; minor item 1 then restores the previous count
+// when the call comes back and answers with a systemic failure (5xx here, not
+// a transport error), because nothing about this GUID in particular was
+// learned. LastAttemptAt still advances to "now" on the rollback, so the
+// minimum-gap rule still applies and a hammering retry loop cannot form.
+func TestAttemptIsSavedBeforeTheRedeliverCallThenRolledBackOnSystemicFailure(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	api := newFakeGitHubAppAPI(func() time.Time { return now })
 	api.seed("guid-evidence", "push", 200, now.Add(-1*time.Minute))
@@ -690,9 +942,23 @@ func TestAttemptIsSavedBeforeTheRedeliverCall(t *testing.T) {
 	})
 	sweeper.Sweep(background())
 
+	saves := store.saves("guid-crash")
+	if len(saves) != 2 {
+		t.Fatalf("saves for guid-crash = %+v, want exactly 2 (the pre-save, then the rollback)", saves)
+	}
+	if saves[0].Attempts != 1 {
+		t.Fatalf("pre-save = %+v, want Attempts=1 saved before the GitHub call (M2)", saves[0])
+	}
+	if saves[1].Attempts != 0 {
+		t.Fatalf("rollback save = %+v, want Attempts restored to 0 after a systemic failure (minor item 1)", saves[1])
+	}
+	if !saves[1].LastAttemptAt.Equal(now) {
+		t.Fatalf("rollback save LastAttemptAt = %s, want %s (the gap rule still applies)", saves[1].LastAttemptAt, now)
+	}
+
 	record, found := store.get("guid-crash")
-	if !found || record.Attempts != 1 {
-		t.Fatalf("record = %+v, found=%t, want the attempt saved even though the call itself failed", record, found)
+	if !found || record.Attempts != 0 {
+		t.Fatalf("final record = %+v, found=%t, want the rolled-back count", record, found)
 	}
 }
 
@@ -851,6 +1117,43 @@ func TestPruneRunsEvenAfterAnAbortedSweep(t *testing.T) {
 	}
 }
 
+// TestContextCancellationIsNotNarratedAsAFailure is minor item 6: a sweep cut
+// short because the daemon is shutting down is not a failure. Whatever
+// caused sweepOnce to abort when ctx is already done must not narrate "sweep
+// failed" and must not set LastFailureAt/LastFailureClass.
+func TestContextCancellationIsNotNarratedAsAFailure(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.seed("guid-a", "push", 500, now.Add(-1*time.Hour))
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: func() time.Time { return now }, Narrate: narrateFn,
+	})
+
+	ctx, cancel := context.WithCancel(background())
+	cancel()
+	sweeper.Sweep(ctx)
+
+	for _, line := range *lines {
+		if strings.Contains(line.Action, "sweep failed") {
+			t.Fatalf("a cancelled sweep must not narrate a failure: %+v", line)
+		}
+	}
+	status := sweeper.Status()
+	if status.LastFailureAt != nil || status.LastFailureClass != "" {
+		t.Fatalf("status = %+v, want no failure recorded for a shutdown", status)
+	}
+	if status.LastSweepAt == nil {
+		t.Fatal("a cancelled sweep must still record LastSweepAt")
+	}
+}
+
 // TestSweepIsInertWithoutFullAppConfiguration is the defensive counterpart of
 // "there is no activity when hub.github.app is not configured": the wiring
 // test for that lives in cmd/wb, where an unconfigured hub never even
@@ -952,6 +1255,52 @@ func TestSweepHonorsRateLimitResetWithoutRetryAfter(t *testing.T) {
 	}
 }
 
+// TestRateLimitResetIgnoredWithBudgetRemaining is minor item 2: a 403 that
+// still has rate-limit budget left is not a rate-limit response at all — the
+// poller (hub/poller) applies the same rule — so X-RateLimit-Reset must be
+// ignored and the ordinary exponential backoff used instead.
+func TestRateLimitResetIgnoredWithBudgetRemaining(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(90 * time.Second)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.listStatus = http.StatusForbidden
+	api.listHeader = http.Header{"X-RateLimit-Remaining": []string{"500"}, "X-RateLimit-Reset": []string{strconv.FormatInt(reset.Unix(), 10)}}
+	server := api.server()
+	defer server.Close()
+
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: newFakeStore(), Now: func() time.Time { return now },
+	})
+	if got := sweeper.Sweep(background()); got != DefaultInterval {
+		t.Fatalf("delay = %s, want the ordinary backoff (DefaultInterval) since remaining budget means this 403 was not a rate limit", got)
+	}
+}
+
+// TestRateLimitWaitCappedAtMaxBackoff is minor item 3: whatever GitHub
+// recommends via Retry-After or X-RateLimit-Reset, the sweep never waits
+// longer than MaxBackoff — a longer wait would let a single GitHub-side
+// number push the recovery loop past the ceiling every other failure path
+// respects.
+func TestRateLimitWaitCappedAtMaxBackoff(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	api := newFakeGitHubAppAPI(func() time.Time { return now })
+	api.listStatus = http.StatusTooManyRequests
+	api.listHeader = http.Header{"Retry-After": []string{strconv.Itoa(int((24 * time.Hour).Seconds()))}}
+	server := api.server()
+	defer server.Close()
+
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: newFakeStore(), Now: func() time.Time { return now },
+	})
+	if got := sweeper.Sweep(background()); got != MaxBackoff {
+		t.Fatalf("delay = %s, want capped at MaxBackoff (%s) despite a 24h Retry-After", got, MaxBackoff)
+	}
+}
+
 // TestNarrationCarriesNoSecretsAndNoIdentifiers is the golden check the
 // common brief, the task, and the review all require: exact line shape,
 // no installation or repository identifier (M1), and no JWT, key material,
@@ -998,6 +1347,49 @@ func TestNarrationCarriesNoSecretsAndNoIdentifiers(t *testing.T) {
 	}
 	if strings.Contains(redeliverLine, "BEGIN RSA PRIVATE KEY") {
 		t.Fatal("the narrated line carried key material")
+	}
+}
+
+// failingTransport fails every request the way a torn-down tunnel or a DNS
+// failure would: net/http wraps this in a *url.Error carrying the full
+// request URL, which is exactly what minor item 7 says must never reach a
+// narrated line.
+type failingTransport struct{ err error }
+
+func (transport failingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return nil, &url.Error{Op: request.Method, URL: request.URL.String(), Err: transport.err}
+}
+
+// TestTransportFailureNarrationOmitsTheRequestURL is minor item 7: a sweep
+// that cannot reach GitHub at all narrates the operation and the error class
+// only, never the full request URL a *url.Error would otherwise carry —
+// which, in production, includes the App's own API path.
+func TestTransportFailureNarrationOmitsTheRequestURL(t *testing.T) {
+	secretLookingURL := "https://api.github.example/secret-app-42/hook/deliveries"
+	client := &http.Client{Transport: failingTransport{err: errors.New("connection refused")}}
+
+	narrateFn, lines := recordingNarrate()
+	sweeper := New(Options{
+		Client: client, APIBaseURL: secretLookingURL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: newFakeStore(), Narrate: narrateFn,
+	})
+	sweeper.Sweep(background())
+
+	failLine := ""
+	for _, line := range *lines {
+		if strings.Contains(line.Action, "sweep failed") {
+			failLine = line.Action
+		}
+	}
+	if failLine == "" {
+		t.Fatal("a transport failure must narrate a sweep-failed line")
+	}
+	if strings.Contains(failLine, secretLookingURL) || strings.Contains(failLine, "secret-app-42") || strings.Contains(failLine, "connection refused") {
+		t.Fatalf("narrated line = %q, must not carry the request URL or the raw transport error", failLine)
+	}
+	if status := sweeper.Status(); status.LastFailureClass != "transport" {
+		t.Fatalf("status.LastFailureClass = %q, want %q", status.LastFailureClass, "transport")
 	}
 }
 
@@ -1171,8 +1563,8 @@ func TestClassifyFallsBackToUnknown(t *testing.T) {
 	if got := classify(errors.New("some other package's error")); got != "unknown" {
 		t.Fatalf("classify = %q, want %q", got, "unknown")
 	}
-	wrapped := &sweepError{class: "auth", err: errors.New("github responded 403")}
-	if got := wrapped.Unwrap(); got == nil || got.Error() != "github responded 403" {
-		t.Fatalf("Unwrap = %v", got)
+	wrapped := &sweepError{class: "auth", message: "github responded 403"}
+	if got := wrapped.Error(); got != "github responded 403" {
+		t.Fatalf("Error() = %q", got)
 	}
 }

@@ -10,13 +10,24 @@
 // Redelivering costs nothing extra when the operator's own endpoint is the
 // thing that is down: GitHub still accepts the redeliver request and simply
 // fails it again. What must be bounded is how many of MaxAttempts a GUID
-// spends while that is true, because "endpoint has been down for a week"
+// spends while that is true, because "the hub keeps answering with an error"
 // must not look identical to "GitHub keeps failing this one delivery for
-// some other reason" — the former should retry forever at the sweep's normal
-// cadence and never reach abandonment on that account alone. spentAttempt
-// answers that question from evidence already in the same listing: some
-// other delivery, any GUID, that reached the endpoint with a 2xx more
-// recently than this GUID's own last attempt.
+// some other reason". reachable answers that from evidence already in the
+// same listing: any delivery attempt the hub itself answered — a 2xx, or an
+// application-level rejection like 401 or 503, but not a gateway/tunnel
+// non-answer (502, 504, 530, or no status at all) — newer than or as new as
+// this GUID's own last recorded attempt, including that GUID's own latest
+// attempt. Without that evidence the sweep still redelivers, since the
+// delivery may succeed even though nothing has recently, but it does not
+// spend one of MaxAttempts on it.
+//
+// That still leaves one case unbounded by MaxAttempts: the tunnel itself is
+// down, so nothing the App API lists was ever answered at all, and every
+// hourly redelivery creates a new attempt with a fresh delivered_at that
+// never ages out of the 72-hour listing window on its own. FirstDeliveredAt
+// closes this: it is set once, from the GUID's earliest attempt this hub has
+// seen, and never overwritten, so a GUID is abandoned once 72 hours have
+// passed since then regardless of how fresh its latest attempt looks.
 //
 // A redelivered event arrives at the hub's normal webhook route and
 // deduplicates there by delivery ID exactly like any other delivery: this
@@ -49,23 +60,26 @@ const (
 	// uncounted redeliver calls for the same GUID. The sweep always runs
 	// once immediately as well, on daemon start.
 	DefaultInterval = time.Hour
-	// MaxDeliveryAge bounds how far back the sweep lists and acts on
-	// deliveries. An operator down longer than this has a bigger problem
-	// than a redelivered push, and the App API listing would only grow. This
-	// is a hard bound: nothing in this package ever widens it.
+	// MaxDeliveryAge bounds how far back the sweep lists deliveries, and also
+	// how long a GUID it cannot count an attempt against survives: once
+	// MaxDeliveryAge has passed since a GUID's FirstDeliveredAt, it is
+	// abandoned outright, whether or not it ever spent an attempt. This is a
+	// hard bound: nothing in this package ever widens it.
 	MaxDeliveryAge = 72 * time.Hour
 	// MaxAttempts bounds how many counted attempts the sweep spends asking
 	// GitHub to redeliver the same GUID before narrating it abandoned and
-	// never touching it again. An attempt only counts while there is
-	// evidence the endpoint is reachable; see spentAttempt.
+	// never touching it again. An attempt only counts while reachable
+	// reports evidence the endpoint is answering at all.
 	MaxAttempts = 3
 	// Retention is how long a redelivery record survives in the store after
 	// its last attempt, whether it is still retrying, succeeded, or was
 	// abandoned.
 	Retention = 7 * 24 * time.Hour
-	// MaxBackoff bounds the exponential retreat after a failed sweep. It
-	// must exceed Interval — a shorter cap would make a persistent failure
-	// retry more often than a healthy sweep does, hammering an outage.
+	// MaxBackoff bounds the exponential retreat after a failed sweep, and
+	// caps any GitHub-recommended Retry-After or X-RateLimit-Reset wait too.
+	// It must exceed Interval — a shorter cap would make a persistent
+	// failure retry more often than a healthy sweep does, hammering an
+	// outage.
 	MaxBackoff = 6 * time.Hour
 	// jwtRefreshAfter re-mints the App JWT partway through a long sweep: the
 	// JWT hub.BuildAppJWT signs is valid for about 9 minutes, and a sweep
@@ -84,6 +98,11 @@ const (
 
 	perPage          = 100
 	maxResponseBytes = 1 << 20
+
+	// statusOriginUnreachable is Cloudflare's own extension status for "the
+	// tunnel had no origin to reach" — a gateway non-answer, the same as 502
+	// and 504, not an application answer.
+	statusOriginUnreachable = 530
 )
 
 // Options configures a Sweeper. Store, AppID and PrivateKeyPEM are required
@@ -121,9 +140,15 @@ type Status struct {
 	LastSweepAt *time.Time
 	Redelivered int
 	Abandoned   int
+	// Uncounted is how many redeliver calls this pass made without evidence
+	// the endpoint is reachable, so they were not spent against MaxAttempts.
+	// A sustained non-zero value is what makes an ongoing outage visible in
+	// `wb daemon status` even though nothing is being abandoned for it.
+	Uncounted int
 	// LastFailureAt and LastFailureClass are sticky: a later clean sweep
 	// does not clear them. An operator asking "has this ever failed, and
-	// how" gets an answer that survives the next successful pass.
+	// how" gets an answer that survives the next successful pass. Neither is
+	// set for a sweep cut short by ctx ending — a shutdown is not a failure.
 	LastFailureAt    *time.Time
 	LastFailureClass string
 }
@@ -177,14 +202,17 @@ func (sweeper *Sweeper) Status() Status {
 // recordCompletion is called exactly once per Sweep, whatever happened
 // during it: a sweep that could not even mint a JWT still updates
 // LastSweepAt, and a sweep that aborted partway through still reports
-// whatever it redelivered or abandoned before the error.
-func (sweeper *Sweeper) recordCompletion(at time.Time, redelivered, abandoned int, sweepErr error) {
+// whatever it redelivered, abandoned or left uncounted before the error. A
+// nil sweepErr — including one reset to nil because ctx ended — leaves
+// LastFailureAt/Class exactly as they were.
+func (sweeper *Sweeper) recordCompletion(at time.Time, redelivered, abandoned, uncounted int, sweepErr error) {
 	sweeper.mu.Lock()
 	defer sweeper.mu.Unlock()
 	sweptAt := at
 	sweeper.last.LastSweepAt = &sweptAt
 	sweeper.last.Redelivered = redelivered
 	sweeper.last.Abandoned = abandoned
+	sweeper.last.Uncounted = uncounted
 	if sweepErr != nil {
 		failedAt := at
 		sweeper.last.LastFailureAt = &failedAt
@@ -208,11 +236,13 @@ func (sweeper *Sweeper) Run(ctx context.Context) error {
 }
 
 // Sweep performs one pass and returns how long to wait before the next one:
-// the configured interval normally, a GitHub-recommended wait when a 403 or
-// 429 carried one, or the current exponential backoff otherwise. It never
-// returns an error and never panics on one: a sweep that cannot reach GitHub
-// is narrated in one line and retried later, which is the whole point of a
-// background recovery loop outliving a transient GitHub outage.
+// the configured interval normally, a GitHub-recommended wait (capped at
+// MaxBackoff) when a 403 or 429 carried one, or the current exponential
+// backoff otherwise. It never returns an error and never panics on one: a
+// sweep that cannot reach GitHub is narrated in one line and retried later,
+// which is the whole point of a background recovery loop outliving a
+// transient GitHub outage. A sweep cut short by ctx ending is not narrated
+// as a failure at all — sweepOnce already resets that case to a nil error.
 func (sweeper *Sweeper) Sweep(ctx context.Context) time.Duration {
 	if sweeper.options.Store == nil || sweeper.options.AppID <= 0 || len(sweeper.options.PrivateKeyPEM) == 0 {
 		return sweeper.options.Interval
@@ -226,9 +256,10 @@ func (sweeper *Sweeper) Sweep(ctx context.Context) time.Duration {
 	var se *sweepError
 	if errors.As(err, &se) && se.wait > 0 {
 		// GitHub told us exactly how long to wait; honor that instead of the
-		// exponential backoff, and do not let it perturb the backoff series
-		// for the next organic failure.
-		return se.wait
+		// exponential backoff, capped the same as the backoff itself, and do
+		// not let it perturb the backoff series for the next organic
+		// failure.
+		return min(se.wait, MaxBackoff)
 	}
 	return sweeper.transientDelay()
 }
@@ -237,32 +268,38 @@ func (sweeper *Sweeper) Sweep(ctx context.Context) time.Duration {
 // recordCompletion: pruning touches only the local store, never GitHub, so
 // it owes nothing to whether the App API could be reached, and the status
 // `wb daemon status` reads must reflect what actually happened even when a
-// pass aborted partway through.
+// pass aborted partway through. A pass ctx cuts short is reported with
+// whatever it completed and no failure at all — a shutdown is not a failure.
 func (sweeper *Sweeper) sweepOnce(ctx context.Context) error {
 	now := sweeper.options.Now()
 	state := &tokenState{}
-	var redelivered, abandoned int
-	var uncounted bool
+	var redelivered, abandoned, uncounted int
 	var sweepErr error
 
 	if err := sweeper.ensureToken(ctx, state); err != nil {
 		sweepErr = err
 	} else {
 		cutoff := now.Add(-MaxDeliveryAge)
-		failed, newestSuccessAt, listErr := sweeper.listRecentDeliveries(ctx, state, cutoff)
+		failed, newestAnsweredAt, listErr := sweeper.listRecentDeliveries(ctx, state, cutoff)
 		if listErr != nil {
 			sweepErr = listErr
 		} else {
-			redelivered, abandoned, uncounted, sweepErr = sweeper.actOn(ctx, state, failed, newestSuccessAt)
+			redelivered, abandoned, uncounted, sweepErr = sweeper.actOn(ctx, state, now, failed, newestAnsweredAt)
 		}
 	}
-	if uncounted {
-		sweeper.options.Narrate(narrate.Line{At: sweeper.options.Now(), Event: eventName, Subject: "github.com", Action: "endpoint unreachable; not counted"})
+	if uncounted > 0 {
+		sweeper.options.Narrate(narrate.Line{At: sweeper.options.Now(), Event: eventName, Subject: "github.com", Action: "no answer from the hub since the last attempt; not counted"})
 	}
 	if pruneErr := sweeper.prune(ctx); pruneErr != nil && sweepErr == nil {
 		sweepErr = pruneErr
 	}
-	sweeper.recordCompletion(now, redelivered, abandoned, sweepErr)
+	if ctx.Err() != nil {
+		// The daemon is shutting down mid-sweep. Whatever was redelivered,
+		// abandoned or left uncounted above still counts, but this is not a
+		// failure this pass reports as one.
+		sweepErr = nil
+	}
+	sweeper.recordCompletion(now, redelivered, abandoned, uncounted, sweepErr)
 	return sweepErr
 }
 
@@ -280,7 +317,7 @@ func (sweeper *Sweeper) ensureToken(_ context.Context, state *tokenState) error 
 	}
 	token, err := hub.BuildAppJWT(sweeper.options.AppID, sweeper.options.PrivateKeyPEM, sweeper.options.Now)
 	if err != nil {
-		return &sweepError{class: "jwt", err: fmt.Errorf("mint github app jwt: %w", err)}
+		return &sweepError{class: "jwt", message: fmt.Sprintf("mint github app jwt: %v", err)}
 	}
 	state.value = token
 	state.mintedAt = now
@@ -306,6 +343,19 @@ func (item deliveryItem) succeeded() bool {
 	return item.StatusCode >= 200 && item.StatusCode < 300
 }
 
+// answered reports whether the hub's own endpoint responded at all, as
+// opposed to nothing upstream of a tunnel ever getting the chance to: a 2xx
+// counts, so does an application-level rejection like 401 or 503, but a
+// gateway/tunnel non-answer (502, 504, 530) or no status at all does not.
+func (item deliveryItem) answered() bool {
+	switch item.StatusCode {
+	case 0, http.StatusBadGateway, http.StatusGatewayTimeout, statusOriginUnreachable:
+		return false
+	default:
+		return true
+	}
+}
+
 // subject is the narrate.Line.Subject column: the webhook's own event name
 // plus the literal "github.com", following the same shape
 // hub.RepositoryEventService's narrationSubject uses for a delivery that
@@ -325,11 +375,11 @@ func (item deliveryItem) subject() string {
 // older. Because the list is newest-first, the first time a GUID is seen is
 // by construction its latest attempt, so grouping needs no sorting.
 //
-// newestSuccessAt is the most recent DeliveredAt among any GUID's latest
-// attempt that succeeded, across the whole listing — the evidence
-// spentAttempt uses to tell "the endpoint is reachable" from "it has been
-// down the whole window".
-func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenState, cutoff time.Time) (failed []deliveryItem, newestSuccessAt time.Time, err error) {
+// newestAnsweredAt is the most recent DeliveredAt among any GUID's latest
+// attempt that the hub answered at all (not only a success) — the evidence
+// reachable uses to tell "the endpoint is answering" from "nothing has ever
+// gotten through".
+func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenState, cutoff time.Time) (failed []deliveryItem, newestAnsweredAt time.Time, err error) {
 	url := sweeper.options.APIBaseURL + "/app/hook/deliveries?per_page=" + strconv.Itoa(perPage)
 	seen := make(map[string]bool)
 	seenURLs := make(map[string]bool)
@@ -368,40 +418,42 @@ func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenSt
 	}
 	failed = make([]deliveryItem, 0, len(latest))
 	for _, item := range latest {
-		if item.succeeded() {
-			if item.DeliveredAt.After(newestSuccessAt) {
-				newestSuccessAt = item.DeliveredAt
-			}
-			continue
+		if item.answered() && item.DeliveredAt.After(newestAnsweredAt) {
+			newestAnsweredAt = item.DeliveredAt
 		}
-		failed = append(failed, item)
+		if !item.succeeded() {
+			failed = append(failed, item)
+		}
 	}
-	return failed, newestSuccessAt, nil
+	return failed, newestAnsweredAt, nil
 }
 
-// spentAttempt reports whether the listing gives evidence the operator's
-// endpoint is currently reachable, relative to one GUID's last recorded
-// attempt (the zero time for a GUID never attempted before, so any success
-// anywhere in the window counts). Without that evidence a redeliver call
-// still goes out — the delivery may succeed even though nothing else has —
-// but it must not spend one of MaxAttempts, or an outage longer than
-// MaxAttempts intervals would abandon a GUID for a reason that has nothing
-// to do with that GUID.
-func spentAttempt(newestSuccessAt, lastAttemptAt time.Time) bool {
-	return newestSuccessAt.After(lastAttemptAt)
+// reachable reports whether the listing gives evidence the operator's
+// endpoint is answering at all, relative to one GUID's last recorded
+// attempt (the zero time for a GUID never attempted before, so any answered
+// delivery anywhere in the window counts, including the GUID's own latest
+// attempt). Without that evidence a redeliver call still goes out — the
+// delivery may succeed even though nothing else has — but it must not spend
+// one of MaxAttempts, or an outage longer than MaxAttempts intervals would
+// abandon a GUID for a reason that has nothing to do with that GUID.
+func reachable(newestAnsweredAt, lastAttemptAt time.Time) bool {
+	return newestAnsweredAt.After(lastAttemptAt)
 }
 
-// actOn redelivers each failed GUID, honoring three rules before it does:
-// abandoned GUIDs are skipped for good; a GUID redelivered less than
-// Interval ago is left for a later sweep, which is what keeps a crash-loop
-// restart from hammering the redeliver endpoint; and a GUID already at
-// MaxAttempts is abandoned without another GitHub call. It aborts and
-// returns an error only for a systemic failure (401/403/429/5xx, or a
-// transport error) — GitHub's own per-delivery rejection of a redeliver
-// call (400/404/422) is counted, possibly abandoned, narrated, and the loop
-// continues to the next GUID.
-func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, failed []deliveryItem, newestSuccessAt time.Time) (redelivered, abandoned int, uncounted bool, err error) {
-	now := sweeper.options.Now().UTC()
+// actOn redelivers each failed GUID, honoring these rules in order: an
+// abandoned GUID is skipped for good; a GUID older than MaxDeliveryAge since
+// its FirstDeliveredAt is abandoned outright, whether or not it ever spent
+// an attempt — this is what bounds a GUID the hub never answers at all,
+// since its latest attempt's own delivered_at never ages out on its own; a
+// GUID redelivered less than Interval ago is left for a later sweep, which
+// is what keeps a crash-loop restart from hammering the redeliver endpoint;
+// and a GUID already at MaxAttempts is abandoned without another GitHub
+// call. It aborts and returns an error only for a systemic failure
+// (401/403/429/5xx, or a transport error) — GitHub's own per-delivery
+// rejection of a redeliver call (400/404/422) is counted, possibly
+// abandoned, narrated, and the loop continues to the next GUID.
+func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.Time, failed []deliveryItem, newestAnsweredAt time.Time) (redelivered, abandoned, uncounted int, err error) {
+	now = now.UTC()
 	for _, item := range failed {
 		record, found, loadErr := sweeper.options.Store.LoadWebhookRedelivery(ctx, item.GUID)
 		if loadErr != nil {
@@ -410,17 +462,29 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, failed []d
 		if found && record.Abandoned {
 			continue
 		}
-		var lastAttemptAt time.Time
+		var lastAttemptAt, firstDeliveredAt time.Time
 		attempts := 0
 		if found {
 			lastAttemptAt = record.LastAttemptAt
+			firstDeliveredAt = record.FirstDeliveredAt
 			attempts = record.Attempts
+		} else {
+			firstDeliveredAt = item.DeliveredAt
+		}
+
+		if now.Sub(firstDeliveredAt) > MaxDeliveryAge {
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+				return redelivered, abandoned, uncounted, storeErr(saveErr)
+			}
+			sweeper.narrate(item, now, "abandoned: older than 72h")
+			abandoned++
+			continue
 		}
 		if found && now.Sub(lastAttemptAt) < sweeper.options.Interval {
 			continue
 		}
 		if attempts >= MaxAttempts {
-			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now}); saveErr != nil {
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 				return redelivered, abandoned, uncounted, storeErr(saveErr)
 			}
 			sweeper.narrate(item, now, fmt.Sprintf("abandoned after %d attempts", attempts))
@@ -428,17 +492,21 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, failed []d
 			continue
 		}
 
-		if !spentAttempt(newestSuccessAt, lastAttemptAt) {
-			// No evidence the endpoint is reachable: ask GitHub anyway (the
-			// delivery may succeed) but record only the gap-enforcing
-			// timestamp, never the spent attempt.
-			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now}); saveErr != nil {
+		if !reachable(newestAnsweredAt, lastAttemptAt) {
+			// No evidence the endpoint is answering at all: ask GitHub
+			// anyway (the delivery may succeed) but record only the
+			// gap-enforcing timestamp, never the spent attempt.
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 				return redelivered, abandoned, uncounted, storeErr(saveErr)
 			}
-			if _, callErr := sweeper.redeliver(ctx, state, item.ID); callErr != nil {
+			status, callErr := sweeper.redeliver(ctx, state, item.ID)
+			if callErr != nil {
 				return redelivered, abandoned, uncounted, callErr
 			}
-			uncounted = true
+			if status == http.StatusBadRequest || status == http.StatusNotFound || status == http.StatusUnprocessableEntity {
+				sweeper.narrate(item, now, fmt.Sprintf("github rejected redelivery (status %d); not counted", status))
+			}
+			uncounted++
 			continue
 		}
 
@@ -446,16 +514,26 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, failed []d
 		// between the save and the response can never grant a fourth real
 		// attempt.
 		nextAttempts := attempts + 1
-		if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: false, LastAttemptAt: now}); saveErr != nil {
+		if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 			return redelivered, abandoned, uncounted, storeErr(saveErr)
 		}
 		status, callErr := sweeper.redeliver(ctx, state, item.ID)
 		if callErr != nil {
+			if classify(callErr) != "transport" {
+				// The redeliver call itself failed systemically (a status,
+				// not a failure to reach GitHub at all): nothing was learned
+				// about this GUID, so the pre-saved attempt above must not
+				// stand. LastAttemptAt still advances, so the gap rule still
+				// applies and a hammering retry loop cannot form.
+				if rollbackErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); rollbackErr != nil {
+					return redelivered, abandoned, uncounted, storeErr(rollbackErr)
+				}
+			}
 			return redelivered, abandoned, uncounted, callErr
 		}
 		if status == http.StatusBadRequest || status == http.StatusNotFound || status == http.StatusUnprocessableEntity {
 			if nextAttempts >= MaxAttempts {
-				if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: true, LastAttemptAt: now}); saveErr != nil {
+				if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 					return redelivered, abandoned, uncounted, storeErr(saveErr)
 				}
 				sweeper.narrate(item, now, fmt.Sprintf("abandoned after %d attempts (github rejected redelivery, status %d)", nextAttempts, status))
@@ -534,18 +612,21 @@ func (sweeper *Sweeper) transientDelay() time.Duration {
 }
 
 // doRequest performs one authenticated GitHub App API request and returns
-// the raw response, still open, for the caller to classify and close.
+// the raw response, still open, for the caller to classify and close. On a
+// transport failure the error message names only the operation, never the
+// request URL or method a *url.Error would otherwise embed: the console a
+// detached daemon writes to disk is not the place for that shape.
 func (sweeper *Sweeper) doRequest(ctx context.Context, method, url, token string) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build github request: %w", err)
+		return nil, &sweepError{class: "transport", message: "build github request"}
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := sweeper.options.Client.Do(request)
 	if err != nil {
-		return nil, &sweepError{class: "transport", err: fmt.Errorf("reach github: %w", err)}
+		return nil, &sweepError{class: "transport", message: "reach github"}
 	}
 	return response, nil
 }
@@ -565,17 +646,19 @@ func (sweeper *Sweeper) get(ctx context.Context, url, token string, out any) (st
 	}
 	next := nextPageURL(response.Header.Get("Link"))
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(out); err != nil {
-		return "", &sweepError{class: "decode", err: fmt.Errorf("decode github response: %w", err)}
+		return "", &sweepError{class: "decode", message: "decode github response"}
 	}
 	return next, nil
 }
 
 // classifyResponseError turns a non-2xx response this package treats as
 // abort-worthy into a classified error, reading Retry-After and
-// X-RateLimit-Reset on 403/429 (per B1) so Sweep can honor whichever GitHub
-// sent. 401 is classified "auth" too — the App JWT itself can expire
-// mid-sweep and comes back this way — but carries no rate-limit wait: GitHub
-// does not send one on a plain authentication failure.
+// X-RateLimit-Reset — only when X-RateLimit-Remaining is exhausted, the same
+// condition hub/poller gates on — on 403/429 (per B1) so Sweep can honor
+// whichever GitHub sent, capped at MaxBackoff. 401 is classified "auth" too
+// — the App JWT itself can expire mid-sweep and comes back this way — but
+// carries no rate-limit wait: GitHub does not send one on a plain
+// authentication failure.
 func (sweeper *Sweeper) classifyResponseError(response *http.Response) error {
 	status := response.StatusCode
 	class := "unknown"
@@ -591,27 +674,31 @@ func (sweeper *Sweeper) classifyResponseError(response *http.Response) error {
 	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
 		if retryAfter, ok := hub.RetryAfter(response.Header); ok {
 			wait = retryAfter
-		} else if limit := hub.ReadRateLimit(response.Header); limit.Known {
+		} else if limit := hub.ReadRateLimit(response.Header); limit.Known && limit.Remaining == 0 {
 			if remaining := limit.Reset.Sub(sweeper.options.Now()); remaining > 0 {
 				wait = remaining
 			}
 		}
+		wait = min(wait, MaxBackoff)
 	}
-	return &sweepError{class: class, wait: wait, err: fmt.Errorf("github responded %d", status)}
+	return &sweepError{class: class, wait: wait, message: fmt.Sprintf("github responded %d", status)}
 }
 
 // sweepError classifies why a sweep failed, for LastFailureClass, and
-// optionally carries a GitHub-recommended wait, for B1's backoff.
+// optionally carries a GitHub-recommended wait, for B1's backoff. message is
+// what Error() renders: always a safe, static description of the operation
+// and the class, never the request URL or any other request detail.
 type sweepError struct {
-	class string
-	wait  time.Duration
-	err   error
+	class   string
+	wait    time.Duration
+	message string
 }
 
-func (e *sweepError) Error() string { return e.err.Error() }
-func (e *sweepError) Unwrap() error { return e.err }
+func (e *sweepError) Error() string { return e.message }
 
-func storeErr(err error) error { return &sweepError{class: "store", err: err} }
+func storeErr(err error) error {
+	return &sweepError{class: "store", message: "webhook redelivery store: " + err.Error()}
+}
 
 // classify extracts the short failure class LastFailureClass reports, or
 // "unknown" for an error this package did not itself classify.

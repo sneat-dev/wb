@@ -123,13 +123,14 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 	failedAt := at.Add(-time.Hour)
 	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) {
 		return daemonHubStatus{WebhookRedelivery: &daemonHubRedeliverySweep{
-			LastSweepAt: &at, Redelivered: 2, Abandoned: 1,
+			LastSweepAt: &at, Redelivered: 2, Abandoned: 1, Uncounted: 4,
 			LastFailureAt: &failedAt, LastFailureClass: "rate_limited",
 		}}, nil
 	}
 
 	status := newDaemonController(deps, root).hubStatus(context.Background(), "127.0.0.1:8765")
 	if status.WebhookRedelivery == nil || status.WebhookRedelivery.Redelivered != 2 || status.WebhookRedelivery.Abandoned != 1 ||
+		status.WebhookRedelivery.Uncounted != 4 ||
 		status.WebhookRedelivery.LastSweepAt == nil || !status.WebhookRedelivery.LastSweepAt.Equal(at) ||
 		status.WebhookRedelivery.LastFailureAt == nil || !status.WebhookRedelivery.LastFailureAt.Equal(failedAt) ||
 		status.WebhookRedelivery.LastFailureClass != "rate_limited" {
@@ -141,7 +142,7 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"hub_webhook_redelivered=2", "hub_webhook_abandoned=1", "hub_webhook_redelivery_last_sweep=" + at.Format(time.RFC3339),
+		"hub_webhook_redelivered=2", "hub_webhook_abandoned=1", "hub_webhook_redelivered_uncounted=4", "hub_webhook_redelivery_last_sweep=" + at.Format(time.RFC3339),
 		"hub_webhook_redelivery_last_failure=" + failedAt.Format(time.RFC3339), "hub_webhook_redelivery_last_failure_class=rate_limited",
 	} {
 		if !strings.Contains(out.String(), want) {

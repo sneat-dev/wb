@@ -118,6 +118,7 @@ type daemonHubRedeliverySweep struct {
 	LastSweepAt      *time.Time `json:"last_sweep_at,omitempty"`
 	Redelivered      int        `json:"redelivered"`
 	Abandoned        int        `json:"abandoned"`
+	Uncounted        int        `json:"uncounted"`
 	LastFailureAt    *time.Time `json:"last_failure_at,omitempty"`
 	LastFailureClass string     `json:"last_failure_class,omitempty"`
 }
@@ -547,8 +548,8 @@ func writeDaemonResult(out io.Writer, format string, result daemonResult) error 
 		_, err = fmt.Fprintf(out, ", hub_last_event_acknowledged=%q", result.Hub.LastEventAcknowledged.ID)
 	}
 	if err == nil && result.Hub.WebhookRedelivery != nil {
-		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_sweep=%s, hub_webhook_redelivered=%d, hub_webhook_abandoned=%d",
-			formatOptionalTime(result.Hub.WebhookRedelivery.LastSweepAt), result.Hub.WebhookRedelivery.Redelivered, result.Hub.WebhookRedelivery.Abandoned)
+		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_sweep=%s, hub_webhook_redelivered=%d, hub_webhook_abandoned=%d, hub_webhook_redelivered_uncounted=%d",
+			formatOptionalTime(result.Hub.WebhookRedelivery.LastSweepAt), result.Hub.WebhookRedelivery.Redelivered, result.Hub.WebhookRedelivery.Abandoned, result.Hub.WebhookRedelivery.Uncounted)
 	}
 	if err == nil && result.Hub.WebhookRedelivery != nil && result.Hub.WebhookRedelivery.LastFailureAt != nil {
 		_, err = fmt.Fprintf(out, ", hub_webhook_redelivery_last_failure=%s, hub_webhook_redelivery_last_failure_class=%s",
@@ -1230,6 +1231,7 @@ func (controller daemonController) hubStatus(ctx context.Context, listen string)
 			LastSweepAt:      live.WebhookRedelivery.LastSweepAt,
 			Redelivered:      live.WebhookRedelivery.Redelivered,
 			Abandoned:        live.WebhookRedelivery.Abandoned,
+			Uncounted:        live.WebhookRedelivery.Uncounted,
 			LastFailureAt:    live.WebhookRedelivery.LastFailureAt,
 			LastFailureClass: live.WebhookRedelivery.LastFailureClass,
 		}

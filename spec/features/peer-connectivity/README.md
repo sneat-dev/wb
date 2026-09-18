@@ -449,15 +449,24 @@ On start and then hourly, a hub in webhook mode MUST do the following:
    per delivery, so a crash-loop restart cannot ask GitHub for the same
    delivery faster than the sweep's own cadence.
 4. Count an attempt against the 3-attempt limit only when the same listing
-   shows evidence the operator's endpoint is currently reachable: some other
-   delivery, any GUID, that succeeded more recently than this delivery's own
-   last attempt (or, for a delivery never attempted before, any success at
-   all within the window). Without that evidence the hub still redelivers —
-   the delivery may succeed even though nothing else recently has — but does
-   not spend an attempt on it, so an outage longer than 3 sweep intervals
-   cannot exhaust the budget by itself. A delivery is retried again on later
-   sweeps while its latest attempt still fails, up to 3 counted attempts, and
-   is then narrated as abandoned.
+   shows evidence the operator's endpoint is currently answering: some other
+   delivery, any GUID, that the hub itself answered — a success, or an
+   application-level rejection such as 401 or 503, but not a gateway or
+   tunnel non-answer — more recently than this delivery's own last attempt
+   (or, for a delivery never attempted before, any such answer at all within
+   the window). Without that evidence the hub still redelivers — the
+   delivery may succeed even though nothing else recently has — but does not
+   spend an attempt on it, so an outage longer than 3 sweep intervals cannot
+   exhaust the budget by itself. A delivery is retried again on later sweeps
+   while its latest attempt still fails, up to 3 counted attempts, and is
+   then narrated as abandoned.
+5. The 72-hour window in step 1 is measured from each delivery's OWN first
+   delivery, not from its latest attempt: every redelivery gets a fresh
+   `delivered_at`, so a delivery the hub never answers at all would otherwise
+   never age out of its own listing entry. Once 72 hours have passed since a
+   delivery's first attempt, it is abandoned outright, whether or not it ever
+   counted against the 3-attempt limit. This bounds an unreachable endpoint
+   to at most about 72 uncounted redeliveries per delivery, never forever.
 
 Redelivered events deduplicate by delivery ID as usual. Each redelivery is
 narrated.
