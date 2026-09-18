@@ -59,14 +59,21 @@ func waitForWaiterQueued(t *testing.T, root string, budget int) {
 }
 
 // TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted drives
-// acquireWithQueueVisibility directly against an injected queue whose only
+// admitWithQueueVisibility directly against an injected queue whose only
 // slot is already held, with a heartbeat cadence shrunk for the test. It is
 // the fast, deterministic counterpart to
 // TestRunCommandReportsQueueVisibilityOnStderr below, which proves the same
 // behavior end to end through `wb run --`.
 func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.T) {
+	// Force the small-machine (N<8) legacy budget-sum pool so this test's
+	// manually-held lease deterministically blocks the admission under
+	// test, regardless of how many CPUs the machine running it actually
+	// has (a large machine would otherwise route "go build ./..." through
+	// the separate adaptive heavy-job pool this hold never touches).
+	defer runqueue.SetNumCPUForTest(4)()
 	root := t.TempDir()
-	held, _, err := runqueue.Acquire(context.Background(), root, 1, 1)
+	budget := runqueue.Budget()
+	held, _, err := runqueue.Acquire(context.Background(), root, budget, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +88,7 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 		// Hold from the moment the waiter is genuinely queued, and for longer
 		// than queueAdmissionGrace, so the wait goes through the
 		// queued+heartbeat path rather than resolving as immediate.
-		waitForWaiterQueued(t, root, 1)
+		waitForWaiterQueued(t, root, budget)
 		time.Sleep(holderHoldDuration)
 		holderAnnouncement.Cleanup()
 		held.Release()
@@ -93,7 +100,7 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 	progress := newRunQueueProgressWithHeartbeat(&out, true, "", 5*time.Millisecond)
 	self := runqueue.Participant{PID: os.Getpid(), Summary: "go test", Worktree: "/w/waiter"}
 
-	lease, waited, err := acquireWithQueueVisibility(context.Background(), root, 1, 1, self, progress)
+	lease, _, waited, err := admitWithQueueVisibility(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +135,7 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	progress := newRunQueueProgressWithHeartbeat(&out, true, "", 5*time.Millisecond)
 	self := runqueue.Participant{PID: 1, Summary: "go test"}
 
-	lease, waited, err := acquireWithQueueVisibility(context.Background(), root, 1, 1, self, progress)
+	lease, _, waited, err := admitWithQueueVisibility(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,26 +151,29 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	}
 }
 
-// TestAcquireWithQueueVisibilitySkipsEverythingForUnitsZero covers a
+// TestAcquireWithQueueVisibilitySkipsEverythingForKindNone covers a
 // non-CPU-governed command (git status, and the vast majority of `wb run
 // --` invocations): no ticket, no lines, immediate return.
-func TestAcquireWithQueueVisibilitySkipsEverythingForUnitsZero(t *testing.T) {
+func TestAcquireWithQueueVisibilitySkipsEverythingForKindNone(t *testing.T) {
 	root := t.TempDir()
 	var out bytes.Buffer
 	progress := newRunQueueProgressWithHeartbeat(&out, true, "", 5*time.Millisecond)
-	lease, waited, err := acquireWithQueueVisibility(context.Background(), root, 0, 1, runqueue.Participant{PID: 1, Summary: "git status"}, progress)
+	lease, units, waited, err := admitWithQueueVisibility(context.Background(), root, []string{"git", "status"}, runqueue.Participant{PID: 1, Summary: "git status"}, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lease.Release()
+	if units != 0 {
+		t.Fatalf("units = %d, want 0 for an ungoverned command", units)
+	}
 	if waited != 0 {
-		t.Fatalf("waited = %s, want 0 for units <= 0", waited)
+		t.Fatalf("waited = %s, want 0 for an ungoverned command", waited)
 	}
 	if out.Len() != 0 {
-		t.Fatalf("units <= 0 must not print any queue line: %q", out.String())
+		t.Fatalf("an ungoverned command must not print any queue line: %q", out.String())
 	}
 	if state := runqueue.Peek(root, 1); state.Total != 0 {
-		t.Fatalf("units <= 0 must not register a waiting ticket: %+v", state)
+		t.Fatalf("an ungoverned command must not register a waiting ticket: %+v", state)
 	}
 }
 
@@ -193,6 +203,9 @@ func TestRunCommandReportsQueueVisibilityOnStderr(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
+	// Force the small-machine (N<8) legacy budget-sum pool: see the same
+	// comment on TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted.
+	defer runqueue.SetNumCPUForTest(4)()
 	t.Setenv("WB_ADMISSION_LOAD_FLOOR", "100000")
 	root := t.TempDir()
 	runQueueHeartbeatOverride = 5 * time.Millisecond
@@ -301,6 +314,9 @@ func TestRunHistoryRecordsQueueWaitAndAdmissionTime(t *testing.T) {
 	}
 	t.Chdir(module)
 
+	// Force the small-machine (N<8) legacy budget-sum pool: see the same
+	// comment on TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted.
+	defer runqueue.SetNumCPUForTest(4)()
 	budget := runqueue.Budget()
 	held, _, err := runqueue.Acquire(context.Background(), root, budget, budget)
 	if err != nil {

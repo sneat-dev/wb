@@ -25,6 +25,10 @@ func tailCovRequireUnixFilesystem(t *testing.T) {
 // CLI family and verb bracket it claims to understand, including the budget
 // clamp and the "known tool, no heavy verb" fall-throughs.
 func TestTailCovUnitsClassifiesEveryToolShape(t *testing.T) {
+	// Forced small-machine (N<8): every case below predates and is
+	// unaffected by sneat-dev/wb#621's adaptive heavy-job sharing, which
+	// only applies once numCPU >= 8.
+	defer SetNumCPUForTest(4)()
 	cases := []struct {
 		name   string
 		argv   []string

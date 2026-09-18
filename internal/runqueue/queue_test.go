@@ -18,6 +18,9 @@ func TestBudgetLeavesOneLogicalCPU(t *testing.T) {
 }
 
 func TestUnitsClassifiesHeavyWork(t *testing.T) {
+	// N=4 (budget 3): the small-machine table, unchanged since before
+	// sneat-dev/wb#621's adaptive heavy-job sharing.
+	defer SetNumCPUForTest(4)()
 	cases := []struct {
 		argv []string
 		want int
