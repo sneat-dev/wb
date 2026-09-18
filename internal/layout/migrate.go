@@ -644,10 +644,18 @@ func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePath
 	if claimReason != "" {
 		return claimReason, nil
 	}
+	// A parked session naming this clone or a linked worktree does NOT
+	// refuse the move by itself (REQ: clone-migration-refusals, amended):
+	// resume resolves each member by identity (repository, branch, Work Log
+	// reference), not by its recorded absolute paths, so a clone move that
+	// changes only a member's canonical_dir does not strand it. See
+	// park-and-resume-agent-sessions#req:resume-resolves-members-by-identity
+	// and internal/worktrees/session_park_local.go. A parked in-clone member
+	// worktree whose path this move changes still gets a relocation
+	// intent/receipt recorded, via the same RecordCloneMoveRelocationIntents
+	// call applyOneClone already makes for every active claim a moved
+	// worktree carries.
 	paths := append([]string{clonePath}, worktreePaths...)
-	if parked := worktrees.ParkedSessionReason(root, paths); parked != "" {
-		return parked, nil
-	}
 	if worktrees.BusyProcessCheckSupported {
 		if busy := worktrees.BusyProcessReason(paths); busy != "" {
 			return busy, nil

@@ -90,7 +90,7 @@ PID, and leave `wb session move` and every fail-closed member check untouched.
 **Id:** task-4
 **Verifies:** park-and-resume-agent-sessions#ac:resume-survives-a-layout-migration
 **Depends-On:** —
-**Status:** queued
+**Status:** complete
 
 Replace the exact absolute-path comparison in `acquire`
 (`internal/worktrees/session_park_local.go`) with resolution by identity:

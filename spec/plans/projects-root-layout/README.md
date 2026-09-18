@@ -257,7 +257,7 @@ relocated checkout's `.worktree.md` after the relocation: the vm1 test on
 **Id:** task-13
 **Verifies:** projects-root-layout#ac:migrate-moves-clones-referenced-by-parked-sessions
 **Depends-On:** task-12
-**Status:** queued
+**Status:** complete
 
 Parked-session resume identifies each member by repository, branch and Work Log
 reference, and resolves the canonical clone through `repopath` and moved
