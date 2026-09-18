@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/landinglane"
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -124,11 +127,13 @@ S="$WB_CREATE_STATE"
 number=$(cat "$S/next-number")
 state=$(cat "$S/pr-state")
 merged=$(cat "$S/merged")
+draft=false
+if [ -f "$S/draft" ]; then draft=$(cat "$S/draft"); fi
 head=$(git --git-dir="$WB_CREATE_REMOTE" rev-parse "refs/heads/$WB_CREATE_BRANCH" 2>/dev/null)
 case "$*" in
-  'pr list --head '*' --state open --json url --jq .[0].url')
+  'pr list --repo acme/app --head '*' --state open --json url,baseRefName --jq '*)
     if [ -f "$S/existing-pr" ]; then cat "$S/existing-pr"; fi ;;
-  'pr create '*)
+  'pr create --repo acme/app '*)
     printf 'https://github.com/acme/app/pull/%s\n' "$number" ;;
   'api repos/acme/app/pulls/'*'/files?per_page=100 --include'|'api repos/acme/app/pulls/'*'/files?per_page=100')
     cat "$S/files" ;;
@@ -137,8 +142,20 @@ case "$*" in
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_CREATE_REMOTE" rev-parse refs/heads/main); fi
-    printf '{"number":%s,"node_id":"PR_kwDOtest%s","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
-      "$number" "$number" "$state" "$merged" "$merge_sha" "$WB_CREATE_BRANCH" "$head" ;;
+    # M2 fixture: a bounded number of remaining "lagging" reads report a
+    # stale head before GitHub's own read-after-write catches up with the
+    # push that just happened, proving the caller re-reads rather than
+    # trusting the first read.
+    reported_head="$head"
+    if [ -f "$S/lag-reads" ]; then
+      lag=$(cat "$S/lag-reads")
+      if [ "$lag" -gt 0 ]; then
+        reported_head="1111111111111111111111111111111111111111"
+        echo $((lag - 1)) >"$S/lag-reads"
+      fi
+    fi
+    printf '{"number":%s,"node_id":"PR_kwDOtest%s","state":"%s","draft":%s,"locked":false,"title":"feat: the change","body":"","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
+      "$number" "$number" "$state" "$draft" "$merged" "$merge_sha" "$WB_CREATE_BRANCH" "$reported_head" ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks'|'api repos/acme/app/branches/develop/protection/required_status_checks --include'|'api repos/acme/app/branches/develop/protection/required_status_checks')
     if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
     printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
@@ -293,7 +310,7 @@ func TestCreateOpensAPullRequestAndPrintsTheNextCommand(t *testing.T) {
 
 func TestCreateAdoptsAnExistingOpenPullRequestWithoutCreatingASecondOne(t *testing.T) {
 	fixture := newCreateFixture(t)
-	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\n")
+	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\tmain\n")
 	worktree := fixture.createWorktree(t, "adopt-task", "feature/adopt", "main", "main.go")
 	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
 		Worktree: worktree, ProjectsRoot: fixture.projects,
@@ -526,8 +543,18 @@ func TestCreateAutoMergeArmsWithApprovedByOnANonMechanicalDiff(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !strings.Contains(string(args), "head=deadbeef") && !strings.Contains(string(args), "head="+result.HeadSHA) {
-		t.Fatalf("graphql args = %s, want the observed head pinned", args)
+	// B2: the exact 40-hex head argument must be the trimmed result.HeadSHA —
+	// `git rev-parse HEAD` itself returns a trailing newline, and passing that
+	// untrimmed value to arming would silently send a graphql argument no
+	// head SHA on Earth actually is.
+	if matched, _ := regexp.MatchString(`^[0-9a-f]{40}$`, result.HeadSHA); !matched {
+		t.Fatalf("result.HeadSHA = %q, want a bare 40-hex SHA with no trailing newline", result.HeadSHA)
+	}
+	if !strings.Contains(string(args), "head="+result.HeadSHA) {
+		t.Fatalf("graphql args = %s, want exactly head=%s", args, result.HeadSHA)
+	}
+	if strings.Contains(string(args), "head="+result.HeadSHA+"\\n") || strings.Contains(string(args), "head="+result.HeadSHA+"\n") {
+		t.Fatalf("graphql args = %s, head argument must not carry a trailing newline", args)
 	}
 	if !strings.Contains(string(args), "subject=feat: the change (#9)") {
 		t.Fatalf("graphql args = %s, want the pull request's own title as the commit subject", args)
@@ -558,6 +585,110 @@ func TestCreateAutoMergeIsNotArmedOnAnUnfencedTarget(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(fixture.state, "auto-merge-args")); statErr == nil {
 		t.Fatal("auto-merge must never have been asked for")
+	}
+}
+
+// TestCreateAutoMergeRefusesADraftAdoptedPullRequest proves M1: arming
+// auto-merge on a pull request GitHub itself would refuse to merge is not a
+// lesser action than landing it, and deserves the same
+// draft/locked/not-mergeable preflight `wb pr land` runs before it ever
+// arms anything.
+func TestCreateAutoMergeRefusesADraftAdoptedPullRequest(t *testing.T) {
+	fixture := newCreateFixture(t)
+	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\tmain\n")
+	fixture.writeState(t, "draft", "true")
+	worktree := fixture.createWorktree(t, "draft-adopt-task", "feature/draft-adopt", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, AutoMerge: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != LandRefusalDraft {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !result.Adopted || result.PullRequest == 0 {
+		t.Fatal("the adopted pull request must still exist even though arming was refused")
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.state, "auto-merge-args")); statErr == nil {
+		t.Fatal("auto-merge must never have been asked for on a draft pull request")
+	}
+}
+
+// TestCreateAutoMergeRefusesADifferentLiveLandingLane proves M1's other
+// half: --auto-merge acquires the same (repository, target) landing lane
+// `wb pr land` acquires around its own arming, so a different live WB
+// session already driving that lane is refused rather than raced.
+func TestCreateAutoMergeRefusesADifferentLiveLandingLane(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "lane-conflict-task", "feature/lane-conflict", "main", "main.go")
+
+	home, err := wbhome.EnsureRoot(fixture.projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := filepath.Join(home, session.DirName)
+	if _, err := session.Register(sessionDir, session.Record{
+		PID: os.Getpid(), WBSessionID: "wbs-other-session", Runtime: "claude-code", Model: "claude-sonnet-5",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register other session: %v", err)
+	}
+	if _, err := landinglane.Acquire(home, landinglane.AcquireRequest{
+		Repository: fixture.repository, Target: "main",
+		Self: landinglane.Owner{WBSessionID: "wbs-other-session", PID: os.Getpid(), Command: "wb pr land"},
+	}); err != nil {
+		t.Fatalf("seed lane acquisition: %v", err)
+	}
+
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, AutoMerge: true,
+		Lane: LaneGuardRequest{
+			Owner: landinglane.Owner{WBSessionID: "wbs-this-session", PID: os.Getpid(), Command: "wb pr create --auto-merge"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != LandRefusalLandingLaneHeld {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !strings.Contains(result.Reason, "wbs-other-session") {
+		t.Fatalf("reason = %q, want it to name the lane's holder", result.Reason)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.state, "auto-merge-args")); statErr == nil {
+		t.Fatal("auto-merge must never have been asked for while a different session holds the lane")
+	}
+}
+
+// TestCreateAutoMergeWaitsForTheAdoptedPullRequestsHeadToCatchUpToThePush
+// proves M2: classifying and arming must be pinned to the SAME head this
+// invocation just pushed. An adopted pull request whose GitHub-reported head
+// still lags that push — a read-after-write race, not a real discrepancy —
+// is re-read, bounded, rather than classified or armed against stale content.
+func TestCreateAutoMergeWaitsForTheAdoptedPullRequestsHeadToCatchUpToThePush(t *testing.T) {
+	fixture := newCreateFixture(t)
+	fixture.writeState(t, "existing-pr", "https://github.com/acme/app/pull/9\tmain\n")
+	fixture.writeState(t, "lag-reads", "2")
+	worktree := fixture.createWorktree(t, "lag-task", "feature/lag", "main", "main.go")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects, AutoMerge: true, ApprovedBy: "review.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess || !result.AutoMergeArmed {
+		t.Fatalf("outcome=%s armed=%v reason=%s", result.Outcome, result.AutoMergeArmed, result.Reason)
+	}
+	args, readErr := os.ReadFile(filepath.Join(fixture.state, "auto-merge-args"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(args), "head=1111111111111111111111111111111111111111") {
+		t.Fatalf("graphql args = %s, armed against the stale, pre-push head", args)
+	}
+	if !strings.Contains(string(args), "head="+result.HeadSHA) {
+		t.Fatalf("graphql args = %s, want the confirmed, caught-up head %s", args, result.HeadSHA)
 	}
 }
 
@@ -631,6 +762,33 @@ func TestCreateCommitAllRefusesASecretLikePath(t *testing.T) {
 	status := runEngineGit(t, worktree, "status", "--porcelain")
 	if !strings.Contains(status, "?? .env") {
 		t.Fatalf("status = %q, .env must remain unstaged", status)
+	}
+}
+
+// TestCreateCommitAllRefusesASecretInsideAnUntrackedDirectory proves B3:
+// `git status --porcelain` collapses an untracked directory to its own name
+// ("?? config/"), never listing config/.env, so a secret check that reads
+// porcelain instead of the STAGED diff would miss it entirely.
+func TestCreateCommitAllRefusesASecretInsideAnUntrackedDirectory(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "secret-dir-task", "feature/secret-dir", "main")
+	writeEngineFile(t, filepath.Join(worktree, "config", ".env"), "SECRET=1\n")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		CommitAll: true, Message: "feat: oops",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalSecretPath {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !strings.Contains(result.Reason, "config/.env") {
+		t.Fatalf("reason = %q, want it to name config/.env, not just the collapsed directory", result.Reason)
+	}
+	status := runEngineGit(t, worktree, "status", "--porcelain")
+	if !strings.Contains(status, "config/") {
+		t.Fatalf("status = %q, config/ must remain unstaged", status)
 	}
 }
 
@@ -775,6 +933,38 @@ func TestCreateAddRefusesANonexistentPath(t *testing.T) {
 	}
 }
 
+// TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace proves
+// B3 for the --add path: naming a directory is not itself a secret-looking
+// path, so the check has to run on what `git add` actually staged inside it,
+// matching case-insensitively (.ENV as well as .env), and reading that staged
+// list with `-z` so a name holding a space is never mis-split.
+func TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "add-dir-secret-task", "feature/add-dir-secret", "main")
+	writeEngineFile(t, filepath.Join(worktree, "config", ".env"), "SECRET=1\n")
+	writeEngineFile(t, filepath.Join(worktree, "config", ".ENV"), "SECRET=2\n")
+	writeEngineFile(t, filepath.Join(worktree, "config", "secret key.pem"), "-----BEGIN-----\n")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		Add: []string{"config"}, Message: "feat: config",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalSecretPath {
+		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	for _, want := range []string{"config/.env", "config/.ENV", "config/secret key.pem"} {
+		if !strings.Contains(result.Reason, want) {
+			t.Fatalf("reason = %q, want it to name %q", result.Reason, want)
+		}
+	}
+	status := runEngineGit(t, worktree, "status", "--porcelain")
+	if !strings.Contains(status, "config/") {
+		t.Fatalf("status = %q, config/ must remain unstaged after the refusal", status)
+	}
+}
+
 func TestCreateAddWithLandRefusesLeftoversBeforeCommitting(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "add-leftover-task", "feature/add-leftover", "main")
@@ -832,6 +1022,36 @@ func TestCreateResolvesADotWorktreeArgumentToAnAbsolutePath(t *testing.T) {
 	}
 }
 
+// TestCreateRunFromASubdirectoryPinsToTheWorktreeRoot proves M3: the guard
+// resolves to the worktree's own root, whatever subdirectory the caller
+// named or ran from, and every later step — the base fetch, the manifest
+// read, the claim binding — must run pinned to that root. Before this fix, a
+// caller in a subdirectory would fetch/log/push relative to the
+// subdirectory, which happens to still work for plain git plumbing but
+// silently reads the wrong directory for anything checking dirtiness or
+// leftovers scoped to a subtree rather than the whole worktree.
+func TestCreateRunFromASubdirectoryPinsToTheWorktreeRoot(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "subdir-task", "feature/subdir", "main", "main.go")
+	subdirectory := filepath.Join(worktree, "pkg", "nested")
+	if err := os.MkdirAll(subdirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: subdirectory, ProjectsRoot: fixture.projects,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != CreateSuccess || result.Repository != fixture.repository {
+		t.Fatalf("outcome=%s repository=%q reason=%s", result.Outcome, result.Repository, result.Reason)
+	}
+	pushed := runEngineGit(t, fixture.remote, "log", "--format=%s", "refs/heads/feature/subdir")
+	if !strings.Contains(pushed, "change main.go") {
+		t.Fatalf("branch was not pushed from the worktree root: %q", pushed)
+	}
+}
+
 func TestCreateLandEndToEndCreatesArmsWaitsAndMerges(t *testing.T) {
 	fixture := newCreateFixture(t)
 	fixture.writeState(t, "files", `[{"filename":"go.sum","status":"modified","patch":"@@ -1,1 +1,1 @@\n-old h1:x=\n+new h1:y=\n"}]`)
@@ -868,5 +1088,83 @@ func TestCreateLandEndToEndCreatesArmsWaitsAndMerges(t *testing.T) {
 	}
 	if !result.LandResult.BranchDeleted {
 		t.Fatal("a landed branch is retired by default")
+	}
+}
+
+// TestCreateReturnsFindingsWithCommittedPathsWhenPushFailsAfterCommit proves
+// M4: an error that happens AFTER the commit step — here, a failing
+// pre-push hook — must still carry whatever the invocation already did.
+// `wb pr create --format json` always encodes `result`, whatever the error,
+// so a caller must never lose the committed paths to a bare error.
+func TestCreateReturnsFindingsWithCommittedPathsWhenPushFailsAfterCommit(t *testing.T) {
+	fixture := newCreateFixture(t)
+	hooksDir := filepath.Join(fixture.canonical, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\necho blocked by pre-push hook >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := fixture.createWorktree(t, "push-hook-task", "feature/push-hook", "main")
+	writeEngineFile(t, filepath.Join(worktree, "new.go"), "package app\n")
+	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		CommitAll: true, Message: "feat: committed but not pushed",
+	})
+	if err == nil {
+		t.Fatal("a failing pre-push hook must fail the invocation")
+	}
+	if !strings.Contains(err.Error(), "blocked by pre-push hook") {
+		t.Fatalf("error = %v, want the hook's own output", err)
+	}
+	if result.Outcome != CreateFindings {
+		t.Fatalf("outcome = %s, want findings even though CreatePullRequest also returned an error", result.Outcome)
+	}
+	if result.Reason != err.Error() {
+		t.Fatalf("reason = %q, want it to carry the same error the call returned", result.Reason)
+	}
+	if len(result.CommittedPaths) != 1 || result.CommittedPaths[0] != "new.go" {
+		t.Fatalf("committed paths = %v, want the commit that happened before the push failed", result.CommittedPaths)
+	}
+}
+
+// TestCreateCommitAllOnARerunWithNothingLeftToCommitContinues proves M4's
+// other half: a rerun where HEAD is already ahead — the previous
+// invocation's commit already happened — and --commit-all now finds nothing
+// left to add is a no-op, not a refusal: this continues through push and
+// pull-request adoption rather than surfacing "nothing to commit" as if it
+// were a new failure.
+func TestCreateCommitAllOnARerunWithNothingLeftToCommitContinues(t *testing.T) {
+	fixture := newCreateFixture(t)
+	worktree := fixture.createWorktree(t, "rerun-task", "feature/rerun", "main")
+	writeEngineFile(t, filepath.Join(worktree, "new.go"), "package app\n")
+	first, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		CommitAll: true, Message: "feat: add new.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != CreateSuccess {
+		t.Fatalf("first outcome=%s reason=%s", first.Outcome, first.Reason)
+	}
+	// A rerun of the exact same command: the worktree is now clean, so
+	// --commit-all's own `git commit` finds nothing left to commit.
+	second, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
+		Worktree: worktree, ProjectsRoot: fixture.projects,
+		CommitAll: true, Message: "feat: add new.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Outcome != CreateSuccess {
+		t.Fatalf("rerun outcome=%s reason=%s, want a no-op success rather than a refusal or a finding", second.Outcome, second.Reason)
+	}
+	if len(second.CommittedPaths) != 0 {
+		t.Fatalf("rerun committed paths = %v, want none: nothing was left to commit", second.CommittedPaths)
+	}
+	if second.PullRequest == 0 {
+		t.Fatal("the rerun must still reach pull-request creation/adoption, not stop at the no-op commit")
 	}
 }

@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -35,6 +37,7 @@ const (
 	CreateRefusalSecretPath            = "secret-like-path"
 	CreateRefusalLeftoverBeforeLanding = "leftover-before-landing"
 	CreateRefusalInvalidPath           = "invalid-add-path"
+	CreateRefusalBaseMismatch          = "base-mismatch"
 )
 
 // CreateOutcome is the envelope outcome, mapped onto WB's exit-code contract
@@ -71,6 +74,12 @@ type PullRequestCreateOptions struct {
 	ApprovedBy    string
 	AllowUnfenced bool
 	MergeMethod   string
+	// Lane optionally names the acquiring WB session for the same
+	// landing-lane guard `wb pr land` acquires around arming; see
+	// LaneGuardRequest. A zero value skips the guard, exactly as it does for
+	// LandPullRequest. Only meaningful with AutoMerge; --land threads its own
+	// Lane through LandOptions instead.
+	Lane LaneGuardRequest
 
 	// CommitStaged commits exactly the worktree's index. It refuses when
 	// nothing is staged. CommitAll runs `git add -A` first (respecting
@@ -104,9 +113,17 @@ type PullRequestCreateOptions struct {
 	Retry   int
 
 	// Events receives one structured record per invocation, whatever the
-	// outcome. A nil appender discards.
-	Events streams.EventAppender
-	Stream string
+	// outcome. A nil appender discards. EventsForRepository, when set,
+	// overrides it once the repository is resolved: this verb's own
+	// repository is not known until the worktree's manifest is read, unlike
+	// `wb pr land`, which receives it as its own CLI argument up front, so
+	// cmd/wb cannot resolve the repository-scoped stream ahead of the call
+	// the way it does for `wb pr land`. --land also uses it to give the
+	// nested `LandPullRequest` call the same repository-scoped stream
+	// `wb pr land` itself would have used.
+	Events              streams.EventAppender
+	Stream              string
+	EventsForRepository func(repository string) (streams.EventAppender, string)
 }
 
 // PullRequestCreateResult is the receipt, and the JSON envelope.
@@ -190,9 +207,24 @@ func mergeCreateRefusal(result PullRequestCreateResult, refusal createRefusal) P
 func CreatePullRequest(ctx context.Context, options PullRequestCreateOptions) (result PullRequestCreateResult, err error) {
 	started := time.Now()
 	defer func() {
-		appendCreateEvent(options, result, started, err)
+		// An error returned after the commit step (a push failure, a failed
+		// adopt/create, an arming error, ...) must still carry whatever the
+		// invocation already did — CommittedPaths, and LandResult when
+		// --land got far enough to have one — so a caller that always prints
+		// the envelope (as `wb pr create --format json` does) reports a
+		// finding instead of losing that state to a bare error.
+		if err != nil && result.Outcome == "" {
+			result.Outcome = CreateFindings
+			result.Reason = err.Error()
+		}
+		events, streamName := options.Events, options.Stream
+		if options.EventsForRepository != nil {
+			events, streamName = options.EventsForRepository(result.Repository)
+		}
+		appendCreateEvent(events, streamName, result, started, err)
 	}()
-	return createPullRequest(ctx, options)
+	result, err = createPullRequest(ctx, options)
+	return result, err
 }
 
 func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (PullRequestCreateResult, error) {
@@ -217,6 +249,13 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 			reason:  fmt.Sprintf("%s is the canonical clone; a pull request is opened from a linked worktree, never from it", guard.CanonicalDir),
 			command: "wb worktree create <task> <owner/repository>",
 		}), nil
+	}
+	// The guard resolves to the worktree's own root, whatever subdirectory
+	// worktree named: every later step (the base fetch, the manifest read,
+	// the claim binding, and the leftover/dirty checks) must run pinned to
+	// that root, not to wherever the caller happened to run the command from.
+	if guard.Path != "" {
+		worktree = guard.Path
 	}
 
 	if options.CommitStaged || options.CommitAll || len(options.Add) > 0 {
@@ -303,9 +342,17 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 		return result, err
 	}
 
-	url, adopted, err := openOrAdoptPullRequest(ctx, worktree, branch, base, title, body, options.Draft,
+	url, adopted, err := openOrAdoptPullRequest(ctx, worktree, repository, branch, base, title, body, options.Draft,
 		Options{Timeout: options.Timeout, Retry: options.Retry})
 	if err != nil {
+		var mismatch *pullRequestBaseMismatchError
+		if errors.As(err, &mismatch) {
+			return mergeCreateRefusal(result, createRefusal{
+				code:    CreateRefusalBaseMismatch,
+				reason:  err.Error(),
+				command: "wb pr land " + mismatch.url + ", or close it, or pass --base " + mismatch.gotBase,
+			}), nil
+		}
 		return result, err
 	}
 	result.URL = url
@@ -335,7 +382,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 		return createPullRequestLand(ctx, options, result, repository, numberText)
 	}
 	if options.AutoMerge {
-		return createPullRequestAutoMerge(ctx, options, result, repository, numberText, headSHA)
+		return createPullRequestAutoMerge(ctx, options, result, repository, numberText, result.HeadSHA)
 	}
 	return result, nil
 }
@@ -356,6 +403,12 @@ func createPullRequestLand(ctx context.Context, options PullRequestCreateOptions
 		landOptions = *options.LandOptions
 	}
 	landOptions.Repository, landOptions.PullRequest = repository, number
+	// `wb pr land` itself resolves its own repository-scoped event stream
+	// from a repository it already has as its CLI argument; give this
+	// nested call the same one, now that the repository is finally known.
+	if options.EventsForRepository != nil {
+		landOptions.Events, landOptions.Stream = options.EventsForRepository(repository)
+	}
 	landResult, landErr := LandPullRequest(ctx, landOptions)
 	result.LandResult = &landResult
 	if landErr != nil {
@@ -381,16 +434,61 @@ func createPullRequestLand(ctx context.Context, options PullRequestCreateOptions
 // -adopted pull request, under the same authority `wb pr land` requires: a
 // mechanical diff needs no approval, a non-mechanical one is refused without
 // --approved-by, and arming is skipped (with the pull request left open) on
-// whatever guard `autoMergeBypassesAGuard` names.
-func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOptions, result PullRequestCreateResult, repository, number, head string) (PullRequestCreateResult, error) {
-	if files, filesErr := pullRequestChangedFiles(ctx, repository, number); filesErr == nil {
-		verdict := ClassifyMechanical(files)
-		result.Mechanical = verdict.Mechanical
-		if !verdict.Mechanical {
-			result.Evidence["not_mechanical_because"] = verdict.Summary()
+// whatever guard `autoMergeBypassesAGuard` names. It reads the pull request,
+// acquires and releases the same landing-lane guard `wb pr land` acquires
+// around its own arming, and runs the same draft/locked/not-mergeable
+// preflight `landPreflightRefusal` runs — arming auto-merge on a pull
+// request GitHub itself would refuse to merge is not a lesser action than
+// landing it, and deserves the same authority.
+func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOptions, result PullRequestCreateResult, repository, number, pushedHead string) (PullRequestCreateResult, error) {
+	view, viewErr := ReadPullRequest(ctx, repository, number)
+	if viewErr != nil {
+		return result, fmt.Errorf("read pull request %s#%s: %w", repository, number, viewErr)
+	}
+
+	// The same lane a live `wb pr land` session already drives for this
+	// (repository, target) must be refused before this call spends any more
+	// GitHub calls arming onto a target it does not own landing onto.
+	laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, repository, view.Base.Ref, options.Lane)
+	if laneErr != nil {
+		var conflict *landinglane.ConflictError
+		if errors.As(laneErr, &conflict) {
+			return mergeCreateRefusal(result, createRefusal{
+				code:    LandRefusalLandingLaneHeld,
+				reason:  laneErr.Error(),
+				command: "wb session recall " + conflict.Record.Owner.WBSessionID,
+			}), nil
 		}
-	} else {
-		result.Evidence["mechanical_classification_error"] = filesErr.Error()
+		return result, laneErr
+	}
+	if laneRecord.Owner.WBSessionID != "" {
+		defer func() {
+			_ = releaseLandingLane(options.ProjectsRoot, repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
+		}()
+	}
+
+	if refusal := landPreflightRefusal(view, repository, number); refusal != nil {
+		return mergeCreateRefusal(result, createRefusal{code: refusal.code, reason: refusal.reason, command: refusal.command}), nil
+	}
+
+	// Classify and arm against the SAME head this call just pushed: GitHub's
+	// own read-after-write for a pull request it just adopted or created can
+	// lag the push that produced pushedHead, and arming (or classifying) a
+	// stale head would silently describe or merge different content than
+	// what was actually pushed.
+	view, err := pinPullRequestViewToHead(ctx, repository, number, pushedHead, view)
+	if err != nil {
+		return result, err
+	}
+
+	files, filesErr := pullRequestChangedFiles(ctx, repository, number)
+	if filesErr != nil {
+		return result, fmt.Errorf("read changed files of %s#%s: %w", repository, number, filesErr)
+	}
+	verdict := ClassifyMechanical(files)
+	result.Mechanical = verdict.Mechanical
+	if !verdict.Mechanical {
+		result.Evidence["not_mechanical_because"] = verdict.Summary()
 	}
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
 	if !result.Mechanical && result.ApprovedBy == "" {
@@ -412,10 +510,6 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 		result.Reason = "not armed: " + reason
 		return result, nil
 	}
-	view, viewErr := ReadPullRequest(ctx, repository, number)
-	if viewErr != nil {
-		return result, fmt.Errorf("read pull request %s#%s: %w", repository, number, viewErr)
-	}
 	commits, commitsErr := pullRequestCommits(ctx, repository, number)
 	if commitsErr != nil {
 		return result, fmt.Errorf("read commits of %s#%s: %w", repository, number, commitsErr)
@@ -426,12 +520,39 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	if method == "" {
 		method = "merge"
 	}
-	if reason := enablePullRequestAutoMerge(ctx, repository, number, method, head, subject, body); reason != "" {
+	if reason := enablePullRequestAutoMerge(ctx, repository, number, method, view.Head.SHA, subject, body); reason != "" {
 		return result, fmt.Errorf("arm auto-merge for %s#%s: %s", repository, number, reason)
 	}
 	result.AutoMergeArmed = true
 	result.NextCommand = "wb wait pr " + repository + "#" + number + " --until closed"
 	return result, nil
+}
+
+// pinPullRequestViewToHead re-reads a pull request until its own reported
+// head SHA matches pushedHead, bounded rather than immediate: GitHub's own
+// read-after-write for a pull request this call just adopted or created can
+// briefly still report the head observed before the push that produced
+// pushedHead. A view already at pushedHead is returned unchanged with no
+// extra call.
+func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view PullRequestView) (PullRequestView, error) {
+	if pushedHead == "" || view.Head.SHA == pushedHead {
+		return view, nil
+	}
+	const attempts = 5
+	const delay = 200 * time.Millisecond
+	for attempt := 1; attempt < attempts; attempt++ {
+		time.Sleep(delay)
+		refreshed, err := ReadPullRequest(ctx, repository, number)
+		if err != nil {
+			return view, fmt.Errorf("re-read pull request %s#%s to confirm its pushed head: %w", repository, number, err)
+		}
+		view = refreshed
+		if view.Head.SHA == pushedHead {
+			return view, nil
+		}
+	}
+	return view, fmt.Errorf("pull request %s#%s still reports head %s, not the pushed head %s",
+		repository, number, view.Head.SHA, pushedHead)
 }
 
 // openOrAdoptPullRequest opens or adopts one branch's pull request. It is a
@@ -444,24 +565,54 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 // change in flight elsewhere. The adoption check therefore runs once here so
 // both branches agree on it, and `openPullRequest` repeats its own equivalent
 // check before ever creating anything, so no path can create twice.
-func openOrAdoptPullRequest(ctx context.Context, worktree, branch, base, title, body string, draft bool, options Options) (url string, adopted bool, err error) {
-	existing, listErr := githubRead(ctx, worktree, "pr", "list", "--head", branch, "--base", base,
-		"--state", "open", "--json", "url", "--jq", ".[0].url")
+// pullRequestBaseMismatchError reports that an already-open pull request was
+// found for the branch, but against a different base than this invocation
+// asked for. Adoption looks for the branch's open pull request against ANY
+// base — GitHub allows exactly one open pull request per (repository, head
+// branch) regardless of base, so a `--base`-scoped list can miss the one
+// that already exists — but adopting a pull request onto the WRONG base
+// would silently retarget it, so a mismatch refuses instead.
+type pullRequestBaseMismatchError struct {
+	url, wantBase, gotBase string
+}
+
+func (mismatch *pullRequestBaseMismatchError) Error() string {
+	return fmt.Sprintf("pull request %s is already open against %s, not %s", mismatch.url, mismatch.gotBase, mismatch.wantBase)
+}
+
+// openOrAdoptPullRequest opens or adopts one branch's pull request, pinned to
+// repository with `--repo` on every `gh pr list`/`gh pr create` call so the
+// worktree's own cwd-inferred repository is never silently substituted.
+func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, base, title, body string, draft bool, options Options) (url string, adopted bool, err error) {
+	existing, listErr := githubRead(ctx, worktree, "pr", "list", "--repo", repository, "--head", branch,
+		"--state", "open", "--json", "url,baseRefName", "--jq", ".[0] | (.url + \"\\t\" + .baseRefName)")
 	if listErr == nil {
 		if trimmed := strings.TrimSpace(existing); trimmed != "" {
-			return trimmed, true, nil
+			if url, gotBase, found := strings.Cut(trimmed, "\t"); found {
+				if gotBase != base {
+					return "", false, &pullRequestBaseMismatchError{url: url, wantBase: base, gotBase: gotBase}
+				}
+				return url, true, nil
+			}
 		}
 	}
 	if !draft {
-		createdURL, createErr := openPullRequest(ctx, worktree, branch, base, title, body, options)
-		return createdURL, false, createErr
+		created, _, createErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create",
+			"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", body)
+		if createErr != nil {
+			return "", false, createErr
+		}
+		if createdURL := lastNonEmptyLine(created); createdURL != "" {
+			return createdURL, false, nil
+		}
+		return "", false, fmt.Errorf("gh pr create returned no pull request URL")
 	}
 	draftBody := body
 	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
 		draftBody = prmeta.Append(draftBody, prmeta.Provenance{Effort: manifest.EffortID})
 	}
 	created, _, createErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create",
-		"--base", base, "--head", branch, "--title", title, "--body", draftBody, "--draft")
+		"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", draftBody, "--draft")
 	if createErr != nil {
 		return "", false, createErr
 	}
@@ -628,16 +779,19 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 				command: "pass an --add path inside the worktree that names an existing path, or a tracked path's deletion",
 			}, nil, nil
 		}
-		var secrets []string
+		// .worktree.md is git-ignored; naming it explicitly would make the
+		// `git add` below fail outright, so this is refused before staging,
+		// on the requested paths themselves rather than the staged diff.
+		var named []string
 		for _, path := range paths {
-			if looksLikeSecretPath(path) || path == ".worktree.md" {
-				secrets = append(secrets, path)
+			if strings.EqualFold(filepath.Base(path), ".worktree.md") {
+				named = append(named, path)
 			}
 		}
-		if len(secrets) > 0 {
+		if len(named) > 0 {
 			return &createRefusal{
 				code:    CreateRefusalSecretPath,
-				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
+				reason:  "refusing to stage .worktree.md: " + strings.Join(named, ", "),
 				command: "remove the listed paths from --add",
 			}, nil, nil
 		}
@@ -659,8 +813,39 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		if _, _, addErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", addArgs...); addErr != nil {
 			return nil, nil, fmt.Errorf("git add -- %s: %w", strings.Join(paths, " "), addErr)
 		}
+		// Checking the STAGED diff, not the requested paths, is what catches a
+		// secret inside a named directory (`--add config` where config/.env
+		// exists): the requested path is a directory name that never looks
+		// like a secret by itself, but the files `git add` actually staged do.
+		staged, stagedErr := stagedFileList(ctx, worktree, options.Timeout, options.Retry, paths...)
+		if stagedErr != nil {
+			return nil, nil, stagedErr
+		}
+		var secrets []string
+		for _, path := range staged {
+			if looksLikeSecretPath(path) {
+				secrets = append(secrets, path)
+			}
+		}
+		if len(secrets) > 0 {
+			unstageArgs := append([]string{"reset", "-q", "--"}, paths...)
+			_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", unstageArgs...)
+			return &createRefusal{
+				code:    CreateRefusalSecretPath,
+				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
+				command: "remove the listed paths from --add",
+			}, nil, nil
+		}
 		commitArgs := append([]string{"commit", "-m", options.Message, "--"}, paths...)
 		if _, _, commitErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", commitArgs...); commitErr != nil {
+			if isNothingToCommit(commitErr) {
+				// A rerun with HEAD already ahead (the previous invocation's
+				// commit already landed the named paths) finds nothing left to
+				// commit here; that is success, not a refusal, so this
+				// continues rather than erroring on a change that already
+				// happened.
+				return nil, nil, nil
+			}
 			return nil, nil, fmt.Errorf("git commit: %w", commitErr)
 		}
 		committedRaw, _, treeErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
@@ -697,23 +882,6 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		}
 	}
 	if options.CommitAll {
-		status, statusErr := pullRequestCreateDirtyPaths(ctx, worktree)
-		if statusErr != nil {
-			return nil, nil, statusErr
-		}
-		var secrets []string
-		for _, line := range status {
-			if path := porcelainPath(line); looksLikeSecretPath(path) {
-				secrets = append(secrets, path)
-			}
-		}
-		if len(secrets) > 0 {
-			return &createRefusal{
-				code:    CreateRefusalSecretPath,
-				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
-				command: "remove the listed paths from the change, or stage the safe paths explicitly and use --commit-staged",
-			}, nil, nil
-		}
 		if _, _, addErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "add", "-A"); addErr != nil {
 			return nil, nil, fmt.Errorf("git add -A: %w", addErr)
 		}
@@ -722,8 +890,37 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		// defensively anyway, and is a no-op — never an error — when it was
 		// never staged to begin with.
 		_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "reset", "-q", "--", ".worktree.md")
+		// Checking the STAGED diff, not `git status --porcelain`, is what
+		// catches a secret inside an untracked directory: porcelain collapses
+		// an untracked directory to its own name ("?? config/"), never
+		// listing config/.env, while the staged diff lists every file `git
+		// add -A` actually staged.
+		staged, stagedErr := stagedFileList(ctx, worktree, options.Timeout, options.Retry)
+		if stagedErr != nil {
+			return nil, nil, stagedErr
+		}
+		var secrets []string
+		for _, path := range staged {
+			if looksLikeSecretPath(path) {
+				secrets = append(secrets, path)
+			}
+		}
+		if len(secrets) > 0 {
+			_, _, _ = runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "reset", "-q")
+			return &createRefusal{
+				code:    CreateRefusalSecretPath,
+				reason:  "refusing to stage what looks like a secret: " + strings.Join(secrets, ", "),
+				command: "remove the listed paths from the change, or stage the safe paths explicitly and use --commit-staged",
+			}, nil, nil
+		}
 	}
 	if _, _, commitErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "commit", "-m", options.Message); commitErr != nil {
+		if isNothingToCommit(commitErr) {
+			// A rerun with HEAD already ahead: the previous invocation's
+			// commit already happened, --commit-staged/--commit-all now find
+			// nothing left to add, and that is success, not a refusal.
+			return nil, nil, nil
+		}
 		return nil, nil, fmt.Errorf("git commit: %w", commitErr)
 	}
 	committedRaw, _, treeErr := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
@@ -731,6 +928,18 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 		return nil, nil, fmt.Errorf("read committed paths: %w", treeErr)
 	}
 	return nil, splitNonEmptyLines(committedRaw), nil
+}
+
+// isNothingToCommit reports whether a failed `git commit` failed only
+// because there was nothing left to commit, the way a rerun of
+// --commit-staged/--commit-all/--add finds the worktree already exactly at
+// the state the previous, successful invocation already committed.
+func isNothingToCommit(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "nothing to commit") || strings.Contains(message, "no changes added to commit")
 }
 
 // porcelainPath extracts the path from one `git status --porcelain` line,
@@ -826,22 +1035,49 @@ func leftoverBeyondAddedPaths(statusLines []string, paths []string) []string {
 	return leftover
 }
 
+// stagedFileList lists every path currently staged (the diff between HEAD and
+// the index), optionally scoped to pathspecs, using NUL-separated output so a
+// path holding whitespace or a shell-special character is read as exactly the
+// bytes Git staged rather than through `git status --porcelain`'s quoting —
+// and so a secret inside an untracked DIRECTORY is seen as the individual
+// file it actually is, never collapsed to the directory's own name.
+func stagedFileList(ctx context.Context, worktree string, timeout time.Duration, retry int, pathspecs ...string) ([]string, error) {
+	args := []string{"diff", "--cached", "--name-only", "-z"}
+	if len(pathspecs) > 0 {
+		args = append(args, "--")
+		args = append(args, pathspecs...)
+	}
+	output, _, err := runCommand(ctx, timeout, retry, worktree, "git", args...)
+	if err != nil {
+		return nil, fmt.Errorf("read staged paths: %w", err)
+	}
+	var paths []string
+	for _, path := range strings.Split(output, "\x00") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
 // looksLikeSecretPath is a defensive filename heuristic, not a content scan:
 // it exists so `--commit-all`'s blanket `git add -A` cannot silently stage a
-// credential a reviewer would have caught by eye.
+// credential a reviewer would have caught by eye. Matching is
+// case-insensitive: a forge's own case-folding, or a careless rename, must
+// not be the difference between refused and silently committed.
 func looksLikeSecretPath(path string) bool {
-	base := filepath.Base(path)
+	base := strings.ToLower(filepath.Base(path))
 	if base == ".env" || strings.HasPrefix(base, ".env.") {
 		return true
 	}
 	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") {
 		return true
 	}
-	return strings.HasPrefix(base, "id_rsa")
+	return strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") || strings.HasPrefix(base, "id_ecdsa")
 }
 
-func appendCreateEvent(options PullRequestCreateOptions, result PullRequestCreateResult, started time.Time, createErr error) {
-	if options.Events == nil {
+func appendCreateEvent(events streams.EventAppender, streamName string, result PullRequestCreateResult, started time.Time, createErr error) {
+	if events == nil {
 		return
 	}
 	outcome := string(result.Outcome)
@@ -863,8 +1099,8 @@ func appendCreateEvent(options PullRequestCreateOptions, result PullRequestCreat
 	if createErr != nil {
 		detail = createErr.Error()
 	}
-	_ = options.Events.Append(streams.Event{
-		Stream:      options.Stream,
+	_ = events.Append(streams.Event{
+		Stream:      streamName,
 		Verb:        "pr create",
 		Repository:  result.Repository,
 		Outcome:     outcome,

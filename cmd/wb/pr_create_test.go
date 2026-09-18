@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,35 @@ func TestPRCreateRejectsAllowUnfencedWithoutAutoMerge(t *testing.T) {
 	}
 	if !strings.Contains(exit.message, "--allow-unfenced") {
 		t.Fatalf("message = %q, want it to name --allow-unfenced", exit.message)
+	}
+}
+
+// TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand proves B1: the
+// contract's own headline example, `wb pr create --land --approved-by
+// <review>`, must not exit 2 before it ever reaches CreatePullRequest.
+// --approved-by/--allow-unfenced were only exempted for --auto-merge, so
+// --land alone (without --auto-merge) used to be rejected as a usage error.
+func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	command := newPRCreateCmd()
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--allow-unfenced"})
+	err = command.Execute()
+	var exit *exitError
+	if errors.As(err, &exit) && exit.code == exitUsage {
+		t.Fatalf("--land --approved-by --allow-unfenced must not be a usage error: %v", exit)
 	}
 }
 

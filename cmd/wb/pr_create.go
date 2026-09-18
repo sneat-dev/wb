@@ -66,12 +66,19 @@ rejected: a draft pull request cannot be merged.
 --land goes further and lands the pull request in-process through the same
 'wb pr land', in one command: commit, push, open/adopt, wait for checks, and
 merge. It implies arming the way 'wb pr land' itself does, so --auto-merge
-alongside it is redundant rather than an error. --commit-staged --land with
-unstaged or untracked changes that would remain, or --add --land with any
-change outside --add's own paths, is refused before anything is committed,
-because landing retires the worktree and a leftover dirty checkout cannot be
-cleaned up afterward; --commit-all, naming every remaining path in --add, or
---keep resolves it.
+alongside it is redundant rather than an error, and --approved-by/
+--allow-unfenced are meaningful with --land exactly as they are with
+--auto-merge. --commit-staged --land with unstaged or untracked changes that
+would remain, or --add --land with any change outside --add's own paths, is
+refused before anything is committed, because landing retires the worktree
+and a leftover dirty checkout cannot be cleaned up afterward; --commit-all,
+naming every remaining path in --add, or --keep resolves it. --draft --land is
+rejected: a draft pull request cannot be landed.
+
+Adoption looks for the branch's open pull request against ANY base, because
+GitHub allows only one open pull request per head branch regardless of base;
+one already open against a different base is refused by naming it, rather
+than silently retargeted.
 
 Exit codes: 0 created/adopted (or landed, with --land), 1 a finding (for
 example auto-merge could not be armed, or CI is not ready), 2 a guard
@@ -111,11 +118,14 @@ wb pr create --format json`,
 			if draft && autoMerge {
 				return usageError("--draft and --auto-merge are mutually exclusive: a draft pull request cannot be merged")
 			}
-			if !autoMerge && command.Flags().Changed("approved-by") {
-				return usageError("--approved-by is only meaningful with --auto-merge (or --land)")
+			if draft && land {
+				return usageError("--draft and --land are mutually exclusive: a draft pull request cannot be landed")
 			}
-			if !autoMerge && command.Flags().Changed("allow-unfenced") {
-				return usageError("--allow-unfenced is only meaningful with --auto-merge (or --land)")
+			if !autoMerge && !land && command.Flags().Changed("approved-by") {
+				return usageError("--approved-by is only meaningful with --auto-merge or --land")
+			}
+			if !autoMerge && !land && command.Flags().Changed("allow-unfenced") {
+				return usageError("--allow-unfenced is only meaningful with --auto-merge or --land")
 			}
 			commitModes := 0
 			for _, active := range []bool{commitStaged, commitAll, len(add) > 0} {
@@ -151,17 +161,29 @@ wb pr create --format json`,
 					CheckoutUpdated:   lifecycleCheckoutUpdated(command.ErrOrStderr()),
 				}
 			}
-			result, err := orchestrate.CreatePullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
+			var lane orchestrate.LaneGuardRequest
+			if autoMerge && !land {
+				lane = landingLaneGuardRequest("wb pr create --auto-merge", "", false)
+			}
+			result, createErr := orchestrate.CreatePullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
 				Worktree: worktreeArg, ProjectsRoot: projectsRoot,
 				Title: title, Body: body, BodyFile: bodyFile, Draft: draft, Base: base,
 				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message,
-				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod,
+				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod, Lane: lane,
 				Land: land, LandOptions: landOptions,
 				LinkPreflight: refuseLinkedRepositoryWorktrees,
+				// The repository is not known until the worktree's manifest is
+				// read inside CreatePullRequest itself, unlike `wb pr land`,
+				// which already has it as a CLI argument — so this hands over
+				// the same repository-scoped-stream resolver `wb pr land`
+				// uses, rather than a repository resolved too early to be right.
+				EventsForRepository: landingEventLog,
 			})
-			if err != nil {
-				return err
-			}
+			// The envelope is printed whatever createErr is: `result` is
+			// initialized on the invocation's very first line and carries
+			// CommittedPaths/LandResult however far the call got, so an
+			// error after the commit step (a push failure, a failed arm, ...)
+			// still reports a finding instead of a bare, structure-less error.
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -174,6 +196,9 @@ wb pr create --format json`,
 				}
 			} else if err := printPullRequestCreate(command, result); err != nil {
 				return err
+			}
+			if createErr != nil {
+				return &exitError{code: exitFindings, message: createErr.Error()}
 			}
 			switch result.ExitCode() {
 			case 0:
@@ -235,6 +260,11 @@ func printPullRequestCreate(command *cobra.Command, result orchestrate.PullReque
 		}
 		if result.NextCommand != "" {
 			if _, err := fmt.Fprintf(out, "next: %s\n", result.NextCommand); err != nil {
+				return err
+			}
+		}
+		if result.Outcome == orchestrate.CreateFindings && result.Reason != "" {
+			if _, err := fmt.Fprintf(out, "finding: %s\n", result.Reason); err != nil {
 				return err
 			}
 		}

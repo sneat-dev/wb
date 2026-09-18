@@ -1,6 +1,6 @@
 ---
 name: wb-merge
-description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use `wb worktree land` (or its `wb land` alias) as the fast path, and `wb pr land` for an already-open pull request. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, repair failed post-target CI, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
+description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use `wb worktree land` (or its `wb land` alias) as the fast path, `wb pr create` to commit, push, and open a pull request for one worktree in a single call, and `wb pr land` for an already-open pull request. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, repair failed post-target CI, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed. Also triggers when an agent is about to commit and push a worktree's own change by hand.
 ---
 
 # WB merge
