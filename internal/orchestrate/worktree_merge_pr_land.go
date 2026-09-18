@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
@@ -255,8 +254,13 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, receipt *Worktre
 		return fmt.Errorf("persist update-branch advance: %w", err)
 	}
 	// Best effort: an unavailable or dirty worktree must not undo the
-	// persisted advance above (M3).
-	_ = fastForwardWorktreeMergeCandidateBranch(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, updated)
+	// persisted advance above (M3). fastForwardWorktreeToUpdatedHead
+	// (pr_land_local_sync.go) is the one shared helper both this hook and
+	// the plain `wb pr land` route's own update-branch success path use;
+	// it never errors, only reports a note.
+	if note := fastForwardWorktreeToUpdatedHead(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, updated); note != "" {
+		receipt.LocalSync = note
+	}
 	return nil
 }
 
@@ -274,38 +278,6 @@ func updateBranchMergeTargetParent(parents []string, previous string) (string, e
 	default:
 		return "", fmt.Errorf("has unexpected parents %v for previous head %s", parents, previous)
 	}
-}
-
-// fastForwardWorktreeMergeCandidateBranch brings the local candidate
-// worktree up to the exact head a server-side update-branch merge (or an
-// adopted foreign advance) just produced. Failure here is always tolerated
-// by its caller: the receipt is the durable record, and the worktree is a
-// convenience the next resume can still repair.
-func fastForwardWorktreeMergeCandidateBranch(ctx context.Context, worktree, branch, updatedHead string) error {
-	if strings.TrimSpace(worktree) == "" {
-		return fmt.Errorf("candidate worktree path is empty")
-	}
-	if info, statErr := os.Stat(worktree); statErr != nil || !info.IsDir() {
-		if statErr == nil {
-			statErr = fmt.Errorf("%s is not a directory", worktree)
-		}
-		return fmt.Errorf("candidate worktree unavailable: %w", statErr)
-	}
-	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
-		return fmt.Errorf("fetch updated candidate branch: %w", err)
-	}
-	fetched, err := mergeRevision(ctx, worktree, "refs/remotes/origin/"+branch)
-	if err != nil {
-		return err
-	}
-	if fetched != updatedHead {
-		return fmt.Errorf("fetched candidate branch head %s does not match updated head %s", fetched, updatedHead)
-	}
-	if _, _, err := runCommand(ctx, 0, 0, worktree, "git", "merge", "--ff-only", "refs/remotes/origin/"+branch); err != nil {
-		return fmt.Errorf("fast-forward candidate worktree: %w", err)
-	}
-	return nil
 }
 
 // adoptServerUpdatedWorktreeMergeHead closes red-team finding M5 for the one
@@ -389,7 +361,9 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, receipt *WorktreeM
 	receipt.TargetSHA = parents[1]
 	receipt.Candidate.SHA = view.Head.SHA
 	receipt.PublishedCandidateSHA = view.Head.SHA
-	_ = fastForwardWorktreeMergeCandidateBranch(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA)
+	if note := fastForwardWorktreeToUpdatedHead(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA); note != "" {
+		receipt.LocalSync = note
+	}
 	return true, nil
 }
 

@@ -213,6 +213,7 @@ type WorktreeMergeReceipt struct {
 	PreviousTargetSHA     string                              `json:"previous_target_sha,omitempty"`
 	LandingSHA            string                              `json:"landing_sha,omitempty"`
 	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
+	LocalSync             string                              `json:"local_sync,omitempty"`
 	Validation            quality.VerificationReport          `json:"validation,omitempty"`
 	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
 	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
@@ -1761,11 +1762,14 @@ func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *Worktr
 	// the recorded candidate's object may never have been fetched into this
 	// worktree at all when the advance was only recorded server side, so a
 	// local ancestry check would fail on a missing object even though the
-	// descent genuinely holds. fastForwardWorktreeMergeCandidateBranch
-	// fetches the candidate branch before fast-forwarding onto it.
+	// descent genuinely holds. fastForwardWorktreeToUpdatedHead
+	// (pr_land_local_sync.go, shared with the plain `wb pr land` route)
+	// fetches the candidate branch before fast-forwarding onto it, and is
+	// itself best-effort: the receipt is the durable record here, and the
+	// worktree is a convenience the next resume can still repair.
 	if worktreeMergeCandidateAdvanceRecorded(*receipt, head, receipt.Candidate.SHA) {
-		if err := fastForwardWorktreeMergeCandidateBranch(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); err != nil {
-			return false, fmt.Errorf("fast-forward worktree left behind a recorded update-branch advance: %w", err)
+		if note := fastForwardWorktreeToUpdatedHead(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
+			receipt.LocalSync = note
 		}
 		return false, nil
 	}

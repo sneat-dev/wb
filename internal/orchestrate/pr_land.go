@@ -187,6 +187,10 @@ type PullRequestLandResult struct {
 	BranchDeleted bool   `json:"branch_deleted"`
 	LandingOnBase bool   `json:"landing_on_base"`
 	CanonicalSync string `json:"canonical_sync,omitempty"`
+	// LocalSync records the outcome of fast-forwarding the local WB worktree
+	// (if any) after a server-side update-branch, or the reason it was left
+	// alone (#611). Empty when no worktree holds the branch.
+	LocalSync string `json:"local_sync,omitempty"`
 	// Commits pairs every source commit with the commit that landed it, and
 	// marks the ones kept separate. GitHub's rebase merge rewrites the SHAs, so
 	// after landing this pairing is the only way back to the originals.
@@ -494,10 +498,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if err != nil {
 		return result, err
 	}
+	result.LocalSync = result.Evidence["local_sync"]
 	if updateRefusal != nil {
 		return mergeRefusal(result, *updateRefusal), nil
 	}
-
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	if mergedByGitHub {

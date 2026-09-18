@@ -108,12 +108,26 @@ func awaitLandablePullRequest(
 					continue
 				}
 				evidence["updated_onto_target"] = shortMergeRevision(updatedHead)
-				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Completed, shortMergeRevision(updatedView.Head.SHA), 0, 0)
 				if options.headUpdated != nil {
+					// The worktree-merge PR route's own hook (M3's
+					// persist-first ordering) owns fast-forwarding its
+					// candidate worktree; calling #611/#613's local-worktree
+					// sync here too would double-fast-forward the same
+					// branch through two independent code paths.
 					if hookErr := options.headUpdated(previousHead, updatedView.Head.SHA); hookErr != nil {
 						return updatedView, waited, autoMergeArmed, false, nil, hookErr
 					}
+				} else if syncNote := syncLocalWorktreeAfterUpdateBranch(ctx, options, updatedView.Head.Ref, updatedHead); syncNote != "" {
+					// The plain `wb pr land` route (red-team finding #611,
+					// #613): once a server-side update-branch has advanced
+					// the pull request's head, bring the local WB worktree
+					// that holds this branch (if any) up to it too, so a
+					// follow-up commit and push from that worktree are not
+					// rejected as non-fast-forward.
+					evidence["local_sync"] = syncNote
+					reportPullRequestLandProgress(options.OperationProgress, "sync_worktree", progress.Completed, syncNote, 0, 0)
 				}
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Completed, shortMergeRevision(updatedView.Head.SHA), 0, 0)
 				continue
 			}
 		}

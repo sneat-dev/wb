@@ -81,6 +81,10 @@ func (report MigrateReport) Markdown() string {
 		for _, worktree := range clone.Worktrees {
 			fmt.Fprintf(&out, "|  | `%s` | `%s` |  |  |\n", worktree.Source, worktree.Destination)
 		}
+		for _, relocation := range clone.Relocations {
+			fmt.Fprintf(&out, "|  relocate `%s` | `%s` | `%s` | `%s` | %s |\n",
+				dash(relocation.Task), relocation.Source, dash(relocation.Destination), relocation.Status, escape(relocation.Reason))
+		}
 	}
 	return out.String()
 }

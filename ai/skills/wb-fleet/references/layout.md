@@ -65,6 +65,56 @@ reason — the rename preserves them, and neither is an unborn `HEAD` (a
 repository with no commit yet). The command exits with the findings code
 whenever any clone is skipped or fails.
 
+`--include-task <task>` (repeatable) and `--include-active-tasks` each lift
+only the live-Work-Log-claim refusal — for the named tasks, or for every
+active task. Task names are matched exactly (case-sensitive). Every other
+refusal above still applies to an included clone, including the re-check
+just before its move. An `--include-task` name that matches no live claim in
+any home WB resolves is a usage error before anything moves, so a typo
+cannot silently include nothing. The dry run marks a clone planned only
+because of an inclusion with a reason like `included: active task <task>`.
+When an included clone moves, its claim's relocation intent and receipt are
+recorded (the same journal a finished task's relocation uses), so `land`,
+`guard` and `cleanup` resolve it at its new path. An included active task's
+in-clone checkout moves and repoints with its clone but is not relocated to
+the store — relocation stays limited to finished tasks (see below) — and is
+reported `moved-with-clone`, not `skipped`, so this is not a finding.
+`--apply` records which tasks (if any) an inclusion lifted the refusal for in
+its manifest; `--undo` honours exactly those, and refuses `--include-task`/
+`--include-active-tasks` passed alongside it as a usage error, since undo
+never accepts a new inclusion.
+
+After moving clones (and for every clone already at the host level, moved
+this run or earlier), `migrate` relocates each managed task checkout whose
+placement differs from the store-mode placement — one checkout at a time, by
+its exact path, using the same no-replace move, Git repair, registration
+verification and relocation receipt primitives as `wb worktree relocate`,
+whose own behaviour is unchanged. Central store mode
+relocates to `{root}/.worktrees/{task}/{host}/{owner}/{repository}`;
+repository-local store mode leaves in-clone checkouts where they are, so
+nothing is relocated for such a clone. A checkout whose Work Log claim has
+gone terminal (the task finished) is relocated — no live session depends on
+its path any more, so this is the safe case. A checkout whose claim is still
+active is left in place, with a finding reading "active task — relocate
+after it finishes" (a finding, not a failure) — a live session may still be
+using it. Every relocation candidate, whichever its claim's lifecycle, is
+re-checked immediately before its own move: a Git operation in progress, a
+live process with its working directory inside it, an un-picked-up parked
+session naming it, its task lock held, or its destination already existing
+each leave that one checkout in place with a finding, while its clone and
+every other checkout still migrate. Uncommitted changes and unpushed commits
+are never a reason to leave a checkout behind — the rename preserves them.
+That per-checkout recheck is additional to, never a substitute for, the
+clone-level refusal above: every clone-refusal condition (a live Work Log
+claim on the clone or any of its linked worktrees, foremost) still skips the
+*whole* clone, including every one of its checkouts, in every mode — a clone
+move carries its in-clone checkouts with it, so moving it out from under a
+live task would pull the directory out from under a running session. A
+linked worktree with no WB task identity is repointed only (never relocated)
+and reported `unmanaged`. Pass `--clones-only` to skip relocation and get
+exactly the clone-move-and-repoint behaviour `migrate` had before this
+existed.
+
 `--apply` (migrate or undo) takes a single exclusive lock under `<root>/.wb`
 for the run; a second concurrent `--apply` against the same root fails
 immediately naming the conflict instead of interleaving moves. `--apply`
@@ -77,6 +127,12 @@ a single path segment — `.`, `..`, empty, or anything containing a path
 separator is rejected before touching the filesystem. It also invalidates
 WB's cached repository-path index and reports when a running daemon must be
 restarted to see the moved paths.
+
+`--undo <id>` reverses every relocation the manifest recorded as `done`
+before it reverses the clone move that relocation depended on. If a
+relocation cannot be safely reversed (its own refusal condition now applies,
+or the reversal itself fails), that clone's move is left in place too and the
+finding names why.
 
 ```sh
 wb layout migrate --apply

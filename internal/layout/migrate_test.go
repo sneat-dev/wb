@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -936,11 +937,480 @@ func TestBusyProcessSelfAncestorGivesCdOutGuidance(t *testing.T) {
 		}
 	}()
 
-	reason := busyProcessReason([]string{root})
+	reason := worktrees.BusyProcessReason([]string{root})
 	if reason == "" {
 		t.Fatal("want a busy-process reason for this process's own cwd")
 	}
 	if !strings.Contains(reason, "cd out") {
 		t.Fatalf("reason = %q, want self-ancestor cd-out guidance", reason)
+	}
+}
+
+// TestMigrateLeavesFinishedCheckoutInPlaceWhenCloneIsRefused covers Fix #2 of
+// the founder's 2026-09-18 redesign: only checkouts of clones that were NOT
+// refused are relocation candidates. A clone with a Git operation in
+// progress (a rebase, here) is refused whole at the clone level
+// (refuseClone) before relocateClones ever runs, so a finished checkout
+// inside it -- normally the safe, relocate-on-sight case -- must be left
+// exactly where it is, with no relocation recorded for it at all.
+func TestMigrateLeavesFinishedCheckoutInPlaceWhenCloneIsRefused(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "rebasing-finished", "acme/rebasing-finished")
+	// worktrees.Create fetches and verifies against the clone's real origin,
+	// so the origin must stay reachable until after the claim exists.
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "rebasing-finished.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	created, err := worktrees.Create(context.Background(), []string{"acme/rebasing-finished"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t1", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create t1: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("create t1 returned %d results", len(created))
+	}
+	nested := created[0].WorktreeDir
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/rebasing-finished.git")
+
+	if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: root, Worktree: nested, Result: "success", Apply: true,
+	}); err != nil {
+		t.Fatalf("finalize t1: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(canonical, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !MigrateFailed(report) {
+		t.Fatal("a run with a refused clone must be reported as failed")
+	}
+	clone, found := findMigrateClone(report, "acme/rebasing-finished")
+	if !found || clone.Status != "skipped" || !strings.Contains(strings.ToLower(clone.Reason), "rebase") {
+		t.Fatalf("clone = %+v, want skipped naming the rebase", clone)
+	}
+	if len(clone.Relocations) != 0 {
+		t.Fatalf("a refused clone must record no relocations at all: %+v", clone.Relocations)
+	}
+	if _, err := os.Stat(nested); err != nil {
+		t.Fatalf("the finished checkout must be left exactly in place: %v", err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("the refused clone must be left exactly in place: %v", err)
+	}
+}
+
+// TestMigrateRelocatesFinishedCheckoutAndLeavesActiveTaskInPlace covers
+// relocateOneCheckout's task/active/destination branches directly, mirroring
+// projects-root-layout's migrate-relocates-managed-worktrees fixture at the
+// package level: clone A is legacy and holds a finished, in-clone checkout,
+// which relocates to the central store alongside clone A's own move; clone B
+// is already host-level (a live claim on any of clone A's own linked
+// worktrees would refuse clone A's move entirely, so the active checkout
+// must live in a clone that never needs to move) and holds an active
+// checkout, which is left exactly where it is, with a finding, not an error.
+func TestMigrateRelocatesFinishedCheckoutAndLeavesActiveTaskInPlace(t *testing.T) {
+	root := t.TempDir()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "wb")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "worktrees.yaml")
+	// repository-local while creating both claims: each lands nested inside
+	// its own clone, matching the real machine's legacy layout, exactly as
+	// the equivalent cmd/wb AC fixture does.
+	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := initRemoteClone(t, root, "dal-go", "relocate-me", "dal-go/relocate-me")
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "dal-go", "relocate-me.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	finished, err := worktrees.Create(context.Background(), []string{"dal-go/relocate-me"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "finished-task", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create finished: %v", err)
+	}
+	finishedWorktree := finished[0].WorktreeDir
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:dal-go/relocate-me.git")
+	if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: root, Worktree: finishedWorktree, Result: "success", Apply: true,
+	}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	hostLevel := filepath.Join(root, "github.com", "dal-go", "already-host")
+	seedRemoteClone(t, root, "already-host", "dal-go/already-host", hostLevel)
+	run(t, hostLevel, "git", "remote", "set-url", "origin", filepath.Join(root, "already-host.git"))
+	run(t, hostLevel, "git", "push", "-u", "origin", "main")
+	active, err := worktrees.Create(context.Background(), []string{"dal-go/already-host"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "active-task", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	activeWorktree := active[0].WorktreeDir
+	run(t, hostLevel, "git", "remote", "set-url", "origin", "git@github.com:dal-go/already-host.git")
+
+	// Reset to today's machine config: default central store, so both
+	// nested checkouts above no longer match where migrate would place them.
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "dal-go/relocate-me")
+	if !found || clone.Status != "done" || len(clone.Relocations) != 1 {
+		t.Fatalf("clone A = %+v, want done with one relocation", clone)
+	}
+	finishedReloc := clone.Relocations[0]
+	if finishedReloc.Task != "finished-task" || finishedReloc.Status != "done" {
+		t.Fatalf("finished-task relocation = %+v, want done", finishedReloc)
+	}
+	if _, err := os.Stat(finishedReloc.Destination); err != nil {
+		t.Fatalf("finished task checkout must exist at its relocated destination: %v", err)
+	}
+	if _, err := os.Stat(finishedWorktree); !os.IsNotExist(err) {
+		t.Fatalf("finished task checkout must no longer sit at its pre-migration path: err=%v", err)
+	}
+	// Regression: a relocated checkout's own .worktree.md marker must name
+	// its final relocated path, not the intermediate (post-clone-move,
+	// pre-relocation) path -- found on a real machine on 2026-09-18.
+	markerContents, err := os.ReadFile(filepath.Join(finishedReloc.Destination, ".worktree.md"))
+	if err != nil {
+		t.Fatalf("relocated checkout marker missing: %v", err)
+	}
+	if !strings.Contains(string(markerContents), finishedReloc.Destination) {
+		t.Fatalf("relocated checkout marker does not name its final path %s:\n%s", finishedReloc.Destination, markerContents)
+	}
+	if strings.Contains(string(markerContents), clone.Destination+string(filepath.Separator)+".worktrees") {
+		t.Fatalf("relocated checkout marker still names its intermediate pre-relocation path:\n%s", markerContents)
+	}
+
+	hostClone, found := findMigrateClone(report, "dal-go/already-host")
+	if !found || hostClone.Status != "already_done" || len(hostClone.Relocations) != 1 {
+		t.Fatalf("clone B = %+v, want already_done with one relocation", hostClone)
+	}
+	activeReloc := hostClone.Relocations[0]
+	if activeReloc.Task != "active-task" || activeReloc.Status != "skipped" || !strings.Contains(activeReloc.Reason, "active task") {
+		t.Fatalf("active-task relocation = %+v, want skipped naming the active task", activeReloc)
+	}
+	if _, err := os.Stat(activeWorktree); err != nil {
+		t.Fatalf("active task checkout must be left exactly in place: %v", err)
+	}
+}
+
+// TestMigrateRelocationManifestWriteFailureReturnsPartialReport covers the
+// relocation persist closure's own manifest-write error path: an already
+// host-level clone whose managed checkout still needs relocating, with its
+// manifest directory made unwritable so the relocation's outcome cannot be
+// recorded. The physical relocation itself (RelocateCheckout's own journal)
+// still completes; only migrate's mirrored manifest bookkeeping fails, and
+// Migrate reports that failure while still listing the clone's own status.
+func TestMigrateRelocationManifestWriteFailureReturnsPartialReport(t *testing.T) {
+	root := t.TempDir()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "wb")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "worktrees.yaml")
+	// repository-local while creating the claim: it lands nested inside the
+	// clone, matching the real machine's legacy layout, so relocating it to
+	// the default central store below is a genuine move, not a no-op.
+	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	hostLevel := filepath.Join(root, "github.com", "acme", "already-host")
+	seedRemoteClone(t, root, "already-host", "acme/already-host", hostLevel)
+	run(t, hostLevel, "git", "remote", "set-url", "origin", filepath.Join(root, "already-host.git"))
+	run(t, hostLevel, "git", "push", "-u", "origin", "main")
+
+	created, err := worktrees.Create(context.Background(), []string{"acme/already-host"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "relocate-me", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	nested := created[0].WorktreeDir
+	run(t, hostLevel, "git", "remote", "set-url", "origin", "git@github.com:acme/already-host.git")
+	if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: root, Worktree: nested, Result: "success", Apply: true,
+	}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// Reset to today's machine config: default central store, so the nested
+	// checkout above no longer matches where migrate would place it.
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	migrationsDir := filepath.Join(root, ".wb", migrationsDirName)
+	if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create the migration lock file itself: acquireMigrationLock opens
+	// it with O_CREATE, which is a no-op (and needs no directory write
+	// permission) once the file already exists, so the run's own lock
+	// acquisition still succeeds once migrationsDir is read-only below --
+	// isolating the failure to the relocation manifest write this test means
+	// to exercise.
+	if err := os.WriteFile(filepath.Join(migrationsDir, migrationLockName), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(migrationsDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(migrationsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{Apply: true})
+	if err == nil {
+		t.Fatalf("a relocation manifest write failure must be reported as an error; report=%+v", report)
+	}
+	clone, found := findMigrateClone(report, "acme/already-host")
+	if !found {
+		t.Fatal("the partial report must still list the clone despite the relocation manifest write failure")
+	}
+	if clone.Status != "already_done" {
+		t.Fatalf("clone = %+v, want already_done (the relocation failure must not corrupt the clone's own status)", clone)
+	}
+	// RelocateCheckout's own move-then-repair-then-verify-then-receipt
+	// journal already completed the physical relocation before persist's
+	// manifest write was even attempted -- exactly as an interrupted clone
+	// move's own manifest write leaves the real move already done. What
+	// failed is only migrate's own mirrored bookkeeping of that outcome.
+	if _, statErr := os.Stat(nested); !os.IsNotExist(statErr) {
+		t.Fatalf("the checkout must no longer sit at its pre-relocation path: err=%v", statErr)
+	}
+}
+
+// TestMigrateUndoReversesRelocationAndRemovesEmptyTaskDirectory covers
+// removeEmptyRelocationDirectories: undoing a relocated, finished-task
+// checkout puts it back at its pre-migration (in-clone) path and removes the
+// emptied <root>/.worktrees/<task> directory the forward relocation left
+// behind. The clone itself is already host-level (never moves), isolating
+// the relocation reversal from a clone-move reversal happening at the same
+// time.
+func TestMigrateUndoReversesRelocationAndRemovesEmptyTaskDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "wb")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "worktrees.yaml")
+	// repository-local while creating the claim: it lands nested inside the
+	// clone, matching the real machine's legacy layout.
+	if err := os.WriteFile(configPath, []byte("version: 1\nworktrees:\n  store: repository-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	hostLevel := filepath.Join(root, "github.com", "dal-go", "undo-relocate")
+	seedRemoteClone(t, root, "undo-relocate", "dal-go/undo-relocate", hostLevel)
+	run(t, hostLevel, "git", "remote", "set-url", "origin", filepath.Join(root, "undo-relocate.git"))
+	run(t, hostLevel, "git", "push", "-u", "origin", "main")
+
+	created, err := worktrees.Create(context.Background(), []string{"dal-go/undo-relocate"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "undo-me", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	originalWorktree := created[0].WorktreeDir
+	run(t, hostLevel, "git", "remote", "set-url", "origin", "git@github.com:dal-go/undo-relocate.git")
+	if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: root, Worktree: originalWorktree, Result: "success", Apply: true,
+	}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// Reset to today's machine config: default central store, so the nested
+	// checkout above no longer matches where migrate would place it.
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(applied, "dal-go/undo-relocate")
+	if !found || clone.Status != "already_done" || len(clone.Relocations) != 1 || clone.Relocations[0].Status != "done" {
+		t.Fatalf("apply clone = %+v, want already_done with one done relocation", clone)
+	}
+	relocatedDestination := clone.Relocations[0].Destination
+	taskDir := filepath.Join(root, ".worktrees", "undo-me")
+	if _, err := os.Stat(taskDir); err != nil {
+		t.Fatalf("relocated task directory must exist after apply: %v", err)
+	}
+	if _, err := os.Stat(originalWorktree); !os.IsNotExist(err) {
+		t.Fatalf("the checkout must no longer sit at its pre-migration path after apply: err=%v", err)
+	}
+
+	undone, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undoClone, found := findMigrateClone(undone, "dal-go/undo-relocate")
+	if !found || undoClone.Status != "reversed" {
+		t.Fatalf("undo clone = %+v, want reversed", undoClone)
+	}
+	if _, err := os.Stat(originalWorktree); err != nil {
+		t.Fatalf("the checkout must be back at its pre-migration path: %v", err)
+	}
+	if _, err := os.Stat(relocatedDestination); !os.IsNotExist(err) {
+		t.Fatalf("the relocated destination must no longer exist after undo: err=%v", err)
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("the emptied <root>/.worktrees/<task> directory must be removed after undo: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".worktrees")); err != nil {
+		t.Fatalf("<root>/.worktrees itself must survive: %v", err)
+	}
+}
+
+// TestMigrateIncludeTaskLiftsOnlyTheLiveClaimRefusal covers
+// REQ: clone-migration-include-active-tasks at the package level: an unknown
+// --include-task name is a usage error before anything moves, and a known
+// one lifts only the live-claim refusal for that task, planning the clone
+// with a reason naming the inclusion.
+func TestMigrateIncludeTaskLiftsOnlyTheLiveClaimRefusal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "included", "acme/included")
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "included.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	if _, err := worktrees.Create(context.Background(), []string{"acme/included"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-included", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/included.git")
+
+	if _, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"no-such-task"}}); err == nil {
+		t.Fatal("an unknown --include-task name must fail the run before anything moves")
+	}
+	var unknownTask *UnknownIncludeTaskError
+	if _, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"no-such-task"}}); !errors.As(err, &unknownTask) || unknownTask.Task != "no-such-task" {
+		t.Fatalf("err = %v, want *UnknownIncludeTaskError naming no-such-task", err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("an unknown --include-task must move nothing: %v", err)
+	}
+
+	report, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-included"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, found := findMigrateClone(report, "acme/included")
+	if !found || clone.Status != "planned" || !strings.Contains(clone.Reason, "included: active task t-included") {
+		t.Fatalf("clone = %+v, want planned naming the inclusion", clone)
+	}
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-included"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedClone, found := findMigrateClone(applied, "acme/included")
+	if !found || appliedClone.Status != "done" {
+		t.Fatalf("apply clone = %+v, want done", appliedClone)
+	}
+}
+
+// TestMigrateUndoHonoursManifestRecordedInclusions covers the fix for a
+// reported bug: undo of an included clone was refused for the very live
+// claim the migration included, because both refuseClone call sites in
+// migrateUndo passed an empty include set instead of the manifest's own
+// recorded inclusions. --apply now records, per clone, which tasks an
+// inclusion covered; --undo reads those back and honours exactly them (a
+// task still active at undo time is still not otherwise refused). Passing
+// --include-task/--include-active-tasks together with --undo is a usage
+// error instead of being silently ignored.
+func TestMigrateUndoHonoursManifestRecordedInclusions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	canonical := initRemoteClone(t, root, "acme", "undo", "acme/undo")
+	run(t, canonical, "git", "remote", "set-url", "origin", filepath.Join(root, "acme", "undo.git"))
+	run(t, canonical, "git", "push", "-u", "origin", "main")
+	if _, err := worktrees.Create(context.Background(), []string{"acme/undo"}, worktrees.CreateOptions{
+		ProjectsRoot: root, Operation: "t-undo", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run(t, canonical, "git", "remote", "set-url", "origin", "git@github.com:acme/undo.git")
+
+	applied, err := Migrate(context.Background(), root, MigrateOptions{IncludeTasks: []string{"t-undo"}, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedClone, found := findMigrateClone(applied, "acme/undo")
+	if !found || appliedClone.Status != "done" {
+		t.Fatalf("apply clone = %+v, want done", appliedClone)
+	}
+	destination := appliedClone.Destination
+
+	// --include-task/--include-active-tasks together with --undo is a usage
+	// error: undo honours exactly the manifest's own recorded inclusions.
+	var undoIncludeFlags *UndoIncludeFlagsError
+	if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, IncludeTasks: []string{"t-undo"}}); !errors.As(err, &undoIncludeFlags) {
+		t.Fatalf("err = %v, want *UndoIncludeFlagsError", err)
+	}
+	if _, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, IncludeActiveTasks: true}); !errors.As(err, &undoIncludeFlags) {
+		t.Fatalf("err = %v, want *UndoIncludeFlagsError", err)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("a rejected undo call must move nothing: %v", err)
+	}
+
+	// The task's claim is still live (never finished): without honouring
+	// the manifest's recorded inclusion, undo's own refuseClone call would
+	// refuse to move the clone back, citing the very claim the original
+	// --apply included.
+	undone, err := Migrate(context.Background(), root, MigrateOptions{UndoID: applied.ManifestID, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undoneClone, found := findMigrateClone(undone, "acme/undo")
+	if !found || undoneClone.Status != "reversed" {
+		t.Fatalf("undo clone = %+v, want reversed (not skipped for the included live claim)", undoneClone)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("undo must restore the clone at its original path: %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("undo must remove the host-level destination: err=%v", err)
+	}
+	status := gitOutput(t, canonical, "status", "--porcelain=v1")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("git status after undo = %q, want clean", status)
+	}
+	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: root, Task: "t-undo"})
+	if err != nil {
+		t.Fatalf("list t-undo after undo: %v", err)
+	}
+	if len(listed) != 1 || listed[0].CanonicalDir != canonical {
+		t.Fatalf("t-undo resolution after undo = %+v, want exactly one result naming the restored path %s", listed, canonical)
 	}
 }

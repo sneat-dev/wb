@@ -2744,7 +2744,15 @@ func TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates(t *te
 	}
 
 	// Take the conflict-candidate acknowledgement snapshot at the receipt's
-	// ORIGINAL target/candidate — before either update-branch advance.
+	// state right after a conflict resolution was recorded — the ack's
+	// AdvancedCandidateSHA is a manually resolved candidate distinct from
+	// OriginalCandidate.SHA (readConflictCandidateAdvance's own immutable-
+	// identity check requires this: the whole point of the record is that
+	// the candidate advanced). The receipt itself is then at that same
+	// resolved candidate, exactly as advanceResolvedConflictWorktreeMergeCandidate
+	// would have left it, BEFORE either update-branch advance this test
+	// chains on top.
+	resolvedCandidateSHA := receipt.Candidate.SHA + "-resolved"
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		t.Fatal(err)
@@ -2755,13 +2763,14 @@ func TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates(t *te
 		ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: ackPath, ReceiptSHA256: receiptHash,
 		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
 		ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: receipt.TargetSHA, OriginalCandidate: receipt.Candidate,
-		AdvancedCandidateSHA: receipt.Candidate.SHA, ClaimBaseSHA: "claim-base",
+		AdvancedCandidateSHA: resolvedCandidateSHA, ClaimBaseSHA: "claim-base",
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), RecordedAt: time.Now().UTC(),
 	}
 	ack.ID = conflictCandidateAdvanceID(ack)
 	if err := persistConflictCandidateAdvance(ackPath, ack); err != nil {
 		t.Fatal(err)
 	}
+	receipt.Candidate.SHA = resolvedCandidateSHA
 
 	// Chain TWO recorded server-side update-branch advances onto the
 	// receipt, each hop's "previous" being the prior hop's "new" — exactly
