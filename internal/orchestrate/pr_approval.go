@@ -29,7 +29,20 @@ const (
 // The check order matters: an existing file or a URL is recognized first so
 // that back-compat inputs are never reinterpreted as an identity, and the
 // literal "ci" is recognized before falling back to the identity shape.
-func classifyApprovedBy(value string) approvalKind {
+//
+// hasReviewComment reports whether the caller also supplied --review-comment
+// or --review-comment-file. A bare word like "sonnet" or "review.md" is
+// ambiguous between the new identity form and the old free-form approval
+// string that predates #604 (any string was accepted, whether or not it
+// named a file that actually existed on disk). A value containing "@" is an
+// unambiguous identity marker (`{model}@{harness}[@{session}]`) — nothing in
+// the pre-#604 free-form usage ever put an "@" in an approval string — so it
+// is always the identity shape. A bare word with no "@" is only the identity
+// shape when a review comment came with it (every genuine model-only
+// identity caller supplies one, and the landing path refuses an identity
+// without one); otherwise it stays the old free-form approval string, so
+// every pre-#604 caller keeps working exactly as before.
+func classifyApprovedBy(value string, hasReviewComment bool) approvalKind {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return approvalKindEmpty
@@ -43,7 +56,10 @@ func classifyApprovedBy(value string) approvalKind {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
 		return approvalKindFile
 	}
-	return approvalKindIdentity
+	if strings.Contains(value, "@") || hasReviewComment {
+		return approvalKindIdentity
+	}
+	return approvalKindFile
 }
 
 // ReviewerIdentity is the `{model}[@{harness}[@{session}]]` triple #604
@@ -168,7 +184,12 @@ func ReviewDigest(comment string) string {
 // review: a header naming the reviewer and the exact head SHA it reviewed,
 // then the review text verbatim.
 func reviewCommentBody(identity ReviewerIdentity, headSHA, comment string) string {
-	return fmt.Sprintf("**Review by %s** (head `%s`)\n\n%s\n", identity.String(), shortMergeRevision(headSHA), comment)
+	// The Reviewed-Head line is machine-readable and exact (the full SHA, not
+	// the shortened display form): #586's binding check parses it back out
+	// of a file or a fetched comment body, and it must match the API's own
+	// head string byte-for-byte.
+	return fmt.Sprintf("**Review by %s** (head `%s`)\nReviewed-Head: %s\n\n%s\n",
+		identity.String(), shortMergeRevision(headSHA), headSHA, comment)
 }
 
 type issueCommentResponse struct {

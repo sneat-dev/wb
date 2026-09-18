@@ -2,12 +2,21 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+// jsonEscapedBody renders text the way the fixture's fake `gh` embeds it
+// into a JSON string: escaped, but without the surrounding quotes, which
+// the shell script adds itself.
+func jsonEscapedBody(text string) string {
+	encoded, _ := json.Marshal(text)
+	return strings.TrimSuffix(strings.TrimPrefix(string(encoded), `"`), `"`)
+}
 
 // #604: the identity form posts the review as a PR comment naming the
 // reviewer and the exact head, and records the receipt fields.
@@ -148,11 +157,188 @@ func TestLandBackCompatFileApprovalStillWorks(t *testing.T) {
 	if result.ApprovedBy != path {
 		t.Fatalf("ApprovedBy = %q, want the file path preserved verbatim", result.ApprovedBy)
 	}
-	if result.ReviewedHeadSHA == "" {
-		t.Fatal("a back-compat approval must still bind a reviewed head")
-	}
 	if fixture.readState(t, "posted-comments") != "" {
 		t.Fatal("the file form must not post a PR comment")
+	}
+}
+
+// #586 (founder-decided 2026-09-18: warn, still land): a file review that
+// names the head it reviewed via a "Reviewed-Head: <sha>" line lands when
+// the current head is exactly that one.
+func TestLandFileReviewWithMatchingReviewedHeadLands(t *testing.T) {
+	fixture := newLandFixture(t, "feature/file-matching-head", "main.go")
+	dir := t.TempDir()
+	path := dir + "/review.md"
+	contents := "looks good\n\nReviewed-Head: " + fixture.headSHA + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := landOptions(fixture)
+	options.ApprovedBy = path
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !result.ReviewBound {
+		t.Fatal("a review naming its head must be recorded as bound")
+	}
+	if result.ReviewedHeadSHA != fixture.headSHA {
+		t.Fatalf("ReviewedHeadSHA = %q, want %q", result.ReviewedHeadSHA, fixture.headSHA)
+	}
+	if result.Evidence["review"] != "" {
+		t.Fatalf("a bound review must not carry the unbound finding: %q", result.Evidence["review"])
+	}
+}
+
+// #586: a file review naming a head, followed by a foreign push (a
+// SEPARATE, later `wb pr land` invocation observes the new head), refuses
+// with review-stale rather than landing an unreviewed change.
+func TestLandFileReviewStaleAfterForeignPushInASeparateInvocation(t *testing.T) {
+	fixture := newLandFixture(t, "feature/file-foreign-push", "main.go")
+	dir := t.TempDir()
+	path := dir + "/review.md"
+	contents := "looks good\n\nReviewed-Head: " + fixture.headSHA + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A foreign push lands a new commit on the PR branch after the review
+	// was written, in the remote the fixture's fake `gh` reads from.
+	foreignHead := fixture.pushForeignCommit(t, "feature/file-foreign-push")
+
+	options := landOptions(fixture)
+	options.ApprovedBy = path
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandRefused || result.RefusalCode != LandRefusalReviewStale {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.HeadSHA != foreignHead {
+		t.Fatalf("HeadSHA = %q, want the foreign-pushed head %q", result.HeadSHA, foreignHead)
+	}
+	if fixture.readState(t, "merged") != "false" {
+		t.Fatal("a review-stale refusal must not have merged anything")
+	}
+}
+
+// #586: a file review naming a head, followed by ONLY a WB-produced
+// update-branch merge (the target advances and WB brings the candidate up
+// to date), still lands: the advance is proved, not a foreign change.
+func TestLandFileReviewSurvivesOnlyAWBUpdateBranchMerge(t *testing.T) {
+	// "feature" (no slash) matches the fixture's fake update-branch script,
+	// which republishes the merge onto a hardcoded "refs/heads/feature"
+	// when no "head-ref" state override is written (see pr_land_test.go's
+	// update-branch case) — the same branch name
+	// TestLandUpdatesABehindCandidateInsteadOfRefusing and friends use.
+	fixture := newLandFixture(t, "feature", "main.go")
+	// The review-stale proof needs a real local checkout of the branch to
+	// run `git merge-tree`/ancestor checks against — the same requirement
+	// --keep-commits already has (locateBranchCheckout). A real linked
+	// worktree, not just the bare canonical push newLandFixture leaves on
+	// main, is what makes it findable.
+	if _, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "file-update-branch",
+		Branch: "feature", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := dir + "/review.md"
+	contents := "looks good\n\nReviewed-Head: " + fixture.headSHA + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	advanceLandTarget(t, fixture)
+
+	options := landOptions(fixture)
+	options.ApprovedBy = path
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !fixtureHasMarker(fixture, "update-branch") {
+		t.Fatal("expected the candidate to have been brought up to date via update-branch")
+	}
+	if !result.ReviewBound {
+		t.Fatal("the review must still be recorded as bound")
+	}
+}
+
+// #586: a file review with no "Reviewed-Head:" line still lands, with the
+// informational review-unbound finding — never a refusal.
+func TestLandFileReviewWithNoReviewedHeadLandsUnbound(t *testing.T) {
+	fixture := newLandFixture(t, "feature/file-unbound", "main.go")
+	dir := t.TempDir()
+	path := dir + "/review.md"
+	if err := os.WriteFile(path, []byte("looks good, no head named"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := landOptions(fixture)
+	options.ApprovedBy = path
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.ReviewBound {
+		t.Fatal("a review naming no head must not be recorded as bound")
+	}
+	if !strings.Contains(result.Evidence["review"], "review-unbound") {
+		t.Fatalf("Evidence[review] = %q, want the review-unbound finding", result.Evidence["review"])
+	}
+}
+
+// #586: a URL review pointing at a GitHub PR/issue comment is fetched
+// through the gh fake and its Reviewed-Head line is parsed the same way.
+func TestLandURLReviewParsesReviewedHeadFromFetchedComment(t *testing.T) {
+	fixture := newLandFixture(t, "feature/url-comment", "main.go")
+	fixture.writeState(t, "comment-body", jsonEscapedBody("looks good\n\nReviewed-Head: "+fixture.headSHA+"\n"))
+
+	options := landOptions(fixture)
+	options.ApprovedBy = "https://github.com/acme/app/pull/7#issuecomment-1"
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !result.ReviewBound || result.ReviewedHeadSHA != fixture.headSHA {
+		t.Fatalf("ReviewBound = %v, ReviewedHeadSHA = %q, want bound to %q", result.ReviewBound, result.ReviewedHeadSHA, fixture.headSHA)
+	}
+}
+
+// #604: the identity form's posted comment carries the exact machine-readable
+// "Reviewed-Head: <full sha>" line.
+func TestLandIdentityReviewCommentContainsExactReviewedHeadLine(t *testing.T) {
+	fixture := newLandFixture(t, "feature/identity-reviewed-head", "main.go")
+	options := landOptions(fixture)
+	options.ApprovedBy = "opus@codex@run-1"
+	options.ReviewComment = "looks good"
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	posted := fixture.readState(t, "posted-comments")
+	if !strings.Contains(posted, "Reviewed-Head: "+result.ReviewedHeadSHA) {
+		t.Fatalf("posted comment = %q, missing the exact Reviewed-Head line for %q", posted, result.ReviewedHeadSHA)
 	}
 }
 

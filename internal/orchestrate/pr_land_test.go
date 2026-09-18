@@ -173,6 +173,14 @@ case "$*" in
       "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
+  'api repos/acme/app/issues/comments/'*)
+    # comment-body is written by the test already JSON-escaped (no
+    # surrounding quotes), so the shell only has to wrap it.
+    if [ -f "$S/comment-body" ]; then
+      printf '{"body":"%s"}\n' "$(cat "$S/comment-body")" ;
+    else
+      printf '{"message":"Not Found"}\n'; exit 1
+    fi ;;
   'api --paginate repos/acme/app/commits/'*'/pulls')
     # The worktree inventory asks GitHub's commit-to-pull-request index while
     # deciding whether a checkout's work landed. Without this the inspection
@@ -217,6 +225,24 @@ case "$*" in
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
+  'api repos/acme/app/commits/'*' --include'|'api repos/acme/app/commits/'*)
+    # A singular commit lookup (#586's parent-shape check), never a
+    # /check-runs or /status suffix — those match the patterns above first.
+    sha="${2#*commits/}"
+    sha="${sha% --include}"
+    parents=$(git --git-dir="$WB_LAND_REMOTE" show -s --format=%P "$sha" 2>/dev/null)
+    parents_json="[]"
+    if [ -n "$parents" ]; then
+      parents_json="["
+      first=1
+      for p in $parents; do
+        if [ "$first" -eq 0 ]; then parents_json="$parents_json,"; fi
+        parents_json="$parents_json{\"sha\":\"$p\"}"
+        first=0
+      done
+      parents_json="$parents_json]"
+    fi
+    printf '{"sha":"%s","parents":%s}\n' "$sha" "$parents_json" ;;
   'api repos/acme/app/compare/'*)
     pair="${2#*compare/}"
     left="${pair%%...*}"
@@ -316,6 +342,22 @@ esac
 func (fixture *landFixture) failNextPullRequestReadWithSignalKilled(t *testing.T) {
 	t.Helper()
 	fixture.writeState(t, "fail-pr-view-once", "1")
+}
+
+// pushForeignCommit simulates a push WB did not make: one ordinary,
+// single-parent commit on top of the pull request's current head, published
+// directly in the fixture's fake remote (and reflected in the fake gh's
+// "head" state, which is what the PR-view endpoint serves). #586's
+// review-stale check must see this as a foreign advance: an update-branch
+// merge always has two parents, and this commit has one.
+func (fixture *landFixture) pushForeignCommit(t *testing.T, branch string) string {
+	t.Helper()
+	tip := strings.TrimSpace(fixture.readState(t, "head"))
+	tree := strings.TrimSpace(runEngineGit(t, fixture.remote, "rev-parse", tip+"^{tree}"))
+	next := strings.TrimSpace(runEngineGit(t, fixture.remote, "commit-tree", tree, "-p", tip, "-m", "foreign fix, not reviewed"))
+	runEngineGit(t, fixture.remote, "update-ref", "refs/heads/"+branch, next)
+	fixture.writeState(t, "head", next)
+	return next
 }
 
 func landOptions(fixture *landFixture) PullRequestLandOptions {

@@ -13,18 +13,39 @@ func TestClassifyApprovedBy(t *testing.T) {
 	if err := os.WriteFile(file, []byte("looks good"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]approvalKind{
+	// Without a review comment, a value containing "@" is still the
+	// unambiguous identity shape, but a bare word with no "@" stays the old
+	// free-form approval evidence (#604 back-compat: any string was
+	// accepted, whether or not it named a file that existed on disk).
+	withoutComment := map[string]approvalKind{
 		"":                                   approvalKindEmpty,
 		"ci":                                 approvalKindCI,
 		"CI":                                 approvalKindCI,
 		"https://github.com/acme/app/pull/7": approvalKindURL,
 		file:                                 approvalKindFile,
 		"sonnet@claude-code@sess-1":          approvalKindIdentity,
+		"sonnet":                             approvalKindFile,
+		"review.md":                          approvalKindFile,
+	}
+	for value, want := range withoutComment {
+		if got := classifyApprovedBy(value, false); got != want {
+			t.Errorf("classifyApprovedBy(%q, false) = %v, want %v", value, got, want)
+		}
+	}
+
+	// With a review comment, an ambiguous bare string is the identity
+	// shape; a URL/file/ci/empty value is unaffected.
+	withComment := map[string]approvalKind{
+		"":                                   approvalKindEmpty,
+		"ci":                                 approvalKindCI,
+		"https://github.com/acme/app/pull/7": approvalKindURL,
+		file:                                 approvalKindFile,
+		"sonnet@claude-code@sess-1":          approvalKindIdentity,
 		"sonnet":                             approvalKindIdentity,
 	}
-	for value, want := range cases {
-		if got := classifyApprovedBy(value); got != want {
-			t.Errorf("classifyApprovedBy(%q) = %v, want %v", value, got, want)
+	for value, want := range withComment {
+		if got := classifyApprovedBy(value, true); got != want {
+			t.Errorf("classifyApprovedBy(%q, true) = %v, want %v", value, got, want)
 		}
 	}
 }

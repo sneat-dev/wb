@@ -292,6 +292,11 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 				return err
 			}
 		}
+		if result.Evidence["review"] != "" {
+			if _, err := fmt.Fprintf(out, "finding: %s\n", result.Evidence["review"]); err != nil {
+				return err
+			}
+		}
 		if len(result.Closes) > 0 || result.Evidence["closes"] != "" {
 			if _, err := fmt.Fprintf(out, "%s\n", result.Evidence["closes"]); err != nil {
 				return err

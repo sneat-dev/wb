@@ -132,21 +132,63 @@ and in the aggregated commit body. The value is one of:
   is recorded — not refused — only when the reviewer's model, harness *and*
   session all match the invoking session's own identity.
 
+A value containing `@` (`{model}@{harness}[@{session}]`) is always the
+identity shape. A bare word with no `@` (e.g. a single model name) is only
+recognized as the identity shape when a review comment accompanies it via
+`--review-comment` or `--review-comment-file`; without one it stays the
+pre-#604 free-form approval string, so existing callers that pass an
+arbitrary label are unaffected.
+
 **The approval never bypasses the mechanical classifier.** The diff is still
 classified from its own content whether or not `--approved-by` is given; a
 mechanical bump needs no approval and none of the above runs for it.
 
-**The approval is bound to the head it reviewed** (issue #586). If the pull
-request's head is no longer that one when `wb pr land` reaches the merge, it
-refuses with `review-stale` — distinct from `head-moved`, which only protects
-one invocation's own observation-to-merge gap. The one exception is a head
-produced by WB's own update-branch merges after the review: each such merge
-is proved (its target-side parent is an ancestor of the current remote
-target, and its tree exactly matches `git merge-tree --write-tree`) before
-it is trusted as a legitimate advance. A foreign push, a "fix lint" commit,
-or a force-push in between is not, and is refused. **WB never disarms
-auto-merge**, so a `review-stale` refusal with auto-merge armed says so
-explicitly: the pull request can still merge on green without you.
+### Binding a review to the commit it reviewed (`Reviewed-Head:`)
+
+A review — file, comment URL, or the identity form's posted comment — binds
+to whatever commit it names with a machine-readable line:
+
+```
+Reviewed-Head: <full 40-character SHA>
+```
+
+- The **identity form** always writes this line itself, in the comment WB
+  posts, naming the exact head it reviewed.
+- A **review file** binds to whatever `Reviewed-Head: <sha>` line appears
+  anywhere in the file — write one when hand-authoring a review file you
+  intend to reuse if the branch advances safely.
+- A **comment URL** binds only when it points at a GitHub PR/issue comment
+  (`...#issuecomment-<id>`); WB fetches that comment's body and parses the
+  same line out of it. Any other URL shape names no head.
+
+**When a review names a head, landing is gated on it** (issue #586): if the
+pull request's current head is not that commit, and does not descend from it
+solely through WB/GitHub update-branch merges, `wb pr land` refuses with
+`review-stale` — distinct from `head-moved`, which only protects one
+invocation's own observation-to-merge gap. This is what makes a review stale
+across *separate* invocations: someone reviews head A, someone else pushes a
+foreign commit, and a later `wb pr land` run — even with the same
+`--approved-by` file or URL — is refused, because the binding is re-read from
+the review artifact itself each time, not just from what this invocation
+happened to observe.
+
+Each update-branch hop in between is proved, not assumed: its target-side
+parent must be an ancestor of the current remote target, and its tree must
+exactly match `git merge-tree --write-tree`. A foreign push, a "fix lint"
+commit, or a force-push in between fails that proof and is refused. **WB
+never disarms auto-merge**, so a `review-stale` refusal with auto-merge
+armed says so explicitly: the pull request can still merge on green without
+you.
+
+**When a review names no head at all — founder decision 2026-09-18, "warn,
+still land"** — `wb pr land` does not refuse. It lands, and records an
+informational finding `review-unbound` (in text and JSON) saying the review
+does not name the commit it reviewed and suggesting `Reviewed-Head: <sha>`
+be added. The receipt always carries `reviewed_head` (empty when unbound) and
+`review_bound: true|false`.
+
+`--approved-by ci` still refuses unconditionally — implementing it is
+tracked as a follow-up, [issue #619](https://github.com/sneat-dev/wb/issues/619).
 
 The classification is made **from the diff's content**, never from filenames and
 never from the title, author or labels:
@@ -177,7 +219,7 @@ file is not mechanical, and is refused until a review is recorded.
 | --- | --- | --- |
 | `unapproved-patch-set` | the diff is not a mechanical bump | `wb pr land … --approved-by <review-file-or-comment-url-or-reviewer-identity>` |
 | `review-comment-empty` | a reviewer-identity `--approved-by` with no (or empty) review text | add `--review-comment "<the review>"` or `--review-comment-file <path>` |
-| `review-stale` | the head is not the one the recorded approval reviewed | review the current head, then rerun `wb pr land …` with a fresh `--approved-by` |
+| `review-stale` | the head is not the one named by the review's `Reviewed-Head:` line, and does not descend from it solely through update-branch merges | review the current head, then rerun `wb pr land …` with a fresh `--approved-by` (or comment) naming it |
 | `draft-pull-request` | landing a draft would bypass the review it is waiting for | `gh pr ready <n> --repo <repo>` |
 | `pull-request-not-open` | already merged, or closed | `wb worktree gc --apply` when it is merged; open it in the browser otherwise |
 | `not-mergeable` | GitHub reports a conflict | `wb worktree merge <task> --route auto` |

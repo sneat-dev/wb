@@ -2,6 +2,9 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 )
 
@@ -84,6 +87,15 @@ func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOption
 		// land an unreviewed change.
 		return false
 	}
+	// The commits between reviewedHead and currentHead (an update-branch
+	// merge GitHub produced server-side, or a reviewedHead recorded in an
+	// earlier invocation) are not necessarily in this worktree's object
+	// database yet. Best effort: bring the branch's current tip into reach
+	// before the walk needs its objects; a failure here (a deleted branch
+	// after merge) is not fatal — the walk below simply fails its own proof
+	// if the objects genuinely cannot be read.
+	_, _, _ = runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
+		"+refs/heads/"+view.Head.Ref+":refs/remotes/origin/"+view.Head.Ref)
 	return reviewedHeadAdvanceChain(ctx, worktree, options.Repository, view.Base.Ref, reviewedHead, currentHead)
 }
 
@@ -107,6 +119,78 @@ func reviewedHeadAdvanceChain(ctx context.Context, worktree, repository, target,
 		head = parents[0]
 	}
 	return false
+}
+
+// reviewedHeadLinePattern matches the machine-readable "Reviewed-Head: <sha>"
+// line: WB's own posted identity-form comments always carry it (#604), and a
+// file or PR/issue-comment review may carry it anywhere in its text (#586,
+// founder-decided 2026-09-18: warn, still land, rather than refuse a review
+// that names no head).
+var reviewedHeadLinePattern = regexp.MustCompile(`(?m)^Reviewed-Head:\s*([0-9a-fA-F]{7,40})\s*$`)
+
+// parseReviewedHeadLine extracts the "Reviewed-Head: <sha>" line's SHA from
+// arbitrary text, or "" when no such line is present.
+func parseReviewedHeadLine(text string) string {
+	match := reviewedHeadLinePattern.FindStringSubmatch(text)
+	if match == nil {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+// issueCommentURLPattern matches a GitHub pull-request or issue comment URL:
+// https://github.com/<owner>/<repo>/(pull|issues)/<n>#issuecomment-<id>. Any
+// other URL shape (a plain PR URL with no comment anchor, a non-GitHub host)
+// names no fetchable comment and is left unbound.
+var issueCommentURLPattern = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/(?:pull|issues)/\d+#issuecomment-(\d+)$`)
+
+// namedReviewedHead resolves the commit a file or URL review names, per
+// #586's binding rule: a file's own "Reviewed-Head: <sha>" line anywhere in
+// it, or — for a URL pointing at a GitHub pull-request or issue comment —
+// that same line fetched from the comment's body via the GitHub API. It
+// returns "" (never an error) for a review that names no head, or a URL
+// this cannot resolve: the caller treats that as "review-unbound", an
+// informational finding, never a refusal.
+func namedReviewedHead(ctx context.Context, approvedBy string, kind approvalKind) string {
+	switch kind {
+	case approvalKindFile:
+		data, err := os.ReadFile(approvedBy)
+		if err != nil {
+			return ""
+		}
+		return parseReviewedHeadLine(string(data))
+	case approvalKindURL:
+		body, ok := fetchIssueCommentBody(ctx, approvedBy)
+		if !ok {
+			return ""
+		}
+		return parseReviewedHeadLine(body)
+	default:
+		return ""
+	}
+}
+
+type issueCommentBodyResponse struct {
+	Body string `json:"body"`
+}
+
+// fetchIssueCommentBody reads one GitHub issue/PR comment's body by its URL,
+// for namedReviewedHead's URL case.
+func fetchIssueCommentBody(ctx context.Context, url string) (string, bool) {
+	match := issueCommentURLPattern.FindStringSubmatch(strings.TrimSpace(url))
+	if match == nil {
+		return "", false
+	}
+	repository, commentID := match[1], match[2]
+	response := githubExecute(ctx, "", "api", "repos/"+repository+"/issues/comments/"+commentID)
+	if response.Err != nil {
+		return "", false
+	}
+	var decoded issueCommentBodyResponse
+	if err := json.Unmarshal(response.Stdout, &decoded); err != nil {
+		return "", false
+	}
+	return decoded.Body, true
 }
 
 // reviewStaleRefusal is the landRefusal `landPullRequest` returns when the

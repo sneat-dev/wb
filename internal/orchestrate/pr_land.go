@@ -200,10 +200,16 @@ type PullRequestLandResult struct {
 	// reviewer identity fully matches this session's own (see
 	// currentSessionIdentity).
 	Reviewer         string `json:"reviewer,omitempty"`
-	ReviewedHeadSHA  string `json:"reviewed_head_sha,omitempty"`
+	ReviewedHeadSHA  string `json:"reviewed_head,omitempty"`
 	ReviewDigest     string `json:"review_digest,omitempty"`
 	ReviewCommentURL string `json:"review_comment_url,omitempty"`
 	SelfReview       bool   `json:"self_review,omitempty"`
+	// ReviewBound is false when the recorded review named no commit to bind
+	// to (#586's warn-still-land design, founder-decided 2026-09-18): the
+	// landing proceeds — this is never a refusal — but Evidence["review"]
+	// carries the informational "review-unbound" finding so the gap is
+	// visible rather than silent.
+	ReviewBound bool `json:"review_bound"`
 	// Closes lists the issues GitHub's own closingIssuesReferences reports
 	// this landing closes (#615). Empty is reported as the informational
 	// "no linked issue" finding in Evidence["closes"], never a refusal.
@@ -473,8 +479,9 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// this head, since nothing else names one) — is stale the moment the
 	// head advances by anything other than WB's own update-branch merges.
 	reviewedHead := result.HeadSHA
+	hasReviewComment := strings.TrimSpace(options.ReviewComment) != "" || strings.TrimSpace(options.ReviewCommentFile) != ""
 	if !result.Mechanical {
-		switch classifyApprovedBy(result.ApprovedBy) {
+		switch classifyApprovedBy(result.ApprovedBy, hasReviewComment) {
 		case approvalKindEmpty:
 			return mergeRefusal(result, landRefusal{
 				code: LandRefusalUnapprovedPatch,
@@ -485,7 +492,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		case approvalKindCI:
 			return mergeRefusal(result, landRefusal{
 				code:    LandRefusalUnapprovedPatch,
-				reason:  "--approved-by ci is not implemented yet (#604): it requires wb.yaml to name a required, passing review check on the exact head, which this build does not check",
+				reason:  "--approved-by ci is not implemented yet; follow-up: https://github.com/sneat-dev/wb/issues/619",
 				command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url-or-reviewer-identity>",
 			}), nil
 		case approvalKindIdentity:
@@ -508,6 +515,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			}
 			result.Reviewer = identity.String()
 			result.ReviewedHeadSHA = reviewedHead
+			result.ReviewBound = true
 			result.ReviewDigest = ReviewDigest(comment)
 			result.ReviewCommentURL = commentURL
 			result.SelfReview = identity.SelfReview(currentSessionIdentity())
@@ -518,7 +526,21 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 				result.Evidence["self_review"] = "true"
 			}
 		case approvalKindFile, approvalKindURL:
-			result.ReviewedHeadSHA = reviewedHead
+			// #586 (founder-decided 2026-09-18: warn, still land): a file or
+			// comment review binds to whatever commit its own
+			// "Reviewed-Head: <sha>" line names — read now, from the review
+			// artifact itself, so a foreign push that happened between when
+			// the review was written and this invocation is still caught.
+			// A review that names no head is never refused for it; it lands,
+			// with the gap surfaced as the "review-unbound" finding.
+			named := namedReviewedHead(ctx, result.ApprovedBy, classifyApprovedBy(result.ApprovedBy, hasReviewComment))
+			if named != "" {
+				reviewedHead = named
+				result.ReviewedHeadSHA = named
+				result.ReviewBound = true
+			} else {
+				result.Evidence["review"] = "review-unbound: the review does not name the commit it reviewed; add \"Reviewed-Head: <sha>\""
+			}
 		}
 	}
 
