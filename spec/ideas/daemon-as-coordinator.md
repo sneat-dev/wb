@@ -92,7 +92,42 @@ That second row is the honest limit, and it is unchanged by any of this. For
 those sessions the mechanisms remain the ones already shipped: the session
 blocks on `wb wait`, or WB acts on its own for work whose owner is gone.
 
-### A third route, already built: tmux paste
+### The transport is already solved, by herdr
+
+The routes below were weighed before establishing what the founder actually
+runs. They use **herdr**, a terminal workspace manager for AI coding agents,
+not tmux — so the tmux primitive WB already has does not reach their sessions.
+
+herdr provides the coordinator surface directly, and factored along exactly the
+boundary this document argues for:
+
+| Need | herdr |
+|---|---|
+| inject without submitting (advisory) | `herdr agent send-keys <target> <key>...` |
+| inject and submit (commanding) | `herdr agent prompt <target> <text> [--wait --until <status>]` |
+| wait for an agent to reach a state | `herdr agent wait <target> --until idle\|working\|blocked\|done` |
+| enumerate agents with status | `herdr agent list` (JSON) |
+| read an agent's output | `herdr agent read <target>` |
+
+So the advisory/binding split does not have to be enforced by WB withholding a
+newline: herdr separates it into two commands, and WB can simply never call
+`prompt` outside the enumerated binding set.
+
+`herdr agent list` also supplies something WB lacks today — **live agent
+status** (`idle`, `working`, `blocked`, `done`, `unknown`) with pane, workspace,
+cwd and the agent's own session id, as JSON. That is precisely the liveness
+signal the abandoned-work gate needs, and far better than inferring it from
+PIDs.
+
+**Consequence.** WB's coordinator needs no channel server, no stdin ownership
+and no `wb claude` wrapper. It shells out to herdr the way it already shells out
+to `gh`. The transport question that dominated this idea is answered by a tool
+already installed.
+
+The routes below are retained because they still apply where herdr is not in
+use, and because the authority analysis is transport-independent.
+
+### A route WB already has, where tmux is in use: paste
 
 WB does not have to own the process to write to a session. `internal/sessionmessage`
 already injects arbitrary bytes into a tmux pane:
