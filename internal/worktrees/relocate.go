@@ -53,6 +53,52 @@ type RelocateResult struct {
 	Repaired        bool   `json:"repaired,omitempty"`
 	ReceiptPath     string `json:"receipt_path,omitempty"`
 	Reason          string `json:"reason,omitempty"`
+	// claimHome is the home under which this checkout's Work Log claim was
+	// actually corroborated -- not necessarily resolution.Write.Home. A claim
+	// recorded under a retired legacy home is still live, and every claim
+	// record it already owns (runs, claims, relocation receipts) lives there;
+	// writing a new relocation intent/receipt anywhere else would split that
+	// history. Unexported: it is plumbing between planRelocation and
+	// applyRelocation/finalizeInterruptedRelocation, never a public result.
+	claimHome string `json:"-"`
+}
+
+// activeWorkLogClaimAcrossHomes resolves a checkout's active Work Log claim by
+// trying every home WB resolves for the root, not only the current write
+// home -- matching REQ: clone-migration-refusals, which requires the same
+// breadth for the live-claim refusal (see ListActiveClaimSummaries). A claim
+// recorded under a retired legacy home is still a live task, and Relocate's
+// own eligibility check must recognise it exactly as the refusal check does,
+// or a genuinely active, corroborated claim is misreported as uncorroborated
+// solely because the machine has since adopted a new write home. It returns
+// the home under which the claim was found so callers write any new
+// relocation record to that same home.
+func activeWorkLogClaimAcrossHomes(resolution wbhome.Resolution, worktree string) (workLogClaim, workLogProjection, string, string, error) {
+	homes := make([]string, 0, len(resolution.Read)+1)
+	tried := map[string]bool{}
+	addHome := func(home string) {
+		if home == "" || tried[home] {
+			return
+		}
+		tried[home] = true
+		homes = append(homes, home)
+	}
+	addHome(resolution.Write.Home)
+	for _, layout := range resolution.Read {
+		addHome(layout.Home)
+	}
+	var lastErr error
+	for _, home := range homes {
+		claim, projection, claimPath, err := activeWorkLogClaim(home, worktree)
+		if err == nil {
+			return claim, projection, claimPath, home, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no resolved home could corroborate an active Work Log claim")
+	}
+	return workLogClaim{}, workLogProjection{}, "", "", lastErr
 }
 
 type RelocateOutcome struct {
@@ -139,7 +185,7 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 	}
 	outcome := RelocateOutcome{SchemaVersion: 1, Diagnostics: listed.Diagnostics}
 	for _, entry := range listed.Results {
-		result, planErr := planRelocation(ctx, resolution.Write.Home, options, entry)
+		result, planErr := planRelocation(ctx, resolution, options, entry)
 		if planErr != nil {
 			return outcome, planErr
 		}
@@ -173,12 +219,12 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 			if !result.RecoveryPending {
 				continue
 			}
-			if err := finalizeInterruptedRelocation(resolution.Write.Home, options, entry, result); err != nil {
+			if err := finalizeInterruptedRelocation(result.claimHome, options, entry, result); err != nil {
 				return outcome, err
 			}
 			continue
 		}
-		if err := applyRelocation(ctx, resolution.Write.Home, options, entry, result); err != nil {
+		if err := applyRelocation(ctx, result.claimHome, options, entry, result); err != nil {
 			return outcome, err
 		}
 	}
@@ -194,15 +240,17 @@ func findRelocationEntry(entries []ListResult, path string) (ListResult, bool) {
 	return ListResult{}, false
 }
 
-func planRelocation(ctx context.Context, home string, options RelocateOptions, entry ListResult) (RelocateResult, error) {
+func planRelocation(ctx context.Context, resolution wbhome.Resolution, options RelocateOptions, entry ListResult) (RelocateResult, error) {
 	result := RelocateResult{Task: entry.Task, Repository: entry.Repository, CanonicalDir: entry.CanonicalDir,
 		WorktreeDir: entry.WorktreeDir, Branch: entry.Branch, HeadSHA: entry.HeadSHA, To: options.To}
-	claim, _, _, claimErr := activeWorkLogClaim(home, entry.WorktreeDir)
+	claim, _, _, claimHome, claimErr := activeWorkLogClaimAcrossHomes(resolution, entry.WorktreeDir)
 	if claimErr != nil {
 		result.Reason = "active Work Log claim is not corroborated: " + claimErr.Error()
 		return result, nil
 	}
 	result.ClaimID = claim.ClaimID
+	result.claimHome = claimHome
+	home := claimHome
 	placement, err := ResolveUserWorktreePlacement(options.ProjectsRoot, entry.CanonicalDir)
 	if err != nil {
 		return result, err
@@ -760,6 +808,69 @@ func corroborateRepositoryRelocation(ctx context.Context, worktree, repository s
 		if err != nil || remote.Identity.Repository != repository {
 			return fmt.Errorf("relocated repository origin does not identify %s", repository)
 		}
+	}
+	return nil
+}
+
+// ReverseRelocation moves a checkout back from destination to source, using
+// the same move-then-repair-then-verify primitive Relocate applies forward,
+// and appends to the exact same Work Log relocation journal Relocate does —
+// an intent before the move, a receipt after it verifies — so a claim's
+// current location resolves correctly (via resolveRelocationChain) once the
+// reversal completes. It is the small, deliberate exception to "relocation
+// goes through Relocate, never a copy of it": Relocate always computes its
+// destination from the machine's CURRENT configured placement, so it has no
+// way to target an arbitrary historical path on its own. It does not take a
+// task lock of its own; a caller reversing a completed relocation (such as
+// `wb layout migrate --undo`) already holds its own run-wide lock.
+func ReverseRelocation(ctx context.Context, projectsRoot, canonicalDir, destination, source string, now time.Time) error {
+	if !filepath.IsAbs(destination) || !filepath.IsAbs(source) {
+		return fmt.Errorf("relocation reversal paths must be absolute")
+	}
+	if _, statErr := os.Lstat(source); statErr == nil {
+		return fmt.Errorf("relocation-reversal destination already exists: %s", source)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect relocation-reversal destination %s: %w", source, statErr)
+	}
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return err
+	}
+	// claimForRelocationAcrossHomes, not activeWorkLogClaimAcrossHomes: a
+	// caller reversing `wb layout migrate`'s own relocation (its only
+	// caller) must be able to reverse a finished task's relocation too, per
+	// the founder's decision (2026-09-18) that a finished task's checkout is
+	// the safe case. This does not change `wb worktree relocate` itself,
+	// which never calls ReverseRelocation.
+	claim, _, home, err := claimForRelocationAcrossHomes(resolution, destination)
+	if err != nil {
+		return fmt.Errorf("recheck Work Log claim before relocation reversal: %w", err)
+	}
+	headOutput, err := git(ctx, destination, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("read HEAD before relocation reversal: %w", err)
+	}
+	head := strings.TrimSpace(headOutput)
+	intent, _, err := appendRelocationIntent(home, claim, destination, source, "local", head, relocationPlacementRecord{}, now)
+	if err != nil {
+		return fmt.Errorf("record relocation-reversal intent: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		return fmt.Errorf("prepare relocation-reversal destination parent: %w", err)
+	}
+	// filepath.Dir(source), not filepath.Dir(destination): moveWorktree's
+	// worktreesRoot argument must bound the NEW path (here, source, the
+	// restoration target) so the secure Git helper's write-capability root
+	// covers where `worktree repair` must write the restored checkout's
+	// .git file. Every other moveWorktree caller bounds its own new path
+	// the same way; this reversal path had it backwards, which only
+	// surfaced where Landlock actually confines the child (CI), not on a
+	// machine where the secure Git capability is unavailable.
+	if _, err := moveWorktree(ctx, canonicalDir, filepath.Dir(source), destination, source, worktreeMoveHooks{}); err != nil {
+		return err
+	}
+	if _, _, err := appendRelocationReceipt(home, claim, intent, now); err != nil {
+		return fmt.Errorf("record relocation-reversal receipt: %w", err)
 	}
 	return nil
 }

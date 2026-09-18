@@ -1,6 +1,6 @@
 //go:build linux
 
-package layout
+package worktrees
 
 import (
 	"fmt"
@@ -13,12 +13,12 @@ import (
 // selfAndAncestorPIDs returns the current process's own pid together with
 // every ancestor pid up to (but not including) pid 1, by following /proc's
 // stat ppid field. It is used to recognise when a busy-process refusal is
-// caused by the very process running this migration — its own working
-// directory, or its parent shell's — rather than by some unrelated agent or
-// user session, since the remedy for those two cases is completely
-// different: an unrelated process must finish or be asked to leave, but this
-// process (or its shell) just needs to `cd` out of the clone before
-// re-running the same command.
+// caused by the very process running this command's own working directory
+// (or its parent shell's) rather than by some unrelated agent or user
+// session, since the remedy for those two cases is completely different: an
+// unrelated process must finish or be asked to leave, but this process (or
+// its shell) just needs to `cd` out of the checkout before re-running the
+// same command.
 func selfAndAncestorPIDs() map[int]bool {
 	pids := map[int]bool{}
 	pid := os.Getpid()
@@ -58,19 +58,20 @@ func readPPID(pid int) (int, bool) {
 	return ppid, true
 }
 
-// busyProcessCheckSupported reports whether busyProcessReason can actually
+// BusyProcessCheckSupported reports whether BusyProcessReason can actually
 // inspect live process working directories on this OS. Linux exposes this
 // through /proc; other kernels have no equivalent WB relies on here.
-const busyProcessCheckSupported = true
+const BusyProcessCheckSupported = true
 
-// busyProcessReason reports, naming the PID and command, whether any live
-// process's current working directory is inside one of paths (a clone or one
-// of its linked worktrees) — a shell sitting in a directory Git itself has no
-// record of, which neither a Git-operation-in-progress check nor a Work Log
-// claim would ever see. Only a readable /proc/<pid>/cwd counts as evidence: a
-// permission error reading another user's process is expected on a shared
-// machine and is silently skipped, not treated as a refusal or a failure.
-func busyProcessReason(paths []string) string {
+// BusyProcessReason reports, naming the PID and command, whether any live
+// process's current working directory is inside one of paths (a clone,
+// checkout, or one of its linked worktrees) — a shell sitting in a directory
+// Git itself has no record of, which neither a Git-operation-in-progress
+// check nor a Work Log claim would ever see. Only a readable
+// /proc/<pid>/cwd counts as evidence: a permission error reading another
+// user's process is expected on a shared machine and is silently skipped,
+// not treated as a refusal or a failure.
+func BusyProcessReason(paths []string) string {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return ""
@@ -106,7 +107,7 @@ func busyProcessReason(paths []string) string {
 				comm = strings.TrimSpace(string(raw))
 			}
 			if selfAndAncestors[pid] {
-				return fmt.Sprintf("this command's own process tree (pid %d, %s) has its working directory inside %s; cd out of the clone and re-run", pid, comm, path)
+				return fmt.Sprintf("this command's own process tree (pid %d, %s) has its working directory inside %s; cd out of the checkout and re-run", pid, comm, path)
 			}
 			return fmt.Sprintf("process %d (%s) has its working directory inside %s", pid, comm, path)
 		}

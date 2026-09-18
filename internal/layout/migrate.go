@@ -17,7 +17,6 @@ import (
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/repopath"
-	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -32,6 +31,9 @@ type MigrateOptions struct {
 	Repositories []string
 	// Apply moves clones; without it the command only plans.
 	Apply bool
+	// ClonesOnly skips relocating managed task checkouts: clones move and
+	// their linked worktrees repoint, exactly as before this option existed.
+	ClonesOnly bool
 	// UndoID reverses a previously completed manifest instead of migrating.
 	UndoID string
 	Now    func() time.Time
@@ -56,9 +58,27 @@ type MigrateClone struct {
 	// failure — it names what `--apply` will fix.
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
+	// Relocations lists this clone's managed task checkouts whose placement
+	// differs from the store-mode placement, and what became of each: moved
+	// via the existing `wb worktree relocate` implementation, left in place
+	// with a finding, or reported unmanaged.
+	Relocations []MigrateRelocation `json:"relocations,omitempty"`
 	// Head is the clone's own HEAD at plan time, carried through to the
 	// undo manifest. It is not part of the report's public JSON shape.
 	Head string `json:"-"`
+}
+
+// MigrateRelocation is one managed task checkout's relocation plan or
+// outcome, considered after its clone reached its host-level placement.
+type MigrateRelocation struct {
+	Task        string `json:"task,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination,omitempty"`
+	// Status is one of: planned, done, skipped, failed, unmanaged. unmanaged
+	// names a linked worktree with no WB task identity: Git repointed it
+	// along with the clone, but it is never relocated.
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // MigrateReport is the result of one wb layout migrate run.
@@ -95,6 +115,11 @@ func MigrateFailed(report MigrateReport) bool {
 		if clone.Status == "skipped" || clone.Status == "failed" {
 			return true
 		}
+		for _, relocation := range clone.Relocations {
+			if relocation.Status == "skipped" || relocation.Status == "failed" {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -113,16 +138,29 @@ type migrationManifest struct {
 }
 
 type manifestClone struct {
-	Repository  string            `json:"repository"`
-	Source      string            `json:"source"`
-	Destination string            `json:"destination"`
-	Head        string            `json:"head"`
-	Worktrees   []MigrateWorktree `json:"worktrees,omitempty"`
-	Status      string            `json:"status"`
-	Reason      string            `json:"reason,omitempty"`
-	CompletedAt *time.Time        `json:"completed_at,omitempty"`
-	Reversed    bool              `json:"reversed,omitempty"`
-	ReversedAt  *time.Time        `json:"reversed_at,omitempty"`
+	Repository  string               `json:"repository"`
+	Source      string               `json:"source"`
+	Destination string               `json:"destination"`
+	Head        string               `json:"head"`
+	Worktrees   []MigrateWorktree    `json:"worktrees,omitempty"`
+	Status      string               `json:"status"`
+	Reason      string               `json:"reason,omitempty"`
+	CompletedAt *time.Time           `json:"completed_at,omitempty"`
+	Reversed    bool                 `json:"reversed,omitempty"`
+	ReversedAt  *time.Time           `json:"reversed_at,omitempty"`
+	Relocations []manifestRelocation `json:"relocations,omitempty"`
+}
+
+// manifestRelocation is one manifestClone's durable relocation record: what
+// the relocation post-pass found or did for one managed task checkout, and
+// (once --undo reverses it) whether it has been reversed.
+type manifestRelocation struct {
+	Task        string `json:"task,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination,omitempty"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	Reversed    bool   `json:"reversed,omitempty"`
 }
 
 // Migrate plans, and with Apply performs, moving every legacy
@@ -151,7 +189,7 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 		ObservedAt:    options.Now(),
 		DryRun:        !options.Apply,
 	}
-	if !busyProcessCheckSupported {
+	if !worktrees.BusyProcessCheckSupported {
 		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
 	}
 	if options.Apply {
@@ -215,6 +253,22 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 				report.Notes = append(report.Notes, fmt.Sprintf(
 					"%s: worktree breakage not caused by migration, left as-is: %s",
 					slug, strings.Join(informational, ", ")))
+			}
+			// A clone already at the host level -- moved by this run or an
+			// earlier one -- is still in scope for relocating its managed
+			// checkouts (REQ: migration-relocates-managed-worktrees says "moved
+			// by this run or earlier"): populate its linked-worktree list the
+			// same way a freshly-planned clone move does, so relocateClones
+			// below does not skip it for having none.
+			if clone.Status != "failed" {
+				if plan, planErr := worktrees.PlanCloneMove(ctx, path, path); planErr == nil {
+					for _, worktree := range plan.Worktrees {
+						if worktree.Source == path {
+							continue
+						}
+						clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Source, Destination: worktree.Destination})
+					}
+				}
 			}
 			report.Clones = append(report.Clones, clone)
 		}
@@ -298,6 +352,39 @@ func migrateApply(ctx context.Context, root string, options MigrateOptions) (Mig
 
 	report.Clones = append(report.Clones, planned...)
 	sort.Slice(report.Clones, func(i, j int) bool { return report.Clones[i].Repository < report.Clones[j].Repository })
+
+	if !options.ClonesOnly {
+		// persist appends each relocation outcome to the manifest as it
+		// completes -- an atomic write per checkout, exactly as each clone
+		// outcome is already appended, rather than one batch write after the
+		// whole sweep finishes (so an interrupted run leaves a durable,
+		// readable partial record of every relocation that did complete).
+		persist := func(clone *MigrateClone) error {
+			if !options.Apply {
+				return nil
+			}
+			if manifest == nil {
+				var writeErr error
+				manifest, manifestPath, writeErr = createMigrationManifest(root, nil, options.Now())
+				if writeErr != nil {
+					return writeErr
+				}
+			}
+			setManifestCloneRelocations(manifest, *clone)
+			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				return fmt.Errorf("record migration manifest relocation for %s: %w", clone.Repository, writeErr)
+			}
+			report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
+			return nil
+		}
+		if err := relocateClones(ctx, root, report.Clones, options.Apply, options.Now(), persist); err != nil {
+			if manifest != nil {
+				report.ManifestID, report.ManifestPath = manifest.ID, manifestPath
+			}
+			return report, err
+		}
+	}
+
 	if options.Apply {
 		var ownerCandidates []string
 		for _, clone := range planned {
@@ -402,11 +489,20 @@ func planLegacyClone(ctx context.Context, root, path, ownerName, repoName string
 	return clone
 }
 
-// refuseClone runs every refusal check the Feature names against clonePath
-// and its linked worktreePaths, in the same order planLegacyClone applies at
-// plan time. applyOneClone and migrateUndo call this again immediately
-// before a clone actually moves, so a condition that changed between
-// planning and execution is caught instead of assumed still true.
+// refuseClone runs every refusal check REQ: clone-migration-refusals names
+// against clonePath and its linked worktreePaths, in the same order
+// planLegacyClone applies at plan time. applyOneClone and migrateUndo call
+// this again immediately before a clone actually moves, so a condition that
+// changed between planning and execution is caught instead of assumed still
+// true.
+//
+// Every one of these conditions — on the canonical clone path or on any
+// linked worktree — refuses the whole clone, including all of its
+// checkouts, in every mode: a clone move carries its in-clone worktrees with
+// it, so moving a clone out from under a live task pulls the directory out
+// from under a running session. Only the relocation-specific conditions
+// (task lock held, relocation destination exists) leave a single checkout
+// in place while its clone still migrates; see relocateClones.
 func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePaths []string) string {
 	if reason, err := worktrees.GitOperationInProgress(ctx, clonePath); err != nil {
 		return "cannot inspect Git state: " + err.Error()
@@ -424,72 +520,15 @@ func refuseClone(ctx context.Context, root, slug, clonePath string, worktreePath
 		return claim
 	}
 	paths := append([]string{clonePath}, worktreePaths...)
-	if parked := parkedSessionReason(root, paths); parked != "" {
+	if parked := worktrees.ParkedSessionReason(root, paths); parked != "" {
 		return parked
 	}
-	if busyProcessCheckSupported {
-		if busy := busyProcessReason(paths); busy != "" {
+	if worktrees.BusyProcessCheckSupported {
+		if busy := worktrees.BusyProcessReason(paths); busy != "" {
 			return busy
 		}
 	}
 	return ""
-}
-
-// parkedSessionReason reports, across every wbhome-resolved home for root,
-// whether any un-picked-up (parked, not yet resumed) session bundle names a
-// worktree under one of paths — the clone itself or one of its linked
-// worktrees. A parked session's bundle binds a worktree to an exact active
-// Work Log claim and custody record (see session_park_local.go); migrating
-// the clone out from under it before the session resumes would leave that
-// binding pointing at a path that no longer holds what it recorded.
-func parkedSessionReason(root string, paths []string) string {
-	resolution, err := wbhome.Resolve(root)
-	if err != nil {
-		return ""
-	}
-	seen := make(map[string]bool, len(resolution.Read))
-	for _, layout := range resolution.Read {
-		home := filepath.Clean(layout.Home)
-		if home == "" || seen[home] {
-			continue
-		}
-		seen[home] = true
-		storeRoot := filepath.Join(home, sessionpark.SourceDirName)
-		entries, readErr := os.ReadDir(storeRoot)
-		if readErr != nil {
-			continue
-		}
-		store := sessionpark.NewStore(storeRoot)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			state, loadErr := store.Load(entry.Name())
-			if loadErr != nil || state.Status != sessionpark.StatusParked {
-				continue
-			}
-			for _, member := range state.Bundle.Worktrees {
-				for _, path := range paths {
-					if underPath(member.CanonicalDir, path) || underPath(member.WorktreeDir, path) {
-						return fmt.Sprintf("an un-picked-up parked session (%s) references %s", state.Bundle.ParkedSessionID, path)
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// underPath reports whether candidate is path itself or nested under it.
-func underPath(candidate, path string) bool {
-	if candidate == "" || path == "" {
-		return false
-	}
-	candidate, path = filepath.Clean(candidate), filepath.Clean(path)
-	if candidate == path {
-		return true
-	}
-	return strings.HasPrefix(candidate, path+string(filepath.Separator))
 }
 
 func liveClaimReason(root, slug string) string {
@@ -572,6 +611,150 @@ func applyOneClone(ctx context.Context, root string, clone *MigrateClone, now ti
 	clone.Status = "done"
 }
 
+// relocateClones relocates every managed task checkout under clones whose
+// placement differs from its store-mode placement, for every clone that
+// reached (or, in a dry run, is planned to reach) its host-level placement
+// this run or earlier, and that was NOT refused (only "done", "already_done",
+// "repaired", "needs_repair", or "planned" clones are candidates at all — a
+// clone left "skipped" or "failed" never reaches this loop, so none of its
+// checkouts, finished task or not, ever moves). Each candidate checkout is
+// matched by its exact path from that specific clone's own linked-worktree
+// list (clone.Worktrees, itself populated from `git worktree list`), never
+// from a machine-wide worktree scan: a per-checkout decision is made about
+// one exact path, not about "every managed worktree currently discoverable".
+// It calls worktrees.RelocateCheckout per checkout — the same no-replace
+// move, Git repair, verification, and relocation-receipt journal primitives
+// `wb worktree relocate` (Relocate) applies, never Relocate itself, and never
+// a copy of those primitives — and mutates clones in place with what it
+// planned or did. persist, when non-nil, is called immediately after each
+// relocation outcome is decided, so `--apply` records it durably one at a
+// time rather than only after the whole sweep finishes. Repository-local
+// store mode leaves in-clone checkouts where they are: no relocation is
+// attempted for such a clone. A linked worktree with no WB task identity is
+// reported unmanaged; Git already repointed it along with its clone, and it
+// is never relocated. An active task's checkout is left in place with the
+// finding "active task — relocate after it finishes".
+func relocateClones(ctx context.Context, root string, clones []MigrateClone, apply bool, now time.Time, persist func(*MigrateClone) error) error {
+	for index := range clones {
+		clone := &clones[index]
+		switch clone.Status {
+		case "done", "already_done", "repaired", "needs_repair", "planned":
+		default:
+			continue
+		}
+		if len(clone.Worktrees) == 0 || clone.Destination == "" {
+			continue
+		}
+		placement, placementErr := worktrees.ResolveUserWorktreePlacement(root, clone.Destination)
+		if placementErr != nil || placement.RepositoryLocal {
+			continue
+		}
+		moved := clone.Status == "done" || clone.Status == "repaired"
+		for _, worktree := range clone.Worktrees {
+			matchPath := worktree.Source
+			if moved {
+				matchPath = worktree.Destination
+			}
+			relocation := relocateOneCheckout(ctx, root, clone.Destination, clone.Repository, matchPath, placement, apply, now)
+			if relocation == (MigrateRelocation{}) {
+				// Already at its store-mode placement: nothing to record.
+				continue
+			}
+			clone.Relocations = append(clone.Relocations, relocation)
+			if persist != nil {
+				if err := persist(clone); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// relocateOneCheckout decides, and when apply is set applies, the relocation
+// of exactly one checkout path. It returns the zero MigrateRelocation when
+// the checkout is already at its store-mode placement — the caller does not
+// record or persist that case.
+func relocateOneCheckout(ctx context.Context, root, canonicalDir, repository, checkoutPath string, placement worktrees.WorktreePlacement, apply bool, now time.Time) MigrateRelocation {
+	task, active, ok, err := worktrees.IdentifyManagedCheckout(root, checkoutPath)
+	if err != nil {
+		return MigrateRelocation{Source: checkoutPath, Status: "skipped", Reason: "cannot resolve Work Log claim: " + err.Error()}
+	}
+	if !ok {
+		return MigrateRelocation{
+			Source: checkoutPath, Status: "unmanaged",
+			Reason: "linked worktree has no WB task identity; repointed only",
+		}
+	}
+	if active {
+		// The founder's decision (2026-09-18): migrate's automatic sweep
+		// never named this checkout, so an active task's checkout — one a
+		// live session might still be using — stays exactly where it is
+		// until the task finishes. This is a finding, not a failure.
+		return MigrateRelocation{Task: task, Source: checkoutPath, Status: "skipped", Reason: "active task — relocate after it finishes"}
+	}
+	destination, destErr := placement.Path(task, repository)
+	if destErr != nil {
+		return MigrateRelocation{
+			Task: task, Source: checkoutPath, Status: "skipped",
+			Reason: "cannot resolve store-mode placement: " + destErr.Error(),
+		}
+	}
+	if filepath.Clean(destination) == filepath.Clean(checkoutPath) {
+		return MigrateRelocation{}
+	}
+	relocation := MigrateRelocation{Task: task, Source: checkoutPath, Destination: destination}
+	outcome, relocateErr := worktrees.RelocateCheckout(ctx, worktrees.RelocateCheckoutOptions{
+		ProjectsRoot: root, CanonicalDir: canonicalDir, Source: checkoutPath, Destination: destination,
+		To: "shared", Apply: apply, Now: func() time.Time { return now },
+	})
+	switch {
+	case relocateErr != nil:
+		relocation.Status, relocation.Reason = "failed", relocateErr.Error()
+	case !outcome.Eligible:
+		relocation.Status, relocation.Reason = "skipped", outcome.Reason
+	case !apply:
+		relocation.Status = "planned"
+	case outcome.Applied:
+		relocation.Status = "done"
+	default:
+		relocation.Status = "failed"
+		relocation.Reason = "relocation did not complete"
+	}
+	return relocation
+}
+
+// setManifestCloneRelocations records clone's relocation outcomes on its
+// manifest entry, creating one when clone had no clone move of its own this
+// run (an already-host-level clone whose managed checkouts still needed
+// relocating) — the only way such a checkout gets an undo-able record.
+func setManifestCloneRelocations(manifest *migrationManifest, clone MigrateClone) {
+	for index := range manifest.Clones {
+		if manifest.Clones[index].Source == clone.Source && manifest.Clones[index].Destination == clone.Destination {
+			manifest.Clones[index].Relocations = convertRelocations(clone.Relocations)
+			return
+		}
+	}
+	entry := manifestClone{
+		Repository: clone.Repository, Source: clone.Source, Destination: clone.Destination,
+		Head: clone.Head, Status: clone.Status, Reason: clone.Reason,
+		Relocations: convertRelocations(clone.Relocations),
+	}
+	entry.Worktrees = append(entry.Worktrees, clone.Worktrees...)
+	manifest.Clones = append(manifest.Clones, entry)
+}
+
+func convertRelocations(relocations []MigrateRelocation) []manifestRelocation {
+	var out []manifestRelocation
+	for _, relocation := range relocations {
+		out = append(out, manifestRelocation{
+			Task: relocation.Task, Source: relocation.Source, Destination: relocation.Destination,
+			Status: relocation.Status, Reason: relocation.Reason,
+		})
+	}
+	return out
+}
+
 func regenerateMarkers(root, path string) {
 	options := checkoutmarker.DescribeOptions{ProjectsRoot: root, Version: "wb"}
 	inspection, err := checkoutmarker.Describe(path, options)
@@ -607,6 +790,29 @@ func removeEmptyLegacyOwner(ownerPath string) (removed bool, reason string) {
 	return true, ""
 }
 
+// removeEmptyRelocationDirectories removes destination's parent directory,
+// and every empty ancestor up to and including <root>/.worktrees/<task>, but
+// never <root>/.worktrees itself -- other tasks' relocations may still live
+// there. It stops at the first non-empty directory or once taskDir itself is
+// removed. Best-effort: any error just leaves the directory in place.
+func removeEmptyRelocationDirectories(root, task, destination string) {
+	if task == "" {
+		return
+	}
+	taskDir := filepath.Clean(filepath.Join(root, ".worktrees", task))
+	dir := filepath.Clean(filepath.Dir(destination))
+	for dir == taskDir || strings.HasPrefix(dir, taskDir+string(filepath.Separator)) {
+		removed, _ := removeEmptyLegacyOwner(dir)
+		if !removed {
+			return
+		}
+		if dir == taskDir {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
 func migrateUndo(ctx context.Context, root string, options MigrateOptions) (MigrateReport, error) {
 	if err := validateMigrationID(options.UndoID); err != nil {
 		return MigrateReport{}, err
@@ -615,7 +821,7 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		SchemaVersion: 1, ProjectsRoot: root, ObservedAt: options.Now(),
 		DryRun: !options.Apply, Undo: true, ManifestID: options.UndoID,
 	}
-	if !busyProcessCheckSupported {
+	if !worktrees.BusyProcessCheckSupported {
 		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
 	}
 	var lock *migrationLock
@@ -640,7 +846,80 @@ func migrateUndo(ctx context.Context, root string, options MigrateOptions) (Migr
 		for _, worktree := range entry.Worktrees {
 			clone.Worktrees = append(clone.Worktrees, MigrateWorktree{Source: worktree.Destination, Destination: worktree.Source})
 		}
+		relocationsOK := true
+		if !options.ClonesOnly {
+			for relIndex := range entry.Relocations {
+				reloc := entry.Relocations[relIndex]
+				if reloc.Status != "done" || reloc.Reversed {
+					continue
+				}
+				// A relocation reverses back to its pre-relocation source: the
+				// manifest's Source/Destination naming stays forward-oriented,
+				// so the reversal's own source/destination are swapped from it.
+				migReloc := MigrateRelocation{Task: reloc.Task, Source: reloc.Destination, Destination: reloc.Source, Status: "planned"}
+				if !options.Apply {
+					clone.Relocations = append(clone.Relocations, migReloc)
+					continue
+				}
+				if reason := refuseClone(ctx, root, entry.Repository, reloc.Destination, nil); reason != "" {
+					migReloc.Status, migReloc.Reason = "skipped", "refused immediately before relocation reversal: "+reason
+					clone.Relocations = append(clone.Relocations, migReloc)
+					relocationsOK = false
+					continue
+				}
+				if err := worktrees.ReverseRelocation(ctx, root, entry.Destination, reloc.Destination, reloc.Source, options.Now()); err != nil {
+					migReloc.Status, migReloc.Reason = "failed", err.Error()
+					clone.Relocations = append(clone.Relocations, migReloc)
+					relocationsOK = false
+					continue
+				}
+				regenerateMarkers(root, reloc.Source)
+				// The relocation left an empty <root>/.worktrees/<task>
+				// directory (and possibly empty host/org levels below it)
+				// behind; a reversal is the mirror of the forward move's own
+				// owner-directory cleanup, so it must not leave one either.
+				removeEmptyRelocationDirectories(root, reloc.Task, reloc.Destination)
+				manifest.Clones[index].Relocations[relIndex].Reversed = true
+				migReloc.Status = "done"
+				clone.Relocations = append(clone.Relocations, migReloc)
+			}
+		}
+		if !relocationsOK {
+			clone.Status = "skipped"
+			clone.Reason = "one or more relocations could not be reversed; clone move left in place"
+			report.Clones = append(report.Clones, clone)
+			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
+				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
+			}
+			continue
+		}
+		if options.Apply && len(entry.Relocations) > 0 {
+			// Persist reversed relocations now: an already-host-level clone
+			// (entry.Status != "done") never reaches one of the writeManifest
+			// calls further down, and its relocation reversals still need to
+			// survive an interruption exactly like a clone move's does.
+			if writeErr := writeManifest(manifestPath, manifest); writeErr != nil {
+				report.Clones = append(report.Clones, manifestUnprocessedClones(manifest, index+1)...)
+				return report, fmt.Errorf("record migration manifest outcome for %s: %w", entry.Repository, writeErr)
+			}
+		}
 		if entry.Status != "done" || entry.Reversed {
+			if entry.Status != "done" && !entry.Reversed && len(entry.Relocations) > 0 {
+				// This clone was already at the host level -- this manifest
+				// never moved it -- but it held managed checkouts whose
+				// relocations were recorded and have just been processed
+				// above (reversed, or correctly left alone, e.g. an active
+				// task that was never itself relocated). Report the clone
+				// itself as reversed, not skipped: nothing here failed, and
+				// a run that only reversed (or found nothing to reverse
+				// for) relocations must not be reported (or exit) as
+				// having findings.
+				clone.Status = "reversed"
+				clone.Reason = "clone was already at the host level; its relocated checkouts were reversed"
+				report.Clones = append(report.Clones, clone)
+				continue
+			}
 			clone.Status = "skipped"
 			clone.Reason = "manifest does not record this clone as a completed, unreversed move"
 			report.Clones = append(report.Clones, clone)
