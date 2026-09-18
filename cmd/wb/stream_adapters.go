@@ -37,12 +37,18 @@ var streamWorktreeCleanup = worktrees.Cleanup
 // on. Deriving it here — rather than guessing later — keeps that promise
 // truthful even when creation never ran.
 func (adapter *streamWorktrees) PlannedWorktree(task, repository string) (string, error) {
-	owner, name, found := strings.Cut(repository, "/")
-	if !found {
+	if _, _, found := strings.Cut(repository, "/"); !found {
 		return "", fmt.Errorf("repository must be owner/name, got %q", repository)
 	}
-	canonical := filepath.Join(adapter.projectsRoot, owner, name)
-	placement, err := worktrees.ResolveUserWorktreePlacement(canonical)
+	// Resolve the canonical clone WB would actually use, so a hosted clone's
+	// literal host level reaches the planned central store path. An unqualified
+	// owner/name with no clone yet falls back to the legacy two-level
+	// prediction.
+	canonical, err := worktrees.CanonicalRepositoryPath(adapter.projectsRoot, repository)
+	if err != nil {
+		return "", err
+	}
+	placement, err := worktrees.ResolveUserWorktreePlacement(adapter.projectsRoot, canonical)
 	if err != nil {
 		return "", err
 	}

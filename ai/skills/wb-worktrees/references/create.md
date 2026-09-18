@@ -151,7 +151,7 @@ state. See [merge.md](merge.md) and the `wb-merge` skill for the full contract.
 
 One command covering multiple repositories is one Run. WB writes a separate
 immutable claim for each repository below
-`<WB_HOME>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`; claim IDs are
+`<projects-root>/.wb/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`; claim IDs are
 portable collision-resistant digests of effort, canonical repository, branch,
 and immutable base; Run ID and absolute worktree path are not identity inputs.
 Never emulate this with a single hand-written shared JSON file.
@@ -192,9 +192,25 @@ optional value. Do not edit private claim files: WB appends an immutable event
 and offline outbox receipt, then projects the explicit predecessor chain.
 
 By default the printed path is
-`<canonical-repository>/.worktrees/<task>`, including when `WB_HOME` is set.
-`WB_HOME` remains the private home for Work Logs, locks, receipts, and reports.
-For a shared checkout root, set this user-only configuration:
+`<root>/.worktrees/<task>/<host>/<org>/<repository>`, including when the retired
+`WB_HOME` is still set. `<host>` is the canonical clone's literal forge
+hostname: its own on-disk host level when it has one, otherwise the host named by
+its `origin` remote, so a clone still at the legacy `<root>/<org>/<repository>`
+path is placed below its forge. A clone whose origin names no forge (a local
+remote) keeps the `<org>/<repository>` suffix. The private home for Work Logs,
+locks, receipts, and reports is the WB state directory `<root>/.wb`.
+For a checkout inside its own canonical clone instead, set this user-only
+configuration:
+
+```yaml
+version: 1
+worktrees:
+  store: repository-local
+```
+
+That mode prints `<canonical-repository>/.worktrees/<task>` and changes no
+task's claim, branch, or Work Log identity. In central mode, `worktrees.root`
+optionally overrides the store root:
 
 ```yaml
 version: 1
@@ -203,9 +219,11 @@ worktrees:
 ```
 
 WB expands `~`, requires the resulting root to be absolute, and prints
-`<root>/<task>/<owner>/<repository>`. Repository policy may set a branch prefix
-but cannot select a checkout root. Existing linked worktrees governed by the
-same `WB_HOME`, including a populated historic `<projects-root>/.wb`, remain
+`<root>/<task>/<host>/<org>/<repository>`. The store mode and root are
+machine-local user policy; repository policy may set a branch prefix but cannot
+select either, and an attempt to do so is rejected with an error naming the
+user-only configuration path. Existing linked worktrees governed by the
+same projects root, including a populated historic `<projects-root>/.wb`, remain
 discoverable; they are never silently selected as a new create target or
 relocated because the default changed.
 

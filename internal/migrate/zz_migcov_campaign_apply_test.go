@@ -25,8 +25,14 @@ func migCovNewApplyCampaign(t *testing.T, declaredModule, modulePath string, fil
 	t.Setenv("GIT_COMMITTER_NAME", "WB Test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "wb@example.test")
 	root := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github", ".wb"))
+	githubDir := filepath.Join(root, "github")
+	t.Setenv(wbhome.EnvOverride, filepath.Join(githubDir, ".wb"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	// The hand-built campaign bypasses normalizeCampaignOptions, so supply the
+	// projects root the campaign derives placement and state from.
+	if strings.TrimSpace(options.GitHubDir) == "" {
+		options.GitHubDir = githubDir
+	}
 
 	source := filepath.Join(root, "source")
 	writeCampaignFile(t, filepath.Join(source, "go.mod"), "module "+declaredModule+"\n\ngo 1.24\n")

@@ -161,7 +161,7 @@ func TestWTCoreCovResolveSharedWorktreesRootExpandsAndValidates(t *testing.T) {
 // TestWTCoreCovPlacementAndNamingRejections asserts the placement/naming policy
 // surfaces each refusal instead of deriving a branch or path that violates it.
 func TestWTCoreCovPlacementAndNamingRejections(t *testing.T) {
-	if _, err := ResolveUserWorktreePlacement("relative/canonical"); err == nil {
+	if _, err := ResolveUserWorktreePlacement(t.TempDir(), "relative/canonical"); err == nil {
 		t.Fatal("a relative canonical path was accepted")
 	}
 	placement := WorktreePlacement{Root: "/trees", RepositoryLocal: true}

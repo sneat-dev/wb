@@ -112,7 +112,7 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--projects-root P` | `~/projects` | Root dir holding `{org}/{repo}` clones. |
+| `--projects-root P` | `~/projects` | Root dir holding `{host}/{org}/{repo}` clones (the first level is the literal forge hostname). |
 | `--filter S` | — | Only process repos whose `org/name` contains `S`. |
 | `--org O` | — | Query an additional GitHub owner (repeatable); before `sync`, it has the same restricting selection as command-local `sync --org`. |
 
@@ -142,11 +142,33 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. By default, a worktree is created at
-`<canonical-repository>/.worktrees/<task>`. `WB_HOME` remains the private
-authority for Work Logs, task locks, receipts, and reports; setting it never
-changes the default checkout placement. To use one shared checkout root across
-repositories, set a user-only root in `~/.config/wb/worktrees.yaml`:
+contains active local work. By default, a worktree is created in the central
+store at `<root>/.worktrees/<task>/<host>/<org>/<repository>`, where `<root>` is
+the projects root: the task is the first level, so every checkout of a
+multi-repository task stays together, and a search scoped to one task, one host,
+one org, or one repository is expressible as a path. `<host>` is the canonical
+clone's literal forge hostname: its own on-disk host level when it has one, and
+otherwise the host named by its `origin` remote — so a clone still at the legacy
+`<root>/<org>/<repository>` path is placed below its forge without the clone
+moving. A clone whose origin names no forge (a local remote) keeps the two-level
+`<org>/<repository>` suffix. Private state lives at
+`<root>/.wb`. To place a checkout inside its own canonical clone instead — for a
+deployment whose sandbox grants only a single repository directory — select the
+repository-local store mode in `~/.config/wb/worktrees.yaml`:
+
+```yaml
+version: 1
+worktrees:
+  store: repository-local
+```
+
+That mode creates the checkout at `<canonical-repository>/.worktrees/<task>`,
+sharing the canonical clone's own Git exclude, and changes no task's claim,
+branch, or Work Log identity. The store mode and, in central mode, the store
+root are machine-local user policy: a repository-tracked `.wb/worktrees.yaml`
+may configure branch naming, but an attempt to select or override the mode or
+the store root is rejected with an error naming the user-only configuration
+path. In central mode `worktrees.root` optionally overrides the store root:
 
 ```yaml
 version: 1
@@ -155,14 +177,12 @@ worktrees:
 ```
 
 WB expands `~` and creates that checkout at
-`<root>/<task>/<owner>/<repository>`. The root must be absolute after
-expansion; repository policy can configure branch naming but cannot choose a
-checkout root. The account running WB therefore needs access to both its
-`WB_HOME` state and the selected checkout root. New
+`<root>/<task>/<host>/<org>/<repository>`. The root must be absolute after
+expansion. New
 work never silently falls back to the historic `<projects-root>/.wb` directory;
-existing linked worktrees governed by the same `WB_HOME` remain discoverable
-and manageable during migration, and WB never relocates them merely because the
-default changed. WB adds a local
+existing linked worktrees remain discoverable
+and manageable during migration, and a configuration change never moves, hides,
+or re-selects an existing checkout. WB adds a local
 Git exclude for the untracked `.worktrees/` directory so Git status stays
 clean; scanners and build tools that do not honor Git excludes must still avoid
 that directory deliberately.
@@ -221,7 +241,7 @@ stays redacted; `log sync` remains offline until Synchestra is configured.
 
 `log finalize --report <path>` (or `--report-stdin`) attaches an agent's
 completion report; `--apply` copies it into the private Work Log store under
-`WB_HOME` (never source Git, capped at 1 MiB) and records `terminal_result`,
+`<root>/.wb` (never source Git, capped at 1 MiB) and records `terminal_result`,
 `terminal_message`, `finalized_at`, and `report_path` on the sealed terminal.
 A lead session reads that a lane finished, and where its report lives,
 through `wb worktree list --finalized`/`--not-finalized` or
@@ -1027,9 +1047,10 @@ wb deps bump go --fleet \
 
 Canonical clones remain untouched, including dirty clones. WB fetches
 `origin/<ref>` (`main` by default) and creates branches with a checkout at
-`<canonical-repository>/.worktrees/<operation>` by default. A user-only
-`worktrees.root` setting selects `<root>/<operation>/<org>/<repo>` instead;
-`WB_HOME` still holds private lifecycle state. Without publication
+`<root>/.worktrees/<operation>/<host>/<org>/<repo>` by default; a
+repository-local mode places the checkout at
+`<canonical-repository>/.worktrees/<operation>` instead. Private lifecycle
+state lives at `<root>/.wb` in both modes. Without publication
 flags, verified changes remain in those local worktrees. `--push` implies
 `--commit`; `--pr` implies push and commit; and `--merge` implies all prior
 stages. Local lint, test, and build checks are enabled by default; use
@@ -1980,8 +2001,9 @@ non-executable shims; `--json` makes its result consumable by CI or Backstage.
 Managed shims also preserve the absolute `--projects-root` and resolved WB
 home used at installation, so worktree guards remain correct when Git invokes
 them from a non-default projects hierarchy. A shim installed from the normal
-default home remains migration-compatible with legacy linked worktrees; an
-explicit `WB_HOME` remains isolated.
+default root remains migration-compatible with legacy linked worktrees, and a
+shim that still pins the retired `WB_HOME` keeps working: the variable selects
+nothing, and state always derives from `--projects-root`.
 
 The managed shim does not retain the executable path used by `hooks install`
 or `hooks repair`. At hook runtime it prefers `WB_EXECUTABLE`, otherwise

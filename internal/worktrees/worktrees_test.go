@@ -1731,6 +1731,9 @@ func assertFailedCreateRolledBack(t *testing.T, fixture *gitFixture, operation s
 
 func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
+	// Clear the repository-local mode the shared fixture pins, so this test
+	// exercises the central default alongside the legacy state namespace.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy", "acme", "app")
 	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/legacy", legacy, "main")
 
@@ -1741,8 +1744,8 @@ func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := created[0].WorktreeDir, filepath.Join(fixture.canonical, ".worktrees", "new-home"); got != want {
-		t.Fatalf("new worktree = %q, want repository-local default path %q", got, want)
+	if got, want := created[0].WorktreeDir, filepath.Join(fixture.projectsRoot, ".worktrees", "new-home", "acme", "app"); got != want {
+		t.Fatalf("new worktree = %q, want central default path %q", got, want)
 	}
 	if strings.HasPrefix(created[0].WorktreeDir, filepath.Join(fixture.projectsRoot, ".wb")) {
 		t.Fatalf("new worktree silently reused legacy home: %s", created[0].WorktreeDir)
@@ -1933,7 +1936,7 @@ func TestGuardRejectsLinkedWorktreeOutsideCentralHierarchy(t *testing.T) {
 	fixture := newGitFixture(t)
 	outside := filepath.Join(t.TempDir(), "outside")
 	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature", outside, "main")
-	if _, err := Guard(context.Background(), outside, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), ".wb/worktrees") {
+	if _, err := Guard(context.Background(), outside, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "resolver-recognized worktrees hierarchy") {
 		t.Fatalf("outside guard error = %v", err)
 	}
 }
@@ -1948,7 +1951,7 @@ func TestGuardRejectsLinkedWorktreeOutsideCentralHierarchy(t *testing.T) {
 func TestGuardStillRefusesUnadoptedExternalWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	path := fixture.externalWorktree(t, "feature/never-adopted")
-	if _, err := Guard(context.Background(), path, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), ".wb/worktrees") {
+	if _, err := Guard(context.Background(), path, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "resolver-recognized worktrees hierarchy") {
 		t.Fatalf("unadopted external guard error = %v", err)
 	}
 }
@@ -2365,12 +2368,22 @@ func newGitFixture(t *testing.T) *gitFixture {
 
 // configureFixtureSharedWorktrees keeps tests that exercise the historical
 // task/owner/repository hierarchy on the explicit shared-placement path. New
-// placement tests cover the default canonical-local hierarchy separately.
+// placement tests cover the central default and the host level separately.
 func configureFixtureSharedWorktrees(t *testing.T, fixture *gitFixture) {
 	t.Helper()
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+filepath.Join(fixture.home, "worktrees")+"\n")
+}
+
+// configureFixtureRepositoryLocalWorktrees re-pins the machine-local
+// repository-local store mode for a test that replaced XDG_CONFIG_HOME and must
+// still exercise that layout rather than the central default.
+func configureFixtureRepositoryLocalWorktrees(t *testing.T) {
+	t.Helper()
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 }
 
 func newGitFixtureForRepository(t *testing.T, repository string) *gitFixture {
@@ -2413,6 +2426,15 @@ func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {
 
 func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *gitFixture {
 	t.Helper()
+	// The suite's fixtures were written against the repository-local layout.
+	// Selecting that machine-local store mode explicitly keeps each test
+	// exercising the layout it describes; the central default, its literal host
+	// level, and the user-only mode boundary are covered by store_mode_test.go
+	// and placement_create_test.go. A test that needs another mode re-pins
+	// XDG_CONFIG_HOME itself, which supersedes this file.
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 	remote := filepath.Join(root, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
 	projectsRoot := filepath.Join(root, "projects")

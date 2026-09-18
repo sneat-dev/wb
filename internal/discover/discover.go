@@ -15,12 +15,14 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/gitremote"
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // Repo identifies a single repository and where it lives.
 type Repo struct {
 	Org      string
 	Name     string
+	Host     string // literal forge hostname of the placement, empty for a legacy flat clone
 	Path     string // local working-tree path; empty if not cloned locally
 	CloneURL string // transport URL from GitHub; empty if only known locally
 	Archived bool
@@ -38,36 +40,99 @@ type Repo struct {
 // Slug returns the "org/repo" identifier.
 func (r Repo) Slug() string { return r.Org + "/" + r.Name }
 
-// Reconcile merges locally-cloned repos with remotely-listed ones, keyed by
-// org/name. Remote metadata (archived flag, clone URL) wins where both exist.
-// The result is sorted by slug for deterministic output.
+// Identity is the repository's host-qualified address when its placement knows
+// the forge, and the bare owner/repository slug otherwise. Two clones of the
+// same owner/repository on different forges are different repositories: they
+// must never collapse into one inventory entry, which is much of why the host
+// level exists.
+func (r Repo) Identity() string {
+	if r.Host == "" {
+		return r.Slug()
+	}
+	return r.Host + "/" + r.Slug()
+}
+
+// Reconcile merges locally-cloned repos with remotely-listed ones.
+//
+// Entries are keyed by their host-qualified Identity, so two clones of the same
+// owner/repository on different forges stay two entries instead of silently
+// collapsing into one — the multi-forge case the host level exists to express.
+// Remote metadata (archived flag, clone URL) wins where a remote listing
+// describes a repository that is already cloned locally. The result is sorted
+// by slug, then host and path, for deterministic output.
 func Reconcile(local, remote []Repo) []Repo {
-	m := map[string]*Repo{}
+	out := make([]*Repo, 0, len(local)+len(remote))
+	byKey := map[string]*Repo{}
+	byIdentity := map[string]*Repo{}
+	appendRepo := func(candidate *Repo) *Repo {
+		key := candidate.Identity()
+		if existing, taken := byKey[key]; taken && existing.Path != candidate.Path {
+			// The same identity twice on disk. Keep both rather than dropping
+			// one silently: a duplicate clone is a finding for the operator,
+			// not data an inventory may discard.
+			key += "\x00" + candidate.Path
+		}
+		byKey[key] = candidate
+		if _, known := byIdentity[candidate.Identity()]; !known {
+			byIdentity[candidate.Identity()] = candidate
+		}
+		out = append(out, candidate)
+		return candidate
+	}
+	// A legacy flat clone carries no host in its path, but in this fleet a flat
+	// clone of a GitHub repository IS the GitHub clone. Index it under its bare
+	// slug as well, so a remote GitHub listing still matches it and `wb sync`
+	// updates it in place instead of cloning a second copy beside it.
+	legacyBySlug := map[string]*Repo{}
 	for _, r := range local {
 		c := r
 		c.Local = true
-		m[c.Slug()] = &c
+		appended := appendRepo(&c)
+		if c.Host == "" {
+			if _, known := legacyBySlug[c.Slug()]; !known {
+				legacyBySlug[c.Slug()] = appended
+			}
+		}
 	}
 	for _, r := range remote {
-		if ex, ok := m[r.Slug()]; ok {
-			ex.Remote = true
-			ex.Archived = r.Archived
-			ex.IsFork = r.IsFork
+		existing := byIdentity[r.Identity()]
+		if existing == nil {
+			// A remote listing describes the clone of the same slug. A legacy
+			// flat clone cannot carry a host in its path, so it is the match
+			// for its own slug; when the listing names no forge at all, the
+			// GitHub clone is the only addressable candidate.
+			existing = legacyBySlug[r.Slug()]
+		}
+		if existing == nil && r.Host == "" {
+			existing = byIdentity["github.com/"+r.Slug()]
+		}
+		if existing != nil {
+			existing.Remote = true
+			existing.Archived = r.Archived
+			existing.IsFork = r.IsFork
 			if r.CloneURL != "" {
-				ex.CloneURL = r.CloneURL
+				existing.CloneURL = r.CloneURL
 			}
 			continue
 		}
 		c := r
 		c.Remote = true
-		m[c.Slug()] = &c
+		appendRepo(&c)
 	}
-	out := make([]Repo, 0, len(m))
-	for _, r := range m {
-		out = append(out, *r)
+	result := make([]Repo, 0, len(out))
+	for _, repo := range out {
+		result = append(result, *repo)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Slug() < out[j].Slug() })
-	return out
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Slug() != result[j].Slug() {
+			return result[i].Slug() < result[j].Slug()
+		}
+		if result[i].Identity() != result[j].Identity() {
+			return result[i].Identity() < result[j].Identity()
+		}
+		return result[i].Path < result[j].Path
+	})
+	return result
 }
 
 // CanonicalRepository is GitHub's current identity for a possibly redirected
@@ -113,9 +178,13 @@ func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalReposi
 // worker pool so no worker clones the destination while another moves source.
 func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.Context, Repo) (CanonicalRepository, error)) []Repo {
 	remoteTargets := map[string]Repo{}
+	remoteIdentityBySlug := map[string]string{}
 	for _, repo := range repos {
 		if repo.Remote {
-			remoteTargets[repo.Slug()] = repo
+			remoteTargets[repo.Identity()] = repo
+			if _, known := remoteIdentityBySlug[repo.Slug()]; !known {
+				remoteIdentityBySlug[repo.Slug()] = repo.Identity()
+			}
 		}
 	}
 	type candidate struct {
@@ -131,8 +200,8 @@ func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.
 		if err != nil || canonical.Slug == repo.Slug() {
 			continue
 		}
-		if _, exists := remoteTargets[canonical.Slug]; exists {
-			byTarget[canonical.Slug] = append(byTarget[canonical.Slug], candidate{source: repo, canonical: canonical})
+		if identity, exists := remoteIdentityBySlug[canonical.Slug]; exists {
+			byTarget[identity] = append(byTarget[identity], candidate{source: repo, canonical: canonical})
 		}
 	}
 	consumed := map[string]bool{}
@@ -151,11 +220,11 @@ func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.
 				combined.TransferError = fmt.Sprintf("ambiguous transfer: %d local repositories resolve to %s", len(candidates), target)
 			}
 			out = append(out, combined)
-			consumed[candidate.source.Slug()] = true
+			consumed[candidate.source.Identity()] = true
 		}
 	}
 	for _, repo := range repos {
-		if !consumed[repo.Slug()] {
+		if !consumed[repo.Identity()] {
 			out = append(out, repo)
 		}
 	}
@@ -163,21 +232,22 @@ func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.
 	return out
 }
 
-// ScanLocal walks projectsRoot two levels deep ({org}/{repo}) and returns every
-// canonical git repository. Linked worktrees use a .git file and are excluded:
-// they are alternate checkouts of a canonical repository, not fleet members.
+// ScanLocal walks projectsRoot and returns every canonical git repository.
+//
+// Canonical clones live at <root>/{host}/{org}/{repo} with the literal forge
+// hostname at the first level; the legacy two-level <root>/{org}/{repo}
+// placement is read as well, so a fleet that has not adopted the host level
+// stays fully visible and a migrated one is never read as empty. Linked
+// worktrees use a .git file and are excluded: they are alternate checkouts of a
+// canonical repository, not fleet members.
 func ScanLocal(projectsRoot string) ([]Repo, error) {
-	orgs, err := os.ReadDir(projectsRoot)
-	if err != nil {
+	if _, err := os.ReadDir(projectsRoot); err != nil {
 		return nil, err
 	}
+	owners, _ := repopath.Owners(projectsRoot)
 	var repos []Repo
-	for _, org := range orgs {
-		if !org.IsDir() || strings.HasPrefix(org.Name(), ".") {
-			continue
-		}
-		orgPath := filepath.Join(projectsRoot, org.Name())
-		entries, err := os.ReadDir(orgPath)
+	for _, owner := range owners {
+		entries, err := os.ReadDir(owner.Path)
 		if err != nil {
 			continue
 		}
@@ -185,12 +255,12 @@ func ScanLocal(projectsRoot string) ([]Repo, error) {
 			if !e.IsDir() {
 				continue
 			}
-			repoPath := filepath.Join(orgPath, e.Name())
+			repoPath := filepath.Join(owner.Path, e.Name())
 			gitDirectory, err := os.Stat(filepath.Join(repoPath, ".git"))
 			if err != nil || !gitDirectory.IsDir() {
 				continue
 			}
-			repos = append(repos, Repo{Org: org.Name(), Name: e.Name(), Path: repoPath})
+			repos = append(repos, Repo{Org: owner.Name, Name: e.Name(), Host: owner.Host, Path: repoPath})
 		}
 	}
 	return repos, nil
@@ -222,6 +292,7 @@ func ListRemote(owner string) ([]Repo, error) {
 		repos = append(repos, Repo{
 			Org:      owner,
 			Name:     r.Name,
+			Host:     repopath.FromCloneURL(r.SSHURL, owner, r.Name).Host,
 			CloneURL: r.SSHURL,
 			Archived: r.IsArchived,
 			IsFork:   r.IsFork,

@@ -117,7 +117,12 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 					}
 					canonical := repository.Path
 					if canonical == "" {
-						canonical = filepath.Join(options.GitHubDir, owner, name)
+						resolved, resolveErr := orchestrate.CanonicalClonePath(options.GitHubDir, repository)
+						if resolveErr != nil {
+							errorsByRepository[index] = resolveErr
+							return
+						}
+						canonical = resolved
 					}
 					resolvedBase, ensureErr := orchestrate.EnsureCanonical(ctx, repository, canonical, options)
 					if ensureErr != nil {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -264,19 +265,38 @@ type GuardResult struct {
 // managedWorktreeLocation is the shared, boundary-aware interpretation of a
 // linked checkout below one supported WB layout. The historic direct form
 // <task>/<repository> is intentionally supported alongside the current
-// <task>/<owner>/<repository> form.
+// <task>/<owner>/<repository> form. Host is the literal forge hostname of the
+// canonical clone's on-disk placement, and is empty for a legacy two-level
+// clone. StoreHost is the hostname the central store path must carry, which
+// falls back to the clone's origin host when the on-disk path has no host level.
 type managedWorktreeLocation struct {
 	Layout     wbhome.Layout
 	Task       string
+	Host       string
+	StoreHost  string
 	Owner      string
 	Repository string
 	Worktree   string
 }
 
+// canonicalPath reconstructs the canonical clone path this managed worktree
+// belongs to from its on-disk placement, carrying the literal host level when
+// the clone has one. It deliberately uses Host, not StoreHost: the clone has not
+// moved merely because its origin names a forge.
+func (location managedWorktreeLocation) canonicalPath(projectsRoot string) string {
+	return repopath.Address{Host: location.Host, Org: location.Owner, Repo: location.Repository}.Path(projectsRoot)
+}
+
+// setCanonicalIdentity records the canonical clone identity a linked worktree
+// belongs to without losing the task and physical location already derived.
+func (location managedWorktreeLocation) setCanonicalIdentity(host, storeHost, owner, repository string) managedWorktreeLocation {
+	location.Host, location.StoreHost = host, storeHost
+	location.Owner, location.Repository = owner, repository
+	return location
+}
+
 type createPlan struct {
 	result         CreateResult
-	owner          string
-	repository     string
 	canonical      *canonicalRepository
 	baseRevision   string
 	branchExists   bool
@@ -284,6 +304,7 @@ type createPlan struct {
 	needsWorkLog   bool
 	resumeClaim    *workLogClaim
 	placement      worktreePlacement
+	userPlacement  WorktreePlacement
 	localRoot      string
 	localRootDir   *os.File
 	recoveredStage bool
@@ -448,16 +469,13 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	// installed hook actually writes to.
 	ctx = withProjectsRoot(ctx, resolution.Root)
 	home := resolution.Write.Home
-	userConfig, userConfigFound, userConfigPath, err := configuredUserWorktreesConfig()
+	// Snapshot the machine-local store policy before any destination is
+	// prepared. A configured store root is resolved here, so a later rename or
+	// symlink swap of that ancestor is reported as a placement change instead
+	// of being silently adopted by today's create.
+	storePolicy, err := resolveUserStorePolicy(resolution.Root)
 	if err != nil {
 		return nil, err
-	}
-	sharedRoot := ""
-	if userConfigFound && userConfig.Worktrees.Root != nil {
-		sharedRoot, err = resolveSharedWorktreesRoot(*userConfig.Worktrees.Root)
-		if err != nil {
-			return nil, fmt.Errorf("worktrees config %s root: %w", userConfigPath, err)
-		}
 	}
 	workLogPrepared := false
 	// prepareWorkLogOptions only validates and snapshots the caller's exact
@@ -538,7 +556,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 	}()
 	for _, repository := range repositories {
-		owner, name, canonical, err := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
+		_, _, canonical, err := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -550,9 +568,20 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, err
 		}
 		canonicalHandle.afterValidation = normalized.afterCanonicalGitAuthorization
-		worktree := filepath.Join(canonical, ".worktrees", normalized.Operation)
-		if sharedRoot != "" {
-			worktree = filepath.Join(sharedRoot, normalized.Operation, owner, name)
+		// The snapshotted user-only store policy predicts the path before any
+		// policy that needs the fetched base is consulted.
+		// configuredWorktreePlacement below re-reads it and refuses a
+		// repository-tracked attempt to move it, and reports a configuration or
+		// filesystem change made since the snapshot.
+		userPlacement, placementErr := storePolicy.placement(ctx, resolution.Root, canonical)
+		if placementErr != nil {
+			canonicalHandle.close()
+			return nil, placementErr
+		}
+		worktree, pathErr := userPlacement.Path(normalized.Operation, repository)
+		if pathErr != nil {
+			canonicalHandle.close()
+			return nil, pathErr
 		}
 		// A task survives placement changes by its claim, not by whatever root
 		// today's configuration predicts. This runs for both create and resume:
@@ -571,7 +600,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			canonicalHandle.close()
 			return nil, existsErr
 		}
-		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, result: CreateResult{
+		plan := createPlan{canonical: canonicalHandle, userPlacement: userPlacement, result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
 			Base: normalized.Base,
 		}}
@@ -687,11 +716,13 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			plan.result.BaseSHA = mergeBase
 			continue
 		}
-		placement, placementErr := configuredWorktreePlacement(ctx, plan.canonical, baseRevision)
+		placement, placementErr := configuredWorktreePlacement(ctx, resolution.Root, plan.canonical, baseRevision)
 		if placementErr != nil {
 			return nil, placementErr
 		}
-		if placement.Local != (sharedRoot == "") || (!placement.Local && filepath.Clean(placement.Root) != filepath.Clean(sharedRoot)) {
+		if placement.Local != plan.userPlacement.RepositoryLocal ||
+			(!placement.Local && filepath.Clean(placement.Root) != filepath.Clean(plan.userPlacement.Root)) ||
+			placement.Relative != plan.userPlacement.relative {
 			return nil, fmt.Errorf("worktree placement changed while creating %s; retry so every task path is planned from one policy snapshot", plan.result.Repository)
 		}
 		plan.placement = placement
@@ -780,13 +811,13 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		var publication *createdWorktreePublication
 		physicalOperation := operation
 		if !plan.resumed && !plan.recoveredStage {
-			owner, repository := plan.owner, plan.repository
+			parent, repository := splitCloneRelative(plan.placement.Relative)
 			if plan.placement.Local {
 				if plan.localRootDir == nil {
 					return nil, fmt.Errorf("local worktree root was not prepared for %s", plan.result.Repository)
 				}
 				physicalOperation = preparedOperationRoot{Path: plan.localRoot, Worktrees: plan.localRootDir, Directory: plan.localRootDir}
-				owner, repository = "", normalized.Operation
+				parent, repository = "", normalized.Operation
 			} else if sharedOperation != nil {
 				physicalOperation = *sharedOperation
 			}
@@ -795,7 +826,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				plan.canonical,
 				physicalOperation.Path,
 				physicalOperation.Directory,
-				owner,
+				parent,
 				repository,
 				plan.result.Branch,
 				plan.result.Base,
@@ -941,7 +972,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		}
 		result := GuardResult{Path: root, Branch: branch, Kind: "canonical"}
 		result.CanonicalDir = root
-		if _, _, err := canonicalCoordinates(projectsRoot, root); err != nil {
+		if _, _, _, err := canonicalCoordinates(projectsRoot, root); err != nil {
 			return GuardResult{}, err
 		}
 		if branch != base {
@@ -999,7 +1030,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		Path: root, Branch: branch, WorktreesRoot: location.Layout.WorktreesRoot,
 		Kind: "linked", External: external,
 	}
-	canonical := filepath.Join(projectsRoot, location.Owner, location.Repository)
+	canonical := location.canonicalPath(projectsRoot)
 	result.CanonicalDir = canonical
 	expectedCommon := filepath.Join(canonical, ".git")
 	resolvedExpected, err := filepath.EvalSymlinks(expectedCommon)
@@ -1103,7 +1134,12 @@ func likelyTaskWorktreePath(path, predicted, task string) bool {
 	if filepath.Base(parent) == ".worktrees" && filepath.Base(path) == task {
 		return true
 	}
-	return filepath.Base(filepath.Dir(parent)) == task
+	// <store>/<task>/<owner>/<repository> and the central-store
+	// <store>/<task>/<host>/<owner>/<repository>.
+	if filepath.Base(filepath.Dir(parent)) == task {
+		return true
+	}
+	return filepath.Base(filepath.Dir(filepath.Dir(parent))) == task
 }
 
 // locateCanonicalLocalWorktree recognizes the default one-repository layout
@@ -1111,7 +1147,7 @@ func likelyTaskWorktreePath(path, predicted, task string) bool {
 // the canonical path; merely resembling this pathname is insufficient.
 func locateCanonicalLocalWorktree(projectsRoot, root, commonDir string) (managedWorktreeLocation, bool) {
 	canonical := filepath.Dir(commonDir)
-	owner, repository, err := canonicalCoordinates(projectsRoot, canonical)
+	host, owner, repository, err := canonicalCoordinates(projectsRoot, canonical)
 	if err != nil {
 		return managedWorktreeLocation{}, false
 	}
@@ -1125,7 +1161,8 @@ func locateCanonicalLocalWorktree(projectsRoot, root, commonDir string) (managed
 		return managedWorktreeLocation{}, false
 	}
 	return managedWorktreeLocation{
-		Layout: wbhome.Layout{WorktreesRoot: worktreesRoot, Local: true}, Task: parts[0], Owner: owner, Repository: repository, Worktree: root,
+		Layout: wbhome.Layout{WorktreesRoot: worktreesRoot, Local: true}, Task: parts[0],
+		Host: host, StoreHost: host, Owner: owner, Repository: repository, Worktree: root,
 	}, true
 }
 
@@ -1146,24 +1183,47 @@ func locateManagedWorktree(
 			if !layout.Local || !validSafeSegment(parts[0]) {
 				continue
 			}
-			owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+			host, storeHost, owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
 			if coordinatesErr != nil {
 				return managedWorktreeLocation{}, coordinatesErr
 			}
-			location.Task, location.Owner, location.Repository = parts[0], owner, repository
-			return location, nil
+			location.Task = parts[0]
+			return location.setCanonicalIdentity(host, storeHost, owner, repository), nil
+		case 4:
+			// Central store: <task>/<host>/<org>/<repository>.
+			if !validSafeSegment(parts[0]) || !repopath.IsForgeHost(parts[1]) ||
+				!validSafeSegment(parts[2]) || !validRepositorySegment(parts[3]) {
+				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
+			}
+			host, storeHost, owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+			if coordinatesErr != nil {
+				return managedWorktreeLocation{}, coordinatesErr
+			}
+			if !strings.EqualFold(storeHost, parts[1]) {
+				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path host %q but canonical clone address host %q", root, parts[1], storeHost)
+			}
+			if owner != parts[2] {
+				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path owner %q but canonical clone owner %q", root, parts[2], owner)
+			}
+			if !strings.HasPrefix(parts[3], ".") && repository != parts[3] {
+				return managedWorktreeLocation{}, &RepositoryRenameMismatchError{
+					Worktree: root, Owner: owner, PathRepository: parts[3], CanonicalRepository: repository,
+				}
+			}
+			location.Task = parts[0]
+			return location.setCanonicalIdentity(host, storeHost, owner, repository), nil
 		case 3:
 			staging := isWorktreeStagingDirectory(parts[1])
 			if !validSafeSegment(parts[0]) || (!validSafeSegment(parts[1]) && !staging) {
 				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
 			}
-			owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+			host, storeHost, owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
 			if coordinatesErr != nil || (!staging && owner != parts[1]) {
 				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path owner %q but canonical clone owner %q", root, parts[1], owner)
 			}
 			if staging {
-				location.Task, location.Owner, location.Repository = parts[0], owner, repository
-				return location, nil
+				location.Task = parts[0]
+				return location.setCanonicalIdentity(host, storeHost, owner, repository), nil
 			}
 			// A regular repository path must agree with its canonical clone. A
 			// dot-prefixed registered directory is a supported hidden alias; its
@@ -1180,21 +1240,21 @@ func locateManagedWorktree(
 					Worktree: root, Owner: owner, PathRepository: parts[2], CanonicalRepository: repository,
 				}
 			}
-			location.Task, location.Owner, location.Repository = parts[0], owner, repository
-			return location, nil
+			location.Task = parts[0]
+			return location.setCanonicalIdentity(host, storeHost, owner, repository), nil
 		case 2:
 			if !validSafeSegment(parts[0]) || !validRepositorySegment(parts[1]) {
 				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
 			}
-			owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+			host, storeHost, owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
 			if coordinatesErr != nil || (!strings.HasPrefix(parts[1], ".") && repository != parts[1]) {
 				return managedWorktreeLocation{}, fmt.Errorf("legacy direct worktree %s has path repository %q but canonical clone identity %s/%s", root, parts[1], owner, repository)
 			}
-			location.Task, location.Owner, location.Repository = parts[0], owner, repository
-			return location, nil
+			location.Task = parts[0]
+			return location.setCanonicalIdentity(host, storeHost, owner, repository), nil
 		}
 	}
-	return managedWorktreeLocation{}, fmt.Errorf("linked worktree %s must be below a resolver-recognized .wb/worktrees hierarchy at <task>/<owner>/<repository> or legacy <task>/<repository>; recreate it with `wb worktree create`", root)
+	return managedWorktreeLocation{}, fmt.Errorf("linked worktree %s must be below a resolver-recognized worktrees hierarchy at <task>/<host>/<owner>/<repository>, <task>/<owner>/<repository>, or legacy <task>/<repository>; recreate it with `wb worktree create`", root)
 }
 
 // locateAdoptedWorktree resolves identity for a worktree `wb worktree adopt`
@@ -1211,11 +1271,11 @@ func locateAdoptedWorktree(ctx context.Context, projectsRoot, root string, layou
 	if !validSafeSegment(task) {
 		return managedWorktreeLocation{}, fmt.Errorf("adopted worktree %s has an invalid task identity %q", root, task)
 	}
-	owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+	host, storeHost, owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
 	if err != nil {
 		return managedWorktreeLocation{}, fmt.Errorf("derive adopted worktree identity for %s: %w", root, err)
 	}
-	return managedWorktreeLocation{Layout: layout, Worktree: root, Task: task, Owner: owner, Repository: repository}, nil
+	return managedWorktreeLocation{Layout: layout, Worktree: root, Task: task, Host: host, StoreHost: storeHost, Owner: owner, Repository: repository}, nil
 }
 
 // locateGuardedAdoptedWorktree resolves an adopted worktree's task for Guard
@@ -1253,20 +1313,35 @@ func isMatchingRetiredStageDirectory(name, prefix string) bool {
 	return prefix != ".wb-retired-stage-" || !strings.HasPrefix(name, ".wb-retired-stage-task-")
 }
 
-func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (owner, repository string, err error) {
+// managedWorktreeCanonicalCoordinates derives the canonical clone identity a
+// linked worktree belongs to from its own Git plumbing. host is the literal
+// hostname of the clone's on-disk placement, and is empty for a legacy two-level
+// clone. storeHost is the hostname the central store path must carry: it is that
+// same on-disk host when the clone has one, and otherwise the literal forge
+// hostname named by the clone's origin remote, so a legacy clone's checkouts are
+// recognized where the store places them without the clone having to move.
+func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (host, storeHost, owner, repository string, err error) {
 	_, commonDir, directoriesErr := gitDirectories(ctx, root)
 	if directoriesErr != nil {
-		return "", "", fmt.Errorf("derive linked worktree identity for %s: %w", root, directoriesErr)
+		return "", "", "", "", fmt.Errorf("derive linked worktree identity for %s: %w", root, directoriesErr)
 	}
 	canonical := filepath.Dir(commonDir)
 	if resolved, resolveErr := filepath.EvalSymlinks(canonical); resolveErr == nil {
 		canonical = resolved
 	}
-	return canonicalCoordinates(projectsRoot, canonical)
+	host, owner, repository, err = canonicalCoordinates(projectsRoot, canonical)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	storeHost = host
+	if storeHost == "" {
+		storeHost = canonicalStoreHost(ctx, canonical)
+	}
+	return host, storeHost, owner, repository, nil
 }
 
 func invalidManagedWorktreePath(root, worktreesRoot string) error {
-	return fmt.Errorf("linked worktree %s must be at %s/<task>/<owner>/<repository> or legacy %s/<task>/<repository>", root, worktreesRoot, worktreesRoot)
+	return fmt.Errorf("linked worktree %s must be at %s/<task>/<host>/<owner>/<repository>, %s/<task>/<owner>/<repository>, or legacy %s/<task>/<repository>", root, worktreesRoot, worktreesRoot, worktreesRoot)
 }
 
 // RepositoryRenameMismatchError reports a managed worktree whose on-disk
@@ -1647,19 +1722,48 @@ func absoluteProjectsRoot(root string) (string, error) {
 	return absolute, nil
 }
 
+// splitRepository validates one repository coordinate: {owner}/{name} or the
+// host-qualified {host}/{owner}/{name}. The literal host level is validated and
+// then dropped, because every caller but canonicalCoordinates and
+// canonicalRepositoryPath needs only the owner/repository identity that claims,
+// work logs and filters carry. Use splitRepositoryAddress when the host
+// matters.
 func splitRepository(repository string) (owner, name string, err error) {
-	if repository != strings.TrimSpace(repository) {
-		return "", "", fmt.Errorf("repository %q must not have surrounding whitespace", repository)
+	address, err := splitRepositoryAddress(repository)
+	if err != nil {
+		return "", "", err
 	}
-	parts := strings.Split(repository, "/")
-	if len(parts) != 2 || !safeSegment.MatchString(parts[0]) || !safeRepositorySegment.MatchString(parts[1]) ||
-		parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
-		return "", "", fmt.Errorf("repository %q must be owner/name using safe path segments", repository)
-	}
-	return parts[0], parts[1], nil
+	return address.Org, address.Repo, nil
 }
 
-// CanonicalRepositoryPath validates one owner/repository slug with the same
+// splitRepositoryAddress parses one repository coordinate into its canonical
+// address. A two-segment {owner}/{name} coordinate carries no host — the legacy
+// spelling every existing claim, work log and CLI argument uses — while a
+// three-segment coordinate must start with a literal forge hostname.
+func splitRepositoryAddress(repository string) (repopath.Address, error) {
+	if repository != strings.TrimSpace(repository) {
+		return repopath.Address{}, fmt.Errorf("repository %q must not have surrounding whitespace", repository)
+	}
+	parts := strings.Split(repository, "/")
+	switch len(parts) {
+	case 2:
+		if !safeSegment.MatchString(parts[0]) || !safeRepositorySegment.MatchString(parts[1]) ||
+			parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
+			return repopath.Address{}, fmt.Errorf("repository %q must be owner/name using safe path segments", repository)
+		}
+		return repopath.Address{Org: parts[0], Repo: parts[1]}, nil
+	case 3:
+		address, err := repopath.ParseRelative(repository)
+		if err != nil {
+			return repopath.Address{}, fmt.Errorf("repository %q must be host/owner/name with a literal forge hostname: %w", repository, err)
+		}
+		return address, nil
+	default:
+		return repopath.Address{}, fmt.Errorf("repository %q must be owner/name or host/owner/name using safe path segments", repository)
+	}
+}
+
+// CanonicalRepositoryPath validates one repository coordinate with the same
 // strict parser used by Create, then returns its canonical-clone path below
 // projectsRoot. Callers that perform work before Create (for example managed
 // hook refresh) must use this resolver rather than constructing a path from
@@ -1673,12 +1777,75 @@ func CanonicalRepositoryPath(projectsRoot, repository string) (string, error) {
 	return canonical, err
 }
 
+// CanonicalRepositoryPathForURL resolves the canonical clone for one repository
+// coordinate whose clone URL is known. An existing clone is used where it is —
+// host level first, legacy placement second — so a missing destination is never
+// created beside a clone the machine already has; when no clone exists, the new
+// one is placed at the literal host level its clone URL names, exactly as
+// `wb sync` and orchestrate place one.
+func CanonicalRepositoryPathForURL(projectsRoot, repository, cloneURL string) (string, error) {
+	root, err := absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	address, err := splitRepositoryAddress(repository)
+	if err != nil {
+		return "", err
+	}
+	return repopath.ClonePathForURL(root, address.Org, address.Repo, cloneURL)
+}
+
+// ExpectedRemoteURL derives the remote URL a canonical clone path under
+// projectsRoot corresponds to: <root>/github.com/dal-go/dalgo becomes
+// https://github.com/dal-go/dalgo.
+//
+// It is pure path arithmetic. No WB configuration and no repository remote is
+// read, so the answer exists before a clone does and cannot be changed by a
+// rewritten origin. A path whose first level is not a literal forge hostname
+// has no such remote and is refused rather than guessed.
+func ExpectedRemoteURL(projectsRoot, canonicalPath string) (string, error) {
+	root, err := absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return repopath.RemoteURLForLocalPath(root, canonicalPath)
+}
+
+// canonicalRepositoryPath resolves one repository coordinate to the canonical
+// clone path below projectsRoot. A host-qualified coordinate names its path
+// directly; an unqualified {owner}/{name} coordinate resolves to the clone that
+// actually exists, so a fleet that has not adopted the host level yet stays
+// operable in place. See resolveCanonicalClone.
 func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, canonical string, err error) {
-	owner, name, err = splitRepository(repository)
+	address, err := splitRepositoryAddress(repository)
 	if err != nil {
 		return "", "", "", err
 	}
-	return owner, name, filepath.Join(projectsRoot, owner, name), nil
+	resolved, err := resolveCanonicalClone(projectsRoot, address)
+	if err != nil {
+		return "", "", "", err
+	}
+	return resolved.Org, resolved.Repo, resolved.Path(projectsRoot), nil
+}
+
+// resolveCanonicalClone returns the canonical clone address for one repository
+// coordinate.
+//
+// A host-qualified coordinate names its path directly. An unqualified
+// {owner}/{name} coordinate resolves to an existing clone, preferring the
+// literal host level and falling back to the legacy two-level placement. When
+// neither exists the legacy path is predicted, because an unqualified
+// coordinate carries no host: a host is knowable only from an existing clone or
+// from a clone URL, and inventing one would place a repository on a forge
+// nobody named.
+func resolveCanonicalClone(projectsRoot string, address repopath.Address) (repopath.Address, error) {
+	if address.Host != "" {
+		return address, nil
+	}
+	// The placement resolution — existing clone first, literal host level
+	// before the legacy two-level one — lives in repopath so every subsystem
+	// that has to answer "where is this repository" answers it the same way.
+	return repopath.Locate(projectsRoot, address.Org, address.Repo)
 }
 
 // synchronizeCanonical validates that canonical is an ordinary clone and
@@ -1894,20 +2061,48 @@ func validBranch(ctx context.Context, branch string) bool {
 	return false
 }
 
-func canonicalCoordinates(projectsRoot, root string) (owner, name string, err error) {
+// canonicalCoordinates reports the clone address of one canonical clone below
+// projectsRoot. Both placements are recognized: the current
+// <projects-root>/{host}/{owner}/{repository}, whose first level must be a
+// literal forge hostname, and the legacy <projects-root>/{owner}/{repository}
+// this fleet still uses. The returned host is empty for the legacy placement.
+func canonicalCoordinates(projectsRoot, root string) (host, owner, name string, err error) {
 	relative, err := filepath.Rel(projectsRoot, root)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	parts := strings.Split(filepath.ToSlash(relative), "/")
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/<owner>/<repository>", root)
+	if len(parts) == 3 {
+		if !repopath.IsForgeHost(parts[0]) {
+			return "", "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/{host}/{owner}/{repository} with the literal forge hostname as its first level", root)
+		}
+		host = parts[0]
+		parts = parts[1:]
 	}
-	return splitRepository(strings.Join(parts, "/"))
+	if len(parts) != 2 {
+		return "", "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/{host}/{owner}/{repository}", root)
+	}
+	owner, name, err = splitRepository(strings.Join(parts, "/"))
+	if err != nil {
+		return "", "", "", err
+	}
+	return host, owner, name, nil
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitWithExtraFiles(ctx, dir, nil, args...)
+}
+
+// canonicalOwnerDirectories lists the {owner} directories under projectsRoot,
+// reading through a literal forge host level when the first-level entry is one
+// and taking every other first-level directory as the legacy {owner} level.
+// Both shapes are returned together, so a fleet that has not moved yet is still
+// fully discovered in place. The walk, the first-level predicate and the
+// diagnostic shape are shared with discovery — see repopath.Owners — so a forge
+// level the placement rules accept (including one with an explicit port) can
+// never be filtered out by inventory, orphans or residue sweeps.
+func canonicalOwnerDirectories(projectsRoot string) ([]repopath.Owner, []string) {
+	return repopath.Owners(projectsRoot)
 }
 
 // gitCancellationGraceDelay is how long a cancelled git may keep its output
@@ -2366,56 +2561,31 @@ func directoryExistsNoFollow(path string) (bool, error) {
 // never calls MkdirAll, Stat, or EvalSymlinks on the mutable WB hierarchy.
 // The returned path is display/result text only; descriptor-relative add owns
 // the real destination mutation.
-func prepareWorktreeDestination(operationRoot string, operationDirectory *os.File, owner, repository string) (string, bool, error) {
+//
+// parent is the slash-separated relative path the repository directory sits
+// below, e.g. "github.com/acme" in central mode or "acme" for a legacy clone; it
+// is empty for repository-local mode, whose checkout is a direct child of the
+// operation root.
+func prepareWorktreeDestination(operationRoot string, operationDirectory *os.File, parent, repository string) (string, bool, error) {
 	if !directoryStillMatches(operationRoot, operationDirectory) {
 		return "", false, fmt.Errorf("secure worktree operation path changed before planning; refusing redirected checkout")
 	}
-	if owner == "" {
-		worktree := filepath.Join(operationRoot, repository)
-		fd, err := unix.Openat(int(operationDirectory.Fd()), repository, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-		if errors.Is(err, unix.ENOENT) {
-			return worktree, false, nil
-		}
-		if err != nil {
-			return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
-		}
-		destination := os.NewFile(uintptr(fd), "wb-direct-worktree-destination-plan")
-		if destination == nil {
-			_ = unix.Close(fd)
-			return "", false, fmt.Errorf("wrap secure worktree destination %s", worktree)
-		}
-		defer func() { _ = destination.Close() }()
-		info, statErr := destination.Stat()
-		if statErr != nil || !info.IsDir() || !directoryStillMatches(worktree, destination) {
-			if statErr != nil {
-				return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, statErr)
-			}
-			return "", false, fmt.Errorf("worktree destination is not a directory: %s", worktree)
-		}
-		return worktree, true, nil
+	if !validRepositorySegment(repository) {
+		return "", false, fmt.Errorf("invalid worktree repository segment %q", repository)
 	}
-	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
+	parentDirectory, parentPath, err := openRelativeParentDirectory(operationDirectory, operationRoot, parent)
 	if err != nil {
 		return "", false, err
 	}
-	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-worktree-owner-plan")
-	if ownerDirectory == nil {
-		_ = unix.Close(ownerFD)
-		return "", false, fmt.Errorf("wrap secure worktree owner directory %s", owner)
-	}
-	defer func() { _ = ownerDirectory.Close() }()
-	ownerPath := filepath.Join(operationRoot, owner)
-	if !directoryStillMatches(ownerPath, ownerDirectory) {
-		return "", false, fmt.Errorf("secure worktree owner path changed before planning; refusing redirected checkout")
-	}
-	worktree := filepath.Join(ownerPath, repository)
-	fd, err := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	defer func() { _ = parentDirectory.Close() }()
+	worktree := filepath.Join(parentPath, repository)
+	fd, err := unix.Openat(int(parentDirectory.Fd()), repository, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return worktree, false, nil
 	}
 	if err != nil {
 		var info unix.Stat_t
-		if statErr := unix.Fstatat(ownerFD, repository, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
+		if statErr := unix.Fstatat(int(parentDirectory.Fd()), repository, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
 			return "", false, fmt.Errorf("refusing symlinked worktree destination %s", worktree)
 		}
 		return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
@@ -2439,6 +2609,58 @@ func prepareWorktreeDestination(operationRoot string, operationDirectory *os.Fil
 	return worktree, true, nil
 }
 
+// openRelativeParentDirectory walks and creates a slash-separated relative
+// parent path below base and returns a descriptor for the deepest directory
+// along with its path. An empty parent returns a duplicate of base, so a
+// repository-local checkout stays a direct child of the operation root. Every
+// component is created and opened without following symlinks — the same
+// hardening the final repository directory gets — so a planted link anywhere on
+// the parent path cannot redirect the checkout.
+func openRelativeParentDirectory(base *os.File, basePath, parent string) (*os.File, string, error) {
+	if parent == "" {
+		duplicate, err := duplicateDirectoryDescriptor(base, "wb-direct-worktree-parent")
+		if err != nil {
+			return nil, "", err
+		}
+		return duplicate, basePath, nil
+	}
+	current := base
+	currentPath := basePath
+	owned := false
+	for _, segment := range strings.Split(parent, "/") {
+		if !validWorktreeParentSegment(segment) {
+			if owned {
+				_ = current.Close()
+			}
+			return nil, "", fmt.Errorf("invalid secure worktree parent segment %q", segment)
+		}
+		fd, err := openOrCreateNoFollowDirectory(int(current.Fd()), segment)
+		if err != nil {
+			if owned {
+				_ = current.Close()
+			}
+			return nil, "", err
+		}
+		if owned {
+			_ = current.Close()
+		}
+		directory := os.NewFile(uintptr(fd), "wb-worktree-parent")
+		if directory == nil {
+			_ = unix.Close(fd)
+			return nil, "", fmt.Errorf("wrap secure worktree parent directory %s", segment)
+		}
+		current, currentPath, owned = directory, filepath.Join(currentPath, segment), true
+	}
+	return current, currentPath, nil
+}
+
+// validWorktreeParentSegment accepts one relative parent component: an ordinary
+// safe path segment, or a literal forge hostname (which may carry an explicit
+// port and would otherwise be rejected).
+func validWorktreeParentSegment(segment string) bool {
+	return validSafeSegment(segment) || repopath.IsForgeHost(segment)
+}
+
 func pathWithin(root, path string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
@@ -2455,7 +2677,7 @@ func addWorktreeAtSecureDestination(
 	canonical *canonicalRepository,
 	operationRoot string,
 	operationDirectory *os.File,
-	owner, repository, branch, base string,
+	parent, repository, branch, base string,
 	baseRevision string,
 	branchExists bool,
 	beforeAdd func(),
@@ -2492,32 +2714,21 @@ func addWorktreeAtSecureDestination(
 	if err != nil {
 		return err
 	}
-	ownerPath := operationRoot
-	var ownerDirectory *os.File
-	ownerFD := operationFD
-	if owner == "" {
-		ownerDirectory, err = duplicateDirectoryDescriptor(operationDirectory, "wb-direct-worktree-parent")
-		if err != nil {
-			return fmt.Errorf("retain direct worktree parent: %w", err)
-		}
-	} else {
-		ownerFD, err = openOrCreateNoFollowDirectory(operationFD, owner)
-		if err != nil {
-			return err
-		}
-		ownerDirectory = os.NewFile(uintptr(ownerFD), "wb-worktree-owner")
-		if ownerDirectory == nil {
-			_ = unix.Close(ownerFD)
-			return fmt.Errorf("wrap secure worktree owner directory %s", owner)
-		}
-		ownerPath = filepath.Join(operationRoot, owner)
+	// parent is the slash-separated relative directory the checkout sits below
+	// ("github.com/acme" in central mode, "acme" for a legacy clone). An empty
+	// parent publishes the checkout directly below the operation root, which is
+	// the repository-local layout.
+	ownerDirectory, ownerPath, err := openRelativeParentDirectory(operationDirectory, operationRoot, parent)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = ownerDirectory.Close() }()
+	ownerFD := int(ownerDirectory.Fd())
 	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 		return err
 	}
 	var stageName string
-	if owner == "" {
+	if parent == "" {
 		stageName, err = makeTaskBoundLocalStageDirectory(operationDirectory, repository)
 	} else {
 		stageName, err = makeSecureStageDirectory(operationDirectory)
@@ -4387,4 +4598,39 @@ func quarantineLockEntry(directory *os.File, expected managedLockIdentity) error
 		return moved.Close()
 	}
 	return fmt.Errorf("create collision-free retired lock name")
+}
+
+// canonicalDirMatchesRepository reports whether dir is a valid canonical clone
+// placement for repository below projectsRoot. It accepts the host-qualified
+// <root>/{host}/{owner}/{repository} placement, and the legacy
+// <root>/{owner}/{repository} placement for an unqualified coordinate, so a
+// durable record written before the host level existed keeps validating.
+func canonicalDirMatchesRepository(projectsRoot, repository, dir string) bool {
+	address, err := splitRepositoryAddress(repository)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(filepath.Clean(projectsRoot), filepath.Clean(dir))
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	switch len(parts) {
+	case 2:
+		return address.Host == "" && strings.EqualFold(parts[0], address.Org) && strings.EqualFold(parts[1], address.Repo)
+	case 3:
+		// A host-qualified coordinate must sit under its own literal host. An
+		// unqualified {owner}/{repository} coordinate carries no host to check,
+		// so any literal forge level is accepted: the durable record's own
+		// CanonicalDir is the authority for where that clone was placed.
+		if !repopath.IsForgeHost(parts[0]) {
+			return false
+		}
+		if address.Host != "" && !strings.EqualFold(parts[0], address.Host) {
+			return false
+		}
+		return strings.EqualFold(parts[1], address.Org) && strings.EqualFold(parts[2], address.Repo)
+	default:
+		return false
+	}
 }

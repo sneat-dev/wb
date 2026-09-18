@@ -7,7 +7,25 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 )
+
+// canonicalClonePath joins trailing path segments onto the canonical clone of
+// owner/repository. The clone may sit at the literal host level or at the
+// legacy two-level placement, and both must be read: a flat join would look at
+// a path nothing is at on a migrated machine, and for a missing clone it keeps
+// the historical flat placement rather than inventing a forge. repopath is a
+// deliberately tiny package so this guard still spawns no process.
+func canonicalClonePath(projectsRoot, owner, name string, trailing ...string) string {
+	segments := []string{owner, name}
+	if address, err := repopath.Locate(projectsRoot, owner, name); err == nil {
+		if resolved := address.Path(projectsRoot); resolved != "" && address.Host != "" {
+			segments = []string{address.Host, owner, name}
+		}
+	}
+	return filepath.Join(append([]string{projectsRoot}, append(segments, trailing...)...)...)
+}
 
 // inspectAgentDispatch judges one subagent-dispatch tool call (Claude Code's
 // `Agent`/`Task` tool). It never spawns a process: every check here reads, at
@@ -171,7 +189,7 @@ func inspectDispatchIntoLiveClaim(input toolInput, cwd, projectsRoot string) *fi
 	callerDirectory, _ := absolutePath(cwd)
 	for _, repository := range candidateRepositories(input.Prompt) {
 		owner, name := repository[0], repository[1]
-		worktreesDir := filepath.Join(projectsRoot, owner, name, ".worktrees")
+		worktreesDir := canonicalClonePath(projectsRoot, owner, name, ".worktrees")
 		entries, err := os.ReadDir(worktreesDir)
 		if err != nil {
 			continue
@@ -261,7 +279,7 @@ func claimLive(projectsRoot, task string) bool {
 	if !ok {
 		return false
 	}
-	claimPath := filepath.Join(projectsRoot, owner, name, "claims", task+".yaml")
+	claimPath := canonicalClonePath(projectsRoot, owner, name, "claims", task+".yaml")
 	info, err := os.Stat(claimPath)
 	return err == nil && !info.IsDir()
 }
@@ -274,7 +292,7 @@ func claimOwner(projectsRoot, task string) string {
 	if !ok {
 		return ""
 	}
-	raw, err := os.ReadFile(filepath.Join(projectsRoot, owner, name, "claims", task+".yaml"))
+	raw, err := os.ReadFile(canonicalClonePath(projectsRoot, owner, name, "claims", task+".yaml"))
 	if err != nil {
 		return ""
 	}

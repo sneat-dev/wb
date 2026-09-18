@@ -1150,7 +1150,7 @@
                 "--report-dir"
               ],
               "modes": [
-                "Reports top-level, misowned, and ok clones under --projects-root."
+                "Reports top-level, misowned, bad-host, and ok clones under --projects-root, with the remote URL each canonical path corresponds to."
               ]
             },
             {
@@ -6288,7 +6288,7 @@
           "limitation": null
         }
       },
-      "notes": "Canonical clones are {owner}/{repository} with a real .git directory. Linked worktrees are ignored."
+      "notes": "Canonical clones are {host}/{owner}/{repository} with a real .git directory, where {host} is the literal forge hostname. A first-level entry that is not a valid hostname is reported as a bad_host finding; its clones are still read in place at the legacy {owner}/{repository} placement. Linked worktrees are ignored."
     },
     {
       "id": "wb.layout.clean",

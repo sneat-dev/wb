@@ -2927,11 +2927,46 @@ func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, clai
 	if err != nil {
 		return err
 	}
-	if entry.Local || filepath.Clean(entry.WorktreeDir) != filepath.Join(entry.WorktreesRoot, entry.Task, newOwner, newName) ||
-		filepath.Clean(claim.Worktree) != filepath.Join(entry.WorktreesRoot, entry.Task, oldOwner, oldName) {
+	// The listed repository is a slug without the host level; the canonical
+	// clone's store address supplies it, so a central-store transfer is verified
+	// against <task>/<host>/<owner>/<repository> rather than a fixed depth. Both
+	// the origin-derived store host and the clone's own on-disk host level are
+	// accepted, so a checkout published before the host reached the suffix stays
+	// valid where it lies.
+	storeAddress, err := canonicalStoreAddress(context.Background(), projectsRoot, entry.CanonicalDir)
+	if err != nil {
+		return err
+	}
+	hosts := []string{storeAddress.Host}
+	if onDisk, _, onDiskErr := canonicalPathAddress(projectsRoot, entry.CanonicalDir); onDiskErr == nil {
+		if onDisk.Host != storeAddress.Host {
+			hosts = append(hosts, onDisk.Host)
+		}
+	}
+	matches := false
+	for _, host := range hosts {
+		newParent := cloneParentRelative(host, newOwner)
+		oldParent := cloneParentRelative(host, oldOwner)
+		if filepath.Clean(entry.WorktreeDir) == filepath.Join(entry.WorktreesRoot, entry.Task, filepath.FromSlash(newParent), newName) &&
+			filepath.Clean(claim.Worktree) == filepath.Join(entry.WorktreesRoot, entry.Task, filepath.FromSlash(oldParent), oldName) {
+			matches = true
+			break
+		}
+	}
+	if entry.Local || !matches {
 		return fmt.Errorf("private work-log claim identity/path mismatch is not a deterministic repository-transfer placement")
 	}
 	return nil
+}
+
+// cloneParentRelative renders the parent path between a task directory and a
+// repository segment: <host>/<owner> for a clone with a literal host level, and
+// the legacy <owner> otherwise.
+func cloneParentRelative(host, owner string) string {
+	if host == "" {
+		return owner
+	}
+	return host + "/" + owner
 }
 
 func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {

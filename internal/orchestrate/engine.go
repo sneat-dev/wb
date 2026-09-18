@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -186,8 +187,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = "repository is archived"
 		return nil
 	}
-	owner, name, err := splitRepository(repository.Slug)
-	if err != nil {
+	if _, _, err := splitRepository(repository.Slug); err != nil {
 		return failResult(result, err)
 	}
 	managedInput, err := managedInputWorktree(ctx, repository.Path, repository.Slug, options)
@@ -201,7 +201,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if managedInput != nil {
 		canonical = managedInput.CanonicalDir
 	} else if canonical == "" {
-		canonical = filepath.Join(options.GitHubDir, owner, name)
+		resolved, resolveErr := CanonicalClonePath(options.GitHubDir, repository)
+		if resolveErr != nil {
+			return failResult(result, resolveErr)
+		}
+		canonical = resolved
 	}
 	result.CanonicalDir = canonical
 	phase("sync")
@@ -471,10 +475,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 			return ResolvedBase{}, err
 		}
-		cloneURL := repository.CloneURL
-		if cloneURL == "" {
-			cloneURL = "https://github.com/" + repository.Slug + ".git"
-		}
+		cloneURL := cloneURLFor(repository)
 		if _, _, err := runCommand(ctx, options.Timeout, 0, filepath.Dir(canonical), "git", "clone", "--quiet", cloneURL, canonical); err != nil {
 			return ResolvedBase{}, err
 		}
@@ -591,7 +592,7 @@ func operationWorktreePath(ctx context.Context, canonical, repository string, op
 		return "", worktrees.WorktreePlacement{}, "", false, err
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
-	placement, err := worktrees.ResolveWorktreePlacement(ctx, canonical, baseSHA)
+	placement, err := worktrees.ResolveWorktreePlacement(ctx, options.GitHubDir, canonical, baseSHA)
 	if err != nil {
 		return "", worktrees.WorktreePlacement{}, "", false, err
 	}
@@ -921,6 +922,38 @@ func failResult[T any](result *Result[T], err error) error {
 	result.Status = "failed"
 	result.Reason = err.Error()
 	return fmt.Errorf("%s: %w", result.Repository, err)
+}
+
+// cloneURLFor is the URL a repository is cloned from. When discovery supplied
+// none, GitHub is the only forge WB can name for a bare owner/repository slug,
+// so that is the fallback — and it is the single place the fallback is written,
+// because the clone destination is derived from the same URL.
+func cloneURLFor(repository Repository) string {
+	if repository.CloneURL != "" {
+		return repository.CloneURL
+	}
+	return "https://github.com/" + repository.Slug + ".git"
+}
+
+// CanonicalClonePath resolves one repository's canonical clone below githubDir.
+//
+// An existing clone is used where it is — the literal host level first, then the
+// legacy two-level placement — so a caller never creates a second copy beside a
+// clone the machine already has. When no clone exists the destination is the
+// literal host level the clone URL names, which is where `wb sync` and
+// orchestrate place a new one. It is a thin typed wrapper over the one
+// resolution every package shares.
+func CanonicalClonePath(githubDir string, repository Repository) (string, error) {
+	return worktrees.CanonicalRepositoryPathForURL(githubDir, repository.Slug, cloneURLFor(repository))
+}
+
+// canonicalClonePath is where a repository's canonical clone belongs below
+// githubDir: <githubDir>/{host}/{owner}/{repository} when the clone URL names a
+// literal forge hostname, and the legacy <githubDir>/{owner}/{repository} when
+// it does not. The host comes from the same URL EnsureCanonical would clone
+// from, so it is never invented and the two can never disagree.
+func canonicalClonePath(githubDir, owner, name, cloneURL string) string {
+	return repopath.FromCloneURL(cloneURL, owner, name).Path(githubDir)
 }
 
 func splitRepository(slug string) (string, string, error) {

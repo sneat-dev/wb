@@ -256,11 +256,11 @@ repository into the stream that already holds it.
 ## State
 
 Stream membership, roles, leases and every live link live in WB-owned state
-under `$WB_HOME/streams/<name>/`, beside the Work Log. **No file inside a member
-repository records stream membership**, so `git status` in every member stays
-clean and the stream is readable after an interrupted session. Each stream also
-carries an append-only, versioned, redacted event log at
-`$WB_HOME/streams/<name>/events.jsonl`.
+under `<projects-root>/.wb/streams/<name>/`, beside the Work Log. **No file
+inside a member repository records stream membership**, so `git status` in every
+member stays clean and the stream is readable after an interrupted session. Each
+stream also carries an append-only, versioned, redacted event log at
+`<projects-root>/.wb/streams/<name>/events.jsonl`.
 
 ## Membership proposal
 

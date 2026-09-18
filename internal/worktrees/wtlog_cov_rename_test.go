@@ -211,8 +211,12 @@ func TestWtLogCovRollbackAppliedRenames(t *testing.T) {
 
 func TestWtLogCovRenamePhysicalDestinationShared(t *testing.T) {
 	destinationRoot := filepath.Join(t.TempDir(), "new-root")
-	plan := &renamePlan{destinationRoot: destinationRoot, entry: ListResult{CanonicalDir: t.TempDir()}}
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", plan); err != nil {
+	plan := &renamePlan{
+		destinationRoot: destinationRoot,
+		entry:           ListResult{CanonicalDir: t.TempDir()},
+		result:          RenameResult{NewWorktreeDir: filepath.Join(destinationRoot, "new-task", "acme", "app")},
+	}
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", plan); err != nil {
 		t.Fatalf("shared destination preparation failed: %v", err)
 	}
 	for _, relative := range []string{filepath.Join("new-task", "acme"), "new-task"} {
@@ -229,7 +233,7 @@ func TestWtLogCovRenamePhysicalDestinationShared(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(destinationRoot, "new-task", "acme", "app"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", plan); err == nil {
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", plan); err == nil {
 		t.Fatal("existing shared destination was accepted")
 	}
 
@@ -237,7 +241,7 @@ func TestWtLogCovRenamePhysicalDestinationShared(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", &renamePlan{destinationRoot: blocked}); err == nil {
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", &renamePlan{destinationRoot: blocked, result: RenameResult{NewWorktreeDir: filepath.Join(blocked, "new-task", "acme", "app")}}); err == nil {
 		t.Fatal("file destination root was accepted")
 	}
 }
@@ -276,20 +280,20 @@ func TestWtLogCovRenamePhysicalDestinationLocal(t *testing.T) {
 	if err := preflightRenamePhysicalDestination(context.Background(), "new-task", plan); err != nil {
 		t.Fatalf("local destination preflight failed: %v", err)
 	}
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", plan); err != nil {
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", plan); err != nil {
 		t.Fatalf("local destination preparation failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(plan.destinationRoot, "new-task")); !os.IsNotExist(err) {
 		t.Fatalf("local rename must not create the task child: %v", err)
 	}
 	// A second preparation must still succeed: the task child is still absent.
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", plan); err != nil {
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", plan); err != nil {
 		t.Fatalf("repeated local destination preparation failed: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(plan.destinationRoot, "new-task"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", "acme", "app", plan); err == nil {
+	if err := prepareRenamePhysicalDestination(context.Background(), "new-task", plan); err == nil {
 		t.Fatal("existing local task child was accepted")
 	}
 }

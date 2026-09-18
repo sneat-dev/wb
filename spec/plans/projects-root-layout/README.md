@@ -79,7 +79,7 @@ write-home fallback so no command can silently adopt it. Tests must prove that a
 **Id:** task-2
 **Verifies:** projects-root-layout#ac:clone-path-inverts-to-url
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Extend `canonicalRepositoryPath` and `splitRepository` to derive
 `<root>/<host>/<org>/<repo>`, taking the host from the repository's `origin`
@@ -94,7 +94,7 @@ is not a valid hostname as a layout finding rather than treating it as a forge.
 **Id:** task-3
 **Verifies:** projects-root-layout#ac:central-store-is-default, projects-root-layout#ac:repo-local-mode-selected
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Add a store mode to the machine-local worktrees configuration. The default mode
 places a checkout at `<root>/.worktrees/<task>/<host>/<org>/<repo>`; the
@@ -107,7 +107,7 @@ branch and Work Log identity untouched across a mode change.
 **Id:** task-4
 **Verifies:** projects-root-layout#ac:wb-home-ignored-with-diagnostic
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
 
 Remove `WB_HOME` as a selector for the state directory. When it is set to a
 non-empty value, emit a diagnostic naming the variable, the value ignored, and

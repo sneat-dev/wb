@@ -52,7 +52,8 @@ through `$wb-worktrees`.
 # Read the issues report
 
 Every `wb sync` writes `~/.wb/last-sync-issues.md` (or
-`$WB_HOME/last-sync-issues.md`). It lists only the repositories that need
+`<projects-root>/.wb/last-sync-issues.md`, since `WB_HOME` is retired). It lists
+only the repositories that need
 attention plus the errors — never the successful ones — with the local clone
 path, the exact state, read-only inspection commands, and the resolution
 options for each.

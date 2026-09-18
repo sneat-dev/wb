@@ -260,7 +260,7 @@ func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWo
 		result.Reason = fmt.Sprintf("existing Work Log state is inconsistent, refusing to adopt: %v", err)
 		return result
 	}
-	owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, candidate.Path)
+	_, _, owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, candidate.Path)
 	if err != nil {
 		result.Action = AdoptSkipped
 		result.Reason = err.Error()
