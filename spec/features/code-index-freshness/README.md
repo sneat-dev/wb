@@ -9,41 +9,40 @@ status: Draft
 **Status:** Draft
 **Source Ideas:** —
 **Related Ideas:** [graph-assisted-fleet-optimization](../../ideas/graph-assisted-fleet-optimization.md) (Draft; not promoted by this Feature)
-**Depends On:** [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md)
+**Depends On:** [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) (amended there by `version-2-extensions`)
 
 ## Summary
 
-Every checkout an agent works in has a code index that matches its `HEAD`,
-without the agent doing anything. WB emits `checkout-updated` whenever a
-checkout moves, whether Git moved it (pull, merge, commit, rebase, checkout)
-or a WB verb did (`wb sync`, `wb pr land`, `wb land`, `wb worktree create`,
-`wb stream` operations). The existing trusted lifecycle runner executes the
-user's configured indexer, coalesced, at background priority, under CPU
-admission, and never in Git's path. Freshness is reported by `wb fleet status`
-from lifecycle receipts, so WB stays tool-agnostic.
+A checkout's code index follows its `HEAD` without the agent doing anything.
+WB emits `checkout-updated` when a Git hook fires for a move (merge, pull,
+commit, rebase, amend, branch checkout) or a WB verb moves a checkout. The
+existing trusted lifecycle runner executes the user's configured indexer,
+coalesced, at background priority, under CPU admission, and never in Git's
+path. Freshness is reported by `wb fleet status` from lifecycle receipts, so
+WB stays tool-agnostic. Moves that fire no Git hook (`git reset`,
+`git update-ref`, `git am`) are not emitted; they show as `stale` until the
+next emitting move.
 
 ## Problem
 
 The founder: "Wb should update graphs on pull, merge, commit, etc."
 
-`checkout-updated` exists (trusted-repository-update-hooks) and, verified in
-code at `9bd6a0e`, is emitted by `wb sync` (`cmd/wb/sync.go`), daemon
-repository-event sync (`internal/repositoryevents/processor.go`), and the
-canonical fast-forward of `wb pr land` and `wb worktree merge`/`wb land`
-(`internal/orchestrate`), plus explicit `wb hooks lifecycle backfill`. It is
-not emitted when:
+`checkout-updated` is emitted today by `wb sync`, daemon repository-event
+sync, the canonical fast-forward of `wb pr land`, `wb pr create --land` and
+`wb worktree merge`/`wb land`, and explicit `wb hooks lifecycle backfill`. It
+is not emitted when an agent or person runs `git pull`, `merge`, `commit`,
+`rebase` or `checkout` directly, when `wb worktree create` makes a checkout,
+or when `wb stream` rebases a stream branch. No worktree has ever had an
+index. The 2026-09-18 SDLC logging-gap analysis counted 3,015 symbol greps
+against 0 codegrapher analysis calls in a week. On wb, `codegrapher init`
+costs 52 s wall, 41 s CPU and 134 MB; an incremental `sync` 3.3 s.
 
-- an agent or person runs `git pull`, `git merge`, `git commit`,
-  `git rebase` or `git checkout` directly in a canonical clone;
-- `wb worktree create` makes a new checkout, or any commit lands in a
-  worktree;
-- `wb stream` rebases a stream branch.
-
-Worktrees are where agents work, and none has ever had an index
-(REPORT.md §9b item 4). An index that is absent or stale makes `grep` the
-rational choice: 3,015 symbol greps against 0 codegrapher analysis calls in
-the week to 2026-09-18. Measured costs on wb: `codegrapher init` 52 s wall,
-41 s CPU, 134 MB; incremental `sync` 3.3 s.
+**Sequencing.** WB's own verbs already keep canonical clones fresh, and a
+worktree can query its canonical clone's index at no cost (option 0 below).
+So option 0 ships first, through the router in
+[Expert Tool Routing](../expert-tool-routing/README.md). The Git-hook profile
+mainly adds freshness after a person's direct `git pull` in a canonical clone
+until worktree indexing is decided.
 
 ## Behavior
 
@@ -51,98 +50,88 @@ the week to 2026-09-18. Measured costs on wb: `codegrapher init` 52 s wall,
 
 A new managed hook profile, `lifecycle`, MUST install `post-merge`,
 `post-checkout`, `post-commit` and `post-rewrite` shims through
-`wb hooks install`. Each shim calls
+`wb hooks install`. Each calls
 `wb hooks lifecycle notify --hook <name> -- <git hook args>`, which resolves
-the checkout, its canonical identity, the old SHA (`post-checkout`'s first
-argument, `ORIG_HEAD` for `post-merge`, the parent of `HEAD` for
-`post-commit`, the first `post-rewrite` stdin pair) and the new `HEAD`, and
-enqueues `checkout-updated` with `WB_UPDATE_CAUSE=git:<hook>`.
-`post-checkout` MUST emit only for branch checkouts (third argument `1`) that
-changed `HEAD`. The profile composes with the existing `worktree` profile in
-the same shim; excluding it (`profiles.exclude: [lifecycle]`) is visible to
-`wb hooks check`.
+the checkout, its canonical identity, the old SHA and the new `HEAD`, and
+enqueues `checkout-updated` with cause `git:<hook>`. The old SHA is
+`post-checkout`'s first argument, `ORIG_HEAD` for `post-merge`, the first
+parent of `HEAD` for `post-commit` (empty for a root commit), and the first
+`post-rewrite` stdin pair's old SHA. `post-checkout` emits only for branch
+checkouts (third argument `1`) that changed `HEAD`. Excluding the profile
+(`profiles.exclude: [lifecycle]`) is visible to `wb hooks check`.
 
 ### REQ: verb-emission
 
-WB MUST emit `checkout-updated` after these checkout moves, with the causes
-named: `wb worktree create` (`worktree-create`, empty old SHA),
-`wb stream start|join|sync` when a stream branch's `HEAD` changes
-(`stream-<verb>`), and every existing emitter unchanged. A verb that emits
-MUST suppress the duplicate its own Git invocation would raise through the
-shim (`WB_LIFECYCLE_SUPPRESS=1` in the child environment), so one move yields
-one event.
+WB MUST emit after `wb worktree create` (cause `worktree-create`, empty old
+SHA) and after `wb stream start|join|sync` changes a stream branch's `HEAD`
+(`stream-<verb>`), and keep every existing emitter. A verb that emits MUST
+suppress the duplicate its own Git child would raise through the shim
+(`WB_LIFECYCLE_SUPPRESS=1` in the child environment).
 
 ### REQ: never-blocks-git
 
-`notify` MUST do no work beyond matching bindings and one durable enqueue.
-When no binding matches it MUST return without writing. It MUST exit `0` in
-every case, including a missing `wb`, corrupt configuration, or an unwritable
-queue: a non-zero `post-checkout` status becomes `git checkout`'s own status.
-Failures are recorded as a lifecycle warning surfaced by the next
-`wb hooks lifecycle status`. Its wall-clock budget is 50 ms at p95, measured
-by `wb hooks measure`.
+For `post-merge`, `post-checkout`, `post-commit` and `post-rewrite`, every
+managed shim, including the existing `worktree` profile's `post-checkout`,
+MUST exit `0` when its executable resolver fails (wb not found, not absolute,
+not trusted): it prints the warning to stderr instead of the current
+`exit 1`, because a non-zero `post-checkout` becomes `git checkout`'s own
+status. `pre-commit` and `pre-push` keep failing closed. `notify` MUST exit
+`0` in every case, MUST be exempt from the worktree heartbeat and the
+invoked-command record (as `wb version` is), MUST NOT claim unseen lifecycle
+warnings, and performs at most one write: the durable enqueue, only when a
+binding matches. Its own failures are recorded as a lifecycle warning for
+`wb hooks lifecycle status`. Budget: 50 ms at p95, measured by
+`wb hooks measure`.
 
 ### REQ: background-execution
 
-Executor configuration gains two optional fields:
+Version-2 executor fields (trusted-repository-update-hooks#req:version-2-extensions):
 
-- `priority: background` runs the executor at the lowest scheduling class
-  the platform offers (`nice 19` plus idle I/O class on Linux,
-  `taskpolicy -b` on macOS, `BELOW_NORMAL_PRIORITY_CLASS` on Windows);
-- `quiet_period: <duration>` (default `2s`) delays a claimed execution until
-  no newer event for the same executor and checkout has arrived for that
-  long, so a rebase of N commits or a burst of commits runs the executor once.
-  A coalesced execution's receipt MUST list every absorbed cause in
-  `causes[]`.
+- `priority: background` runs the executor at the platform's lowest class
+  (`nice 19` and idle I/O class on Linux, `taskpolicy -b` on macOS,
+  `BELOW_NORMAL_PRIORITY_CLASS` on Windows);
+- `quiet_period` (default `2s`) delays a claimed execution until no newer
+  event for the same executor and checkout has arrived for that long; the
+  receipt lists every absorbed cause in `causes[]`.
 
 Before starting an executor the worker MUST acquire a `wb run` host-load
-admission slot in a background class that yields to foreground `wb run`
-work; while admission is refused the execution stays queued, never dropped.
-Coalescing across processes is unchanged
-(trusted-repository-update-hooks#req:matching-and-coalescing).
+admission slot in a background class that yields to foreground work; while
+refused, the execution stays queued, never dropped.
 
 ### REQ: checkout-kinds
 
 Events MUST carry `WB_CHECKOUT_KIND` (`canonical` or `worktree`) and, for a
-worktree, `WB_CANONICAL_CHECKOUT` (the canonical clone's path) so an executor
-can seed from the canonical index. Bindings gain
-`match.checkouts: [canonical, worktree]`; an existing binding without the key
-MUST keep matching canonical checkouts only, so upgrading wb changes no
-behavior until the user opts in. The worktree index strategy is an open
-founder decision (see Open Questions); this Feature fixes only the event
-contract every strategy needs.
+worktree, `WB_CANONICAL_CHECKOUT`. Bindings gain
+`match.checkouts: [canonical, worktree]`; a binding without it matches
+canonical checkouts only, so upgrading wb changes nothing until the user opts
+in. The worktree strategy is an open decision (see Open Questions).
 
 ### REQ: disk-budget
 
-Executor configuration gains optional `artifacts: [<relative path>...]`
-(for the code index, `.codegraph`). `wb disk` MUST report the summed
-artifacts of every matched checkout as category `lifecycle-artifacts`
-(kind `cache`), split canonical vs worktree. A user-set
-`lifecycle.artifacts_budget` (default 5 GiB) MUST raise a `wb disk` finding
-when exceeded; [Disk Reclaim](../disk-reclaim/README.md) removes worktree
-artifacts least-recently-updated first and never touches a canonical
-checkout's artifacts.
+Executors gain `artifacts: [<relative path>...]`. `wb disk` MUST report the
+artifacts of every matched checkout as category `lifecycle-artifacts` (kind
+`cache`), split by checkout kind, and raise a finding when
+`lifecycle.artifacts_budget` (default 5 GiB) is exceeded.
+[Disk Reclaim](../disk-reclaim/README.md) enforces it.
 
 ### REQ: freshness-in-fleet-status
 
 For every checkout with a matching binding, `wb fleet status` and
-`wb fleet stats` MUST report per executor: `fresh` (the latest successful
-receipt's new SHA equals `HEAD`), `stale` (an older SHA, with commits
-behind), `pending` (queued or running), `failed` (latest attempt failed),
-or `never`. This is derived from lifecycle receipts only; WB MUST NOT open
-or interpret an executor's artifacts. `--format json` exposes it as
-`lifecycle: [{executor, state, receipt_sha, head_sha}]`. A stale or failed
-executor on a canonical clone MUST count as attention.
+`wb fleet stats` MUST report per executor: `fresh` (latest successful
+receipt's new SHA equals `HEAD`), `stale` (older, with commits behind),
+`pending` (queued or running), `failed`, or `never`, from receipts only; WB
+MUST NOT open an executor's artifacts. JSON:
+`lifecycle: [{executor, state, receipt_sha, head_sha, behind}]`. A stale or
+failed executor on a canonical clone counts as attention.
 
 ## Interaction with Other Features
 
 | Feature | Interaction |
 |---|---|
-| [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) | Same event, trust model, queue, receipts and `failure: warn`. This Feature adds emitters, the `lifecycle` hook profile, `priority`, `quiet_period`, `artifacts`, and `match.checkouts`. |
-| [Machine Setup](../machine-setup/README.md) | Installs the `lifecycle` hook profile and writes the `code-index` executor. |
-| [Fleet Status](../fleet-status/README.md) | Gains the `lifecycle` freshness field and attention condition. |
+| [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) | Same event, trust model, queue and receipts; this Feature specifies the version-2 fields that Feature's amendment admits. |
+| [Machine Setup](../machine-setup/README.md) | Installs the `lifecycle` profile and writes the executor from the tool's catalog-declared template, with bounded backfill. |
 | [Disk Reclaim](../disk-reclaim/README.md) | Enforces the artifacts budget. |
-| [Expert Tool Routing](../expert-tool-routing/README.md) | Consumes freshness: nudges and graph-assisted test selection apply only to `fresh` checkouts. |
+| [Expert Tool Routing](../expert-tool-routing/README.md) | Consumes freshness for nudges, the `wb create` Tools block and test selection. |
 
 ## Acceptance Criteria
 
@@ -150,12 +139,11 @@ executor on a canonical clone MUST count as attention.
 
 **Requirements:** code-index-freshness#req:git-hook-emission
 
-**Given** a canonical clone with the `lifecycle` profile installed and a
-binding whose executor appends `$WB_OLD_SHA $WB_NEW_SHA $WB_UPDATE_CAUSE` to a
-file
-**When** the user runs `git pull` that fast-forwards `HEAD` from A to B
-**Then** within the quiet period plus 5 s the file holds exactly one line
-`A B git:post-merge`, and `wb fleet status --format json` reports that
+**Given** a canonical clone with the `lifecycle` profile and a binding whose
+executor appends `$WB_OLD_SHA $WB_NEW_SHA $WB_UPDATE_CAUSE` to a file
+**When** `git pull` fast-forwards `HEAD` from A to B
+**Then** within the quiet period plus 5 s the file holds exactly the line
+`A B git:post-merge`, and `wb fleet status --format json` reports the
 executor `fresh` at B.
 
 ### AC: each-git-move-emits
@@ -164,133 +152,126 @@ executor `fresh` at B.
 
 **Given** the same setup
 **When** the user, waiting past the quiet period between steps, commits,
-checks out another branch, runs `git rebase` over 5 commits, and runs
-`git checkout -- file.go`
-**Then** the commit, the branch checkout and the rebase each produce exactly
-one execution, whose receipt `causes[]` include `git:post-commit`,
-`git:post-checkout` and `git:post-rewrite` respectively; the file checkout
-produces none.
+checks out another branch, rebases 5 commits, runs
+`git checkout -- file.go`, and runs `git reset --hard HEAD~1`
+**Then** the commit, branch checkout and rebase each produce exactly one
+execution with `causes[]` including `git:post-commit`, `git:post-checkout`
+and `git:post-rewrite`; the file checkout and the reset produce none, and
+after the reset the executor reports `stale`.
 
-### AC: rebase-burst-coalesces
+### AC: root-commit-has-empty-old-sha
+
+**Requirements:** code-index-freshness#req:git-hook-emission
+
+**Given** a new repository with the profile and a matching binding
+**When** the first commit is made
+**Then** the execution's `WB_OLD_SHA` is empty and `WB_NEW_SHA` is the commit.
+
+### AC: burst-coalesces
 
 **Requirements:** code-index-freshness#req:background-execution
 
 **Given** `quiet_period: 2s` and an executor that records each invocation
 **When** 20 commits are made within one second
-**Then** the executor runs once with the first commit's parent as old SHA and
-the last commit as new SHA.
+**Then** it runs once, with the first commit's parent as old SHA and the last
+commit as new SHA.
 
 ### AC: git-never-blocked-or-failed
 
 **Requirements:** code-index-freshness#req:never-blocks-git
 
-**Given** a binding whose executor sleeps 60 s, and separately a `wb.yaml`
-made unreadable, and separately `wb` removed from `PATH`
-**When** the user runs `git checkout other-branch` in each case
-**Then** `git checkout` exits `0` in each case, returns within 1 s, and
-`wb hooks lifecycle status` (with `wb` restored) reports the configuration
-and dispatch failures as warnings.
+**Given** the `lifecycle` and `worktree` profiles installed, and in three runs
+respectively: an executor that sleeps 60 s, an unreadable `wb.yaml`, and `wb`
+absent from `PATH` with `WB_EXECUTABLE` unset
+**When** the user runs `git checkout other-branch` in each
+**Then** `git checkout` exits `0` and returns within 1 s each time; the third
+prints the resolver warning on stderr; with `wb` restored,
+`wb hooks lifecycle status` reports the configuration failure.
 
-### AC: no-binding-no-write
+### AC: notify-writes-at-most-the-enqueue
 
 **Requirements:** code-index-freshness#req:never-blocks-git
 
-**Given** the `lifecycle` profile installed and no binding matching the
-repository
+**Given** the profile installed in a worktree and no matching binding
 **When** the user commits
-**Then** no queue or receipt file is created or modified.
+**Then** no file under the projects root's `.wb` directory, the XDG state
+directory, or the worktree's `.wb` changes, including the heartbeat.
 
 ### AC: verbs-emit-once
 
 **Requirements:** code-index-freshness#req:verb-emission
 
-**Given** a binding matching worktrees and canonical clones
-**When** the agent runs `wb create t1 owner/repo`, then `wb stream sync` on a
-stream whose branch is rebased, then `wb land` of a worktree that
-fast-forwards the canonical clone
-**Then** receipts show exactly one execution per checkout move, with causes
+**Given** a binding with `match.checkouts: [canonical, worktree]`
+**When** the agent runs `wb create t1 owner/repo`, then `wb stream sync`
+rebasing its stream branch, then `wb land` fast-forwarding the canonical clone
+**Then** each move yields exactly one execution, with causes
 `worktree-create`, `stream-sync` and the existing landing cause, and none
-with a `git:` cause for those moves.
+with a `git:` cause.
 
 ### AC: background-priority-and-admission
 
 **Requirements:** code-index-freshness#req:background-execution
 
-**Given** `priority: background` and three foreground `wb run -- go test`
-jobs holding every admission slot
+**Given** `priority: background` and foreground `wb run -- go test` jobs
+holding every admission slot
 **When** a checkout update enqueues an execution
-**Then** the execution stays `pending` in `wb hooks lifecycle status` until a
-slot frees, then runs with the platform's background class (on Linux,
-`/proc/<pid>/stat` nice value 19), and no foreground job waited on it.
+**Then** it stays `pending` in `wb hooks lifecycle status` until a slot
+frees, then runs at nice 19 on Linux (`/proc/<pid>/stat`), and no foreground
+job waited on it.
 
 ### AC: existing-bindings-unchanged
 
 **Requirements:** code-index-freshness#req:checkout-kinds
 
-**Given** a `wb.yaml` binding written before this Feature, with no
-`match.checkouts`
+**Given** a version-1 binding without `match.checkouts`
 **When** the user commits in a worktree of a matched repository
-**Then** no execution is enqueued; after adding
-`match.checkouts: [canonical, worktree]` the next commit enqueues one with
-`WB_CHECKOUT_KIND=worktree` and `WB_CANONICAL_CHECKOUT` set.
+**Then** nothing is enqueued; after upgrading the section to version 2 with
+`match.checkouts: [canonical, worktree]`, the next commit enqueues one
+execution with `WB_CHECKOUT_KIND=worktree` and `WB_CANONICAL_CHECKOUT` set.
 
-### AC: artifacts-budget-reported
+### AC: budget-and-staleness-visible
 
-**Requirements:** code-index-freshness#req:disk-budget
+**Requirements:** code-index-freshness#req:disk-budget, code-index-freshness#req:freshness-in-fleet-status
 
-**Given** `artifacts: [.codegraph]`, `lifecycle.artifacts_budget: 200MiB`,
-and two worktrees holding 134 MB indexes each
-**When** the user runs `wb disk --format json`
-**Then** category `lifecycle-artifacts` reports both, split by checkout kind,
-a budget finding is raised, and the exit code is `1`.
-
-### AC: staleness-visible
-
-**Requirements:** code-index-freshness#req:freshness-in-fleet-status
-
-**Given** a canonical clone whose latest successful receipt is at A while
-`HEAD` is at B, three commits later
-**When** the user runs `wb fleet status --format json`
-**Then** the repository is listed as attention with
-`lifecycle: [{"executor":"code-index","state":"stale","receipt_sha":"A","head_sha":"B"}]`
-and a commits-behind count of 3; after the executor succeeds at B the
-repository no longer appears.
+**Given** `artifacts: [.codegraph]`, a 200 MiB budget, two 134 MB worktree
+indexes, and a canonical clone whose latest receipt is at A with `HEAD` three
+commits later at B
+**When** the user runs `wb disk --format json` and
+`wb fleet status --format json`
+**Then** `wb disk` reports both indexes under `lifecycle-artifacts` with a
+budget finding and exits `1`; `wb fleet status` lists the clone as attention
+with `{"state":"stale","receipt_sha":"A","head_sha":"B","behind":3}`.
 
 ### AC: wb-stays-tool-agnostic
 
-**Requirements:** code-index-freshness#req:freshness-in-fleet-status, code-index-freshness#req:disk-budget
+**Requirements:** code-index-freshness#req:freshness-in-fleet-status
 
 **Given** the wb source tree
-**When** `grep -ri codegrapher internal/lifecyclehooks internal/disk cmd/wb/fleet*.go` runs
-**Then** it finds no match; freshness and budget work for any executor name.
-
-## Non-goals
-
-- A long-running index daemon owned by WB. If hooks prove insufficient, a
-  per-canonical-clone `codegrapher daemon` owned by the wb daemon is a later
-  Feature (REPORT.md §9c item 7).
-- Indexing on file save (the graph-assisted idea's edit hook).
+**When** `grep -rli codegrapher internal/lifecyclehooks internal/hooks internal/disk` runs over non-test Go files
+**Then** it finds no match.
 
 ## Open Questions
 
-- **Worktree index strategy (founder decision 6, REPORT.md §8).** Options:
-  1. *Per-worktree index* built by `sync --init`: simplest, 52 s CPU and
-     134 MB per wb worktree; at 10 live worktrees, 1.3 GB and nine minutes of
-     CPU on a 4-core VM already at its lane cap.
-  2. *Seed from the canonical index*: on `worktree-create`, run
-     `codegrapher export` in the canonical clone (or reuse the latest export
-     keyed by its SHA), `import` into the worktree, then `sync` (~3 s).
-     Same disk per worktree, near-zero CPU, needs no new CodeGrapher feature.
-  3. *Shared central store* keyed by repository, one base graph plus
-     per-worktree overlays: least disk, needs new CodeGrapher work.
+- **Worktree index strategy (open decision 6 of the 2026-09-18 analysis).**
+  0. *Query the canonical index.* A worktree runs
+     `codegrapher query|callers|impact -p <canonical clone>`. Zero disk and
+     CPU; the answer reflects the base branch, not the worktree's own edits.
+     **Recommended interim**, and the router's fallback in
+     [Expert Tool Routing](../expert-tool-routing/README.md).
+  1. *Per-worktree index* by `sync --init`: 52 s CPU and 134 MB per wb
+     worktree; ten live worktrees cost 1.3 GB and nine CPU-minutes on a
+     4-core VM.
+  2. *Seed from the canonical index*: `export` in the canonical clone (cached
+     per SHA), `import` into the worktree, then `sync` (about 3 s). Same disk,
+     near-zero CPU, no new CodeGrapher work.
+  3. *Shared central store* with per-worktree overlays: least disk, needs new
+     CodeGrapher work.
 
-  Recommendation: 2 now, because it removes the CPU cost without new tool
-  work and the artifacts budget bounds the disk; 3 later if the budget is
-  routinely hit. Until decided, `match.checkouts` defaults to canonical only.
-- Default `lifecycle.artifacts_budget`: 5 GiB is a placeholder, about 35 wb
-  worktree indexes. Should it be a share of the volume instead?
-- Should `post-commit` in worktrees be excluded by default to spare the agent's
-  own inner loop, relying on `quiet_period` and the next `post-merge`?
+  Until decided, bindings match canonical checkouts only.
+- Is 5 GiB the right default artifacts budget (about 35 wb indexes), or
+  should it be a share of the volume?
+- Should worktree `post-commit` be excluded by default, relying on
+  `quiet_period` and the next merge?
 
 ---
 *This document follows the https://specscore.md/feature-specification*
