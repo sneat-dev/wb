@@ -407,13 +407,52 @@ Conditions beyond checks — review submitted, changes requested, a comment, a
 conflict appearing — are worth having but are not what the motivating scenario
 needed, and should not delay the first three.
 
+### A waiter nobody can see is the same as no waiter
+
+This reverses part of the argument above and is the strongest case for durable
+state in the whole idea.
+
+The case against persistence was made purely on **wake reliability**: a bounded
+waiter plus harness re-invocation survives everything except the harness dying,
+so a durable watch buys little. That reasoning missed **legibility**.
+
+When an agent correctly delegates its waiting and goes quiet, the session
+becomes indistinguishable from one that has crashed, hung, or simply stopped.
+The founder put it exactly:
+
+> a session will be looked like stopped without active waiters that are supposed
+> to wake session up once event happens
+
+Nothing in WB records that a wait is outstanding. `wb session list` reports
+`live`, `gone` or parked — a session idle *because it is waiting* looks the same
+as one idle because it gave up. The only recourse available to a watching human
+is to interrupt, which destroys the quiet the feature exists to create.
+
+So delegated waiting has a precondition the first draft never stated:
+
+> **A delegated wait MUST be observable by someone other than the process doing
+> it.** A wait that exists only as a background process in one harness's memory
+> has moved the "did anyone remember this?" problem rather than solved it.
+
+This does not require a daemon, webhooks, or an event bus. It requires the
+waiter to record what it is waiting for, for whom, since when, and the exact
+command that resumes it — and for something to list those records. The record
+is small, local, and removed when the wait ends; a record whose process is gone
+is prunable evidence that a wait died, which is itself the thing worth knowing.
+
+Note what this justifies and what it does not. It justifies durable *state about
+waits*. It does not resurrect the durable watch programme: WB still cannot wake
+an arbitrary session, and the App event contract still cannot carry pull-request
+state. Observability is a much cheaper requirement than delivery.
+
 ## Open Questions
 
-- Does a durable `wb watch` layer earn its complexity at all, now that the
-  audit shows WB cannot wake an arbitrary session and the App event contract
-  cannot carry pull-request state? Its only advantage over a backgrounded
-  bounded waiter is surviving the harness itself dying — and if the harness is
-  dead there is nothing to wake.
+- Should a wait record be attributed to the WB session, the effort, or both?
+  Session is what a human asks about ("what is this session doing?"); effort is
+  what survives the session.
+- Does a durable `wb watch` layer earn its complexity *beyond* the observability
+  requirement above, now that the audit shows WB cannot wake an arbitrary
+  session and the App event contract cannot carry pull-request state?
 - Should `wb wait pr` take a per-`(repository, number)` advisory lock so a
   second waiter for the same target attaches or refuses instead of duplicating?
   The idea's own triggering observation was one agent launching two pollers for
