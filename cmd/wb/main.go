@@ -169,6 +169,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newCoverageCmd(), rootGroupQuality),
 		groupedRootCommand(newVerifyCmd(), rootGroupQuality),
 		groupedRootCommand(newCheckCmd(), rootGroupQuality),
+		groupedRootCommand(newDeadcodeCmd(), rootGroupQuality),
 		groupedRootCommand(newCICmd(), rootGroupQuality),
 		groupedRootCommand(newHooksCmd(), rootGroupQuality),
 		groupedRootCommand(newDepsCmd(), rootGroupChange),
