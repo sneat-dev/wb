@@ -1,0 +1,219 @@
+package orchestrate
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/progress"
+)
+
+// awaitLandablePullRequest is the shared wait-and-arm engine both `wb pr
+// land` and the worktree-merge PR route drive to reach a green, mergeable
+// head. It arms GitHub auto-merge first — unless doing so would bypass a
+// guard the caller enforces (see autoMergeBypassesAGuard) — then loops
+// bringing a candidate that is behind its target up to date and waiting for
+// its checks, treating a GitHub merge that completes mid-wait (because
+// auto-merge is armed) as the success it is rather than a moved target.
+//
+// evidence is mutated in place with the same keys `wb pr land` has always
+// recorded ("auto_merge", "head", "updated_onto_target"); callers that do not
+// want those recorded pass a throwaway map.
+//
+// options.headUpdated, when non-nil, is called after every successful
+// update-branch and re-read with the previous and the updated head SHA. A
+// non-nil error aborts the wait immediately and is returned as err — the
+// caller decided the update cannot be trusted to continue on.
+func awaitLandablePullRequest(
+	ctx context.Context,
+	options PullRequestLandOptions,
+	view PullRequestView,
+	number, subject, body string,
+	evidence map[string]string,
+) (updatedView PullRequestView, waited PullRequestWaitResult, autoMergeArmed, mergedByGitHub bool, refusal *landRefusal, err error) {
+	if evidence == nil {
+		evidence = map[string]string{}
+	}
+	updatedView = view
+
+	// Arm auto-merge BEFORE waiting, not after — see the long comment on this
+	// in the original `wb pr land` call site (pr_land.go) for why: everything
+	// below can end without landing, and arming first means none of those
+	// endings strand a complete change.
+	if !options.NoAutoMerge {
+		reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Started, options.Repository+"#"+number, 0, 0)
+		if bypassed := autoMergeBypassesAGuard(ctx, options, updatedView.Base.Ref); bypassed != "" {
+			evidence["auto_merge"] = "not armed: " + bypassed
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "skipped: "+bypassed, 0, 0)
+		} else if armReason := enablePullRequestAutoMerge(ctx, options.Repository, number, options.MergeMethod, updatedView.Head.SHA, subject, body); armReason != "" {
+			evidence["auto_merge"] = "not armed: " + armReason
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Failed, armReason, 0, 0)
+		} else {
+			autoMergeArmed = true
+			evidence["auto_merge"] = "armed before waiting"
+			reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Completed, "armed", 0, 0)
+		}
+	}
+
+	updates := !options.NoUpdateBranch && len(options.KeepCommits) == 0
+	pollInterval := options.CheckPollInterval
+	if pollInterval <= 0 {
+		pollInterval = DefaultCheckPollInterval
+	}
+	deadline := waitDeadline(options)
+	for {
+		remaining := time.Until(deadline)
+		if options.Now != nil {
+			remaining = deadline.Sub(options.Now())
+		}
+		// A budget no longer than one poll cannot observe anything; it is
+		// spent, and spent is pending, not an error.
+		if remaining <= pollInterval {
+			waited = pendingCommitWaitResult(PullRequestWaitResult{
+				Status: PullRequestWaitPending, Repository: options.Repository, PullRequest: number,
+				Target: updatedView.Base.Ref, Head: updatedView.Head.SHA,
+				Reason: "landing wait budget elapsed before checks settled",
+			})
+			return updatedView, waited, autoMergeArmed, false, nil, nil
+		}
+
+		if updates {
+			behind, reason := candidateIsBehindTarget(ctx, options.Repository, updatedView.Base.Ref, updatedView.Head.SHA)
+			if reason != "" && !isTransientReadReason(reason) {
+				return updatedView, waited, autoMergeArmed, false, nil, fmt.Errorf("determine whether %s#%s is behind %s: %s", options.Repository, number, updatedView.Base.Ref, reason)
+			}
+			if behind {
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, shortMergeRevision(updatedView.Head.SHA), 0, 0)
+				previousHead := updatedView.Head.SHA
+				updatedHead, updateReason := updatePullRequestBranch(ctx, options.Repository, number, updatedView.Head.SHA, options.OperationProgress)
+				if updateReason != "" {
+					if updateBranchConflict(updateReason) {
+						// A conflict is the author's to resolve. Auto-merge
+						// stays armed: once they resolve and push, CI runs
+						// against the resolution and merges it if it passes.
+						return updatedView, waited, autoMergeArmed, false, &landRefusal{
+							code:    LandRefusalUpdateConflict,
+							reason:  "candidate is behind " + updatedView.Base.Ref + " and updating it conflicts; resolving that is a judgement WB does not make for you: " + updateReason,
+							command: "resolve the conflict on " + updatedView.Head.Ref + ", push, then: wb pr land " + options.Repository + "#" + number,
+						}, nil
+					}
+					if !updateBranchHeadMoved(updateReason) {
+						return updatedView, waited, autoMergeArmed, false, nil, fmt.Errorf("update %s#%s onto %s: %s", options.Repository, number, updatedView.Base.Ref, updateReason)
+					}
+					// Someone pushed between the read and the update: the
+					// compare-and-swap did its job. Re-read and go round.
+				}
+				updatedView, err = ReadPullRequest(ctx, options.Repository, number)
+				if err != nil {
+					return updatedView, waited, autoMergeArmed, false, nil, err
+				}
+				evidence["head"] = shortMergeRevision(updatedView.Head.SHA)
+				if updateReason != "" {
+					continue
+				}
+				evidence["updated_onto_target"] = shortMergeRevision(updatedHead)
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Completed, shortMergeRevision(updatedView.Head.SHA), 0, 0)
+				if options.headUpdated != nil {
+					if hookErr := options.headUpdated(previousHead, updatedView.Head.SHA); hookErr != nil {
+						return updatedView, waited, autoMergeArmed, false, nil, hookErr
+					}
+				}
+				continue
+			}
+		}
+
+		waitOptions := PullRequestWaitOptions{
+			Repository:        options.Repository,
+			PullRequest:       number,
+			Target:            updatedView.Base.Ref,
+			Head:              updatedView.Head.SHA,
+			AllowUnfenced:     options.AllowUnfenced,
+			Slice:             remaining,
+			CheckPollInterval: options.CheckPollInterval,
+			Progress:          options.Progress,
+			OperationProgress: options.OperationProgress,
+		}
+		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(updatedView.Head.SHA), 0, 0)
+		// This wait can run the remaining budget in one call: keep the lane's
+		// heartbeat fresh throughout so it never goes stale out from under
+		// this still-live session. See startLandingLaneHeartbeat. A no-op
+		// when options.Lane was never populated.
+		stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, options.Repository, updatedView.Base.Ref, options.Lane.Owner.WBSessionID, 0)
+		observed, waitErr := waitForPullRequestLandChecks(ctx, waitOptions)
+		stopLaneHeartbeat()
+		if waitErr != nil {
+			return updatedView, waited, autoMergeArmed, false, nil, waitErr
+		}
+		waited = observed
+		reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
+		if waited.Status == PullRequestWaitPassed {
+			return updatedView, waited, autoMergeArmed, false, nil, nil
+		}
+
+		// With auto-merge armed, GitHub normally merges within seconds of the
+		// checks going green — usually before the confirming observation —
+		// and the wait then sees the target move past the head and reports
+		// failure. That is the success path, not a red check: find out
+		// before judging.
+		if autoMergeArmed {
+			if merged, readErr := ReadPullRequest(ctx, options.Repository, number); readErr == nil && merged.Merged {
+				return updatedView, waited, autoMergeArmed, true, nil, nil
+			}
+		}
+
+		// The wait reports a target that moved under the head as a failure.
+		// When updating is allowed that is not a verdict on the work: bring
+		// it up to date and wait again.
+		if updates && waited.Status == PullRequestWaitFailed && targetMovedUnderHead(waited.Reason) {
+			if behind, reason := candidateIsBehindTarget(ctx, options.Repository, updatedView.Base.Ref, updatedView.Head.SHA); reason == "" && behind {
+				reportPullRequestLandProgress(options.OperationProgress, "update_branch", progress.Started, "target advanced during the wait", 0, 0)
+				continue
+			}
+		}
+		return updatedView, waited, autoMergeArmed, false, nil, nil
+	}
+}
+
+// mergeOrAdoptAutoMerge performs the merge write, or — when armed auto-merge
+// already won the race to the same green head — adopts that as the landing
+// instead of treating GitHub's refusal as an error.
+//
+// mergedByGitHub short-circuits straight to adopting: it means the caller's
+// own wait already observed the pull request merged, so issuing a second
+// merge write would only be refused for a reason that is not a finding.
+func mergeOrAdoptAutoMerge(
+	ctx context.Context,
+	options PullRequestLandOptions,
+	number, head, mergeMethod, subject, body string,
+	autoMergeArmed, mergedByGitHub bool,
+	evidence map[string]string,
+) (mergeSHA string, refusal *landRefusal, err error) {
+	if options.beforeMerge != nil {
+		options.beforeMerge()
+	}
+	if mergedByGitHub {
+		if evidence != nil {
+			evidence["merged_by"] = "github auto-merge"
+		}
+		return "", nil, nil
+	}
+	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
+	merge, mergeRefused, mergeErr := mergePullRequest(ctx, options.Repository, number, head, mergeMethod, subject, body)
+	if mergeErr != nil {
+		return "", nil, mergeErr
+	}
+	if mergeRefused != nil {
+		// Armed auto-merge can win the race to the same green head; a
+		// refusal then means GitHub merged it, which is a landing.
+		merged, readErr := ReadPullRequest(ctx, options.Repository, number)
+		if !autoMergeArmed || readErr != nil || !merged.Merged {
+			return "", mergeRefused, nil
+		}
+		if evidence != nil {
+			evidence["merged_by"] = "github auto-merge"
+		}
+		return "", nil, nil
+	}
+	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Completed, shortMergeRevision(merge), 0, 0)
+	return merge, nil, nil
+}

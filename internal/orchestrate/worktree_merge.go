@@ -231,6 +231,14 @@ type WorktreeMergeReceipt struct {
 	SourceRefreshes    []WorktreeMergeSourceRefresh                   `json:"source_refreshes,omitempty"`
 	TargetRefreshes    []WorktreeMergeTargetRefresh                   `json:"target_refreshes,omitempty"`
 	SourcePullRequests []WorktreeMergeSourcePullRequestReconciliation `json:"source_pull_requests,omitempty"`
+	// AutoMergeArmed records that the PR route armed GitHub auto-merge for
+	// this receipt's pull request. It says nothing about who performed the
+	// merge: MergedBy records that when GitHub did.
+	AutoMergeArmed bool `json:"auto_merge_armed,omitempty"`
+	// MergedBy names who performed the merge when it was not this WB
+	// invocation's own merge write — "github auto-merge" when armed
+	// auto-merge landed it while WB was waiting, resuming, or absent.
+	MergedBy string `json:"merged_by,omitempty"`
 	// RebatchOf binds this candidate to an immutable prepared receipt whose
 	// source set was safely expanded. The old receipt is never rewritten.
 	RebatchOf           string                   `json:"rebatch_of,omitempty"`
@@ -1201,6 +1209,26 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
+		// Adopt an unrecorded server-side update-branch advance BEFORE the
+		// local-advance detection below: that detection reasons about the
+		// local candidate worktree's own HEAD, which a server-side update
+		// never touches, and would otherwise never see this advance at all.
+		// See adoptServerUpdatedWorktreeMergeHead (M5) and
+		// adoptWorktreeMergeUpdateBranchAdvance's M3 persist-first ordering,
+		// whose crash window this closes.
+		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, &receipt)
+		if adoptErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, adoptErr)
+		}
+		if adopted {
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+		}
+	}
+	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, &receipt)
 		if advanceErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
@@ -1624,18 +1652,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, nil
 		}
 		reportWorktreeMergeProgress(options.Progress, "candidate_checks", progress.Waiting, receipt.PullRequest)
-		checks, err := waitForWorktreeMergeChecks(ctx, receipt, options, receipt.PullRequest, receipt.Candidate.SHA, false)
-		receipt.Checks = checks
+		receipt, serverLanding, err = landWorktreeMergePullRequest(ctx, receipt, options)
 		if err != nil {
-			status := WorktreeMergeChecksFailed
-			if checks.Status == PullRequestWaitPending {
-				status = WorktreeMergeChecksPending
-			}
-			return failWorktreeMergeReceipt(receipt, status, err)
-		}
-		serverLanding, err = mergeExactPullRequest(ctx, receipt, options)
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			return receipt, err
 		}
 		reportWorktreeMergeProgress(options.Progress, "merge_pull_request", progress.Completed, shortMergeRevision(serverLanding))
 	}
@@ -1979,9 +1998,17 @@ func conflictCandidateAdvanceNeedsValidation(receipt WorktreeMergeReceipt) (bool
 	if err != nil {
 		return false, err
 	}
+	// A recorded server update (the PR-land engine's update-branch advance;
+	// see TargetRefreshes and red-team finding M2) can legitimately move
+	// receipt.TargetSHA past the snapshot this acknowledgement took. That is
+	// not a mismatch to hard-fail on: the receipt's own append-only history
+	// proves why it changed.
+	targetMatches := ack.ReceiptTargetSHA == receipt.TargetSHA && ack.CurrentTargetSHA == receipt.TargetSHA ||
+		worktreeMergeTargetAdvanceRecorded(receipt, ack.ReceiptTargetSHA, receipt.TargetSHA) &&
+			worktreeMergeTargetAdvanceRecorded(receipt, ack.CurrentTargetSHA, receipt.TargetSHA)
 	if ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane ||
-		ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.ReceiptTargetSHA != receipt.TargetSHA ||
-		ack.CurrentTargetSHA != receipt.TargetSHA || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
+		ack.Repository != receipt.Repository || ack.Target != receipt.Target || !targetMatches ||
+		!sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
 		ack.OriginalCandidate.Task != receipt.Candidate.Task || ack.OriginalCandidate.Worktree != receipt.Candidate.Worktree ||
 		ack.OriginalCandidate.Branch != receipt.Candidate.Branch || ack.AdvancedCandidateSHA != receipt.Candidate.SHA {
 		return false, fmt.Errorf("conflict-candidate advance %s does not match the current receipt", ack.AcknowledgementPath)
@@ -2650,48 +2677,6 @@ func shortMergeRevision(revision string) string {
 	return revision
 }
 
-func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, error) {
-	// The repository is fully qualified in the endpoint itself, so this read
-	// needs no working directory; an empty dir matches the same GitHub-only
-	// pattern already used by targetHead and candidateContainsTarget and
-	// never depends on a candidate worktree that later cleanup may remove.
-	output, err := githubGet(ctx, "", receipt.Repository, receipt.Target, receipt.Candidate.SHA, "repos/"+receipt.Repository)
-	if err != nil {
-		return "", fmt.Errorf("read repository merge methods: %w", err)
-	}
-	var settings struct {
-		AllowMerge  bool `json:"allow_merge_commit"`
-		AllowSquash bool `json:"allow_squash_merge"`
-		AllowRebase bool `json:"allow_rebase_merge"`
-	}
-	if err := json.Unmarshal(output, &settings); err != nil {
-		return "", fmt.Errorf("decode repository merge methods: %w", err)
-	}
-	method := ""
-	switch {
-	case settings.AllowMerge:
-		method = "--merge"
-	case settings.AllowSquash:
-		method = "--squash"
-	case settings.AllowRebase:
-		method = "--rebase"
-	default:
-		return "", fmt.Errorf("repository exposes no supported pull-request merge method")
-	}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree, "gh", "pr", "merge", receipt.PullRequest,
-		"--match-head-commit", receipt.Candidate.SHA, method); err != nil {
-		return "", fmt.Errorf("merge exact pull-request head: %w", err)
-	}
-	serverLanding, merged, err := pullRequestLandingReceipt(ctx, receipt, options)
-	if err != nil {
-		return "", err
-	}
-	if !merged {
-		return "", fmt.Errorf("pull request did not report a merged server result after merge command")
-	}
-	return serverLanding, nil
-}
-
 func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, bool, error) {
 	// The pull request URL and --repo already fully qualify this read; an
 	// empty dir avoids depending on the candidate worktree, exactly like
@@ -2718,12 +2703,29 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 		return "", false, fmt.Errorf("pull-request landing receipt does not match target %s", receipt.Target)
 	}
 	if view.HeadRefOID != receipt.Candidate.SHA {
-		advancesPublished, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, view.HeadRefOID, receipt.Candidate.SHA)
-		if view.State == "MERGED" || receipt.PublishedCandidateSHA == "" || view.HeadRefOID != receipt.PublishedCandidateSHA || ancestorErr != nil || !advancesPublished {
-			if ancestorErr == nil {
-				ancestorErr = fmt.Errorf("pull-request head %s does not match exact candidate %s or its recorded published predecessor %s", view.HeadRefOID, receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
+		if view.State == "MERGED" {
+			// GitHub's own merged verdict is authoritative once the merged
+			// head is proven to descend from our recorded candidate — a
+			// foreign push, or an update-branch this receipt never
+			// recorded, while auto-merge was armed must not strand an
+			// already-landed change behind a conflict receipt (red-team
+			// finding M4). It still has to be OUR candidate that landed,
+			// not an unrelated head, so the descent is proven, not assumed.
+			descendsFromCandidate, descentErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, view.HeadRefOID)
+			if descentErr != nil || !descendsFromCandidate {
+				if descentErr == nil {
+					descentErr = fmt.Errorf("pull-request head %s does not match exact candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
+				}
+				return "", false, descentErr
 			}
-			return "", false, ancestorErr
+		} else {
+			advancesPublished, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, view.HeadRefOID, receipt.Candidate.SHA)
+			if receipt.PublishedCandidateSHA == "" || view.HeadRefOID != receipt.PublishedCandidateSHA || ancestorErr != nil || !advancesPublished {
+				if ancestorErr == nil {
+					ancestorErr = fmt.Errorf("pull-request head %s does not match exact candidate %s or its recorded published predecessor %s", view.HeadRefOID, receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
+				}
+				return "", false, ancestorErr
+			}
 		}
 	}
 	if view.State != "MERGED" {
