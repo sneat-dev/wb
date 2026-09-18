@@ -6600,6 +6600,139 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.pr.create",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr create",
+              "flags": [
+                "--add",
+                "--allow-unfenced",
+                "--approved-by",
+                "--auto-merge",
+                "--base",
+                "--body",
+                "--body-file",
+                "--commit-all",
+                "--commit-staged",
+                "--draft",
+                "--format",
+                "--keep",
+                "--land",
+                "--merge-method",
+                "--message",
+                "--timeout",
+                "--title"
+              ],
+              "modes": [
+                "Addressed by worktree path or task name, defaulting to the current directory; a canonical clone is refused, naming wb worktree create, and a dirty worktree is refused by listing the uncommitted paths unless a commit mode is given",
+                "No local build, test, or lint runs; CI is the gate, and wb pr land on the printed number is the way to actually land it unless --land is given here",
+                "The branch is pushed through the normal git push path so hooks run there too, and the pull request is opened through the same idempotent primitive wb worktree merge uses: an already-open pull request for the branch is adopted, never duplicated",
+                "The default title/body come from the branch's own commits; a single commit contributes its own subject and body, several contribute a WB-authored summary, and a wip-shaped subject never becomes the title; --title/--body/--body-file override individually",
+                "--commit-staged commits exactly the index and refuses when nothing is staged; --commit-all runs git add -A first and refuses a secret-looking path, never staging .worktree.md; --add <paths> commits exactly the named paths via git add -- <paths> then git commit -- <paths>, refusing an escaping or nonexistent path; the three modes are mutually exclusive and -m/--message is required with any one",
+                "Hooks always run for a requested commit; this never passes --no-verify, and a failing hook stops before any push",
+                "--auto-merge arms GitHub auto-merge under the same authority wb pr land requires: a mechanical diff needs no approval, a non-mechanical one is refused without --approved-by, and arming is skipped, with the pull request left open, wherever it would bypass a guard --allow-unfenced would have to widen; --draft --auto-merge is rejected",
+                "--land lands the pull request in-process through the existing wb pr land, in one command: commit, push, open/adopt, wait for checks, and merge; it implies arming the way wb pr land itself does, so --auto-merge alongside it is redundant rather than an error",
+                "--commit-staged --land with unstaged or untracked changes that would remain, or --add --land with any change outside --add's own paths, is refused before anything is committed, because landing retires the worktree and a leftover dirty checkout cannot be cleaned up afterward",
+                "The task's active Work Log claim is durably bound to the opened or adopted pull request in a sidecar file beside the claim, so a daemon can later resolve a pull request back to its task, claim, and session without polling GitHub or trusting a caller's own report",
+                "Exit 0 created/adopted (or landed, with --land), 1 a finding (for example auto-merge could not be armed, or CI is not ready), 2 a guard refused; --format json emits the envelope"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr create --help",
+              "contains": [
+                "CI is the gate",
+                "canonical clone",
+                "wip",
+                "--auto-merge",
+                "--draft --auto-merge",
+                "--add"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-create.md",
+              "marker": "# Open (or land) a pull request with wb pr create",
+              "examples": [
+                "wb pr create --commit-all -m the-change --land --approved-by review.md",
+                "wb pr create --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateRefusesTheCanonicalClone",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateOpensAPullRequestAndPrintsTheNextCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateCommitAllCommitsTheUntrackedFileAndListsIt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateAddCommitsOnlyTheNamedPathsAndLeavesOtherStagedFileOut",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateAutoMergeArmsOnAMechanicalDiff",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_create_test.go",
+              "name": "TestCreateLandEndToEndCreatesArmsWaitsAndMerges",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/pr_create_test.go",
+              "name": "TestPRCreateRejectsBodyAndBodyFileTogether",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/pr_create_test.go",
+              "name": "TestPRCreateRejectsAddWithCommitAll",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/pr_create_test.go",
+              "name": "TestPRCreateHelpStatesItsContract",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "wb pr create exists because the local suite wb worktree merge/wb worktree land pay for first was 26+ minutes on a shared 4-core VM, which pushed agents onto raw gh pr create; --land fuses commit/push/open/wait/merge into one call for the founder's single-command flow."
+    },
+    {
       "id": "wb.pr.land",
       "feature_refs": [
         "spec/features/dependency-streams/README.md"
