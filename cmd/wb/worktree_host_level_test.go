@@ -180,3 +180,104 @@ func TestWorktreeRescueFleetFindsAHostLevelClone(t *testing.T) {
 		t.Fatalf("the report does not say it changed nothing:\n%s", stdout)
 	}
 }
+
+// TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree is the exact
+// CLI reproduction from sneat-dev/wb#594:
+//
+//	$ wb worktree create <task> <owner>/<repo> --base main ...
+//	created ...: <projects-root>/.worktrees/<task>/github.com/<owner>/<repo>
+//	$ wb worktree cleanup <task> --apply
+//	error: cleanup worktree ... has unsupported hierarchy
+//
+// `wb worktree create` writes the default central-store host-level layout
+// (no ~/.config/wb/worktrees.yaml present, exactly the report's own note),
+// and `wb worktree cleanup --apply` must retire that exact path once the
+// branch has landed, rather than refusing it.
+func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	remote := filepath.Join(root, "remote.git")
+	canonical := filepath.Join(projectsRoot, "acme", "app")
+	gcGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gcGit(t, root, "clone", remote, canonical)
+	gcGit(t, canonical, "config", "user.email", "wb-test@example.com")
+	gcGit(t, canonical, "config", "user.name", "wb-test")
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gcGit(t, canonical, "add", "README.md")
+	gcGit(t, canonical, "commit", "-m", "initial")
+	gcGit(t, canonical, "push", "-u", "origin", "main")
+	// Name a real forge in the origin, aliased locally, so the default
+	// central store mode derives the literal host level exactly as it does
+	// for a real clone of a github.com repository.
+	forgeURL := "https://github.com/acme/app.git"
+	gcGit(t, canonical, "config", "url."+remote+".insteadOf", forgeURL)
+	gcGit(t, canonical, "remote", "set-url", "origin", forgeURL)
+
+	// Central is the default store mode; an isolated, empty config
+	// directory keeps this hermetic against any ambient user config.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	installGCFakeGh(t)
+	prompt := writeOriginalPromptFixture(t, "host-level cleanup e2e prompt")
+
+	const task = "host-e2e"
+	created := runWB(t, "worktree", "create", task, "acme/app",
+		"--projects-root", projectsRoot, "--model", "unknown",
+		"--mode", "manual", "--initiator", "wb-test",
+		"--original-prompt-file", prompt, "--format", "json")
+	if created.exitCode != exitOK {
+		t.Fatalf("create exit = %d stderr=%s stdout=%s", created.exitCode, created.stderr, created.stdout)
+	}
+	var results []worktrees.CreateResult
+	if err := json.Unmarshal([]byte(created.stdout), &results); err != nil {
+		t.Fatalf("decode create output: %v\n%s", err, created.stdout)
+	}
+	if len(results) != 1 {
+		t.Fatalf("create results = %+v", results)
+	}
+	worktree := results[0].WorktreeDir
+	wantWorktree := filepath.Join(projectsRoot, ".worktrees", task, "github.com", "acme", "app")
+	if worktree != wantWorktree {
+		t.Fatalf("create did not place the checkout at the host-level layout the bug reported: got %q, want %q", worktree, wantWorktree)
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("created worktree missing: %v", err)
+	}
+
+	// Land the branch directly into canonical main — the same "direct push,
+	// no pull request" integration path the worktrees package's own cleanup
+	// tests already rely on — so cleanup finds it eligible without any real
+	// GitHub state.
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("host-level\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gcGit(t, worktree, "add", "feature.txt")
+	gcGit(t, worktree, "commit", "-m", "feature")
+	gcGit(t, worktree, "push", "-u", "origin", results[0].Branch)
+	gcGit(t, canonical, "merge", "--no-ff", results[0].Branch, "-m", "merge feature")
+	gcGit(t, canonical, "push", "origin", "main")
+
+	ownerDir := filepath.Dir(worktree)
+	hostDir := filepath.Dir(ownerDir)
+
+	cleaned := runWB(t, "worktree", "cleanup", task, "--apply", "--remote", "--projects-root", projectsRoot, "--format", "json")
+	if cleaned.exitCode != exitOK {
+		t.Fatalf("cleanup exit = %d stderr=%s stdout=%s", cleaned.exitCode, cleaned.stderr, cleaned.stdout)
+	}
+	if strings.Contains(cleaned.stderr, "unsupported hierarchy") {
+		t.Fatalf("cleanup refused the exact host-level layout create just wrote: %s", cleaned.stderr)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree survived cleanup --apply: %v", err)
+	}
+	if _, err := os.Stat(ownerDir); !os.IsNotExist(err) {
+		t.Fatalf("empty owner directory %s was not retired: %v", ownerDir, err)
+	}
+	if _, err := os.Stat(hostDir); !os.IsNotExist(err) {
+		t.Fatalf("empty host directory %s was not retired: %v", hostDir, err)
+	}
+}
