@@ -304,8 +304,8 @@ func TestOrchCovPullRequestLandResumeCommandCarriesEveryOption(t *testing.T) {
 	}
 	got := pullRequestLandResumeCommand(options, "7", "")
 	want := `wb pr land acme/app#7 --merge-method squash --keep --allow-unfenced ` +
-		`--keep-commits aaa111,bbb222 --reason "has \"quotes\"" --subject "the subject" ` +
-		`--approved-by "reviewer@example.test"`
+		`--keep-commits aaa111,bbb222 --reason 'has "quotes"' --subject 'the subject' ` +
+		`--approved-by 'reviewer@example.test'`
 	if got != want {
 		t.Fatalf("resume command =\n%s\nwant\n%s", got, want)
 	}
@@ -340,6 +340,42 @@ func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyExhaustedReads(t *
 	// returned unchanged rather than decorated with a guess.
 	if got := withPullRequestLandResumeGuidance(exhausted, PullRequestLandOptions{}, PullRequestLandResult{}); strings.Contains(got.Error(), "resumable") {
 		t.Fatalf("unaddressable selector gained resume guidance: %v", got)
+	}
+}
+
+// TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesReviewText
+// proves round 4's second half of B4: a transient GitHub read failure that
+// happens BEFORE the identity form's comment is ever posted — in
+// ReadPullRequest, pullRequestChangedFiles, or lane acquisition — leaves
+// result.ReviewCommentURL empty, so the earlier fix (swap in the posted
+// URL) never triggers. The review's own literal text — which can contain a
+// backtick or "$(...)" — must still never appear in the printed resume
+// command; a placeholder takes its place instead.
+func TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesReviewText(t *testing.T) {
+	t.Parallel()
+	exhausted := fmt.Errorf("%w: gh api failed after 3 attempts", githubobserver.ErrTransientRetriesExhausted)
+	options := PullRequestLandOptions{
+		Repository:    "acme/app",
+		PullRequest:   "acme/app#7",
+		ApprovedBy:    "opus@codex@run-42",
+		ReviewComment: "looks good, do not run `rm -rf $HOME` or $(whoami) please",
+	}
+	// result.ReviewCommentURL is empty: the comment was never posted.
+	got := withPullRequestLandResumeGuidance(exhausted, options, PullRequestLandResult{})
+	if got == nil {
+		t.Fatal("expected a wrapped error")
+	}
+	message := got.Error()
+	for _, fragment := range []string{"looks good", "rm -rf", "whoami", "$HOME", "$(whoami)"} {
+		if strings.Contains(message, fragment) {
+			t.Fatalf("resume guidance echoed the review text (%q): %q", fragment, message)
+		}
+	}
+	if strings.ContainsRune(message, '`') || strings.ContainsRune(message, '$') {
+		t.Fatalf("resume guidance contains an unquoted backtick or $: %q", message)
+	}
+	if !strings.Contains(message, reviewCommentFilePlaceholder) {
+		t.Fatalf("resume guidance = %q, want the review-comment-file placeholder", message)
 	}
 }
 

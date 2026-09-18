@@ -39,6 +39,15 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 // lengthens a wait: it only records, for a human or a later audit, which
 // required check(s) concluded "skipped" or "neutral" instead of actually
 // running on the head GitHub itself judged landable.
+//
+// The caller only ever invokes this once the wait has actually resolved to
+// something worth recording (round 4, minor 1): a landing whose checks are
+// still pending or have failed is resumed in a later slice, and each resume
+// re-observes the same wait's checks from scratch — calling this on every
+// slice used to append one finding per resume, letting the same skip get
+// recorded again and again for a landing that had not actually landed yet.
+// It also replaces any existing finding with this code rather than
+// appending a second one, so a receipt only ever carries one.
 func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, waited PullRequestWaitResult) {
 	if receipt.ValidationDeferral == nil {
 		return
@@ -47,14 +56,21 @@ func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, 
 	if len(skipped) == 0 {
 		return
 	}
-	receipt.Findings = append(receipt.Findings, WorktreeMergeFinding{
+	finding := WorktreeMergeFinding{
 		Code: WorktreeMergeFindingDeferredValidationCheckSkipped,
 		Message: fmt.Sprintf(
 			"candidate validation was deferred to CI, and required check(s) %s concluded skipped or neutral instead of actually running; GitHub branch protection judged the head landable anyway",
 			strings.Join(skipped, ", "),
 		),
 		Checks: skipped,
-	})
+	}
+	for i, existing := range receipt.Findings {
+		if existing.Code == WorktreeMergeFindingDeferredValidationCheckSkipped {
+			receipt.Findings[i] = finding
+			return
+		}
+	}
+	receipt.Findings = append(receipt.Findings, finding)
 }
 
 func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, string, error) {
@@ -135,7 +151,13 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	// wait itself observed, never on the later post-target phase (see
 	// waitForWorktreeMergeChecks in worktree_merge.go, which does not call
 	// this helper).
-	recordDeferredValidationCheckSkippedFinding(&receipt, waited)
+	// Round 4, minor 1: only record once the wait actually resolved to a
+	// landing — passed, or GitHub merged it anyway — never while it is
+	// still pending or has failed, so a later resume slice does not record
+	// the same finding again for a landing that has not landed yet.
+	if waited.Status == PullRequestWaitPassed || mergedByGitHub {
+		recordDeferredValidationCheckSkippedFinding(&receipt, waited)
+	}
 	if waited.Status != PullRequestWaitPassed && !mergedByGitHub {
 		status := WorktreeMergeChecksFailed
 		reason := fmt.Errorf("exact-head checks failed: %s", waited.Reason)

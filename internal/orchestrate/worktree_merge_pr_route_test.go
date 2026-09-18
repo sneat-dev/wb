@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,95 @@ func TestPrepareWorktreeMergeValidateLocallyForcesValidationOnPRRoute(t *testing
 	if receipt.ValidationIdentity == nil {
 		t.Fatalf("locally-run validation is missing its validation identity: %+v", receipt)
 	}
+}
+
+// TestPrepareWorktreeMergeRunsLazyHostLoadAdmissionOnlyWhenPlanDoesNotDefer
+// is round 4's minor 2 test: cmd/wb's combined command can skip the
+// up-front host-load admission check on a cheap prediction that the
+// resolved validation plan will defer, and hand PrepareWorktreeMerge a
+// lazy fallback (RequireHostLoadAdmission) instead. This proves that
+// fallback fires exactly when it must — never when the plan genuinely
+// defers, and always (stopping the prepare on refusal, never running local
+// validation) when it does not.
+func TestPrepareWorktreeMergeRunsLazyHostLoadAdmissionOnlyWhenPlanDoesNotDefer(t *testing.T) {
+	t.Run("plan defers: the lazy fallback is never called", func(t *testing.T) {
+		fixture := newEngineFixture(t)
+		source := createMergeSource(t, fixture, "lazy-admission-defers-source", "feature/lazy-admission-defers", "a.txt", "a\n")
+		installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+			`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+		called := false
+		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+			ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+			Model: "test-model", AgentRuntime: "test", Route: WorktreeMergeRoutePullRequest,
+			RequireHostLoadAdmission: func() (*WorktreeMergeHostLoadAdmission, error) {
+				called = true
+				return nil, fmt.Errorf("must not be reached")
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.ValidationDeferral == nil {
+			t.Fatalf("this test requires a deferred receipt: %+v", receipt)
+		}
+		if called {
+			t.Fatal("the lazy host-load admission fallback was called even though the plan deferred")
+		}
+	})
+
+	t.Run("plan does not defer and admission refuses: prepare fails before validation runs", func(t *testing.T) {
+		fixture := newEngineFixture(t)
+		source := createMergeSource(t, fixture, "lazy-admission-refuses-source", "feature/lazy-admission-refuses", "a.txt", "a\n")
+
+		refusal := fmt.Errorf("wb worktree merge: host load 9.0 exceeds floor 2.0")
+		called := false
+		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+			ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+			Model: "test-model", AgentRuntime: "test", ValidateLocally: true,
+			RequireHostLoadAdmission: func() (*WorktreeMergeHostLoadAdmission, error) {
+				called = true
+				return nil, refusal
+			},
+		})
+		if !called {
+			t.Fatal("the lazy host-load admission fallback was never called even though the plan did not defer")
+		}
+		if err == nil || !strings.Contains(err.Error(), "host load 9.0 exceeds floor") {
+			t.Fatalf("err = %v, want the admission refusal", err)
+		}
+		if receipt.Validation.Status == quality.StatusPassed {
+			t.Fatalf("local validation ran despite the admission refusal: %+v", receipt.Validation)
+		}
+	})
+
+	t.Run("plan does not defer and admission allows: validation runs and records the admission", func(t *testing.T) {
+		fixture := newEngineFixture(t)
+		source := createMergeSource(t, fixture, "lazy-admission-allows-source", "feature/lazy-admission-allows", "a.txt", "a\n")
+
+		granted := &WorktreeMergeHostLoadAdmission{Load: 1.0, Floor: 2.0}
+		called := false
+		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+			ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+			Model: "test-model", AgentRuntime: "test", ValidateLocally: true,
+			RequireHostLoadAdmission: func() (*WorktreeMergeHostLoadAdmission, error) {
+				called = true
+				return granted, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !called {
+			t.Fatal("the lazy host-load admission fallback was never called even though the plan did not defer")
+		}
+		if receipt.Validation.Status != quality.StatusPassed {
+			t.Fatalf("validation.status = %s, want passed: %+v", receipt.Validation.Status, receipt.Validation)
+		}
+		if receipt.HostLoadAdmission == nil || receipt.HostLoadAdmission.Load != granted.Load {
+			t.Fatalf("receipt did not record the lazily-obtained admission: %+v", receipt.HostLoadAdmission)
+		}
+	})
 }
 
 // TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute is the
@@ -656,6 +746,39 @@ func TestLandWorktreeMergePullRequestDeferredValidationSkippedCheckLandsAndRecor
 	}
 }
 
+// TestRecordDeferredValidationCheckSkippedFindingReplacesRatherThanAppends
+// is round 4's minor 1 unit test: calling the recorder twice for the same
+// receipt — exactly what happens across two resume slices that each
+// re-observe the same wait's checks from scratch — must leave exactly one
+// finding with this code, not two. The second call additionally proves the
+// replacement carries the *latest* observation (a second, different skipped
+// check), not a stale copy of the first.
+func TestRecordDeferredValidationCheckSkippedFindingReplacesRatherThanAppends(t *testing.T) {
+	receipt := &WorktreeMergeReceipt{ValidationDeferral: &WorktreeMergeValidationDeferral{}}
+	first := PullRequestWaitResult{
+		RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}},
+		Checks:         []RemoteCheck{{Name: "CI", Conclusion: "skipped"}},
+	}
+	recordDeferredValidationCheckSkippedFinding(receipt, first)
+	if len(receipt.Findings) != 1 {
+		t.Fatalf("after one call, findings = %+v, want exactly one", receipt.Findings)
+	}
+	second := PullRequestWaitResult{
+		RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}, {Name: "Lint"}},
+		Checks: []RemoteCheck{
+			{Name: "CI", Conclusion: "success"},
+			{Name: "Lint", Conclusion: "neutral"},
+		},
+	}
+	recordDeferredValidationCheckSkippedFinding(receipt, second)
+	if len(receipt.Findings) != 1 {
+		t.Fatalf("after two calls, findings = %+v, want still exactly one (replaced, not appended)", receipt.Findings)
+	}
+	if got := receipt.Findings[0].Checks; len(got) != 1 || got[0] != "Lint" {
+		t.Fatalf("replaced finding = %+v, want it to carry the second call's own checks (Lint)", receipt.Findings[0])
+	}
+}
+
 // TestLandWorktreeMergePullRequestNonDeferredSkippedCheckRecordsNoFinding
 // covers the negative case the coordinator asked for directly: a land whose
 // candidate was validated locally (never deferred) must never record the
@@ -687,6 +810,69 @@ func TestLandWorktreeMergePullRequestNonDeferredSkippedCheckRecordsNoFinding(t *
 	}
 	if len(landed.Findings) != 0 {
 		t.Fatalf("non-deferred land unexpectedly recorded findings: %+v", landed.Findings)
+	}
+}
+
+// TestLandWorktreeMergePullRequestDeferredValidationRecordsFindingOnceAcrossTwoResumeSlices
+// is round 4's minor 1 integration test: a resume that stops at
+// checks_pending (a resume "slice" that observed the wait but did not
+// resolve it) must record no deferred-validation-check-skipped finding at
+// all — the wait has not resolved to anything worth recording yet — and a
+// later resume that lands must record exactly one, not accumulate one per
+// slice.
+func TestLandWorktreeMergePullRequestDeferredValidationRecordsFindingOnceAcrossTwoResumeSlices(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "two-slices-source", "feature/two-slices", "two-slices.txt", "two\n")
+	installWorktreeMergeDeferralGH(t, `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
+		`{"strict":true,"contexts":["CI"],"checks":[]}`, `[]`)
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main",
+		Model: "test-model", AgentRuntime: "test", Route: WorktreeMergeRoutePullRequest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ValidationDeferral == nil {
+		t.Fatalf("prepare did not defer validation, so this test would not exercise the deferred-landing path: %+v", receipt)
+	}
+
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "check-conclusion", "")
+	gh.writeState(t, "check-conclusion-status", "in_progress")
+
+	// First resume slice: the wait times out while checks are still
+	// pending. Nothing has resolved yet, so no finding of any kind may be
+	// recorded on this receipt.
+	pendingOptions := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	pendingOptions.Timeout = 200 * time.Millisecond
+	pending, err := ResumeWorktreeMerge(context.Background(), pendingOptions)
+	if err == nil || pending.Status != WorktreeMergeChecksPending {
+		t.Fatalf("first resume slice did not stop at checks_pending: receipt=%+v err=%v", pending, err)
+	}
+	if len(pending.Findings) != 0 {
+		t.Fatalf("a checks-pending resume slice recorded a finding before the wait resolved: %+v", pending.Findings)
+	}
+
+	// Second resume slice: the required check now concludes "skipped", so
+	// this slice both lands and records the finding — exactly once.
+	gh.writeState(t, "check-conclusion", "skipped")
+	landedOptions := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	landed, err := ResumeWorktreeMerge(context.Background(), landedOptions)
+	if err != nil {
+		t.Fatalf("second resume slice did not land: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded && landed.Status != WorktreeMergeComplete {
+		t.Fatalf("landed receipt status = %s, want landed or complete: %+v", landed.Status, landed)
+	}
+	found := 0
+	for _, finding := range landed.Findings {
+		if finding.Code == WorktreeMergeFindingDeferredValidationCheckSkipped {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("landed receipt recorded the deferred-validation-check-skipped finding %d time(s) across two resume slices, want exactly 1: %+v", found, landed.Findings)
 	}
 }
 

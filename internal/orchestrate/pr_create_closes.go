@@ -58,16 +58,21 @@ func withClosesPrefix(body string, issues []int) string {
 }
 
 // issueReferencePattern matches a bare "#123" issue reference, the shape a
-// task's original prompt or Work Log names an issue in.
-var issueReferencePattern = regexp.MustCompile(`#(\d+)`)
+// task's original prompt or Work Log names an issue in. The trailing `\b`
+// (round 4, minor 3) requires the digit run to end at a word boundary, so a
+// hex colour that mixes digits and hex letters — "#3b82f6", "#00ff00" — never
+// matches at all: `\d+` alone would otherwise stop at the first non-digit
+// and misread "3" or "00" out of the middle of a colour literal as an issue
+// number.
+var issueReferencePattern = regexp.MustCompile(`#(\d+)\b`)
 
 // SuggestClosesFromPrompt finds issue numbers named in a task's original
 // prompt (Work Log), in first-seen order with duplicates removed. It never
 // adds them itself (#615): the caller prints them as a suggestion, and only
 // --closes adds them to the pull request body.
 //
-// Round 3, minor 6: two shapes that contain "#<digits>" are never this
-// repository's own issue number, and must not be suggested as one:
+// Three shapes that contain "#<digits>" are never this repository's own
+// issue number, and must not be suggested as one:
 //   - "owner/repo#123" names an issue in a DIFFERENT repository — detected
 //     by the immediately-preceding token (back to the previous whitespace)
 //     containing a "/", the one character an issue number's own prefix
@@ -76,6 +81,11 @@ var issueReferencePattern = regexp.MustCompile(`#(\d+)`)
 //     "#123456" — GitHub, and every other "#NNN" convention, only ever
 //     writes a colour as exactly 3, 4, 6, or 8 hex digits, so a decimal run
 //     of exactly one of those lengths is treated as a colour, not an issue.
+//     (A colour that mixes digits and hex letters, like "#3b82f6" or
+//     "#00ff00", never reaches this check at all: issueReferencePattern's
+//     own `\b` already excludes it — round 4, minor 3.)
+//   - "#0" — GitHub issue numbering starts at 1, so 0 is never a real issue
+//     number regardless of what wrote it (round 4, minor 3).
 func SuggestClosesFromPrompt(prompt string) []int {
 	matches := issueReferencePattern.FindAllStringSubmatchIndex(prompt, -1)
 	seen := map[int]bool{}
@@ -90,7 +100,7 @@ func SuggestClosesFromPrompt(prompt string) []int {
 			continue
 		}
 		number, err := strconv.Atoi(digits)
-		if err != nil || seen[number] {
+		if err != nil || number == 0 || seen[number] {
 			continue
 		}
 		seen[number] = true

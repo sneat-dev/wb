@@ -122,8 +122,8 @@ func TestLandIdentityReviewDoesNotPostCommentWhenPreflightRefuses(t *testing.T) 
 // Round 3, B4: once the identity form's comment is posted, every resume /
 // sanctioned command built from here on must carry the posted comment's
 // URL, and never the identity + review text again — a copy-run of it must
-// not post a second comment, and the review text (which strconv.Quote does
-// not escape "$" or a backtick from) must never appear in a command line.
+// not post a second comment, and the review text (which may contain "$" or
+// a backtick) must never appear in a command line at all.
 func TestLandChecksPendingResumeCommandCarriesPostedCommentURLNotReviewText(t *testing.T) {
 	fixture := newLandFixture(t, "feature/identity-resume", "main.go")
 	options := landOptions(fixture)

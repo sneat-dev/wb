@@ -147,10 +147,16 @@ unaffected.
 
 The identity form's comment is posted **once**, only after landing's own
 preflight has passed (never on a preflight refusal such as
-`cleanup-blocked-dirty`), and every resume/sanctioned command WB then prints
-carries `--approved-by <the posted comment URL>` in place of the original
-identity/comment text — the review text itself never appears in a resume
-command (round 3, issue #619's B4).
+`cleanup-blocked-dirty`). Once it is posted, every resume/sanctioned command
+WB then prints carries `--approved-by <the posted comment URL>` in place of
+the original identity/comment text. The review text itself never appears in
+a resume command on **any** path, including one where a transient GitHub
+read failure exhausts its retries before the comment is ever posted (round
+4): a file-backed review carries its file's path instead, and an inline
+review with no file gets a placeholder (`--review-comment-file
+<review.md>`) that the accompanying message explains — never the review's
+own literal text, which may contain a backtick or `$(...)` that would run on
+copy-paste (issue #619's B4).
 
 **The approval never bypasses the mechanical classifier.** The diff is still
 classified from its own content whether or not `--approved-by` is given; a
@@ -218,7 +224,10 @@ never a false refusal.
 still land"** — `wb pr land` does not refuse. It lands, and records an
 informational finding `review-unbound` (in text and JSON) saying the review
 does not name the commit it reviewed and suggesting `Reviewed-Head: <sha>`
-be added. The receipt always carries `reviewed_head` (empty when unbound).
+be added. `reviewed_head` is `omitempty` on the receipt: it appears only
+when a review named a head at all, and is omitted — not present as an
+empty string — both when the review was unbound and when no review
+applied in the first place (e.g. a mechanical bump).
 `review_bound` is tri-state (round 3, minor 7): omitted entirely on a
 landing no review ever applied to (e.g. a mechanical bump), and otherwise
 `true` or `false`.

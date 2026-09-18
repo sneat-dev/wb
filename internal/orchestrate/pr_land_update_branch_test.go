@@ -343,21 +343,23 @@ func TestLandChecksPendingResumeCarriesATimeoutFloor(t *testing.T) {
 // TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted pins #584: the
 // resume command must reproduce every flag that changed this invocation's
 // behavior - --timeout, --no-auto-merge, --allow-unfenced, --approved-by,
-// --keep-commits/--reason - with free-text values `strconv.Quote`d (this
-// function's existing convention for --reason/--subject/--approved-by) so a
-// review string containing a space or a quote cannot break the printed
-// command or be misread as a second flag.
+// --keep-commits/--reason - with free-text values POSIX single-quoted
+// (round 4: shellSingleQuote, not strconv.Quote, is this function's
+// convention for --reason/--subject/--approved-by) so a review string
+// containing a space, a double quote, a backtick, or "$" cannot break the
+// printed command, be misread as a second flag, or shell-expand on
+// copy-paste.
 func TestPullRequestLandResumeCommandCarriesOriginalFlagsQuoted(t *testing.T) {
 	t.Parallel()
 	got := pullRequestLandResumeCommand(PullRequestLandOptions{
 		Repository:    "acme/app",
 		NoAutoMerge:   true,
 		AllowUnfenced: true,
-		ApprovedBy:    `review with a space and a " quote`,
+		ApprovedBy:    `review with a space and a ' quote`,
 		KeepCommits:   []string{"abc123", "def456"},
 		Reason:        "kept for audit",
 	}, "9", "45m")
-	want := `wb pr land acme/app#9 --timeout 45m --no-auto-merge --allow-unfenced --keep-commits abc123,def456 --reason "kept for audit" --approved-by "review with a space and a \" quote"`
+	want := `wb pr land acme/app#9 --timeout 45m --no-auto-merge --allow-unfenced --keep-commits abc123,def456 --reason 'kept for audit' --approved-by 'review with a space and a '\'' quote'`
 	if got != want {
 		t.Fatalf("pullRequestLandResumeCommand = %q, want %q", got, want)
 	}

@@ -403,6 +403,21 @@ type WorktreeMergePrepareOptions struct {
 	// calling PrepareWorktreeMerge, if any. It is copied onto the new receipt
 	// so the override is provable from the receipt itself.
 	HostLoadAdmission *WorktreeMergeHostLoadAdmission
+	// RequireHostLoadAdmission is cmd/wb's lazy fallback for the gap round
+	// 4's minor 2 closes: its combined `wb worktree land`/`wb land` command
+	// skips the up-front host-load admission check whenever a cheap
+	// PeekWorktreeMergeValidationDeferral call predicts the resolved
+	// validation plan will defer to CI (so no local CPU work is coming,
+	// and the check would gate nothing). If a transient GitHub read makes
+	// the ACTUAL resolve here disagree with that prediction and fall back
+	// to local validation after all, HostLoadAdmission is still nil — the
+	// up-front check never ran — and running CPU-heavy validation ungated
+	// is exactly the saturated-host incident admission exists to prevent.
+	// When set, this is invoked exactly once, only when the resolved plan
+	// does not defer and HostLoadAdmission is still nil; a non-nil error
+	// stops the prepare before validation ever runs, exactly as the
+	// up-front check would have. Nil (every other caller) changes nothing.
+	RequireHostLoadAdmission func() (*WorktreeMergeHostLoadAdmission, error)
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
@@ -967,6 +982,24 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally, false)
 	if planErr != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+	}
+	// Round 4, minor 2: cmd/wb's combined `wb worktree land`/`wb land`
+	// command skips the up-front host-load admission check whenever a
+	// cheap pre-resolution predicts this plan will defer. If that
+	// prediction and this actual resolve disagree — most often a
+	// transient GitHub read that made the earlier cheap resolution
+	// succeed while this one falls back to local validation — the plan
+	// above does not defer, admission was never checked, and local
+	// CPU-heavy validation is about to run unadmitted. Closing that gap
+	// here, once, just-in-time, is cheaper and less invasive than
+	// threading admission through every applyOrDeferWorktreeMergeValidation
+	// call site; it only ever fires for the one caller that set this hook.
+	if !plan.Defer && receipt.HostLoadAdmission == nil && options.RequireHostLoadAdmission != nil {
+		admission, admissionErr := options.RequireHostLoadAdmission()
+		if admissionErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, admissionErr)
+		}
+		receipt.HostLoadAdmission = admission
 	}
 	checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
 	if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
