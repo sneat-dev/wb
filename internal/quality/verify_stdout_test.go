@@ -10,6 +10,7 @@ import (
 // Go tool prints module download notices on stderr, and a runner that merged
 // streams once handed "go: downloading ..." to go test as a package path.
 func TestRunStdoutKeepsStderrOutOfParsedOutput(t *testing.T) {
+	t.Parallel()
 	output, err := runStdout(context.Background(), t.TempDir(), "go", "env", "GOOS")
 	if err != nil {
 		t.Fatalf("go env: %v", err)

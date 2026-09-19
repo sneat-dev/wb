@@ -13,6 +13,7 @@ import (
 // TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding covers the two
 // callers' mistakes that must fail before any subprocess starts.
 func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	if _, _, err := runCoverageWithOptions(context.Background(), RunOptions{GoTestShards: 1, GoShardPackages: []string{"./serial"}}, module, filepath.Join(module, "p.out")); err == nil || !strings.Contains(err.Error(), "at least 2 shards") {
 		t.Fatalf("single-shard error = %v, want the shard minimum", err)
@@ -245,6 +246,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 }
 
 func TestDqCovFailedGoTestNamesDeduplicatesAndSkipsEmpty(t *testing.T) {
+	t.Parallel()
 	output := strings.Join([]string{
 		"=== RUN   TestAlpha",
 		"--- FAIL: TestAlpha (0.01s)",
@@ -284,6 +286,7 @@ func TestDqCovFailedGoTestNamesDeduplicatesAndSkipsEmpty(t *testing.T) {
 // TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline pins that a zero
 // attempt deadline contributes no -timeout flag at all.
 func TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline(t *testing.T) {
+	t.Parallel()
 	arguments := goCoverageArgumentsWithTimeout(filepath.Join("tmp", "coverage.out"), 0, "./serial", "-run", "^(TestOne)$")
 	if joined := strings.Join(arguments, " "); strings.Contains(joined, "-timeout") {
 		t.Fatalf("disabled deadline leaked a flag: %s", joined)
@@ -294,10 +297,12 @@ func TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline(t *testing.T) 
 // contract: only failed jobs are written, an empty failure records its error,
 // and a manifest without files is not published.
 func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
+	t.Parallel()
 	repository := "example/diagnostics"
 	module := "/modules/app"
 
 	t.Run("no failures writes no manifest", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "ok", profilePath: "p"}}, []goCoverageJobResult{{output: "fine", attempts: 1}}); err != nil {
 			t.Fatal(err)
@@ -309,6 +314,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("empty failure output records the error", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("exit status 1")}}); err != nil {
 			t.Fatal(err)
@@ -323,6 +329,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("unusable directory fails", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "file")
 		writeQualityFile(t, blocker, "x")
 		err := writeCoverageDiagnostics(filepath.Join(blocker, "reports"), repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("boom")}})
@@ -332,6 +339,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("raw artifact collision fails", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		stem := coverageDiagnosticStem(repository, module)
 		if err := os.Mkdir(filepath.Join(directory, "coverage-raw-"+stem+"-1.log"), 0o755); err != nil {
@@ -344,6 +352,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("manifest collision fails", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		stem := coverageDiagnosticStem(repository, module)
 		if err := os.Mkdir(filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml"), 0o755); err != nil {
@@ -357,6 +366,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 }
 
 func TestDqCovCoverageDiagnosticForMissingManifestIsNil(t *testing.T) {
+	t.Parallel()
 	if diagnostic := coverageDiagnosticFor(t.TempDir(), "example/repo", "/modules/app"); diagnostic != nil {
 		t.Fatalf("diagnostic = %+v, want nil when no manifest was retained", diagnostic)
 	}
@@ -418,6 +428,7 @@ func TestDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts(t *testing.T)
 }
 
 func TestDqCovBoundedCoverageParallelismRejectsEmptyInputs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ requested, jobs, cpu int }{{0, 5, 8}, {8, 0, 8}, {-1, 5, 8}, {8, -1, 8}} {
 		if got := boundedCoverageParallelism(tc.requested, tc.jobs, tc.cpu); got != 0 {
 			t.Fatalf("boundedCoverageParallelism(%d, %d, %d) = %d, want 0", tc.requested, tc.jobs, tc.cpu, got)

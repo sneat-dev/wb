@@ -41,6 +41,7 @@ func wtLogCovFullView() WorkLogView {
 }
 
 func TestWtLogCovFormatWorkLogViewRendersEverySection(t *testing.T) {
+	t.Parallel()
 	text := FormatWorkLogViewText(wtLogCovFullView())
 	for _, want := range []string{
 		"# WB work log",
@@ -87,6 +88,7 @@ func TestWtLogCovFormatWorkLogViewRendersEverySection(t *testing.T) {
 }
 
 func TestWtLogCovFormatWorkLogViewRendersEmptySections(t *testing.T) {
+	t.Parallel()
 	view := WorkLogView{Worktree: "/tmp/empty", Prompts: []PromptRecord{}}
 	text := FormatWorkLogViewText(view)
 	for _, want := range []string{
@@ -108,6 +110,7 @@ func TestWtLogCovFormatWorkLogViewRendersEmptySections(t *testing.T) {
 }
 
 func TestWtLogCovFormatWorkLogViewOmitsOptionalManifestAndClaimFields(t *testing.T) {
+	t.Parallel()
 	view := WorkLogView{
 		Worktree: "/tmp/minimal",
 		Manifest: &Manifest{Version: 1, EffortID: "e", EffortKind: "feature", Repository: "acme/app", Branch: "b", Base: "main", BaseSHA: "sha", Provenance: "created"},
@@ -129,6 +132,7 @@ func TestWtLogCovFormatWorkLogViewOmitsOptionalManifestAndClaimFields(t *testing
 }
 
 func TestWtLogCovFormatWorkLogViewReportBodyWithTrailingNewlineAndZeroPromptTime(t *testing.T) {
+	t.Parallel()
 	view := WorkLogView{
 		Worktree:           "/tmp/wt2",
 		Terminal:           &WorkLogTerminalView{Disposition: "landed", SealedAt: time.Unix(0, 0).UTC()},
@@ -153,6 +157,7 @@ func TestWtLogCovFormatWorkLogViewReportBodyWithTrailingNewlineAndZeroPromptTime
 }
 
 func TestWtLogCovFormatWorktreeInfoRendersRedactedSections(t *testing.T) {
+	t.Parallel()
 	view := wtLogCovFullView()
 	text := FormatWorktreeInfoText(view)
 	for _, want := range []string{
@@ -187,6 +192,7 @@ func TestWtLogCovFormatWorktreeInfoRendersRedactedSections(t *testing.T) {
 }
 
 func TestWtLogCovFormatWorktreeInfoRendersEmptySections(t *testing.T) {
+	t.Parallel()
 	text := FormatWorktreeInfoText(WorkLogView{Worktree: "/tmp/info-empty", Prompts: []PromptRecord{}})
 	for _, want := range []string{
 		"# WB worktree info",

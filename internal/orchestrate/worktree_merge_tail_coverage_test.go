@@ -259,6 +259,7 @@ func TestOrchCovFindExactOpenPullRequestFailsClosedOnUnusableReads(t *testing.T)
 }
 
 func TestOrchCovTerminalWorkLogExpectationsNamesEveryTerminalCheckout(t *testing.T) {
+	t.Parallel()
 	valid := WorktreeMergeReceipt{
 		Repository: "acme/app", Target: "main",
 		Candidate: WorktreeMergeCandidate{Task: "candidate-task", Worktree: "/candidate", Branch: "wb/merge", SHA: "aaa"},
@@ -304,6 +305,7 @@ func TestOrchCovTerminalWorkLogExpectationsNamesEveryTerminalCheckout(t *testing
 		}, wantIn: "conflicting terminal cleanup identities for task rebatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := valid
 			receipt.Sources = append([]WorktreeMergeSource(nil), valid.Sources...)
 			receipt.RebatchedCandidates = append([]WorktreeMergeCandidate(nil), valid.RebatchedCandidates...)
@@ -391,6 +393,7 @@ func TestOrchCovExtractWorktreeMergeArchiveRefusesUnsafeEntries(t *testing.T) {
 		{name: "unsupported entry", header: &tar.Header{Name: "fifo", Typeflag: tar.TypeFifo}, wantIn: "unsupported archived entry"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := extractWorktreeMergeArchive(write(test.header), destination)
 			if err == nil || !strings.Contains(err.Error(), test.wantIn) {
 				t.Fatalf("error = %v, want %q", err, test.wantIn)
@@ -450,6 +453,7 @@ func TestOrchCovSameLegacyIdentityComparesEveryField(t *testing.T) {
 		{name: "Reason", mutate: func(i *WorktreeMergeLegacyValidationFailureIdentity) { i.Reason = "other" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			other := failure
 			other.Sources = append([]WorktreeMergeSource(nil), failure.Sources...)
 			test.mutate(&other)
@@ -492,6 +496,7 @@ func TestOrchCovSameLegacyIdentityComparesEveryField(t *testing.T) {
 		{name: "Reason", mutate: func(i *WorktreeMergeLegacyConflictIdentity) { i.Reason = "other" }},
 	} {
 		t.Run("conflict "+test.name, func(t *testing.T) {
+			t.Parallel()
 			other := conflict
 			other.Sources = append([]WorktreeMergeSource(nil), conflict.Sources...)
 			test.mutate(&other)

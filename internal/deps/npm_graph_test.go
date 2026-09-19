@@ -10,7 +10,6 @@ import (
 )
 
 func TestGraphFromNpmFleetFiltersExactDependencyWithProviderContext(t *testing.T) {
-	t.Parallel()
 	discovered := npmFleetGraph{
 		packages: map[string]npmFleetPackage{
 			"@sneat/core": {Name: "@sneat/core", Repository: "sneat-co/sneat-libs", Manifest: "package.json"},
@@ -42,7 +41,6 @@ func TestGraphFromNpmFleetFiltersExactDependencyWithProviderContext(t *testing.T
 // fallback path already does when a Go module's owner/repo convention does
 // not resolve it either.
 func TestGraphFromNpmFleetReportsAmbiguousProviderWithoutGuessing(t *testing.T) {
-	t.Parallel()
 	declarations := []npmFleetPackage{
 		{Name: "@sneat/core", Repository: "sneat-co/sneat-libs", Manifest: "package.json"},
 		{Name: "@sneat/core", Repository: "sneat-co/sneat-libs-copy", Manifest: "package.json"},
@@ -72,7 +70,6 @@ func TestGraphFromNpmFleetReportsAmbiguousProviderWithoutGuessing(t *testing.T) 
 // still surface the requirement under a clearly-labeled synthetic consumer
 // rather than dropping it or crashing on an empty node identity.
 func TestGraphFromNpmFleetLabelsWorkspaceOnlyOverrideConsumer(t *testing.T) {
-	t.Parallel()
 	discovered := npmFleetGraph{
 		packages: map[string]npmFleetPackage{
 			"@sneat/core": {Name: "@sneat/core", Repository: "sneat-co/sneat-libs", Manifest: "package.json"},

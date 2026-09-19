@@ -316,6 +316,7 @@ func TestLoadSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.
 }
 
 func TestSaveRoutePublishesExactImmutableSSHRouteAndReplays(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	route := Route{
 		HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -359,6 +360,7 @@ func TestSaveRoutePublishesExactImmutableSSHRouteAndReplays(t *testing.T) {
 }
 
 func TestSaveRouteRejectsConflictAndPreservesFirstRoute(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	first := Route{
 		HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -382,6 +384,7 @@ func TestSaveRouteRejectsConflictAndPreservesFirstRoute(t *testing.T) {
 }
 
 func TestConcurrentIdenticalRoutesPublishOnce(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	route := validRoute(request, digest)
 	const callers = 12
@@ -423,6 +426,7 @@ func TestConcurrentIdenticalRoutesPublishOnce(t *testing.T) {
 }
 
 func TestLoadRouteKeepsPersistedAddressAfterConfigChanges(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	configured := SSHConfig{Host: "old-host", WBPath: "/old/bin/wb"}
 	if _, _, err := store.SaveRoute(Route{
@@ -445,6 +449,7 @@ func TestLoadRouteKeepsPersistedAddressAfterConfigChanges(t *testing.T) {
 }
 
 func TestRequestBytesReturnsExactAdmittedEncoding(t *testing.T) {
+	t.Parallel()
 	store, request, digest, admittedRaw := admittedRouteRequest(t, true)
 	loaded, loadedDigest, loadedRaw, err := store.RequestBytes(request.HandoffID)
 	if err != nil {
@@ -464,6 +469,7 @@ func TestRequestBytesReturnsExactAdmittedEncoding(t *testing.T) {
 }
 
 func TestSaveRouteRefusesRoutesThatDoNotMatchAdmittedRequest(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	valid := Route{
 		HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -481,6 +487,7 @@ func TestSaveRouteRefusesRoutesThatDoNotMatchAdmittedRequest(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, _, err := store.SaveRoute(mutate(valid)); err == nil {
 				t.Fatal("SaveRoute accepted a route that did not match its admitted request")
 			}
@@ -492,6 +499,7 @@ func TestSaveRouteRefusesRoutesThatDoNotMatchAdmittedRequest(t *testing.T) {
 }
 
 func TestLoadRouteRefusesMalformedOrMismatchedArtifacts(t *testing.T) {
+	t.Parallel()
 	tests := map[string]func(Request, Digest) []byte{
 		"malformed": func(Request, Digest) []byte { return []byte("{not-json\n") },
 		"unknown field": func(request Request, digest Digest) []byte {
@@ -536,6 +544,7 @@ func TestLoadRouteRefusesMalformedOrMismatchedArtifacts(t *testing.T) {
 	}
 	for name, fixture := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, _ := admittedRouteRequest(t, false)
 			path := filepath.Join(store.Root, request.HandoffID, routeFileName)
 			if err := os.WriteFile(path, fixture(request, digest), 0o600); err != nil {
@@ -549,7 +558,9 @@ func TestLoadRouteRefusesMalformedOrMismatchedArtifacts(t *testing.T) {
 }
 
 func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
+	t.Parallel()
 	t.Run("store root symlink", func(t *testing.T) {
+		t.Parallel()
 		realStore, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := realStore.SaveRoute(validRoute(request, digest)); err != nil {
 			t.Fatal(err)
@@ -563,6 +574,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("handoff directory symlink", func(t *testing.T) {
+		t.Parallel()
 		realStore, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := realStore.SaveRoute(validRoute(request, digest)); err != nil {
 			t.Fatal(err)
@@ -579,6 +591,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("oversized route", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		path := filepath.Join(store.Root, request.HandoffID, routeFileName)
 		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxRouteBytes+1), 0o600); err != nil {
@@ -589,6 +602,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("route symlink", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		external := filepath.Join(t.TempDir(), "external-route.json")
 		if err := os.WriteFile(external, validRouteBytes(t, request, digest), 0o600); err != nil {
@@ -602,6 +616,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("request symlink", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, admittedRaw := admittedRouteRequest(t, false)
 		requestPath := filepath.Join(store.Root, request.HandoffID, requestFileName)
 		external := filepath.Join(t.TempDir(), "external-request.json")
@@ -619,6 +634,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("route hard link", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 			t.Fatal(err)
@@ -632,6 +648,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("request hard link", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		requestPath := filepath.Join(store.Root, request.HandoffID, requestFileName)
 		if err := os.Link(requestPath, filepath.Join(t.TempDir(), "request-alias.json")); err != nil {
@@ -642,6 +659,7 @@ func TestRouteReadsAreBoundedAndRefuseLinks(t *testing.T) {
 		}
 	})
 	t.Run("oversized request", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		requestPath := filepath.Join(store.Root, request.HandoffID, requestFileName)
 		if err := os.WriteFile(requestPath, bytes.Repeat([]byte("x"), maxExecutionLockRequestBytes+1), 0o600); err != nil {

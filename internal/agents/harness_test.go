@@ -38,6 +38,7 @@ func configValues(t *testing.T, argv []string) map[string]string {
 }
 
 func TestCodexArgvIsolatesTheChildAndKeepsTheTaskOffArgv(t *testing.T) {
+	t.Parallel()
 	argv, err := CodexArgv(codexOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +88,7 @@ func TestCodexArgvIsolatesTheChildAndKeepsTheTaskOffArgv(t *testing.T) {
 }
 
 func TestCodexArgvQuotesEveryValueAsTOML(t *testing.T) {
+	t.Parallel()
 	options := codexOptions()
 	options.ProviderName = "openrouter"
 	options.Provider = Provider{BaseURL: "https://openrouter.ai/api/v1", CredentialEnv: "OPENROUTER_API_KEY", WireAPI: WireAPIResponses}
@@ -115,6 +117,7 @@ func containsArg(argv []string, want string) bool {
 }
 
 func TestCodexArgvOmitsReasoningWhenUnset(t *testing.T) {
+	t.Parallel()
 	options := codexOptions()
 	options.Reasoning = ""
 	argv, err := CodexArgv(options)
@@ -137,6 +140,7 @@ func TestCodexArgvOmitsReasoningWhenUnset(t *testing.T) {
 }
 
 func TestCodexArgvOmitsLastMessageWhenUnset(t *testing.T) {
+	t.Parallel()
 	options := codexOptions()
 	options.LastMessagePath = ""
 	argv, err := CodexArgv(options)
@@ -149,6 +153,7 @@ func TestCodexArgvOmitsLastMessageWhenUnset(t *testing.T) {
 }
 
 func TestCodexArgvRejectsIncompleteOptions(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(*HarnessOptions){
 		"no working directory": func(o *HarnessOptions) { o.WorktreeDir = "  " },
 		"no model":             func(o *HarnessOptions) { o.Model = "" },
@@ -158,6 +163,7 @@ func TestCodexArgvRejectsIncompleteOptions(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			options := codexOptions()
 			mutate(&options)
 			if _, err := CodexArgv(options); err == nil {
@@ -168,6 +174,7 @@ func TestCodexArgvRejectsIncompleteOptions(t *testing.T) {
 }
 
 func TestSummarizeEventsExtractsFactsOnly(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"type":"thread.started","thread_id":"t"}`,
 		`not json at all: the harness merges stderr into the same file`,
@@ -199,6 +206,7 @@ func TestSummarizeEventsExtractsFactsOnly(t *testing.T) {
 }
 
 func TestSummarizeEventsReportsFailedTurnsAndMalformedLines(t *testing.T) {
+	t.Parallel()
 	summary := SummarizeEvents(strings.NewReader("{\"type\":\"turn.failed\"}\n"))
 	if !summary.TurnFailed || summary.TurnCompleted || summary.Usage != nil {
 		t.Fatalf("failed turn = %#v", summary)
@@ -229,6 +237,7 @@ func TestSummarizeEventsReportsFailedTurnsAndMalformedLines(t *testing.T) {
 }
 
 func TestSummarizeEventsReadsTheHarnessUsageFieldNames(t *testing.T) {
+	t.Parallel()
 	// The field names are the harness's contract; this pins them so a harness
 	// rename is caught here rather than silently dropping usage.
 	raw := `{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":2,"cache_write_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":5,"extra_future_field":6}}`
@@ -243,6 +252,7 @@ func TestSummarizeEventsReadsTheHarnessUsageFieldNames(t *testing.T) {
 }
 
 func TestRecentActionsCondensesWhatTheWorkerDid(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"command_execution","command":"  cat   a.txt "}}`,
 		`{"type":"item.completed","item":{"type":"file_change"}}`,
@@ -269,6 +279,7 @@ func TestRecentActionsCondensesWhatTheWorkerDid(t *testing.T) {
 }
 
 func TestRecentActionsKeepsOnlyTheRequestedWindow(t *testing.T) {
+	t.Parallel()
 	var builder strings.Builder
 	for index := 0; index < 10; index++ {
 		builder.WriteString(`{"type":"item.completed","item":{"type":"command_execution","command":"cmd-`)

@@ -30,6 +30,7 @@ func TestOrchCovMatchesHoldUsesPathMatchSemantics(t *testing.T) {
 		{name: "later pattern still matches", slug: "acme/app", patterns: []string{"other/app", "acme/app"}, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := MatchesHold(test.slug, test.patterns); got != test.want {
 				t.Fatalf("MatchesHold(%q, %v) = %t, want %t", test.slug, test.patterns, got, test.want)
 			}
@@ -170,6 +171,7 @@ func TestOrchCovLandingLaneHeartbeatRefreshesTheHeldLane(t *testing.T) {
 }
 
 func TestOrchCovLandingLaneHeartbeatClampsANonPositiveInterval(t *testing.T) {
+	t.Parallel()
 	// A non-positive interval has to be clamped to the documented default: a
 	// zero duration would panic time.NewTicker inside the refresh goroutine,
 	// taking the process with it.
@@ -236,6 +238,7 @@ func TestOrchCovNonMechanicalGoModuleRefusesGraphDirectives(t *testing.T) {
 		{name: "empty patch line", patch: "+\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			reason := nonMechanicalGoModule("go.mod", test.patch)
 			if test.want == "" {
 				if reason != "" {
@@ -332,6 +335,7 @@ func TestOrchCovNonMechanicalContentReasonsAboutAPackageManifest(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			name := test.file
 			if name == "" {
 				name = "package.json"

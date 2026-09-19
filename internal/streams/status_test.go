@@ -12,6 +12,7 @@ import (
 // declares an older published version. All three are reported separately, are
 // named per repository, and come from stream state after a session restart.
 func TestStatusSeparatesLinkedUntaggedAndBehind(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/linked", "acme/behind"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -98,6 +99,7 @@ func TestStatusSeparatesLinkedUntaggedAndBehind(t *testing.T) {
 // REQ: stream-backlog-is-counted-by-patch-identity — N branches carrying one
 // body of work are named as one cluster with their cardinality.
 func TestStatusCollapsesPatchIdenticalBacklog(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -137,6 +139,7 @@ func TestStatusCollapsesPatchIdenticalBacklog(t *testing.T) {
 // A gap WB could not establish is reported as unknown; an empty gap list must
 // never be readable as "nothing is wrong".
 func TestStatusReportsWhatItCouldNotEstablish(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -161,6 +164,7 @@ func TestStatusReportsWhatItCouldNotEstablish(t *testing.T) {
 // must use each member worktree as repository context and stay strictly
 // read-only; join is the explicit mutating recovery verb.
 func TestStatusReadOnlyDiscoversEachMembersExistingPullRequest(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, _ := newTestEngine(t)
 	const branch = "stream/incident-recovery"
 	corePath := "/projects/datatug/datatug-core/.worktrees/incident-recovery"
@@ -208,6 +212,7 @@ func TestStatusReadOnlyDiscoversEachMembersExistingPullRequest(t *testing.T) {
 }
 
 func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		pr   PullRequest
@@ -217,6 +222,7 @@ func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T)
 		{name: "wrong head", pr: PullRequest{Number: 13, URL: "https://example.test/pull/13", Head: "stream/other", Base: "main", State: "OPEN"}, want: "head stream/other"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			engine, git, hub, _ := newTestEngine(t)
 			const worktree = "/projects/acme/app/.worktrees/mismatch"
 			if _, err := engine.Store.Create(Stream{
@@ -247,6 +253,7 @@ func TestStatusBlocksMismatchedMemberPullRequestsWithoutARetryLoop(t *testing.T)
 }
 
 func TestStatusLabelsPersistedPublicationFailureAsHistorical(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	const worktree = "/projects/acme/app/.worktrees/history"
 	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
@@ -282,6 +289,7 @@ func TestStatusLabelsPersistedPublicationFailureAsHistorical(t *testing.T) {
 }
 
 func TestStatusDoesNotMisdatePersistedPublicationFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	const worktree = "/projects/acme/app/.worktrees/history"
 	const persistedFailure = "push stream/history: exit status 1"
@@ -313,6 +321,7 @@ func TestStatusDoesNotMisdatePersistedPublicationFailure(t *testing.T) {
 }
 
 func TestVersionComparisonTreatsUnreadableVersionsAsNotBehind(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		declared, published string
 		want                bool

@@ -10,6 +10,7 @@ import (
 )
 
 func TestMemoizableGitQueryAcceptsOnlyStableReadOnlyVerbs(t *testing.T) {
+	t.Parallel()
 	accepted := [][]string{
 		{"rev-parse", "HEAD"},
 		{"rev-parse", "--path-format=absolute", "--git-common-dir"},
@@ -94,6 +95,7 @@ func TestGitQueryMemoNeverCachesWorkingTreeState(t *testing.T) {
 }
 
 func TestWithGitQueryMemoIsIdempotent(t *testing.T) {
+	t.Parallel()
 	ctx := withGitQueryMemo(context.Background())
 	again := withGitQueryMemo(ctx)
 	if gitQueryMemoFrom(ctx) != gitQueryMemoFrom(again) {
@@ -102,6 +104,7 @@ func TestWithGitQueryMemoIsIdempotent(t *testing.T) {
 }
 
 func TestIsAncestorShortCircuitsSelfComparison(t *testing.T) {
+	t.Parallel()
 	// A nonexistent repository proves no git process ran: a real spawn would
 	// fail on the missing directory rather than answer true.
 	ok, err := isAncestor(context.Background(), filepath.Join(t.TempDir(), "missing"), "abc123", "abc123")

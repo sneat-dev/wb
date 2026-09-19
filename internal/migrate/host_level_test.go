@@ -14,6 +14,7 @@ import (
 // a second copy of it. Only when no clone exists is the literal host level
 // predicted, which is where a new clone must land.
 func TestCampaignCanonicalPathPrefersAnExistingClone(t *testing.T) {
+	t.Parallel()
 	newClone := func(t *testing.T, path string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Join(path, ".git"), 0o755); err != nil {
@@ -22,6 +23,7 @@ func TestCampaignCanonicalPathPrefersAnExistingClone(t *testing.T) {
 	}
 
 	t.Run("host level wins", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		hosted := filepath.Join(root, "github.com", "acme", "app")
 		newClone(t, hosted)
@@ -36,6 +38,7 @@ func TestCampaignCanonicalPathPrefersAnExistingClone(t *testing.T) {
 	})
 
 	t.Run("legacy clone is used in place", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		legacy := filepath.Join(root, "acme", "app")
 		newClone(t, legacy)
@@ -49,6 +52,7 @@ func TestCampaignCanonicalPathPrefersAnExistingClone(t *testing.T) {
 	})
 
 	t.Run("a missing clone is predicted at the host level", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		got, err := campaignCanonicalPath(root, "acme", "app", "github.com/acme/app")
 		if err != nil {

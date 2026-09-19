@@ -117,6 +117,7 @@ func newEngine(t *testing.T, worktrees []Worktree) (*Engine, *fakeCapture, *fake
 // The whole point of the verb: a dirty worktree is captured BEFORE it is
 // retired, and the recoverable reference is reported.
 func TestUncommittedWorkIsCapturedBeforeTheWorktreeIsRetired(t *testing.T) {
+	t.Parallel()
 	engine, capture, retirer, claims, notes, order := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app", Branch: "feature/x"},
 	})
@@ -147,6 +148,7 @@ func TestUncommittedWorkIsCapturedBeforeTheWorktreeIsRetired(t *testing.T) {
 // A capture that fails stops the removal. Retiring a checkout whose work could
 // not be preserved is the one outcome that loses data irrecoverably.
 func TestAFailedCaptureStopsTheRemoval(t *testing.T) {
+	t.Parallel()
 	engine, capture, retirer, claims, _, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 	})
@@ -171,6 +173,7 @@ func TestAFailedCaptureStopsTheRemoval(t *testing.T) {
 // A live local link is the one refusal, and it fires before any side effect
 // over ANY of the task's worktrees.
 func TestALiveLinkRefusesTheWholeTaskBeforeAnySideEffect(t *testing.T) {
+	t.Parallel()
 	engine, capture, retirer, claims, _, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 		{Repository: "acme/site", Path: "/wt/site"},
@@ -196,6 +199,7 @@ func TestALiveLinkRefusesTheWholeTaskBeforeAnySideEffect(t *testing.T) {
 
 // Without --apply nothing is changed and the report says what would happen.
 func TestWithoutApplyNothingIsChanged(t *testing.T) {
+	t.Parallel()
 	engine, capture, retirer, claims, notes, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 	})
@@ -219,6 +223,7 @@ func TestWithoutApplyNothingIsChanged(t *testing.T) {
 // The claim outlives a worktree that could not be retired: releasing it would
 // advertise the task as free while its checkout is still on disk.
 func TestTheClaimIsKeptWhenAWorktreeSurvives(t *testing.T) {
+	t.Parallel()
 	engine, _, retirer, claims, _, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 		{Repository: "acme/site", Path: "/wt/site"},
@@ -242,6 +247,7 @@ func TestTheClaimIsKeptWhenAWorktreeSurvives(t *testing.T) {
 
 // A clean worktree is retired with no capture at all.
 func TestACleanWorktreeIsRetiredWithoutACapture(t *testing.T) {
+	t.Parallel()
 	engine, capture, retirer, _, _, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 	})
@@ -263,6 +269,7 @@ func TestACleanWorktreeIsRetiredWithoutACapture(t *testing.T) {
 // A note that cannot be sealed must not strand the worktree: the capture
 // already exists, and leaving residue is what this verb removes.
 func TestANoteThatCannotBeSealedStillRetiresTheWorktree(t *testing.T) {
+	t.Parallel()
 	engine, _, retirer, _, _, _ := newEngine(t, []Worktree{{Repository: "acme/app", Path: "/wt/app"}})
 	engine.Notes = failingNotes{}
 	result, err := engine.End(context.Background(), Options{Task: "t", Apply: true})
@@ -282,6 +289,7 @@ type failingNotes struct{}
 func (failingNotes) Seal(string, string) (string, error) { return "", errors.New("read-only journal") }
 
 func TestAnUnknownTaskIsAnError(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _, _ := newEngine(t, nil)
 	if _, err := engine.End(context.Background(), Options{Task: "absent"}); err == nil {
 		t.Fatal("ending a task with no worktrees reported success")
@@ -289,6 +297,7 @@ func TestAnUnknownTaskIsAnError(t *testing.T) {
 }
 
 func TestRepositoryNarrowsACoordinatedTask(t *testing.T) {
+	t.Parallel()
 	engine, _, retirer, _, _, _ := newEngine(t, []Worktree{
 		{Repository: "acme/app", Path: "/wt/app"},
 		{Repository: "acme/site", Path: "/wt/site"},

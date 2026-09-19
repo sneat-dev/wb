@@ -49,7 +49,6 @@ func TestGraphProjectionsShareCanonicalEvidence(t *testing.T) {
 }
 
 func TestGraphFromGoFleetFiltersExactDependencyWithProviderContext(t *testing.T) {
-	t.Parallel()
 	discovered := goFleetGraph{
 		modules: map[string]goFleetModule{
 			"example.com/provider": {Path: "example.com/provider", Repository: "acme/provider", Manifest: "go.mod"},
@@ -70,7 +69,6 @@ func TestGraphFromGoFleetFiltersExactDependencyWithProviderContext(t *testing.T)
 }
 
 func TestGraphPreservesAmbiguousProvidersWhileMutationValidationRejectsThem(t *testing.T) {
-	t.Parallel()
 	declarations := []goFleetModule{
 		{Path: "example.com/provider", Repository: "acme/provider", Manifest: "go.mod"},
 		{Path: "example.com/provider", Repository: "acme/provider-copy", Manifest: "go.mod"},
@@ -101,7 +99,6 @@ func TestGraphPreservesAmbiguousProvidersWhileMutationValidationRejectsThem(t *t
 // stays visible; it is the fatal mutation-time abort that this pins as
 // gone, because the ambiguity is no longer unresolved.
 func TestGraphUsesRepositoryMatchingDeclarationAndAllowsMutation(t *testing.T) {
-	t.Parallel()
 	const module = "github.com/acme/provider"
 	declarations := []goFleetModule{
 		{Path: module, Repository: "acme/provider", Manifest: "go.mod"},

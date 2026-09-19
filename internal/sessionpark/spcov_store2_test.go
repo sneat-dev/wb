@@ -16,6 +16,7 @@ import (
 )
 
 func TestSpCovSourceLockAuthenticatesOnlyExactAggregateBytes(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	raw, err := EncodeBundle(bundle)
@@ -56,6 +57,7 @@ func TestSpCovSourceLockAuthenticatesOnlyExactAggregateBytes(t *testing.T) {
 }
 
 func TestSpCovSourceLockRejectsTamperedAggregateEvidence(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(t *testing.T, store Store, bundle Bundle){
 		"root mode": func(t *testing.T, store Store, bundle Bundle) {
 			if err := os.Chmod(store.Root, 0o755); err != nil {
@@ -114,6 +116,7 @@ func TestSpCovSourceLockRejectsTamperedAggregateEvidence(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			store, bundle := spCovCreatedStore(t)
 			lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 			raw, err := EncodeBundle(bundle)
@@ -130,6 +133,7 @@ func TestSpCovSourceLockRejectsTamperedAggregateEvidence(t *testing.T) {
 }
 
 func TestSpCovRetainSessionDirAndUnderLockReads(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	raw, err := EncodeBundle(bundle)
 	if err != nil {
@@ -200,6 +204,7 @@ func TestSpCovRetainSessionDirAndUnderLockReads(t *testing.T) {
 }
 
 func TestSpCovEnsureAndLoadLocalSuccessorContext(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock, nil); err == nil {
@@ -254,7 +259,9 @@ func TestSpCovEnsureAndLoadLocalSuccessorContext(t *testing.T) {
 }
 
 func TestSpCovLocalSuccessorContextZeroMembersAndOversize(t *testing.T) {
+	t.Parallel()
 	t.Run("zero members", func(t *testing.T) {
+		t.Parallel()
 		bundle := testBundle(t)
 		bundle.ParkedSessionID = "park-neutral"
 		bundle.Worktrees = nil
@@ -276,6 +283,7 @@ func TestSpCovLocalSuccessorContextZeroMembersAndOversize(t *testing.T) {
 		}
 	})
 	t.Run("oversized body", func(t *testing.T) {
+		t.Parallel()
 		bundle := testBundle(t)
 		bundle.ParkedSessionID = "park-huge-context"
 		bundle.Worktrees = []Worktree{{
@@ -297,6 +305,7 @@ func TestSpCovLocalSuccessorContextZeroMembersAndOversize(t *testing.T) {
 }
 
 func TestSpCovLocalLaunchRootSelectsMemberOrNeutralRoot(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	if _, err := store.LocalLaunchRootUnderLock(lock); err == nil {
@@ -319,6 +328,7 @@ func TestSpCovLocalLaunchRootSelectsMemberOrNeutralRoot(t *testing.T) {
 }
 
 func TestSpCovLocalNeutralRootCreationReuseAndRejection(t *testing.T) {
+	t.Parallel()
 	newNeutralLock := func(t *testing.T) (Store, Bundle, *SourceLock) {
 		t.Helper()
 		bundle := testBundle(t)
@@ -336,6 +346,7 @@ func TestSpCovLocalNeutralRootCreationReuseAndRejection(t *testing.T) {
 	}
 
 	t.Run("creates then reuses", func(t *testing.T) {
+		t.Parallel()
 		store, bundle, lock := newNeutralLock(t)
 		if existing, ok, err := store.ExistingLocalLaunchRootUnderLock(lock); err != nil || ok || existing != "" {
 			t.Fatalf("existing=%q ok=%t err=%v", existing, ok, err)
@@ -362,6 +373,7 @@ func TestSpCovLocalNeutralRootCreationReuseAndRejection(t *testing.T) {
 		}
 	})
 	t.Run("regular file rejected", func(t *testing.T) {
+		t.Parallel()
 		store, bundle, lock := newNeutralLock(t)
 		path := filepath.Join(store.Root, bundle.ParkedSessionID, LocalNeutralDirName)
 		spCovWriteRaw(t, path, []byte("not a directory"), 0o600)
@@ -375,6 +387,7 @@ func TestSpCovLocalNeutralRootCreationReuseAndRejection(t *testing.T) {
 }
 
 func TestSpCovResumeUnderLockValidatesSuccessorLineage(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	if _, err := store.ResumeUnderLock(lock, session.Record{PID: 1, WBSessionID: "wbs-x"}, time.Now()); err == nil {
@@ -392,6 +405,9 @@ func TestSpCovResumeUnderLockValidatesSuccessorLineage(t *testing.T) {
 		"negative pid":      {PID: -3, WBSessionID: "wbs-x"},
 		"padded session id": {PID: 1, WBSessionID: " wbs-x"},
 	} {
+		// Left serial: the trailing successful resume below must observe
+		// the pre-resume store state, and a parallel t.Run would return
+		// before its body (and this rejection) actually ran.
 		t.Run(name, func(t *testing.T) {
 			if _, err := store.ResumeUnderLock(lock, successor, time.Now()); err == nil {
 				t.Fatalf("invalid successor accepted: %#v", successor)
@@ -415,6 +431,7 @@ func TestSpCovResumeUnderLockValidatesSuccessorLineage(t *testing.T) {
 }
 
 func TestSpCovClaimResumeRouteRejectsUnsafeModesAndTargets(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	local := func() (ResumeRoute, bool, error) {
@@ -449,6 +466,9 @@ func TestSpCovClaimResumeRouteRejectsUnsafeModesAndTargets(t *testing.T) {
 			return store.claimResumeRouteUnderLock(lock, ResumeRouteRemote, "target", string(sessionmove.CourierSSH), sessionmove.SSHConfig{}, time.Now())
 		},
 	} {
+		// Left serial: the trailing checks below claim a real route on the
+		// same store/lock and write to the same aggregate path, and must
+		// run only after every rejection case above has actually executed.
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := call(); err == nil {
 				t.Fatal("unsafe remote route claimed")
@@ -477,6 +497,7 @@ func TestSpCovClaimResumeRouteRejectsUnsafeModesAndTargets(t *testing.T) {
 }
 
 func TestSpCovResumeRouteValidationAndSSHConfig(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	if _, err := store.validateResumeRouteUnderLock(nil, ResumeRouteLocal, ""); err == nil {
@@ -523,6 +544,7 @@ func TestSpCovResumeRouteValidationAndSSHConfig(t *testing.T) {
 }
 
 func TestSpCovLoadResumeRouteAtRejectsTamperedArtifacts(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	path := filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceResumeRouteFileName)
 	spCovWriteRaw(t, path, []byte("{not json"), 0o600)
@@ -566,6 +588,7 @@ func spCovOpenAggregate(t *testing.T, root, parkID string) *os.File {
 }
 
 func TestSpCovAppendSourceEventSequencingAndIdempotence(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	lock := spCovAcquire(t, store, bundle.ParkedSessionID)
 	id := bundle.ParkedSessionID
@@ -614,6 +637,7 @@ func TestSpCovAppendSourceEventSequencingAndIdempotence(t *testing.T) {
 }
 
 func TestSpCovListSourceEventsRejectsEveryMalformedArtifact(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	id := bundle.ParkedSessionID
 	eventsDir := filepath.Join(spCovAggregatePath(store.Root, id), sourceEventsDirName)
@@ -697,7 +721,9 @@ func TestSpCovListSourceEventsRejectsEveryMalformedArtifact(t *testing.T) {
 }
 
 func TestSpCovLoadSourceStateRejectsCorruptEventEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("events directory missing", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		if err := os.RemoveAll(filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceEventsDirName)); err != nil {
 			t.Fatal(err)
@@ -707,6 +733,7 @@ func TestSpCovLoadSourceStateRejectsCorruptEventEvidence(t *testing.T) {
 		}
 	})
 	t.Run("rogue event artifact", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		eventsDir := filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceEventsDirName)
 		spCovWriteRaw(t, filepath.Join(eventsDir, "rogue.json"), []byte("{}\n"), 0o600)
@@ -715,6 +742,7 @@ func TestSpCovLoadSourceStateRejectsCorruptEventEvidence(t *testing.T) {
 		}
 	})
 	t.Run("corrupt resume route", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		spCovWriteRaw(t, filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceResumeRouteFileName), []byte("{}\n"), 0o600)
 		if _, err := store.Load(bundle.ParkedSessionID); err == nil {
@@ -722,6 +750,7 @@ func TestSpCovLoadSourceStateRejectsCorruptEventEvidence(t *testing.T) {
 		}
 	})
 	t.Run("remote receipt absent and conflicting", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		eventsDir := filepath.Join(spCovAggregatePath(store.Root, bundle.ParkedSessionID), sourceEventsDirName)
 		remote := spCovResumedEvent(1, func(event *Event) {
@@ -756,6 +785,7 @@ func TestSpCovLoadSourceStateRejectsCorruptEventEvidence(t *testing.T) {
 }
 
 func TestSpCovPrepareRemoteUnderLockRejectsUnsafeRoutes(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -781,6 +811,9 @@ func TestSpCovPrepareRemoteUnderLockRejectsUnsafeRoutes(t *testing.T) {
 			return store.PrepareRemoteUnderLock(lock, "target", "", courier, sessionmove.SSHConfig{}, time.Now())
 		},
 	} {
+		// Left serial: the trailing checks below prepare a real remote
+		// route on the same store/lock and must run only after every
+		// rejection case above has actually executed.
 		t.Run(name, func(t *testing.T) {
 			if _, err := call(); err == nil {
 				t.Fatal("unsafe remote route prepared")
@@ -807,6 +840,7 @@ func TestSpCovPrepareRemoteUnderLockRejectsUnsafeRoutes(t *testing.T) {
 }
 
 func TestSpCovPrepareRemoteUnderLockRefusesResumedSource(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -829,6 +863,7 @@ func TestSpCovPrepareRemoteUnderLockRefusesResumedSource(t *testing.T) {
 }
 
 func TestSpCovValidateRemoteAdmissionRequiresExactDurableBytes(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -881,6 +916,7 @@ func TestSpCovValidateRemoteAdmissionRequiresExactDurableBytes(t *testing.T) {
 }
 
 func TestSpCovLoadAndSaveRemoteReceiptUnderLock(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -942,6 +978,7 @@ func TestSpCovLoadAndSaveRemoteReceiptUnderLock(t *testing.T) {
 }
 
 func TestSpCovFinalizeRemoteUnderLockRequiresDurableReceipt(t *testing.T) {
+	t.Parallel()
 	store := NewStore(t.TempDir())
 	bundle := remoteTestBundle(t)
 	if _, err := store.Create(bundle); err != nil {
@@ -974,6 +1011,7 @@ func TestSpCovFinalizeRemoteUnderLockRequiresDurableReceipt(t *testing.T) {
 }
 
 func TestSpCovSourceAcquireRejectsUnsafeAggregates(t *testing.T) {
+	t.Parallel()
 	if _, err := NewStore(t.TempDir()).Acquire(context.Background(), ".."); err == nil {
 		t.Fatal("invalid park ID acquired")
 	}
@@ -1016,6 +1054,7 @@ func TestSpCovSourceAcquireRejectsUnsafeAggregates(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			store, bundle := spCovCreatedStore(t)
 			mutate(t, store, bundle)
 			if _, err := store.Acquire(context.Background(), bundle.ParkedSessionID); err == nil {
@@ -1025,6 +1064,7 @@ func TestSpCovSourceAcquireRejectsUnsafeAggregates(t *testing.T) {
 	}
 
 	t.Run("aggregate ID mismatch", func(t *testing.T) {
+		t.Parallel()
 		store, bundle := spCovCreatedStore(t)
 		agg := spCovAggregatePath(store.Root, bundle.ParkedSessionID)
 		renamed := spCovAggregatePath(store.Root, "park-renamed")
@@ -1038,6 +1078,7 @@ func TestSpCovSourceAcquireRejectsUnsafeAggregates(t *testing.T) {
 }
 
 func TestSpCovSourceAcquireFenceHonoursCancelledContext(t *testing.T) {
+	t.Parallel()
 	store, bundle := spCovCreatedStore(t)
 	held := spCovAcquire(t, store, bundle.ParkedSessionID)
 	// An empty digest is the documented wildcard used by held(): it authenticates

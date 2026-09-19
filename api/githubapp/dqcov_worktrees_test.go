@@ -10,6 +10,7 @@ import (
 )
 
 func TestDQCovRemoteStateWorktreeReadModelPropagatesStoreFailure(t *testing.T) {
+	t.Parallel()
 	store := &readSnapshotStore{err: errors.New("snapshots unavailable")}
 	model := RemoteStateWorktreeReadModel{Store: store, Access: machineAccess{}}
 	_, err := model.Worktrees(context.Background(), Viewer{Authenticated: true, Member: true, UserID: "user"}, WorktreeFilter{})
@@ -19,6 +20,7 @@ func TestDQCovRemoteStateWorktreeReadModelPropagatesStoreFailure(t *testing.T) {
 }
 
 func TestDQCovRemoteStateWorktreeReadModelSkipsUnvalidatedRecords(t *testing.T) {
+	t.Parallel()
 	invalid := machinesnapshot.StoredSnapshot{
 		Snapshot:   machinesnapshot.Snapshot{Login: "alex", Machine: "vm"},
 		ReceivedAt: time.Unix(1, 0), Digest: "digest",
@@ -38,6 +40,7 @@ func TestDQCovRemoteStateWorktreeReadModelSkipsUnvalidatedRecords(t *testing.T) 
 }
 
 func TestDQCovRemoteStateWorktreeReadModelSortsRowsDeterministically(t *testing.T) {
+	t.Parallel()
 	published := time.Unix(1000, 0).UTC()
 	store := &readSnapshotStore{records: []machinesnapshot.StoredSnapshot{
 		storedMachine("alex", "beta", published, published, []machinesnapshot.Worktree{
@@ -72,6 +75,7 @@ func TestDQCovRemoteStateWorktreeReadModelSortsRowsDeterministically(t *testing.
 }
 
 func TestDQCovWorktreeRowDefaultsAndAttentionReasons(t *testing.T) {
+	t.Parallel()
 	published := time.Unix(1000, 0).UTC()
 	received := published.Add(time.Minute)
 	snapshot := machinesnapshot.Snapshot{Machine: "vm", PublishedAt: published}
@@ -114,6 +118,7 @@ func TestDQCovWorktreeRowDefaultsAndAttentionReasons(t *testing.T) {
 }
 
 func TestDQCovWorktreeRowHeartbeatPrefersNewestObservation(t *testing.T) {
+	t.Parallel()
 	published := time.Unix(1000, 0).UTC()
 	lastSeen := published.Add(5 * time.Minute)
 	received := published.Add(time.Minute)

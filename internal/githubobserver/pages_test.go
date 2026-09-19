@@ -15,6 +15,7 @@ func pageResponse(body, link string) commandResult {
 }
 
 func TestGetPagesFollowsTheLinkHeaderWithoutSlurp(t *testing.T) {
+	t.Parallel()
 	var requested []string
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -55,6 +56,7 @@ func TestGetPagesFollowsTheLinkHeaderWithoutSlurp(t *testing.T) {
 }
 
 func TestGetPagesReturnsOnePageWhenThereIsNoNextLink(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -74,6 +76,7 @@ func TestGetPagesReturnsOnePageWhenThereIsNoNextLink(t *testing.T) {
 // verb walk forever, and a wait that never ends is indistinguishable from a
 // hang.
 func TestGetPagesRefusesALoopingLinkHeader(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -87,6 +90,7 @@ func TestGetPagesRefusesALoopingLinkHeader(t *testing.T) {
 }
 
 func TestGetPagesRefusesToExceedItsBound(t *testing.T) {
+	t.Parallel()
 	page := 0
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -114,6 +118,7 @@ func itoa(value int) string {
 }
 
 func TestNextPageEndpointReadsOnlyTheNextRelation(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		headers map[string]string

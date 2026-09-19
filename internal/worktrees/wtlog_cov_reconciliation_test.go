@@ -23,6 +23,7 @@ func wtLogCovReconciliationClaim(worktree string) (workLogClaim, workLogProjecti
 }
 
 func TestWtLogCovValidateBranchReconciliationOptions(t *testing.T) {
+	t.Parallel()
 	valid := LogRecoverOptions{Worktree: "/tmp/wt", ReconcileBranch: "wb/x", ExpectedHead: strings.Repeat("a", 40),
 		Actor: "operator", Reason: "rebind", EventID: "event-1", Remote: true}
 	if err := validateBranchReconciliationOptions(valid); err != nil {
@@ -50,6 +51,7 @@ func TestWtLogCovValidateBranchReconciliationOptions(t *testing.T) {
 }
 
 func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	claim, projection := wtLogCovReconciliationClaim(worktree)
 	if err := corroborateReconciliationClaimShape(worktree, projection, claim); err != nil {
@@ -103,6 +105,7 @@ func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
 }
 
 func TestWtLogCovReconciliationEventAndProjection(t *testing.T) {
+	t.Parallel()
 	record := branchReconciliationRecord{EventID: "event-1", Reason: "rebind", Actor: "operator",
 		LiveBranch: "wb/live", ClaimBranch: "wb/claim", LocalHead: "local", RemoteHead: "remote"}
 	event := reconciliationEvent(context.Background(), t.TempDir(), record)
@@ -166,6 +169,7 @@ func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
 }
 
 func TestWtLogCovCorroborateReconciliationRecord(t *testing.T) {
+	t.Parallel()
 	claim, _ := wtLogCovReconciliationClaim("/tmp/wt")
 	head := strings.Repeat("a", 40)
 	options := LogRecoverOptions{Worktree: "/tmp/wt", ReconcileBranch: "wb/live", ExpectedHead: head,

@@ -7,6 +7,7 @@ import (
 )
 
 func TestWtLogCovSelectorPackageFromLockfileSelector(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		selector string
 		want     string
@@ -28,6 +29,7 @@ func TestWtLogCovSelectorPackageFromLockfileSelector(t *testing.T) {
 }
 
 func TestWtLogCovParseLockfileSelector(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		ecosystem   string
@@ -50,6 +52,7 @@ func TestWtLogCovParseLockfileSelector(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			segments, ok := parseLockfileSelector(tc.ecosystem, tc.lockfile, tc.selector, tc.packageName)
 			if ok != tc.wantOK {
 				t.Fatalf("parseLockfileSelector(%q,%q,%q,%q) ok = %t, want %t", tc.ecosystem, tc.lockfile, tc.selector, tc.packageName, ok, tc.wantOK)
@@ -62,6 +65,7 @@ func TestWtLogCovParseLockfileSelector(t *testing.T) {
 }
 
 func TestWtLogCovLockfileEntryContainsVersion(t *testing.T) {
+	t.Parallel()
 	goSum := "example.com/nx v1.2.3 h1:aaa=\nexample.com/nx v1.2.3/go.mod h1:bbb=\nexample.com/other v9.9.9 h1:ccc=\n"
 	if !lockfileEntryContainsVersion("go", "go.sum", goSum, "example.com/nx", "v1.2.3") {
 		t.Fatal("go.sum exact module at version was not proven")
@@ -96,6 +100,7 @@ func TestWtLogCovLockfileEntryContainsVersion(t *testing.T) {
 }
 
 func TestWtLogCovNormalizeDependencyVersion(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{"1.2.3": "v1.2.3", "v1.2.3": "v1.2.3", "  v2.0.0 ": "v2.0.0", " 2.0.0": "v2.0.0", "": ""}
 	for input, want := range cases {
 		if got := normalizeDependencyVersion(input); got != want {
@@ -105,6 +110,7 @@ func TestWtLogCovNormalizeDependencyVersion(t *testing.T) {
 }
 
 func TestWtLogCovDependencyVersionSatisfiesEcosystems(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		ecosystem string
 		candidate string
@@ -140,6 +146,7 @@ func TestWtLogCovDependencyVersionSatisfiesEcosystems(t *testing.T) {
 }
 
 func TestWtLogCovNpmRangeAlternativeSatisfies(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		candidate string
 		requested string
@@ -165,6 +172,7 @@ func TestWtLogCovNpmRangeAlternativeSatisfies(t *testing.T) {
 }
 
 func TestWtLogCovNpmComparatorSatisfies(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		candidate  string
 		constraint string
@@ -198,6 +206,7 @@ func TestWtLogCovNpmComparatorSatisfies(t *testing.T) {
 }
 
 func TestWtLogCovValidateDependencyManifestNPM(t *testing.T) {
+	t.Parallel()
 	contents := []byte(`{"dependencies":{"nx":"22.7.7"},"devDependencies":{"jest":"29.0.0"},"peerDependencies":{"react":"18.0.0"},"optionalDependencies":{"fsevents":"2.3.0"}}`)
 	cases := []struct {
 		name     string
@@ -220,6 +229,7 @@ func TestWtLogCovValidateDependencyManifestNPM(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rejection := validateDependencyManifest(tc.delta, contents, tc.expected, tc.exact)
 			if tc.want == "" {
 				if rejection != "" {
@@ -241,6 +251,7 @@ func TestWtLogCovValidateDependencyManifestNPM(t *testing.T) {
 }
 
 func TestWtLogCovValidateDependencyManifestGo(t *testing.T) {
+	t.Parallel()
 	manifest := []byte("module example.com/app\n\ngo 1.21\n\nrequire example.com/nx v1.2.3\n")
 	delta := SupersessionDependencyDelta{Ecosystem: "go", Manifest: "go.mod", Selector: "require:example.com/nx", Package: "example.com/nx"}
 	if rejection := validateDependencyManifest(delta, manifest, "v1.2.3", true); rejection != "" {
@@ -267,6 +278,7 @@ func TestWtLogCovValidateDependencyManifestGo(t *testing.T) {
 }
 
 func TestWtLogCovDependencyManifestValue(t *testing.T) {
+	t.Parallel()
 	npmContents := []byte(`{"dependencies":{"nx":"22.7.7"},"devDependencies":{"jest":"29.0.0"},"peerDependencies":{"react":"18.0.0"},"optionalDependencies":{"fsevents":"2.3.0"}}`)
 	cases := []struct {
 		name     string
@@ -287,6 +299,7 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			value, found, err := dependencyManifestValue(tc.delta, tc.contents)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %t", err, tc.wantErr)
@@ -319,6 +332,7 @@ func TestWtLogCovDependencyManifestValue(t *testing.T) {
 }
 
 func TestWtLogCovSameSupersessionReceipt(t *testing.T) {
+	t.Parallel()
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app"}
 	if !sameSupersessionReceipt(nil, nil) {
 		t.Fatal("two nil receipts should match")
@@ -337,6 +351,7 @@ func TestWtLogCovSameSupersessionReceipt(t *testing.T) {
 }
 
 func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
+	t.Parallel()
 	entry := ListResult{Repository: "acme/app", HeadSHA: "head-1", OpenPullRequest: dependencyTestPullRequest("head-1")}
 	receipt := SupersessionReceipt{
 		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17,
@@ -359,6 +374,7 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			mutatedReceipt, mutatedEntry := receipt, entry
 			mutatedEntry.OpenPullRequest = dependencyTestPullRequest("head-1")
 			tc.mutate(&mutatedReceipt, &mutatedEntry)
@@ -387,6 +403,7 @@ func TestWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
 }
 
 func TestWtLogCovIsDependencyManifestOrImporter(t *testing.T) {
+	t.Parallel()
 	for _, want := range []string{"package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.sum", "apps/web/package.json", ".github/workflows/ci.yml", ".github/workflows/ci.yaml"} {
 		if !isDependencyManifestOrImporter(want) {
 			t.Errorf("isDependencyManifestOrImporter(%q) = false, want true", want)
@@ -400,6 +417,7 @@ func TestWtLogCovIsDependencyManifestOrImporter(t *testing.T) {
 }
 
 func TestWtLogCovDependencyAuditRendersEmptyAndSorted(t *testing.T) {
+	t.Parallel()
 	empty := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17"}
 	jsonBytes, err := empty.DependencyAuditJSON()
 	if err != nil {

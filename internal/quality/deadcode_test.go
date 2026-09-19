@@ -50,6 +50,7 @@ const twoFindings = `[
 ]`
 
 func TestDeadcodeSortsFindingsAndBuildsIdentityFromPackageAndFunction(t *testing.T) {
+	t.Parallel()
 	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
 		Tool: stubAnalyzer(t, twoFindings, 0),
 	})
@@ -77,6 +78,7 @@ func TestDeadcodeSortsFindingsAndBuildsIdentityFromPackageAndFunction(t *testing
 }
 
 func TestDeadcodeGatesOnlyFindingsMissingFromBaseline(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	baseline := filepath.Join(repository, "baseline.txt")
 	// Comments and blank lines are ignored, so the file can explain itself.
@@ -104,6 +106,7 @@ func TestDeadcodeGatesOnlyFindingsMissingFromBaseline(t *testing.T) {
 }
 
 func TestDeadcodeReportsBaselineEntriesThatAreReachableAgainWithoutFailing(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	// Two entries recorded, only one still dead: the other was wired up or
 	// deleted. That must never fail the gate — the ratchet only tightens.
@@ -127,6 +130,7 @@ func TestDeadcodeReportsBaselineEntriesThatAreReachableAgainWithoutFailing(t *te
 }
 
 func TestDeadcodeTreatsAMissingBaselineAsEveryFindingNew(t *testing.T) {
+	t.Parallel()
 	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
 		Tool:         stubAnalyzer(t, twoFindings, 0),
 		BaselinePath: "absent.txt",
@@ -143,6 +147,7 @@ func TestDeadcodeTreatsAMissingBaselineAsEveryFindingNew(t *testing.T) {
 }
 
 func TestDeadcodeFailsWhenTheAnalyzerItselfFails(t *testing.T) {
+	t.Parallel()
 	// deadcode exits 0 even when it reports findings, so a non-zero exit is a
 	// build error or a missing module. Reading it as "nothing is dead" would
 	// turn a broken analysis into a passing gate.
@@ -158,6 +163,7 @@ func TestDeadcodeFailsWhenTheAnalyzerItselfFails(t *testing.T) {
 }
 
 func TestDeadcodeRejectsOutputThatIsNotAnalyzerJSON(t *testing.T) {
+	t.Parallel()
 	_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
 		Tool: stubAnalyzer(t, "not json at all", 0),
 	})
@@ -167,6 +173,7 @@ func TestDeadcodeRejectsOutputThatIsNotAnalyzerJSON(t *testing.T) {
 }
 
 func TestDeadcodeAcceptsAnEmptyAnalysisAsClean(t *testing.T) {
+	t.Parallel()
 	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
 		Tool:         stubAnalyzer(t, "", 0),
 		BaselinePath: "absent.txt",
@@ -180,6 +187,7 @@ func TestDeadcodeAcceptsAnEmptyAnalysisAsClean(t *testing.T) {
 }
 
 func TestDeadcodeHonoursItsTimeout(t *testing.T) {
+	t.Parallel()
 	script := filepath.Join(t.TempDir(), "slow")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil { // #nosec G306 -- test fixture.
 		t.Fatal(err)
@@ -197,6 +205,7 @@ func TestDeadcodeHonoursItsTimeout(t *testing.T) {
 }
 
 func TestFormatDeadcodeBaselineSortsAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	rendered := FormatDeadcodeBaseline([]DeadcodeFinding{
 		{Identity: "z/pkg.B"},
 		{Identity: "a/pkg.A"},
@@ -214,6 +223,7 @@ func TestFormatDeadcodeBaselineSortsAndDeduplicates(t *testing.T) {
 }
 
 func TestWriteDeadcodeBaselineRoundTripsThroughLoad(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nested", DefaultDeadcodeBaseline)
 	findings := []DeadcodeFinding{{Identity: "a/pkg.A"}, {Identity: "b/pkg.B"}}
 	if err := WriteDeadcodeBaseline(path, findings); err != nil {
@@ -236,6 +246,7 @@ func TestWriteDeadcodeBaselineRoundTripsThroughLoad(t *testing.T) {
 // coverage run whose tests pass and whose profile merge then fails — the cause
 // was discarded and only the successful-looking output survived.
 func TestCommandErrorKeepsTheUnderlyingErrorAlongsideOutput(t *testing.T) {
+	t.Parallel()
 	detail := commandError("wb coverage .", "ok  \tgithub.com/acme/app\t0.4s\tcoverage: 91.2% of statements",
 		errors.New("merge coverage profiles: inconsistent mode line"))
 	if !strings.Contains(detail, "coverage: 91.2%") {
@@ -247,6 +258,7 @@ func TestCommandErrorKeepsTheUnderlyingErrorAlongsideOutput(t *testing.T) {
 }
 
 func TestCommandErrorDoesNotRepeatAnErrorAlreadyInTheOutput(t *testing.T) {
+	t.Parallel()
 	detail := commandError("go test ./...", "FAIL\nexit status 1", errors.New("exit status 1"))
 	if got := strings.Count(detail, "exit status 1"); got != 1 {
 		t.Fatalf("error duplicated %d times: %q", got, detail)
@@ -254,6 +266,7 @@ func TestCommandErrorDoesNotRepeatAnErrorAlreadyInTheOutput(t *testing.T) {
 }
 
 func TestCommandErrorFallsBackToTheErrorWhenOutputIsEmpty(t *testing.T) {
+	t.Parallel()
 	detail := commandError("go build ./...", "   \n  ", errors.New("no space left on device"))
 	if detail != "no space left on device" {
 		t.Fatalf("detail = %q", detail)
@@ -263,6 +276,7 @@ func TestCommandErrorFallsBackToTheErrorWhenOutputIsEmpty(t *testing.T) {
 // The truncation keeps a head and a tail. The appended error must survive it,
 // which is why it is appended rather than prefixed.
 func TestCommandErrorSurvivesTruncationOfLargeOutput(t *testing.T) {
+	t.Parallel()
 	detail := commandError("wb coverage .", strings.Repeat("noise line that says nothing useful\n", 200),
 		errors.New("merge coverage profiles: inconsistent mode line"))
 	if len(detail) > 1000 {

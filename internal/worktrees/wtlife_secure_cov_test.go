@@ -133,6 +133,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, testCase.args)
 			if result.exitCode != 1 {
 				t.Fatalf("exit = %d, want 1 (stderr %q)", result.exitCode, result.stderr)
@@ -145,6 +146,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRejectsMissingStageDescriptor(t *testing.T) {
+	t.Parallel()
 	result := wtLifeCovRunSecureHelper(t, "stage", nil, []string{secureStagePathArgument})
 	if result.exitCode != 1 {
 		t.Fatalf("stage without descriptor exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -242,6 +244,7 @@ func TestWtLifeCovSecureStageCanonicalHelperRejectsInvalidArguments(t *testing.T
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage-canonical", files, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid arguments") {
 				t.Fatalf("exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -453,6 +456,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperRejectsNonPolicyQueries(t *testing.
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "canonical-policy",
 				[]*os.File{repo.root, repo.common}, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid read-only query") {
@@ -884,6 +888,7 @@ func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.
 }
 
 func TestWtLifeCovSecurePushRepositoryArgumentSelectsRemote(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		args []string
 		want string

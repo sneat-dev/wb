@@ -40,6 +40,7 @@ func newRemoteRepo(t *testing.T) string {
 }
 
 func TestEvaluateTemplateSectionInsert(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := writeTemplate(t, "m", "block body")
 	r.Target = "README.md"
@@ -54,6 +55,7 @@ func TestEvaluateTemplateSectionInsert(t *testing.T) {
 }
 
 func TestEvaluateTemplateSectionNoTargetFile(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
 	seed := t.TempDir()
@@ -77,6 +79,7 @@ func TestEvaluateTemplateSectionNoTargetFile(t *testing.T) {
 }
 
 func TestLandTemplateSectionDirectPush(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := writeTemplate(t, "m", "block body")
 	r.Name = "test-recipe"
@@ -104,6 +107,7 @@ func TestLandTemplateSectionDirectPush(t *testing.T) {
 }
 
 func TestLandCommandDirectPush(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := Recipe{Name: "touch-it", Type: KindCommand, Command: "echo hi > NOTES.md"}
 	if err := r.applyDefaults(); err != nil {

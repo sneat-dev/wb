@@ -96,12 +96,14 @@ func TestListNeverDeletesAndPruneRemovesOnlyStale(t *testing.T) {
 }
 
 func TestRegisterRefusesARecordWithNoIdentity(t *testing.T) {
+	t.Parallel()
 	if _, err := Register(t.TempDir(), Record{PID: 1}); err == nil {
 		t.Error("registered a wait with no id")
 	}
 }
 
 func TestListIsEmptyRatherThanFailingBeforeAnyWait(t *testing.T) {
+	t.Parallel()
 	records, err := List(t.TempDir())
 	if err != nil {
 		t.Fatalf("listing before any wait failed: %v", err)
@@ -112,6 +114,7 @@ func TestListIsEmptyRatherThanFailingBeforeAnyWait(t *testing.T) {
 }
 
 func TestListIgnoresJunkInTheRegistry(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, directory), 0o700); err != nil {
 		t.Fatal(err)

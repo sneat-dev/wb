@@ -11,6 +11,7 @@ import (
 )
 
 func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
+	t.Parallel()
 	request := BuildRemoteRequest(remoteTestBundle(t), "target", "codex", time.Unix(100, 0).UTC())
 	envelope := Envelope{SchemaVersion: EnvelopeSchemaVersion, Kind: EnvelopeKind, Request: request}
 	raw, err := EncodeEnvelope(envelope)
@@ -23,6 +24,7 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 	}
 
 	t.Run("unknown field", func(t *testing.T) {
+		t.Parallel()
 		var value map[string]any
 		if err := json.Unmarshal(raw, &value); err != nil {
 			t.Fatal(err)
@@ -34,11 +36,13 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 		}
 	})
 	t.Run("trailing JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeEnvelope(append(bytes.Clone(raw), []byte("{}")...)); err == nil {
 			t.Fatal("trailing JSON accepted")
 		}
 	})
 	t.Run("zero members", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.Request.Members = nil
 		if _, err := EncodeEnvelope(candidate); err == nil || !strings.Contains(err.Error(), "requires between 1") {
@@ -46,6 +50,7 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 		}
 	})
 	t.Run("member count", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.Request.Members = make([]RemoteMember, MaxMembers+1)
 		if _, err := EncodeEnvelope(candidate); err == nil {
@@ -53,6 +58,7 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 		}
 	})
 	t.Run("field bound", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.Request.Members = append([]RemoteMember(nil), request.Members...)
 		candidate.Request.Members[0].Branch = strings.Repeat("x", MaxFieldBytes+1)
@@ -61,6 +67,7 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 		}
 	})
 	t.Run("credential redaction", func(t *testing.T) {
+		t.Parallel()
 		secret := "top-secret-token"
 		candidate := envelope
 		candidate.Request.Members = append([]RemoteMember(nil), request.Members...)
@@ -73,6 +80,7 @@ func TestParkResumeProtocolStrictBoundsAndUnsafeRemoteRedaction(t *testing.T) {
 }
 
 func TestParkResumeReceiptBindsEveryExactMember(t *testing.T) {
+	t.Parallel()
 	request := BuildRemoteRequest(remoteTestBundle(t), "target", "", time.Unix(100, 0).UTC())
 	raw, err := EncodeEnvelope(Envelope{SchemaVersion: EnvelopeSchemaVersion, Kind: EnvelopeKind, Request: request})
 	if err != nil {

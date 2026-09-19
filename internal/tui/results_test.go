@@ -14,6 +14,7 @@ import (
 )
 
 func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
+	t.Parallel()
 	results := []fleetsync.Result{
 		{Repo: discover.Repo{Org: "a", Name: "clean"}, Status: fleetsync.Pulled, PullAttempted: true, PullSucceeded: true},
 		{Repo: discover.Repo{Org: "a", Name: "broken"}, Status: fleetsync.Failed},
@@ -38,6 +39,7 @@ func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
 }
 
 func TestResultsModelNavigatesRepositoriesAndDetails(t *testing.T) {
+	t.Parallel()
 	results := []fleetsync.Result{
 		{
 			Repo:   discover.Repo{Org: "a", Name: "first"},
@@ -96,6 +98,7 @@ func TestResultsModelNavigatesRepositoriesAndDetails(t *testing.T) {
 }
 
 func TestResultsModelStacksOnNarrowTerminalAndScrollsDetails(t *testing.T) {
+	t.Parallel()
 	commits := make([]string, 40)
 	for i := range commits {
 		commits[i] = fmt.Sprintf("%07x commit %d with a subject long enough to wrap", i, i)
@@ -146,6 +149,7 @@ func selectResultGroup(t *testing.T, m *ResultsModel, label string) {
 }
 
 func TestResultsModelLetsFocusedFilterConsumeQ(t *testing.T) {
+	t.Parallel()
 	m := NewResultsModel([]fleetsync.Result{
 		{Repo: discover.Repo{Org: "acme", Name: "queue"}, Status: fleetsync.Failed},
 	})
@@ -161,6 +165,7 @@ func TestResultsModelLetsFocusedFilterConsumeQ(t *testing.T) {
 }
 
 func TestResultsModelFiltersRepositoriesInTheRightPane(t *testing.T) {
+	t.Parallel()
 	m := NewResultsModel([]fleetsync.Result{
 		{Repo: discover.Repo{Org: "acme", Name: "alpha"}, Status: fleetsync.Pulled},
 		{Repo: discover.Repo{Org: "acme", Name: "queue"}, Status: fleetsync.Pulled},
@@ -180,6 +185,7 @@ func TestResultsModelFiltersRepositoriesInTheRightPane(t *testing.T) {
 }
 
 func TestResultsModelNeverExceedsTerminalBounds(t *testing.T) {
+	t.Parallel()
 	for _, size := range []struct{ width, height int }{{120, 24}, {60, 20}, {40, 10}, {20, 6}} {
 		m := NewResultsModel([]fleetsync.Result{{Repo: discover.Repo{Org: "long-owner", Name: "long-repository-name"}, Status: fleetsync.Pulled}})
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})

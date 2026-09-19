@@ -87,6 +87,7 @@ func writeFile(t *testing.T, path, content string) {
 // every agent's real work; a canonical clone that read as linked would leave
 // the clone unprotected.
 func TestClassifyDistinguishesCanonicalFromLinked(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	cases := []struct {
 		name string
@@ -108,6 +109,7 @@ func TestClassifyDistinguishesCanonicalFromLinked(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			got := Classify(repositories.ProjectsRoot, testCase.path)
 			if got.Kind != testCase.want {
 				t.Fatalf("Classify(%s) = %q, want %q", testCase.path, got.Kind, testCase.want)
@@ -124,6 +126,7 @@ func TestClassifyDistinguishesCanonicalFromLinked(t *testing.T) {
 // as an internal directory left thirteen canonical clones on the real fleet
 // unguarded, while `<projects-root>/.wb` must still never read as a coordinate.
 func TestClassifyProtectsADotPrefixedRepository(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	profile := filepath.Join(repositories.ProjectsRoot, "sneat-co", ".github")
 	if err := os.MkdirAll(filepath.Join(profile, ".git"), 0o755); err != nil {
@@ -155,6 +158,7 @@ func TestClassifyProtectsADotPrefixedRepository(t *testing.T) {
 // .git is a symlink to a directory. Reading that as a file would silently
 // downgrade the clone to a writable worktree.
 func TestClassifyFollowsASymlinkedGitDirectory(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	relocated := filepath.Join(t.TempDir(), "backstage.git")
 	if err := os.Rename(filepath.Join(repositories.Canonical, ".git"), relocated); err != nil {
@@ -172,6 +176,7 @@ func TestClassifyFollowsASymlinkedGitDirectory(t *testing.T) {
 // projects root reaches the guard through /tmp while paths arrive resolved
 // through /private/tmp, or the reverse.
 func TestClassifyAcceptsASymlinkedProjectsRoot(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	link := filepath.Join(t.TempDir(), "projects-link")
 	if err := os.Symlink(repositories.ProjectsRoot, link); err != nil {
@@ -203,6 +208,7 @@ func mustJSON(value string) string {
 // in the violations this guard was built for, plus the managed-hook bypass
 // that made a pre-commit hook insufficient on its own.
 func TestBashRefusesWritesIntoACanonicalClone(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []struct {
 		name    string
@@ -245,6 +251,7 @@ func TestBashRefusesWritesIntoACanonicalClone(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed the call; want deny", testCase.command)
@@ -262,6 +269,7 @@ func TestBashRefusesWritesIntoACanonicalClone(t *testing.T) {
 // protects the fleet from the guard. Fetching and fast-forwarding is a
 // canonical clone's entire job, and every read of one is legitimate.
 func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []struct {
 		name    string
@@ -306,6 +314,7 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if decision.Deny {
 				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", testCase.command, decision.Reason)
@@ -328,6 +337,7 @@ func TestBashAllowsWhatACanonicalCloneExistsToDo(t *testing.T) {
 // TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed for the
 // shapes that no longer qualify, or never did).
 func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		"specscore feature change-status --help",
@@ -346,6 +356,7 @@ func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a read-only --help invocation:\n%s", command, decision.Reason)
 			}
@@ -373,6 +384,7 @@ func TestBashAllowsHelpInvocationsOfGuardedTools(t *testing.T) {
 // TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation for the
 // full repro.
 func TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	// Every one of these has --help/-h as the final word but at least one
 	// other flag earlier on the line, so requestsHelp must not recognise any
@@ -387,6 +399,7 @@ func TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed(t *testi
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) treated a flag-plus-help line as a bare help request; want it inspected (and refused) normally", command)
@@ -401,6 +414,7 @@ func TestBashCommandsWithAFlagBesideHelpAreInspectedNormallyNotBypassed(t *testi
 // bare "help" appearing as an ORDINARY ARGUMENT (not the subcommand position)
 // must not be mistaken for the help subcommand either.
 func TestBashStillRefusesWritesNamedAlongsideHelpText(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		"specscore feature change-status x --to Approved",
@@ -409,6 +423,7 @@ func TestBashStillRefusesWritesNamedAlongsideHelpText(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a write; want deny", command)
 			}
@@ -423,6 +438,7 @@ func TestBashStillRefusesWritesNamedAlongsideHelpText(t *testing.T) {
 // internal/agentguard/git.go before this policy), and the refusal message is
 // distinct from the canonical-clone wording.
 func TestHooksAreNeverBypassedInAnyManagedWorktree(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []struct {
 		name    string
@@ -444,6 +460,7 @@ func TestHooksAreNeverBypassedInAnyManagedWorktree(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a hook bypass", testCase.command)
@@ -465,6 +482,7 @@ func TestHooksAreNeverBypassedInAnyManagedWorktree(t *testing.T) {
 // bypassesManagedHooks doc comment explains: `-n` means something else on
 // push and merge than it does on commit.
 func TestHookBypassFalsePositives(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []struct {
 		name    string
@@ -479,6 +497,7 @@ func TestHookBypassFalsePositives(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if decision.Deny {
 				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", testCase.command, decision.Reason)
@@ -493,6 +512,7 @@ func TestHookBypassFalsePositives(t *testing.T) {
 // already named. The refusal fires regardless of chaining, subshells, and
 // working directory — none of that is what made those lanes go around WB.
 func TestBashRefusesGhPrMerge(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []struct {
 		name    string
@@ -595,6 +615,7 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, testCase.cwd), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed the call; want deny", testCase.command)
@@ -613,6 +634,7 @@ func TestBashRefusesGhPrMerge(t *testing.T) {
 // the refusal names) is always allowed, and every other `gh pr` subcommand
 // stays read-only from this guard's perspective.
 func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		"gh pr view 1041",
@@ -653,6 +675,7 @@ func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a legitimate call:\n%s", command, decision.Reason)
 			}
@@ -666,6 +689,7 @@ func TestBashAllowsGhReadsAndTheWBLandingVerbs(t *testing.T) {
 // wider keyword and wrapper walk (wb#500 final review, S3) must not start
 // reading them as one.
 func TestBashGhPrMergeTextIsNotACall(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		`git commit -m "docs: replace gh pr merge 12 with wb land"`,
@@ -688,6 +712,7 @@ func TestBashGhPrMergeTextIsNotACall(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused text that only mentions gh pr merge:\n%s", command, decision.Reason)
 			}
@@ -700,6 +725,7 @@ func TestBashGhPrMergeTextIsNotACall(t *testing.T) {
 // else on the line that could consume it as a value — prints help and merges
 // nothing, so it must stay allowed exactly as it was before the fix.
 func TestGhPrMergeHelpAloneIsStillAllowed(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		"gh pr merge --help",
@@ -715,6 +741,7 @@ func TestGhPrMergeHelpAloneIsStillAllowed(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a genuine --help request:\n%s", command, decision.Reason)
 			}
@@ -738,6 +765,7 @@ func TestGhPrMergeHelpAloneIsStillAllowed(t *testing.T) {
 //     chown/cp (operate on the symlink itself); it is an ordinary flag that
 //     must never turn off the canonical-clone guard for those tools.
 func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	target := filepath.Join(repositories.Canonical, "spec", "lessons", "x.md")
 	commands := []struct {
@@ -757,6 +785,7 @@ func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
 	}
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a real write/merge because of an unrelated -h/--help token", testCase.command)
@@ -778,6 +807,7 @@ func TestBashHelpTokenNeverBypassesAnUnrelatedGuard(t *testing.T) {
 // line, this is inspected normally and refused exactly like any other
 // change-status call with the clone as the working directory.
 func TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	commands := []string{
 		"specscore feature change-status wb-land-discoverability --caller --help --to Approved",
@@ -785,6 +815,7 @@ func TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a real change-status write because --help sat on the line; want deny", command)
@@ -808,6 +839,7 @@ func TestBashSpecscoreCallerFlagBeforeHelpIsRefusedAsAWrite(t *testing.T) {
 // inspected normally and still hits the governed-validation gate inside a
 // managed worktree, the same as a bare `npm run build`.
 func TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
 	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
@@ -822,6 +854,7 @@ func TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation(t *testi
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed direct heavy validation because --help sat on the line; want the governed-validation gate", command)
@@ -856,6 +889,7 @@ func TestBashPackageManagerRunScriptDashDashHelpStillGovernedValidation(t *testi
 // like a bare `go run .`, does not hit the gate at all, because "run" is not
 // one of go's governed verbs (test/vet/build).
 func TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
 	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
@@ -875,6 +909,7 @@ func TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools(t *testi
 	}
 	for _, pair := range pairs {
 		t.Run(pair.withHelp, func(t *testing.T) {
+			t.Parallel()
 			withHelp := Inspect(bashCall(pair.withHelp, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
 			withoutHelp := Inspect(bashCall(pair.withoutHelp, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if withHelp.Deny != withoutHelp.Deny {
@@ -897,6 +932,7 @@ func TestBashSubcommandBeforeHelpIsInspectedNormallyForPassThroughTools(t *testi
 // to gh (which has its own, value-flag-aware recognition in gh.go) or to any
 // file mutator.
 func TestHelpBypassNeverAppliesOutsideItsOwnAllowlist(t *testing.T) {
+	t.Parallel()
 	if helpBypassTools["gh"] {
 		t.Fatal("helpBypassTools must never include gh: its --help/-h recognition belongs in gh.go's ghRequestsHelp, value-flag aware")
 	}
@@ -922,6 +958,7 @@ func TestHelpBypassNeverAppliesOutsideItsOwnAllowlist(t *testing.T) {
 // `-lc` spelling agent harnesses commonly use for a login shell running one
 // command.
 func TestBashUnwrapsShellDashC(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	refused := []struct {
 		name    string
@@ -971,6 +1008,7 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 	}
 	for _, testCase := range refused {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(testCase.command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a call wrapped in a shell -c payload; want deny", testCase.command)
@@ -986,6 +1024,7 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 	}
 	for _, command := range allowed {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused a legitimate call inside a shell -c payload:\n%s", command, decision.Reason)
 			}
@@ -1001,6 +1040,7 @@ func TestBashUnwrapsShellDashC(t *testing.T) {
 // option that spent the -c word as its own value, in which case the real
 // shell fails without running anything.
 func TestShellDashCPayloadEdgeCases(t *testing.T) {
+	t.Parallel()
 	const payload = "gh pr merge 123"
 	cases := []struct {
 		name  string
@@ -1034,6 +1074,7 @@ func TestShellDashCPayloadEdgeCases(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			got := shellDashCPayloads(testCase.words, shellInterpreters[testCase.words[0]])
 			if !slices.Equal(got, testCase.want) {
 				t.Fatalf("shellDashCPayloads(%q) = %q, want %q", testCase.words, got, testCase.want)
@@ -1048,6 +1089,7 @@ func TestShellDashCPayloadEdgeCases(t *testing.T) {
 // this guard does not (and, per its own package doc, must not try to) read
 // what a script file contains.
 func TestBashAllowsAnInterpreterWithNoDashC(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	if decision := Inspect(bashCall("bash script.sh", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 		t.Fatalf("Inspect(%q) refused an interpreter invocation with no -c payload:\n%s", "bash script.sh", decision.Reason)
@@ -1070,17 +1112,20 @@ func TestBashAllowsAnInterpreterWithNoDashC(t *testing.T) {
 func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 	repositories := newFixture(t)
 	t.Run("no override still refuses", func(t *testing.T) {
+		t.Parallel()
 		if decision := Inspect(bashCall("gh pr merge 1041", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 			t.Fatal("an unset override allowed gh pr merge through")
 		}
 	})
 	t.Run("empty inline override still refuses", func(t *testing.T) {
+		t.Parallel()
 		command := ghPrMergeOverrideEnv + `="" gh pr merge 1041`
 		if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 			t.Fatal("an empty inline override allowed gh pr merge through")
 		}
 	})
 	t.Run("whitespace-only inline override still refuses", func(t *testing.T) {
+		t.Parallel()
 		command := ghPrMergeOverrideEnv + `="   " gh pr merge 1041`
 		if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 			t.Fatal("a whitespace-only inline override allowed gh pr merge through")
@@ -1186,6 +1231,7 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 	}
 }
 func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
 	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
@@ -1214,6 +1260,7 @@ func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
 	}
 	for _, command := range denied {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
 			if !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed direct heavy validation", command)
@@ -1228,6 +1275,7 @@ func TestManagedWorktreeRequiresGovernedHeavyValidation(t *testing.T) {
 }
 
 func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
 	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
@@ -1252,6 +1300,7 @@ func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.
 	}
 	for _, command := range allowed {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("Inspect(%q) refused an allowed command:\n%s", command, decision.Reason)
 			}
@@ -1271,6 +1320,7 @@ func TestManagedWorktreeAllowsImmediateFormattingAndGovernedCommands(t *testing.
 // TestFileToolsAreJudgedByTheirPath covers Write, Edit, and the read tools
 // that carry the same key and must not be touched.
 func TestFileToolsAreJudgedByTheirPath(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	inCanonical := filepath.Join(repositories.Canonical, "spec", "lessons", "note.md")
 	inWorktree := filepath.Join(repositories.Worktree, "spec", "lessons", "note.md")
@@ -1293,6 +1343,7 @@ func TestFileToolsAreJudgedByTheirPath(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			call := ToolCall{
 				HookEventName: "PreToolUse",
 				ToolName:      testCase.tool,
@@ -1309,6 +1360,7 @@ func TestFileToolsAreJudgedByTheirPath(t *testing.T) {
 // TestGuardFailsOpen is the property the whole design is subordinate to. Every
 // case here would, if it denied, stop every agent on the machine.
 func TestGuardFailsOpen(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	write := `{"command":` + mustJSON("git reset --hard") + `}`
 	cases := []struct {
@@ -1394,6 +1446,7 @@ func TestGuardFailsOpen(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(testCase.call, testCase.options); decision.Deny {
 				t.Fatalf("the guard failed closed:\n%s", decision.Reason)
 			}
@@ -1404,6 +1457,7 @@ func TestGuardFailsOpen(t *testing.T) {
 // TestDecodeToolCallFailsOpenOnUnreadablePayloads proves the decode step
 // cannot manufacture a refusal out of nonsense.
 func TestDecodeToolCallFailsOpenOnUnreadablePayloads(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	payloads := []string{
 		"",
@@ -1415,6 +1469,7 @@ func TestDecodeToolCallFailsOpenOnUnreadablePayloads(t *testing.T) {
 	}
 	for _, payload := range payloads {
 		t.Run(payload, func(t *testing.T) {
+			t.Parallel()
 			call := DecodeToolCall(strings.NewReader(payload))
 			if decision := Inspect(call, Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
 				t.Fatalf("payload %q produced a refusal:\n%s", payload, decision.Reason)
@@ -1427,6 +1482,7 @@ func TestDecodeToolCallFailsOpenOnUnreadablePayloads(t *testing.T) {
 // verbatim. A wrong field name here means the guard never fires at all, which
 // is the one failure that looks exactly like success.
 func TestDecodeToolCallReadsARealPayload(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	payload := `{
 	  "session_id": "abc123",
@@ -1457,6 +1513,7 @@ func TestDecodeToolCallReadsARealPayload(t *testing.T) {
 // Emitting an explicit "allow" would suppress the permission prompt the user
 // would otherwise have seen.
 func TestWriteDecisionEmitsNothingForAnAllow(t *testing.T) {
+	t.Parallel()
 	var buffer bytes.Buffer
 	wrote, err := WriteDecision(&buffer, Decision{})
 	if err != nil {
@@ -1469,6 +1526,7 @@ func TestWriteDecisionEmitsNothingForAnAllow(t *testing.T) {
 
 // TestWriteDecisionEmitsTheDocumentedDenyShape pins the exact response schema.
 func TestWriteDecisionEmitsTheDocumentedDenyShape(t *testing.T) {
+	t.Parallel()
 	var buffer bytes.Buffer
 	if _, err := WriteDecision(&buffer, Decision{Deny: true, Reason: "because"}); err != nil {
 		t.Fatalf("WriteDecision: %v", err)
@@ -1495,6 +1553,7 @@ func TestWriteDecisionEmitsTheDocumentedDenyShape(t *testing.T) {
 // TestSplitSegmentsSkipsHeredocBodies protects the one construct that would
 // otherwise let a data payload be read as commands, in either direction.
 func TestSplitSegmentsSkipsHeredocBodies(t *testing.T) {
+	t.Parallel()
 	segments := splitSegments("cat > out.txt <<'EOF'\ngit reset --hard\nrm -rf /\nEOF\necho done")
 	var commands []string
 	for _, current := range segments {
@@ -1520,6 +1579,7 @@ func TestSplitSegmentsSkipsHeredocBodies(t *testing.T) {
 // what is NOT a prefix: a `for` word list, `wb` without run --, and a
 // recipe-mode `wb run`.
 func TestCommandWordsSeesThroughPrefixes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		command  string
 		want     string
@@ -1574,6 +1634,7 @@ func TestCommandWordsSeesThroughPrefixes(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.command, func(t *testing.T) {
+			t.Parallel()
 			stripped := stripCommandPrefixes(strings.Fields(testCase.command))
 			if got := strings.Join(stripped.Words, " "); got != testCase.want || stripped.Governed != testCase.governed {
 				t.Fatalf("stripCommandPrefixes(%q) = %q (governed %v), want %q (governed %v)", testCase.command, got, stripped.Governed, testCase.want, testCase.governed)
@@ -1586,6 +1647,7 @@ func TestCommandWordsSeesThroughPrefixes(t *testing.T) {
 // wider prefix walk (wb#500 final review, S3) serves every recogniser, not
 // only gh's. `sudo -u x rm ...` in a canonical clone was allowed before it.
 func TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	target := filepath.Join(repositories.Canonical, "README.md")
 	commands := []string{
@@ -1599,6 +1661,7 @@ func TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker(t *testing.T) {
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			if decision := Inspect(bashCall(command, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); !decision.Deny {
 				t.Fatalf("Inspect(%q) allowed a canonical-clone write behind a keyword or wrapper", command)
 			}
@@ -1609,6 +1672,7 @@ func TestBashSeesThroughKeywordsAndWrapperOptionsForEveryChecker(t *testing.T) {
 // TestRefusalNamesTheRemedy keeps the message actionable. A refusal an agent
 // cannot act on is a refusal it works around.
 func TestRefusalNamesTheRemedy(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	decision := Inspect(bashCall("git reset --hard", repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
 	if !decision.Deny {
@@ -1630,6 +1694,7 @@ func TestRefusalNamesTheRemedy(t *testing.T) {
 // fifth review added: a # that starts a word opens a comment to the end of
 // the line, and a brace is a group boundary only when it is a whole word.
 func TestSplitSegmentsCommentsAndBraces(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		command string
 		want    [][]string
@@ -1645,6 +1710,7 @@ func TestSplitSegmentsCommentsAndBraces(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.command, func(t *testing.T) {
+			t.Parallel()
 			var got [][]string
 			for _, segment := range splitSegments(tc.command) {
 				got = append(got, segment.Words)
@@ -1658,6 +1724,7 @@ func TestSplitSegmentsCommentsAndBraces(t *testing.T) {
 
 // TestBraceExpansions pins the shell's brace-list reading the gh walker uses.
 func TestBraceExpansions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		word string
 		want []string
@@ -1674,6 +1741,7 @@ func TestBraceExpansions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.word, func(t *testing.T) {
+			t.Parallel()
 			if got := braceExpansions(tc.word, maxBraceExpansions); fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Fatalf("braceExpansions(%q) = %q, want %q", tc.word, got, tc.want)
 			}
@@ -1695,6 +1763,7 @@ func TestBraceExpansions(t *testing.T) {
 // write into it is refused exactly as for the legacy two-level placement. A
 // clone the guard called foreign would be silently writable.
 func TestClassifyProtectsACanonicalCloneAtTheLiteralHostLevel(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	canonical := filepath.Join(projectsRoot, "github.com", "sneat-co", "backstage")
 	if err := os.MkdirAll(filepath.Join(canonical, ".git"), 0o755); err != nil {

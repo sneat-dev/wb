@@ -11,6 +11,7 @@ import (
 // repository alone (sneat-co/chessraiders) held 51 worktrees and produced
 // exactly one distinct answer across its 51 fetches.
 func TestTargetHeadCacheFetchesOncePerRepositoryAndBase(t *testing.T) {
+	t.Parallel()
 	cache := &targetHeadCache{entries: map[string]*targetHeadEntry{}}
 	calls := 0
 	fetch := func() (string, error) { calls++; return "780916c29da3", nil }
@@ -29,6 +30,7 @@ func TestTargetHeadCacheFetchesOncePerRepositoryAndBase(t *testing.T) {
 // A different base is a different question and must not be served the answer
 // to the first one.
 func TestTargetHeadCacheSeparatesRepositoryAndBase(t *testing.T) {
+	t.Parallel()
 	cache := &targetHeadCache{entries: map[string]*targetHeadEntry{}}
 	calls := 0
 	for _, tc := range []struct{ repository, base, want string }{
@@ -57,6 +59,7 @@ func TestTargetHeadCacheSeparatesRepositoryAndBase(t *testing.T) {
 // worktree asked first, so the fleet pays for it once rather than once per
 // task — which is exactly the hang that cost a live sweep 38 minutes.
 func TestTargetHeadCacheMemoisesFailureSoOneBadRemoteCostsOneAttempt(t *testing.T) {
+	t.Parallel()
 	cache := &targetHeadCache{entries: map[string]*targetHeadEntry{}}
 	unreachable := errors.New("fetch exact origin/main target: connection timed out")
 	calls := 0
@@ -78,6 +81,7 @@ func TestTargetHeadCacheMemoisesFailureSoOneBadRemoteCostsOneAttempt(t *testing.
 // installed always performs a live fetch. preflightCleanupRepository re-inspects
 // on the caller's own context precisely so the pre-deletion recheck is real.
 func TestNoCacheInstalledMeansNoMemoisation(t *testing.T) {
+	t.Parallel()
 	if targetHeadCacheFrom(context.Background()) != nil {
 		t.Fatal("a bare context must carry no target cache")
 	}

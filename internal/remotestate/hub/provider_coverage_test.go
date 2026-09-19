@@ -113,6 +113,7 @@ func dqCovTokenFile(t *testing.T, contents string) string {
 }
 
 func TestHubProviderNewRejectsMachineRetryDelayAndCredentialDefects(t *testing.T) {
+	t.Parallel()
 	for name, testCase := range map[string]struct {
 		options Options
 		want    string
@@ -135,6 +136,7 @@ func TestHubProviderNewRejectsMachineRetryDelayAndCredentialDefects(t *testing.T
 // constructor does not alias caller-owned memory and that the endpoint and
 // injected token are trimmed before use.
 func TestHubProviderNewCopiesMutableOptionsAndNormalisesValues(t *testing.T) {
+	t.Parallel()
 	delays := []time.Duration{time.Second}
 	provider, err := New(Options{
 		BaseURL: " https://hub.example/ ", Machine: dqCovMachine, Token: "  injected  ", RetryDelays: delays,
@@ -161,6 +163,7 @@ func TestHubProviderNewCopiesMutableOptionsAndNormalisesValues(t *testing.T) {
 }
 
 func TestHubProviderPublishRejectsMismatchedMachineAndInvalidSnapshotWithoutARequest(t *testing.T) {
+	t.Parallel()
 	provider, recorder := dqCovStartHub(t, "token", func(http.ResponseWriter, *http.Request) {
 		t.Error("a locally rejected snapshot must not reach the hub")
 	})
@@ -183,6 +186,7 @@ func TestHubProviderPublishRejectsMismatchedMachineAndInvalidSnapshotWithoutAReq
 }
 
 func TestHubProviderPublishReportsHubAndReceiptFailures(t *testing.T) {
+	t.Parallel()
 	for name, testCase := range map[string]struct {
 		handler http.HandlerFunc
 		want    string
@@ -205,6 +209,7 @@ func TestHubProviderPublishReportsHubAndReceiptFailures(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			provider, recorder := dqCovStartHub(t, "token", testCase.handler)
 			result, err := provider.Publish(context.Background(), dqCovSnapshot())
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -221,6 +226,7 @@ func TestHubProviderPublishReportsHubAndReceiptFailures(t *testing.T) {
 }
 
 func TestHubProviderListFlagsInvalidHostedRecords(t *testing.T) {
+	t.Parallel()
 	provider, recorder := dqCovStartHub(t, "token", dqCovStatusHandler(http.StatusOK, `{"snapshots":[
 		{"snapshot":{"schema_version":1,"login":"alice","machine":"laptop","published_at":"2026-09-06T14:00:00Z"},"received_at":"2026-09-06T14:00:01Z"},
 		{"snapshot":{"schema_version":2,"login":"bob","machine":"old","published_at":"2026-09-06T14:00:00Z"},"received_at":"2026-09-06T14:00:01Z"},
@@ -253,6 +259,7 @@ func TestHubProviderListFlagsInvalidHostedRecords(t *testing.T) {
 }
 
 func TestHubProviderStatusSurfacesListFailure(t *testing.T) {
+	t.Parallel()
 	provider, recorder := dqCovStartHub(t, "token", dqCovStatusHandler(http.StatusInternalServerError, `{"error":"boom"}`))
 
 	status, err := provider.Status(context.Background())
@@ -268,6 +275,7 @@ func TestHubProviderStatusSurfacesListFailure(t *testing.T) {
 }
 
 func TestHubProviderClaimReleaseClaimsReportUnsupported(t *testing.T) {
+	t.Parallel()
 	provider, recorder := dqCovStartHub(t, "token", func(http.ResponseWriter, *http.Request) {
 		t.Error("claim operations must not reach the hub")
 	})
@@ -288,6 +296,7 @@ func TestHubProviderClaimReleaseClaimsReportUnsupported(t *testing.T) {
 }
 
 func TestHubProviderPollRepositoryEventsRejectsInvalidArgumentsWithoutARequest(t *testing.T) {
+	t.Parallel()
 	provider, recorder := dqCovStartHub(t, "token", func(http.ResponseWriter, *http.Request) {
 		t.Error("an invalid poll must not reach the hub")
 	})
@@ -305,6 +314,7 @@ func TestHubProviderPollRepositoryEventsRejectsInvalidArgumentsWithoutARequest(t
 		"wait over max":  {cursor: "before", limit: 1, wait: (repositoryevent.MaxWaitSeconds + 1) * time.Second, want: "wait must be between 0 and 30 seconds"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			response, err := provider.PollRepositoryEvents(context.Background(), testCase.cursor, testCase.limit, testCase.wait)
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("PollRepositoryEvents(%q, %d, %v) = %+v, %v; want an error containing %q",
@@ -321,6 +331,7 @@ func TestHubProviderPollRepositoryEventsRejectsInvalidArgumentsWithoutARequest(t
 }
 
 func TestHubProviderPollRepositoryEventsSurfacesHubFailures(t *testing.T) {
+	t.Parallel()
 	validEvent := func(id string) string {
 		return `{"version":1,"id":"` + id + `","repository":"github.com/acme/app","ref":"refs/heads/main","reason":"default_branch_updated"}`
 	}
@@ -346,6 +357,7 @@ func TestHubProviderPollRepositoryEventsSurfacesHubFailures(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			provider, recorder := dqCovStartHub(t, "token", testCase.handler)
 			response, err := provider.PollRepositoryEvents(context.Background(), "before", 1, 0)
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -362,6 +374,7 @@ func TestHubProviderPollRepositoryEventsSurfacesHubFailures(t *testing.T) {
 }
 
 func TestHubProviderAckRepositoryEventsSurfacesHubFailures(t *testing.T) {
+	t.Parallel()
 	valid := repositoryevent.AckRequest{
 		Version:  repositoryevent.ContractVersion,
 		Cursor:   "after",
@@ -369,6 +382,7 @@ func TestHubProviderAckRepositoryEventsSurfacesHubFailures(t *testing.T) {
 	}
 
 	t.Run("invalid request", func(t *testing.T) {
+		t.Parallel()
 		provider, recorder := dqCovStartHub(t, "token", func(http.ResponseWriter, *http.Request) {
 			t.Error("an invalid acknowledgement must not reach the hub")
 		})
@@ -404,6 +418,7 @@ func TestHubProviderAckRepositoryEventsSurfacesHubFailures(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			provider, recorder := dqCovStartHub(t, "token", testCase.handler)
 			response, err := provider.AckRepositoryEvents(context.Background(), valid)
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -417,6 +432,7 @@ func TestHubProviderAckRepositoryEventsSurfacesHubFailures(t *testing.T) {
 }
 
 func TestHubProviderReadsTheCredentialFileForEveryRequest(t *testing.T) {
+	t.Parallel()
 	recorder := &dqCovHubRecorder{}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		recorder.capture(request)
@@ -455,6 +471,7 @@ func TestHubProviderReadsTheCredentialFileForEveryRequest(t *testing.T) {
 }
 
 func TestHubProviderDoJSONRejectsUnencodableInput(t *testing.T) {
+	t.Parallel()
 	provider, err := New(Options{BaseURL: "https://hub.example", Machine: dqCovMachine, Token: "token"})
 	if err != nil {
 		t.Fatal(err)
@@ -466,6 +483,7 @@ func TestHubProviderDoJSONRejectsUnencodableInput(t *testing.T) {
 }
 
 func TestHubProviderDoJSONReportsCredentialFailureBeforeRequesting(t *testing.T) {
+	t.Parallel()
 	provider, err := New(Options{
 		BaseURL: "https://hub.example", Machine: dqCovMachine,
 		TokenFile: filepath.Join(t.TempDir(), "absent.token"),
@@ -480,6 +498,7 @@ func TestHubProviderDoJSONReportsCredentialFailureBeforeRequesting(t *testing.T)
 }
 
 func TestHubProviderDoJSONRejectsAnInvalidRequestMethod(t *testing.T) {
+	t.Parallel()
 	provider, err := New(Options{BaseURL: "https://hub.example", Machine: dqCovMachine, Token: "token"})
 	if err != nil {
 		t.Fatal(err)
@@ -507,6 +526,7 @@ func (body *dqCovFailingBody) Read([]byte) (int, error) {
 func (body *dqCovFailingBody) Close() error { return body.closeErr }
 
 func TestHubProviderDoJSONReportsBodyReadAndCloseFailures(t *testing.T) {
+	t.Parallel()
 	readErr := errors.New("socket read failed")
 	closeErr := errors.New("socket close failed")
 	for name, testCase := range map[string]struct {
@@ -518,6 +538,7 @@ func TestHubProviderDoJSONReportsBodyReadAndCloseFailures(t *testing.T) {
 		"close": {&dqCovFailingBody{closeErr: closeErr}, "close successful hub response", closeErr},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Body: testCase.body, Header: make(http.Header)}, nil
 			})}
@@ -535,6 +556,7 @@ func TestHubProviderDoJSONReportsBodyReadAndCloseFailures(t *testing.T) {
 }
 
 func TestHubProviderDoJSONReportsDecodeFailureAndTrailingData(t *testing.T) {
+	t.Parallel()
 	for name, testCase := range map[string]struct {
 		body string
 		want string
@@ -543,6 +565,7 @@ func TestHubProviderDoJSONReportsDecodeFailureAndTrailingData(t *testing.T) {
 		"trailing": {`{"snapshots":[]} }`, "trailing data"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			provider, recorder := dqCovStartHub(t, "token", dqCovStatusHandler(http.StatusOK, testCase.body))
 			var output machinesnapshot.ListResponse
 			err := provider.doJSON(context.Background(), http.MethodGet, machinesnapshot.SnapshotPath, nil, &output)
@@ -560,6 +583,7 @@ func TestHubProviderDoJSONReportsDecodeFailureAndTrailingData(t *testing.T) {
 // error is retried for every configured delay and then reported as a failed
 // hub request, not retried forever.
 func TestHubProviderDoJSONGivesUpOnPersistentTransportFailure(t *testing.T) {
+	t.Parallel()
 	transportErr := errors.New("dial tcp: connection refused")
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -585,6 +609,7 @@ func TestHubProviderDoJSONGivesUpOnPersistentTransportFailure(t *testing.T) {
 }
 
 func TestHubProviderDoJSONStopsRetryingWhenSleepFails(t *testing.T) {
+	t.Parallel()
 	sleepErr := errors.New("retry wait was cancelled")
 	provider, recorder := dqCovStartHubWith(t, Options{
 		Token:       "token",
@@ -603,6 +628,7 @@ func TestHubProviderDoJSONStopsRetryingWhenSleepFails(t *testing.T) {
 }
 
 func TestHubProviderCredentialResolvesATokenFile(t *testing.T) {
+	t.Parallel()
 	provider, err := New(Options{
 		BaseURL: "https://hub.example", Machine: dqCovMachine,
 		TokenFile: dqCovTokenFile(t, "  rotated-token\n"),
@@ -617,6 +643,7 @@ func TestHubProviderCredentialResolvesATokenFile(t *testing.T) {
 }
 
 func TestHubProviderCredentialRejectsUnusableTokenFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	oversized := filepath.Join(dir, "oversized.token")
 	if err := os.WriteFile(oversized, bytes.Repeat([]byte("a"), maxTokenBytes+1), 0o600); err != nil {
@@ -635,6 +662,7 @@ func TestHubProviderCredentialRejectsUnusableTokenFiles(t *testing.T) {
 		"directory instead": {dir, "hub credential file"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			provider, err := New(Options{BaseURL: "https://hub.example", Machine: dqCovMachine, TokenFile: testCase.tokenFile})
 			if err != nil {
 				t.Fatal(err)
@@ -654,6 +682,7 @@ func TestHubProviderCredentialRejectsUnusableTokenFiles(t *testing.T) {
 // permission-denied branch, which only exists on platforms and users that
 // enforce unix read permission bits.
 func TestHubProviderCredentialRejectsAnUnreadableTokenFile(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("windows does not enforce unix read permission bits, so the unreadable-file branch is unreachable there")
 	}
@@ -681,6 +710,7 @@ func TestHubProviderCredentialRejectsAnUnreadableTokenFile(t *testing.T) {
 }
 
 func TestSleepContextWaitsForTheDelayAndHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	start := time.Now()
 	if err := sleepContext(context.Background(), 20*time.Millisecond); err != nil {
 		t.Fatalf("sleepContext(delay) = %v, want nil", err)
@@ -696,7 +726,7 @@ func TestSleepContextWaitsForTheDelayAndHonoursCancellation(t *testing.T) {
 	}
 
 	expired, expire := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer expire()
+	t.Cleanup(func() { expire() })
 	if err := sleepContext(expired, time.Hour); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("sleepContext(expired) = %v, want context.DeadlineExceeded", err)
 	}

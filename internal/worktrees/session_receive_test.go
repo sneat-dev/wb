@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionReceiveRepositoryFromRemoteIsStrict(t *testing.T) {
+	t.Parallel()
 	local := filepath.Join(t.TempDir(), "remotes", "acme", "app.git")
 	tests := []struct {
 		remote string
@@ -34,6 +35,7 @@ func TestSessionReceiveRepositoryFromRemoteIsStrict(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.remote, func(t *testing.T) {
+			t.Parallel()
 			got, err := sessionReceiveRepositoryFromRemote(test.remote)
 			if test.ok && (err != nil || got != test.want) {
 				t.Fatalf("repository = %q, err = %v, want %q", got, err, test.want)

@@ -19,6 +19,7 @@ func sdCovHandoffDir(fixture custodyFixture) string {
 }
 
 func TestSdCovAcknowledgeRejectsNilContextWithoutDurableState(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	// The nil context is exactly what this test asserts is rejected.
 	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
@@ -36,6 +37,7 @@ func TestSdCovAcknowledgeRejectsNilContextWithoutDurableState(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeValidateOptionsRejections(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	for _, tc := range []struct {
 		name    string
@@ -86,6 +88,7 @@ func TestSdCovAcknowledgeValidateOptionsRejections(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			options := fixture.options
 			tc.mutate(&options)
 			options.EnsureSourceOffer = func(worktrees.ExternalSourceOfferOptions) (worktrees.ExternalSourceOfferResult, error) {
@@ -109,6 +112,7 @@ func TestSdCovAcknowledgeValidateOptionsRejections(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeRejectsRequestThatDiffersFromAdmittedAggregate(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.Request.Branch = "feature/different-branch"
@@ -130,6 +134,7 @@ func TestSdCovAcknowledgeRejectsRequestThatDiffersFromAdmittedAggregate(t *testi
 }
 
 func TestSdCovAcknowledgeRequiresReceiptWhenNoLocalReceiptExists(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.Receipt = sessionmove.Receipt{}
@@ -151,6 +156,7 @@ func TestSdCovAcknowledgeRequiresReceiptWhenNoLocalReceiptExists(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeRejectsSealThatDoesNotMatchReceiptLineage(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.SealWorkLog = func(worktrees.ExternalSourceSealOptions) (worktrees.ExternalSourceSealResult, error) {
@@ -177,6 +183,7 @@ func TestSdCovAcknowledgeRejectsSealThatDoesNotMatchReceiptLineage(t *testing.T)
 }
 
 func TestSdCovAcknowledgeRunsAfterLockHookBeforeSourceOfferRepair(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	blocked := errors.New("lock boundary blocked")
 	offered := false
@@ -200,6 +207,7 @@ func TestSdCovAcknowledgeRunsAfterLockHookBeforeSourceOfferRepair(t *testing.T) 
 }
 
 func TestSdCovAcknowledgeFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	// A regular file where the events directory belongs makes the durable
 	// projection unreadable while leaving request admission and the lock intact.
@@ -221,6 +229,7 @@ func TestSdCovAcknowledgeFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeFailsWhenSealSeamCorruptsAggregate(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.SealWorkLog = func(worktrees.ExternalSourceSealOptions) (worktrees.ExternalSourceSealResult, error) {
@@ -243,6 +252,7 @@ func TestSdCovAcknowledgeFailsWhenSealSeamCorruptsAggregate(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeFailsWhenCompletedEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.SealWorkLog = func(worktrees.ExternalSourceSealOptions) (worktrees.ExternalSourceSealResult, error) {
@@ -268,6 +278,7 @@ func TestSdCovAcknowledgeFailsWhenCompletedEventCannotBeAppended(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeFailsWhenReceiptPublicationIsBlocked(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.EnsureSourceOffer = func(worktrees.ExternalSourceOfferOptions) (worktrees.ExternalSourceOfferResult, error) {
@@ -293,6 +304,7 @@ func TestSdCovAcknowledgeFailsWhenReceiptPublicationIsBlocked(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeFailsWhenSuccessorAddressPublicationIsBlocked(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.Hooks.AfterReceipt = func() error {
@@ -314,6 +326,7 @@ func TestSdCovAcknowledgeFailsWhenSuccessorAddressPublicationIsBlocked(t *testin
 }
 
 func TestSdCovAcknowledgeDefaultsToProductionSourceOfferSeam(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.EnsureSourceOffer = nil
@@ -328,6 +341,7 @@ func TestSdCovAcknowledgeDefaultsToProductionSourceOfferSeam(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeDefaultsToProductionSealSeam(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.SealWorkLog = nil
@@ -348,6 +362,7 @@ func TestSdCovAcknowledgeDefaultsToProductionSealSeam(t *testing.T) {
 }
 
 func TestSdCovAcknowledgeRejectsSourceSessionWithoutRecordedIdentity(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	options := fixture.options
 	options.SourceSession = session.Record{}
@@ -358,6 +373,7 @@ func TestSdCovAcknowledgeRejectsSourceSessionWithoutRecordedIdentity(t *testing.
 }
 
 func TestSdCovAcknowledgeFailsWhenExecutionLockCannotBeAcquired(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	// A directory where the per-handoff execution fence belongs can never be
 	// opened, so source custody must not advance or publish any evidence.

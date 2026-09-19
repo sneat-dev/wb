@@ -13,6 +13,7 @@ import (
 // binary sees exactly what is checked into ai/skills/, not a stale or
 // partial copy pinned at build time by an overly narrow //go:embed pattern.
 func TestSkillsFSEmbedsEveryOnDiskSkill(t *testing.T) {
+	t.Parallel()
 	onDisk, err := os.ReadDir("skills")
 	if err != nil {
 		t.Fatal(err)

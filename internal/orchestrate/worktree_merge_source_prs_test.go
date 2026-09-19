@@ -52,6 +52,7 @@ func sourcePullRequestView(number int, state, head, base string) PullRequestView
 }
 
 func TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce(t *testing.T) {
+	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	remote := &fakeSourcePullRequestRemote{
 		byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
@@ -81,6 +82,7 @@ func TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce(t *testing.T) {
 }
 
 func TestReconcileAbsorbedSourcePullRequestCommentFailureLeavesItOpen(t *testing.T) {
+	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	remote := &fakeSourcePullRequestRemote{
 		byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
@@ -100,6 +102,7 @@ func TestReconcileAbsorbedSourcePullRequestCommentFailureLeavesItOpen(t *testing
 }
 
 func TestReconcileAbsorbedSourcePullRequestRefusesDriftedIdentity(t *testing.T) {
+	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	tests := []struct {
 		name, head, base, outcome string
@@ -109,6 +112,7 @@ func TestReconcileAbsorbedSourcePullRequestRefusesDriftedIdentity(t *testing.T) 
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			remote := &fakeSourcePullRequestRemote{
 				byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", test.head, test.base)}},
 				comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{},

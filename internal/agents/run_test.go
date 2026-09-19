@@ -43,6 +43,7 @@ func sampleRecord(t *testing.T) Record {
 }
 
 func TestNewIDIsPrefixedRandomAndUnique(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for index := 0; index < 64; index++ {
 		id, err := NewID()
@@ -63,6 +64,7 @@ func TestNewIDIsPrefixedRandomAndUnique(t *testing.T) {
 }
 
 func TestStoreCreateSaveLoadRoundTrip(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	record.OwnerPID = 4321
@@ -118,6 +120,7 @@ func TestStoreCreateSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestStorePathsLiveUnderOnePrivateDirectory(t *testing.T) {
+	t.Parallel()
 	store := NewStore("/home/example/.wb")
 	dir := store.Dir("agt-00")
 	if dir != filepath.Join("/home/example/.wb", DirName, "agt-00") {
@@ -136,6 +139,7 @@ func TestStorePathsLiveUnderOnePrivateDirectory(t *testing.T) {
 }
 
 func TestStoreRejectsMalformedAgentIDs(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	for _, id := range []string{
 		"", "agt-", "wbs-00", "agt-zz", "agt-0", "../escape", "agt-0011",
@@ -155,6 +159,7 @@ func TestStoreRejectsMalformedAgentIDs(t *testing.T) {
 }
 
 func TestStoreLoadMissingRunIsAnUnknownAgent(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	_, err := store.Load("agt-00000000000000000000000000000000")
 	if err == nil {
@@ -170,6 +175,7 @@ func TestStoreLoadMissingRunIsAnUnknownAgent(t *testing.T) {
 }
 
 func TestStoreLoadReportsCorruptAndFutureRecords(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	id, err := NewID()
 	if err != nil {
@@ -199,6 +205,7 @@ func TestStoreLoadReportsCorruptAndFutureRecords(t *testing.T) {
 }
 
 func TestStoreListIsNewestFirstAndTolerantOfAnAbsentRoot(t *testing.T) {
+	t.Parallel()
 	store := NewStore(filepath.Join(t.TempDir(), "never-created"))
 	records, err := store.List()
 	if err != nil || len(records) != 0 {
@@ -253,6 +260,7 @@ func TestStoreListIsNewestFirstAndTolerantOfAnAbsentRoot(t *testing.T) {
 }
 
 func TestStoreListReportsACorruptRecordRatherThanHidingIt(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	if err := store.Create(record); err != nil {
@@ -267,6 +275,7 @@ func TestStoreListReportsACorruptRecordRatherThanHidingIt(t *testing.T) {
 }
 
 func TestRenderResolvesDeadRunsToAbandoned(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 
 	running := sampleRecord(t)
@@ -313,6 +322,7 @@ func TestRenderResolvesDeadRunsToAbandoned(t *testing.T) {
 }
 
 func TestRenderNeverLeaksThePrivateTask(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	record.Task = "SUPER SECRET PROMPT"
@@ -344,6 +354,7 @@ func TestRenderNeverLeaksThePrivateTask(t *testing.T) {
 }
 
 func TestRenderOmitsFinishedAtUntilTheRunEnds(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	if result := store.Render(record); result.FinishedAt != nil {
@@ -358,6 +369,7 @@ func TestRenderOmitsFinishedAtUntilTheRunEnds(t *testing.T) {
 }
 
 func TestStateTerminalVocabularyIsClosed(t *testing.T) {
+	t.Parallel()
 	terminal := []State{StateCompleted, StateFailed, StateTimeout, StateAbandoned}
 	for _, state := range terminal {
 		if !state.Terminal() {
@@ -373,6 +385,7 @@ func TestStateTerminalVocabularyIsClosed(t *testing.T) {
 }
 
 func TestSummaryLineAndBoundResultKeepOutputCompact(t *testing.T) {
+	t.Parallel()
 	if got := SummaryLine("\n\n  first   line  \nsecond line\n"); got != "first line" {
 		t.Fatalf("SummaryLine = %q", got)
 	}
@@ -397,6 +410,7 @@ func TestSummaryLineAndBoundResultKeepOutputCompact(t *testing.T) {
 }
 
 func TestStoreSurfacesFilesystemFailuresRatherThanLosingWork(t *testing.T) {
+	t.Parallel()
 	// A root that is a regular file cannot host runs, and Create must say so.
 	root := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(root, []byte("x"), 0o600); err != nil {

@@ -44,6 +44,7 @@ func validMessageReceipt(message Message, digest Digest) MessageReceipt {
 }
 
 func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	message := validMessage(request)
 	if _, err := EncodeMessage(message); err != nil {
@@ -67,6 +68,7 @@ func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value := message
 			test.mutate(&value)
 			if _, err := EncodeMessage(value); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -89,6 +91,7 @@ func TestMessageProtocolBindsRequiredLineageAndStandardRequestHandoff(t *testing
 }
 
 func TestMessageReceiptStrictlyBindsExactMessageAndPasteAcknowledgement(t *testing.T) {
+	t.Parallel()
 	message := validMessage(validRequest())
 	raw, err := EncodeMessage(message)
 	if err != nil {
@@ -138,7 +141,7 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	message := validMessage(request)
 	messageRaw, err := EncodeMessage(message)
@@ -208,6 +211,8 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 		{"inbox record", func(value *MessageReceipt) { value.RecordedAt = value.RecordedAt.Add(time.Second) }},
 		{"paste intent", func(value *MessageReceipt) { value.PaneID = "%8" }},
 	} {
+		// Left serial: all four cases share one receiptPath under the
+		// admitted message's lock and mutate it in place.
 		t.Run("load refuses forged "+test.name, func(t *testing.T) {
 			forged := receipt
 			test.mutate(&forged)

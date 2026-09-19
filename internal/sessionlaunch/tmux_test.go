@@ -9,6 +9,7 @@ import (
 )
 
 func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing.T) {
+	t.Parallel()
 	write := func(name, diagnostic string) string {
 		path := filepath.Join(t.TempDir(), name)
 		body := "#!/bin/sh\nprintf '%s\\n' \"" + diagnostic + "\" >&2\nexit 1\n"
@@ -26,6 +27,7 @@ func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing
 }
 
 func TestTmuxPanePIDScopesAllPanesInExactSession(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 if [ "$1" != "list-panes" ] || [ "$2" != "-s" ] || [ "$3" != "-t" ] || [ "$4" != "=wb-session-x" ]; then
@@ -44,6 +46,7 @@ printf '4242\t0\n'
 }
 
 func TestTmuxPaneFailureRetainsExitStatusAndBoundedDiagnostic(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 case "$1" in
@@ -62,6 +65,7 @@ esac
 }
 
 func TestTmuxPaneFailureAcceptsLivePaneWithEmptyExitStatus(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tmux")
 	body := `#!/bin/sh
 case "$1" in
@@ -79,6 +83,7 @@ esac
 }
 
 func TestParseTmuxPaneFailureOutputRequiresStatusOnlyForDeadPane(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		output string
@@ -96,6 +101,7 @@ func TestParseTmuxPaneFailureOutputRequiresStatusOnlyForDeadPane(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			dead, status, err := parseTmuxPaneFailureOutput([]byte(test.output))
 			if test.valid {
 				if err != nil || dead != test.dead || status != test.status {

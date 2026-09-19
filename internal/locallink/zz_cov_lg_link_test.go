@@ -49,10 +49,12 @@ func lgCovDist(t *testing.T, name, version string) string {
 
 // Link's failure surface must be reported, never half-applied silently.
 func TestLgCovLinkFailurePaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash"}
 
 	t.Run("node_modules cannot be created", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(consumer, "node_modules"), "not a directory\n")
 		_, err := node.Link(ctx, consumer, "@acme/core", lgCovDist(t, "@acme/core", "1.1.0-dev"))
@@ -62,6 +64,7 @@ func TestLgCovLinkFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a prior link that cannot be restored stops the refresh", func(t *testing.T) {
+		t.Parallel()
 		consumer, _, marker, _ := lgCovStagedConsumer(t, "@acme/core")
 		lgCovWriteFile(t, marker, filepath.Join(consumer, "node_modules", ".bogus.wb-locallink-stage")+"\n")
 		_, err := node.Link(ctx, consumer, "@acme/core", lgCovDist(t, "@acme/core", "1.1.0-dev"))
@@ -71,6 +74,7 @@ func TestLgCovLinkFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an unreadable target is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(consumer, "node_modules", "@acme"), 0o755); err != nil {
 			t.Fatal(err)
@@ -85,6 +89,7 @@ func TestLgCovLinkFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a dist that is not a real directory is refused", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		_, err := node.Link(ctx, consumer, "@acme/core", filepath.Join(consumer, "missing-dist"))
 		if err == nil || !strings.Contains(err.Error(), "stage @acme/core in the consumer's installed peer context") {
@@ -93,6 +98,7 @@ func TestLgCovLinkFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a dist carrying a symlink is refused", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		dist := lgCovDist(t, "@acme/core", "1.1.0-dev")
 		if err := os.Symlink(filepath.Join(dist, "package.json"), filepath.Join(dist, "alias.json")); err != nil {
@@ -116,10 +122,12 @@ func TestLgCovLinkFailurePaths(t *testing.T) {
 // on-disk state is not one it can prove. Each branch is asserted through the
 // filesystem it leaves behind.
 func TestLgCovUnlinkBranches(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	node := ExecNode{}
 
 	t.Run("an unreadable marker is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer, _, marker, _ := lgCovStagedConsumer(t, "@acme/core")
 		if err := os.Remove(marker); err != nil {
 			t.Fatal(err)
@@ -134,6 +142,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a recorded link that now dangles is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, _, _ := lgCovStagedConsumer(t, "@acme/core")
 		missing := filepath.Join(consumer, "node_modules", ".pnpm", "gone", "node_modules", "@acme", "core")
 		if err := os.Symlink(missing, target); err != nil {
@@ -147,6 +156,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a superseded link whose record cannot be cleared is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, _, _ := lgCovStagedConsumer(t, "@acme/core")
 		published := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@2.0.0", "node_modules", "@acme", "core")
 		lgCovWriteFile(t, filepath.Join(published, "package.json"), `{"name":"@acme/core","version":"2.0.0"}`)
@@ -169,6 +179,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a record whose symlink vanished without backups is cleared", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, marker, stage := lgCovStagedConsumer(t, "@acme/core")
 		unknown := filepath.Join(consumer, "somewhere-else", "core")
 		if err := os.MkdirAll(unknown, 0o755); err != nil {
@@ -187,6 +198,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a published directory supersedes the staged link", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, marker, stage := lgCovStagedConsumer(t, "@acme/core")
 		lgCovWriteFile(t, filepath.Join(target, "package.json"), `{"name":"@acme/core","version":"2.0.0"}`)
 		note, err := node.Unlink(ctx, consumer, "@acme/core")
@@ -205,6 +217,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a replaced symlink with backups keeps refusing", func(t *testing.T) {
+		t.Parallel()
 		consumer, target, marker, stage := lgCovStagedConsumer(t, "@acme/core")
 		if err := os.Mkdir(target, 0o755); err != nil {
 			t.Fatal(err)
@@ -220,6 +233,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("an empty recorded link target is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		target := filepath.Join(consumer, "node_modules", "@acme", "core")
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -233,6 +247,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("restoring over an existing directory is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		target := filepath.Join(consumer, "node_modules", "@acme", "core")
 		if err := os.MkdirAll(target, 0o755); err != nil {
@@ -246,6 +261,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("an unreadable link record is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		target := filepath.Join(consumer, "node_modules", "@acme", "core")
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -261,6 +277,7 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 	})
 
 	t.Run("a directory backup that cannot be restored is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		target := filepath.Join(consumer, "node_modules", "@acme", "core")
 		if err := os.MkdirAll(target, 0o755); err != nil {
@@ -283,7 +300,9 @@ func TestLgCovUnlinkBranches(t *testing.T) {
 }
 
 func TestLgCovResolvePublishedPackageRejections(t *testing.T) {
+	t.Parallel()
 	t.Run("a WB stage is never a published copy", func(t *testing.T) {
+		t.Parallel()
 		dir := filepath.Join(t.TempDir(), ".core"+wbStageSuffix)
 		lgCovWriteFile(t, filepath.Join(dir, "package.json"), `{"name":"@acme/core","version":"1.0.0"}`)
 		if name, version, ok := resolvePublishedPackage(dir, "@acme/core"); ok || name != "" || version != "" {
@@ -292,12 +311,14 @@ func TestLgCovResolvePublishedPackageRejections(t *testing.T) {
 	})
 
 	t.Run("no manifest means no published copy", func(t *testing.T) {
+		t.Parallel()
 		if _, _, ok := resolvePublishedPackage(t.TempDir(), "@acme/core"); ok {
 			t.Fatal("a directory without a manifest resolved as a published copy")
 		}
 	})
 
 	t.Run("a malformed manifest means no published copy", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(dir, "package.json"), `{"version":`)
 		if _, _, ok := resolvePublishedPackage(dir, "@acme/core"); ok {
@@ -306,6 +327,7 @@ func TestLgCovResolvePublishedPackageRejections(t *testing.T) {
 	})
 
 	t.Run("a versionless manifest means no published copy", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(dir, "package.json"), `{"name":"@acme/core"}`)
 		if _, _, ok := resolvePublishedPackage(dir, "@acme/core"); ok {
@@ -314,6 +336,7 @@ func TestLgCovResolvePublishedPackageRejections(t *testing.T) {
 	})
 
 	t.Run("a nameless manifest falls back to the linked name", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lgCovWriteFile(t, filepath.Join(dir, "package.json"), `{"version":"3.1.4"}`)
 		name, version, ok := resolvePublishedPackage(dir, "@acme/core")
@@ -358,6 +381,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a missing marker is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		err := node.LinkSiblings(ctx, consumer, []string{"@acme/core"})
 		if err == nil || !strings.Contains(err.Error(), "read staged sibling marker for @acme/core") {
@@ -366,6 +390,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an invalid marker is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		target := filepath.Join(consumer, "node_modules", "@acme", "core")
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -379,6 +404,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an unreadable stage manifest is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovStagedPackage(t, consumer, "@acme/core", "")
 		err := node.LinkSiblings(ctx, consumer, []string{"@acme/core"})
@@ -388,6 +414,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a malformed stage manifest is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		lgCovStagedPackage(t, consumer, "@acme/core", `{"dependencies":`)
 		err := node.LinkSiblings(ctx, consumer, []string{"@acme/core"})
@@ -397,6 +424,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("a staged sibling pointing elsewhere is refused", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		appStage := lgCovStagedPackage(t, consumer, "@acme/app", `{"name":"@acme/app","dependencies":{"@acme/core":"1.0.0"}}`)
 		coreStage := lgCovStagedPackage(t, consumer, "@acme/core", `{"name":"@acme/core"}`)
@@ -415,6 +443,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 	})
 
 	t.Run("an unstattable staged sibling path is reported", func(t *testing.T) {
+		t.Parallel()
 		consumer := t.TempDir()
 		appStage := lgCovStagedPackage(t, consumer, "@acme/app", `{"name":"@acme/app","dependencies":{"@acme/core":"1.0.0"}}`)
 		lgCovStagedPackage(t, consumer, "@acme/core", `{"name":"@acme/core"}`)
@@ -458,6 +487,7 @@ func TestLgCovLinkSiblingsFailurePaths(t *testing.T) {
 }
 
 func TestLgCovSamePathAndRemoveSiblingEdges(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	if !samePath(base, "relative/target", filepath.Join(base, "relative", "target")) {
 		t.Fatal("samePath rejected a relative target that names the wanted absolute path")
@@ -555,6 +585,7 @@ func TestLgCovVerifyRuntimeGraphFailurePaths(t *testing.T) {
 // A clean graph resolves with the default timeout when ExecNode.Timeout is
 // unset, which is the production shape of the port.
 func TestLgCovVerifyRuntimeGraphAcceptsACleanGraph(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
 	}

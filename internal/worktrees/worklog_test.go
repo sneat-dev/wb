@@ -18,6 +18,7 @@ import (
 )
 
 func TestNormalizeTaskSummaryRejectsPromptLikeOrUnsafeValues(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"Fix discovery", "line one\nline two", "token=ghp_private", "Use ghp_abcdefghijklmnopqrstuvwxyz123456 for testing", "Bearer abcdefghijklmnopqrstuvwxyz123456", "password: private", strings.Repeat("x", MaxTaskSummaryRunes+1)} {
 		_, err := NormalizeTaskSummary(value)
 		if value == "Fix discovery" && err != nil {
@@ -298,6 +299,7 @@ func TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile(t *testing.T) {
 }
 
 func TestWorkLogClaimIdentitySurvivesRunAndWorktreeRelocation(t *testing.T) {
+	t.Parallel()
 	original := CreateResult{
 		Repository:  "acme/app",
 		WorktreeDir: "/machine-a/worktrees/task/acme/app",

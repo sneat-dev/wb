@@ -1244,6 +1244,7 @@ func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
 }
 
 func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
+	t.Parallel()
 	environment := gitEnvironmentWithHeldGitDirAndWorkTree("/retained/git", "/retained/repository")
 	values := map[string]string{}
 	for _, entry := range environment {
@@ -1884,11 +1885,13 @@ func TestGuardCanonicalFreshnessReportsOfflineExplicitly(t *testing.T) {
 }
 
 func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
+	t.Parallel()
 	const local = "1111111111111111111111111111111111111111"
 	const fetched = "2222222222222222222222222222222222222222"
 	const moved = "3333333333333333333333333333333333333333"
 
 	t.Run("fetch failure", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
 				return local + "\n", nil
@@ -1908,6 +1911,7 @@ func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
 	})
 
 	t.Run("target drift", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			switch args[0] {
 			case "rev-parse":

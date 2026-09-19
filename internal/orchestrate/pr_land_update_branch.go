@@ -25,8 +25,10 @@ const (
 const updateBranchSettleTimeout = 90 * time.Second
 
 // updateBranchSettlePoll is deliberately short. This is one local API read
-// against a head that is already changing, not a CI observation.
-const updateBranchSettlePoll = 3 * time.Second
+// against a head that is already changing, not a CI observation. It is a
+// var, not a const, so a test exercising more than one poll iteration can
+// shrink it instead of waiting out the real interval.
+var updateBranchSettlePoll = 3 * time.Second
 
 // candidateIsBehindTarget reports whether the pull request head does not
 // contain the target's current head, which is what a strict up-to-date policy

@@ -12,6 +12,7 @@ import (
 )
 
 func TestSDCovValidateReceiverRequestBranches(t *testing.T) {
+	t.Parallel()
 	if _, err := validateReceiverRequest(nil, 1024); err == nil || !strings.Contains(err.Error(), "must not be empty") {
 		t.Fatalf("empty request error = %v", err)
 	}

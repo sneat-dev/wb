@@ -11,6 +11,7 @@ import (
 // the file were absent: an unreadable manifest, coverage config, Playwright
 // test source, and workflow must each surface.
 func TestGpCovAuditPropagatesReadErrorsFromEveryScannedFileKind(t *testing.T) {
+	t.Parallel()
 	const goSource = "package main\nfunc main() {}\n"
 	cases := []struct {
 		name string
@@ -23,6 +24,7 @@ func TestGpCovAuditPropagatesReadErrorsFromEveryScannedFileKind(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			write(t, root, "main.go", goSource)
 			write(t, root, testCase.file, "placeholder\n")
@@ -40,6 +42,7 @@ func TestGpCovAuditPropagatesReadErrorsFromEveryScannedFileKind(t *testing.T) {
 }
 
 func TestGpCovAuditOnAMissingRootReportsTheWalkError(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "absent-root")
 	report, err := Audit(missing)
 	if err == nil {
@@ -54,8 +57,10 @@ func TestGpCovAuditOnAMissingRootReportsTheWalkError(t *testing.T) {
 // out dependency tree or build output never makes a repository look like it
 // ships Go source, so no coverage gate is demanded of it.
 func TestGpCovAuditDoesNotCountSourcesUnderIgnoredDirectories(t *testing.T) {
+	t.Parallel()
 	for _, directory := range []string{".git", ".worktrees", "node_modules", "vendor", "dist", "coverage", ".nx", ".cache"} {
 		t.Run(directory, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			write(t, root, filepath.Join(directory, "main.go"), "package main\n")
 			report, err := Audit(root)
@@ -72,6 +77,7 @@ func TestGpCovAuditDoesNotCountSourcesUnderIgnoredDirectories(t *testing.T) {
 	}
 
 	t.Run("a source file outside them is counted", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		report, err := Audit(root)
@@ -88,6 +94,7 @@ func TestGpCovAuditDoesNotCountSourcesUnderIgnoredDirectories(t *testing.T) {
 // middle of the promotion triangle: CI publishes an artifact and the deploy
 // downloads it, but nothing ties the bytes back to the source revision.
 func TestGpCovAuditReportsAnArtifactConsumerThatChecksNoProvenance(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write(t, root, ".github/workflows/ci.yml", `
 jobs:
@@ -124,7 +131,9 @@ jobs:
 // order a caller can diff against: codes sort first, and findings sharing a
 // code sort by their file.
 func TestGpCovAuditOrdersFindingsByCodeThenFile(t *testing.T) {
+	t.Parallel()
 	t.Run("findings sharing a code are ordered by file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/a.yml", "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n")
@@ -145,6 +154,7 @@ func TestGpCovAuditOrdersFindingsByCodeThenFile(t *testing.T) {
 	// "deploy-missing-artifact" for b.yml; only the sort can put them in code
 	// order, so this asserts a real reorder rather than a no-op pass.
 	t.Run("a later finding is moved ahead of an earlier one", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/a.yml", `
 jobs:
@@ -179,6 +189,7 @@ jobs:
 	// A finding that is neither artifact- nor deploy-shaped must not veto
 	// promotion: hasArtifactFinding has to walk findings that do not match.
 	t.Run("an unrelated finding does not veto promotion", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/ci.yml", `
 jobs:
@@ -217,6 +228,7 @@ jobs:
 // where the coverage floor lives in the workflow's own c8 invocation rather
 // than in a package script.
 func TestGpCovAuditRecognizesC8GateDeclaredInTheWorkflowItself(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	write(t, root, "src/pages/index.astro", "<main>Surpriseless</main>")
 	write(t, root, ".github/workflows/ci.yml", `
@@ -245,6 +257,7 @@ jobs:
 // Playwright V8 gate quoted inside docs/ is documentation, not evidence that
 // CI enforces a floor.
 func TestGpCovAuditDoesNotReadACoverageGateFromDocumentation(t *testing.T) {
+	t.Parallel()
 	const manifest = `{
   "scripts": {"test:coverage": "pnpm run build && playwright test"},
   "devDependencies": {"@playwright/test": "1", "astro": "7"}
@@ -265,6 +278,7 @@ test("built landing runtime", async ({ page }) => {
 `
 
 	t.Run("a gate quoted under docs/", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", "<main>Surpriseless</main>")
@@ -285,6 +299,7 @@ test("built landing runtime", async ({ page }) => {
 	})
 
 	t.Run("the same source outside docs/", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "package.json", manifest)
 		write(t, root, "src/pages/index.astro", "<main>Surpriseless</main>")
@@ -304,6 +319,7 @@ test("built landing runtime", async ({ page }) => {
 // TestGpCovAuditReadsCoverageThresholdsFromTestRunnerConfigs covers the
 // vitest/jest config read and the file it feeds jsConfigThreshold.
 func TestGpCovAuditReadsCoverageThresholdsFromTestRunnerConfigs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		config string
@@ -314,6 +330,7 @@ func TestGpCovAuditReadsCoverageThresholdsFromTestRunnerConfigs(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			write(t, root, "src/pages/index.astro", "<main>Surpriseless</main>")
 			write(t, root, testCase.config, testCase.body)
@@ -337,7 +354,9 @@ func TestGpCovAuditReadsCoverageThresholdsFromTestRunnerConfigs(t *testing.T) {
 // boundary truncation: a --minimum belonging to the next step must not be read
 // as the gate of the wb coverage step.
 func TestGpCovAuditCreditsAWBCoverageMinimumOnlyWithinItsStep(t *testing.T) {
+	t.Parallel()
 	t.Run("a minimum in a later step is not credited", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -359,6 +378,7 @@ jobs:
 	})
 
 	t.Run("a minimum in the same step is credited", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml", `
@@ -384,7 +404,9 @@ jobs:
 // TestGpCovAuditBoundsTheWindowItSearchesForAWBCoverageMinimum pins the
 // 4096-byte cap that keeps a marker from scanning an entire workflow file.
 func TestGpCovAuditBoundsTheWindowItSearchesForAWBCoverageMinimum(t *testing.T) {
+	t.Parallel()
 	t.Run("a minimum beyond the window is not credited", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml",
@@ -402,6 +424,7 @@ func TestGpCovAuditBoundsTheWindowItSearchesForAWBCoverageMinimum(t *testing.T) 
 	})
 
 	t.Run("a minimum inside the window is credited", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")
 		write(t, root, ".github/workflows/ci.yml",

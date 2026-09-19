@@ -554,6 +554,7 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			refusal := options
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)

@@ -36,6 +36,7 @@ func tailCovReplaceRecord(t *testing.T, old, replacement string) string {
 // enforces, proving the record that violates exactly that rule is refused with
 // a message naming the field.
 func TestTailCovParseRejectsEveryInvalidFrontmatterField(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		raw     string
@@ -119,6 +120,7 @@ func TestTailCovParseRejectsEveryInvalidFrontmatterField(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := Parse([]byte(testCase.raw)); err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("Parse error = %v, want a message containing %q", err, testCase.wantErr)
 			}
@@ -130,6 +132,7 @@ func TestTailCovParseRejectsEveryInvalidFrontmatterField(t *testing.T) {
 // side of the same rules: head_sha is optional and the Markdown body is kept
 // verbatim.
 func TestTailCovParsePreservesBodyAndAcceptsAnOmittedHeadSHA(t *testing.T) {
+	t.Parallel()
 	withoutSHA := strings.Replace(validRecord, "head_sha: 4afefc42745fe329f2ca4a32388a337096b55cdb\n", "", 1)
 	record, err := Parse([]byte(withoutSHA))
 	if err != nil {
@@ -150,6 +153,7 @@ func TestTailCovParsePreservesBodyAndAcceptsAnOmittedHeadSHA(t *testing.T) {
 // repository validator, including names that only fail on one side of the
 // slash.
 func TestTailCovValidateRepositoryChecksOwnerAndName(t *testing.T) {
+	t.Parallel()
 	bad := []string{
 		"",
 		"schoolus",

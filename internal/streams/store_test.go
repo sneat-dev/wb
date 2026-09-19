@@ -11,6 +11,7 @@ import (
 )
 
 func TestStoreCreateRefusesASecondStreamOfTheSameName(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "once"}); err != nil {
 		t.Fatal(err)
@@ -27,6 +28,7 @@ func TestStoreCreateRefusesASecondStreamOfTheSameName(t *testing.T) {
 // stayed at 1 refused this file outright; loading it here proves the current
 // build reads it, and that Members and LinkedConsumers both round-trip.
 func TestStoreLoadsRealSchemaTwoLinkedConsumersFixture(t *testing.T) {
+	t.Parallel()
 	fixture, err := os.ReadFile(filepath.Join("testdata", "stream_schema_v2.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +84,7 @@ func TestStoreLoadsRealSchemaTwoLinkedConsumersFixture(t *testing.T) {
 }
 
 func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Load("absent"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
@@ -103,6 +106,7 @@ func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
 // state. A state file there, however, is malformed state and must still be
 // surfaced rather than hidden by the reservation.
 func TestStoreListIgnoresOnlyTheEventOnlyFleetDirectory(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Dir(".fleet"), 0o700); err != nil {
 		t.Fatal(err)
@@ -146,6 +150,7 @@ func TestStoreListIgnoresOnlyTheEventOnlyFleetDirectory(t *testing.T) {
 // A newer schema is refused rather than partially interpreted: stream state
 // carries the only record of the versions a link replaced.
 func TestStoreRefusesANewerSchema(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
 		t.Fatal(err)
@@ -162,6 +167,7 @@ func TestStoreRefusesANewerSchema(t *testing.T) {
 // Update re-reads under an exclusive lock, so concurrent mutations compose
 // instead of each writing back its own stale copy of the whole stream.
 func TestUpdateSerializesConcurrentMutations(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "busy"}); err != nil {
 		t.Fatal(err)
@@ -191,6 +197,7 @@ func TestUpdateSerializesConcurrentMutations(t *testing.T) {
 }
 
 func TestUpdateLeavesTheStoredStreamUntouchedWhenTheMutationFails(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "unchanged", Members: []Member{{Repository: "acme/one"}}}); err != nil {
 		t.Fatal(err)
@@ -211,6 +218,7 @@ func TestUpdateLeavesTheStoredStreamUntouchedWhenTheMutationFails(t *testing.T) 
 }
 
 func TestRepositoryStreamIgnoresEndedStreams(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	ended := time.Now().UTC()
 	if _, err := store.Create(Stream{
@@ -226,6 +234,7 @@ func TestRepositoryStreamIgnoresEndedStreams(t *testing.T) {
 // The link inventory is the state half of the merge refusal, so it must
 // resolve a worktree path through symlinks and ignore ended streams.
 func TestLiveLinksForWorktreeFindsLinksAcrossOpenStreams(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	store := OpenAt(filepath.Join(base, "streams"))
 	worktree := filepath.Join(base, "app")
@@ -259,6 +268,7 @@ func TestLiveLinksForWorktreeFindsLinksAcrossOpenStreams(t *testing.T) {
 // through symlinks, and ignore ended streams — an ended stream released its
 // repositories and no longer strands anyone.
 func TestLinkSourcesForWorktreeFindsBothMechanismsAcrossOpenStreams(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	store := OpenAt(filepath.Join(base, "streams"))
 	library := filepath.Join(base, "library")
@@ -325,6 +335,7 @@ func TestLinkSourcesForWorktreeFindsBothMechanismsAcrossOpenStreams(t *testing.T
 }
 
 func TestValidateNameRejectsAnythingThatCouldNotBeATaskName(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"", "-leading", "has space", "has/slash", ".."} {
 		if err := ValidateName(name); err == nil {
 			t.Errorf("ValidateName(%q) accepted a name that is not a valid worktree task", name)
@@ -336,6 +347,7 @@ func TestValidateNameRejectsAnythingThatCouldNotBeATaskName(t *testing.T) {
 }
 
 func TestIsStreamBranchRecognizesBothSpellings(t *testing.T) {
+	t.Parallel()
 	if !IsStreamBranch("stream/x") || !IsStreamBranch("refs/heads/stream/x") {
 		t.Error("stream branch not recognized")
 	}
@@ -348,6 +360,7 @@ func TestIsStreamBranchRecognizesBothSpellings(t *testing.T) {
 // stream holds this repository" is only as good as the records WB could read,
 // and a truncated file could be the very stream that holds it.
 func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "healthy", Phase: PhaseOpen}); err != nil {
 		t.Fatal(err)
@@ -380,6 +393,7 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 // carries live local links this stream's undo and landing guard must reach,
 // so a second stream must not be able to claim it either.
 func TestRepositoryStreamReadsSchemaTwoLinkedConsumers(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Dir("known"), 0o700); err != nil {
 		t.Fatal(err)
@@ -404,6 +418,7 @@ func TestRepositoryStreamReadsSchemaTwoLinkedConsumers(t *testing.T) {
 // decodes to a valid, readable Stream — it simply carries a member with an
 // empty repository, which matches nothing.
 func TestRepositoryStreamReadsSchemaTwoMemberMissingRepositoryField(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Dir("incomplete"), 0o700); err != nil {
 		t.Fatal(err)
@@ -419,6 +434,7 @@ func TestRepositoryStreamReadsSchemaTwoMemberMissingRepositoryField(t *testing.T
 }
 
 func TestRepositoryStreamKeepsUnknownFutureSchemaUnreadable(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if err := os.MkdirAll(store.Dir("future"), 0o700); err != nil {
 		t.Fatal(err)

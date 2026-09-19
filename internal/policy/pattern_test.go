@@ -3,6 +3,7 @@ package policy
 import "testing"
 
 func TestPatternMatch(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		pattern string
@@ -34,6 +35,7 @@ func TestPatternMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			pattern, err := CompilePattern(tc.pattern)
 			if err != nil {
 				t.Fatalf("CompilePattern(%q): %v", tc.pattern, err)
@@ -46,6 +48,7 @@ func TestPatternMatch(t *testing.T) {
 }
 
 func TestCompilePatternRejectsMalformed(t *testing.T) {
+	t.Parallel()
 	for _, pattern := range []string{"", "github.com/acme/{unclosed/...", "github.com/acme/.../trailing", "github.com/acme/{}/x"} {
 		if _, err := CompilePattern(pattern); err == nil {
 			t.Fatalf("CompilePattern(%q) succeeded, want error", pattern)
@@ -54,6 +57,7 @@ func TestCompilePatternRejectsMalformed(t *testing.T) {
 }
 
 func TestPatternCoversReportsShadowing(t *testing.T) {
+	t.Parallel()
 	broad, err := CompilePattern("github.com/acme/*/...")
 	if err != nil {
 		t.Fatal(err)

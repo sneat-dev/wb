@@ -32,6 +32,7 @@ func TestOrchCovNormalizeRejectsIncoherentLifecycleOptions(t *testing.T) {
 		{name: "dry run with resume", mutate: func(o *Options) { o.DryRun, o.Resume = true, true }, wantIn: "--dry-run cannot be combined"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			options := valid
 			test.mutate(&options)
 			if _, err := Normalize(options); err == nil || !strings.Contains(err.Error(), test.wantIn) {
@@ -140,6 +141,7 @@ func TestOrchCovParseLsRemoteSymrefReadsTheDefaultBranch(t *testing.T) {
 }
 
 func TestOrchCovReadOriginHeadSymrefRefusesAnUnexpectedRef(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	if _, err := readOriginHeadSymref(context.Background(), dir, Options{Timeout: time.Minute}); err == nil {
@@ -398,7 +400,6 @@ exit 30
 }
 
 func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	options := Options{Timeout: time.Minute}
 	if _, err := changedFiles(context.Background(), dir, options); err == nil {
@@ -410,7 +411,6 @@ func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
 }
 
 func TestOrchCovChangedFilesNamesEveryModifiedPath(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	writeEngineFile(t, filepath.Join(dir, "kept.txt"), "contents\n")

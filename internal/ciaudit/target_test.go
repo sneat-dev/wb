@@ -50,6 +50,7 @@ func targetGit(t *testing.T, dir string, arguments ...string) {
 // TestCompareCoverageFloorsReportsALoweredFloor pins
 // lesson:l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit.
 func TestCompareCoverageFloorsReportsALoweredFloor(t *testing.T) {
+	t.Parallel()
 	fixture := newTargetFixture(t, "85")
 	targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
 	write(t, fixture.Root, ".github/workflows/ci.yml", `
@@ -81,7 +82,9 @@ jobs:
 // already being the target, and a workflow that is new on this branch (so
 // the target has nothing to compare it to).
 func TestCompareCoverageFloorsFalsePositives(t *testing.T) {
+	t.Parallel()
 	t.Run("a raised floor is not a lowered one", func(t *testing.T) {
+		t.Parallel()
 		fixture := newTargetFixture(t, "70")
 		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
 		write(t, fixture.Root, ".github/workflows/ci.yml", `
@@ -103,6 +106,7 @@ jobs:
 	})
 
 	t.Run("an unchanged floor", func(t *testing.T) {
+		t.Parallel()
 		fixture := newTargetFixture(t, "85")
 		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
 		write(t, fixture.Root, "README.md", "unrelated change\n")
@@ -119,6 +123,7 @@ jobs:
 	})
 
 	t.Run("the current branch already is the target", func(t *testing.T) {
+		t.Parallel()
 		fixture := newTargetFixture(t, "85")
 		findings, err := CompareCoverageFloors(fixture.Root, "main")
 		if err != nil {
@@ -130,6 +135,7 @@ jobs:
 	})
 
 	t.Run("a workflow file that is new on this branch", func(t *testing.T) {
+		t.Parallel()
 		fixture := newTargetFixture(t, "85")
 		targetGit(t, fixture.Root, "checkout", "-qb", "feature/x")
 		write(t, fixture.Root, ".github/workflows/new.yml", `
@@ -151,6 +157,7 @@ jobs:
 	})
 
 	t.Run("an empty target is a no-op", func(t *testing.T) {
+		t.Parallel()
 		fixture := newTargetFixture(t, "85")
 		findings, err := CompareCoverageFloors(fixture.Root, "")
 		if err != nil {

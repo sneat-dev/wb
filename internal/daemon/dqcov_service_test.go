@@ -98,6 +98,7 @@ func dqCovHelperArgument() string {
 // TestDqCovDaemonHelperProcess is a re-exec target for raw operations. It only
 // acts when the parent test set WB_DAEMON_TEST_HELPER.
 func TestDqCovDaemonHelperProcess(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("WB_DAEMON_TEST_HELPER") != "1" {
 		return
 	}
@@ -120,6 +121,7 @@ func TestDqCovDaemonHelperProcess(t *testing.T) {
 }
 
 func TestDqCovNewServiceDefaultsAuthorizeAndGeneration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "test-build", "", nil)
 	if err != nil {
@@ -141,7 +143,9 @@ func TestDqCovNewServiceDefaultsAuthorizeAndGeneration(t *testing.T) {
 }
 
 func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
+	t.Parallel()
 	t.Run("projects root is a file", func(t *testing.T) {
+		t.Parallel()
 		file := filepath.Join(t.TempDir(), "not-a-directory")
 		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -152,6 +156,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 	})
 
 	t.Run("unreadable store", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 			t.Skip("POSIX directory permissions are not enforced for this account")
 		}
@@ -170,6 +175,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 	})
 
 	t.Run("running operation cannot be fenced", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 			t.Skip("POSIX directory permissions are not enforced for this account")
 		}
@@ -189,6 +195,7 @@ func TestDqCovNewServiceRejectsUnusableOperationStore(t *testing.T) {
 }
 
 func TestDqCovNewServiceIgnoresForeignStoreEntries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	directory := dqCovOperationsDir(root)
 	if err := os.MkdirAll(filepath.Join(directory, "nested.json"), 0o700); err != nil {
@@ -207,6 +214,7 @@ func TestDqCovNewServiceIgnoresForeignStoreEntries(t *testing.T) {
 }
 
 func TestDqCovNewServiceReportsCorruptDurableRecords(t *testing.T) {
+	t.Parallel()
 	newRoot := func(t *testing.T, name string, contents []byte, mode os.FileMode, stage func(t *testing.T, root string)) {
 		t.Helper()
 		root := t.TempDir()
@@ -227,21 +235,26 @@ func TestDqCovNewServiceReportsCorruptDurableRecords(t *testing.T) {
 	}
 
 	t.Run("unreadable operation", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 			t.Skip("POSIX file permissions are not enforced for this account")
 		}
 		newRoot(t, "secret.json", []byte("{}"), 0o000, nil)
 	})
 	t.Run("corrupt json", func(t *testing.T) {
+		t.Parallel()
 		newRoot(t, "broken.json", []byte("{"), 0o600, nil)
 	})
 	t.Run("incomplete schema", func(t *testing.T) {
+		t.Parallel()
 		newRoot(t, "old.json", []byte(`{"schema":0}`), 0o600, nil)
 	})
 }
 
 func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
+	t.Parallel()
 	t.Run("target recovered from the operation", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, ExecutionMode: executionModeWorker, WorkingDir: root, Argv: []string{"go", "test"}, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "worker-op", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
@@ -259,6 +272,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 	})
 
 	t.Run("conflicting identities", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, ExecutionMode: executionModeWorker, TargetWorkerID: "outer-worker", Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "conflicted", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
@@ -271,6 +285,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 	})
 
 	t.Run("invalid target is quarantined", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, ExecutionMode: executionModeWorker, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "nameless", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
@@ -290,6 +305,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 	})
 
 	t.Run("quarantine is not durable", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, ExecutionMode: executionModeWorker, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "unwritable", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
@@ -302,6 +318,7 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 	})
 
 	t.Run("idempotency digest is rebuilt", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, ExecutionMode: executionModeWorker, WorkingDir: root, Argv: []string{"go", "test"}, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "legacy-key", State: daemonv1.OperationState_OPERATION_STATE_QUEUED,
@@ -324,7 +341,9 @@ func TestDqCovNewServiceRebuildsWorkerTargetIdentity(t *testing.T) {
 }
 
 func TestDqCovNewServiceFencesQueuedOperationWhenPersistFails(t *testing.T) {
+	t.Parallel()
 	t.Run("running transition", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "running-unfenceable", State: daemonv1.OperationState_OPERATION_STATE_RUNNING, Cursor: "2",
@@ -336,6 +355,7 @@ func TestDqCovNewServiceFencesQueuedOperationWhenPersistFails(t *testing.T) {
 	})
 
 	t.Run("revoked raw authorization", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dqCovWriteRecord(t, root, &record{Schema: QueueSchema, WorkingDir: root, Argv: []string{"true"}, Operation: &daemonv1.Operation{
 			SchemaVersion: QueueSchema, OperationId: "queued-denied", State: daemonv1.OperationState_OPERATION_STATE_QUEUED, Cursor: "1",
@@ -348,6 +368,7 @@ func TestDqCovNewServiceFencesQueuedOperationWhenPersistFails(t *testing.T) {
 }
 
 func TestDqCovSubmitOperationValidation(t *testing.T) {
+	t.Parallel()
 	storeRoot := t.TempDir()
 	service, err := NewService(storeRoot, dqCovOperationsDir(storeRoot), "build", "1", allowRawForTest)
 	if err != nil {
@@ -368,6 +389,7 @@ func TestDqCovSubmitOperationValidation(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := service.SubmitOperation(context.Background(), connect.NewRequest(check.request))
 			if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), check.want) {
 				t.Fatalf("error = %v, want %q", err, check.want)
@@ -377,6 +399,7 @@ func TestDqCovSubmitOperationValidation(t *testing.T) {
 }
 
 func TestDqCovSubmitOperationRollsBackFailedDurableWrite(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -425,6 +448,7 @@ func TestDqCovSubmitOperationRollsBackFailedDurableWrite(t *testing.T) {
 }
 
 func TestDqCovGetAndWaitOperationErrorsAndDeadlines(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -478,6 +502,7 @@ func TestDqCovGetAndWaitOperationErrorsAndDeadlines(t *testing.T) {
 }
 
 func TestDqCovCancelOperationCoversTerminalAndRunningCases(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -531,6 +556,7 @@ func TestDqCovCancelOperationCoversTerminalAndRunningCases(t *testing.T) {
 }
 
 func TestDqCovExecuteIgnoresWorkThatIsNotQueuedRawExecution(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -713,6 +739,7 @@ func TestDqCovExecuteRevokesAuthorizationImmediatelyBeforeLaunch(t *testing.T) {
 }
 
 func TestDqCovFinishIsIdempotentAndSkipsCancelledWork(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -765,6 +792,7 @@ func TestDqCovFinishReportsFailedTerminalWrite(t *testing.T) {
 }
 
 func TestDqCovFailAuthorizationIgnoresWorkThatIsGoneOrNotQueued(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -784,6 +812,7 @@ func TestDqCovFailAuthorizationIgnoresWorkThatIsGoneOrNotQueued(t *testing.T) {
 }
 
 func TestDqCovPersistRecordReportsUnusableTargets(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -809,6 +838,7 @@ func TestDqCovPersistRecordReportsUnusableTargets(t *testing.T) {
 }
 
 func TestDqCovOperationHelpersAreDeterministic(t *testing.T) {
+	t.Parallel()
 	cursors := map[string]string{"": "1", "0": "1", "1": "2", "2": "3", "3": "3.1", "weird": "weird.1"}
 	for input, want := range cursors {
 		if got := nextCursor(input); got != want {

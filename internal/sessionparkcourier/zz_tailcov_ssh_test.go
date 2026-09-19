@@ -17,6 +17,7 @@ import (
 )
 
 func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
+	t.Parallel()
 	validConfig := sessionmove.SSHConfig{Host: "target"}
 	runner := &courierRunner{}
 	executable, err := os.Executable()
@@ -25,34 +26,40 @@ func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
 	}
 
 	t.Run("invalid config", func(t *testing.T) {
+		t.Parallel()
 		if _, err := newSSHDeliverer(sessionmove.SSHConfig{Host: "-bad"}, executableLookup(t), runner, Options{}); err == nil || !strings.Contains(err.Error(), "ssh.host") {
 			t.Fatalf("err = %v, want the invalid ssh.host to be rejected", err)
 		}
 	})
 	t.Run("no executable lookup", func(t *testing.T) {
+		t.Parallel()
 		if _, err := newSSHDeliverer(validConfig, nil, runner, Options{}); err == nil || !strings.Contains(err.Error(), "executable lookup is unavailable") {
 			t.Fatalf("err = %v, want the missing lookup to be reported", err)
 		}
 	})
 	t.Run("lookup fails", func(t *testing.T) {
+		t.Parallel()
 		fail := func(string) (string, error) { return "", errors.New("no ssh on this host") }
 		if _, err := newSSHDeliverer(validConfig, fail, runner, Options{}); err == nil || !strings.Contains(err.Error(), "no ssh on this host") {
 			t.Fatalf("err = %v, want the lookup failure to be wrapped", err)
 		}
 	})
 	t.Run("relative executable", func(t *testing.T) {
+		t.Parallel()
 		relative := func(string) (string, error) { return "ssh", nil }
 		if _, err := newSSHDeliverer(validConfig, relative, runner, Options{}); err == nil || !strings.Contains(err.Error(), "not one clean absolute path") {
 			t.Fatalf("err = %v, want a relative executable to be rejected", err)
 		}
 	})
 	t.Run("unclean executable", func(t *testing.T) {
+		t.Parallel()
 		unclean := func(string) (string, error) { return "/usr/bin/../bin/ssh", nil }
 		if _, err := newSSHDeliverer(validConfig, unclean, runner, Options{}); err == nil || !strings.Contains(err.Error(), "not one clean absolute path") {
 			t.Fatalf("err = %v, want an unclean executable to be rejected", err)
 		}
 	})
 	t.Run("missing executable", func(t *testing.T) {
+		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "ssh")
 		lookup := func(string) (string, error) { return missing, nil }
 		if _, err := newSSHDeliverer(validConfig, lookup, runner, Options{}); err == nil || !strings.Contains(err.Error(), "not one executable regular file") {
@@ -60,6 +67,7 @@ func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
 		}
 	})
 	t.Run("non-executable file", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(t.TempDir(), "ssh")
 		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -70,6 +78,7 @@ func TestTailCovNewSSHDelivererRejectsUnusableResolutions(t *testing.T) {
 		}
 	})
 	t.Run("no runner", func(t *testing.T) {
+		t.Parallel()
 		if _, err := newSSHDeliverer(validConfig, func(string) (string, error) { return executable, nil }, nil, Options{}); err == nil || !strings.Contains(err.Error(), "command runner is unavailable") {
 			t.Fatalf("err = %v, want the missing runner to be reported", err)
 		}
@@ -126,6 +135,7 @@ func TestTailCovNewSSHDelivererDrivesTheRealExecRunner(t *testing.T) {
 // runner that actually launches a process, which the fake-runner tests never
 // touch.
 func TestTailCovExecCommandRunnerPipesStdinAndReportsExitStatus(t *testing.T) {
+	t.Parallel()
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Fatalf("this platform has no sh: %v", err)
@@ -145,15 +155,18 @@ func TestTailCovExecCommandRunnerPipesStdinAndReportsExitStatus(t *testing.T) {
 }
 
 func TestTailCovDeliverRejectsUnusableEnvelopes(t *testing.T) {
+	t.Parallel()
 	_, raw := courierEnvelope(t)
 	deliverer := testSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, &courierRunner{})
 
 	t.Run("not an envelope", func(t *testing.T) {
+		t.Parallel()
 		if _, err := deliverer.Deliver(context.Background(), []byte("{not json")); err == nil || !strings.Contains(err.Error(), "validate SSH parked-session envelope") {
 			t.Fatalf("err = %v, want a malformed envelope to be rejected", err)
 		}
 	})
 	t.Run("not canonical", func(t *testing.T) {
+		t.Parallel()
 		var envelope sessionpark.Envelope
 		if err := json.Unmarshal(raw, &envelope); err != nil {
 			t.Fatal(err)
@@ -169,6 +182,7 @@ func TestTailCovDeliverRejectsUnusableEnvelopes(t *testing.T) {
 }
 
 func TestTailCovDeliverReportsCancelledDeliveryContext(t *testing.T) {
+	t.Parallel()
 	_, raw := courierEnvelope(t)
 	runner := &courierRunner{err: errors.New("exit status 1")}
 	deliverer := testSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
@@ -180,10 +194,12 @@ func TestTailCovDeliverReportsCancelledDeliveryContext(t *testing.T) {
 }
 
 func TestTailCovDeliverRejectsMismatchedOrInvalidReceipts(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	digest := sessionmove.DigestBytes(raw)
 
 	t.Run("incomplete phase", func(t *testing.T) {
+		t.Parallel()
 		body, err := json.Marshal(sessionparkreceive.Result{ResumeID: request.ResumeID, Digest: digest, Phase: sessionparkreceive.PhaseReceived})
 		if err != nil {
 			t.Fatal(err)
@@ -194,6 +210,7 @@ func TestTailCovDeliverRejectsMismatchedOrInvalidReceipts(t *testing.T) {
 		}
 	})
 	t.Run("conflicting receipt", func(t *testing.T) {
+		t.Parallel()
 		body, err := json.Marshal(sessionparkreceive.Result{
 			ResumeID: request.ResumeID, Digest: digest, Phase: sessionparkreceive.PhaseCompleted, Receipt: &sessionpark.Receipt{},
 		})
@@ -208,6 +225,7 @@ func TestTailCovDeliverRejectsMismatchedOrInvalidReceipts(t *testing.T) {
 }
 
 func TestTailCovDecodeReceiverResultRejectsMalformedResponses(t *testing.T) {
+	t.Parallel()
 	cases := map[string][]byte{
 		"unknown field":      []byte(`{"unexpected":true}`),
 		"syntax error":       []byte(`{"resume_id":`),
@@ -216,6 +234,7 @@ func TestTailCovDecodeReceiverResultRejectsMalformedResponses(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := decodeReceiverResult(raw); err == nil {
 				t.Fatalf("decodeReceiverResult(%q) was accepted", raw)
 			}
@@ -224,6 +243,7 @@ func TestTailCovDecodeReceiverResultRejectsMalformedResponses(t *testing.T) {
 }
 
 func TestTailCovBoundedBufferDropsEverythingPastItsLimit(t *testing.T) {
+	t.Parallel()
 	buffer := boundedBuffer{limit: 4}
 	if n, err := buffer.Write([]byte("abcd")); n != 4 || err != nil || buffer.exceeded {
 		t.Fatalf("first write = (%d, %v), exceeded=%t", n, err, buffer.exceeded)
@@ -240,6 +260,7 @@ func TestTailCovBoundedBufferDropsEverythingPastItsLimit(t *testing.T) {
 // journal-write failure through the public delivery path: the diagnostic must
 // be dropped rather than disclosed when the journal path is unusable.
 func TestTailCovDeliverSuppressesStderrWhenJournalCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	request, raw := courierEnvelope(t)
 	secret := request.Continuation
 	dir := t.TempDir()

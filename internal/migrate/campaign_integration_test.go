@@ -401,6 +401,7 @@ func TestLocalCampaignContinuesVerificationAfterProviderFailure(t *testing.T) {
 }
 
 func TestUpdateGoModuleTidiesUnusedMigrationRequirement(t *testing.T) {
+	t.Parallel()
 	moduleRoot := t.TempDir()
 	recordRoot := t.TempDir()
 	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/unused\n\ngo 1.24\n")
@@ -446,6 +447,7 @@ func TestCampaignPRRequiresPublishedVersionsBeforePush(t *testing.T) {
 }
 
 func TestPreflightPublishedReleasesRejectsUnrelatedLocalReplacement(t *testing.T) {
+	t.Parallel()
 	moduleRoot := t.TempDir()
 	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/consumer\n\ngo 1.24\n\nrequire example.com/unrelated v0.0.0\n\nreplace example.com/unrelated => ../unrelated\n")
 

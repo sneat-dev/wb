@@ -81,9 +81,10 @@ func smCovWriteRequest(t *testing.T, raw []byte, mode os.FileMode) string {
 }
 
 func TestSmCovLockHeldForSessionRequiresExactAggregateAndDigest(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	var nilLock *ExecutionLock
 	if nilLock.HeldForSession(fixture.root, fixture.request.HandoffID, string(fixture.digest)) {
@@ -111,9 +112,10 @@ func TestSmCovLockHeldForSessionRequiresExactAggregateAndDigest(t *testing.T) {
 }
 
 func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	var nilLock *ExecutionLock
 	if retained, err := nilLock.RetainSessionDir(fixture.root, fixture.request.HandoffID, string(fixture.digest)); err == nil {
@@ -132,6 +134,7 @@ func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			retained, err := lock.RetainSessionDir(fixture.root, test.aggregateID, string(test.digest))
 			if err == nil {
 				_ = retained.Close()
@@ -147,7 +150,7 @@ func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RetainSessionDir on the bound aggregate: %v", err)
 	}
-	defer func() { _ = retained.Close() }()
+	t.Cleanup(func() { _ = retained.Close() })
 	wantInfo, err := os.Stat(smCovHandoffDir(fixture))
 	if err != nil {
 		t.Fatalf("stat handoff directory %s: %v", smCovHandoffDir(fixture), err)
@@ -162,7 +165,9 @@ func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
 }
 
 func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
+	t.Parallel()
 	t.Run("nil lock", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		var lock *ExecutionLock
 		if lock.HeldForStore(fixture.root, fixture.request, fixture.digest) {
@@ -171,6 +176,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("empty expected root", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -180,6 +186,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("padded expected root", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -189,6 +196,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("different store root", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -203,6 +211,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("different request projection", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -214,6 +223,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("different validating digest", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -227,6 +237,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("different handoff id", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -238,6 +249,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("replacement request inode", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -254,6 +266,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("missing request file", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -266,6 +279,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("renamed handoff directory", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -278,6 +292,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("renamed execution lock entry", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -291,6 +306,7 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 	})
 
 	t.Run("removed store root", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -304,7 +320,9 @@ func TestSmCovLockHeldForStoreRejectsUnboundAuthority(t *testing.T) {
 }
 
 func TestSmCovLockHeldForStoreRejectsSwappedDirectoryIdentity(t *testing.T) {
+	t.Parallel()
 	t.Run("swapped store root", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -320,6 +338,7 @@ func TestSmCovLockHeldForStoreRejectsSwappedDirectoryIdentity(t *testing.T) {
 	})
 
 	t.Run("swapped handoff directory", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lock := fixture.smCovAcquire(t)
 		defer func() { _ = lock.Close() }()
@@ -337,6 +356,7 @@ func TestSmCovLockHeldForStoreRejectsSwappedDirectoryIdentity(t *testing.T) {
 }
 
 func TestSmCovLockRetainHandoffForStoreRequiresExactBinding(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
 
@@ -362,6 +382,7 @@ func TestSmCovLockRetainHandoffForStoreRequiresExactBinding(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			retained, err := lock.RetainHandoffForStore(test.root, test.request, test.digest)
 			if err == nil {
 				_ = retained.Close()
@@ -404,6 +425,7 @@ func TestSmCovLockRetainHandoffForStoreRequiresExactBinding(t *testing.T) {
 }
 
 func TestSmCovLockRetainStoreRootForStoreRequiresExactBinding(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
 
@@ -429,6 +451,7 @@ func TestSmCovLockRetainStoreRootForStoreRequiresExactBinding(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			retained, err := lock.RetainStoreRootForStore(test.root, test.request, test.digest)
 			if err == nil {
 				_ = retained.Close()
@@ -471,6 +494,7 @@ func TestSmCovLockRetainStoreRootForStoreRequiresExactBinding(t *testing.T) {
 }
 
 func TestSmCovLockAcquireRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	regularFile := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(regularFile, []byte("regular file"), 0o600); err != nil {
@@ -536,6 +560,7 @@ func TestSmCovLockAcquireRejectsInvalidArguments(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			lock, err := test.store.AcquireExecutionLock(context.Background(), test.handoffID, test.digest)
 			if err == nil {
 				_ = lock.Close()
@@ -549,7 +574,9 @@ func TestSmCovLockAcquireRejectsInvalidArguments(t *testing.T) {
 }
 
 func TestSmCovLockAcquireRejectsUnstableExecutionLockEntry(t *testing.T) {
+	t.Parallel()
 	t.Run("lock entry is a directory", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		lockPath := filepath.Join(smCovHandoffDir(fixture), executionLockFileName)
 		if err := os.Mkdir(lockPath, 0o700); err != nil {
@@ -566,6 +593,7 @@ func TestSmCovLockAcquireRejectsUnstableExecutionLockEntry(t *testing.T) {
 	})
 
 	t.Run("lock entry has multiple links", func(t *testing.T) {
+		t.Parallel()
 		fixture := smCovNewLockFixture(t)
 		dir := smCovHandoffDir(fixture)
 		source := filepath.Join(dir, "linked-source")
@@ -587,6 +615,7 @@ func TestSmCovLockAcquireRejectsUnstableExecutionLockEntry(t *testing.T) {
 }
 
 func TestSmCovLockAcquireRejectsCorruptedAdmittedRequest(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	requestPath := filepath.Join(smCovHandoffDir(fixture), requestFileName)
 	if err := os.Remove(requestPath); err != nil {
@@ -638,10 +667,15 @@ func TestSmCovLockAcquireRejectsUnresolvableRoot(t *testing.T) {
 }
 
 func TestSmCovLockAcquireWaitsInterruptiblyForContendedFence(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	held := fixture.smCovAcquire(t)
-	defer func() { _ = held.Close() }()
+	t.Cleanup(func() { _ = held.Close() })
 
+	// These three subtests are left serial: "fence is reusable after
+	// release" closes the fence the other two depend on staying held for
+	// contention, and only serial, declaration-order execution guarantees
+	// it runs last.
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -693,12 +727,13 @@ func TestSmCovLockAcquireWaitsInterruptiblyForContendedFence(t *testing.T) {
 }
 
 func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	handoff, err := os.Open(dir)
 	if err != nil {
 		t.Fatalf("open handoff directory %s: %v", dir, err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 
 	firstFD, err := openExecutionLockAt(int(handoff.Fd()))
 	if err != nil {
@@ -708,7 +743,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 	if first == nil {
 		t.Fatalf("wrap first execution lock fd %d", firstFD)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 
 	secondFD, err := openExecutionLockAt(int(handoff.Fd()))
 	if err != nil {
@@ -718,7 +753,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 	if second == nil {
 		t.Fatalf("wrap second execution lock fd %d", secondFD)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 
 	firstInfo, err := first.Stat()
 	if err != nil {
@@ -754,6 +789,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 }
 
 func TestSmCovLockOpenExecutionLockAtReportsCreationFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatalf("chmod unwritable handoff directory %s: %v", dir, err)
@@ -764,7 +800,7 @@ func TestSmCovLockOpenExecutionLockAtReportsCreationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open unwritable handoff directory %s: %v", dir, err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 
 	fd, err := openExecutionLockAt(int(handoff.Fd()))
 	if err == nil {
@@ -778,10 +814,12 @@ func TestSmCovLockOpenExecutionLockAtReportsCreationFailure(t *testing.T) {
 }
 
 func TestSmCovLockAdmittedRequestAtValidatesDurableRequest(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	otherDigest := DigestBytes([]byte("some other request bytes"))
 
 	t.Run("missing request file", func(t *testing.T) {
+		t.Parallel()
 		handoff, err := os.Open(t.TempDir())
 		if err != nil {
 			t.Fatalf("open empty handoff directory: %v", err)
@@ -801,6 +839,7 @@ func TestSmCovLockAdmittedRequestAtValidatesDurableRequest(t *testing.T) {
 	})
 
 	t.Run("mismatched digest", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		handoff, err := os.Open(dir)
 		if err != nil {
@@ -821,6 +860,7 @@ func TestSmCovLockAdmittedRequestAtValidatesDurableRequest(t *testing.T) {
 	})
 
 	t.Run("mismatched handoff id", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		handoff, err := os.Open(dir)
 		if err != nil {
@@ -838,6 +878,7 @@ func TestSmCovLockAdmittedRequestAtValidatesDurableRequest(t *testing.T) {
 	})
 
 	t.Run("success returns admitted request and open file", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		handoff, err := os.Open(dir)
 		if err != nil {
@@ -870,10 +911,12 @@ func TestSmCovLockAdmittedRequestAtValidatesDurableRequest(t *testing.T) {
 }
 
 func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	otherDigest := DigestBytes([]byte("some other request bytes"))
 
 	t.Run("mode 0644 is accepted because permissions are not part of the bound check", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o644)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), fixture.request.HandoffID, fixture.digest)
 		if err != nil {
@@ -885,6 +928,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("request file is a directory", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		if err := os.Mkdir(filepath.Join(dir, requestFileName), 0o700); err != nil {
 			t.Fatalf("create directory request file: %v", err)
@@ -899,6 +943,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("request file has a second hard link", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		path := filepath.Join(dir, requestFileName)
 		if err := os.Link(path, filepath.Join(dir, "request.json.link")); err != nil {
@@ -914,6 +959,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("request file exceeds the byte limit", func(t *testing.T) {
+		t.Parallel()
 		oversized := make([]byte, maxExecutionLockRequestBytes+1)
 		dir := smCovWriteRequest(t, oversized, 0o600)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), fixture.request.HandoffID, fixture.digest)
@@ -926,6 +972,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("request file is corrupted json", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, []byte("{not-json"), 0o600)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), fixture.request.HandoffID, fixture.digest)
 		if err == nil {
@@ -937,6 +984,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("handoff id mismatch conflicts", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), "handoff-other", fixture.digest)
 		if err == nil {
@@ -948,6 +996,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("digest mismatch conflicts", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), fixture.request.HandoffID, otherDigest)
 		if err == nil {
@@ -959,6 +1008,7 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 	})
 
 	t.Run("exact admitted request decodes", func(t *testing.T) {
+		t.Parallel()
 		dir := smCovWriteRequest(t, fixture.raw, 0o600)
 		request, err := readAdmittedRequestFile(smCovOpenRequest(t, dir), fixture.request.HandoffID, fixture.digest)
 		if err != nil {
@@ -971,16 +1021,17 @@ func TestSmCovLockReadAdmittedRequestFileEnforcesBounds(t *testing.T) {
 }
 
 func TestSmCovLockSameFileRejectsNilAndDistinctDescriptors(t *testing.T) {
+	t.Parallel()
 	first, err := os.CreateTemp(t.TempDir(), "smcov-same-file-*")
 	if err != nil {
 		t.Fatalf("create first temp file: %v", err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 	second, err := os.CreateTemp(t.TempDir(), "smcov-same-file-*")
 	if err != nil {
 		t.Fatalf("create second temp file: %v", err)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 
 	if sameFile(nil, first) {
 		t.Fatalf("sameFile(nil, file) = true, want false")
@@ -997,6 +1048,7 @@ func TestSmCovLockSameFileRejectsNilAndDistinctDescriptors(t *testing.T) {
 }
 
 func TestSmCovLockCloseIsIdempotentAndReleasesFence(t *testing.T) {
+	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 
 	var nilLock *ExecutionLock

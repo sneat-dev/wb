@@ -145,6 +145,7 @@ exit 1
 }
 
 func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T) {
+	t.Parallel()
 	requirements, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "devDependencies": {"@acme/data": "1.0.0"},
@@ -168,6 +169,7 @@ func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T)
 }
 
 func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
+	t.Parallel()
 	_, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "peerDependencies": {"@acme/core": "2.0.0"}
@@ -227,7 +229,6 @@ func TestRunBumpNpmNoRegistrySkipsCurrentCarrierEvidence(t *testing.T) {
 // normalizeBumpOptions' event validation: a `--changed` event has to look
 // like a real npm package identity before any repository work starts.
 func TestRunBumpNpmRejectsInvalidPackageName(t *testing.T) {
-	t.Parallel()
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "Not An npm Name", Version: "1.0.0"}}, nil, BumpOptions{
 		Ecosystem: EcosystemNPM,
 		Options:   Options{GitHubDir: t.TempDir(), DryRun: true},
@@ -241,7 +242,6 @@ func TestRunBumpNpmRejectsInvalidPackageName(t *testing.T) {
 // must be an exact published version, not a range — deps bump only ever
 // carries evidence of an actual release forward.
 func TestRunBumpNpmRejectsRangeAsReleaseVersion(t *testing.T) {
-	t.Parallel()
 	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "@acme/provider", Version: "^1.0.0"}}, nil, BumpOptions{
 		Ecosystem: EcosystemNPM,
 		Options:   Options{GitHubDir: t.TempDir(), DryRun: true},

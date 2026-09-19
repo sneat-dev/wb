@@ -10,6 +10,7 @@ import (
 )
 
 func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -59,6 +60,7 @@ func TestOrchCovEnsureCanonicalReportsAFetchFailure(t *testing.T) {
 }
 
 func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
@@ -97,6 +99,7 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 }
 
 func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "broken")

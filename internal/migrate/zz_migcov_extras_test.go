@@ -10,6 +10,7 @@ import (
 )
 
 func TestMigCovImportedGoPackageWithoutScopeOrBinding(t *testing.T) {
+	t.Parallel()
 	// A selector whose package binding was never recorded resolves to no
 	// package at all rather than falling back to a spelling-only match.
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Scopes: map[ast.Node]*types.Scope{}}

@@ -19,6 +19,7 @@ import (
 )
 
 func TestReceiveRejectsWrongTargetMachineBeforeAdmission(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	called := false
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
@@ -43,6 +44,7 @@ func TestReceiveRejectsWrongTargetMachineBeforeAdmission(t *testing.T) {
 }
 
 func TestReceiveReturnsExistingReceiptWithoutExecutingTarget(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -178,6 +180,7 @@ func TestReceiveIdenticalRetryReturnsReceiptWithoutDuplicateReceiverEffects(t *t
 }
 
 func TestReceiveRepairsCompletionAcrossTargetEvidenceAndReceiptBoundaries(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -240,6 +243,7 @@ func TestReceiveRepairsCompletionAcrossTargetEvidenceAndReceiptBoundaries(t *tes
 }
 
 func TestReceiveRejectsSameHandoffIDDifferentExactBytes(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -273,6 +277,7 @@ func TestReceiveRejectsSameHandoffIDDifferentExactBytes(t *testing.T) {
 }
 
 func TestReceiveRecordsActionableFailureWithoutReceipt(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -300,6 +305,7 @@ func TestReceiveRecordsActionableFailureWithoutReceipt(t *testing.T) {
 }
 
 func TestReceiveConcurrentIdenticalRequestsSerializeAndCreateOnce(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -372,6 +378,7 @@ func TestReceiveConcurrentIdenticalRequestsSerializeAndCreateOnce(t *testing.T) 
 }
 
 func TestReceiveReplayAfterWorktreeReadyUsesLocalVerifierWithoutRefetch(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -405,6 +412,7 @@ func TestReceiveReplayAfterWorktreeReadyUsesLocalVerifierWithoutRefetch(t *testi
 }
 
 func TestReceiveReplayAfterSuccessorStartedBypassesAllGit(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -441,6 +449,7 @@ func TestReceiveReplayAfterSuccessorStartedBypassesAllGit(t *testing.T) {
 }
 
 func TestReceiveRecoversReleasedSuccessorBeforeDirtyWorktreeReplay(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -486,6 +495,7 @@ func TestReceiveRecoversReleasedSuccessorBeforeDirtyWorktreeReplay(t *testing.T)
 }
 
 func TestReceiveRetriesExactTerminalLauncherWithoutGitReplay(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()

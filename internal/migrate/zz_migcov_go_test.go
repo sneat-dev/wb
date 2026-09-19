@@ -20,6 +20,7 @@ func migCovParseGo(t *testing.T, source string) (*token.FileSet, *ast.File) {
 }
 
 func TestMigCovTransformRejectsUnsupportedAndUnadaptedSteps(t *testing.T) {
+	t.Parallel()
 	if _, _, err := transform([]Step{{Kind: "regex.replace"}}, "go", []byte("package p\n"), "x.go"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported kind "regex.replace"`) {
 		t.Fatalf("transform(unsupported kind) = %v", err)
@@ -35,6 +36,7 @@ func TestMigCovTransformRejectsUnsupportedAndUnadaptedSteps(t *testing.T) {
 }
 
 func TestMigCovTransformGoRejectsUnsupportedKindAndUnparseableSource(t *testing.T) {
+	t.Parallel()
 	if _, _, err := transformGo([]byte("package p\n"), "p.go", Step{Kind: "text.replace", From: "a", To: "b"}); err == nil ||
 		!strings.Contains(err.Error(), `unsupported Go step "text.replace"`) {
 		t.Fatalf("transformGo(text.replace) = %v", err)
@@ -46,6 +48,7 @@ func TestMigCovTransformGoRejectsUnsupportedKindAndUnparseableSource(t *testing.
 }
 
 func TestMigCovTransformGoLeavesMemberlessRewriteTargetsAlone(t *testing.T) {
+	t.Parallel()
 	// A rewrite target that does not name a member cannot be expressed as a
 	// package-qualified selector, so the selector is left untouched while the
 	// new import is still made available.
@@ -70,6 +73,7 @@ func TestMigCovTransformGoLeavesMemberlessRewriteTargetsAlone(t *testing.T) {
 }
 
 func TestMigCovTypedStructCompositeAcceptsInstantiatedNamedTypes(t *testing.T) {
+	t.Parallel()
 	step := Step{Kind: "composite_field.rename", Language: "go", From: "RecordWithID", To: "WithID"}
 	source := "package p\n\ntype Pair[A, B any] struct { RecordWithID int }\n\nvar pair = Pair[int, string]{RecordWithID: 1}\n"
 	updated, changed, err := transformGo([]byte(source), "p.go", step)
@@ -85,6 +89,7 @@ func TestMigCovTypedStructCompositeAcceptsInstantiatedNamedTypes(t *testing.T) {
 }
 
 func TestMigCovRemoveUnusedGoImportIgnoresAbsentAndOtherImports(t *testing.T) {
+	t.Parallel()
 	fset, file := migCovParseGo(t, "package p\n\nimport (\n\t\"example.com/other\"\n\t\"example.com/unused\"\n)\n\nvar x = other.Key\n")
 	if removeUnusedGoImport(file, fset, "example.com/absent") {
 		t.Fatal("removeUnusedGoImport removed an import that was never declared")
@@ -105,6 +110,7 @@ func TestMigCovRemoveUnusedGoImportIgnoresAbsentAndOtherImports(t *testing.T) {
 }
 
 func TestMigCovEnsureGoImportAddsDeclarationAndAlias(t *testing.T) {
+	t.Parallel()
 	// No import declaration exists at all: the runner must create one rather
 	// than assume the file already imports something.
 	fset, file := migCovParseGo(t, "package p\n\nvar x = 1\n")
@@ -133,6 +139,7 @@ func TestMigCovEnsureGoImportAddsDeclarationAndAlias(t *testing.T) {
 }
 
 func TestMigCovEnsureGoImportKeepsOrDropsExistingAlias(t *testing.T) {
+	t.Parallel()
 	// The package is already imported under the preferred name.
 	fset, file := migCovParseGo(t, "package p\n\nimport \"example.com/record\"\n\nvar x = 1\n")
 	name, changed := ensureGoImport(file, fset, "example.com/record", "record")
@@ -160,6 +167,7 @@ func TestMigCovEnsureGoImportKeepsOrDropsExistingAlias(t *testing.T) {
 }
 
 func TestMigCovAvailableGoIdentifierFallsBackDeterministically(t *testing.T) {
+	t.Parallel()
 	_, file := migCovParseGo(t, "package p\n\nvar record = 1\nvar dalrecord = 2\n")
 	if got := availableGoIdentifier(file, "record"); got != "dalrecord2" {
 		t.Fatalf("availableGoIdentifier() = %q, want dalrecord2", got)

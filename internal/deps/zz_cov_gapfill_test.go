@@ -24,6 +24,7 @@ func depsCovGapEnforcesPermissions() bool {
 // cannot be listed, so the scan must surface the filesystem error instead of
 // silently reporting "no manifest here".
 func TestDepsCovGapRepositoryContainsLocalManifestUnreadableTree(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		scan func(string) (bool, error)
@@ -32,6 +33,7 @@ func TestDepsCovGapRepositoryContainsLocalManifestUnreadableTree(t *testing.T) {
 		{name: "npm", scan: repositoryContainsLocalNpmManifest},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := filepath.Join(t.TempDir(), "checkout")
 			if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 				t.Fatal(err)
@@ -67,10 +69,12 @@ func TestDepsCovGapRepositoryContainsLocalManifestUnreadableTree(t *testing.T) {
 // adapter reports a directory it cannot list and a directory it cannot write
 // to, instead of returning a silently empty decision set.
 func TestDepsCovGapGitHubActionsApplySurfacesFilesystemRefusals(t *testing.T) {
+	t.Parallel()
 	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0", Resolved: strings.Repeat("2", 40)}
 	body := "jobs:\n  ci:\n    uses: acme/cicd/.github/workflows/go.yml@" + strings.Repeat("1", 40) + " # v1.0.0\n"
 
 	t.Run("unlistable workflows directory", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		workflows := filepath.Join(worktree, ".github", "workflows")
 		writeTestFile(t, filepath.Join(workflows, "ci.yml"), body)
@@ -92,6 +96,7 @@ func TestDepsCovGapGitHubActionsApplySurfacesFilesystemRefusals(t *testing.T) {
 	})
 
 	t.Run("unwritable workflows directory", func(t *testing.T) {
+		t.Parallel()
 		worktree := t.TempDir()
 		workflows := filepath.Join(worktree, ".github", "workflows")
 		writeTestFile(t, filepath.Join(workflows, "ci.yml"), body)
@@ -119,6 +124,7 @@ func TestDepsCovGapGitHubActionsApplySurfacesFilesystemRefusals(t *testing.T) {
 // TestDepsCovGapNpmApplySurfacesUnwritableManifest proves an npm manifest
 // rewrite that cannot be written is reported as an error rather than dropped.
 func TestDepsCovGapNpmApplySurfacesUnwritableManifest(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		files map[string]string
@@ -127,6 +133,7 @@ func TestDepsCovGapNpmApplySurfacesUnwritableManifest(t *testing.T) {
 		{name: "pnpm-workspace.yaml", files: map[string]string{"pnpm-workspace.yaml": "overrides:\n  \"@sneat/core\": \"1.0.0\"\n"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			worktree := t.TempDir()
 			for relative, contents := range testCase.files {
 				writeTestFile(t, filepath.Join(worktree, relative), contents)
@@ -154,6 +161,7 @@ func TestDepsCovGapNpmApplySurfacesUnwritableManifest(t *testing.T) {
 // manifest read that fails after the walk has already listed the path: a
 // dangling symlink is a directory entry the walk accepts and the read rejects.
 func TestDepsCovGapInstalledNpmVersionsReportsUnreadableManifest(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.Symlink(filepath.Join(root, "missing-target.json"), filepath.Join(root, "package.json")); err != nil {
 		t.Skipf("this platform cannot create the dangling-symlink fixture: %v", err)

@@ -167,6 +167,7 @@ func TestWtLifeCovPrepareOperationRootAtClassifiesUnsafeRoot(t *testing.T) {
 }
 
 func TestWtLifeCovDirectoryExistsNoFollowClassifiesDestinations(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if exists, err := directoryExistsNoFollow(filepath.Join(root, "absent")); err != nil || exists {
 		t.Fatalf("absent destination = %t, %v", exists, err)

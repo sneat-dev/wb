@@ -182,6 +182,7 @@ exit 30
 `
 
 func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
+	t.Parallel()
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 	if deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err != nil || deleted {
@@ -275,6 +276,7 @@ func TestOrchCovLandPreflightRefusalNamesEachBlockedState(t *testing.T) {
 		{name: "not mergeable", view: PullRequestView{State: "open", Mergeable: &notMergeable, MergeableState: "dirty"}, want: LandRefusalNotMergeable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			refusal := landPreflightRefusal(test.view, "acme/app", "7")
 			if refusal == nil || refusal.code != test.want {
 				t.Fatalf("preflight refusal = %+v, want %s", refusal, test.want)
@@ -380,7 +382,6 @@ func TestOrchCovWithPullRequestLandResumeGuidancePrePostTransientNeverEchoesRevi
 }
 
 func TestOrchCovLandPullRequestRejectsUnusableOptions(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		options PullRequestLandOptions
@@ -629,6 +630,7 @@ func TestOrchCovAppendLandEventRecordsARefusalWithItsReason(t *testing.T) {
 }
 
 func TestOrchCovRefuseLinkedWorktreeIgnoresAnUnlinkedCheckout(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	checkout := filepath.Join(t.TempDir(), "checkout")
 	if err := os.MkdirAll(checkout, 0o755); err != nil {

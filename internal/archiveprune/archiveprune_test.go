@@ -332,6 +332,7 @@ func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
 }
 
 func TestPlanUntrackedRefusesSymlinkAndTraversal(t *testing.T) {
+	t.Parallel()
 	clone := t.TempDir()
 	mustWriteFile(t, filepath.Join(clone, "outside.txt"), "outside\n")
 	if err := os.Symlink("outside.txt", filepath.Join(clone, "linked.txt")); err != nil {
@@ -548,6 +549,7 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 }
 
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := filepath.Join(root, ".wb")
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")

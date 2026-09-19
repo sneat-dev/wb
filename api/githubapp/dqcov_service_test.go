@@ -19,6 +19,7 @@ func (model dqCovWorktreeModel) Worktrees(context.Context, Viewer, WorktreeFilte
 }
 
 func TestDQCovServiceFailsClosedWithoutConfiguredModels(t *testing.T) {
+	t.Parallel()
 	service := Service{}
 	ctx := context.Background()
 	if _, err := service.Dashboard(ctx, Viewer{}); !errors.Is(err, ErrNoReadModel) {
@@ -48,6 +49,7 @@ func TestDQCovServiceFailsClosedWithoutConfiguredModels(t *testing.T) {
 }
 
 func TestDQCovServicePropagatesReadModelFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	boom := errors.New("read model down")
 	service := Service{ReadModel: &dqCovReadModel{err: boom}}
@@ -74,6 +76,7 @@ func TestDQCovServicePropagatesReadModelFailures(t *testing.T) {
 }
 
 func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	member := Viewer{Authenticated: true, Member: true, UserID: "firebase-user"}
 
@@ -94,27 +97,34 @@ func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
 		t.Fatalf("read-model limit = %d, want 9", public.ReadModel.(*dqCovReadModel).limit)
 	}
 
-	private := Service{ReadModel: &dqCovReadModel{visibility: VisibilityPrivate}}
+	// Each call below builds its own Service/dqCovReadModel rather than
+	// closing over one shared instance: the anonymous and member subtests
+	// for the same case, and every other case, all run in parallel with
+	// each other, and dqCovReadModel.LatestMerges writes its receiver's
+	// limit field, so a shared instance raced under -race.
+	newPrivate := func() Service { return Service{ReadModel: &dqCovReadModel{visibility: VisibilityPrivate}} }
 	for name, call := range map[string]func(Viewer) error{
 		"series": func(viewer Viewer) error {
-			_, err := private.Series(ctx, viewer, ScopeRepository, "id", "metric")
+			_, err := newPrivate().Series(ctx, viewer, ScopeRepository, "id", "metric")
 			return err
 		},
 		"leaderboard": func(viewer Viewer) error {
-			_, err := private.Leaderboard(ctx, viewer, "metric")
+			_, err := newPrivate().Leaderboard(ctx, viewer, "metric")
 			return err
 		},
 		"latest merges": func(viewer Viewer) error {
-			_, err := private.LatestMerges(ctx, viewer, 5)
+			_, err := newPrivate().LatestMerges(ctx, viewer, 5)
 			return err
 		},
 	} {
 		t.Run(name+"/anonymous", func(t *testing.T) {
+			t.Parallel()
 			if err := call(Viewer{}); !errors.Is(err, ErrPrivateData) {
 				t.Fatalf("anonymous err = %v, want ErrPrivateData", err)
 			}
 		})
 		t.Run(name+"/member", func(t *testing.T) {
+			t.Parallel()
 			if err := call(member); err != nil {
 				t.Fatalf("member err = %v", err)
 			}
@@ -131,6 +141,7 @@ func TestDQCovServiceReturnsPublicAndPrivateValues(t *testing.T) {
 }
 
 func TestDQCovEventStreamPropagatesSourceFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if _, _, err := (Service{Events: &dqCovEventSource{replayErr: errors.New("replay down"), live: make(chan Event)}}).
 		EventStream(ctx, Viewer{}, EventFilter{}); err == nil || !strings.Contains(err.Error(), "replay daemon events") {
@@ -147,6 +158,7 @@ func TestDQCovEventStreamPropagatesSourceFailures(t *testing.T) {
 }
 
 func TestDQCovEventStreamFiltersVisibleEventsAndAdvancesCursor(t *testing.T) {
+	t.Parallel()
 	since := time.Unix(100, 0)
 	source := &dqCovEventSource{
 		replay: []Event{
@@ -178,6 +190,7 @@ func TestDQCovEventStreamFiltersVisibleEventsAndAdvancesCursor(t *testing.T) {
 }
 
 func TestDQCovEventStreamKeepsCursorForEmptyReplayAndSkipsStaleLiveEvents(t *testing.T) {
+	t.Parallel()
 	live := make(chan Event, 1)
 	live <- Event{ID: 3, Visibility: VisibilityPublic, Payload: []byte(`{}`)}
 	close(live)
@@ -202,6 +215,7 @@ func TestDQCovEventStreamKeepsCursorForEmptyReplayAndSkipsStaleLiveEvents(t *tes
 }
 
 func TestDQCovEventStreamGoroutineStopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	source := &dqCovEventSource{live: make(chan Event)}
 	_, updates, err := (Service{Events: source}).EventStream(ctx, Viewer{}, EventFilter{})
@@ -215,6 +229,7 @@ func TestDQCovEventStreamGoroutineStopsOnCancelledContext(t *testing.T) {
 }
 
 func TestDQCovEventStreamDropsLiveEventWhenCancelledWhileBlocked(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	live := make(chan Event)
 	source := &dqCovEventSource{live: live}
@@ -233,6 +248,7 @@ func TestDQCovEventStreamDropsLiveEventWhenCancelledWhileBlocked(t *testing.T) {
 }
 
 func TestDQCovProcessWebhookRejectsMalformedSignatureEncoding(t *testing.T) {
+	t.Parallel()
 	engine := ProjectionEngine{
 		Deliveries: &testDeliveries{}, Reader: &testReader{}, Writer: &testProjectionWriter{},
 		AuthoritativeReader: &testReader{}, WebhookSecret: []byte("secret"),

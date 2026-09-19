@@ -101,7 +101,9 @@ func smCovRouteBaseAddress(t *testing.T) (Request, Digest, SuccessorAddress) {
 }
 
 func TestSmCovRouteSaveRouteRejectionsAndLoopback(t *testing.T) {
+	t.Parallel()
 	t.Run("missing handoff", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		raw, err := EncodeRequest(request)
 		if err != nil {
@@ -153,6 +155,7 @@ func TestSmCovRouteSaveRouteRejectionsAndLoopback(t *testing.T) {
 		}, "must not carry a remote address"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, _ := admittedRouteRequest(t, false)
 			_, replay, err := store.SaveRoute(test.route(request, digest))
 			if err == nil || replay {
@@ -168,6 +171,7 @@ func TestSmCovRouteSaveRouteRejectionsAndLoopback(t *testing.T) {
 	}
 
 	t.Run("loopback is published and replayed", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		route := Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine, Courier: CourierLoopback}
 		first, replay, err := store.SaveRoute(route)
@@ -189,7 +193,9 @@ func TestSmCovRouteSaveRouteRejectionsAndLoopback(t *testing.T) {
 }
 
 func TestSmCovRouteSaveRouteRefusesTamperedAndUnreadableArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("schema zero route on disk", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		route := validRoute(request, digest)
 		if _, _, err := store.SaveRoute(route); err != nil {
@@ -213,6 +219,7 @@ func TestSmCovRouteSaveRouteRefusesTamperedAndUnreadableArtifacts(t *testing.T) 
 	})
 
 	t.Run("route symlink", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		path := filepath.Join(store.Root, request.HandoffID, routeFileName)
 		external := filepath.Join(t.TempDir(), "external-route.json")
@@ -238,6 +245,7 @@ func TestSmCovRouteSaveRouteRefusesTamperedAndUnreadableArtifacts(t *testing.T) 
 }
 
 func TestSmCovRouteLoadRouteUnderLockAuthority(t *testing.T) {
+	t.Parallel()
 	store, request, digest, _ := admittedRouteRequest(t, false)
 	if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
 		t.Fatal(err)
@@ -245,23 +253,29 @@ func TestSmCovRouteLoadRouteUnderLockAuthority(t *testing.T) {
 	lock := smCovRouteOpenLock(t, store, request, digest)
 
 	t.Run("nil lock", func(t *testing.T) {
+		t.Parallel()
 		if _, err := store.LoadRouteUnderLock(nil, request.HandoffID, digest); err == nil || !strings.Contains(err.Error(), "exact admitted execution authority") {
 			t.Fatalf("LoadRouteUnderLock(nil) error = %v", err)
 		}
 	})
 
 	t.Run("wrong digest", func(t *testing.T) {
+		t.Parallel()
 		if _, err := store.LoadRouteUnderLock(lock, request.HandoffID, DigestBytes([]byte("other request"))); err == nil || !strings.Contains(err.Error(), "exact admitted execution authority") {
 			t.Fatalf("LoadRouteUnderLock(wrong digest) error = %v", err)
 		}
 	})
 
 	t.Run("another handoff", func(t *testing.T) {
+		t.Parallel()
 		if _, err := store.LoadRouteUnderLock(lock, "handoff-other", digest); err == nil || !strings.Contains(err.Error(), "exact admitted execution authority") {
 			t.Fatalf("LoadRouteUnderLock(other handoff) error = %v", err)
 		}
 	})
 
+	// Left serial relative to each other (and to one another only):
+	// "missing route" deletes the durable route file that "exact authority"
+	// needs on disk, so "exact authority" must fully complete first.
 	t.Run("exact authority", func(t *testing.T) {
 		loaded, err := store.LoadRouteUnderLock(lock, request.HandoffID, digest)
 		if err != nil || !reflect.DeepEqual(loaded, validRoute(request, digest)) {
@@ -445,6 +459,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	store, request, _, _, address, raw := smCovRoutePublishSuccessor(t, validRequest())
 
 	t.Run("invalid successor id", func(t *testing.T) {
+		t.Parallel()
 		if _, err := store.LoadSuccessorAddress(""); err == nil {
 			t.Fatal("LoadSuccessorAddress accepted an empty successor id")
 		}
@@ -454,6 +469,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing store root", func(t *testing.T) {
+		t.Parallel()
 		missing := NewStore(filepath.Join(t.TempDir(), "absent", DirName))
 		if _, err := missing.LoadSuccessorAddress(request.SuccessorWBSessionID); err == nil {
 			t.Fatal("LoadSuccessorAddress accepted an absent store root")
@@ -495,6 +511,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("handoff is absent", func(t *testing.T) {
+		t.Parallel()
 		other := NewStore(filepath.Join(t.TempDir(), DirName))
 		if err := os.MkdirAll(filepath.Join(other.Root, successorAddressesDirName), 0o700); err != nil {
 			t.Fatal(err)
@@ -508,6 +525,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("handoff has no admitted request", func(t *testing.T) {
+		t.Parallel()
 		other := NewStore(filepath.Join(t.TempDir(), DirName))
 		if err := os.MkdirAll(filepath.Join(other.Root, successorAddressesDirName), 0o700); err != nil {
 			t.Fatal(err)
@@ -554,6 +572,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 	})
 
 	t.Run("happy path", func(t *testing.T) {
+		t.Parallel()
 		loaded, err := store.LoadSuccessorAddress(request.SuccessorWBSessionID)
 		if err != nil || !reflect.DeepEqual(loaded, address) {
 			t.Fatalf("LoadSuccessorAddress = %#v, error %v", loaded, err)
@@ -563,6 +582,7 @@ func TestSmCovRouteLoadSuccessorAddressArtifacts(t *testing.T) {
 
 func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	t.Run("nil lock", func(t *testing.T) {
+		t.Parallel()
 		store, request, digest, _ := admittedRouteRequest(t, false)
 		if _, err := store.LoadSuccessorAddressUnderLock(nil, request.HandoffID, digest); err == nil || !strings.Contains(err.Error(), "exact admitted execution authority") {
 			t.Fatalf("LoadSuccessorAddressUnderLock(nil) error = %v", err)
@@ -570,6 +590,7 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("successors directory is absent", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store, digest := smCovRouteAdmit(t, request)
 		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
@@ -582,6 +603,7 @@ func TestSmCovRouteLoadSuccessorAddressUnderLockArtifacts(t *testing.T) {
 	})
 
 	t.Run("address file is absent", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store, digest := smCovRouteAdmit(t, request)
 		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
@@ -678,12 +700,14 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	}
 
 	t.Run("undecodable address", func(t *testing.T) {
+		t.Parallel()
 		if _, err := corroborateSuccessorAddressAt(openHandoff(t, store, request.HandoffID), request, digest, request.SuccessorWBSessionID, []byte("{not-json\n")); err == nil {
 			t.Fatal("corroborateSuccessorAddressAt accepted an undecodable address")
 		}
 	})
 
 	t.Run("address names another handoff", func(t *testing.T) {
+		t.Parallel()
 		tampered := address
 		tampered.HandoffID = "handoff-other"
 		tampered.Route.HandoffID = "handoff-other"
@@ -731,6 +755,7 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	})
 
 	t.Run("address bytes differ from the derived address", func(t *testing.T) {
+		t.Parallel()
 		tampered := address
 		tampered.StartedAt = address.StartedAt.Add(time.Hour)
 		mutated, err := marshalJSON(tampered)
@@ -743,6 +768,7 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 	})
 
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		got, err := corroborateSuccessorAddressAt(openHandoff(t, store, request.HandoffID), request, digest, request.SuccessorWBSessionID, raw)
 		if err != nil || !reflect.DeepEqual(got, address) {
 			t.Fatalf("corroborateSuccessorAddressAt = %#v, error %v", got, err)
@@ -751,6 +777,7 @@ func TestSmCovRouteCorroborateSuccessorAddressAt(t *testing.T) {
 }
 
 func TestSmCovRouteValidateCourierRoute(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		route Route
@@ -770,6 +797,7 @@ func TestSmCovRouteValidateCourierRoute(t *testing.T) {
 		{"unknown", Route{Courier: Courier("carrier-pigeon")}, "unsupported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateCourierRoute(test.route)
 			if test.want == "" {
 				if err != nil {
@@ -785,13 +813,16 @@ func TestSmCovRouteValidateCourierRoute(t *testing.T) {
 }
 
 func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
+	t.Parallel()
 	t.Run("nil root", func(t *testing.T) {
+		t.Parallel()
 		if _, err := openSuccessorAddressesAt(nil, false); err == nil {
 			t.Fatal("openSuccessorAddressesAt accepted a nil root")
 		}
 	})
 
 	t.Run("create false on missing directory", func(t *testing.T) {
+		t.Parallel()
 		root, err := os.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -803,6 +834,7 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 	})
 
 	t.Run("create is idempotent", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		root, err := os.Open(dir)
 		if err != nil {
@@ -837,6 +869,7 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 	})
 
 	t.Run("unsafe mode", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		index := filepath.Join(dir, successorAddressesDirName)
 		if err := os.Mkdir(index, 0o755); err != nil {
@@ -856,6 +889,7 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 	})
 
 	t.Run("symlink", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		external := filepath.Join(t.TempDir(), "external-index")
 		if err := os.Mkdir(external, 0o700); err != nil {
@@ -877,6 +911,7 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 	})
 
 	t.Run("regular file", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, successorAddressesDirName), []byte("not a directory"), 0o600); err != nil {
 			t.Fatal(err)
@@ -894,6 +929,7 @@ func TestSmCovRouteOpenSuccessorAddressesAt(t *testing.T) {
 	})
 
 	t.Run("root is not a directory", func(t *testing.T) {
+		t.Parallel()
 		file, err := os.CreateTemp(t.TempDir(), "not-a-directory")
 		if err != nil {
 			t.Fatal(err)
@@ -909,12 +945,14 @@ func TestSmCovRouteDecodeAndValidateSuccessorAddress(t *testing.T) {
 	request, _, address := smCovRouteBaseAddress(t)
 
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := decodeAndValidateSuccessorAddress([]byte("{not-json\n"), request.SuccessorWBSessionID); err == nil || !strings.Contains(err.Error(), "decode successor address") {
 			t.Fatalf("decodeAndValidateSuccessorAddress error = %v", err)
 		}
 	})
 
 	t.Run("schema zero", func(t *testing.T) {
+		t.Parallel()
 		tampered := address
 		tampered.SchemaVersion = 0
 		raw, err := marshalJSON(tampered)
@@ -927,6 +965,7 @@ func TestSmCovRouteDecodeAndValidateSuccessorAddress(t *testing.T) {
 	})
 
 	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
 		raw, err := marshalJSON(address)
 		if err != nil {
 			t.Fatal(err)
@@ -987,6 +1026,7 @@ func TestSmCovRouteValidateSuccessorAddressBranches(t *testing.T) {
 		{"route ssh missing", func(a *SuccessorAddress) { a.Route.SSH = nil }, nil, "only one configured ssh address"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			address := base
 			test.mutate(&address)
 			err := validateSuccessorAddress(address, request.SuccessorWBSessionID)
@@ -1003,6 +1043,7 @@ func TestSmCovRouteValidateSuccessorAddressBranches(t *testing.T) {
 	}
 
 	t.Run("key mismatch", func(t *testing.T) {
+		t.Parallel()
 		if err := validateSuccessorAddress(base, "wbs-different"); !errors.Is(err, ErrHandoffConflict) {
 			t.Fatalf("validateSuccessorAddress(key mismatch) error = %v, want ErrHandoffConflict", err)
 		}
@@ -1010,9 +1051,11 @@ func TestSmCovRouteValidateSuccessorAddressBranches(t *testing.T) {
 }
 
 func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
-	dir := t.TempDir()
+	t.Parallel()
 
 	t.Run("read missing route file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1024,6 +1067,8 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 	})
 
 	t.Run("oversized route", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1038,6 +1083,8 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 	})
 
 	t.Run("immutable publication replays identical bytes", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1060,7 +1107,9 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 }
 
 func TestSmCovRouteLoadRouteArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("missing handoff", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, err := store.LoadRoute(request.HandoffID); err == nil {
@@ -1069,6 +1118,7 @@ func TestSmCovRouteLoadRouteArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing route file", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		if _, err := store.LoadRoute(request.HandoffID); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("LoadRoute error = %v, want os.ErrNotExist", err)
@@ -1076,6 +1126,7 @@ func TestSmCovRouteLoadRouteArtifacts(t *testing.T) {
 	})
 
 	t.Run("malformed route file", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		if err := os.WriteFile(filepath.Join(store.Root, request.HandoffID, routeFileName), []byte("{not-json\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1086,6 +1137,7 @@ func TestSmCovRouteLoadRouteArtifacts(t *testing.T) {
 	})
 
 	t.Run("corrupt request file", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		if err := os.WriteFile(filepath.Join(store.Root, request.HandoffID, requestFileName), []byte("{not-json\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1097,6 +1149,7 @@ func TestSmCovRouteLoadRouteArtifacts(t *testing.T) {
 }
 
 func TestSmCovRouteSaveRouteRejectsUnadmittedIdentity(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*Route)
@@ -1105,6 +1158,7 @@ func TestSmCovRouteSaveRouteRejectsUnadmittedIdentity(t *testing.T) {
 		{"target machine", func(route *Route) { route.TargetMachine = "other-machine" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store, request, digest, _ := admittedRouteRequest(t, false)
 			route := validRoute(request, digest)
 			test.mutate(&route)
@@ -1119,7 +1173,9 @@ func TestSmCovRouteSaveRouteRejectsUnadmittedIdentity(t *testing.T) {
 }
 
 func TestSmCovRouteRequestBytesRejectsUnusableHandoffs(t *testing.T) {
+	t.Parallel()
 	t.Run("missing handoff", func(t *testing.T) {
+		t.Parallel()
 		request := validRequest()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, _, _, err := store.RequestBytes(request.HandoffID); err == nil {
@@ -1128,6 +1184,7 @@ func TestSmCovRouteRequestBytesRejectsUnusableHandoffs(t *testing.T) {
 	})
 
 	t.Run("corrupt request file", func(t *testing.T) {
+		t.Parallel()
 		store, request, _, _ := admittedRouteRequest(t, false)
 		if err := os.WriteFile(filepath.Join(store.Root, request.HandoffID, requestFileName), []byte("{not-json\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1139,6 +1196,7 @@ func TestSmCovRouteRequestBytesRejectsUnusableHandoffs(t *testing.T) {
 }
 
 func TestSmCovRouteDecodeAndValidateRoute(t *testing.T) {
+	t.Parallel()
 	_, request, digest, _ := admittedRouteRequest(t, false)
 	valid := validRoute(request, digest)
 	decoded, err := decodeAndValidateRoute(mustRouteJSON(t, valid), request, digest)

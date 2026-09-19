@@ -22,6 +22,7 @@ func TestWtLogCovRelocateValidation(t *testing.T) {
 }
 
 func TestWtLogCovFindRelocationEntry(t *testing.T) {
+	t.Parallel()
 	entries := []ListResult{{WorktreeDir: "/a/b"}, {WorktreeDir: "/c/d"}}
 	if entry, found := findRelocationEntry(entries, "/c/d"); !found || entry.WorktreeDir != "/c/d" {
 		t.Fatalf("entry = %#v/%t", entry, found)
@@ -35,6 +36,7 @@ func TestWtLogCovFindRelocationEntry(t *testing.T) {
 }
 
 func TestWtLogCovRelocationEligibility(t *testing.T) {
+	t.Parallel()
 	if eligible, reason := relocationEligibility(ListResult{Clean: true}); !eligible || reason != "" {
 		t.Fatalf("clean entry = %t/%q", eligible, reason)
 	}

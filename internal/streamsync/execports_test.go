@@ -14,6 +14,7 @@ import (
 // the real Git port against a bare origin: the local stream branch must remain
 // usable when origin has no matching remote-tracking ref yet.
 func TestFastForwardToRemoteAllowsAMissingRemoteStreamBranch(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -44,6 +45,7 @@ func TestFastForwardToRemoteAllowsAMissingRemoteStreamBranch(t *testing.T) {
 }
 
 func TestFastForwardToRemoteAdvancesWhenTheFetchedStreamIsAhead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	runGit(t, fixture.other, "checkout", "stream/fixture")
 	commitFile(t, fixture.other, "remote.txt", "remote\n", "feat: remote stream advance")
@@ -66,6 +68,7 @@ func TestFastForwardToRemoteAdvancesWhenTheFetchedStreamIsAhead(t *testing.T) {
 }
 
 func TestFastForwardToRemoteLeavesAnUnpushedLocalStreamAhead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	commitFile(t, fixture.local, "local.txt", "local\n", "feat: local stream work")
 	localBefore := strings.TrimSpace(runGit(t, fixture.local, "rev-parse", "stream/fixture"))
@@ -87,6 +90,7 @@ func TestFastForwardToRemoteLeavesAnUnpushedLocalStreamAhead(t *testing.T) {
 }
 
 func TestFastForwardToRemoteRefusesDivergedStreamBranchesWithoutChangingLocalHead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	commitFile(t, fixture.local, "local.txt", "local\n", "feat: local stream work")
 	localBefore := strings.TrimSpace(runGit(t, fixture.local, "rev-parse", "stream/fixture"))

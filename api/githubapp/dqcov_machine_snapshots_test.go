@@ -33,6 +33,7 @@ func (store *dqCovSnapshotStore) ListLatest(context.Context) ([]machinesnapshot.
 }
 
 func TestDQCovMachineSnapshotPublishValidatesIdentityAndStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	snapshot := validHostedSnapshot()
 	receivedAt := time.Date(2026, 9, 6, 14, 0, 1, 0, time.UTC)
@@ -85,6 +86,7 @@ func TestDQCovMachineSnapshotPublishValidatesIdentityAndStore(t *testing.T) {
 }
 
 func TestDQCovMachineSnapshotPublishFailsClosedWhenSnapshotCannotBeEncoded(t *testing.T) {
+	t.Parallel()
 	// A year outside RFC 3339's range passes Snapshot.Validate but cannot be
 	// encoded for durable storage, so Publish must fail before touching the
 	// store rather than persisting an unverifiable record.
@@ -107,6 +109,7 @@ func TestDQCovMachineSnapshotPublishFailsClosedWhenSnapshotCannotBeEncoded(t *te
 }
 
 func TestDQCovMachineSnapshotListValidatesPublisherAndRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	valid := validHostedSnapshot()
@@ -147,6 +150,7 @@ func TestDQCovMachineSnapshotListValidatesPublisherAndRecords(t *testing.T) {
 }
 
 func TestDQCovMachineSnapshotsHandlerListFailuresAndSuccess(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 6, 14, 0, 0, 0, time.UTC)
 	valid := validHostedSnapshot()
 	validPublisher := publisherResolverFunc(func(*http.Request) (MachinePublisher, error) {
@@ -220,6 +224,7 @@ func TestDQCovMachineSnapshotsHandlerListFailuresAndSuccess(t *testing.T) {
 }
 
 func TestDQCovPublishMachineSnapshotMapsEveryOutcome(t *testing.T) {
+	t.Parallel()
 	valid := validHostedSnapshot()
 	body, err := json.Marshal(valid)
 	if err != nil {
@@ -281,6 +286,7 @@ func TestDQCovPublishMachineSnapshotMapsEveryOutcome(t *testing.T) {
 		"unclassified": errors.New("unexpected storage failure"),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			failing := NewHandler(HandlerOptions{
 				MachineSnapshots:  &MachineSnapshotService{Store: &dqCovSnapshotStore{storeErr: storeErr}},
 				PublisherResolver: validPublisher,
@@ -315,6 +321,7 @@ func dqCovPostSnapshot(t *testing.T, handler http.Handler, payload string) *http
 }
 
 func TestDQCovPublishMachineSnapshotMismatchIsForbidden(t *testing.T) {
+	t.Parallel()
 	mismatch := validHostedSnapshot()
 	mismatch.Machine = "vm"
 	body, err := json.Marshal(mismatch)

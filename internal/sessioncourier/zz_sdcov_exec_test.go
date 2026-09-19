@@ -134,6 +134,7 @@ func TestSDCovDeliverSSHFailureBranchesThroughResolvedExecutable(t *testing.T) {
 	_, raw := courierTestRequest(t)
 
 	t.Run("already cancelled context", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := DeliverSSH(ctx, sessionmove.SSHConfig{Host: "target"}, raw)

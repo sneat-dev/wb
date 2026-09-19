@@ -62,6 +62,7 @@ func readModel(records ...machinesnapshot.StoredSnapshot) RemoteStateReadModel {
 }
 
 func TestDashboardServesTheLocalFleet(t *testing.T) {
+	t.Parallel()
 	publishedAt := time.Date(2026, 9, 15, 11, 30, 0, 0, time.UTC)
 	snapshot := testSnapshot(publishedAt, machinesnapshot.Worktree{
 		Task: "ship-dashboard", Repository: "acme/widgets", Branch: "feat/dashboard",
@@ -107,6 +108,7 @@ func TestDashboardServesTheLocalFleet(t *testing.T) {
 // owner and pull-request state that the browser does not accept, so an
 // unfiltered pass-through would render no data at all with no error shown.
 func TestFleetPayloadSurvivesHostileStoredValues(t *testing.T) {
+	t.Parallel()
 	publishedAt := time.Date(2026, 9, 15, 11, 30, 0, 0, time.UTC)
 	hostile := testSnapshot(publishedAt,
 		machinesnapshot.Worktree{
@@ -157,6 +159,7 @@ func TestFleetPayloadSurvivesHostileStoredValues(t *testing.T) {
 }
 
 func TestStatsNarrowToTheRequestedScope(t *testing.T) {
+	t.Parallel()
 	publishedAt := time.Date(2026, 9, 15, 11, 30, 0, 0, time.UTC)
 	model := readModel(stored(testSnapshot(publishedAt), publishedAt))
 
@@ -194,6 +197,7 @@ func TestStatsNarrowToTheRequestedScope(t *testing.T) {
 // TestUnavailableSeriesAreWellFormed keeps the page rendering: the browser
 // expects arrays, not null, even when a self-hosted hub has no such data.
 func TestUnavailableSeriesAreWellFormed(t *testing.T) {
+	t.Parallel()
 	model := readModel()
 	ctx := context.Background()
 
@@ -230,6 +234,7 @@ func TestUnavailableSeriesAreWellFormed(t *testing.T) {
 }
 
 func TestReadModelRefusesAnUnauthenticatedViewer(t *testing.T) {
+	t.Parallel()
 	publishedAt := time.Date(2026, 9, 15, 11, 30, 0, 0, time.UTC)
 	model := readModel(stored(testSnapshot(publishedAt), publishedAt))
 
@@ -245,6 +250,7 @@ func TestReadModelRefusesAnUnauthenticatedViewer(t *testing.T) {
 }
 
 func TestUnconfiguredAndUnreadableStoresAreReported(t *testing.T) {
+	t.Parallel()
 	if _, err := (RemoteStateReadModel{}).Dashboard(context.Background(), localViewer()); !errors.Is(err, ErrNoReadModel) {
 		t.Fatalf("error = %v; want ErrNoReadModel", err)
 	}
@@ -256,6 +262,7 @@ func TestUnconfiguredAndUnreadableStoresAreReported(t *testing.T) {
 }
 
 func TestMalformedRecordsAreSkippedRatherThanServed(t *testing.T) {
+	t.Parallel()
 	publishedAt := time.Date(2026, 9, 15, 11, 30, 0, 0, time.UTC)
 	invalid := testSnapshot(publishedAt)
 	invalid.SchemaVersion = 99 // Validate rejects it.

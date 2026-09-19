@@ -31,6 +31,7 @@ func spCovEnvelopeFixture(t *testing.T) (Envelope, []byte, sessionmove.Digest) {
 }
 
 func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
+	t.Parallel()
 	envelope, raw, digest := spCovEnvelopeFixture(t)
 
 	decoded, err := DecodeEnvelope(raw)
@@ -48,6 +49,7 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 	}
 
 	t.Run("empty and oversized decode input", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeEnvelope(nil); err == nil {
 			t.Fatal("empty envelope accepted")
 		}
@@ -56,11 +58,13 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 		}
 	})
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeEnvelope([]byte("{not json")); err == nil {
 			t.Fatal("malformed envelope accepted")
 		}
 	})
 	t.Run("unknown field rejected", func(t *testing.T) {
+		t.Parallel()
 		var value map[string]any
 		if err := json.Unmarshal(raw, &value); err != nil {
 			t.Fatal(err)
@@ -75,11 +79,13 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 		}
 	})
 	t.Run("trailing JSON rejected", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeEnvelope(append(bytes.Clone(raw), []byte("{}")...)); err == nil {
 			t.Fatal("trailing JSON accepted")
 		}
 	})
 	t.Run("decoded but invalid envelope rejected", func(t *testing.T) {
+		t.Parallel()
 		var value map[string]any
 		if err := json.Unmarshal(raw, &value); err != nil {
 			t.Fatal(err)
@@ -94,6 +100,7 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 		}
 	})
 	t.Run("envelope schema", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.SchemaVersion = SchemaVersion + 1
 		if _, err := EncodeEnvelope(candidate); err == nil {
@@ -101,6 +108,7 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 		}
 	})
 	t.Run("envelope kind", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.Kind = "session_move"
 		if _, err := EncodeEnvelope(candidate); err == nil {
@@ -108,6 +116,7 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 		}
 	})
 	t.Run("oversized envelope bytes", func(t *testing.T) {
+		t.Parallel()
 		candidate := envelope
 		candidate.Request.Members = []RemoteMember{{
 			MemberID:               strings.Repeat("m", MaxEnvelopeBytes),
@@ -124,6 +133,7 @@ func TestSpCovEnvelopeBoundsValidationAndStrictDecode(t *testing.T) {
 }
 
 func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
+	t.Parallel()
 	envelope, raw, digest := spCovEnvelopeFixture(t)
 	receipt := validRemoteReceipt(t, RemoteAdmission{Envelope: envelope, Raw: raw, Digest: digest})
 	encoded, err := EncodeReceipt(receipt)
@@ -143,6 +153,7 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 	}
 
 	t.Run("shape rejected on encode", func(t *testing.T) {
+		t.Parallel()
 		candidate := receipt
 		candidate.SchemaVersion = 0
 		if _, err := EncodeReceipt(candidate); err == nil {
@@ -150,6 +161,7 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 		}
 	})
 	t.Run("empty and oversized decode input", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeReceipt(nil); err == nil {
 			t.Fatal("empty receipt accepted")
 		}
@@ -158,11 +170,13 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 		}
 	})
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := DecodeReceipt([]byte("{]")); err == nil {
 			t.Fatal("malformed receipt accepted")
 		}
 	})
 	t.Run("unknown field rejected", func(t *testing.T) {
+		t.Parallel()
 		var value map[string]any
 		if err := json.Unmarshal(encoded, &value); err != nil {
 			t.Fatal(err)
@@ -177,6 +191,7 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 		}
 	})
 	t.Run("invalid shape rejected on decode", func(t *testing.T) {
+		t.Parallel()
 		candidate := receipt
 		candidate.AttemptIndex = 0
 		invalid, err := json.Marshal(candidate)
@@ -190,6 +205,7 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 }
 
 func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
+	t.Parallel()
 	envelope, raw, digest := spCovEnvelopeFixture(t)
 	request := envelope.Request
 	receipt := validRemoteReceipt(t, RemoteAdmission{Envelope: envelope, Raw: raw, Digest: digest})
@@ -198,6 +214,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 	}
 
 	t.Run("invalid request", func(t *testing.T) {
+		t.Parallel()
 		candidate := request
 		candidate.SchemaVersion = 0
 		if err := ValidateReceipt(receipt, candidate, digest); err == nil {
@@ -205,6 +222,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 		}
 	})
 	t.Run("invalid receipt shape", func(t *testing.T) {
+		t.Parallel()
 		candidate := receipt
 		candidate.PID = 0
 		if err := ValidateReceipt(candidate, request, digest); err == nil {
@@ -212,6 +230,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 		}
 	})
 	t.Run("identity conflicts", func(t *testing.T) {
+		t.Parallel()
 		for name, mutate := range map[string]func(*Receipt){
 			"resume id":      func(value *Receipt) { value.ResumeID = "resume-other" },
 			"request digest": func(value *Receipt) { value.RequestDigest = sessionmove.Digest("sha256:" + strings.Repeat("0", 64)) },
@@ -233,6 +252,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 			"member work nope": func(value *Receipt) { value.Members[0].TargetWorkLogReference = "bogus" },
 		} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				candidate := receipt
 				candidate.Members = append([]ReceiptMember(nil), receipt.Members...)
 				mutate(&candidate)
@@ -243,11 +263,13 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 		}
 	})
 	t.Run("harness identity conflicts", func(t *testing.T) {
+		t.Parallel()
 		for name, mutate := range map[string]func(*Receipt){
 			"runtime": func(value *Receipt) { value.Runtime = "claude-code" },
 			"model":   func(value *Receipt) { value.Model = "gpt-5" },
 		} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				candidate := receipt
 				candidate.Members = append([]ReceiptMember(nil), receipt.Members...)
 				mutate(&candidate)
@@ -260,6 +282,7 @@ func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 }
 
 func TestSpCovTargetWorkLogReferenceBindsSourceClaim(t *testing.T) {
+	t.Parallel()
 	request := spCovRemoteRequest(t)
 	_, _, digest := spCovEnvelopeFixture(t)
 	member := request.Members[0]
@@ -288,6 +311,7 @@ func TestSpCovTargetWorkLogReferenceBindsSourceClaim(t *testing.T) {
 	}
 
 	t.Run("source reference rejected", func(t *testing.T) {
+		t.Parallel()
 		broken := member
 		broken.SourceWorkLogReference = "bogus"
 		if _, err := TargetWorkLogReference(request, digest, broken); err == nil {
@@ -295,6 +319,7 @@ func TestSpCovTargetWorkLogReferenceBindsSourceClaim(t *testing.T) {
 		}
 	})
 	t.Run("invalid digest rejected", func(t *testing.T) {
+		t.Parallel()
 		if _, err := TargetWorkLogReference(request, sessionmove.Digest(""), member); err == nil {
 			t.Fatal("invalid digest accepted")
 		}
@@ -302,6 +327,7 @@ func TestSpCovTargetWorkLogReferenceBindsSourceClaim(t *testing.T) {
 }
 
 func TestSpCovTargetWorkLogClaimIDRejectsInvalidIdentity(t *testing.T) {
+	t.Parallel()
 	_, raw, digest := spCovEnvelopeFixture(t)
 	request := spCovRemoteRequest(t)
 	source, err := sessionmove.ParseWorkLogReference(request.Members[0].SourceWorkLogReference)
@@ -352,6 +378,7 @@ func TestSpCovTargetWorkLogClaimIDRejectsInvalidIdentity(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := call(); err == nil {
 				t.Fatal("invalid claim identity accepted")
 			}
@@ -360,6 +387,7 @@ func TestSpCovTargetWorkLogClaimIDRejectsInvalidIdentity(t *testing.T) {
 }
 
 func TestSpCovLaunchAuthorityPublishesExactRequestIdentity(t *testing.T) {
+	t.Parallel()
 	envelope, raw, digest := spCovEnvelopeFixture(t)
 	request := envelope.Request
 	continuationPath := filepath.Join(t.TempDir(), "successor-context.md")
@@ -383,6 +411,7 @@ func TestSpCovLaunchAuthorityPublishesExactRequestIdentity(t *testing.T) {
 	}
 
 	t.Run("invalid request", func(t *testing.T) {
+		t.Parallel()
 		broken := request
 		broken.SchemaVersion = 0
 		if _, err := LaunchAuthority(broken, digest, continuationPath, continuation); err == nil {
@@ -390,16 +419,19 @@ func TestSpCovLaunchAuthorityPublishesExactRequestIdentity(t *testing.T) {
 		}
 	})
 	t.Run("empty continuation", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LaunchAuthority(request, digest, continuationPath, nil); err == nil {
 			t.Fatal("empty continuation accepted")
 		}
 	})
 	t.Run("oversized continuation", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LaunchAuthority(request, digest, continuationPath, make([]byte, MaxSuccessorContextBytes+1)); err == nil {
 			t.Fatal("oversized continuation accepted")
 		}
 	})
 	t.Run("relative continuation path", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LaunchAuthority(request, digest, "relative/context.md", continuation); err == nil {
 			t.Fatal("relative private continuation path accepted")
 		}
@@ -407,6 +439,7 @@ func TestSpCovLaunchAuthorityPublishesExactRequestIdentity(t *testing.T) {
 }
 
 func TestSpCovLocalLaunchAuthorityModesAndRejections(t *testing.T) {
+	t.Parallel()
 	bundle := testBundle(t)
 	raw, err := EncodeBundle(bundle)
 	if err != nil {
@@ -449,6 +482,7 @@ func TestSpCovLocalLaunchAuthorityModesAndRejections(t *testing.T) {
 	}
 
 	t.Run("zero worktrees uses neutral root", func(t *testing.T) {
+		t.Parallel()
 		neutral := bundle
 		neutral.Worktrees = nil
 		neutralRaw, err := EncodeBundle(neutral)
@@ -464,6 +498,7 @@ func TestSpCovLocalLaunchAuthorityModesAndRejections(t *testing.T) {
 		}
 	})
 	t.Run("invalid bundle", func(t *testing.T) {
+		t.Parallel()
 		broken := bundle
 		broken.SchemaVersion = 0
 		if _, err := LocalLaunchAuthority(broken, digest, continuationPath, continuation); err == nil {
@@ -471,21 +506,25 @@ func TestSpCovLocalLaunchAuthorityModesAndRejections(t *testing.T) {
 		}
 	})
 	t.Run("invalid digest", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LocalLaunchAuthority(bundle, "", continuationPath, continuation); err == nil {
 			t.Fatal("invalid digest accepted")
 		}
 	})
 	t.Run("empty continuation", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LocalLaunchAuthority(bundle, digest, continuationPath, nil); err == nil {
 			t.Fatal("empty continuation accepted")
 		}
 	})
 	t.Run("unrelated continuation", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LocalLaunchAuthority(bundle, digest, continuationPath, []byte("unrelated")); err == nil {
 			t.Fatal("unrelated continuation accepted")
 		}
 	})
 	t.Run("relative continuation path", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LocalLaunchAuthority(bundle, digest, "relative.md", continuation); err == nil {
 			t.Fatal("relative continuation path accepted")
 		}
@@ -493,6 +532,7 @@ func TestSpCovLocalLaunchAuthorityModesAndRejections(t *testing.T) {
 }
 
 func TestSpCovValidateRequestRejectsEveryIncompleteIdentity(t *testing.T) {
+	t.Parallel()
 	request := spCovRemoteRequest(t)
 	for name, mutate := range map[string]func(*RemoteRequest){
 		"schema":             func(value *RemoteRequest) { value.SchemaVersion = 0 },
@@ -523,6 +563,7 @@ func TestSpCovValidateRequestRejectsEveryIncompleteIdentity(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := request
 			candidate.Members = append([]RemoteMember(nil), request.Members...)
 			mutate(&candidate)
@@ -534,6 +575,7 @@ func TestSpCovValidateRequestRejectsEveryIncompleteIdentity(t *testing.T) {
 }
 
 func TestSpCovValidateRemoteMemberRejectsUnsafeFields(t *testing.T) {
+	t.Parallel()
 	member := spCovRemoteRequest(t).Members[0]
 	for name, mutate := range map[string]func(*RemoteMember){
 		"member key":             func(value *RemoteMember) { value.MemberID = ".." },
@@ -554,6 +596,7 @@ func TestSpCovValidateRemoteMemberRejectsUnsafeFields(t *testing.T) {
 		"unparsable source reference": func(value *RemoteMember) { value.SourceWorkLogReference = "worklog:a/b" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := member
 			mutate(&candidate)
 			if err := validateRemoteMember(candidate); err == nil {
@@ -567,6 +610,7 @@ func TestSpCovValidateRemoteMemberRejectsUnsafeFields(t *testing.T) {
 }
 
 func TestSpCovValidateReceiptShapeRejectsIncompleteFields(t *testing.T) {
+	t.Parallel()
 	envelope, raw, digest := spCovEnvelopeFixture(t)
 	receipt := validRemoteReceipt(t, RemoteAdmission{Envelope: envelope, Raw: raw, Digest: digest})
 	if err := validateReceiptShape(receipt); err != nil {
@@ -597,6 +641,7 @@ func TestSpCovValidateReceiptShapeRejectsIncompleteFields(t *testing.T) {
 		"bad work log":       func(value *Receipt) { value.Members[0].TargetWorkLogReference = "nope" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := receipt
 			candidate.Members = append([]ReceiptMember(nil), receipt.Members...)
 			mutate(&candidate)
@@ -608,6 +653,7 @@ func TestSpCovValidateReceiptShapeRejectsIncompleteFields(t *testing.T) {
 }
 
 func TestSpCovStrictDecodeRejectsTrailingValuesAndUnknownFields(t *testing.T) {
+	t.Parallel()
 	type spCovShape struct {
 		Value int `json:"value"`
 	}

@@ -57,6 +57,7 @@ func wtLifeCovValidManifest(effort string) Manifest {
 }
 
 func TestWtLifeCovRepositoryRootForResolvesOwningCheckout(t *testing.T) {
+	t.Parallel()
 	if _, err := RepositoryRootFor(context.Background(), t.TempDir()); err == nil ||
 		!strings.Contains(err.Error(), "resolve worktree root") {
 		t.Fatalf("non-repository root error = %v", err)
@@ -123,6 +124,7 @@ func TestWtLifeCovCheckAdmissionClassifiesEveryMissingRecord(t *testing.T) {
 }
 
 func TestWtLifeCovValidateManifestRejectsEveryDocumentedCorruption(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		mutate  func(*Manifest)
@@ -140,6 +142,7 @@ func TestWtLifeCovValidateManifestRejectsEveryDocumentedCorruption(t *testing.T)
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			manifest := wtLifeCovValidManifest("feature.one")
 			testCase.mutate(&manifest)
 			err := validateManifest(manifest)
@@ -347,6 +350,7 @@ func TestWtLifeCovReconstructManifestReportsUnusableCheckouts(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructManifestRejectsUnidentifiableRepository(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	worktree := filepath.Join(root, "owner", "-unusable")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -360,6 +364,7 @@ func TestWtLifeCovReconstructManifestRejectsUnidentifiableRepository(t *testing.
 }
 
 func TestWtLifeCovReconstructManifestRejectsDetachedHead(t *testing.T) {
+	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	head := strings.TrimSpace(wtLifeCovGit(t, worktree, "rev-parse", "HEAD"))
 	wtLifeCovGit(t, worktree, "update-ref", "--no-deref", "HEAD", head)
@@ -370,6 +375,7 @@ func TestWtLifeCovReconstructManifestRejectsDetachedHead(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructManifestRejectsUnderivableEffort(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	worktree := filepath.Join(root, ".hidden", "nested", "worktree")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -431,6 +437,7 @@ func TestWtLifeCovPreviewReportsPersistedManifestUnchanged(t *testing.T) {
 }
 
 func TestWtLifeCovEffortAndRepositoryFromWorktreePath(t *testing.T) {
+	t.Parallel()
 	if got := effortFromWorktreePath("/a/.worktrees/feature.one"); got != "feature.one" {
 		t.Fatalf("default placement effort = %q", got)
 	}
@@ -456,6 +463,7 @@ func TestWtLifeCovEffortAndRepositoryFromWorktreePath(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructCreationTimeFallsBackToOldestCommit(t *testing.T) {
+	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if err := os.RemoveAll(filepath.Join(worktree, ".git", "logs")); err != nil {
 		t.Fatal(err)
@@ -480,6 +488,7 @@ func TestWtLifeCovReconstructCreationTimeFallsBackToOldestCommit(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructBaseFallsBackAndGivesUp(t *testing.T) {
+	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	if _, _, ok := reconstructBase(context.Background(), worktree, "main"); ok {
 		t.Fatal("reconstructBase found a base without a remote target")
@@ -640,6 +649,7 @@ func wtLifeCovClosedDirectory(t *testing.T, path string) *os.File {
 }
 
 func TestWtLifeCovParsePromptHeaderRejectsMalformedFrontmatter(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		content string
@@ -652,6 +662,7 @@ func TestWtLifeCovParsePromptHeaderRejectsMalformedFrontmatter(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := parsePromptHeader([]byte(testCase.content)); err == nil ||
 				!strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("parsePromptHeader error = %v, want %q", err, testCase.wantErr)
@@ -664,6 +675,7 @@ func TestWtLifeCovParsePromptHeaderRejectsMalformedFrontmatter(t *testing.T) {
 }
 
 func TestWtLifeCovPromptSlugDerivesSafeHint(t *testing.T) {
+	t.Parallel()
 	if got := promptSlug("", []byte("First line\nsecond line\n")); got != "first-line" {
 		t.Fatalf("first-line slug = %q", got)
 	}
@@ -792,6 +804,7 @@ func TestWtLifeCovReconstructManifestReportsUnusableJournal(t *testing.T) {
 }
 
 func TestWtLifeCovReconstructManifestInfersBaseFromRemoteTarget(t *testing.T) {
+	t.Parallel()
 	worktree := wtLifeCovJournalWorktree(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", "--initial-branch=main", remote)
@@ -815,6 +828,7 @@ func TestWtLifeCovReconstructManifestInfersBaseFromRemoteTarget(t *testing.T) {
 }
 
 func TestWtLifeCovEffortFromShortPath(t *testing.T) {
+	t.Parallel()
 	if got := effortFromWorktreePath("/a"); got != "" {
 		t.Fatalf("short path effort = %q", got)
 	}
