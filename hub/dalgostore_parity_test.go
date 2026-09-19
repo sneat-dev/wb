@@ -5,6 +5,8 @@ package hub
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -154,4 +156,71 @@ func TestDALgoDocumentStoreRunsTheRepositoryEventJourney(t *testing.T) {
 func pendingRefreshCount(ctx context.Context, status RepositoryEventStatusStore, identityID string) (int, error) {
 	_, pending, _, err := status.IdentityRepositoryEventStatus(ctx, identityID)
 	return len(pending), err
+}
+
+// TestDALgoDocumentStoreRunsAConcurrentInviteJourney is M-b:
+// TestConcurrentInviteOfTheSameNameHasExactlyOneWinner proves Invite's
+// mutual exclusion against firestoreMemoryBackend, whose UpdateAtomic is a
+// hand-written mutex, not a real transaction manager. This is the same race
+// over the real dalgostore/DALgo adapter (dalgo2memory.FirestoreProfile,
+// which — like the real Firestore client — rejects a transactional read that
+// follows a write), so the guarantee is proven through the real transactional
+// path Invite will actually run on, not only the fake's approximation of it.
+func TestDALgoDocumentStoreRunsAConcurrentInviteJourney(t *testing.T) {
+	ctx := context.Background()
+	backend := newDALgoDocumentStore()
+	credentials, _, _ := NewMachineStores(backend)
+	trust, stats := NewPeerStores(backend)
+	service := &PeerAdminService{
+		Credentials: credentials, Index: NewMachineIndex(backend), Trust: trust, Stats: stats,
+		Backend: backend, Pepper: []byte(testPeerAdminPepper), HubMachineName: "vm1",
+	}
+
+	const attempts = 8
+	results := make([]PeerInviteResult, attempts)
+	errs := make([]error, attempts)
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = service.Invite(ctx, "laptop", false)
+		}(i)
+	}
+	wg.Wait()
+
+	wins, tokens := 0, map[string]bool{}
+	for i := 0; i < attempts; i++ {
+		if errs[i] == nil {
+			wins++
+			tokens[results[i].Token] = true
+			continue
+		}
+		if !strings.Contains(errs[i].Error(), "already a peer") {
+			t.Fatalf("attempt %d failed with an unexpected error: %v", i, errs[i])
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent invite of the same name had %d winners over the real DALgo adapter, want exactly 1", wins)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("winner token set = %v, want exactly one token", tokens)
+	}
+
+	record, found, err := trust.FindPeerByName(ctx, "laptop")
+	if err != nil || !found {
+		t.Fatalf("FindPeerByName after the race = %+v, %t, %v", record, found, err)
+	}
+	var winnerToken string
+	for token := range tokens {
+		winnerToken = token
+	}
+	_, resolver, _ := NewMachineStores(backend)
+	digest, err := DigestMachineToken(winnerToken, []byte(testPeerAdminPepper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveMachineCredential(ctx, digest); err != nil {
+		t.Fatalf("winner's token no longer resolves after the race: %v", err)
+	}
 }

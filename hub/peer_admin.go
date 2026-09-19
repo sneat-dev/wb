@@ -186,6 +186,20 @@ func (service *PeerAdminService) Invite(ctx context.Context, name string, rotate
 			// caller (or an operator re-running invite) mints a fresh token.
 			return ErrUnavailable
 		}
+		// Every read this transaction needs happens above this line, and
+		// every write happens below it. The strict Firestore profile (like
+		// real Firestore) refuses a transactional read that follows a write,
+		// so the stats existence check — needed only on the fresh-invite
+		// path below — is read here, before the credential revoke/write
+		// calls that follow, rather than being read lazily where it is used.
+		var existingStats PeerStats
+		var statsFound bool
+		if !trustFound {
+			statsFound, err = transaction.Get(ctx, peerStatsCollection, machineID, &existingStats)
+			if err != nil {
+				return fmt.Errorf("read current peer statistics: %w", err)
+			}
+		}
 		if enrollmentFound && enrollment.CredentialID != "" && enrollment.CredentialID != credentialID {
 			if err := transaction.Delete(ctx, machineCredentialCollection, enrollment.CredentialID); err != nil {
 				return fmt.Errorf("revoke previous machine credential: %w", err)
@@ -212,11 +226,6 @@ func (service *PeerAdminService) Invite(ctx context.Context, name string, rotate
 		}
 		if err := transaction.Set(ctx, peerTrustCollection, machineID, newRecord); err != nil {
 			return fmt.Errorf("write peer trust record: %w", err)
-		}
-		var existingStats PeerStats
-		statsFound, err := transaction.Get(ctx, peerStatsCollection, machineID, &existingStats)
-		if err != nil {
-			return fmt.Errorf("read current peer statistics: %w", err)
 		}
 		if !statsFound {
 			if err := transaction.Set(ctx, peerStatsCollection, machineID, PeerStats{MachineID: machineID}); err != nil {

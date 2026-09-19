@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"sync"
@@ -380,6 +381,266 @@ func TestResolvePeerBranches(t *testing.T) {
 	backend.failQuery = failQueryOnCollection(peerTrustCollection)
 	if _, err := service.resolvePeer(ctx, "laptop"); err == nil {
 		t.Fatal("resolvePeer must surface a FindPeerByName (Query) failure")
+	}
+}
+
+// TestPeerAdminServiceIdentityDefaultsToLocal covers identity()'s two
+// branches directly.
+func TestPeerAdminServiceIdentityDefaultsToLocal(t *testing.T) {
+	var service PeerAdminService
+	if got := service.identity(); got != "local" {
+		t.Fatalf("identity() with LocalIdentityID unset = %q, want \"local\"", got)
+	}
+	service.LocalIdentityID = "hosted-identity"
+	if got := service.identity(); got != "hosted-identity" {
+		t.Fatalf("identity() with LocalIdentityID set = %q, want %q", got, "hosted-identity")
+	}
+}
+
+// TestRefuseIfPeerNameCollision covers every branch of the S4 collision
+// guard the owner RPC's "enroll" route calls: the empty-name guard, the
+// hub's-own-name refusal, an existing peer's name, a nil Trust store
+// (pass-through), a clean name, and a backend failure.
+func TestRefuseIfPeerNameCollision(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	service := newTestPeerAdminService(backend)
+
+	if err := service.RefuseIfPeerNameCollision(ctx, "  "); err == nil {
+		t.Fatal("expected a refusal for an empty name")
+	}
+	if err := service.RefuseIfPeerNameCollision(ctx, "vm1"); err == nil {
+		t.Fatal("expected a refusal for the hub's own machine name")
+	}
+	if err := service.RefuseIfPeerNameCollision(ctx, "VM1"); err == nil {
+		t.Fatal("expected the hub's own machine name refusal to be case-insensitive")
+	}
+	if _, err := service.Invite(ctx, "laptop", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RefuseIfPeerNameCollision(ctx, "laptop"); err == nil {
+		t.Fatal("expected a refusal for a name that already belongs to a peer")
+	}
+	if err := service.RefuseIfPeerNameCollision(ctx, "second-mac"); err != nil {
+		t.Fatalf("RefuseIfPeerNameCollision(clean name) = %v, want nil", err)
+	}
+
+	var noTrust PeerAdminService
+	noTrust.HubMachineName = "vm1"
+	if err := noTrust.RefuseIfPeerNameCollision(ctx, "anything"); err != nil {
+		t.Fatalf("RefuseIfPeerNameCollision with no Trust store = %v, want a pass-through nil", err)
+	}
+
+	backend.failQuery = failQueryOnCollection(peerTrustCollection)
+	if err := service.RefuseIfPeerNameCollision(ctx, "third-mac"); err == nil {
+		t.Fatal("expected RefuseIfPeerNameCollision to surface a backend Query (FindPeerByName) failure")
+	}
+}
+
+// TestInviteTransactionGuardsAndBackendErrors covers every Get/Set/Delete
+// failure branch inside Invite's UpdateAtomic callback (round 3's coverage
+// regression), mirroring the fault-injection style
+// TestAcknowledgeGuardsAndBackendErrors and TestEnqueueForMachinesGuardsAnd
+// BackendErrors already use for the sibling repository-event store.
+func TestInviteTransactionGuardsAndBackendErrors(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("enrollment read fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failGet = failOnCollection(machineEnrollmentCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the transaction's enrollment Get failure")
+		}
+	})
+
+	t.Run("trust read fails inside the transaction", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		// The pre-check (peerExists) also reads peerTrustCollection once,
+		// before the transaction; skip that call and fail only the
+		// transaction's own read.
+		backend.failGet = failNthCollectionCall(peerTrustCollection, 2)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the transaction's trust Get failure")
+		}
+	})
+
+	t.Run("credential digest collision check fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failGet = failOnCollection(machineCredentialCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the credential collision Get failure")
+		}
+	})
+
+	t.Run("credential digest collision found", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		service := newTestPeerAdminService(backend)
+		fixedToken := bytes.Repeat([]byte{0x07}, machineTokenBytes)
+		service.Random = bytes.NewReader(fixedToken)
+		token := base64.RawURLEncoding.EncodeToString(fixedToken)
+		digest := digestMachineToken(token, []byte(testPeerAdminPepper))
+		backend.putDocument(machineCredentialCollection, machineCredentialID(digest), machineCredentialDocument{})
+		if _, err := service.Invite(ctx, "laptop", false); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("Invite with a digest collision = %v, want ErrUnavailable", err)
+		}
+	})
+
+	t.Run("revoke previous credential fails on rotate", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err != nil {
+			t.Fatal(err)
+		}
+		backend.failDelete = failOnCollection(machineCredentialCollection)
+		if _, err := service.Invite(ctx, "laptop", true); err == nil {
+			t.Fatal("expected Invite (rotate) to surface the previous-credential revoke failure")
+		}
+	})
+
+	t.Run("credential write fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failSet = failOnCollection(machineCredentialCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the machine credential write failure")
+		}
+	})
+
+	t.Run("enrollment write fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failSet = failOnCollection(machineEnrollmentCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the machine enrollment write failure")
+		}
+	})
+
+	t.Run("trust write fails on rotate", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err != nil {
+			t.Fatal(err)
+		}
+		backend.failSet = failOnCollection(peerTrustCollection)
+		if _, err := service.Invite(ctx, "laptop", true); err == nil {
+			t.Fatal("expected Invite (rotate) to surface the trust record write failure")
+		}
+	})
+
+	t.Run("trust write fails on a fresh invite", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failSet = failOnCollection(peerTrustCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the trust record write failure")
+		}
+	})
+
+	t.Run("statistics read fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failGet = failOnCollection(peerStatsCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the statistics Get failure")
+		}
+	})
+
+	t.Run("statistics write fails", func(t *testing.T) {
+		backend := newFirestoreMemoryBackend()
+		backend.failSet = failOnCollection(peerStatsCollection)
+		service := newTestPeerAdminService(backend)
+		if _, err := service.Invite(ctx, "laptop", false); err == nil {
+			t.Fatal("expected Invite to surface the statistics write failure")
+		}
+	})
+}
+
+// TestRotateMachineCredentialRefusesAMachineNameAlreadyClaimedByAPeer is
+// M-c: RefuseIfPeerNameCollision's pre-check (the plain "enroll" RPC route's
+// only guard before this fix, cmd/wb/daemon_peers.go) and
+// MachineEnrollmentService.Enroll's write are two separate, non-atomic
+// steps, so a concurrent Invite of the same name could commit its peer trust
+// document in the gap between them and still lose to a plain enroll that
+// silently rotated its credential. RotateMachineCredential's own transaction
+// now re-checks the trust document at the one point that actually decides
+// the write, closing that gap regardless of what any earlier, racy pre-check
+// saw.
+func TestRotateMachineCredentialRefusesAMachineNameAlreadyClaimedByAPeer(t *testing.T) {
+	ctx := context.Background()
+	backend := newFirestoreMemoryBackend()
+	adminService := newTestPeerAdminService(backend)
+	if _, err := adminService.Invite(ctx, "laptop", false); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, _, _ := NewMachineStores(backend)
+
+	// The store level, directly: proves the transaction's own message names
+	// the actual reason (a peer already holds the name), not just "refused".
+	binding := MachineCredentialBinding{IdentityID: "local", MachineName: "laptop", IssuedAt: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
+	if _, storeErr := credentials.RotateMachineCredential(ctx, binding, MachineTokenDigest{0x09}); storeErr == nil {
+		t.Fatal("expected RotateMachineCredential to refuse a machine name a peer already holds")
+	} else if !strings.Contains(storeErr.Error(), "already belongs to a peer") {
+		t.Fatalf("RotateMachineCredential error = %v, want an already-belongs-to-a-peer refusal", storeErr)
+	}
+
+	// The public Enroll path, end to end: MachineEnrollmentService.Enroll
+	// collapses every store-side refusal (a digest collision, a backend
+	// fault, and now this one) into the same ErrUnavailable, exactly as it
+	// already did for the store's other transaction refusals before this
+	// fix — this proves the race is closed through the real API surface a
+	// concurrent invite-then-enroll actually calls, not only at the store's
+	// own layer.
+	enrollment := MachineEnrollmentService{
+		Store: credentials, Pepper: []byte(testPeerAdminPepper),
+		Now: func() time.Time { return time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC) },
+	}
+	_, err := enrollment.Enroll(ctx, Viewer{Authenticated: true, IdentityID: "local"}, MachineEnrollmentRequest{Name: "laptop"})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Enroll error = %v, want ErrUnavailable (as every other RotateMachineCredential refusal already surfaces)", err)
+	}
+
+	// The peer's own credential and trust record must survive the refused
+	// enroll attempt untouched.
+	trust, _ := NewPeerStores(backend)
+	record, found, findErr := trust.FindPeerByName(ctx, "laptop")
+	if findErr != nil || !found || record.Trust != PeerTrustActive {
+		t.Fatalf("peer trust record after the refused enroll = %+v, %t, %v", record, found, findErr)
+	}
+}
+
+// TestRotateMachineCredentialSurfacesAPeerTrustReadFailure covers M-c's new
+// peer-trust re-check's own error branch: a backend fault reading the trust
+// document must fail the rotation rather than silently proceeding as if no
+// peer held the name.
+func TestRotateMachineCredentialSurfacesAPeerTrustReadFailure(t *testing.T) {
+	backend := newFirestoreMemoryBackend()
+	backend.failGet = failOnCollection(peerTrustCollection)
+	credentials, _, _ := NewMachineStores(backend)
+	binding := MachineCredentialBinding{IdentityID: "local", MachineName: "laptop", IssuedAt: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
+	if _, err := credentials.RotateMachineCredential(context.Background(), binding, MachineTokenDigest{0x09}); err == nil {
+		t.Fatal("expected RotateMachineCredential to surface the peer trust read failure")
+	}
+}
+
+// failNthCollectionCall returns a fault-injection hook that fails only the
+// nth (1-indexed) call against collection, letting every earlier call (and
+// every call against a different collection) through — for a branch a test
+// must reach past a pre-check that reads the same collection once already.
+func failNthCollectionCall(collection string, n int) func(c, id string) error {
+	calls := 0
+	return func(c, _ string) error {
+		if c != collection {
+			return nil
+		}
+		calls++
+		if calls == n {
+			return errFirestoreMemoryFault
+		}
+		return nil
 	}
 }
 
