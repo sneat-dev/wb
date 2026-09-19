@@ -15,6 +15,7 @@ import (
 	"time"
 
 	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -417,6 +418,39 @@ func TestWorkLogClaimWithoutEnvHasNoProvenanceFieldsExceptWBVersion(t *testing.T
 	}
 	if claim.WBVersion == "" {
 		t.Fatal("claim WBVersion must never be empty")
+	}
+}
+
+// TestAutoRegisterSessionFromEnvNeverMergesIntoAParkedRow pins wb#645's r2
+// review (NM2): claim-time auto-registration must never merge into a row
+// whose own Lifecycle is "parked" or "resumed" — that would silently take
+// over the parked session's WBSessionID and overwrite its Runtime/Model with
+// the new claim's, corrupting a session someone will resume later.
+func TestAutoRegisterSessionFromEnvNeverMergesIntoAParkedRow(t *testing.T) {
+	previous := findHarnessAncestorForClaim
+	findHarnessAncestorForClaim = func(int) (int, string) { return os.Getpid(), "" }
+	defer func() { findHarnessAncestorForClaim = previous }()
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, session.DirName)
+	if _, err := session.Register(dir, session.Record{
+		PID: os.Getpid(), Runtime: "codex", Model: "gpt-5.5",
+		Lifecycle: "parked", WBSessionID: "wbs-parked-1",
+	}); err != nil {
+		t.Fatalf("seed a parked row: %v", err)
+	}
+
+	fields := wbprovenance.Fields{HarnessSessionID: "sess-abc123", Harness: "claude-code_2-1-276_agent"}
+	if _, ok := autoRegisterSessionFromEnv(home, fields); ok {
+		t.Fatal("autoRegisterSessionFromEnv registered a claim into a parked session row")
+	}
+
+	after, _ := session.Lookup(dir, os.Getpid())
+	if after.Runtime != "codex" || after.Model != "gpt-5.5" || after.Lifecycle != "parked" || after.WBSessionID != "wbs-parked-1" {
+		t.Fatalf("the parked row was modified: %+v", after)
 	}
 }
 

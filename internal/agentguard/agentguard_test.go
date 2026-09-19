@@ -1333,11 +1333,17 @@ func TestCompoundWBInvocationIsNeverStamped(t *testing.T) {
 }
 
 // TestRewrittenSimpleCommandsRunCorrectlyInARealShell pins wb#645's review
-// minor m4: the earlier tests only compared the rewritten TEXT against a
-// value built with the same function under test, never executed it. This
-// exercises real rewritten output in a real POSIX shell with a stub `wb`
-// script on PATH that records the arguments it was called with, so quoting
-// and word-splitting bugs the string comparison alone would miss are caught.
+// minor m4 and its r2 follow-up (minor 4): the earlier tests only compared
+// the rewritten TEXT against a value built with the same function under
+// test, never executed it, and the stub recorded only argv, so it could not
+// show a dropped `$`, `~`, glob, or a `VAR=value` assignment that survived
+// as a real environment variable rather than becoming literal text (NB1).
+// This exercises real rewritten output in a real POSIX shell with a stub
+// `wb` script on PATH that records BOTH the arguments it was called with
+// AND its own GOOS, so a splice that turned an assignment into a quoted
+// literal word (breaking the assignment, or writing to a literal `$VAR`
+// directory) is caught the same way running the command for real would
+// catch it.
 func TestRewrittenSimpleCommandsRunCorrectlyInARealShell(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh on PATH")
@@ -1350,45 +1356,106 @@ func TestRewrittenSimpleCommandsRunCorrectlyInARealShell(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(repositories.Worktree, "internal", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	binDir := t.TempDir()
 	recorded := filepath.Join(binDir, "recorded.txt")
-	stub := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(recorded) + "\n"
+	stub := "#!/bin/sh\n{ printf 'ARGV:%s\\n' \"$*\"; printf 'GOOS:%s\\n' \"$GOOS\"; } > " + shellQuote(recorded) + "\n"
 	stubPath := filepath.Join(binDir, "wb")
 	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
 		t.Fatalf("write stub wb: %v", err)
 	}
 
-	cases := []struct {
-		command string
-		want    string
-	}{
-		{"go test ./internal/runlog", "run -- go test ./internal/runlog"},
-		{"GOOS=windows go build ./...", "run -- go build ./..."},
-		{"cd internal && go test ./runlog", "run -- go test ./runlog"},
+	runRewrite := func(t *testing.T, command string) string {
+		t.Helper()
+		decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+		if decision.Deny || decision.RewriteCommand == "" {
+			t.Fatalf("Inspect(%q) did not rewrite: %+v", command, decision)
+		}
+		_ = os.Remove(recorded)
+		shell := exec.Command("sh", "-c", decision.RewriteCommand)
+		shell.Dir = repositories.Worktree
+		shell.Env = append(os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TMPDIR="+binDir,
+			"HOME="+repositories.Worktree,
+			"GOPATH="+repositories.Worktree,
+		)
+		if output, err := shell.CombinedOutput(); err != nil {
+			t.Fatalf("sh -c %q: %v\n%s", decision.RewriteCommand, err, output)
+		}
+		got, err := os.ReadFile(recorded)
+		if err != nil {
+			t.Fatalf("the stub wb was never invoked by %q: %v", decision.RewriteCommand, err)
+		}
+		return string(got)
 	}
-	for _, testCase := range cases {
-		t.Run(testCase.command, func(t *testing.T) {
-			decision := Inspect(bashCall(testCase.command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
-			if decision.Deny || decision.RewriteCommand == "" {
-				t.Fatalf("Inspect(%q) did not rewrite: %+v", testCase.command, decision)
+
+	rewriteCases := []struct {
+		name        string
+		command     string
+		wantArgv    string
+		wantGOOS    string
+		wantSpliced string // required verbatim substring of RewriteCommand, when set
+	}{
+		{
+			name:     "expansion in a flag value is preserved, not quoted",
+			command:  "go build -o $TMPDIR/x ./cmd/wb",
+			wantArgv: "run -- go build -o " + binDir + "/x ./cmd/wb",
+		},
+		{
+			name:     "a quoted multi-word assignment stays one assignment",
+			command:  `GOFLAGS="-count=1 -race" go test ./...`,
+			wantArgv: "run -- go test ./...",
+		},
+		{
+			name:     "a tilde in an assignment expands, is not literalised",
+			command:  "GOPATH=~/go go build",
+			wantArgv: "run -- go build",
+		},
+		{
+			name:     "a quoted -run pattern round-trips",
+			command:  `go test -run "$PATTERN" ./...`,
+			wantArgv: "run -- go test -run  ./...", // $PATTERN is unset, expands empty
+		},
+		{
+			name:     "a glob is left for the shell, not quoted off",
+			command:  "go vet ./internal/*/",
+			wantArgv: "run -- go vet ./internal/sub/",
+		},
+		{
+			name:     "GOOS reaches the child process environment",
+			command:  "GOOS=windows go build ./...",
+			wantArgv: "run -- go build ./...",
+			wantGOOS: "windows",
+		},
+	}
+	for _, testCase := range rewriteCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := runRewrite(t, testCase.command)
+			wantLine := "ARGV:" + testCase.wantArgv
+			if !strings.Contains(got, wantLine) {
+				t.Fatalf("rewritten command %q produced %q, want a line %q", testCase.command, got, wantLine)
 			}
-			_ = os.Remove(recorded)
-			if err := os.MkdirAll(filepath.Join(repositories.Worktree, "internal"), 0o755); err != nil {
-				t.Fatal(err)
+			wantGOOS := "GOOS:" + testCase.wantGOOS
+			if !strings.Contains(got, wantGOOS) {
+				t.Fatalf("rewritten command %q produced %q, want a line %q", testCase.command, got, wantGOOS)
 			}
-			command := exec.Command("sh", "-c", decision.RewriteCommand)
-			command.Dir = repositories.Worktree
-			command.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("sh -c %q: %v\n%s", decision.RewriteCommand, err, output)
-			}
-			got, err := os.ReadFile(recorded)
-			if err != nil {
-				t.Fatalf("the stub wb was never invoked by %q: %v", decision.RewriteCommand, err)
-			}
-			if strings.TrimSpace(string(got)) != testCase.want {
-				t.Fatalf("rewritten command %q invoked wb with %q, want %q", decision.RewriteCommand, strings.TrimSpace(string(got)), testCase.want)
+		})
+	}
+
+	refusalCases := []string{
+		"go test ./... &",
+		"(cd internal/sub && go test ./...)",
+		"go test < /dev/null",
+	}
+	for _, command := range refusalCases {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny || decision.RewriteCommand != "" {
+				t.Fatalf("Inspect(%q) = %+v, want a refusal with no rewrite", command, decision)
 			}
 		})
 	}
@@ -2001,6 +2068,37 @@ func TestRefusalNamesTheRemedy(t *testing.T) {
 	} {
 		if !strings.Contains(decision.Reason, expected) {
 			t.Fatalf("refusal is missing %q:\n%s", expected, decision.Reason)
+		}
+	}
+}
+
+// TestSimpleGovernedRewriteQuotesAWBExecutablePathWithASpace pins wb#645's
+// review r2 (NM1/minor 2): a non-empty wbExecutable is a filesystem path
+// this package does not control the contents of, and must be shell-quoted
+// before it is spliced into the rewritten command — unlike a bare "wb",
+// which is used unquoted so it still matches a user's own `Bash(wb run:*)`
+// permission rule. The review reproduced the unquoted-path bug directly:
+// with the binary at "/tmp/w 645/wb", the old rewrite was
+// "/tmp/w 645/wb run -- go vet ..." and bash failed with "/tmp/w: No such
+// file or directory".
+func TestSimpleGovernedRewriteQuotesAWBExecutablePathWithASpace(t *testing.T) {
+	executable := "/opt/w 645/wb"
+	got, ok := simpleGovernedRewrite("go test ./...", executable)
+	if !ok {
+		t.Fatalf("simpleGovernedRewrite did not rewrite a plain governed command")
+	}
+	want := shellQuote(executable) + " run -- go test ./..."
+	if got != want {
+		t.Fatalf("simpleGovernedRewrite(%q) = %q, want %q", executable, got, want)
+	}
+	if strings.Contains(got, "/opt/w 645/wb run") {
+		t.Fatalf("the executable path with a space was spliced in unquoted: %q", got)
+	}
+
+	if _, err := exec.LookPath("sh"); err == nil {
+		splitWords := strings.Fields(got)
+		if len(splitWords) == 0 || splitWords[0] == "/opt/w" {
+			t.Fatalf("an unquoted path with a space would split into multiple shell words: %q", got)
 		}
 	}
 }

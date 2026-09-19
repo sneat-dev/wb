@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -44,6 +45,46 @@ func agentHookShellCommand(executable string) string {
 	return fmt.Sprintf("%s %s 2>/dev/null; exit 0", shellQuote(executable), agentHookInvocation)
 }
 
+// resolveWBExecutableForHook decides what a governed-command rewrite should
+// splice in front of "run --": self (the hook's own executable, as
+// hookExecutable() resolves it) when PATH would find a DIFFERENT binary
+// under the name "wb", and "" — meaning "use the bare name 'wb', unquoted" —
+// when exec.LookPath("wb") resolves to the identical file self already is.
+//
+// This exists because the bare name is what a user's own Claude Code
+// permission rule is written against (`Bash(wb run:*)`): a rewrite that
+// always spliced in the absolute path stopped matching that rule the moment
+// the two files were the same binary anyway (wb#645 review r2, NM1/minor 2).
+// os.SameFile compares device and inode, not string equality, so a
+// symlink, a different relative spelling, or hash-cached shell lookup that
+// still ultimately names this same executable is still treated as a match.
+// When the two are genuinely different files — self was launched from a
+// build directory or an absolute path never added to PATH, while some other
+// "wb" (or none) sits on PATH — only the absolute path is guaranteed to run
+// the same guard that is making this decision, so it is returned for the
+// caller to shell-quote before splicing.
+func resolveWBExecutableForHook(self string) string {
+	if self == "" {
+		return self
+	}
+	onPath, err := exec.LookPath("wb")
+	if err != nil {
+		return self
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		return self
+	}
+	onPathInfo, err := os.Stat(onPath)
+	if err != nil {
+		return self
+	}
+	if os.SameFile(selfInfo, onPathInfo) {
+		return ""
+	}
+	return self
+}
+
 func shellQuote(value string) string {
 	if value != "" && !strings.ContainsAny(value, " \t\n\"'\\$`*?[]{}();&|<>#~!") {
 		return value
@@ -59,8 +100,9 @@ func newHooksAgentPreToolUseCmd() *cobra.Command {
 		Long: `Refuse an agent tool call that violates one of this guard's policies.
 
 Reads a Claude Code PreToolUse payload as JSON on stdin and writes a deny
-document on stdout when the call matches one of the policies below. It writes
-nothing at all for every other outcome.
+document, or a rewrite document with no permission decision, on stdout when
+the call matches one of the policies below. It writes nothing at all for
+every other outcome.
 
 Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
 
@@ -248,7 +290,7 @@ Install it with 'wb hooks agent install'.`,
 				reader = file
 			}
 			call := agentguard.DecodeToolCall(reader)
-			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot, WBExecutable: hookExecutable()})
+			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot, WBExecutable: resolveWBExecutableForHook(hookExecutable())})
 			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision, call.ToolInput); err != nil {
 				return nil
 			}

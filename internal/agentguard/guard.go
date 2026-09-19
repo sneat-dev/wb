@@ -287,7 +287,7 @@ func shellQuote(value string) string {
 // permission prompt entirely, which is not this guard's call to make). This
 // relies on Claude Code >= 2.1.276's behaviour for a response that sets
 // UpdatedInput without PermissionDecision; it is undocumented, and
-// TestRewriteNeverSetsPermissionDecision pins it.
+// TestRewriteAndStampNeverSetPermissionDecision pins it.
 type hookResponse struct {
 	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput"`
 }

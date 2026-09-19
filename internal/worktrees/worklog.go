@@ -1107,8 +1107,20 @@ func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (sessio
 		return session.Record{}, false
 	}
 	dir := filepath.Join(home, session.DirName)
-	if existing, ok := session.ResolveForProcess(dir, ancestorPID); ok {
+	// session.Lookup (not ResolveForProcess, which would keep walking up the
+	// process tree past ancestorPID) reports the exact record at this PID,
+	// if any, and whether it currently qualifies as a live, non-parked,
+	// non-resumed session. A record whose own Lifecycle is "parked" or
+	// "resumed" is never merged into: wb#645's review (r2, NM2) found the
+	// earlier version called session.Register directly, which merges into
+	// whatever record already sits at ancestorPID regardless of lifecycle —
+	// so a claim created while that PID's session was parked silently took
+	// over the parked row's WBSessionID and overwrote its Runtime/Model with
+	// the new claim's, corrupting a session someone will resume later.
+	if existing, live := session.Lookup(dir, ancestorPID); live {
 		return existing, true
+	} else if existing.Lifecycle == "parked" || existing.Lifecycle == "resumed" {
+		return session.Record{}, false
 	}
 	runtime := normalizeHarnessRuntime(fields.Harness)
 	if runtime == "" {
