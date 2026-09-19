@@ -107,9 +107,28 @@ limitation stands unchanged: it "cannot register the session itself" because
 on its behalf" — where it cannot resolve identity, it MUST fall back to its
 existing behavior of reminding the agent to re-run `wb session register`
 itself. Until either path resolves the new session ID, the session degrades
-to record-only for delivery purposes rather than addressing a stale ID. The
-same extended hook announcement also names any recorded, unread successor
-message per REQ:existing-successor-messaging-binding-path's herdr path.
+to record-only for delivery purposes rather than addressing a stale ID.
+
+The same extended hook is also a **notification**, never a delivery: its
+output enters the model's context automatically, so printing a message's
+body there would amount to submitting it exactly as an `agent prompt` would.
+It MUST print only the unread count, each unread message's ID, and each
+message's sender WB session ID — never any body text — and it MUST name the
+read verb (REQ:successor-message-read-verb) so reading is a separate,
+explicit action the agent chooses to take.
+
+#### REQ: successor-message-read-verb
+
+WB MUST add a read verb, owned by Task 5: `wb session messages` lists this
+session's unread messages (ID, sender WB session ID, recorded time, kind) —
+no body text — and `wb session messages read <id>` prints one message's full
+body on the agent's own explicit request. Its output MUST be labelled as a
+message from another session (naming the sender's WB session ID), never
+presented as the founder's own words — it did not arrive with a founder-typed
+`❯` prefix, and nothing about reading it may imply otherwise. Per
+REQ:daemon-message-not-approval-evidence's rule, extended here: no WB verb
+may accept a successor message, read this way or any other, as
+`--approved-by` or any other approval evidence.
 
 ### Pluggable terminal transport
 
@@ -211,11 +230,14 @@ pre-existing submitted (binding) delivery path, distinct from the daemon
 wake: it delivers a predecessor session's message to its receipt-recorded
 successor, guarded by that receipt's lineage rather than by
 REQ:prompt-restricted-to-own-pr-outcome's own-PR-outcome restriction.
+`wb session recall` (alias `wb session request-handoff`) sends its own typed
+message through the identical send and `wb session receive-message` path, so
+everything below applies to it equally.
 
-**On tmux, its behavior is unchanged by this Feature.** It already submits
-today because its `paste-buffer` payload ends in a newline (`sessionmessage`'s
-`marshalJSON` terminates the message with `'\n'`), and REQ:tmux-parity-preserved
-keeps that behavior exactly as it is.
+**On tmux, behavior is unchanged by this Feature.** Both commands already
+submit today because their `paste-buffer` payload ends in a newline
+(`sessionmessage`'s `marshalJSON` terminates the message with `'\n'`), and
+REQ:tmux-parity-preserved keeps that behavior exactly as it is.
 
 **On herdr, no submit is built in this iteration**, for the same reason the
 daemon wake isn't: it would need the same deferred empty-input evidence
@@ -224,14 +246,37 @@ daemon wake isn't: it would need the same deferred empty-input evidence
 `wb session receive` (`cmd/wb/session_receive.go`, which bootstraps a brand
 new successor from a full portable handoff bundle; a different flow) — MUST
 still durably record the message on herdr exactly as it does on tmux, and
-MUST NOT attempt `PaneSendText` or `AgentPrompt` to deliver it. The recorded,
-unread message MUST be surfaced through the same `SessionStart` hook
-mechanism REQ:reregister-on-session-start-hook already extends, since that is
-WB's one existing "inject text at session start" surface — a fresh or
-resumed session sees it named in the hook's announcement rather than the
-receiver pushing it live into a running pane. The herdr submit path
+MUST NOT attempt `PaneSendText` or `AgentPrompt` to deliver it, per
+REQ:recorded-only-receipt-state. The recorded, unread message is a
+**notification only**, surfaced by count, ID, and sender through the
+`SessionStart` hook REQ:reregister-on-session-start-hook extends — never a
+body pushed live into a running pane — and read on the agent's own explicit
+request through REQ:successor-message-read-verb. The herdr submit path
 (`agent prompt`, gated the same way as the daemon wake) is specified under
 Deferred, not built now.
+
+#### REQ: recorded-only-receipt-state
+
+Today's `MessageReceipt` schema cannot represent a recorded-only outcome: its
+validation requires a non-zero `PastedAt` and the canonical tmux identity
+fields (`TmuxName`, `PaneID`, `PID`) unconditionally
+(`internal/sessionmove/message.go:116` and the receipt-matching checks around
+lines 424 and 503), and both sender and receiver command output
+unconditionally print "durably recorded and pasted to tmux". This is a schema
+change, owned by Task 4:
+
+- `MessageReceipt` MUST carry an explicit `delivery` field with exactly two
+  values, `pasted` or `recorded`.
+- When `delivery: pasted`, today's fields and validation apply unchanged —
+  `TmuxName`, `PaneID`, `PID`, and a non-zero `PastedAt` remain required, and
+  the existing receipt-matching checks are unchanged.
+- When `delivery: recorded`, `TmuxName`, `PaneID`, `PID`, and `PastedAt` MUST
+  NOT be required, and the receipt-matching logic MUST NOT compare them —
+  only `RecordedAt` and the message digest are authoritative.
+- Sender and receiver output MUST be honest per state: `pasted` keeps
+  "durably recorded and pasted to tmux"; `recorded` MUST say something
+  distinct, e.g. "durably recorded; not delivered — read with `wb session
+  messages read <id>`".
 
 #### REQ: none-transport-is-first-class
 
@@ -593,14 +638,52 @@ newline
 
 ### AC: successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
 
-**Requirements:** herdr-session-transport#req:existing-successor-messaging-binding-path
+**Requirements:** herdr-session-transport#req:existing-successor-messaging-binding-path, herdr-session-transport#req:recorded-only-receipt-state
 
 Scenario: A predecessor sends a follow-up message to a herdr-hosted successor
 Given a completed handoff with a herdr-transport successor
 When the courier invokes `wb session receive-message` on the target machine
-Then the message is durably recorded and a receipt is returned exactly as on
-tmux, but nothing is submitted or pasted into the pane; the successor's next
-`SessionStart` hook announcement names the recorded, unread message
+Then the message is durably recorded and a `delivery: recorded` receipt is
+returned, distinct from tmux's `delivery: pasted` receipt; nothing is
+submitted or pasted into the pane; the successor's next `SessionStart` hook
+announcement names the count, the message ID, and the sender's WB session ID
+— never the body
+
+### AC: read-verb-labels-a-message-as-anothers-not-the-founders
+
+**Requirements:** herdr-session-transport#req:successor-message-read-verb
+
+Scenario: An agent reads an unread message by ID
+Given an unread message recorded from a named predecessor WB session
+When the agent runs `wb session messages` and then `wb session messages read <id>`
+Then the list shows the ID, sender WB session ID, and recorded time with no
+body; the read shows the full body labelled as a message from that sender
+session, never presented as the founder's own words; and no WB verb accepts
+this message, read or unread, as `--approved-by` or other approval evidence
+
+### AC: hook-output-never-contains-message-body
+
+**Requirements:** herdr-session-transport#req:reregister-on-session-start-hook, herdr-session-transport#req:successor-message-read-verb
+
+Scenario: A session has one unread message with a sensitive body
+Given a recorded, unread successor message whose body contains arbitrary text
+When the `SessionStart` hook fires for that session
+Then its output contains the unread count, the message ID, and the sender's
+WB session ID, and never contains any substring of the message body; the
+body is retrievable only via the agent's own explicit
+`wb session messages read <id>`
+
+### AC: recorded-only-receipt-is-honest-about-non-delivery
+
+**Requirements:** herdr-session-transport#req:recorded-only-receipt-state
+
+Scenario: A herdr-hosted message is recorded without a paste
+Given `wb session receive-message` records a message with `delivery:
+recorded`
+When the sender and the receiver each print their outcome
+Then neither says "durably recorded and pasted to tmux"; both name the
+recorded-only state and point at `wb session messages read <id>`, and the
+receipt validates with no `TmuxName`, `PaneID`, `PID`, or `PastedAt`
 
 ### AC: herdr-failure-at-delivery-is-record-only
 
@@ -825,13 +908,19 @@ JSON captured from the real, read-only `herdr agent list` and
 - Relaying provider-authored text (titles, bodies, comments, logs) into any
   submitted message, on any transport.
 - Supporting a terminal multiplexer other than herdr or tmux.
+- Printing a successor message's body anywhere that reaches a session's
+  context automatically (the `SessionStart` hook, or any future notification
+  surface); reading a body is always an explicit agent action.
 
 ## Deferred
 
-All three items below were open questions; the founder closed the first two,
+The first two items below were open questions; the founder closed them,
 2026-09-19, by ruling the underlying work out of scope for now rather than
-answering the design question. They are specified here as a coherent shape so
-submission activates without a redesign later, but none is built in this
+answering the design question. The third is not something the founder was
+asked — it is the lead's ruling that a second submit path (successor
+messaging's herdr side) cannot exist while the first is deferred, since both
+need the identical evidence. All three are specified here as a coherent shape
+so submission activates without a redesign later, but none is built in this
 iteration.
 
 ### Empty-input evidence mechanism
@@ -867,16 +956,19 @@ assumed closed.
 
 ### Successor messaging's herdr submit path
 
-Not answered by the founder directly, but it depends on the same deferred
-mechanism above, so it waits with it.
+Not something the founder was asked; the lead's ruling, because this path
+depends on the same deferred mechanism above.
 
-`wb session send`'s herdr implementation (REQ:existing-successor-messaging-binding-path)
-would use `agent prompt`, gated by the same idle/done and empty-input-evidence
-guards as the daemon wake. Since that evidence mechanism does not exist, this
-submit path is not built in this iteration either: on herdr, `wb session
-receive-message` durably records the message and the recipient sees it named
-in its `SessionStart` hook announcement, exactly as an own-PR-outcome event
-is recorded rather than delivered. tmux is unaffected — its existing submit
+`wb session send`'s and `wb session recall`'s herdr implementation
+(REQ:existing-successor-messaging-binding-path) would use `agent prompt`,
+gated by the same idle/done and empty-input-evidence guards as the daemon
+wake. Since that evidence mechanism does not exist, this submit path is not
+built in this iteration either: on herdr, `wb session receive-message`
+durably records the message with `delivery: recorded`
+(REQ:recorded-only-receipt-state), and the recipient sees its count, ID, and
+sender named in its `SessionStart` hook announcement — never its body — and
+reads it only on explicit request through `wb session messages read <id>`
+(REQ:successor-message-read-verb). tmux is unaffected — its existing submit
 behavior is pre-existing and outside this Feature's guard entirely.
 
 ## Open Questions

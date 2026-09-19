@@ -73,13 +73,18 @@ human. This is the lead's default; the founder separately confirmed tmux
 stays supported, 2026-09-19 ("yes").
 
 **A predecessor sends the herdr-hosted agent a follow-up message through
-`wb session send`, unrelated to the daemon.** Observable good result: the
-courier's `wb session receive-message` durably records it and returns a
-receipt exactly as it does on tmux, but nothing is pasted or submitted; the
-next time the agent's `SessionStart` hook fires, its announcement names the
-recorded, unread message. tmux is unaffected — its pre-existing submit
-behavior (a `paste-buffer` payload that already ends in a newline) keeps
-working exactly as it does today.
+`wb session send` (or `recall`), unrelated to the daemon.** Observable good
+result: the courier's `wb session receive-message` durably records it with a
+`delivery: recorded` receipt — distinct from tmux's `delivery: pasted` one —
+and nothing is pasted or submitted. The next time the agent's `SessionStart`
+hook fires, its announcement names only the unread count, the message ID,
+and the sender's WB session ID — **never the body**, because that output
+enters the model's context automatically and printing a body there would be
+a submit in every way that matters. The agent reads the body only by
+explicitly running `wb session messages read <id>`, and sees it labelled as a
+message from that sender session, never as the founder's own words. tmux is
+unaffected — its pre-existing submit behavior (a `paste-buffer` payload that
+already ends in a newline) keeps working exactly as it does today.
 
 **A third session has neither herdr nor tmux — a bare shell.** Observable good
 result: the event is recorded only, `wb wait list` says so explicitly, and
@@ -183,13 +188,13 @@ directly: `internal/session/session.go`, `internal/session/exact.go`,
 `cmd/wb/session_receive.go`, `cmd/wb/session_register.go`. Declare tmux's
 capability matrix (no live status, no input evidence) and prove its
 record-only default for daemon-originated events; the pre-existing
-successor-messaging path (`wb session send`) keeps submitting on tmux exactly
-as it does today, unaffected by this default.
+successor-messaging paths (`wb session send` and `wb session recall`) keep
+submitting on tmux exactly as they do today, unaffected by this default.
 
 ### Task 4: Wire the herdr transport onto the `internal/herdr` adapter
 
 **Id:** task-4
-**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
+**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery
 **Depends-On:** 1, 2
 **Status:** planning
 
@@ -201,25 +206,35 @@ resolution MUST call `agent list` on the session's recorded
 `HERDR_SOCKET_PATH` and match uniquely on `agent_session`; zero or multiple
 matches resolve to record-only, never a guess. No `agent prompt` submit path
 is built in this iteration — not for the daemon wake, and not for
-`wb session send`'s herdr side either, since both need the same deferred
-empty-input evidence. On herdr, `wb session receive-message`
-(`cmd/wb/session_message.go`) durably records a successor message and
-returns a receipt without pasting it; the recorded, unread message is
-surfaced through Task 5's extended `SessionStart` hook.
+`wb session send`'s or `wb session recall`'s herdr side either, since all
+three need the same deferred empty-input evidence.
+
+**Schema change, owned here:** `internal/sessionmove.MessageReceipt` gains a
+`delivery` field (`pasted` | `recorded`). Today's validation
+(`internal/sessionmove/message.go:116`) requires a non-zero `PastedAt` and
+the tmux identity fields unconditionally, and the matching checks around
+lines 424 and 503 compare `TmuxName`/`PaneID`/`PID` unconditionally too; both
+become conditional on `delivery: pasted`. On herdr, `wb session
+receive-message` (`cmd/wb/session_message.go`) durably records a successor
+message with `delivery: recorded` and returns a receipt without pasting it —
+sender and receiver output must say so honestly, not "durably recorded and
+pasted to tmux". The recorded, unread message's count, ID, and sender are
+surfaced through Task 5's extended `SessionStart` hook; its body is read only
+through Task 5's new `wb session messages` verb.
 
 ### Task 5: Automatic identity capture, selection, and session-start re-registration
 
 **Id:** task-5
-**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
+**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:read-verb-labels-a-message-as-anothers-not-the-founders, herdr-session-transport#ac:hook-output-never-contains-message-body
 **Depends-On:** 2, 3, 4
 **Status:** planning
 
 Files: `internal/session/session.go`, `internal/session/exact.go`,
 `cmd/wb/session_register.go`, `cmd/wb/skills_hook_run.go`,
-`cmd/wb/skills_hook_install.go`. Depends on Task 4 because the hook's
-announcement names a recorded, unread successor message, which only exists
-correctly once Task 4's herdr `receive-message` recording behavior is built.
-Builds on Task 3's already-refactored
+`cmd/wb/skills_hook_install.go`, `cmd/wb/session_messages.go` (new). Depends
+on Task 4 because the hook's announcement names a recorded, unread successor
+message, which only exists correctly once Task 4's herdr `receive-message`
+recording behavior is built. Builds on Task 3's already-refactored
 `internal/session` package rather than racing it. Extend `wb session
 register` and the session record with `HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`,
 `HERDR_SOCKET_PATH`, a resolved terminal ID, and the harness session ID
@@ -232,10 +247,17 @@ a second one. Extend WB's existing Claude Code `SessionStart` hook
 (`cmd/wb/skills_hook_run.go`, installed by `skills_hook_install.go`) to
 re-register the transport identity on a new `CLAUDE_CODE_SESSION_ID` in the
 same pane (e.g. after `/clear`) where it can resolve identity, falling back
-to its existing reminder-only behavior where it cannot. Also extend the
-hook's announcement to name any recorded, unread successor message for this
-session, so a herdr-hosted successor sees a follow-up message on its next
-start even though nothing was pasted or submitted to deliver it.
+to its existing reminder-only behavior where it cannot.
+
+**New read verb, owned here:** because the hook's output enters the model's
+context automatically, it MUST NEVER print a message body — only the unread
+count, each message's ID, and each message's sender WB session ID. Add
+`wb session messages` (list, no body) and `wb session messages read <id>`
+(print one body on explicit request), labelled as a message from the named
+sender session, never as the founder's own words, and never accepted as
+`--approved-by` or other approval evidence by any WB verb. Extend the hook's
+announcement to name the count/IDs/senders of any recorded, unread successor
+messages for this session — never their bodies.
 
 ### Task 6: Read PR bindings and evaluate outcomes (the watcher)
 
@@ -316,7 +338,7 @@ herdr failure is Task 7's record-only rule, not a re-route.
 ### Task 11: Prove the whole journey end-to-end
 
 **Id:** task-11
-**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:tmux-behavior-is-unregressed, herdr-session-transport#ac:none-transport-records-only, herdr-session-transport#ac:wake-subscription-is-visible, herdr-session-transport#ac:daemon-watches-only-registered-prs, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:no-live-owner-is-record-only
+**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:tmux-behavior-is-unregressed, herdr-session-transport#ac:none-transport-records-only, herdr-session-transport#ac:wake-subscription-is-visible, herdr-session-transport#ac:daemon-watches-only-registered-prs, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:no-live-owner-is-record-only, herdr-session-transport#ac:hook-output-never-contains-message-body, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery
 **Depends-On:** 3, 5, 6, 8, 9, 10
 **Status:** planning
 
