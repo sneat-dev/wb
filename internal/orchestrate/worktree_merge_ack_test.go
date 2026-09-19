@@ -1579,7 +1579,6 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	}
 
 	t.Run("missing identity fails closed", func(t *testing.T) {
-		t.Parallel()
 		if err := os.Remove(identityPath); err != nil {
 			t.Fatal(err)
 		}
@@ -1592,7 +1591,6 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	})
 
 	t.Run("tampered identity fails closed", func(t *testing.T) {
-		t.Parallel()
 		tampered := strings.Replace(string(identityBefore), receipt.ID, "tampered", 1)
 		if tampered == string(identityBefore) {
 			t.Fatal("identity fixture did not contain receipt ID")
@@ -1609,7 +1607,6 @@ func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *t
 	})
 
 	t.Run("mismatched identity fails closed", func(t *testing.T) {
-		t.Parallel()
 		var identity WorktreeMergeLegacyValidationFailureIdentity
 		if err := json.Unmarshal(identityBefore, &identity); err != nil {
 			t.Fatal(err)
@@ -1687,7 +1684,6 @@ func TestLegacyConflictSupersessionCorrelatesMissingCandidateSHA(t *testing.T) {
 	}
 
 	t.Run("missing identity fails closed", func(t *testing.T) {
-		t.Parallel()
 		if err := os.Remove(identityPath); err != nil {
 			t.Fatal(err)
 		}
@@ -1700,7 +1696,6 @@ func TestLegacyConflictSupersessionCorrelatesMissingCandidateSHA(t *testing.T) {
 	})
 
 	t.Run("tampered identity fails closed", func(t *testing.T) {
-		t.Parallel()
 		tampered := strings.Replace(string(identityBefore), ack.OriginalCandidate.SHA, strings.Repeat("0", 40), 1)
 		if err := os.WriteFile(identityPath, []byte(tampered), 0o600); err != nil {
 			t.Fatal(err)

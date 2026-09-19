@@ -122,7 +122,6 @@ func TestAcquireOperationLockRefusesLiveLegacyOwner(t *testing.T) {
 
 func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	githubDir := t.TempDir()
 	for _, test := range []struct {
 		name     string
 		contents string
@@ -133,6 +132,7 @@ func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			githubDir := t.TempDir()
 			const operation = "invalid-metadata"
 			path := operationLockTestPath(t, githubDir, operation)
 			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
