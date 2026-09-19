@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/waitregistry"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -496,58 +497,42 @@ func waitChecksKey(checks map[string]int) string {
 }
 
 // observePullRequest reads one pull request and the checks on its exact head.
-// It reuses orchestrate's single implementation of both facts rather than
-// adding a second dialect for them.
+// It delegates to prsnapshot.Observe — one shared implementation of both
+// facts, reused by the herdr-session-transport daemon watcher
+// (internal/prwatch) rather than a second dialect of the same GitHub reads —
+// and adapts the result onto waitTarget so `wb wait pr`'s own behavior is
+// unchanged by the move (see cmd/wb/wait_test.go).
 func observePullRequest(ctx context.Context, reference waitReference) waitTarget {
 	target := waitTarget{Selector: reference.Selector, Repository: reference.Repository, Number: reference.Number}
-	view, err := orchestrate.ReadPullRequest(ctx, reference.Repository, reference.Number)
-	if err != nil {
-		return waitReadFailure(target, err)
-	}
-	target.State = view.State
-	target.Draft = view.Draft
-	target.Head = view.Head.SHA
-	target.Base = view.Base.Ref
-	target.URL = view.HTMLURL
-	target.Mergeable = view.MergeableState
-	if view.Merged {
+	snapshot := prsnapshot.Observe(ctx, reference.Repository, reference.Number)
+	// prsnapshot.Observe fills in State/Draft/Head/Base/URL/Mergeable
+	// whenever the pull-request read itself succeeded, even when a later
+	// checks read failed on an open pull request and Err is set: the pull
+	// request's own identity is real, known information, not something a
+	// caller should lose because a different, later read failed. Copying
+	// these fields before checking Err — not after — is exactly what
+	// restores this verb's pre-prsnapshot behavior: `--json` keeps every
+	// field it always reported for this case, and the first observation
+	// `--until changed` compares later ticks against carries the real head
+	// rather than an empty one that would otherwise register as a false
+	// "changed" the moment a following, successful read reports it (round 3
+	// review of herdr-session-transport PR #657: a serious regression).
+	target.State = snapshot.State
+	if snapshot.Merged {
 		target.State = "merged"
 	}
-	checks, green, err := orchestrate.PullRequestHeadChecks(ctx, reference.Repository, reference.Number)
-	if err != nil {
-		// A closed pull request no longer needs its checks read; reporting the
-		// closure is more useful than failing on a head that may be gone.
-		if target.State != "" && !strings.EqualFold(target.State, "open") {
-			target.Checks = map[string]int{}
-			return target
-		}
-		return waitReadFailure(target, err)
+	target.Draft = snapshot.Draft
+	target.Head = snapshot.Head
+	target.Base = snapshot.Base
+	target.URL = snapshot.URL
+	target.Mergeable = snapshot.Mergeable
+	if snapshot.Err != nil {
+		return waitReadFailure(target, snapshot.Err)
 	}
-	target.Checks = map[string]int{}
-	for _, check := range checks {
-		target.Checks[check.Bucket]++
-		if check.Bucket == "fail" || check.Bucket == "cancel" {
-			target.Failed = append(target.Failed, check.Name)
-		}
-	}
-	sort.Strings(target.Failed)
-	// A required check that nobody produces is ABSENT from the observed set,
-	// not pending in it — the renamed-workflow trap. Counting pending checks
-	// alone would call that head settled and green when it can never merge, so
-	// the policy verdict is what decides, and the gap is named.
-	if !green && target.Checks["pending"] == 0 && len(target.Failed) == 0 {
-		if gaps, gapErr := orchestrate.UnsatisfiedRequiredChecks(ctx, reference.Repository, reference.Number); gapErr == nil {
-			target.Blocked = gaps
-		}
-	}
-	// Why it is red is only fetched once the head is terminal, and only when
-	// something actually failed. Annotations cost extra reads, and a check that
-	// is still running has nothing to explain yet.
-	if len(target.Failed) > 0 && target.Checks["pending"] == 0 {
-		if failures, err := orchestrate.PullRequestFailureDetails(ctx, reference.Repository, reference.Number); err == nil {
-			target.Failures = failures
-		}
-	}
+	target.Checks = snapshot.Checks
+	target.Failed = snapshot.Failed
+	target.Failures = snapshot.Failures
+	target.Blocked = snapshot.Blocked
 	return target
 }
 
