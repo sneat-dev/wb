@@ -77,7 +77,25 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 	if absolute, ok := absolutePath(sessionCwd); ok {
 		workingDirectory = absolute
 	}
-	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false)
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, false)
+}
+
+// inspectBashDenyOnly scans command for every WB deny policy while ignoring
+// any governed-validation match, so a real deny anywhere on the line is
+// never hidden behind a governed command earlier in it.
+//
+// wb#645's review (Blocker 2) found `go test ./... && gh pr merge 5 --merge`
+// allowed: inspectBash stops at the first governed-validation segment and
+// hands the whole line to the rewrite, so the gh pr merge chained after it —
+// and any other real deny later on the line — was never reached. This scan
+// runs first and, if it finds anything, deny wins outright: inspectBashCall
+// never even considers a rewrite.
+func inspectBashDenyOnly(command, sessionCwd, projectsRoot string) *finding {
+	workingDirectory := ""
+	if absolute, ok := absolutePath(sessionCwd); ok {
+		workingDirectory = absolute
+	}
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, true)
 }
 
 // programName is the name every recogniser is keyed by: the last path
@@ -103,8 +121,11 @@ const maxShellUnwrapDepth = 8
 // -c payloads have already been unwrapped to reach command, so recursion into
 // a nested `bash -c "bash -c '...'"` terminates. governed is true when command
 // is a payload that `wb run --` runs, so the governed-validation gate never
-// sends back to wb run what wb run is already running.
-func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int, governed bool) *finding {
+// sends back to wb run what wb run is already running. ignoreGoverned, set
+// only by inspectBashDenyOnly, skips the governed-validation match entirely
+// so scanning continues past it to any real deny later on the line
+// (wb#645 review Blocker 2, "deny wins").
+func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int, governed, ignoreGoverned bool) *finding {
 	for _, current := range splitSegments(command) {
 		if result := inspectRedirects(current, workingDirectory, projectsRoot); result != nil {
 			return result
@@ -130,7 +151,7 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int,
 		if readings, ok := shellInterpreters[name]; ok && depth < maxShellUnwrapDepth {
 			if payloads := shellDashCPayloads(words, readings); len(payloads) > 0 {
 				for _, payload := range payloads {
-					if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1, segmentGoverned); result != nil {
+					if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1, segmentGoverned, ignoreGoverned); result != nil {
 						return result
 					}
 				}
@@ -167,7 +188,7 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int,
 		// validation to. The command it runs is still judged by every other
 		// policy below (a gh pr merge, a canonical-clone write), but it is
 		// never sent back to wb run.
-		if !segmentGoverned && managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
+		if !segmentGoverned && !ignoreGoverned && managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
 			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
 		}
 		if result := inspectCommand(name, words, current.Words, workingDirectory, projectsRoot); result != nil {
@@ -1044,84 +1065,167 @@ func containsWord(words []string, target string) bool {
 	return false
 }
 
-// rewriteGoverned returns the command a governed-validation call should run
-// instead of the one it was given, so it is measured, coalesced, and
-// scheduled through `wb run --` (wb#637, founder decision 2026-09-18: rewrite
-// inside a managed worktree, not refuse).
+// stripLeadingAssignments splits the leading `VAR=value` words off words,
+// returning them separately from the rest of the command.
 //
-// A command splitSegments reads as exactly one simple command keeps its own
-// text byte-for-byte after "wb run --": `go test ./...` becomes exactly
-// `wb run -- go test ./...`, the shape the acceptance test pins, and nothing
-// about quoting or word order that the caller wrote is disturbed.
-//
-// A compound command — anything splitSegments reads as more than one simple
-// command (`&&`, `;`, a pipeline, a subshell, a loop, ...) — is wrapped whole
-// in a POSIX-quoted `sh -c` payload instead. Rewriting only the one segment
-// inspectBash matched would silently drop the rest of the line (a `cd`, a
-// `&&`-chained cleanup) that the caller's command relied on running together;
-// re-emitting the matched segment from its already-unquoted Words would also
-// lose whatever quoting the caller actually wrote. Wrapping the whole,
-// untouched command text in `sh -c` keeps it running exactly as given, while
-// still routing the entire call through wb run.
-func rewriteGoverned(command string) string {
-	trimmed := strings.TrimSpace(command)
-	if len(splitSegments(trimmed)) <= 1 {
-		return "wb run -- " + trimmed
+// It reads only leading assignments — never sudo, env, time, or any other
+// wrapper — because the simple-command shape (wb#645 review, fix 2) rewrites
+// only a single, direct governed-validation invocation, optionally prefixed
+// by `VAR=value` assignments and/or a leading `cd <dir> &&`. A wrapper in
+// front of the real command falls back to the pre-PR refusal instead of
+// being rewritten. This is what keeps `time go test ./...` from becoming
+// `wb run -- time go test ./...`, which would run /usr/bin/time instead of
+// the shell keyword (wb#645 review minor m6): `time` is not a `VAR=value`
+// word, so it is never stripped, `rest[0]` is "time", and
+// isGovernedValidation("time", …) is false.
+func stripLeadingAssignments(words []string) (assignments, rest []string) {
+	for len(words) > 0 && isEnvironmentAssignment(words[0]) {
+		assignments = append(assignments, words[0])
+		words = words[1:]
 	}
-	return "wb run -- sh -c " + posixSingleQuote(trimmed)
+	return assignments, words
 }
 
-// posixSingleQuote wraps value in single quotes, closing and reopening the
-// quoting around any single quote value itself contains — the one escape a
-// POSIX shell accepts inside single quotes. Unlike shellQuote (used only for
-// a refusal message's individual, already-split words), this always quotes:
-// value here is a whole command line that must survive as one shell word
-// no matter what it contains.
-func posixSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+// governedSegmentTail reports whether current is, entirely on its own, a
+// directly governed-validation command optionally prefixed by `VAR=value`
+// assignments — the tail half of the "simple command" shape wb#645's review
+// requires (fix 2). A redirect on the segment fails the match outright: a
+// rewrite must never drop or reinterpret a `>` the caller wrote. Only a
+// leading VAR=value assignment is stripped before the governed-validation
+// check, never a wrapper program (see stripLeadingAssignments), so a wrapped
+// invocation is refused the old way rather than silently rewritten into
+// something that runs a different program.
+//
+// assignmentsPrefix is each assignment, shell-quoted, in its original order,
+// followed by a trailing space (empty when there are none); commandTail is
+// the governed command's own words, shell-quoted and space-joined, byte for
+// byte the same command the caller wrote after `wb run --`.
+func governedSegmentTail(current segment) (assignmentsPrefix, commandTail string, ok bool) {
+	if len(current.RedirectTargets) > 0 {
+		return "", "", false
+	}
+	assignments, rest := stripLeadingAssignments(current.Words)
+	if len(rest) == 0 || !isGovernedValidation(programName(rest[0]), rest) {
+		return "", "", false
+	}
+	var prefix strings.Builder
+	for _, assignment := range assignments {
+		prefix.WriteString(shellQuote(assignment))
+		prefix.WriteByte(' ')
+	}
+	quoted := make([]string, len(rest))
+	for index, word := range rest {
+		quoted[index] = shellQuote(word)
+	}
+	return prefix.String(), strings.Join(quoted, " "), true
 }
 
-// safeProvenanceID is the charset WB_AGENT_ID/WB_TOOL_USE_ID must clear
-// before stampSubagentID interpolates either into a rewritten shell command.
-// It matches internal/provenance.SafeID; duplicated here rather than
+// simpleGovernedRewrite builds the rewritten command for the one shape
+// wb#645's review (fix 2, founder decision) allows a rewrite at all: a
+// single governed-validation command, optionally prefixed by `VAR=value`
+// assignments and/or a leading `cd <dir> &&`. Anything else — a second `&&`
+// segment, `;`, a pipeline, `||`, a subshell, a heredoc — is not rewritten;
+// ok is false, and the caller falls back to the pre-PR governedCommandRefusal
+// instead. There is no `sh -c` wrapping anywhere in this package any more:
+// that wrap hid the inner command from the user's own Bash permission rules,
+// changed semantics under dash, and (combined with the guard's old
+// auto-allow) let a governed command hide a chained deny (wb#645 review
+// Blockers 1, 2, 4, Major 1).
+//
+// The two cases below are exactly the shapes the founder specified:
+//
+//   - One segment: `[VAR=value ...] <governed command>` becomes
+//     `[VAR=value ...] wbExecutable run -- <governed command>` — the env
+//     assignments move in front of `wb run` so they still apply to the
+//     process wb run execs (wb#645 review Blocker 4: `GOOS=windows go build`
+//     used to become `wb run -- GOOS=windows go build`, which fails because
+//     wb run tried to exec the literal program name "GOOS=windows").
+//   - Two segments joined by `&&`, the first being a bare `cd <dir>` with no
+//     flags and no redirect: `cd <dir> && [VAR=value ...] <governed command>`
+//     becomes `cd <dir> && [VAR=value ...] wbExecutable run -- <governed
+//     command>`. The `cd` stays outside `wb run --` so it still changes the
+//     calling shell's directory for whatever runs next, exactly as the
+//     caller's own `&&` chain intended.
+//
+// wbExecutable is the absolute path the hook is registered with when known,
+// so the rewritten command runs the exact binary the hook itself is (wb#645
+// review minor m5), falling back to the bare "wb" name resolved from PATH
+// when it is not.
+func simpleGovernedRewrite(command, wbExecutable string) (string, bool) {
+	if wbExecutable == "" {
+		wbExecutable = "wb"
+	}
+	segments := splitSegments(strings.TrimSpace(command))
+	switch len(segments) {
+	case 1:
+		prefix, tail, ok := governedSegmentTail(segments[0])
+		if !ok {
+			return "", false
+		}
+		return prefix + wbExecutable + " run -- " + tail, true
+	case 2:
+		cd := segments[0]
+		if len(cd.RedirectTargets) > 0 || len(cd.Words) != 2 || programName(cd.Words[0]) != "cd" {
+			return "", false
+		}
+		if segments[1].Separator != "&&" {
+			return "", false
+		}
+		prefix, tail, ok := governedSegmentTail(segments[1])
+		if !ok {
+			return "", false
+		}
+		return "cd " + shellQuote(cd.Words[1]) + " && " + prefix + wbExecutable + " run -- " + tail, true
+	default:
+		return "", false
+	}
+}
+
+// safeProvenanceID is the charset WB_SUBAGENT_ID/WB_SUBAGENT_TOOL_USE_ID must
+// clear before stampSubagentID interpolates either into a rewritten shell
+// command. It matches internal/provenance.SafeID; duplicated here rather than
 // imported so this scanner keeps its own dependency-free, independently
 // auditable read path (see claimOwnerFile's doc for the same reasoning) and
 // so a value this guard will shell out is validated by code this package
 // alone owns.
 var safeProvenanceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
-// bashInvokesWB reports whether any top-level segment of command runs the wb
-// binary directly, skipping only a leading VAR=value assignment. It
-// deliberately does not walk through sudo/env/time/wb's own `wb run --`
-// unwrapping the way stripCommandPrefixes does elsewhere in this file: those
-// exist to find the REAL program a wrapper runs, while this exists to answer
-// a narrower question — does the caller's own command literally say "wb"? — so
-// a rewritten `wb run -- ...` command (which stripCommandPrefixes would
-// unwrap past "wb" to see "go" or "sh") is still recognised as invoking wb.
-// Missing an indirect invocation (`sudo wb ...`) fails open: no stamp, never
-// a wrongful one.
-func bashInvokesWB(command string) bool {
-	for _, current := range splitSegments(command) {
-		words := current.Words
-		for len(words) > 0 && isEnvironmentAssignment(words[0]) {
-			words = words[1:]
-		}
-		if len(words) == 0 {
-			continue
-		}
-		if programName(words[0]) == "wb" {
-			return true
-		}
+// simpleWBInvocation reports whether command is, entirely on its own, a
+// direct invocation of the wb binary: a single segment, no redirects,
+// optionally prefixed by leading `VAR=value` assignments, whose program is
+// "wb". Anything else — a second command chained with `&&`/`;`/`|`, a
+// redirect, a wrapper such as sudo — is not a simple wb invocation, so the
+// ID stamp is never added: stamping a compound line would export the
+// subagent identity to every other command it happens to chain with, not
+// only wb (wb#645 review Blocker 1's `wb status && rm -rf /tmp/zzz` shape).
+func simpleWBInvocation(command string) bool {
+	segments := splitSegments(strings.TrimSpace(command))
+	if len(segments) != 1 {
+		return false
 	}
-	return false
+	current := segments[0]
+	if len(current.RedirectTargets) > 0 {
+		return false
+	}
+	_, rest := stripLeadingAssignments(current.Words)
+	return len(rest) > 0 && programName(rest[0]) == "wb"
 }
 
 // stampSubagentID prefixes command with an export of the subagent identity a
 // PreToolUse payload declared, so every wb call the command makes can
 // attribute the WB record it writes to the exact subagent and tool call that
 // ran it (wb#631's provenance fields). It only ever adds the prefix when
-// command itself invokes wb (see bashInvokesWB): stamping a command that
-// never calls wb would export environment nothing reads.
+// command is, entirely on its own, a simple wb invocation (see
+// simpleWBInvocation): stamping a compound line would export the identity to
+// every other command on it, not only wb (wb#645 review Blocker 1).
+//
+// The variable names are WB_SUBAGENT_ID and WB_SUBAGENT_TOOL_USE_ID,
+// deliberately outside the WB_AGENT_* family: WB_AGENT_ID already exists as
+// the owner-identity variable a session declares to claim a worktree
+// (internal/worktrees.EnvAgentID), and reusing that name made a declared
+// subagent identity look like a live owner declaration, which flipped
+// `--mode auto` to agent mode and then failed admission for any subagent
+// that never separately registered a session (wb#645 review Blocker 3).
 //
 // Both IDs are validated against safeProvenanceID before they are ever
 // interpolated into a shell command. An unsafe or absent agentID drops the
@@ -1130,12 +1234,12 @@ func bashInvokesWB(command string) bool {
 // useful provenance.
 func stampSubagentID(command, agentID, toolUseID string) string {
 	agentID = strings.TrimSpace(agentID)
-	if agentID == "" || !safeProvenanceID.MatchString(agentID) || !bashInvokesWB(command) {
+	if agentID == "" || !safeProvenanceID.MatchString(agentID) || !simpleWBInvocation(command) {
 		return command
 	}
-	prefix := "export WB_AGENT_ID=" + agentID
+	prefix := "export WB_SUBAGENT_ID=" + agentID
 	if toolUseID = strings.TrimSpace(toolUseID); toolUseID != "" && safeProvenanceID.MatchString(toolUseID) {
-		prefix += " WB_TOOL_USE_ID=" + toolUseID
+		prefix += " WB_SUBAGENT_TOOL_USE_ID=" + toolUseID
 	}
 	return prefix + "; " + command
 }

@@ -1198,9 +1198,11 @@ func TestGhPrMergeOverrideEscapeHatchIsRecorded(t *testing.T) {
 
 // TestManagedWorktreeRewritesGovernedHeavyValidation pins wb#637's founder
 // decision (2026-09-18): a managed worktree rewrites direct heavy validation
-// into `wb run --` instead of refusing it. A simple command keeps its own
-// text verbatim after "wb run --"; a compound command is wrapped whole in a
-// POSIX-quoted `sh -c` payload so the rest of the line still runs together.
+// into `wb run --`, but only for the narrow "simple command" shape wb#645's
+// review restricted this to (fix 2): a single governed command, optionally
+// prefixed by `VAR=value` assignments and/or a leading `cd <dir> &&`. There
+// is no `sh -c` wrapping any more — anything else falls back to the pre-PR
+// refusal instead (see TestNonSimpleGovernedCommandsAreRefusedNotRewritten).
 func TestManagedWorktreeRewritesGovernedHeavyValidation(t *testing.T) {
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
@@ -1222,8 +1224,13 @@ func TestManagedWorktreeRewritesGovernedHeavyValidation(t *testing.T) {
 		"yarn e2e":                      "wb run -- yarn e2e",
 		"npx nx affected --target=test": "wb run -- npx nx affected --target=test",
 		"cargo test --workspace":        "wb run -- cargo test --workspace",
-		"timeout 600 go test ./...":     "wb run -- timeout 600 go test ./...",
-		"nice -n 10 go test ./...":      "wb run -- nice -n 10 go test ./...",
+		// wb#645 review Blocker 4: the env assignment moves in front of
+		// `wb run --`, not after it, so it still reaches the exec'd program.
+		"GOOS=windows go build ./...":              "GOOS=windows wb run -- go build ./...",
+		"CGO_ENABLED=0 go test ./...":              "CGO_ENABLED=0 wb run -- go test ./...",
+		"FOO=1 BAR=two go test ./...":              "FOO=1 BAR=two wb run -- go test ./...",
+		"cd internal && go test ./runlog":          "cd internal && wb run -- go test ./runlog",
+		"cd internal && GOOS=windows go vet ./...": "cd internal && GOOS=windows wb run -- go vet ./...",
 	}
 	for command, want := range simple {
 		t.Run(command, func(t *testing.T) {
@@ -1236,23 +1243,152 @@ func TestManagedWorktreeRewritesGovernedHeavyValidation(t *testing.T) {
 			}
 		})
 	}
+}
 
-	// TEST: compound commands — the second rewrite strategy this brief
-	// requires be documented and tested.
-	compound := []string{
-		"cd internal && go test ./runlog",
+// TestNonSimpleGovernedCommandsAreRefusedNotRewritten pins wb#645's review
+// (fix 2): anything wider than the narrow "simple command" shape — a wrapper
+// in front of the real command (nice, timeout, time), a second `&&` segment,
+// a `for`/`if` body, `;`, a pipeline — is never rewritten. It falls back to
+// the pre-PR refusal that names the command to submit through `wb run --`
+// directly. There is no `sh -c` wrapping anywhere in this package: it hid the
+// inner command from the user's own Bash permission rules and changed
+// semantics under dash (wb#645 review Blocker 1, Major 1). `time` gets its
+// own case (minor m6): `wb run -- time go test ./...` would run
+// /usr/bin/time instead of the shell's own `time` keyword.
+func TestNonSimpleGovernedCommandsAreRefusedNotRewritten(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{
+		"timeout 600 go test ./...",
+		"nice -n 10 go test ./...",
+		"time go test ./...",
 		`for p in ./a ./b; do go test "$p"; done`,
 		"if true; then go vet ./...; fi",
+		"cd internal && go test ./runlog && echo done",
 	}
-	for _, command := range compound {
+	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
-			if decision.Deny {
-				t.Fatalf("Inspect(%q) refused instead of rewriting:\n%s", command, decision.Reason)
+			if !decision.Deny || decision.RewriteCommand != "" {
+				t.Fatalf("Inspect(%q) rewrote a non-simple shape instead of refusing it: %+v", command, decision)
 			}
-			want := "wb run -- sh -c " + posixSingleQuote(command)
-			if decision.RewriteCommand != want {
-				t.Fatalf("Inspect(%q).RewriteCommand = %q, want %q", command, decision.RewriteCommand, want)
+			for _, expected := range []string{"wb run --", "durable ID"} {
+				if !strings.Contains(decision.Reason, expected) {
+					t.Fatalf("refusal for %q is missing %q:\n%s", command, expected, decision.Reason)
+				}
+			}
+		})
+	}
+}
+
+// TestDenyWinsOverAGovernedRewrite pins wb#645's review Blocker 2 and the
+// founder's fix 3 directly: every WB deny policy is evaluated across the
+// whole line before a rewrite is even considered, so a real deny chained
+// after (or around) a governed-validation command is never hidden behind the
+// rewrite. Both commands here are denied on base too (the reviewer confirmed
+// this against commit 9bd6a0e7); the PR's pre-fix binary allowed both by
+// rewriting the governed segment and never reaching the chained deny.
+func TestDenyWinsOverAGovernedRewrite(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{
+		"go test ./... && gh pr merge 5 --merge",
+		"go vet ./... ; rm -rf " + filepath.Join(repositories.Canonical, "README.md"),
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			decision := Inspect(bashCall(command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if !decision.Deny || decision.RewriteCommand != "" {
+				t.Fatalf("Inspect(%q) did not deny outright: %+v", command, decision)
+			}
+		})
+	}
+}
+
+// TestCompoundWBInvocationIsNeverStamped pins wb#645's review Blocker 1's own
+// shape directly: a Bash command that chains `wb` with anything else must
+// never receive the subagent-ID export, because that export would apply to
+// every command on the line, not only wb.
+func TestCompoundWBInvocationIsNeverStamped(t *testing.T) {
+	repositories := newFixture(t)
+	decision := Inspect(
+		subagentBashCall("wb status && rm -rf /tmp/zzz", repositories.Foreign, "agent-1", "toolu_1"),
+		Options{ProjectsRoot: repositories.ProjectsRoot},
+	)
+	if decision.Deny || decision.RewriteCommand != "" {
+		t.Fatalf("a compound wb invocation was stamped or changed: %+v", decision)
+	}
+}
+
+// TestRewrittenSimpleCommandsRunCorrectlyInARealShell pins wb#645's review
+// minor m4: the earlier tests only compared the rewritten TEXT against a
+// value built with the same function under test, never executed it. This
+// exercises real rewritten output in a real POSIX shell with a stub `wb`
+// script on PATH that records the arguments it was called with, so quoting
+// and word-splitting bugs the string comparison alone would miss are caught.
+func TestRewrittenSimpleCommandsRunCorrectlyInARealShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on PATH")
+	}
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	recorded := filepath.Join(binDir, "recorded.txt")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(recorded) + "\n"
+	stubPath := filepath.Join(binDir, "wb")
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub wb: %v", err)
+	}
+
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"go test ./internal/runlog", "run -- go test ./internal/runlog"},
+		{"GOOS=windows go build ./...", "run -- go build ./..."},
+		{"cd internal && go test ./runlog", "run -- go test ./runlog"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.command, func(t *testing.T) {
+			decision := Inspect(bashCall(testCase.command, repositories.Worktree), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if decision.Deny || decision.RewriteCommand == "" {
+				t.Fatalf("Inspect(%q) did not rewrite: %+v", testCase.command, decision)
+			}
+			_ = os.Remove(recorded)
+			if err := os.MkdirAll(filepath.Join(repositories.Worktree, "internal"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("sh", "-c", decision.RewriteCommand)
+			command.Dir = repositories.Worktree
+			command.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("sh -c %q: %v\n%s", decision.RewriteCommand, err, output)
+			}
+			got, err := os.ReadFile(recorded)
+			if err != nil {
+				t.Fatalf("the stub wb was never invoked by %q: %v", decision.RewriteCommand, err)
+			}
+			if strings.TrimSpace(string(got)) != testCase.want {
+				t.Fatalf("rewritten command %q invoked wb with %q, want %q", decision.RewriteCommand, strings.TrimSpace(string(got)), testCase.want)
 			}
 		})
 	}
@@ -1295,7 +1431,7 @@ func TestSubagentWBCallGetsTheIDPrefix(t *testing.T) {
 		subagentBashCall("wb run -- go test ./internal/runlog", repositories.Foreign, "agent-42", "toolu_01ABC"),
 		Options{ProjectsRoot: repositories.ProjectsRoot},
 	)
-	want := "export WB_AGENT_ID=agent-42 WB_TOOL_USE_ID=toolu_01ABC; wb run -- go test ./internal/runlog"
+	want := "export WB_SUBAGENT_ID=agent-42 WB_SUBAGENT_TOOL_USE_ID=toolu_01ABC; wb run -- go test ./internal/runlog"
 	if decision.Deny || decision.RewriteCommand != want {
 		t.Fatalf("Inspect = %+v, want RewriteCommand %q", decision, want)
 	}
@@ -1317,7 +1453,7 @@ func TestSubagentWBCallComposesWithTheGovernedRewrite(t *testing.T) {
 		subagentBashCall("go test ./...", repositories.Worktree, "agent-1", "toolu_1"),
 		Options{ProjectsRoot: repositories.ProjectsRoot},
 	)
-	want := "export WB_AGENT_ID=agent-1 WB_TOOL_USE_ID=toolu_1; wb run -- go test ./..."
+	want := "export WB_SUBAGENT_ID=agent-1 WB_SUBAGENT_TOOL_USE_ID=toolu_1; wb run -- go test ./..."
 	if decision.Deny || decision.RewriteCommand != want {
 		t.Fatalf("Inspect = %+v, want RewriteCommand %q", decision, want)
 	}
@@ -1354,7 +1490,7 @@ func TestUnsafeToolUseIDDropsOnlyItself(t *testing.T) {
 		subagentBashCall("wb run -- go test ./...", repositories.Foreign, "agent-1", "tool one"),
 		Options{ProjectsRoot: repositories.ProjectsRoot},
 	)
-	want := "export WB_AGENT_ID=agent-1; wb run -- go test ./..."
+	want := "export WB_SUBAGENT_ID=agent-1; wb run -- go test ./..."
 	if decision.Deny || decision.RewriteCommand != want {
 		t.Fatalf("Inspect = %+v, want RewriteCommand %q", decision, want)
 	}
@@ -1362,7 +1498,13 @@ func TestUnsafeToolUseIDDropsOnlyItself(t *testing.T) {
 
 // TestOtherToolInputFieldsArePreservedAcrossARewrite proves WriteDecision's
 // merge keeps every field the caller sent — description, timeout, and
-// run_in_background — unchanged inside updatedInput.
+// run_in_background — unchanged inside updatedInput, and that a rewrite's
+// response carries no "permissionDecision" key at all (wb#645 review fix 1):
+// Claude Code v2.1.276 applies a response that sets updatedInput with no
+// permissionDecision as the new input and then runs the normal permission
+// flow on it, so the user's own prompts and allow/deny/ask rules still apply
+// to the rewritten command. An explicit "allow" here was found to suppress
+// that prompt entirely, which is not this guard's call to make.
 func TestOtherToolInputFieldsArePreservedAcrossARewrite(t *testing.T) {
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
@@ -1386,10 +1528,20 @@ func TestOtherToolInputFieldsArePreservedAcrossARewrite(t *testing.T) {
 	if _, err := WriteDecision(&buffer, decision, call.ToolInput); err != nil {
 		t.Fatalf("WriteDecision: %v", err)
 	}
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(buffer.Bytes(), &generic); err != nil {
+		t.Fatalf("the rewrite document is not valid JSON: %v\n%s", err, buffer.String())
+	}
+	var outputGeneric map[string]json.RawMessage
+	if err := json.Unmarshal(generic["hookSpecificOutput"], &outputGeneric); err != nil {
+		t.Fatalf("hookSpecificOutput is not valid JSON: %v\n%s", err, buffer.String())
+	}
+	if _, present := outputGeneric["permissionDecision"]; present {
+		t.Fatalf("a rewrite's response carried a permissionDecision key:\n%s", buffer.String())
+	}
 	var document struct {
 		HookSpecificOutput struct {
-			PermissionDecision string `json:"permissionDecision"`
-			UpdatedInput       struct {
+			UpdatedInput struct {
 				Command         string `json:"command"`
 				Description     string `json:"description"`
 				Timeout         int    `json:"timeout"`
@@ -1401,12 +1553,56 @@ func TestOtherToolInputFieldsArePreservedAcrossARewrite(t *testing.T) {
 		t.Fatalf("the rewrite document is not valid JSON: %v\n%s", err, buffer.String())
 	}
 	output := document.HookSpecificOutput
-	if output.PermissionDecision != "allow" {
-		t.Fatalf("rewrite permissionDecision = %q, want allow", output.PermissionDecision)
-	}
 	if output.UpdatedInput.Command != "wb run -- go test ./..." || output.UpdatedInput.Description != "Run the suite" ||
 		output.UpdatedInput.Timeout != 120000 || output.UpdatedInput.RunInBackground {
 		t.Fatalf("updatedInput did not preserve every field: %+v", output.UpdatedInput)
+	}
+}
+
+// TestRewriteAndStampNeverSetPermissionDecision pins wb#645's review fix 1
+// directly against WriteDecision's output for both rewrite shapes this guard
+// produces — a governed-validation rewrite and a subagent-ID stamp — so
+// neither can regress into carrying an explicit "allow" that would suppress
+// the user's own permission prompt.
+func TestRewriteAndStampNeverSetPermissionDecision(t *testing.T) {
+	repositories := newFixture(t)
+	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		call ToolCall
+	}{
+		{"governed-validation rewrite", bashCall("go test ./...", repositories.Worktree)},
+		{"subagent-ID stamp", subagentBashCall("wb run -- go test ./...", repositories.Foreign, "agent-1", "toolu_1")},
+		{"stamp composed with a rewrite", subagentBashCall("go test ./...", repositories.Worktree, "agent-1", "toolu_1")},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := Inspect(testCase.call, Options{ProjectsRoot: repositories.ProjectsRoot})
+			if decision.Deny || decision.RewriteCommand == "" {
+				t.Fatalf("test setup did not produce a rewrite: %+v", decision)
+			}
+			var buffer bytes.Buffer
+			if _, err := WriteDecision(&buffer, decision, testCase.call.ToolInput); err != nil {
+				t.Fatalf("WriteDecision: %v", err)
+			}
+			var generic map[string]json.RawMessage
+			if err := json.Unmarshal(buffer.Bytes(), &generic); err != nil {
+				t.Fatalf("not valid JSON: %v\n%s", err, buffer.String())
+			}
+			var outputGeneric map[string]json.RawMessage
+			if err := json.Unmarshal(generic["hookSpecificOutput"], &outputGeneric); err != nil {
+				t.Fatalf("hookSpecificOutput not valid JSON: %v\n%s", err, buffer.String())
+			}
+			if _, present := outputGeneric["permissionDecision"]; present {
+				t.Fatalf("%s carried a permissionDecision key:\n%s", testCase.name, buffer.String())
+			}
+		})
 	}
 }
 
@@ -1914,6 +2110,13 @@ func TestClassifyProtectsACanonicalCloneAtTheLiteralHostLevel(t *testing.T) {
 // every tool call of every agent on the machine (no network, no model
 // call), so a slow guard is a defect in its own right, independent of
 // correctness.
+//
+// This measures only the in-process Inspect call, called directly rather
+// than through the "wb hooks agent pre-tool-use" CLI subprocess (wb#645
+// review minor m3): the whole hook, including process start, measured about
+// 33ms p99 on both base and this PR's binary — there is no regression, but
+// that number is dominated by process start, which this budget is not
+// claiming to cover. The 20ms figure is Inspect's own cost alone.
 func TestInspectP99LatencyBudget(t *testing.T) {
 	repositories := newFixture(t)
 	manifest := filepath.Join(repositories.Worktree, ".wb", "local", "manifest.yaml")

@@ -1027,6 +1027,19 @@ func TestGpCovRefusalWordingFallbacks(t *testing.T) {
 			t.Fatalf("refusal is missing %q:\n%s", expected, message)
 		}
 	}
+
+	// A finding carrying GovernedCommand reaches refusal() whenever
+	// inspectBashCall could not rewrite it (wb#645 review): deny-wins found a
+	// real deny elsewhere on the line, or the command did not match the
+	// narrow "simple command" shape. Either way it renders the pre-PR
+	// governed-command wording, naming the command to submit through
+	// `wb run --` directly.
+	governed := refusal(finding{Detail: "go test ./...", GovernedCommand: []string{"go", "test", "./..."}})
+	for _, expected := range []string{"wb run -- go test ./...", "durable ID"} {
+		if !strings.Contains(governed, expected) {
+			t.Fatalf("governed refusal is missing %q:\n%s", expected, governed)
+		}
+	}
 }
 
 // TestGpCovFileToolIgnoresUnresolvablePaths pins that a Write naming a path

@@ -21,17 +21,28 @@ import (
 	"github.com/sneat-dev/wb/internal/buildinfo"
 )
 
-// Environment variables this package reads. WB_AGENT_ID and WB_TOOL_USE_ID
-// are the same variables the agent guard's rewrite stamps onto a Bash call
-// that invokes wb (internal/agentguard, wb#637) — this package is the other
-// half of that loop: the guard writes them into the child process's
-// environment, and every WB record writer reads them back.
+// Environment variables this package reads. WB_SUBAGENT_ID and
+// WB_SUBAGENT_TOOL_USE_ID are the same variables the agent guard's rewrite
+// stamps onto a Bash call that invokes wb (internal/agentguard, wb#637) —
+// this package is the other half of that loop: the guard writes them into
+// the child process's environment, and every WB record writer reads them
+// back.
+//
+// These are deliberately named outside the WB_AGENT_* family: WB_AGENT_ID
+// already exists as the owner-identity variable a session declares to claim
+// a worktree (internal/worktrees.EnvAgentID, see ownership.md). Wb#645's
+// review (Blocker 3) found that reusing that name made a declared subagent
+// identity look like a live owner declaration, which flips `--mode auto` to
+// agent mode and then fails admission for any subagent that never
+// separately registered a session. A distinct name keeps "which subagent
+// called wb" (this package) and "who owns this worktree" (internal/worktrees)
+// from ever colliding.
 const (
 	EnvHarnessSessionID = "CLAUDE_CODE_SESSION_ID"
 	EnvHarness          = "AI_AGENT"
 	EnvEffortLevel      = "CLAUDE_EFFORT"
-	EnvAgentID          = "WB_AGENT_ID"
-	EnvToolUseID        = "WB_TOOL_USE_ID"
+	EnvAgentID          = "WB_SUBAGENT_ID"
+	EnvToolUseID        = "WB_SUBAGENT_TOOL_USE_ID"
 )
 
 // Fields is machine identity, cheap enough to attach to every WB record:
@@ -63,19 +74,22 @@ type Fields struct {
 func FromEnv() Fields {
 	return Fields{
 		HarnessSessionID: safeValue(os.Getenv(EnvHarnessSessionID)),
-		Harness:          strings.TrimSpace(os.Getenv(EnvHarness)),
-		EffortLevel:      strings.TrimSpace(os.Getenv(EnvEffortLevel)),
+		Harness:          safeValue(os.Getenv(EnvHarness)),
+		EffortLevel:      safeValue(os.Getenv(EnvEffortLevel)),
 		AgentID:          safeValue(os.Getenv(EnvAgentID)),
 		ToolUseID:        safeValue(os.Getenv(EnvToolUseID)),
 		WBVersion:        buildinfo.Version(),
 	}
 }
 
-// safeIDPattern is the charset an ID must clear before this package trusts
-// it: the same compact-token shape the agent guard requires before
-// interpolating WB_AGENT_ID/WB_TOOL_USE_ID into a rewritten shell command
-// (internal/agentguard, wb#637). A record is safer with an omitted field
-// than with one that carries whatever an untrusted environment put there.
+// safeIDPattern is the charset every field must clear before this package
+// trusts it (wb#645 review m2: Harness and EffortLevel were free text with
+// no charset or length check). It is the same compact-token shape the agent
+// guard requires before interpolating WB_SUBAGENT_ID/WB_SUBAGENT_TOOL_USE_ID
+// into a rewritten shell command (internal/agentguard, wb#637) — applying it
+// uniformly to every field means one rule to audit, not one per field, and a
+// record is safer with an omitted field than with one that carries whatever
+// an untrusted environment put there.
 var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // SafeID reports whether value is a compact token safe to record verbatim

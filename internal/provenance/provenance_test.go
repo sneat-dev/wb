@@ -1,6 +1,9 @@
 package provenance
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestFromEnvReadsDeclaredFields proves every declared variable reaches the
 // field the SDLC logging-gap analysis (wb#631) names for it.
@@ -62,5 +65,27 @@ func TestFromEnvDropsUnsafeDeclaredIDs(t *testing.T) {
 	fields := FromEnv()
 	if fields.AgentID != "" || fields.ToolUseID != "" || fields.HarnessSessionID != "" {
 		t.Fatalf("FromEnv carried an unsafe ID through: %+v", fields)
+	}
+}
+
+// TestFromEnvAppliesTheSameCharsetAndLengthLimitToHarnessAndEffortLevel pins
+// wb#645 review minor m2: Harness and EffortLevel were free text from the
+// environment with no charset or length check, unlike every other field.
+func TestFromEnvAppliesTheSameCharsetAndLengthLimitToHarnessAndEffortLevel(t *testing.T) {
+	t.Setenv(EnvHarness, "claude-code; rm -rf /")
+	t.Setenv(EnvEffortLevel, strings.Repeat("x", 200))
+	fields := FromEnv()
+	if fields.Harness != "" {
+		t.Fatalf("FromEnv carried an unsafe Harness value through: %q", fields.Harness)
+	}
+	if fields.EffortLevel != "" {
+		t.Fatalf("FromEnv carried an over-length EffortLevel value through: %q", fields.EffortLevel)
+	}
+
+	t.Setenv(EnvHarness, "claude-code")
+	t.Setenv(EnvEffortLevel, "high")
+	fields = FromEnv()
+	if fields.Harness != "claude-code" || fields.EffortLevel != "high" {
+		t.Fatalf("FromEnv rejected ordinary safe values: %+v", fields)
 	}
 }

@@ -78,25 +78,55 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     See lessons l3/l11.
   - Governed heavy validation: rewrites 'go test'/'golangci-lint'/etc. run
     directly inside a managed worktree into 'wb run -- ...' instead of
-    refusing it (wb#637, founder decision 2026-09-18). A simple command keeps
-    its own text verbatim after 'wb run --'; a compound command ('&&', ';',
-    a pipeline, a subshell, a loop, ...) is wrapped whole in a POSIX-quoted
-    'sh -c' payload so the rest of the line still runs together. Outside a
-    managed worktree, and for a call already under 'wb run --', nothing
-    changes. This is the guard's one exception to "only a deny is ever
-    written": Claude Code has no channel for "run this instead" other than an
-    explicit allow carrying 'updatedInput', so the rewrite is written, not
-    silent, and every other 'tool_input' field the call carried
-    (description, timeout, run_in_background, ...) passes through unchanged.
+    refusing it (wb#637, founder decision 2026-09-18), but only for the one
+    narrow shape wb#645's review restricted this to: a single governed
+    command, optionally prefixed by 'VAR=value' assignments and/or a leading
+    'cd <dir> &&'. The env assignments move in front of 'wb run' so they
+    still apply ('GOOS=windows go build ./...' becomes
+    'GOOS=windows wb run -- go build ./...'), and a leading 'cd' stays
+    outside 'wb run --' so it still changes the shell's directory. Any other
+    compound command ('&&' twice, ';', a pipeline, '||', a subshell, a
+    heredoc) is never rewritten; it falls back to the pre-PR refusal that
+    names the command to submit through 'wb run --' yourself. There is no
+    'sh -c' wrapping anywhere: it hid the inner command from the user's own
+    Bash permission rules, changed semantics under a non-bash /bin/sh, and
+    could let a governed command hide a chained deny. Outside a managed
+    worktree, and for a call already under 'wb run --', nothing changes.
+    'time <command>' is treated as a compound shape and is never rewritten,
+    because 'wb run -- time ...' would run /usr/bin/time instead of the
+    shell's own 'time' keyword.
+
+    A rewrite is written as 'updatedInput' with NO 'permissionDecision' at
+    all — this is the guard's one exception to "only a deny is ever
+    written". Claude Code v2.1.276 applies a response that sets
+    'updatedInput' with no 'permissionDecision' as the new input and then
+    runs its NORMAL permission flow on it, so the user's own prompts and
+    allow/deny/ask rules still apply to the rewritten command exactly as
+    they would to the one the agent proposed. This is deliberate: an
+    explicit 'allow' would suppress the permission prompt entirely, which is
+    not this guard's call to make, and this behaviour is undocumented and
+    depends on Claude Code >= 2.1.276. Every other 'tool_input' field the
+    call carried (description, timeout, run_in_background, ...) passes
+    through unchanged. Every WB deny policy is evaluated across the WHOLE
+    command line before a rewrite is even considered, ignoring any governed
+    match while doing so, so a real deny anywhere on the line (a chained
+    'gh pr merge', a canonical-clone write, ...) always wins over a rewrite.
   - Subagent-ID stamp: when the PreToolUse payload carries 'agent_id' (Claude
-    Code sends it only from a subagent) and the Bash command itself invokes
-    'wb', prefixes 'export WB_AGENT_ID=<agent_id> WB_TOOL_USE_ID=<tool_use_id>;'
+    Code sends it only from a subagent) and the Bash command is, entirely on
+    its own, a simple invocation of 'wb' (a single command, no '&&'/';'/'|',
+    optionally prefixed by 'VAR=value' assignments), prefixes
+    'export WB_SUBAGENT_ID=<agent_id> WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>;'
     onto it, so every WB record that call's 'wb' invocation writes carries
-    the subagent and tool-call identity (wb#631's provenance fields). Both
-    IDs are validated against a compact safe charset before they are ever
+    the subagent and tool-call identity (wb#631's provenance fields). These
+    names are deliberately outside the WB_AGENT_* family WB's own
+    owner-identity variables use (WB_AGENT_ID already names the session that
+    claims a worktree), so a subagent stamp is never mistaken for a
+    declared owner identity by wb's own admission checks. Both IDs are
+    validated against a compact safe charset before they are ever
     interpolated into the rewritten command; an unsafe or absent agent_id
-    drops the whole prefix. A main-thread call (no 'agent_id') is never
-    stamped.
+    drops the whole prefix. A main-thread call (no 'agent_id'), or a Bash
+    command that chains 'wb' with anything else, is never stamped, and this
+    never sets 'permissionDecision' either.
   - Missing model (Agent/Task tool): refuses a subagent dispatch that names
     no 'model'. See lesson l49.
   - Literal report path (Agent/Task tool): refuses a dispatch prompt that
@@ -218,7 +248,7 @@ Install it with 'wb hooks agent install'.`,
 				reader = file
 			}
 			call := agentguard.DecodeToolCall(reader)
-			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot})
+			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot, WBExecutable: hookExecutable()})
 			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision, call.ToolInput); err != nil {
 				return nil
 			}

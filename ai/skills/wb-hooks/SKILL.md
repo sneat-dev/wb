@@ -63,16 +63,22 @@ PreToolUse payload on stdin and carries these policies:
   `disable-version-bumping: true` beside it.
 - **Governed heavy validation** — rewrites `go test`/`golangci-lint`/etc. run
   directly inside a managed worktree into `wb run -- …` instead of refusing
-  it (wb#637, founder decision 2026-09-18: rewrite, not refuse). See below.
+  it (wb#637, founder decision 2026-09-18: rewrite, not refuse), but only for
+  the narrow "simple command" shape below. See below.
 - **Subagent-ID stamp** — when the payload carries `agent_id` (Claude Code
   sends it only from a subagent, never the main thread) and the Bash command
-  itself invokes `wb`, prefixes `export WB_AGENT_ID=<agent_id>
-  WB_TOOL_USE_ID=<tool_use_id>;` onto it, so every WB record that `wb`
-  invocation writes carries the subagent and tool-call identity (feeds the
-  provenance fields wb#631 stamps onto claims, fleet events, `wb run` events,
-  and wait records). Both IDs are validated against a compact safe charset
-  before they are ever interpolated into the rewritten command; an unsafe or
-  absent `agent_id` drops the whole prefix.
+  is, entirely on its own, a simple invocation of `wb` (no other command
+  chained onto the line), prefixes `export WB_SUBAGENT_ID=<agent_id>
+  WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>;` onto it, so every WB record that
+  `wb` invocation writes carries the subagent and tool-call identity (feeds
+  the provenance fields wb#631 stamps onto claims, fleet events, `wb run`
+  events, and wait records). These names are deliberately outside the
+  `WB_AGENT_*` family WB's own owner-identity variables use (`WB_AGENT_ID`
+  already names the session that claims a worktree; see `ownership.md`), so
+  a subagent stamp is never mistaken for a declared owner identity by `wb`'s
+  own admission checks (wb#645 review Blocker 3). Both IDs are validated
+  against a compact safe charset before they are ever interpolated into the
+  rewritten command; an unsafe or absent `agent_id` drops the whole prefix.
 - **Missing model** (`Agent`/`Task` tool) — refuses a subagent dispatch that
   names no `model`; an omitted model silently inherits the parent's.
 - **Literal report path** (`Agent`/`Task` tool) — refuses a dispatch prompt
@@ -204,19 +210,34 @@ allow the call. It leaves `git fetch`, `git merge --ff-only`, `git status`, and
 `git log` alone inside a canonical clone.
 
 Inside a WB-managed worktree, the same hook rewrites CPU-heavy validation into
-the governed command gateway instead of refusing it. An agent's own `go test`,
-`go vet`, `go build`, and common Node/Rust test, build, lint, and E2E commands
-are silently substituted for the equivalent `wb run --` call — Claude Code
-runs `wb run -- go test ./internal/worktrees` even though the agent typed
-`go test ./internal/worktrees`. A simple command keeps its own text verbatim
-after `wb run --`; a compound command (`&&`, `;`, a pipeline, a subshell, a
-loop, …) is wrapped whole in a POSIX-quoted `sh -c` payload instead, so the
-rest of the line still runs together:
+the governed command gateway instead of refusing it, but only for the narrow
+"simple command" shape wb#645's review restricted this to (founder decision):
+a single governed command, optionally prefixed by `VAR=value` assignments
+and/or a leading `cd <dir> &&`. The env assignments move in front of
+`wb run` so they still apply, and a leading `cd` stays outside `wb run --` so
+it still changes the shell's directory:
 
 ```
 go test ./internal/worktrees        → wb run -- go test ./internal/worktrees
-cd internal && go test ./runlog     → wb run -- sh -c 'cd internal && go test ./runlog'
+GOOS=windows go build ./...         → GOOS=windows wb run -- go build ./...
+cd internal && go test ./runlog     → cd internal && wb run -- go test ./runlog
 ```
+
+Any other compound command (`&&` a second time, `;`, a pipeline, `||`, a
+subshell, a heredoc) is never rewritten — it falls back to the pre-PR refusal
+that names the command to submit through `wb run --` directly. There is no
+`sh -c` wrapping anywhere any more: it hid the inner command from the user's
+own Bash permission rules, changed semantics under a non-bash `/bin/sh`
+(dash), and could let a governed command hide a chained deny (wb#645 review
+Blockers 1, 4, Major 1). `time <command>` is treated as a compound shape and
+is never rewritten either, because `wb run -- time …` would run
+`/usr/bin/time` instead of the shell's own `time` keyword.
+
+Every WB deny policy is evaluated across the whole command line — ignoring
+any governed-validation match while doing so — before a rewrite is even
+considered, so a real deny anywhere on the line (a chained `gh pr merge`, a
+canonical-clone write, …) always wins over a rewrite (wb#645 review
+Blocker 2, "deny wins").
 
 That boundary gives validation an operation ID and privacy-safe timing receipt,
 and lets a local scheduler queue or coalesce it. Run `gofmt` and Prettier
@@ -226,12 +247,17 @@ agent PreToolUse policy, not a shell wrapper, and a call already under
 `wb run --` is left untouched.
 
 A rewrite (governed or the subagent-ID stamp) is the guard's one exception to
-"only a deny is ever written": it emits an explicit PreToolUse `allow` with
-`updatedInput.command` set to the substituted command, carrying every other
-`tool_input` field the call sent (`description`, `timeout`,
-`run_in_background`, …) through unchanged. Claude Code has no other channel
-for "run this instead" — a deny would only refuse the call, not replace it —
-and silence would run the original, ungoverned command.
+"only a deny is ever written": it emits `updatedInput.command` set to the
+substituted command, carrying every other `tool_input` field the call sent
+(`description`, `timeout`, `run_in_background`, …) through unchanged — but it
+deliberately never sets `permissionDecision`. Claude Code v2.1.276 applies a
+response that carries `updatedInput` with no `permissionDecision` as the new
+input and then runs its normal permission flow on that input, so the user's
+own prompts and allow/deny/ask rules still apply to the rewritten command
+exactly as they would to the one the agent proposed. This relies on Claude
+Code >= 2.1.276's behaviour for that combination, which is undocumented; an
+explicit `allow` here was found to suppress the permission prompt entirely
+(wb#645 review), which is not this guard's call to make.
 
 Rehearse a decision against a saved payload without a pipe:
 

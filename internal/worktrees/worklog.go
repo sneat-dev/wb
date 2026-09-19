@@ -25,6 +25,7 @@ import (
 	// to wb#631's harness-identity package.
 	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -1066,29 +1067,89 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 	return recordWorkLogWithHooks(home, task, result, options, workLogPublicationHooks{})
 }
 
-// autoRegisterSessionFromEnv registers this process's session from the same
-// zero-cost environment declarations internal/provenance reads (wb#631),
-// when nothing has already registered live and the environment carries at
-// least one harness signal (HarnessSessionID or Harness). It is a thin
-// wrapper over session.ResolveOrRegisterForProcess, the same auto-register
-// path `wb session park` already uses when a session parks without ever
-// having registered: walking the ancestor chain from this process's own PID
-// to find the harness that spawned it is exactly what an unregistered claim
-// creation needs too, not just an unregistered park.
+// autoRegisterSessionFromEnv registers the harness process above this one
+// from the same zero-cost environment declarations internal/provenance reads
+// (wb#631), when nothing has already registered live and the environment
+// carries at least one harness signal (HarnessSessionID or Harness).
+//
+// wb#645's review (Major 2, minor m7) found the earlier version wrong two
+// ways: it registered wb's own short-lived PID as the session whenever no
+// recognisable harness sat above it (a junk session row for every claim from
+// a shell wb was not launched under), and it wrote the raw AI_AGENT value
+// (e.g. "claude-code_2-1-276_agent") straight into the runtime field, which
+// sessionlaunch.NormalizeRuntime then rejects, breaking `wb session move`
+// for that session. This version walks the ancestor chain first with
+// session.FindHarnessAncestor and returns ok=false outright when no
+// recognised harness process is found — never falling back to registering
+// wb's own PID — and normalises the runtime it stores through
+// normalizeHarnessRuntime, storing the raw declaration only in the claim's
+// own Harness field (recordWorkLogWithHooks), never in the session registry.
+//
+// This also never marks the registration RegisteredAtPark: that flag means
+// "this session's only footprint is a park it never registered ahead of",
+// and a claim-time registration is not that — see session.Record's own doc.
 //
 // It returns ok=false on any error or when nothing was declared — recording
 // provenance must never block the claim it would have enriched.
+// findHarnessAncestorForClaim is session.FindHarnessAncestor behind a
+// package-level indirection, so a test can substitute a fake process tree
+// without depending on what happens to be running above the test binary
+// itself — the same seam internal/session's own tests use for the identical
+// walk.
+var findHarnessAncestorForClaim = session.FindHarnessAncestor
+
 func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (session.Record, bool) {
 	if fields.HarnessSessionID == "" && fields.Harness == "" {
 		return session.Record{}, false
 	}
+	ancestorPID, ancestorRuntime := findHarnessAncestorForClaim(os.Getpid())
+	if ancestorPID <= 0 {
+		return session.Record{}, false
+	}
 	dir := filepath.Join(home, session.DirName)
-	hints := session.AutoRegisterHints{Runtime: fields.Harness}
-	registered, created, err := session.ResolveOrRegisterForProcess(dir, os.Getpid(), hints)
-	if err != nil || !created {
+	if existing, ok := session.ResolveForProcess(dir, ancestorPID); ok {
+		return existing, true
+	}
+	runtime := normalizeHarnessRuntime(fields.Harness)
+	if runtime == "" {
+		runtime = ancestorRuntime
+	}
+	if runtime == "" {
+		runtime = session.Unknown
+	}
+	registered, err := session.Register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown})
+	if err != nil {
 		return session.Record{}, false
 	}
 	return registered, true
+}
+
+// normalizeHarnessRuntime maps a raw AI_AGENT declaration to one of WB's
+// closed runtime names, or "" when it cannot be told (wb#645 review Major 2).
+// AI_AGENT is not one of those closed names itself — Claude Code's own value
+// has carried a version and role suffix ("claude-code_2-1-276_agent") — so a
+// known prefix is checked first, then sessionlaunch.NormalizeRuntime's own
+// exact aliases as a fallback for anything this prefix table misses. The raw
+// value is never lost: recordWorkLogWithHooks still stores it verbatim in the
+// claim's own Harness field, this function only decides what goes into the
+// session registry's Runtime field, which sessionlaunch's own callers
+// (`wb session move`, et al.) require to be one of the closed names.
+func normalizeHarnessRuntime(rawHarness string) string {
+	trimmed := strings.TrimSpace(rawHarness)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "claude"):
+		return sessionlaunch.RuntimeClaudeCode
+	case strings.HasPrefix(lower, "codex"):
+		return sessionlaunch.RuntimeCodex
+	}
+	if normalized, err := sessionlaunch.NormalizeRuntime("", trimmed); err == nil {
+		return normalized
+	}
+	return ""
 }
 
 func recordWorkLogWithHooks(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks) (WorkLogPublicationOutcome, error) {
