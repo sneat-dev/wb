@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
 
 func newTestClient(t *testing.T, runner Runner, opts ...ClientOption) *Client {
 	t.Helper()
-	client, err := NewClient(lookupFromMap(map[string]string{envBinPath: "/fake/herdr"}), append([]ClientOption{WithRunner(runner)}, opts...)...)
+	binary := fakeHerdrBinaryPath(t)
+	client, err := NewClient(lookupFromMap(map[string]string{envBinPath: binary}), append([]ClientOption{WithRunner(runner)}, opts...)...)
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -18,12 +20,13 @@ func newTestClient(t *testing.T, runner Runner, opts ...ClientOption) *Client {
 }
 
 func TestNewClientResolvesBinaryAndRejectsMissingOne(t *testing.T) {
-	client, err := NewClient(lookupFromMap(map[string]string{envBinPath: "/fake/herdr"}))
+	binary := fakeHerdrBinaryPath(t)
+	client, err := NewClient(lookupFromMap(map[string]string{envBinPath: binary}))
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	if client.Binary() != "/fake/herdr" {
-		t.Fatalf("Binary() = %q, want /fake/herdr", client.Binary())
+	if client.Binary() != binary {
+		t.Fatalf("Binary() = %q, want %q", client.Binary(), binary)
 	}
 
 	directory := t.TempDir()
@@ -62,13 +65,13 @@ func TestClientCallUsesConfiguredSocketPathNeverAmbient(t *testing.T) {
 	// HERDR_SOCKET_PATH once a caller has been explicit.
 	t.Setenv(envSocketPath, "/tmp/wrong-ambient.sock")
 
-	runner := newFakeRunner(t).on([]string{"pane", "current", "--current"}, fakeCall{
-		stdout: mustReadTestdata(t, "pane_current.json"),
+	runner := newFakeRunner(t).on([]string{"pane", "get", "w1:p1"}, fakeCall{
+		stdout: mustReadTestdata(t, "pane_get.json"),
 	})
 	client := newTestClient(t, runner, WithSocketPath("/tmp/configured.sock"))
 
-	if _, err := client.PaneCurrent(context.Background()); err != nil {
-		t.Fatalf("PaneCurrent() error = %v", err)
+	if _, err := client.PaneGet(context.Background(), "w1:p1"); err != nil {
+		t.Fatalf("PaneGet() error = %v", err)
 	}
 	if len(runner.envs) != 1 {
 		t.Fatalf("recorded %d envs, want 1", len(runner.envs))
@@ -89,6 +92,38 @@ func TestClientCallUsesConfiguredSocketPathNeverAmbient(t *testing.T) {
 	}
 }
 
+func TestClientCallOnTargetedClientStripsAmbientPaneIdentity(t *testing.T) {
+	// A targeted Client's calls must never carry the calling process's own
+	// ambient pane/tab/workspace/session identity: those name a pane on
+	// whichever server the ambient environment happens to point at, not
+	// necessarily the one this Client was told to target.
+	t.Setenv(envPaneID, "w1:p2")
+	t.Setenv(envTabID, "w1:t2")
+	t.Setenv(envWorkspaceID, "w1")
+	t.Setenv(envSession, "ambient-session")
+	t.Setenv(envClientSocketPath, "/ambient-client.sock")
+
+	runner := newFakeRunner(t).on([]string{"agent", "get", "reviewer"}, fakeCall{
+		stdout: mustReadTestdata(t, "agent_get.json"),
+	})
+	client := newTestClient(t, runner, WithSocketPath("/tmp/configured.sock"))
+
+	if _, err := client.AgentGet(context.Background(), "reviewer"); err != nil {
+		t.Fatalf("AgentGet() error = %v", err)
+	}
+	if len(runner.envs) != 1 {
+		t.Fatalf("recorded %d envs, want 1", len(runner.envs))
+	}
+	for _, key := range []string{envPaneID, envTabID, envWorkspaceID, envSession, envClientSocketPath} {
+		prefix := key + "="
+		for _, entry := range runner.envs[0] {
+			if strings.HasPrefix(entry, prefix) {
+				t.Fatalf("subprocess env still carries ambient %s: %v", key, runner.envs[0])
+			}
+		}
+	}
+}
+
 func TestClientCallWithoutSocketPathConfiguredPassesNilEnv(t *testing.T) {
 	// No WithSocketPath: the Client must not touch the environment at all,
 	// so os/exec's own "inherit the ambient environment" default applies.
@@ -106,13 +141,13 @@ func TestClientCallWithoutSocketPathConfiguredPassesNilEnv(t *testing.T) {
 }
 
 func TestClientCallPrependsSessionFlag(t *testing.T) {
-	runner := newFakeRunner(t).on([]string{"--session", "reviewer-session", "pane", "current", "--current"}, fakeCall{
-		stdout: mustReadTestdata(t, "pane_current.json"),
+	runner := newFakeRunner(t).on([]string{"--session", "reviewer-session", "pane", "get", "w1:p1"}, fakeCall{
+		stdout: mustReadTestdata(t, "pane_get.json"),
 	})
 	client := newTestClient(t, runner, WithSessionName("reviewer-session"))
 
-	if _, err := client.PaneCurrent(context.Background()); err != nil {
-		t.Fatalf("PaneCurrent() error = %v", err)
+	if _, err := client.PaneGet(context.Background(), "w1:p1"); err != nil {
+		t.Fatalf("PaneGet() error = %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -37,27 +38,66 @@ func (execRunner) Run(ctx context.Context, binary string, args []string, env []s
 // an ambient HERDR_SOCKET_PATH without needing a real subprocess.
 var osEnviron = os.Environ
 
+// envSession and envClientSocketPath are herdr environment variables this
+// package never reads for its own [Identity] but must still scrub from a
+// targeted Client's subprocess environment (see [buildEnv]): herdr itself
+// consults them to resolve "the current session"/"the current client
+// socket", the same ambient-identity role HERDR_PANE_ID etc. play.
+const (
+	envSession          = "HERDR_SESSION"
+	envClientSocketPath = "HERDR_CLIENT_SOCKET_PATH"
+)
+
+// ambientIdentityEnvVars are every herdr environment variable that resolves
+// "current"/ambient identity — which pane, tab, workspace, named session,
+// or client socket a bare herdr invocation implicitly means. A client
+// explicitly targeting a different socket or session (via [WithSocketPath]
+// or [WithSessionName]) must never let these leak in from its own ambient
+// environment: `herdr pane current`, for instance, resolves its target
+// from HERDR_PANE_ID, so an unscrubbed ambient value would silently
+// resolve against the calling process's own local pane on a server that is
+// not the one the caller explicitly asked for, where IDs collide (herdr
+// --skill: "IDs and live agent names are scoped to one server").
+var ambientIdentityEnvVars = []string{
+	envSocketPath,
+	envPaneID,
+	envTabID,
+	envWorkspaceID,
+	envSession,
+	envClientSocketPath,
+}
+
 // buildEnv returns the environment one herdr invocation should run with.
-// When socketPath is empty it returns nil — "inherit the ambient
-// environment unchanged", today's single-server default. When socketPath
-// is set, it returns an explicit environment: the ambient environment with
-// any existing HERDR_SOCKET_PATH entry removed and the configured one
-// appended, so a caller that names a socket explicitly — as a daemon
-// coordinating more than one herdr session must — never silently falls
-// back to whatever socket the ambient process happened to have.
-func buildEnv(ambient []string, socketPath string) []string {
-	if socketPath == "" {
+// targeted is true once a [Client] has been configured with
+// [WithSocketPath] or [WithSessionName]. When not targeted, it returns
+// nil — "inherit the ambient environment unchanged", today's single-server
+// default. When targeted, it returns an explicit environment: the ambient
+// environment with every var in [ambientIdentityEnvVars] removed, then
+// HERDR_SOCKET_PATH re-added when socketPath is set. Scrubbing (rather
+// than only overriding HERDR_SOCKET_PATH) is what stops a targeted client
+// from resolving "current" against its own ambient pane on the wrong
+// server, and from herdr silently preferring an ambient named session over
+// the one this Client asked for.
+func buildEnv(ambient []string, targeted bool, socketPath string) []string {
+	if !targeted {
 		return nil
 	}
-	prefix := envSocketPath + "="
+	strip := make(map[string]bool, len(ambientIdentityEnvVars))
+	for _, key := range ambientIdentityEnvVars {
+		strip[key] = true
+	}
 	filtered := make([]string, 0, len(ambient)+1)
 	for _, entry := range ambient {
-		if strings.HasPrefix(entry, prefix) {
+		key, _, _ := strings.Cut(entry, "=")
+		if strip[key] {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
-	return append(filtered, prefix+socketPath)
+	if socketPath != "" {
+		filtered = append(filtered, envSocketPath+"="+socketPath)
+	}
+	return filtered
 }
 
 // withSessionFlag prepends herdr's global `--session <name>` flag ahead of
@@ -75,13 +115,25 @@ func withSessionFlag(sessionName string, args []string) []string {
 
 // ResolveBinary finds the herdr executable: HERDR_BIN_PATH (read through
 // lookup) first, then PATH. It never runs the resolved binary; callers
-// learn whether it actually works from their first real call.
+// learn whether it actually works from their first real call. A configured
+// HERDR_BIN_PATH that does not exist on disk — stale after an uninstall or
+// a move — is not trusted blindly: ResolveBinary falls back to PATH
+// instead, the same as an unset HERDR_BIN_PATH.
 func ResolveBinary(lookup EnvLookup) (string, error) {
 	if lookup == nil {
 		return "", fmt.Errorf("%w: no environment lookup was provided", ErrBinaryNotFound)
 	}
 	if configured, ok := lookup(envBinPath); ok && configured != "" {
-		return configured, nil
+		switch _, statErr := statPath(configured); {
+		case statErr == nil:
+			return configured, nil
+		case isStaleBinaryPath(statErr):
+			// A HERDR_BIN_PATH that no longer exists — an uninstall or a
+			// move — is treated the same as an unset one: fall through to
+			// PATH rather than handing back a path nothing can execute.
+		default:
+			return "", fmt.Errorf("%w: HERDR_BIN_PATH %q: %w", ErrBinaryNotFound, configured, statErr)
+		}
 	}
 	resolved, err := lookPath("herdr")
 	if err != nil {
@@ -90,10 +142,22 @@ func ResolveBinary(lookup EnvLookup) (string, error) {
 	return resolved, nil
 }
 
-// lookPath is exec.LookPath, seamed for env_os_test.go; production callers
+// lookPath is exec.LookPath, seamed for runner_test.go; production callers
 // always get the real PATH search. It is a var, not a wrapper function,
 // only so a test can restore it exactly with defer.
 var lookPath = exec.LookPath
+
+// statPath is os.Stat, seamed for runner_test.go so a stale-HERDR_BIN_PATH
+// test does not depend on real filesystem timing or permissions beyond
+// "the file is absent".
+var statPath = os.Stat
+
+// isStaleBinaryPath reports whether err is the "the configured path does
+// not exist" case ResolveBinary falls back from, as opposed to some other
+// stat failure worth surfacing differently in the future.
+func isStaleBinaryPath(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
+}
 
 // isExecNotFound reports whether err is the kind of failure ResolveBinary
 // itself would have already caught — a binary that vanished between

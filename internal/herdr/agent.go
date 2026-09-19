@@ -6,21 +6,35 @@ import (
 	"fmt"
 )
 
+// agentListResultType is the "type" discriminator herdr's own success
+// envelope carries for `agent list` (herdr api schema --json,
+// $defs.ResponseResult: {"type":"agent_list","agents":[...]}).
+const agentListResultType = "agent_list"
+
 // AgentList lists live agents with their status, pane, workspace and
 // harness session identity where herdr exposes it, via `herdr agent list`.
+// It requires the result's own "type" discriminator to read "agent_list"
+// and every entry to be [rawPaneOrAgent.valid] before returning anything,
+// so a differently-shaped or partially-populated response is reported as
+// [ErrUnparseableOutput] rather than a silently incomplete or wrong list.
 func (c *Client) AgentList(ctx context.Context) ([]Agent, error) {
 	result, err := c.call(ctx, "agent", "list")
 	if err != nil {
 		return nil, err
 	}
 	var body struct {
+		Type   string           `json:"type"`
 		Agents []rawPaneOrAgent `json:"agents"`
 	}
-	if unmarshalErr := json.Unmarshal(result, &body); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(result, &body); unmarshalErr != nil || body.Type != agentListResultType {
 		return nil, fmt.Errorf("%w: agent list: %s", ErrUnparseableOutput, describeParseFailure(unmarshalErr, result))
 	}
 	agents := make([]Agent, 0, len(body.Agents))
 	for _, raw := range body.Agents {
+		if !raw.valid() {
+			return nil, fmt.Errorf("%w: agent list: an entry is missing its pane id: %s",
+				ErrUnparseableOutput, truncate(string(result), 256))
+		}
 		agents = append(agents, raw.toAgent())
 	}
 	return agents, nil

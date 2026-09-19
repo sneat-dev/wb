@@ -45,4 +45,12 @@ var (
 	// ErrInvalidKeyName means a key name passed to [Client.AgentSendKeys]
 	// was empty or contained characters no herdr key name uses.
 	ErrInvalidKeyName = errors.New("herdr: invalid key name")
+
+	// ErrCurrentUnavailable means [Client.PaneCurrent] was called on a
+	// Client configured with [WithSocketPath] or [WithSessionName].
+	// "current" resolves from the calling process's own ambient
+	// HERDR_PANE_ID, which is meaningless once a Client explicitly targets
+	// a different socket or session; call [Client.PaneGet] with a known
+	// pane id instead.
+	ErrCurrentUnavailable = errors.New("herdr: pane current is unavailable on an explicitly targeted client")
 )

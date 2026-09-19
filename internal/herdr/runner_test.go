@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,14 +11,68 @@ import (
 )
 
 func TestResolveBinaryPrefersHERDRBinPath(t *testing.T) {
+	binary := fakeHerdrBinaryPath(t)
 	resolved, err := ResolveBinary(lookupFromMap(map[string]string{
-		envBinPath: "/fake/path/to/herdr",
+		envBinPath: binary,
 	}))
 	if err != nil {
 		t.Fatalf("ResolveBinary() error = %v", err)
 	}
-	if resolved != "/fake/path/to/herdr" {
-		t.Fatalf("ResolveBinary() = %q, want the configured HERDR_BIN_PATH", resolved)
+	if resolved != binary {
+		t.Fatalf("ResolveBinary() = %q, want the configured HERDR_BIN_PATH %q", resolved, binary)
+	}
+}
+
+func TestResolveBinaryStaleHERDRBinPathFallsBackToPATH(t *testing.T) {
+	directory := t.TempDir()
+	fakeHerdr := filepath.Join(directory, "herdr")
+	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+
+	staleBinPath := filepath.Join(t.TempDir(), "no-longer-here")
+	resolved, err := ResolveBinary(lookupFromMap(map[string]string{envBinPath: staleBinPath}))
+	if err != nil {
+		t.Fatalf("ResolveBinary() error = %v", err)
+	}
+	if resolved != fakeHerdr {
+		t.Fatalf("ResolveBinary() = %q, want PATH fallback %q for a stale HERDR_BIN_PATH", resolved, fakeHerdr)
+	}
+}
+
+func TestResolveBinaryStaleHERDRBinPathAndNoPATHFallback(t *testing.T) {
+	directory := t.TempDir() // deliberately empty: no herdr binary on PATH
+	t.Setenv("PATH", directory)
+
+	staleBinPath := filepath.Join(t.TempDir(), "no-longer-here")
+	_, err := ResolveBinary(lookupFromMap(map[string]string{envBinPath: staleBinPath}))
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("ResolveBinary() error = %v, want ErrBinaryNotFound", err)
+	}
+}
+
+func TestResolveBinaryOtherStatErrorIsNotTreatedAsStale(t *testing.T) {
+	original := statPath
+	defer func() { statPath = original }()
+	sentinel := errors.New("permission denied (simulated)")
+	statPath = func(string) (os.FileInfo, error) { return nil, sentinel }
+
+	_, err := ResolveBinary(lookupFromMap(map[string]string{envBinPath: "/configured/herdr"}))
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("ResolveBinary() error = %v, want ErrBinaryNotFound", err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ResolveBinary() error = %v, should not claim the path was merely absent", err)
+	}
+}
+
+func TestIsStaleBinaryPath(t *testing.T) {
+	if !isStaleBinaryPath(fs.ErrNotExist) {
+		t.Fatal("isStaleBinaryPath(fs.ErrNotExist) = false, want true")
+	}
+	if isStaleBinaryPath(errors.New("boom")) {
+		t.Fatal("isStaleBinaryPath(other) = true, want false")
 	}
 }
 
@@ -101,14 +156,18 @@ func TestExecRunnerRunsArgvOnly(t *testing.T) {
 	}
 }
 
-func TestBuildEnvEmptySocketPathReturnsNil(t *testing.T) {
-	if got := buildEnv([]string{"PATH=/bin", envSocketPath + "=/ambient.sock"}, ""); got != nil {
-		t.Fatalf("buildEnv(empty socketPath) = %#v, want nil", got)
+func TestBuildEnvNotTargetedReturnsNilEvenWithSocketPath(t *testing.T) {
+	// targeted=false always means "inherit ambient unchanged", regardless
+	// of what socketPath holds — callers only ever pass a non-empty
+	// socketPath alongside targeted=true (Client.targeted() guarantees
+	// this), but buildEnv itself must not depend on that.
+	if got := buildEnv([]string{"PATH=/bin", envSocketPath + "=/ambient.sock"}, false, "/configured.sock"); got != nil {
+		t.Fatalf("buildEnv(targeted=false) = %#v, want nil", got)
 	}
 }
 
 func TestBuildEnvOverridesExistingEntry(t *testing.T) {
-	got := buildEnv([]string{"PATH=/bin", envSocketPath + "=/ambient.sock", "OTHER=1"}, "/configured.sock")
+	got := buildEnv([]string{"PATH=/bin", envSocketPath + "=/ambient.sock", "OTHER=1"}, true, "/configured.sock")
 	wantContains := envSocketPath + "=/configured.sock"
 	found, stale := false, false
 	for _, entry := range got {
@@ -131,10 +190,39 @@ func TestBuildEnvOverridesExistingEntry(t *testing.T) {
 }
 
 func TestBuildEnvAppendsWhenAbsent(t *testing.T) {
-	got := buildEnv([]string{"PATH=/bin"}, "/configured.sock")
+	got := buildEnv([]string{"PATH=/bin"}, true, "/configured.sock")
 	want := []string{"PATH=/bin", envSocketPath + "=/configured.sock"}
 	if !equalStrings(got, want) {
 		t.Fatalf("buildEnv() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildEnvTargetedWithoutSocketPathOmitsSocketVarEntirely(t *testing.T) {
+	// A Client targeted only via WithSessionName (no WithSocketPath): the
+	// ambient HERDR_SOCKET_PATH is stripped, and nothing replaces it, so
+	// herdr's own built-in default socket applies rather than an
+	// unrelated ambient one.
+	got := buildEnv([]string{"PATH=/bin", envSocketPath + "=/ambient.sock"}, true, "")
+	want := []string{"PATH=/bin"}
+	if !equalStrings(got, want) {
+		t.Fatalf("buildEnv(targeted, no socketPath) = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildEnvTargetedStripsAmbientIdentityVars(t *testing.T) {
+	ambient := []string{
+		"PATH=/bin",
+		envPaneID + "=w1:p2",
+		envTabID + "=w1:t2",
+		envWorkspaceID + "=w1",
+		envSession + "=some-session",
+		envClientSocketPath + "=/ambient-client.sock",
+		envSocketPath + "=/ambient.sock",
+	}
+	got := buildEnv(ambient, true, "/configured.sock")
+	want := []string{"PATH=/bin", envSocketPath + "=/configured.sock"}
+	if !equalStrings(got, want) {
+		t.Fatalf("buildEnv() = %#v, want every ambient identity var stripped, got %#v", got, want)
 	}
 }
 

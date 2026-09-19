@@ -17,6 +17,23 @@ func prependToPATH(t *testing.T, directory string) {
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// neutralizeAmbientHerdr is a belt-and-suspenders safety net for these two
+// real-os/exec tests: this test process's own ambient environment is a
+// live herdr pane (HERDR_PANE_ID etc. are genuinely set, and
+// HERDR_SOCKET_PATH genuinely reaches the founder's real server). PATH
+// resolution already makes the fake script win, and the fake script never
+// reads these variables — but if any of that ever regressed, a child
+// process must still be unable to reach the real server or address a real
+// pane: HERDR_SOCKET_PATH is pointed at a socket that cannot exist, and
+// the pane/tab/workspace IDs are cleared.
+func neutralizeAmbientHerdr(t *testing.T) {
+	t.Helper()
+	t.Setenv(envSocketPath, filepath.Join(t.TempDir(), "unreachable-by-construction.sock"))
+	t.Setenv(envPaneID, "")
+	t.Setenv(envTabID, "")
+	t.Setenv(envWorkspaceID, "")
+}
+
 // fakeHerdrScript is a POSIX shell script standing in for the real herdr
 // binary. It records the exact argv it received (NUL-separated, so no
 // argument's own content — including embedded shell metacharacters or
@@ -60,6 +77,7 @@ func installFakeHerdr(t *testing.T) (argvFile, stdoutFile, exitFile string) {
 	}
 
 	prependToPATH(t, directory)
+	neutralizeAmbientHerdr(t)
 	t.Setenv("FAKE_HERDR_ARGV_FILE", argvFile)
 	t.Setenv("FAKE_HERDR_STDOUT_FILE", stdoutFile)
 	t.Setenv("FAKE_HERDR_EXIT_FILE", exitFile)
@@ -115,6 +133,7 @@ func TestFakeHERDRBinaryNonZeroExit(t *testing.T) {
 	directory := t.TempDir()
 	argvFile := filepath.Join(directory, "argv.recorded")
 	prependToPATH(t, directory)
+	neutralizeAmbientHerdr(t)
 	t.Setenv("FAKE_HERDR_ARGV_FILE", argvFile)
 
 	// herdr reports structured errors as JSON on stderr with exit status 1

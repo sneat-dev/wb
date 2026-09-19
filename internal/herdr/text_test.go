@@ -19,6 +19,12 @@ func TestValidatePromptText(t *testing.T) {
 		{name: "tab is a control character", text: "hello\tworld", wantErr: true},
 		{name: "escape byte", text: "hello\x1bworld", wantErr: true},
 		{name: "unicode text without control chars", text: "sneat-dev/wb#598 — checks failed", wantErr: false},
+		{name: "line separator U+2028", text: "hello" + string(rune(0x2028)) + "world", wantErr: true},
+		{name: "paragraph separator U+2029", text: "hello" + string(rune(0x2029)) + "world", wantErr: true},
+		{name: "right-to-left override U+202E", text: "hello" + string(rune(0x202e)) + "world", wantErr: true},
+		{name: "zero width space U+200B", text: "hello" + string(rune(0x200b)) + "world", wantErr: true},
+		{name: "leading hyphen", text: "-x", wantErr: true},
+		{name: "hyphen not leading", text: "checks-failed", wantErr: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

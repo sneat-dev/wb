@@ -47,6 +47,39 @@ func TestAgentListUnparseableEnvelope(t *testing.T) {
 	}
 }
 
+func TestAgentListMissingTypeKey(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"agent", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:agent:list","result":{"agents":[]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.AgentList(context.Background()); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("AgentList() error = %v, want ErrUnparseableOutput for a missing type key", err)
+	}
+}
+
+func TestAgentListWrongTypeKey(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"agent", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:agent:list","result":{"type":"pane_list","agents":[]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.AgentList(context.Background()); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("AgentList() error = %v, want ErrUnparseableOutput for a mismatched type key", err)
+	}
+}
+
+func TestAgentListEntryMissingID(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"agent", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent_status":"idle","focused":false,"revision":1},{"agent_status":"idle","focused":false,"revision":0}]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.AgentList(context.Background()); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("AgentList() error = %v, want ErrUnparseableOutput for an entry missing pane_id", err)
+	}
+}
+
 func TestAgentListUnparseableResultShape(t *testing.T) {
 	// The envelope itself is valid JSON; "agents" is the wrong JSON type,
 	// so AgentList's own decode (not the envelope decode) fails.
@@ -173,6 +206,13 @@ func TestAgentPromptRejectsInvalidText(t *testing.T) {
 	}
 	if err := client.AgentPrompt(context.Background(), "", "hello"); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("AgentPrompt(target=\"\") error = %v, want ErrUnknownTarget", err)
+	}
+}
+
+func TestAgentPromptRejectsLeadingHyphen(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if err := client.AgentPrompt(context.Background(), "reviewer", "-1"); !errors.Is(err, ErrInvalidPromptText) {
+		t.Fatalf("AgentPrompt(text starting with -) error = %v, want ErrInvalidPromptText", err)
 	}
 }
 

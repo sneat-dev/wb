@@ -563,16 +563,15 @@ transfer.
 
 ### herdr — a second session transport, not yet wired to any caller
 
-`wb session move`'s successor above runs in detached tmux; `internal/herdr`
-(sneat-dev/wb#647-adjacent work) is a bounded adapter over a different
-transport, [herdr](https://herdr.dev), the terminal workspace manager the
-founder's live agent sessions run in on this machine. It resolves the herdr
-binary, shells out to it as argv (never through a shell), and types its pane,
-agent and screen-text JSON responses — nothing more. No caller in this
+`wb session move`'s successor above runs in detached tmux. `internal/herdr`
+is a bounded adapter over a different transport: [herdr](https://herdr.dev),
+a terminal workspace manager for AI coding agents. It resolves the herdr
+binary, shells out to it as argv (never through a shell), and types its
+pane, agent and screen-text JSON responses — nothing more. No caller in this
 repository uses it yet, and it carries no delivery policy of its own (no
 rule about who may be woken or what a message may say): see
-`spec/ideas/daemon-as-coordinator.md` for why the package exists and what a
-later task still has to decide before anything calls
+`spec/ideas/daemon-as-coordinator.md` for the design questions a later task
+still has to answer before anything calls
 `Client.AgentPrompt`/`Client.PaneSendText`.
 
 ### `wb remote` — fleet state across machines

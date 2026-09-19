@@ -3,6 +3,7 @@ package herdr
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"unicode"
 )
 
@@ -11,14 +12,33 @@ import (
 // boundary": herdr submits a prompt by sending the text followed by its own
 // encoded Enter, so a newline embedded in text would let a caller smuggle
 // an extra, unreviewed line of input into the founder's session. This
-// package refuses any text containing a newline, carriage return, or other
-// C0/C1 control character, so [Client.AgentPrompt] can only ever submit
-// exactly the one line the caller passed. [Client.PaneSendText] — literal
-// text into a pane, advisory rather than submitted — reuses this same
-// check: a control character has no legitimate reason to be in either.
+// package refuses any text containing:
+//
+//   - a newline, carriage return, or other C0/C1 control character
+//     (unicode.IsControl);
+//   - a Unicode line or paragraph separator, U+2028/U+2029
+//     (unicode.Zl/unicode.Zp) — visually invisible line breaks a control
+//     check alone would miss;
+//   - a Unicode format character (unicode.Cf) such as U+202E RIGHT-TO-LEFT
+//     OVERRIDE or U+200B ZERO WIDTH SPACE, which can make submitted text
+//     render differently than it reads;
+//   - a leading "-", because herdr's own CLI parser has no `--`
+//     end-of-options separator to escape one (`herdr agent get -- x`
+//     exits 2 with a usage error rather than treating "x" as the target,
+//     confirmed live 2026-09-19 via the read-only `agent get`) — a leading
+//     hyphen in the text argument risks being parsed as a flag instead of
+//     positional text.
+//
+// so [Client.AgentPrompt] can only ever submit exactly the one line the
+// caller passed. [Client.PaneSendText] — literal text into a pane, advisory
+// rather than submitted — reuses this same check: none of the above has a
+// legitimate reason to be in either.
 func ValidatePromptText(text string) error {
 	if text == "" {
 		return fmt.Errorf("%w: prompt text is empty", ErrInvalidPromptText)
+	}
+	if strings.HasPrefix(text, "-") {
+		return fmt.Errorf("%w: prompt text starts with %q; herdr's CLI has no -- separator to escape it", ErrInvalidPromptText, "-")
 	}
 	for _, r := range text {
 		switch {
@@ -26,6 +46,10 @@ func ValidatePromptText(text string) error {
 			return fmt.Errorf("%w: prompt text contains a newline", ErrInvalidPromptText)
 		case unicode.IsControl(r):
 			return fmt.Errorf("%w: prompt text contains control character %U", ErrInvalidPromptText, r)
+		case unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r):
+			return fmt.Errorf("%w: prompt text contains a Unicode line/paragraph separator %U", ErrInvalidPromptText, r)
+		case unicode.Is(unicode.Cf, r):
+			return fmt.Errorf("%w: prompt text contains a Unicode format character %U", ErrInvalidPromptText, r)
 		}
 	}
 	return nil

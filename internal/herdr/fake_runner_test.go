@@ -68,3 +68,15 @@ func lookupFromMap(values map[string]string) EnvLookup {
 		return value, ok
 	}
 }
+
+// fakeHerdrBinaryPath writes a real, executable (but never executed) file
+// so tests can hand ResolveBinary a HERDR_BIN_PATH that survives its
+// os.Stat check without depending on any real herdr installation.
+func fakeHerdrBinaryPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write fake herdr binary: %v", err)
+	}
+	return path
+}

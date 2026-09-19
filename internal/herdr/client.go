@@ -117,6 +117,16 @@ func (c *Client) SessionName() string {
 	return c.sessionName
 }
 
+// targeted reports whether this Client was configured with [WithSocketPath]
+// or [WithSessionName]. A targeted Client's subprocess environment is
+// scrubbed of ambient identity (see [buildEnv]), and [Client.PaneCurrent]
+// refuses on one, because "current" is ambiguous once a caller has said
+// which server or session it means instead of relying on its own ambient
+// one.
+func (c *Client) targeted() bool {
+	return c != nil && (c.socketPath != "" || c.sessionName != "")
+}
+
 // herdrEnvelope is the JSON shape every herdr socket-API command returns on
 // stdout, success or failure: {"id":"cli:...","result":{...}} on exit 0,
 // or {"id":"cli:...","error":{"code":"...","message":"..."}} — observed on
@@ -188,7 +198,7 @@ func (c *Client) rawCall(ctx context.Context, args ...string) ([]byte, error) {
 	defer cancel()
 
 	fullArgs := withSessionFlag(c.sessionName, args)
-	env := buildEnv(osEnviron(), c.socketPath)
+	env := buildEnv(osEnviron(), c.targeted(), c.socketPath)
 	stdout, stderr, runErr := c.runner.Run(callCtx, c.binary, fullArgs, env)
 	if runErr == nil {
 		return stdout, nil

@@ -42,6 +42,39 @@ func TestPaneCurrent(t *testing.T) {
 	}
 }
 
+func TestPaneCurrentRefusesOnTargetedClientBySocketPath(t *testing.T) {
+	runner := newFakeRunner(t)
+	client := newTestClient(t, runner, WithSocketPath("/tmp/other.sock"))
+
+	_, err := client.PaneCurrent(context.Background())
+	if !errors.Is(err, ErrCurrentUnavailable) {
+		t.Fatalf("PaneCurrent() error = %v, want ErrCurrentUnavailable", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("PaneCurrent() invoked herdr %d times, want 0 (refused before any call)", len(runner.calls))
+	}
+}
+
+func TestPaneCurrentRefusesOnTargetedClientBySessionName(t *testing.T) {
+	runner := newFakeRunner(t)
+	client := newTestClient(t, runner, WithSessionName("reviewer-session"))
+
+	if _, err := client.PaneCurrent(context.Background()); !errors.Is(err, ErrCurrentUnavailable) {
+		t.Fatalf("PaneCurrent() error = %v, want ErrCurrentUnavailable", err)
+	}
+}
+
+func TestPaneCurrentWorksOnUntargetedClient(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"pane", "current", "--current"}, fakeCall{
+		stdout: mustReadTestdata(t, "pane_current.json"),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.PaneCurrent(context.Background()); err != nil {
+		t.Fatalf("PaneCurrent() on an untargeted client error = %v, want nil", err)
+	}
+}
+
 func TestPaneCurrentInvalidShape(t *testing.T) {
 	runner := newFakeRunner(t).on([]string{"pane", "current", "--current"}, fakeCall{
 		stdout: []byte(`{"id":"cli:pane:current","result":{"unexpected":true}}`),
@@ -103,6 +136,39 @@ func TestPaneListUnparseableEnvelope(t *testing.T) {
 	}
 }
 
+func TestPaneListMissingTypeKey(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"pane", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:pane:list","result":{"panes":[]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.PaneList(context.Background(), ""); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("PaneList() error = %v, want ErrUnparseableOutput for a missing type key", err)
+	}
+}
+
+func TestPaneListWrongTypeKey(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"pane", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:pane:list","result":{"type":"agent_list","panes":[]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.PaneList(context.Background(), ""); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("PaneList() error = %v, want ErrUnparseableOutput for a mismatched type key", err)
+	}
+}
+
+func TestPaneListEntryMissingID(t *testing.T) {
+	runner := newFakeRunner(t).on([]string{"pane", "list"}, fakeCall{
+		stdout: []byte(`{"id":"cli:pane:list","result":{"type":"pane_list","panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent_status":"idle","focused":false,"revision":1},{"agent_status":"idle","focused":false,"revision":0}]}}`),
+	})
+	client := newTestClient(t, runner)
+
+	if _, err := client.PaneList(context.Background(), ""); !errors.Is(err, ErrUnparseableOutput) {
+		t.Fatalf("PaneList() error = %v, want ErrUnparseableOutput for an entry missing pane_id", err)
+	}
+}
+
 func TestPaneListUnparseableResultShape(t *testing.T) {
 	runner := newFakeRunner(t).on([]string{"pane", "list"}, fakeCall{
 		stdout: []byte(`{"id":"cli:pane:list","result":{"panes":"not-an-array"}}`),
@@ -152,6 +218,13 @@ func TestPaneSendTextRejectsInvalidText(t *testing.T) {
 	client := newTestClient(t, newFakeRunner(t))
 	if err := client.PaneSendText(context.Background(), "w1:p2", "two\nlines"); !errors.Is(err, ErrInvalidPromptText) {
 		t.Fatalf("PaneSendText(bad text) error = %v, want ErrInvalidPromptText", err)
+	}
+}
+
+func TestPaneSendTextRejectsLeadingHyphen(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if err := client.PaneSendText(context.Background(), "w1:p2", "-1"); !errors.Is(err, ErrInvalidPromptText) {
+		t.Fatalf("PaneSendText(text starting with -) error = %v, want ErrInvalidPromptText", err)
 	}
 }
 
