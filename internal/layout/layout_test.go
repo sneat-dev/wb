@@ -23,13 +23,21 @@ func TestMain(m *testing.M) {
 	// own tests exercise a dropped-HOME subprocess path whose expected
 	// behavior depends on the real ambient HOME being genuinely absent, so
 	// the same redirection must not apply there.
-	if home, err := os.MkdirTemp("", "wb-layout-test-home-*"); err == nil {
+	//
+	// os.Exit skips deferred calls, so the directory is removed explicitly
+	// after m.Run; leaving it behind leaked one populated HOME per run.
+	home, err := os.MkdirTemp("", "wb-layout-test-home-*")
+	if err == nil {
 		if resolved, err := filepath.EvalSymlinks(home); err == nil {
 			home = resolved
 		}
 		_ = os.Setenv("HOME", home)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if home != "" {
+		_ = os.RemoveAll(home)
+	}
+	os.Exit(code)
 }
 
 func TestAuditDetectsTopLevelAndMisowned(t *testing.T) {
