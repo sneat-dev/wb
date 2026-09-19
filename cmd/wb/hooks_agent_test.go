@@ -491,3 +491,27 @@ func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) 
 		t.Fatalf("resolveWBExecutableForHook(%q) with no PATH match = %q, want %q", self, got, self)
 	}
 }
+
+// TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf covers the
+// two remaining branches: an empty self (hookExecutable() could not resolve
+// anything at all, so there is nothing to compare or quote) and a self path
+// that no longer exists on disk (os.Stat fails), both of which must fall
+// back to returning self unchanged rather than panicking or misreporting a
+// match.
+func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) {
+	if got := resolveWBExecutableForHook(""); got != "" {
+		t.Fatalf("resolveWBExecutableForHook(\"\") = %q, want \"\"", got)
+	}
+
+	binDir := t.TempDir()
+	onPath := filepath.Join(binDir, "wb")
+	if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write a wb on PATH: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if got := resolveWBExecutableForHook(missing); got != missing {
+		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q (self unchanged)", missing, got, missing)
+	}
+}

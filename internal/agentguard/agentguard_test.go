@@ -2103,6 +2103,65 @@ func TestSimpleGovernedRewriteQuotesAWBExecutablePathWithASpace(t *testing.T) {
 	}
 }
 
+// TestParseSpliceCandidateWordReading directly exercises readSpliceWord's
+// quote-aware branches (unterminated single/double quotes, a trailing
+// backslash, an escaped backslash, and an escaped character inside a double
+// quote), since the higher-level rewrite tests only reach a subset of them
+// through governed-validation-shaped commands.
+func TestParseSpliceCandidateWordReading(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		wantOK  bool
+		want    []string
+	}{
+		{"unterminated single quote", `go test 'abc`, false, nil},
+		{"unterminated double quote", `go test "abc`, false, nil},
+		{"trailing backslash", `go test abc\`, false, nil},
+		{"escaped backslash preserved", `go test a\\b`, true, []string{"go", "test", `a\b`}},
+		{"escaped quote inside double quotes", `go test "a\"b"`, true, []string{"go", "test", `a"b`}},
+		{"escaped space inside double quotes", `go test "a b"`, true, []string{"go", "test", "a b"}},
+		{"single-quoted literal keeps special characters inert", `go test 'a&b'`, true, []string{"go", "test", "a&b"}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			words, _, ok := parseSpliceCandidate(testCase.command)
+			if ok != testCase.wantOK {
+				t.Fatalf("parseSpliceCandidate(%q) ok=%v, want %v", testCase.command, ok, testCase.wantOK)
+			}
+			if !ok {
+				return
+			}
+			got := make([]string, len(words))
+			for index, word := range words {
+				got[index] = word.Text
+			}
+			if len(got) != len(testCase.want) {
+				t.Fatalf("parseSpliceCandidate(%q) = %#v, want %#v", testCase.command, got, testCase.want)
+			}
+			for index := range got {
+				if got[index] != testCase.want[index] {
+					t.Fatalf("parseSpliceCandidate(%q) = %#v, want %#v", testCase.command, got, testCase.want)
+				}
+			}
+		})
+	}
+}
+
+// TestSimpleWBInvocationStripsLeadingAssignments pins simpleWBInvocation's
+// own assignment-stripping path (kept independent from
+// parseSpliceCandidate, since the stamp only ever prefixes the original
+// text and never splices into it) against a wb call prefixed by more than
+// one VAR=value assignment.
+func TestSimpleWBInvocationStripsLeadingAssignments(t *testing.T) {
+	if !simpleWBInvocation("FOO=1 BAR=2 wb status") {
+		t.Fatal("a wb call behind two leading assignments was not recognised as simple")
+	}
+	if simpleWBInvocation("FOO=1 BAR=2 wb status && echo done") {
+		t.Fatal("a compound line was recognised as a simple wb invocation")
+	}
+}
+
 // TestSplitSegmentsCommentsAndBraces pins the two reader rules the wb#500
 // fifth review added: a # that starts a word opens a comment to the end of
 // the line, and a brace is a group boundary only when it is a whole word.
