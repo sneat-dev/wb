@@ -194,7 +194,7 @@ submitting on tmux exactly as they do today, unaffected by this default.
 ### Task 4: Wire the herdr transport onto the `internal/herdr` adapter
 
 **Id:** task-4
-**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery
+**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery, herdr-session-transport#ac:legacy-and-old-peer-receipts-still-validate
 **Depends-On:** 1, 2
 **Status:** planning
 
@@ -209,23 +209,32 @@ is built in this iteration — not for the daemon wake, and not for
 `wb session send`'s or `wb session recall`'s herdr side either, since all
 three need the same deferred empty-input evidence.
 
-**Schema change, owned here:** `internal/sessionmove.MessageReceipt` gains a
-`delivery` field (`pasted` | `recorded`). Today's validation
+**Schema change, owned here:** `internal/sessionmove.MessageReceipt` gains an
+`omitempty` `delivery` field (`pasted` | `recorded`), with no schema-version
+bump — `MessageReceiptSchemaVersion` stays `1`. Today's validation
 (`internal/sessionmove/message.go:116`) requires a non-zero `PastedAt` and
 the tmux identity fields unconditionally, and the matching checks around
 lines 424 and 503 compare `TmuxName`/`PaneID`/`PID` unconditionally too; both
-become conditional on `delivery: pasted`. On herdr, `wb session
-receive-message` (`cmd/wb/session_message.go`) durably records a successor
-message with `delivery: recorded` and returns a receipt without pasting it —
-sender and receiver output must say so honestly, not "durably recorded and
-pasted to tmux". The recorded, unread message's count, ID, and sender are
-surfaced through Task 5's extended `SessionStart` hook; its body is read only
-through Task 5's new `wb session messages` verb.
+become conditional on `delivery: pasted`, and the incoming-direction
+"requires a durable paste intent" check (line 421) applies only then. A
+receipt with no `delivery` key — every receipt on disk today, and every
+receipt from an unpatched peer — reads as `pasted` (the field's Go zero
+value). Because `decodeJSON` uses `DisallowUnknownFields`, a sender MUST omit
+`delivery` when its value is `pasted` and send the key only for `recorded`,
+which an unpatched peer never needs to accept since it has no herdr
+transport to produce one. Prove wire parity against a captured pre-Feature
+v1 receipt fixture. On herdr, `wb session receive-message`
+(`cmd/wb/session_message.go`) durably records a successor message with
+`delivery: recorded` and returns a receipt without pasting it — sender and
+receiver output must say so honestly, not "durably recorded and pasted to
+tmux". The recorded, unread message's count, ID, and sender are surfaced
+through Task 5's extended `SessionStart` hook; its body is read only through
+Task 5's new `wb session messages` verb.
 
 ### Task 5: Automatic identity capture, selection, and session-start re-registration
 
 **Id:** task-5
-**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:read-verb-labels-a-message-as-anothers-not-the-founders, herdr-session-transport#ac:hook-output-never-contains-message-body
+**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:read-verb-labels-a-message-as-anothers-not-the-founders, herdr-session-transport#ac:hook-output-never-contains-message-body, herdr-session-transport#ac:hook-withholds-a-non-conforming-id
 **Depends-On:** 2, 3, 4
 **Status:** planning
 
@@ -258,6 +267,16 @@ sender session, never as the founder's own words, and never accepted as
 `--approved-by` or other approval evidence by any WB verb. Extend the hook's
 announcement to name the count/IDs/senders of any recorded, unread successor
 messages for this session — never their bodies.
+
+**ID format-check, owned here:** today's `validateID`/`safeID`
+(`^[A-Za-z0-9][A-Za-z0-9._-]*$`, `internal/sessionmove/types.go`) has no
+length cap or fixed shape, so a crafted `message_id` or
+`sender_wb_session_id` that merely satisfies it could land in the hook's
+output verbatim. Before printing any ID, the hook MUST re-check it against
+WB's own generated formats — `^message-[0-9a-f]{32}$` for message IDs
+(`NewMessageID`), `^wbs-[0-9a-f]{32}$` for WB session IDs (`session.NewID`)
+— and withhold any ID that fails, printing a neutral placeholder instead
+(e.g. "(1 message with a non-standard id; run `wb session messages`)").
 
 ### Task 6: Read PR bindings and evaluate outcomes (the watcher)
 
