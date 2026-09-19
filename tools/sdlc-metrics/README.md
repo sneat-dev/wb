@@ -26,6 +26,18 @@ window, so activity on OTHER days can no longer change a window's own
 counts (a real defect an earlier pass had: a multi-day-old gap between
 sessions was being miscounted as a same-day stall, inflating the count and
 making it drift between runs while a later day's session was still live).
+Minutes booked for a gap that opened before the window are further clipped
+to the portion that actually fell inside it, so a session idle for several
+days never dumps more than a day's worth of stall minutes onto the single
+day that happened to close the gap.
+
+**Expected online/offline differences.** Two fields are timestamps of the
+extraction run itself, not derived metrics, and are EXPECTED to differ
+between an online run and a later `--offline` replay of its own cache (and
+between any two runs at all): `generated_at` (top level) and
+`adoption.codegrapher_index_status.checked_at`. Every other field must be
+identical between an online run and an `--offline` replay of the same
+`raw/` cache.
 
 Flags:
 
@@ -66,14 +78,30 @@ point `--out` at a scratch or reports directory (for example
 2. **WB state**: `<wb-state-dir>/worklogs/*/outbox/*.json` (`worktree.claimed`
    / `worktree.sealed` events — landing outcome and duration) and
    `<wb-state-dir>/waits/*.json` (a snapshot of open waits, not a history).
-3. **GitHub**, for `--repo`: `gh api repos/<repo>/pulls` and
-   `repos/<repo>/actions/runs`, both paginated and cached under `raw/`.
+3. **GitHub**, for `--repo`: `gh api search/issues` (two queries: PRs
+   *created* in the window, and PRs *merged* in the window -- see
+   "Merged-PR headline" below) and `repos/<repo>/actions/runs`, all
+   server-side filtered to the window and cached under `raw/`. Plus one
+   more `search/issues` query per batch of repos, for the fleet-wide
+   merged-PR count (below).
 4. **`git log --since/--until`** in `--git-repo-path`: commit, merge-commit
    and `#<issue>` reference counts only. No diffs, no commit messages beyond
    the reference-number scan.
 
 ## Metric definitions
 
+- **Headline** (`headline`, rendered first in both `metrics.json` and
+  `SUMMARY.md`): `total_usd`/`usd_per_day`/`usd_main`/`usd_subagent` are the
+  same priced-per-message totals as `tokens`, just summed and split by
+  role. `cache_read_share_of_usd` is the cache-read slice of `total_usd`.
+  `output_tokens_total` sums `output_tokens` across `tokens.main_loop_by_model`
+  and `tokens.subagent_by_model`. `usd_per_sealed_worktree` divides
+  `total_usd` by `wb_state.sealed` (worktrees sealed in the window, fleet-
+  wide). `stall_minutes_by_kind` is `orchestrator.stalls`/`subagents.stalls`'
+  `minutes_by_kind`, clipped to the window (see "Subagents" below) --
+  **not** raw gap duration. For the two merged-PR figures, see "Merged-PR headline:
+  two different scopes, on purpose" further down; they are deliberately
+  different scopes (fleet vs. single repo) and must not be confused.
 - **Tokens and cost** (`tokens`): priced per message, from each assistant
   message's own `usage` object (or, when present, the sum of its
   `usage.iterations` — never both), then split by day, model family
@@ -112,7 +140,14 @@ point `--out` at a scratch or reports directory (for example
   or the prior turn said it was waiting for one), or `idle_until_resume`
   (anything else, most commonly a fresh user turn via SendMessage after
   the agent went idle at the end of a turn). The main loop's own stalls
-  are reported the same way, under `orchestrator.stalls`.
+  are reported the same way, under `orchestrator.stalls`. **Minutes**
+  (`minutes_by_kind`, on both sections, and the headline's
+  `stall_minutes_by_kind`) are clipped to `max(gap_start, since)` -- a gap
+  that opened before the window only books the portion of its duration
+  that actually fell inside it, so a session left idle for several days
+  never dumps more than a day's worth of minutes onto the single day that
+  happened to close the gap. Whether a gap counts as a stall AT ALL is
+  still decided from its full, unclipped duration.
 - **Tool calls** (`tools`): every `tool_use`/`tool_result` pair, grouped by
   `(role, model family, tool name)`. Result size is the character length of
   the tool_result content (never the content itself); `estimated_total_tokens`
@@ -255,9 +290,35 @@ declared here so no future field can quietly widen it without review):
 | File | Kept fields | Dropped (never written) |
 |---|---|---|
 | `raw/pulls.json` | `number`, `created_at`, `merged_at`, `closed_at`, `state` | the full PR body, author |
+| `raw/pulls_merged.json` | same fields as `pulls.json` | same as `pulls.json`; this is the `merged:`-qualified query (see "Merged-PR headline" below) |
+| `raw/fleet_merged_prs_batch<NN>.json` | same fields as `pulls.json` | same as `pulls.json`; one file per batch of repos in the fleet-wide merged-PR query |
 | `raw/actions_runs.json` | `id`, `name`, `event`, `conclusion`, `run_started_at`, `updated_at`, `head_sha` | `head_commit.author` (a real email/name) |
 | `raw/waits/<hash>.json` | `kind`, `started_at` | `pid`, `wb_session_id`, `targets`, `resume_args` (these can name any repo/PR the fleet is watching) |
 | `raw/wb_run_events/<hash>.jsonl` | `timestamp`, `state`, `kind`, `queue_wait_ms`, one line per IN-WINDOW event only | `repository`, `effort_id` (a task/worktree name), `run_id`, `operation_id` |
+
+### Merged-PR headline: two different scopes, on purpose
+
+The headline's "$ per merged PR" answers "how much does a landed PR cost",
+fleet-wide -- it is **not** the same query as the plain `<repo>` PR count
+next to it:
+
+- **`usd_per_fleet_merged_pr` / `fleet_merged_prs_in_window`** (numerator:
+  ALL session cost on this machine, across every repository -- denominator:
+  every PR MERGED in the window, via the Search API's `merged:` qualifier,
+  across every repository that had an in-window worktree claim or seal).
+  Repo names themselves are never written to `metrics.json` -- only the
+  repo COUNT (`fleet_repos_queried`) and the resulting merged-PR count.
+- **`<repo>_merged_prs_in_window`** (a plain count: PRs merged in the
+  window for `--repo` alone, also via `merged:`, never `created:` -- a PR
+  created inside the window that merges days later would be invisible to
+  a `created:`-only query, and a PR created earlier that merges inside the
+  window would be missed entirely by one).
+
+`pipeline_and_ci.prs.merged` (the OLDER, `created:`-keyed field) still
+answers a different question -- "of the PRs created in the window, how
+many are ALREADY merged by the time this pass runs" -- which is useful for
+lead-time stats but is not what "PRs merged in window" means, and must
+never be read as if it were.
 
 That trimming keeps casual disclosure out, but `raw/` is still a cache of
 this run's own data, not a publishable artifact: treat the whole `<out>/`

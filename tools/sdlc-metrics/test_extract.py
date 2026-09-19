@@ -873,10 +873,12 @@ class TestStallWindowBoundary(unittest.TestCase):
                                {"input_tokens": 10, "output_tokens": 5,
                                 "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
                                [{"type": "text", "text": "done for now"}]),
-                # closes IN the window, 70 minutes later -- must be counted,
-                # and its measured duration must reflect the actual 70-minute
-                # gap (proving the timer advanced from the out-of-window
-                # record too, not from some earlier in-window one).
+                # closes IN the window, 70 minutes after the OPENING record
+                # but only 10 minutes after the window's own start -- must
+                # be counted (the gap is real and exceeds the threshold),
+                # but Major 1 (round 3) says the booked MINUTES are clipped
+                # to max(gap_prev_ts, since), so only the in-window portion
+                # (10 minutes) is booked, not the full 70.
                 {"type": "user", "isSidechain": False, "timestamp": "2026-09-17T00:10:00Z",
                  "message": {"role": "user", "content": [{"type": "text", "text": "continue please"}]}},
             ]
@@ -885,7 +887,44 @@ class TestStallWindowBoundary(unittest.TestCase):
             until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
             a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
             self.assertEqual(sum(a.stalls_by_kind.values()), 1)
-            self.assertAlmostEqual(sum(a.stall_minutes_by_kind.values()), 70.0, delta=0.5)
+            self.assertAlmostEqual(sum(a.stall_minutes_by_kind.values()), 10.0, delta=0.5)
+
+
+class TestStallMinutesClippedToWindow(unittest.TestCase):
+    """Major 1 (round 3): a gap that opened before the window must only
+    book the portion of its duration that actually falls inside the
+    window -- otherwise a multi-day-idle session dumps hours of stall
+    minutes onto whichever single day happens to close the gap."""
+
+    def test_overnight_gap_books_only_in_window_minutes(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-overnight.jsonl"
+            records = [
+                # opens the PREVIOUS day, well before the window
+                assistant_msg("2026-09-16T20:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "pausing for the night"}]),
+                # closes 40 minutes into the window (09-17 00:40) -- the
+                # real gap is 640 minutes, but only 40 fall in-window
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-17T00:40:00Z",
+                 "message": {"role": "user", "content": [{"type": "text", "text": "back"}]}},
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            main_minutes = metrics["orchestrator"]["stalls"]["minutes_by_kind"]
+            total_minutes = sum(main_minutes.values())
+            self.assertAlmostEqual(total_minutes, 40.0, delta=0.5)
+            self.assertLess(total_minutes, 640.0)
 
 
 class TestNewlineAndOptionSeparators(unittest.TestCase):
@@ -1409,6 +1448,174 @@ class TestRealisticFixtureShapes(unittest.TestCase):
             until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
             a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
             self.assertEqual(a.stalls_by_kind.get("waiting_notification", 0), 1)
+
+
+class TestShellSyntaxNotCountedAsCommand(unittest.TestCase):
+    """Minor 1 (round 3): a heredoc's closing delimiter line, a shell
+    keyword (`do`/`done`/`for`/...), lone punctuation, or a stranded
+    redirection file-descriptor number must never occupy a command
+    position in by_verb/pipe_filters/the sequence miner."""
+
+    def test_heredoc_closing_delimiter_not_a_command(self):
+        cmd = "cat > f.txt <<'EOF'\nsome body\nEOF\ngo test ./..."
+        segments = list(extract.iter_command_segments(cmd))
+        verbs = [seg[0] for seg in segments]
+        self.assertNotIn("EOF", verbs)
+        self.assertIn("cat", verbs)
+        self.assertIn("go", verbs)
+
+    def test_shell_keywords_not_counted(self):
+        cmd = "for f in *.go; do go vet $f; done"
+        segments = list(extract.iter_command_segments(cmd))
+        verbs = [seg[0] for seg in segments]
+        for kw in ("do", "done", "for"):
+            self.assertNotIn(kw, verbs)
+
+    def test_redirection_digit_not_counted(self):
+        segments = list(extract.iter_command_segments("cd somedir 2>/dev/null"))
+        verbs = [seg[0] for seg in segments]
+        self.assertNotIn("2", verbs)
+
+    def test_lone_punctuation_not_counted(self):
+        self.assertTrue(extract._is_non_command_leading_token("("))
+        self.assertTrue(extract._is_non_command_leading_token(")"))
+        self.assertTrue(extract._is_non_command_leading_token("done"))
+        self.assertTrue(extract._is_non_command_leading_token("7"))
+        self.assertFalse(extract._is_non_command_leading_token("git"))
+
+
+class TestPriceConfigNewPrefixDoesNotCrash(unittest.TestCase):
+    """Minor 3 (round 3): a brand-new model-prefix override with no
+    `cache_read` field must fall back to the usual 0.1x-of-input rule,
+    never raise KeyError the first time that model prices a message."""
+
+    def setUp(self):
+        import copy
+        self._orig_family = copy.deepcopy(extract.PRICE_TABLE_USD_PER_MTOK)
+        self._orig_prefix = copy.deepcopy(extract.PRICE_TABLE_BY_PREFIX)
+
+    def tearDown(self):
+        extract.PRICE_TABLE_USD_PER_MTOK.clear()
+        extract.PRICE_TABLE_USD_PER_MTOK.update(self._orig_family)
+        extract.PRICE_TABLE_BY_PREFIX[:] = self._orig_prefix
+
+    def test_new_prefix_without_cache_read_gets_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "prices.json"
+            cfg.write_text(json.dumps({"claude-sonnet-5-9": {"input": 3, "output": 15}}), encoding="utf-8")
+            extract.load_price_overrides(cfg)
+            rates = extract.price_rates_for_model("claude-sonnet-5-9")
+            self.assertAlmostEqual(rates["cache_read"], 0.3)  # 0.1x of input=3
+            # must not raise when actually pricing a message
+            bucket = extract.UsageBucket()
+            bucket.add({"input_tokens": 100, "output_tokens": 50,
+                        "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0},
+                       model="claude-sonnet-5-9")
+            self.assertGreater(bucket.cost_usd(), 0)
+
+
+class TestSubverbOtherPlaceholderUnified(unittest.TestCase):
+    """Minor 4 (round 3): an unknown git/gh/wb/npm-family subcommand must
+    always surface as the SAME placeholder, whether the raw token was
+    merely unrecognized or syntactically unsafe -- never two distinct
+    spellings ("git <other>" alongside "git (other)") for the same
+    underlying "no known subcommand" case."""
+
+    def test_unsafe_second_token_uses_same_placeholder_as_unknown(self):
+        _verb, subverb_unknown = extract.classify_segment_tokens(["git", "totally-unknown-subcmd"])
+        _verb, subverb_unsafe = extract.classify_segment_tokens(["git", "/etc/passwd"])
+        self.assertEqual(subverb_unknown, "git (other)")
+        self.assertEqual(subverb_unsafe, "git (other)")
+        self.assertNotIn("<other>", subverb_unsafe)
+
+
+class TestFleetMergedPRHeadline(unittest.TestCase):
+    """Major 2 (round 3): the fleet-wide "$ per merged PR" denominator
+    counts PRs MERGED in the window (via `merged:`) across every repo
+    with in-window worktree activity, batching `repo:` qualifiers and
+    caching each batch under raw/ for --offline reproducibility."""
+
+    def _envelope(self, prs):
+        return [{"items": [
+            {"number": pr["number"], "created_at": pr.get("created_at", "2026-09-01T00:00:00Z"),
+             "merged_at": pr.get("merged_at"), "closed_at": pr.get("merged_at"), "state": "closed"}
+            for pr in prs
+        ]}]
+
+    def test_counts_merged_prs_within_window_across_batches(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw_dir = Path(td) / "raw"
+            raw_dir.mkdir()
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            # force 2 batches by shrinking the batch size for this test
+            orig_size = extract._FLEET_PR_SEARCH_BATCH_SIZE
+            extract._FLEET_PR_SEARCH_BATCH_SIZE = 1
+            try:
+                (raw_dir / "fleet_merged_prs_batch00.json").write_text(
+                    json.dumps(self._envelope([
+                        {"number": 1, "merged_at": "2026-09-17T10:00:00Z"},
+                        {"number": 2, "merged_at": "2026-09-16T10:00:00Z"},  # out of window
+                    ])), encoding="utf-8")
+                (raw_dir / "fleet_merged_prs_batch01.json").write_text(
+                    json.dumps(self._envelope([
+                        {"number": 3, "merged_at": "2026-09-17T12:00:00Z"},
+                    ])), encoding="utf-8")
+                result = extract.process_fleet_merged_prs(
+                    ["repo-a/one", "repo-b/two"], since, until, raw_dir, offline=True)
+            finally:
+                extract._FLEET_PR_SEARCH_BATCH_SIZE = orig_size
+            self.assertEqual(result["merged_in_window"], 2)  # #2 excluded, out of window
+            self.assertEqual(result["repos_queried"], 2)
+            self.assertEqual(result["batches"], 2)
+
+    def test_no_repos_reports_unavailable(self):
+        with tempfile.TemporaryDirectory() as td:
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            result = extract.process_fleet_merged_prs([], since, until, Path(td), offline=True)
+            self.assertIn("unavailable", result)
+
+    def test_repo_merged_in_window_uses_merged_qualifier_not_created(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw_dir = Path(td) / "raw"
+            raw_dir.mkdir()
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            # `pulls.json` (created:-keyed): a PR created earlier that only
+            # merges INSIDE the window -- created: query would never see it
+            (raw_dir / "pulls.json").write_text(
+                json.dumps(self._envelope([])), encoding="utf-8")
+            (raw_dir / "pulls_merged.json").write_text(
+                json.dumps(self._envelope([
+                    {"number": 42, "created_at": "2026-09-01T00:00:00Z",
+                     "merged_at": "2026-09-17T15:00:00Z"},
+                ])), encoding="utf-8")
+            (raw_dir / "actions_runs.json").write_text(json.dumps([]), encoding="utf-8")
+            result = extract.process_github("some/repo", since, until, raw_dir, offline=True)
+            self.assertEqual(result["prs"]["merged_in_window"], 1)
+            # the created:-based "merged" count must NOT see this PR --
+            # it was created outside the window
+            self.assertEqual(result["prs"]["created_in_window"], 0)
+
+
+class TestSurvivingFilesOnlineOfflineParity(unittest.TestCase):
+    """Major 3 (round 3): `surviving_run_events.surviving_files` must be
+    the same number online and --offline -- an offline replay finds the
+    exact cache files a live run just wrote, so there is no reason for
+    the count to differ."""
+
+    def test_surviving_files_same_online_and_offline(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw_dir = Path(td) / "raw" / "wb_run_events"
+            raw_dir.mkdir(parents=True)
+            for i in range(3):
+                (raw_dir / f"file{i}.jsonl").write_text("", encoding="utf-8")
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            result = extract.process_surviving_run_events(
+                Path(td), since, until, Path(td) / "raw", offline=True)
+            self.assertEqual(result["surviving_files"], 3)
 
 
 if __name__ == "__main__":

@@ -130,8 +130,8 @@ def _apply_rate_override(existing: dict, override: dict) -> dict:
     $0.25/MTok) must never be silently reset to the 0.1x default just
     because `input` changed."""
     merged = dict(existing)
-    input_usd = override.get("input", existing.get("input"))
-    output_usd = override.get("output", existing.get("output"))
+    input_usd = override.get("input", existing.get("input")) or 0.0
+    output_usd = override.get("output", existing.get("output")) or 0.0
     merged["input"] = input_usd
     merged["output"] = output_usd
     if "cache_write_5m" not in override:
@@ -141,6 +141,13 @@ def _apply_rate_override(existing: dict, override: dict) -> dict:
     for k, v in override.items():
         merged[k] = v  # any explicitly given field wins outright, last
     merged["cache_write"] = merged["cache_write_5m"]  # equal-to-5m fallback for old callers
+    # minor #3 (round 3): a brand-new prefix added via --price-config with
+    # no `cache_read` (and no existing entry to inherit one from) used to
+    # leave this field missing entirely -- UsageBucket.add() then raised
+    # KeyError('cache_read') the first time that model's usage was priced.
+    # Fall back to the usual 0.1x-of-input rule rather than crash.
+    if "cache_read" not in merged or merged.get("cache_read") is None:
+        merged["cache_read"] = round(input_usd * 0.1, 6)
     return merged
 
 
@@ -465,8 +472,14 @@ def strip_heredocs(cmd: str) -> str:
     """Remove heredoc BODIES (the lines between a `<<[-]DELIM` marker and the
     line containing just DELIM) before any tokenising or classification --
     their contents are never inspected for verb/pattern extraction (B4).
-    The marker line itself (and the closing delimiter line) are kept so the
-    surrounding command structure is still visible."""
+    The marker line itself is kept so the surrounding command structure is
+    still visible and still classifies (e.g. the `cat` in `cat > f <<EOF`).
+    minor #1 (round 3): the closing delimiter line is now DROPPED, not
+    kept -- with NM1's newline-to-`;` rewrite, keeping it turned the bare
+    delimiter word into its own fake command position (`EOF` showed up
+    1,346 times in `by_verb` on real data). The line after it still gets
+    its own newline separator from the marker line, so a following real
+    command is still classified on its own."""
     if "<<" not in cmd:
         return cmd
     lines = cmd.split("\n")
@@ -482,8 +495,7 @@ def strip_heredocs(cmd: str) -> str:
             while i < len(lines) and lines[i].strip() != delim:
                 i += 1
             if i < len(lines):
-                out.append(lines[i])  # keep the closing delimiter line
-                i += 1
+                i += 1  # skip the closing delimiter line -- never classified
             continue
         i += 1
     return "\n".join(out)
@@ -652,6 +664,28 @@ def strip_segment_prefix(tokens: list) -> list:
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SAFE_VERB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*$")
 
+# minor #1 (round 3): shell keywords are control-flow syntax, never a
+# command of their own, so a segment beginning with one (a stray `do`/
+# `done`/`for` from a for-loop, `(`/`)` from a subshell, `then`/`fi` from
+# an if) must never occupy a command position.
+_SHELL_KEYWORDS = {
+    "do", "done", "for", "then", "fi", "else", "elif", "while", "case",
+    "esac", "in", "function", "select", "until", "time",
+}
+_LONE_PUNCT_TOKENS = {"(", ")", "{", "}", "[", "]", "[[", "]]"}
+
+
+def _is_non_command_leading_token(tok: str) -> bool:
+    """True if `tok` cannot possibly be a command's own leading verb --
+    shell keyword, lone punctuation, or a bare digit (a redirection
+    file-descriptor number stranded after prefix-stripping, e.g. the `2`
+    in `cd dir 2>/dev/null` once `cd dir` is stripped)."""
+    if tok in _SHELL_KEYWORDS or tok in _LONE_PUNCT_TOKENS:
+        return True
+    if tok.isdigit():
+        return True
+    return False
+
 
 def _sanitize_verb(tok: str) -> str:
     """A verb/subverb token must never carry a path, an assignment's value,
@@ -737,7 +771,13 @@ def classify_segment_tokens(toks: list) -> tuple:
         # second one, e.g. "list" in "gh run list") -- it only ever
         # surfaces below through the explicit two_word allowlist, so it
         # needs no separate gate here, just syntax sanitisation.
-        sub = _allowlisted_sub(verb, raw_sub) if raw_sub not in ("<other>", "<assignment>", "(empty)") else raw_sub
+        # minor #4 (round 3): an unsafe/unparseable second token (raw_sub
+        # is "<other>"/"<assignment>"/"(empty)") is ALSO an unknown
+        # subcommand -- route it through the same "(other)" placeholder
+        # the allowlist itself uses, instead of leaking a second, distinct
+        # placeholder spelling ("git <other>" alongside "git (other)")
+        # for what is really the same "no known subcommand" case.
+        sub = _allowlisted_sub(verb, raw_sub) if raw_sub not in ("<other>", "<assignment>", "(empty)") else "(other)"
         third = _sanitize_verb(toks[2]) if len(toks) > 2 else None
         # go test/build/vet, git push/fetch/merge, gh api/run, wb pr/run/wait...
         if verb == "go" and sub in ("test", "build", "vet", "run", "mod", "vendor"):
@@ -782,6 +822,14 @@ def iter_command_segments(cmd: str):
     for preceding_op, seg in split_command_segments_with_ops(cmd):
         stripped = strip_segment_prefix(seg)
         if not stripped:
+            continue
+        # minor #1 (round 3): a shell keyword (`do`/`done`/`for`/...), a
+        # bare redirection file-descriptor number left over from something
+        # like `cd dir 2>/dev/null`, or lone punctuation (`(`, `)`, `{`,
+        # `}`) is shell SYNTAX, never a command of its own -- it must not
+        # occupy a command position in by_verb/pipe_filters/the sequence
+        # miner just because it happened to land between two operators.
+        if _is_non_command_leading_token(stripped[0]):
             continue
         verb, subverb = classify_segment_tokens(stripped)
         yield verb, subverb, " ".join(stripped), preceding_op == "|", stripped
@@ -1316,6 +1364,15 @@ def advance_stall_gap(rec: dict, msg: dict, ts: Optional[datetime],
     wall-clock impact (a SUMMARY headline needs stall MINUTES, not just how
     many).
 
+    Major 1 (round 3): whether a gap counts as a stall at all is still
+    decided from its FULL duration (a genuine multi-day gap is still a
+    stall the day it's noticed) -- but the MINUTES booked for it are
+    clipped to `max(gap_prev_ts, since)`, so a gap that opened on an
+    earlier day only books the portion that actually fell inside THIS
+    window. Otherwise a session idle for several days would book more
+    than a day of stall minutes onto the single day that happened to
+    close it.
+
     Returns the (possibly updated) (gap_prev_ts, gap_prev_text) pair.
     """
     if ts is None:
@@ -1324,12 +1381,14 @@ def advance_stall_gap(rec: dict, msg: dict, ts: Optional[datetime],
         gap_seconds = (ts - gap_prev_ts).total_seconds()
         if gap_seconds > STALL_THRESHOLD_SECONDS:
             kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+            clipped_start = max(gap_prev_ts, since)
+            clipped_seconds = (ts - clipped_start).total_seconds()
             if loop_events is not None:
-                loop_events.append(("stall", role, session_id, kind, gap_seconds))
+                loop_events.append(("stall", role, session_id, kind, clipped_seconds))
             if counter is not None:
                 counter[kind] += 1
             if minutes_counter is not None:
-                minutes_counter[kind] += gap_seconds / 60.0
+                minutes_counter[kind] += clipped_seconds / 60.0
     return ts, extract_text(msg.get("content"))
 
 
@@ -1501,6 +1560,19 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                 rec, msg, ts, since, until, gap_prev_ts, gap_prev_text,
                 pending_tool_ids, role, session_id, loop_events)
             if ts is None or not in_window(ts, since, until):
+                # minor #8 (round 3): still register this OUT-of-window
+                # record's own tool_use ids -- otherwise the first
+                # in-window gap that a later tool_result closes has
+                # nothing pending to match against, and is misclassified
+                # idle_until_resume instead of tool_running. This is
+                # bookkeeping only (no window-gated metric reads it);
+                # everything else about this record stays skipped.
+                for block in msg.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tid = block.get("id")
+                        if tid:
+                            pending_tool_use[tid] = (ts, block.get("name") or "?", block.get("input") or {}, None)
+                            pending_tool_ids.add(tid)
                 continue
             touched = True
             model = msg.get("model")
@@ -1980,11 +2052,18 @@ def discover_main_sessions(home: Path) -> list:
 
 def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
                          raw_dir: Optional[Path] = None, home: Optional[Path] = None,
-                         offline: bool = False) -> dict:
+                         offline: bool = False, repos_out: Optional[set] = None) -> dict:
     """Scan one or more WB state directories (a fleet may have used
     `~/.wb` and later `~/projects/.wb`, or both at once) and merge them,
     de-duplicating events seen under more than one root by (type, claim_id,
-    run_id)."""
+    run_id).
+
+    `repos_out`, when given, is filled with every distinct `repository`
+    seen on a claim or seal event that falls inside the window (Major 2,
+    round 3: the fleet-wide "$ per merged PR" denominator's repo set) --
+    kept OUT of the returned dict itself, since metrics.json otherwise
+    would end up listing every repository the fleet has touched, private
+    or not, which nothing before this needed to expose."""
     existing_dirs = [d for d in wb_state_dirs if d.exists()]
     if not existing_dirs:
         return {"unavailable": f"no WB state dir found among {scrub_home_path([str(d) for d in wb_state_dirs])}"}
@@ -2024,18 +2103,28 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
             ts = parse_ts(d.get("at"))
             if ts:
                 claims[d.get("claim_id")] = ts
+                if in_window(ts, since, until) and d.get("repository") and repos_out is not None:
+                    repos_out.add(d["repository"])
 
     for t, d in all_events:
         if t != "worktree.sealed":
             continue
         ts = parse_ts(d.get("at"))
-        if ts and not in_window(ts, since, until):
+        # minor #7 (round 3): a seal record with NO timestamp must be
+        # excluded, not silently treated as in-window -- `ts and not
+        # in_window(...)` short-circuits to False (i.e. "don't skip") when
+        # `ts` is None, which is backwards.
+        if not ts or not in_window(ts, since, until):
             continue
         out["sealed"] += 1
         out["disposition"][d.get("disposition") or "unknown"] += 1
+        if d.get("repository") and repos_out is not None:
+            repos_out.add(d["repository"])
         claimed_at = claims.get(d.get("claim_id"))
         if claimed_at and ts:
             out["landing_durations_s"].append((ts - claimed_at).total_seconds())
+
+    out["repos_with_in_window_activity_count"] = len(repos_out) if repos_out is not None else None
 
     out["disposition"] = dict(out["disposition"])
     if out["landing_durations_s"]:
@@ -2090,9 +2179,14 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
                         pass
     if any_waits_dir:
         out["open_wait_snapshots_by_kind"] = dict(wait_kinds)
+        # minor #5 (round 3): explicitly a live SNAPSHOT, not window-
+        # filtered data -- a wait started before or after the window is
+        # still counted here if its file was on disk at extraction time,
+        # because wb keeps no durable wait-history log to filter against.
         out["open_wait_note"] = (
-            "counts files present on disk at extraction time, not all waits started "
-            "within the window; wb keeps no durable wait-history log"
+            "SNAPSHOT, not filtered to the window: counts wait files present on disk "
+            "at extraction time, regardless of when each wait actually started (wb "
+            "keeps no durable wait-history log to filter against)"
             + (" (replayed from raw/ cache: --offline)" if offline else "")
         )
     else:
@@ -2184,7 +2278,10 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
         files = sorted(glob.glob(str(raw_dir / "wb_run_events" / "*.jsonl")))
         if not files:
             return {"unavailable": f"--offline given but no cached raw/wb_run_events/ files under {scrub_home_path(str(raw_dir))}"}
-        surviving_files = None  # not meaningful when replaying a merged cache
+        # Major 3 (round 3): report the same `len(files)` an online run
+        # would -- offline replay finds the same cached files a live run
+        # just wrote, so there's no reason for this to differ.
+        surviving_files = len(files)
     else:
         # worktree layout is <task>/<host>/<owner>/<repo>/.wb/local/run/events.jsonl
         # (e.g. .worktrees/my-task/github.com/sneat-dev/wb/.wb/...); glob
@@ -2387,11 +2484,46 @@ def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, o
         else:
             still_open += 1
 
+    # Major 2 (round 3): "merged" above counts PRs CREATED in the window
+    # that HAPPEN to already be merged by the time this pass runs -- not
+    # the same set as PRs actually MERGED in the window (a PR created in
+    # the window can merge days later, and a PR created earlier can merge
+    # inside the window and would be invisible to the `created:` query).
+    # This second, separate query answers "PRs merged in window" honestly,
+    # via the Search API's `merged:` qualifier, for the headline's single-
+    # repo count (label b).
+    try:
+        mq = f"repo:{repo} is:pr is:merged merged:{since.date()}..{until.date()}"
+        merged_raw_pages = gh_api_paginated(
+            "search/issues",
+            params={"q": mq, "per_page": "100"},
+            cache_path=raw_dir / "pulls_merged.json", offline=offline, sanitize=_sanitize_pr_fields,
+        )
+        merged_prs = []
+        for page in merged_raw_pages:
+            if isinstance(page, dict) and "items" in page:
+                merged_prs.extend(page["items"])
+            else:
+                merged_prs.append(page)
+        # defensive re-check against the field this query is actually
+        # keyed on (merged_at), not created_at
+        merged_in_window = len([pr for pr in merged_prs if in_window(parse_ts(pr.get("merged_at")), since, until)])
+    except Exception as e:
+        merged_in_window = None
+        merged_in_window_unavailable = f"gh api pulls (merged search) failed: {e}"
+    else:
+        merged_in_window_unavailable = None
+
     result["prs"] = {
         "created_in_window": len(window_prs),
         "merged": merged,
         "closed_unmerged": closed_unmerged,
         "still_open": still_open,
+        # Major 2: the honest "merged in window" count, via `merged:`, not
+        # `created:` -- this is what the headline's "<repo> PRs merged in
+        # window" (label b) reports, never the `created`-keyed `merged` above.
+        "merged_in_window": merged_in_window,
+        "merged_in_window_unavailable": merged_in_window_unavailable,
         "time_to_merge_hours": {
             "median": round(statistics.median(merge_times_h), 2) if merge_times_h else None,
             "p90": round(sorted(merge_times_h)[int(0.9 * (len(merge_times_h) - 1))], 2) if merge_times_h else None,
@@ -2471,6 +2603,64 @@ def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, o
         "per-PR failure-round counts are marked unavailable rather than guessed"
     )
     return result
+
+
+_FLEET_PR_SEARCH_BATCH_SIZE = 15  # GitHub's search query has a length limit;
+                                   # batch repo: qualifiers to stay well under it
+
+
+def process_fleet_merged_prs(repos: list, since: datetime, until: datetime,
+                              raw_dir: Path, offline: bool) -> dict:
+    """Major 2 (round 3): the fleet-wide numerator for "$ per merged PR" is
+    every session's cost, across every repo the fleet touched -- so its
+    denominator must be PRs merged across that SAME fleet, not one repo's
+    PRs. `repos` is every repository with an in-window worktree claim or
+    seal (process_wb_worklogs' `repos_out`). Queries the Search API's
+    `is:pr is:merged merged:<since>..<until>` with batched `repo:`
+    qualifiers (one query per batch, to stay under GitHub's query-length
+    limit), and caches each batch's trimmed results under raw/ so an
+    `--offline` rerun reproduces the same count."""
+    if not repos:
+        return {"unavailable": "no repository had an in-window worktree claim or seal"}
+    sorted_repos = sorted(repos)
+    batches = [sorted_repos[i:i + _FLEET_PR_SEARCH_BATCH_SIZE]
+               for i in range(0, len(sorted_repos), _FLEET_PR_SEARCH_BATCH_SIZE)]
+    total_merged = 0
+    # batches never overlap in repos, so no PR can appear in two batches --
+    # dedupe within a batch only (search results can repeat a PR across pages)
+    for bi, batch in enumerate(batches):
+        q = ("is:pr is:merged merged:" + f"{since.date()}..{until.date()} "
+             + " ".join(f"repo:{r}" for r in batch))
+        try:
+            raw_pages = gh_api_paginated(
+                "search/issues",
+                params={"q": q, "per_page": "100"},
+                cache_path=raw_dir / f"fleet_merged_prs_batch{bi:02d}.json",
+                offline=offline, sanitize=_sanitize_pr_fields,
+            )
+        except Exception as e:
+            return {"unavailable": f"gh api fleet merged-PR search failed on batch {bi}: {e}"}
+        items = []
+        for page in raw_pages:
+            if isinstance(page, dict) and "items" in page:
+                items.extend(page["items"])
+            else:
+                items.append(page)
+        batch_numbers = set()
+        for pr in items:
+            if not in_window(parse_ts(pr.get("merged_at")), since, until):
+                continue
+            num = pr.get("number")
+            if num is not None and num in batch_numbers:
+                continue
+            if num is not None:
+                batch_numbers.add(num)
+            total_merged += 1
+    return {
+        "merged_in_window": total_merged,
+        "repos_queried": len(sorted_repos),
+        "batches": len(batches),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -2710,14 +2900,25 @@ def build_stalls_section(loop_events: list) -> dict:
     return out
 
 
-def build_headline_section(since: datetime, until: datetime,
+def build_headline_section(since: datetime, until: datetime, repo: str,
                             tokens_main_by_model: dict, tokens_subagent_by_model: dict,
                             total_cost: float, stalls_section: dict,
-                            gh_stats: dict, wb_stats: dict) -> dict:
+                            gh_stats: dict, wb_stats: dict, fleet_pr_stats: dict) -> dict:
     """A reviewer coming back a week later needs the total before the
     12-item unavailable list buries it. Computed once here and rendered
     as the FIRST section of SUMMARY.md (and the first key other than
-    window/generated_at in metrics.json), with `unavailable` moved last."""
+    window/generated_at in metrics.json), with `unavailable` moved last.
+
+    Major 2 (round 3): "$ per merged PR" now names both halves of the
+    division explicitly, because the two are NOT the same repo scope:
+    - (a) `usd_per_fleet_merged_pr`: every session's cost on this machine,
+      across every repository (not just `repo`), divided by every PR
+      MERGED in the window (via `merged:`) across every repository that
+      had an in-window worktree claim or seal (fleet_pr_stats). This is
+      the fleet-wide "how much does a landed PR cost" figure.
+    - (b) `repo_merged_prs_in_window`: a plain count -- PRs merged in the
+      window for `repo` alone (gh_stats' `merged_in_window`, itself keyed
+      on `merged:`, never `created:`)."""
     days = max(1, (until.date() - since.date()).days + 1)
     main_usd = sum(d["estimated_usd"] for d in tokens_main_by_model.values())
     subagent_usd = sum(d["estimated_usd"] for d in tokens_subagent_by_model.values())
@@ -2726,9 +2927,12 @@ def build_headline_section(since: datetime, until: datetime,
     output_tokens = (sum(d["output_tokens"] for d in tokens_main_by_model.values())
                       + sum(d["output_tokens"] for d in tokens_subagent_by_model.values()))
 
-    merged_prs = None
+    fleet_merged_prs = None
+    if isinstance(fleet_pr_stats, dict) and "unavailable" not in fleet_pr_stats:
+        fleet_merged_prs = fleet_pr_stats.get("merged_in_window")
+    repo_merged_prs = None
     if isinstance(gh_stats, dict) and "unavailable" not in gh_stats:
-        merged_prs = gh_stats.get("prs", {}).get("merged")
+        repo_merged_prs = gh_stats.get("prs", {}).get("merged_in_window")
     sealed_worktrees = None
     if isinstance(wb_stats, dict) and "unavailable" not in wb_stats:
         sealed_worktrees = wb_stats.get("sealed")
@@ -2743,9 +2947,11 @@ def build_headline_section(since: datetime, until: datetime,
         "usd_subagent": round(subagent_usd, 2),
         "cache_read_share_of_usd": round(cache_read_usd / total_cost, 3) if total_cost else None,
         "output_tokens_total": output_tokens,
-        "usd_per_merged_pr": _usd_per(merged_prs),
+        "usd_per_fleet_merged_pr": _usd_per(fleet_merged_prs),
+        "fleet_merged_prs_in_window": fleet_merged_prs,
+        "fleet_repos_queried": fleet_pr_stats.get("repos_queried") if isinstance(fleet_pr_stats, dict) else None,
+        f"{repo}_merged_prs_in_window": repo_merged_prs,
         "usd_per_sealed_worktree": _usd_per(sealed_worktrees),
-        "merged_prs_in_window": merged_prs,
         "sealed_worktrees_in_window": sealed_worktrees,
         "stall_minutes_by_kind": {
             "main": stalls_section["main"]["minutes_by_kind"],
@@ -2941,8 +3147,13 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
         (a.last_ts - a.first_ts).total_seconds() for a in agents if a.first_ts and a.last_ts
     ]
 
-    wb_stats = process_wb_worklogs(wb_state_dirs, since, until, raw_dir, home=home, offline=offline)
+    fleet_repos: set = set()
+    wb_stats = process_wb_worklogs(wb_state_dirs, since, until, raw_dir, home=home, offline=offline,
+                                    repos_out=fleet_repos)
     gh_stats = process_github(repo, since, until, raw_dir, offline)
+    # Major 2 (round 3): the fleet-wide merged-PR denominator, across every
+    # repo with an in-window claim/seal -- see process_fleet_merged_prs.
+    fleet_pr_stats = process_fleet_merged_prs(sorted(fleet_repos), since, until, raw_dir, offline)
     git_stats = process_git_log(git_repo_path, since, until)
     tools_section = build_tools_section(tool_agg)
     bash_section = build_bash_section(bash_verb_totals, bash_subverb_totals, long_bash,
@@ -3038,6 +3249,9 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
         unavailable.append({"metric": "GitHub PR/Actions data", "reason": gh_stats["unavailable"]})
     if isinstance(gh_stats.get("actions"), dict) and "unavailable" in gh_stats["actions"]:
         unavailable.append({"metric": "GitHub Actions runs", "reason": gh_stats["actions"]["unavailable"]})
+    if isinstance(fleet_pr_stats, dict) and "unavailable" in fleet_pr_stats:
+        unavailable.append({"metric": "fleet-wide merged PRs (headline usd_per_fleet_merged_pr)",
+                             "reason": fleet_pr_stats["unavailable"]})
     unavailable.append({
         "metric": "per-PR lint-vs-test failure rounds and review/fix rounds",
         "reason": "GitHub exposes run-level conclusion only; attributing a failed run to "
@@ -3104,8 +3318,8 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
     # before the unavailable list buries it. Computed once here, rendered
     # first (metrics.json keeps `unavailable` last too, moved below).
     headline_section = build_headline_section(
-        since, until, tokens_main_by_model, tokens_subagent_by_model,
-        total_cost, stalls_section, gh_stats, wb_stats,
+        since, until, repo, tokens_main_by_model, tokens_subagent_by_model,
+        total_cost, stalls_section, gh_stats, wb_stats, fleet_pr_stats,
     )
 
     metrics = {
@@ -3162,6 +3376,7 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
         "adoption": adoption_section,
         "codex": codex_stats,
         "pipeline_and_ci": gh_stats,
+        "fleet_merged_prs": fleet_pr_stats,
         "wb_state": wb_stats,
         "git_log": git_stats,
         "top10_expensive_patterns": top10,
@@ -3193,9 +3408,16 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
     lines.append(f"- Cache-read share of total $: {cr_share * 100:.1f}%" if cr_share is not None
                   else "- Cache-read share of total $: n/a (no cost this window)")
     lines.append(f"- Total output tokens: {h.get('output_tokens_total', 0):,}")
-    upp = h.get("usd_per_merged_pr")
-    lines.append(f"- $ per merged PR: {('$' + str(upp)) if upp is not None else 'n/a'} "
-                  f"({h.get('merged_prs_in_window')} merged in window)")
+    # Major 2 (round 3): two distinct scopes, never blended -- (a) is
+    # fleet-wide cost over fleet-wide merged PRs, (b) is a plain per-repo
+    # count. See build_headline_section's docstring.
+    upp = h.get("usd_per_fleet_merged_pr")
+    lines.append(f"- $ per merged PR (fleet): {('$' + str(upp)) if upp is not None else 'n/a'} "
+                  f"({h.get('fleet_merged_prs_in_window')} merged across "
+                  f"{h.get('fleet_repos_queried')} repos with in-window activity)")
+    repo_name = metrics.get("repo", "?")
+    repo_merged = h.get(f"{repo_name}_merged_prs_in_window")
+    lines.append(f"- `{repo_name}` PRs merged in window: {repo_merged if repo_merged is not None else 'n/a'}")
     upw = h.get("usd_per_sealed_worktree")
     lines.append(f"- $ per sealed worktree: {('$' + str(upw)) if upw is not None else 'n/a'} "
                   f"({h.get('sealed_worktrees_in_window')} sealed in window)")
@@ -3350,8 +3572,12 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
         lines.append(f"- unavailable: {p['unavailable']}")
     else:
         prs = p.get("prs", {})
-        lines.append(f"- PRs created in window: {prs.get('created_in_window')}, merged: {prs.get('merged')}, "
+        lines.append(f"- PRs created in window: {prs.get('created_in_window')}, "
+                      f"of those already merged: {prs.get('merged')}, "
                       f"closed unmerged: {prs.get('closed_unmerged')}, still open: {prs.get('still_open')}")
+        # Major 2 (round 3): the honest MERGED-in-window count (via
+        # `merged:`), distinct from "created in window, merged" above.
+        lines.append(f"- PRs actually merged in window (via `merged:`): {prs.get('merged_in_window')}")
         ttm = prs.get("time_to_merge_hours", {})
         lines.append(f"- time to merge (hours): median={ttm.get('median')}, p90={ttm.get('p90')}, n={ttm.get('count')}")
         a = p.get("actions", {})
