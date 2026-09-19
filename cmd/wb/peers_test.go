@@ -205,6 +205,54 @@ func TestPeersInvitePrintsTokenOnceOrWritesTokenFile(t *testing.T) {
 	}
 }
 
+// TestPeersInviteTokenFileWriteFailureStillReportsTheToken is M-a: a token
+// file write failure after the hub has already minted (and, on a rotate,
+// revoked) a live credential must not discard that credential's only copy,
+// but it is still a real failure — invite must exit non-zero, and in JSON
+// mode it must still emit valid JSON rather than switch to plain text a
+// scripted caller cannot parse.
+func TestPeersInviteTokenFileWriteFailureStillReportsTheToken(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory permission this test relies on")
+	}
+	adminServer, mount := newPeerAdminTestServer(t)
+	mount.PeerAdmin.MemoryEngine = false
+	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
+		t.Fatal(err)
+	}
+	deps := testPeersDeps(t, adminServer, nil)
+
+	readOnlyDir := t.TempDir()
+	if err := os.Chmod(readOnlyDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o700) })
+	tokenFile := filepath.Join(readOnlyDir, "token.txt")
+
+	var out bytes.Buffer
+	err := runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", true, tokenFile, false, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("error = %v, want an exitFindings *exitError", err)
+	}
+	if !strings.Contains(out.String(), "could not write token file") || !strings.Contains(out.String(), "Token (copy this now") {
+		t.Fatalf("text output = %q, want a write-failure warning and the rescued token", out.String())
+	}
+
+	out.Reset()
+	err = runPeersInvite(context.Background(), deps, t.TempDir(), "laptop", true, tokenFile+".json", true, &out)
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("json-mode error = %v, want an exitFindings *exitError", err)
+	}
+	var jsonResult peersInviteResult
+	if jsonErr := json.Unmarshal(out.Bytes(), &jsonResult); jsonErr != nil {
+		t.Fatalf("json-mode output is not valid JSON: %q, %v", out.String(), jsonErr)
+	}
+	if jsonResult.Token == "" || jsonResult.TokenFile != "" {
+		t.Fatalf("json-mode result = %+v, want the rescued token and no token file", jsonResult)
+	}
+}
+
 func peerRecordFixture(name string) hub.PeerRecord {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	// MachineID must match hub.MachineID("local", name) exactly: that is the
@@ -329,16 +377,25 @@ func TestPeersListEscalatesToAFindingWhenAHubIsConfiguredButUnreachable(t *testi
 func TestPeersListGoldenTextAndJSON(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	lastSeen := now.Add(-2 * time.Hour)
+	lag37 := int64(37)
+	lag99 := int64(99)
 	downstream := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "machine_1", Name: "alex-macbook", Role: "downstream", Status: "connected", LastSeenAt: &lastSeen}
 	upstream := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "vm1.sneat.dev", Name: "vm1.sneat.dev", Role: "upstream", Status: "offline", ResetPending: true}
-	rows := []peers.Record{downstream, upstream}
+	withLag := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "machine_2", Name: "dev-mac", Role: "downstream", Status: "offline", Lag: &lag37}
+	lagAndReset := peers.Record{SchemaVersion: peers.SchemaVersion, ID: "machine_3", Name: "old-laptop", Role: "downstream", Status: "blocked", Lag: &lag99, ResetPending: true}
+	rows := []peers.Record{downstream, upstream, withLag, lagAndReset}
 
 	var text bytes.Buffer
 	writePeersTable(&text, now, rows)
 	const rowFormat = "%-13s %-11s %-10s %-10s %-9s %-6s %s\n"
 	wantText := fmt.Sprintf(rowFormat, "NAME", "ROLE", "STATUS", "LAST SEEN", "CONNECTED", "CURSOR", "LAG") +
 		fmt.Sprintf(rowFormat, "alex-macbook", "downstream", "connected", "2h ago", "-", "-", "-") +
-		fmt.Sprintf(rowFormat, "vm1.sneat.dev", "upstream", "offline", "-", "-", "-", "reset")
+		fmt.Sprintf(rowFormat, "vm1.sneat.dev", "upstream", "offline", "-", "-", "-", "reset") +
+		fmt.Sprintf(rowFormat, "dev-mac", "downstream", "offline", "-", "-", "-", "37") +
+		// A pending reset takes priority over a present lag value in the
+		// rendered column: the last-known count is stale until
+		// reconciliation completes.
+		fmt.Sprintf(rowFormat, "old-laptop", "downstream", "blocked", "-", "-", "-", "reset")
 	if text.String() != wantText {
 		t.Fatalf("golden text mismatch:\ngot:  %q\nwant: %q", text.String(), wantText)
 	}
@@ -349,7 +406,9 @@ func TestPeersListGoldenTextAndJSON(t *testing.T) {
 	}
 	wantJSON := `{"schema_version":1,"peers":[` +
 		`{"schema_version":1,"id":"machine_1","name":"alex-macbook","role":"downstream","status":"connected","created_at":"0001-01-01T00:00:00Z","last_seen_at":"2026-09-18T10:00:00Z"},` +
-		`{"schema_version":1,"id":"vm1.sneat.dev","name":"vm1.sneat.dev","role":"upstream","status":"offline","created_at":"0001-01-01T00:00:00Z","reset_pending":true}` +
+		`{"schema_version":1,"id":"vm1.sneat.dev","name":"vm1.sneat.dev","role":"upstream","status":"offline","created_at":"0001-01-01T00:00:00Z","reset_pending":true},` +
+		`{"schema_version":1,"id":"machine_2","name":"dev-mac","role":"downstream","status":"offline","created_at":"0001-01-01T00:00:00Z","lag":37},` +
+		`{"schema_version":1,"id":"machine_3","name":"old-laptop","role":"downstream","status":"blocked","created_at":"0001-01-01T00:00:00Z","reset_pending":true,"lag":99}` +
 		"]}\n"
 	if gotJSON.String() != wantJSON {
 		t.Fatalf("golden JSON mismatch:\ngot:  %s\nwant: %s", gotJSON.String(), wantJSON)

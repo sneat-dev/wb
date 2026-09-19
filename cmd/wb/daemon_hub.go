@@ -318,7 +318,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Credentials: credentials, Index: machineIndex, Trust: peerTrust, Stats: peerStats,
 		Backend: store, Pepper: pepper, HubMachineName: machine, MemoryEngine: cfg.Store.Engine == hubconfig.EngineMemory,
 	}
-	peersSource := hubPeerReadSource{trust: peerTrust}
+	peersSource := hubPeerReadSource{trust: peerTrust, queuedWork: hub.NewQueuedWorkStore(store)}
 	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
 
 	handler := hub.NewHandler(hub.HandlerOptions{
@@ -437,11 +437,14 @@ func (emptyPeersSource) GetPeer(context.Context, string) (peers.Detail, bool, er
 	return peers.Detail{}, false, nil
 }
 
-// hubPeerReadSource adapts hub.PeerTrustStore to internal/peers.Source. It is
-// the hub-side (downstream role) half of "the same handler serves identical
-// JSON everywhere it is mounted"; task 2 adds the laptop-side (upstream
-// role) counterpart.
-type hubPeerReadSource struct{ trust hub.PeerTrustStore }
+// hubPeerReadSource adapts hub.PeerTrustStore (and, for LAG, hub.
+// QueuedWorkStore) to internal/peers.Source. It is the hub-side (downstream
+// role) half of "the same handler serves identical JSON everywhere it is
+// mounted"; task 2 adds the laptop-side (upstream role) counterpart.
+type hubPeerReadSource struct {
+	trust      hub.PeerTrustStore
+	queuedWork hub.QueuedWorkStore
+}
 
 func (source hubPeerReadSource) ListPeers(ctx context.Context) ([]peers.Record, error) {
 	if source.trust == nil {
@@ -453,7 +456,7 @@ func (source hubPeerReadSource) ListPeers(ctx context.Context) ([]peers.Record, 
 	}
 	list := make([]peers.Record, 0, len(records))
 	for _, record := range records {
-		list = append(list, peerRecordToRead(record))
+		list = append(list, source.recordToRead(ctx, record))
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	return list, nil
@@ -477,10 +480,27 @@ func (source hubPeerReadSource) GetPeer(ctx context.Context, idOrName string) (p
 		return peers.Detail{}, false, nil
 	}
 	return peers.Detail{
-		Record: peerRecordToRead(record),
+		Record: source.recordToRead(ctx, record),
 		// Session is nil and Counters is zero until Task 2 and Task 6.
 		// AdminAvailable is false until Task 7's dashboard admin session.
 	}, true, nil
+}
+
+// recordToRead is peerRecordToRead enriched with LAG: the queued-work count
+// from workbench_repository_event_queues/<machineID>, read for every peer
+// exactly once per list/get call. A missing queue-state document (nothing
+// writes one until Task 3/4) or a read failure both leave Lag nil, rendered
+// as "-" — this is display enrichment, not authoritative trust data, so it
+// never fails the whole list/get over one peer's queue-state read.
+func (source hubPeerReadSource) recordToRead(ctx context.Context, record hub.PeerRecord) peers.Record {
+	read := peerRecordToRead(record)
+	if source.queuedWork == nil {
+		return read
+	}
+	if count, found, err := source.queuedWork.QueuedWork(ctx, record.MachineID); err == nil && found {
+		read.Lag = &count
+	}
+	return read
 }
 
 // peerRecordToRead converts the hub's persisted trust record to the read

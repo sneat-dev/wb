@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,15 +159,30 @@ func runPeersInvite(ctx context.Context, deps peersDeps, projectsRoot, name stri
 			// The token is already minted, and the hub never returns it
 			// again. Printing it now — with a loud warning — is the only
 			// way not to lose the operator's only copy; failing outright
-			// here would strand a live, un-recorded credential.
-			if _, err := fmt.Fprintf(out, "wb: could not write token file %s: %v\n", absoluteTokenFile, writeErr); err != nil {
-				return err
+			// here would strand a live, un-recorded credential. The write
+			// failure is still real, though: this returns a findings-level
+			// (exit 1) error rather than exit 0, and in JSON mode it emits a
+			// normal JSON result (with the token still in it, since no file
+			// holds it) rather than the loud text warning, so a scripted
+			// caller parsing stdout as JSON never has to also understand a
+			// plain-text failure mode.
+			if jsonOut {
+				result.TokenFile = ""
+				if err := json.NewEncoder(out).Encode(result); err != nil {
+					return err
+				}
+			} else {
+				if _, err := fmt.Fprintf(out, "wb: could not write token file %s: %v\n", absoluteTokenFile, writeErr); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintln(out, "Token (copy this now; it cannot be shown again):"); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintln(out, response.Token); err != nil {
+					return err
+				}
 			}
-			if _, err := fmt.Fprintln(out, "Token (copy this now; it cannot be shown again):"); err != nil {
-				return err
-			}
-			_, err := fmt.Fprintln(out, response.Token)
-			return err
+			return &exitError{code: exitFindings, message: fmt.Sprintf("could not write token file %s: %v", absoluteTokenFile, writeErr)}
 		}
 		result.Token = ""
 		result.TokenFile = absoluteTokenFile
@@ -618,7 +634,13 @@ func writePeersTable(out io.Writer, now time.Time, rows []peers.Record) {
 			lastSeen = publishedAgo(humanAge(now.Sub(*row.LastSeenAt)))
 		}
 		lag := "-"
+		if row.Lag != nil {
+			lag = strconv.FormatInt(*row.Lag, 10)
+		}
 		if row.ResetPending {
+			// A pending reset makes the last-known count stale until
+			// reconciliation completes, so it takes priority even when a
+			// number is also present.
 			lag = "reset"
 		}
 		_, _ = fmt.Fprintf(out, "%-13s %-11s %-10s %-10s %-9s %-6s %s\n", row.Name, row.Role, row.Status, lastSeen, "-", "-", lag)

@@ -32,10 +32,17 @@ type Record struct {
 	LastSeenAt      *time.Time `json:"last_seen_at,omitempty"`
 	LastConnectedAt *time.Time `json:"last_connected_at,omitempty"`
 	ResetPending    bool       `json:"reset_pending,omitempty"`
-	WBVersion       string     `json:"wb_version,omitempty"`
-	OS              string     `json:"os,omitempty"`
-	Arch            string     `json:"arch,omitempty"`
-	Protocol        int        `json:"protocol,omitempty"`
+	// Lag is the peer's queued-work count (pieces of sync work, after
+	// coalescing, not yet acknowledged) — `wb peers list`'s LAG column. nil
+	// until Task 3/4 start writing it (no queue-state document exists yet,
+	// or this peer has never had one), rendered as "-"; ResetPending takes
+	// priority over it in the rendered CLI table, since a pending reset
+	// makes the count stale.
+	Lag       *int64 `json:"lag,omitempty"`
+	WBVersion string `json:"wb_version,omitempty"`
+	OS        string `json:"os,omitempty"`
+	Arch      string `json:"arch,omitempty"`
+	Protocol  int    `json:"protocol,omitempty"`
 }
 
 // Session is the live session a peer detail response carries. It is always

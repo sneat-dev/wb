@@ -42,6 +42,18 @@ func TestPeersReadParityAcrossHubAndLocalMounts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Seed a queue-state document directly, as Task 3/4's own writer would
+	// have left it — nothing else writes queued_work yet. The collection
+	// name and firestore tag mirror hub's own unexported
+	// repositoryEventQueueCollection/repositoryEventQueueState exactly
+	// (see hub/repository_event_store.go); PeerAdmin.Backend is the same
+	// raw document store hub.NewQueuedWorkStore(store) reads in
+	// buildHubMount.
+	if err := mount.PeerAdmin.Backend.Set(context.Background(), "workbench_repository_event_queues", hub.MachineID("local", "laptop"), struct {
+		QueuedWork int64 `firestore:"queued_work"`
+	}{QueuedWork: 42}); err != nil {
+		t.Fatal(err)
+	}
 
 	hubHandler := mount.Mounts[hub.APIPrefix+"/"]
 	localHandler := dashboard.NewHandler(dashboard.Options{
@@ -68,6 +80,12 @@ func TestPeersReadParityAcrossHubAndLocalMounts(t *testing.T) {
 	}
 	if byName["laptop"].Status != "offline" || byName["laptop"].NodeID != longNodeID[:8] {
 		t.Fatalf("laptop record = %+v, want status offline and an 8-char node id", byName["laptop"])
+	}
+	if byName["laptop"].Lag == nil || *byName["laptop"].Lag != 42 {
+		t.Fatalf("laptop record = %+v, want lag=42 from the seeded queue-state document", byName["laptop"])
+	}
+	if byName["old-laptop"].Lag != nil {
+		t.Fatalf("old-laptop record = %+v, want lag=nil (no queue-state document seeded for it)", byName["old-laptop"])
 	}
 	if byName["old-laptop"].Status != "blocked" {
 		t.Fatalf("old-laptop record = %+v, want status blocked", byName["old-laptop"])
