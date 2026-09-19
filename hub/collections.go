@@ -42,5 +42,7 @@ func Collections() []string {
 		repositoryEventQueueCollection + "/" + repositoryEventQueuePolls,
 		repositoryEventStatusCollection,
 		repositoryEventStatusCollection + "/" + repositoryEventStatusPending,
+
+		webhookRedeliveryCollection,
 	}
 }
