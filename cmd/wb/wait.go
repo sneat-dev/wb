@@ -505,9 +505,18 @@ func waitChecksKey(checks map[string]int) string {
 func observePullRequest(ctx context.Context, reference waitReference) waitTarget {
 	target := waitTarget{Selector: reference.Selector, Repository: reference.Repository, Number: reference.Number}
 	snapshot := prsnapshot.Observe(ctx, reference.Repository, reference.Number)
-	if snapshot.Err != nil {
-		return waitReadFailure(target, snapshot.Err)
-	}
+	// prsnapshot.Observe fills in State/Draft/Head/Base/URL/Mergeable
+	// whenever the pull-request read itself succeeded, even when a later
+	// checks read failed on an open pull request and Err is set: the pull
+	// request's own identity is real, known information, not something a
+	// caller should lose because a different, later read failed. Copying
+	// these fields before checking Err — not after — is exactly what
+	// restores this verb's pre-prsnapshot behavior: `--json` keeps every
+	// field it always reported for this case, and the first observation
+	// `--until changed` compares later ticks against carries the real head
+	// rather than an empty one that would otherwise register as a false
+	// "changed" the moment a following, successful read reports it (round 3
+	// review of herdr-session-transport PR #657: a serious regression).
 	target.State = snapshot.State
 	if snapshot.Merged {
 		target.State = "merged"
@@ -517,6 +526,9 @@ func observePullRequest(ctx context.Context, reference waitReference) waitTarget
 	target.Base = snapshot.Base
 	target.URL = snapshot.URL
 	target.Mergeable = snapshot.Mergeable
+	if snapshot.Err != nil {
+		return waitReadFailure(target, snapshot.Err)
+	}
 	target.Checks = snapshot.Checks
 	target.Failed = snapshot.Failed
 	target.Failures = snapshot.Failures
