@@ -477,6 +477,158 @@ func TestTickReportsUnavailableForOneBindingWithoutStoppingTheRest(t *testing.T)
 	}
 }
 
+// TestBindingKeyIsStableAcrossAClaimIDChange proves the watcher's memory is
+// keyed by task, repository, and pull request — never by claim ID (round 3
+// review, minor 1): the same logical binding, re-recorded under a different
+// claim ID (the shape a `/move` successor claim or a re-recorded binding
+// takes), still confirms its two-observation streak rather than restarting
+// it as if it were a brand new binding.
+func TestBindingKeyIsStableAcrossAClaimIDChange(t *testing.T) {
+	w := NewWatcher()
+	first := fixedBinding("task-l", "claim-original", "acme/app", 15)
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "15", "open", false, fakeHeadA, "main", passingChecks)))
+	tick1, err := w.Evaluate(context.Background(), first)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 1): %v", err)
+	}
+	if tick1.Kind != KindChecksPassed || tick1.Terminal {
+		t.Fatalf("tick 1 = %+v, want checks-passed, not yet terminal", tick1)
+	}
+
+	successor := fixedBinding("task-l", "claim-successor", "acme/app", 15)
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "15", "open", false, fakeHeadA, "main", passingChecks)))
+	tick2, err := w.Evaluate(context.Background(), successor)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2): %v", err)
+	}
+	if tick2.Kind != KindChecksPassed || !tick2.Terminal {
+		t.Fatalf("tick 2 (different claim ID, same task/repository/PR) = %+v, want checks-passed and terminal", tick2)
+	}
+}
+
+// TestTickPrunesMemoryForBindingsNoLongerListed proves a binding that drops
+// out of ListRegisteredPullRequestBindings — its claim finished, or the
+// binding was otherwise withdrawn — has its remembered tick forgotten rather
+// than left to accumulate forever (round 3 review, minor 2).
+func TestTickPrunesMemoryForBindingsNoLongerListed(t *testing.T) {
+	projectsRoot := newTwoRepoFixture(t)
+	ctx := context.Background()
+
+	created, err := worktrees.Create(ctx, []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: projectsRoot, Operation: "watch-prune", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+	claim := created[0]
+	task, claimID, err := worktrees.RecordClaimPullRequestBinding(projectsRoot, claim.WorktreeDir, worktrees.ClaimPullRequestBinding{
+		Repository: "acme/app", PullRequest: 30, URL: "https://github.com/acme/app/pull/30",
+	})
+	if err != nil {
+		t.Fatalf("RecordClaimPullRequestBinding: %v", err)
+	}
+
+	w := NewWatcher()
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "30", "open", false, fakeHeadA, "main", pendingChecks)))
+	results, err := w.Tick(ctx, projectsRoot)
+	if err != nil {
+		t.Fatalf("Tick (1): %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome.Kind != KindChecksPending {
+		t.Fatalf("tick 1 results = %+v, want one checks-pending outcome", results)
+	}
+	key := bindingKey(worktrees.RegisteredPullRequestBinding{Task: task, Repository: "acme/app", PullRequest: 30})
+	if _, remembered := w.seen[key]; !remembered {
+		t.Fatal("tick 1 did not remember the binding")
+	}
+
+	if _, err := worktrees.Abort(ctx, worktrees.AbortOptions{
+		ProjectsRoot: projectsRoot, Task: task, Disposition: worktrees.AbortDiscarded, Apply: true, DeleteRemote: true,
+	}); err != nil {
+		t.Fatalf("Abort (seal the claim terminal, so it drops out of the registered set): %v", err)
+	}
+
+	results, err = w.Tick(ctx, projectsRoot)
+	if err != nil {
+		t.Fatalf("Tick (2): %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("tick 2 results = %+v, want none: the claim is sealed and no longer registered", results)
+	}
+	if _, remembered := w.seen[key]; remembered {
+		t.Fatalf("tick 2 left claim %s/%s pruned binding's memory behind: %+v", task, claimID, w.seen)
+	}
+}
+
+// TestTickPrunesMemoryOnceAMergedOutcomeIsEmitted proves a merged (or
+// closed) outcome's memory is forgotten right after Tick emits it: neither
+// classification depends on remembered state, so keeping it around would
+// only grow the map for as long as the daemon keeps polling an already-
+// resolved binding (round 3 review, minor 2).
+func TestTickPrunesMemoryOnceAMergedOutcomeIsEmitted(t *testing.T) {
+	projectsRoot := newTwoRepoFixture(t)
+	ctx := context.Background()
+
+	created, err := worktrees.Create(ctx, []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: projectsRoot, Operation: "watch-prune-merged", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+	claim := created[0]
+	task, _, err := worktrees.RecordClaimPullRequestBinding(projectsRoot, claim.WorktreeDir, worktrees.ClaimPullRequestBinding{
+		Repository: "acme/app", PullRequest: 31, URL: "https://github.com/acme/app/pull/31",
+	})
+	if err != nil {
+		t.Fatalf("RecordClaimPullRequestBinding: %v", err)
+	}
+
+	w := NewWatcher()
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "31", "closed", true, fakeHeadA, "main", passingChecks)))
+	results, err := w.Tick(ctx, projectsRoot)
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome.Kind != KindMerged || !results[0].Outcome.Terminal {
+		t.Fatalf("tick results = %+v, want one terminal merged outcome", results)
+	}
+	key := bindingKey(worktrees.RegisteredPullRequestBinding{Task: task, Repository: "acme/app", PullRequest: 31})
+	if _, remembered := w.seen[key]; remembered {
+		t.Fatalf("a merged outcome's memory was not pruned after being emitted: %+v", w.seen)
+	}
+}
+
+// TestZeroValueWatcherIsSafe proves Watcher{} — never passed through
+// NewWatcher — works correctly rather than panicking on its first remembered
+// tick, because its memory map is created lazily (round 3 review, minor 3).
+func TestZeroValueWatcherIsSafe(t *testing.T) {
+	var w Watcher
+	binding := fixedBinding("task-m", "claim-m", "acme/app", 16)
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "16", "open", false, fakeHeadA, "main", passingChecks)))
+	tick1, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 1) on a zero-value Watcher: %v", err)
+	}
+	if tick1.Kind != KindChecksPassed || tick1.Terminal {
+		t.Fatalf("tick 1 = %+v, want checks-passed, not yet terminal", tick1)
+	}
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "16", "open", false, fakeHeadA, "main", passingChecks)))
+	tick2, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2) on a zero-value Watcher: %v", err)
+	}
+	if tick2.Kind != KindChecksPassed || !tick2.Terminal {
+		t.Fatalf("tick 2 = %+v, want checks-passed and terminal: the zero-value Watcher must still remember tick 1", tick2)
+	}
+	// EvaluatedAt must also be usable without an injected clock: Now is nil
+	// on the zero value, so Evaluate falls back to the real one.
+	if tick2.EvaluatedAt.IsZero() {
+		t.Fatal("EvaluatedAt is zero even without an injected clock")
+	}
+}
+
 // newTwoRepoFixture establishes a hermetic WB projects root with two local
 // bare-remote-backed repositories (acme/app, acme/other), the minimum
 // worktrees.Create needs to record a real active Work Log claim per

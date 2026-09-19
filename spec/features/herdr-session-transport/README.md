@@ -370,7 +370,10 @@ snapshot per tick through the same required-check functions `wb ci
 wait`/`wb wait pr` use, never waiting or rereading within a single tick, and
 a terminal checks verdict requires two consecutive identical observations
 across ticks — the daemon's own polling cadence supplies the confirming
-reread a bounded foreground wait would otherwise take in one call.
+reread a bounded foreground wait would otherwise take in one call. This
+two-tick streak is in-memory only: a restarted daemon starts it over from
+zero for every binding, which only ever delays a terminal checks verdict by
+one extra tick and never fabricates one.
 
 #### REQ: resolution-at-delivery
 

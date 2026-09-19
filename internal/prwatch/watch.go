@@ -137,8 +137,16 @@ func NewWatcher() *Watcher {
 	return &Watcher{seen: map[string]tickMemory{}, Now: func() time.Time { return time.Now().UTC() }}
 }
 
+// bindingKey identifies a watched pull request by task, repository, and pull
+// request number — never by claim ID (round 3 review, minor 1). A claim ID
+// can change under a binding that still names the same task and the same
+// pull request (a successor claim after `/move`, or a re-recorded binding);
+// keying on it would silently reset an in-progress two-observation streak on
+// every such change even though nothing about the watched pull request
+// itself moved. Task-scoping still keeps two different tasks that happen to
+// share a pull request (a rare but possible fan-in) from colliding.
 func bindingKey(binding worktrees.RegisteredPullRequestBinding) string {
-	return binding.Task + "\x00" + binding.ClaimID
+	return binding.Task + "\x00" + binding.Repository + "\x00" + strconv.Itoa(binding.PullRequest)
 }
 
 // Evaluate takes exactly one observation of binding's pull request through
@@ -252,8 +260,15 @@ func classifyChecks(snapshot prsnapshot.Snapshot) (Kind, string) {
 
 func (w *Watcher) remember(binding worktrees.RegisteredPullRequestBinding, kind Kind, head string) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen == nil {
+		// A zero-value Watcher{} (round 3 review, minor 3) has never gone
+		// through NewWatcher, so seen is still nil: writing to it directly
+		// here, rather than only in NewWatcher, is what makes the zero value
+		// usable at all instead of panicking on its first remembered tick.
+		w.seen = map[string]tickMemory{}
+	}
 	w.seen[bindingKey(binding)] = tickMemory{Kind: kind, Head: head}
-	w.mu.Unlock()
 }
 
 // PollResult pairs one registered binding with the Outcome its evaluation
@@ -279,10 +294,47 @@ func (w *Watcher) Tick(ctx context.Context, projectsRoot string) ([]PollResult, 
 	if err != nil {
 		return nil, fmt.Errorf("list registered pull-request bindings: %w", err)
 	}
+	// Pruning (round 3 review, minor 2): a binding this tick never lists at
+	// all — the claim finished, moved on, or lost its binding — has no
+	// future tick to confirm or drift against, so its memory would only ever
+	// grow the map. A merged or closed entry is pruned once its terminal
+	// outcome has been emitted below, for the same reason: neither
+	// classification depends on remembered state (see Evaluate), so nothing
+	// is lost by forgetting it, and the daemon may still be polling a
+	// binding whose claim has not yet been sealed.
+	listed := make(map[string]bool, len(bindings))
+	for _, binding := range bindings {
+		listed[bindingKey(binding)] = true
+	}
+	w.pruneUnlisted(listed)
+
 	results := make([]PollResult, 0, len(bindings))
 	for _, binding := range bindings {
 		outcome, evalErr := w.Evaluate(ctx, binding)
 		results = append(results, PollResult{Binding: binding, Outcome: outcome, Err: evalErr})
+		if outcome.Kind == KindMerged || outcome.Kind == KindClosed {
+			w.forget(binding)
+		}
 	}
 	return results, nil
+}
+
+// pruneUnlisted drops every remembered key not present in listed.
+func (w *Watcher) pruneUnlisted(listed map[string]bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for key := range w.seen {
+		if !listed[key] {
+			delete(w.seen, key)
+		}
+	}
+}
+
+// forget drops binding's remembered tick, if any.
+func (w *Watcher) forget(binding worktrees.RegisteredPullRequestBinding) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen != nil {
+		delete(w.seen, bindingKey(binding))
+	}
 }
