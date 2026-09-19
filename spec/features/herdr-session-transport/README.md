@@ -365,7 +365,12 @@ or scan pull requests it has no recorded binding for, and MUST reuse the
 existing renamed-required-check-aware check-verdict evaluation (the same
 logic `wb ci wait`/`wb pr land` already use) rather than reimplementing
 check-state interpretation, so a registered PR's outcome is judged
-identically to how a foreground wait would judge it.
+identically to how a foreground wait would judge it. The watcher takes one
+snapshot per tick through the same required-check functions `wb ci
+wait`/`wb wait pr` use, never waiting or rereading within a single tick, and
+a terminal checks verdict requires two consecutive identical observations
+across ticks — the daemon's own polling cadence supplies the confirming
+reread a bounded foreground wait would otherwise take in one call.
 
 #### REQ: resolution-at-delivery
 

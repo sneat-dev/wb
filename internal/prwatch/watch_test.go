@@ -5,19 +5,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// writeFakeGH puts a fake `gh` on PATH ahead of any real one, so no test in
-// this package ever reaches the real GitHub API — per herdr-session-transport's
-// brief, all GitHub access goes through the existing gh-api helper and seams
-// orchestrate.ReadPullRequest/WaitForPullRequestChecks already use.
+// writeFakeGH puts a fake `gh` on PATH ahead of any real one, and resets the
+// per-user observer cache directory, so every tick in this package's tests
+// is hermetic and never reaches the real GitHub API.
 func writeFakeGH(t *testing.T, script string) {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "bin")
@@ -31,43 +30,42 @@ func writeFakeGH(t *testing.T, script string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// fakeGHCase renders one repository's worth of endpoint responses as a shell
-// if-chain fragment, matched by the raw REST endpoint orchestrate's
-// `gh api` calls use. It covers exactly the reads Evaluate's call into
-// orchestrate.WaitForPullRequestChecks performs: pull-request identity
-// (asked more than once), the exact target head, candidate-contains-target
-// ancestry, branch-protection policy (answered 403 so a caller under
-// AllowUnfenced treats it as an authoritatively unavailable policy rather
-// than fetching real branch-protection JSON), check runs, Actions runs, and
-// commit statuses.
-func fakeGHCase(repository, pr, head, target, targetHeadSHA, checkRunsJSON string) string {
+// fakeGHCase renders one pull request's worth of endpoint responses as a
+// shell if-chain fragment: identity (state/merged), its head's check runs,
+// commit statuses, and an unprotected/no-rules branch policy. It never wires
+// up `git/ref/heads/*` or `repos/.../compare/...` — prsnapshot.Observe has no
+// reason to call either, since it enforces no target-branch freshness fence
+// and no candidate-contains-target ancestry check (herdr-session-transport
+// Plan Task 6 review round 2, point 3) — so a test whose fake gh has no
+// fallback for those endpoints still passes only if that stays true.
+func fakeGHCase(repository, pr, state string, merged bool, head, target, checkRunsJSON string) string {
+	mergedJSON := "false"
+	if merged {
+		mergedJSON = "true"
+	}
 	return `
-if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/pulls/` + pr + `'; then
-  echo '{"number":` + pr + `,"state":"open","draft":false,"head":{"ref":"candidate","sha":"` + head + `","repo":{"full_name":"` + repository + `"}},"base":{"ref":"` + target + `","sha":""}}'
-  exit 0
-fi
-if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/git/ref/heads/` + target + `'; then
-  echo '{"object":{"sha":"` + targetHeadSHA + `"}}'
-  exit 0
-fi
-if [ "$1" = api ] && [ "$2" = 'repos/` + repository + `/branches/` + target + `' ]; then
-  echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2
-  exit 1
-fi
-if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/compare/` + targetHeadSHA + `...` + head + `'; then
-  echo '{"status":"ahead","base_commit":{"sha":"` + targetHeadSHA + `"},"merge_base_commit":{"sha":"` + targetHeadSHA + `"}}'
+if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/pulls/` + pr + `$'; then
+  echo '{"number":` + pr + `,"state":"` + state + `","draft":false,"merged":` + mergedJSON + `,"mergeable_state":"unknown","html_url":"https://example.invalid/` + pr + `","head":{"ref":"candidate","sha":"` + head + `","repo":{"full_name":"` + repository + `"}},"base":{"ref":"` + target + `","sha":""}}'
   exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/commits/` + head + `/check-runs?per_page=100'; then
   echo '` + checkRunsJSON + `'
   exit 0
 fi
-if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/actions/runs?head_sha=` + head + `'; then
-  echo '{"total_count":0,"workflow_runs":[]}'
-  exit 0
-fi
 if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/commits/` + head + `/status?per_page=100'; then
   echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/` + repository + `/branches/` + target + `' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/rules/branches/` + target + `'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q 'repos/` + repository + `/actions/runs?head_sha=` + head + `'; then
+  echo '{"total_count":0,"workflow_runs":[]}'
   exit 0
 fi
 `
@@ -78,165 +76,298 @@ func fakeGHScript(cases ...string) string {
 }
 
 const (
-	fakeHeadA       = "1111111111111111111111111111111111111a"
-	fakeTargetHeadA = "2222222222222222222222222222222222222b"
-	fakeHeadB       = "3333333333333333333333333333333333333c"
-	fakeTargetHeadB = "4444444444444444444444444444444444444d"
+	passingChecks = `{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":1}}]}`
+	failingChecks = `{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","app":{"id":1}}]}`
+	pendingChecks = `{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","conclusion":"","app":{"id":1}}]}`
+
+	fakeHeadA = "1111111111111111111111111111111111111a"
+	fakeHeadB = "2222222222222222222222222222222222222b"
 )
 
-// TestEvaluatePassesWithNoApplicableChecksUnderAllowUnfenced proves Evaluate
-// reports orchestrate's own "passed" verdict unchanged when a registered pull
-// request's checks and required-check policy are both empty under an
-// explicit AllowUnfenced — the same receipt `wb ci wait --allow-unfenced`
-// would produce, never a reimplemented interpretation.
-func TestEvaluatePassesWithNoApplicableChecksUnderAllowUnfenced(t *testing.T) {
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "3", fakeHeadA, "main", fakeTargetHeadA, `{"total_count":0,"check_runs":[]}`)))
-	binding := worktrees.RegisteredPullRequestBinding{
-		Task: "task-a", ClaimID: "claim-a", Repository: "acme/app", PullRequest: 3,
-		URL: "https://github.com/acme/app/pull/3", RecordedAt: time.Now().UTC(),
-	}
-	outcome, err := Evaluate(context.Background(), binding, EvaluateOptions{
-		Slice: 5 * time.Second, CheckPollInterval: 50 * time.Millisecond,
-		StableRereadDelay: time.Millisecond, AllowUnfenced: true,
-	})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if outcome.Status != orchestrate.PullRequestWaitPassed {
-		t.Fatalf("outcome = %+v, want passed", outcome)
-	}
-	if outcome.Task != "task-a" || outcome.ClaimID != "claim-a" || outcome.Repository != "acme/app" ||
-		outcome.PullRequest != 3 || outcome.URL != binding.URL {
-		t.Fatalf("outcome identity = %+v, want it copied from the binding", outcome)
-	}
-	if outcome.Head != fakeHeadA || outcome.Target != "main" {
-		t.Fatalf("outcome head/target = %q/%q, want the pull request's own current identity", outcome.Head, outcome.Target)
-	}
-	if outcome.EvaluatedAt.IsZero() {
-		t.Fatal("outcome.EvaluatedAt is zero")
+func fixedBinding(task, claimID, repository string, pr int) worktrees.RegisteredPullRequestBinding {
+	return worktrees.RegisteredPullRequestBinding{
+		Task: task, ClaimID: claimID, Repository: repository, PullRequest: pr,
+		URL: "https://github.com/" + repository + "/pull/" + strconv.Itoa(pr),
 	}
 }
 
-// TestEvaluateReturnsFailedWhenAGitHubCheckFails proves a failing observed
-// check reaches Outcome.Status as "failed" — orchestrate's own terminal
-// failure verdict, reported without a second interpretation layer — and that
-// Evaluate itself returns no Go error for a plain failed verdict.
-func TestEvaluateReturnsFailedWhenAGitHubCheckFails(t *testing.T) {
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "9", fakeHeadA, "main", fakeTargetHeadA,
-		`{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","app":{"id":1}}]}`)))
-	binding := worktrees.RegisteredPullRequestBinding{
-		Task: "task-b", ClaimID: "claim-b", Repository: "acme/app", PullRequest: 9,
-		URL: "https://github.com/acme/app/pull/9",
-	}
-	outcome, err := Evaluate(context.Background(), binding, EvaluateOptions{
-		Slice: 5 * time.Second, CheckPollInterval: 50 * time.Millisecond,
-	})
+func newFixedClockWatcher(at time.Time) *Watcher {
+	w := NewWatcher()
+	w.Now = func() time.Time { return at }
+	return w
+}
+
+// TestWatcherEvaluateChecksPassedNeedsTwoConsecutiveIdenticalTicks pins the
+// coordinator's two-observation rule: a single green tick is never Terminal,
+// and only a second, identical (same Kind, same head) tick confirms it.
+func TestWatcherEvaluateChecksPassedNeedsTwoConsecutiveIdenticalTicks(t *testing.T) {
+	binding := fixedBinding("task-a", "claim-a", "acme/app", 1)
+	w := NewWatcher()
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "1", "open", false, fakeHeadA, "main", passingChecks)))
+	first, err := w.Evaluate(context.Background(), binding)
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("Evaluate (tick 1): %v", err)
 	}
-	if outcome.Status != orchestrate.PullRequestWaitFailed {
-		t.Fatalf("outcome = %+v, want failed", outcome)
+	if first.Kind != KindChecksPassed || first.Terminal {
+		t.Fatalf("tick 1 = %+v, want checks-passed, not yet terminal", first)
 	}
-	if outcome.Reason == "" {
-		t.Fatal("failed outcome carries no reason")
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "1", "open", false, fakeHeadA, "main", passingChecks)))
+	second, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2): %v", err)
+	}
+	if second.Kind != KindChecksPassed || !second.Terminal {
+		t.Fatalf("tick 2 = %+v, want checks-passed and terminal", second)
 	}
 }
 
-// TestEvaluateReturnsPendingWhenChecksHaveNotSettled proves a still-running
-// check keeps the outcome "pending" once the bounded evaluation slice
-// expires, exactly as a bounded `wb ci wait` slice would report it — the
-// watcher's caller re-evaluates a pending outcome on its own next poll rather
-// than this call blocking indefinitely.
-func TestEvaluateReturnsPendingWhenChecksHaveNotSettled(t *testing.T) {
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "11", fakeHeadA, "main", fakeTargetHeadA,
-		`{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","conclusion":"","app":{"id":1}}]}`)))
-	binding := worktrees.RegisteredPullRequestBinding{
-		Task: "task-c", ClaimID: "claim-c", Repository: "acme/app", PullRequest: 11,
-		URL: "https://github.com/acme/app/pull/11",
+// TestWatcherEvaluateChecksFailedNeedsTwoConsecutiveIdenticalTicksToo proves
+// the same two-observation rule applies to a failing verdict, not only a
+// passing one.
+func TestWatcherEvaluateChecksFailedNeedsTwoConsecutiveIdenticalTicksToo(t *testing.T) {
+	binding := fixedBinding("task-b", "claim-b", "acme/app", 2)
+	w := NewWatcher()
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "2", "open", false, fakeHeadA, "main", failingChecks)))
+	first, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 1): %v", err)
 	}
-	outcome, err := Evaluate(context.Background(), binding, EvaluateOptions{
-		Slice: 300 * time.Millisecond, CheckPollInterval: 50 * time.Millisecond, AllowUnfenced: true,
-	})
+	if first.Kind != KindChecksFailed || first.Terminal {
+		t.Fatalf("tick 1 = %+v, want checks-failed, not yet terminal", first)
+	}
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "2", "open", false, fakeHeadA, "main", failingChecks)))
+	second, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2): %v", err)
+	}
+	if second.Kind != KindChecksFailed || !second.Terminal {
+		t.Fatalf("tick 2 = %+v, want checks-failed and terminal", second)
+	}
+	if second.Reason == "" {
+		t.Fatal("terminal failed outcome carries no reason")
+	}
+}
+
+// TestWatcherEvaluateChecksPendingIsNeverTerminal proves a still-running
+// check stays checks-pending, and stays non-terminal, tick after tick.
+func TestWatcherEvaluateChecksPendingIsNeverTerminal(t *testing.T) {
+	binding := fixedBinding("task-c", "claim-c", "acme/app", 3)
+	w := NewWatcher()
+	for tick := 0; tick < 2; tick++ {
+		writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "3", "open", false, fakeHeadA, "main", pendingChecks)))
+		outcome, err := w.Evaluate(context.Background(), binding)
+		if err != nil {
+			t.Fatalf("Evaluate (tick %d): %v", tick, err)
+		}
+		if outcome.Kind != KindChecksPending || outcome.Terminal {
+			t.Fatalf("tick %d = %+v, want checks-pending, never terminal", tick, outcome)
+		}
+	}
+}
+
+// TestWatcherEvaluateMergedIsTerminalImmediatelyAndNeverFailed pins the
+// coordinator's blocking fix: a merged pull request is Terminal on its very
+// first observation, and it must never be reported as checks-failed even
+// though its underlying check data (deliberately, in this test) is red.
+func TestWatcherEvaluateMergedIsTerminalImmediatelyAndNeverFailed(t *testing.T) {
+	binding := fixedBinding("task-d", "claim-d", "acme/app", 4)
+	w := NewWatcher()
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "4", "closed", true, fakeHeadA, "main", failingChecks)))
+	outcome, err := w.Evaluate(context.Background(), binding)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if outcome.Status != orchestrate.PullRequestWaitPending {
-		t.Fatalf("outcome = %+v, want pending", outcome)
+	if outcome.Kind != KindMerged {
+		t.Fatalf("Kind = %q, want merged (never checks-failed, even with a red underlying check)", outcome.Kind)
+	}
+	if !outcome.Terminal {
+		t.Fatal("a merged outcome must be terminal on its first observation")
+	}
+}
+
+// TestWatcherEvaluateClosedWithoutMergeIsTerminalImmediatelyAndNeverFailed
+// is TestWatcherEvaluateMergedIsTerminalImmediatelyAndNeverFailed's sibling
+// for a closed-not-merged pull request.
+func TestWatcherEvaluateClosedWithoutMergeIsTerminalImmediatelyAndNeverFailed(t *testing.T) {
+	binding := fixedBinding("task-e", "claim-e", "acme/app", 5)
+	w := NewWatcher()
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "5", "closed", false, fakeHeadA, "main", failingChecks)))
+	outcome, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if outcome.Kind != KindClosed {
+		t.Fatalf("Kind = %q, want closed (never checks-failed, even with a red underlying check)", outcome.Kind)
+	}
+	if !outcome.Terminal {
+		t.Fatal("a closed outcome must be terminal on its first observation")
+	}
+}
+
+// TestWatcherEvaluateReportsHeadDriftThenConfirmsOnTheNewHead proves a head
+// that moves between ticks is reported as head-drift rather than silently
+// carrying an unconfirmed pass/fail verdict on the new commit forward, and
+// that the Watcher's memory of the real classification underneath the drift
+// still lets the very next matching tick confirm normally.
+func TestWatcherEvaluateReportsHeadDriftThenConfirmsOnTheNewHead(t *testing.T) {
+	binding := fixedBinding("task-f", "claim-f", "acme/app", 6)
+	w := NewWatcher()
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "6", "open", false, fakeHeadA, "main", pendingChecks)))
+	tick1, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 1): %v", err)
+	}
+	if tick1.Kind != KindChecksPending || tick1.Head != fakeHeadA {
+		t.Fatalf("tick 1 = %+v, want checks-pending on head A", tick1)
+	}
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "6", "open", false, fakeHeadB, "main", passingChecks)))
+	tick2, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2): %v", err)
+	}
+	if tick2.Kind != KindHeadDrift || tick2.Terminal || tick2.Head != fakeHeadB {
+		t.Fatalf("tick 2 = %+v, want head-drift onto head B, never terminal", tick2)
+	}
+	if !strings.Contains(tick2.Reason, fakeHeadA) || !strings.Contains(tick2.Reason, fakeHeadB) {
+		t.Fatalf("tick 2 reason = %q, want it to name both heads", tick2.Reason)
+	}
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "6", "open", false, fakeHeadB, "main", passingChecks)))
+	tick3, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 3): %v", err)
+	}
+	if tick3.Kind != KindChecksPassed || !tick3.Terminal {
+		t.Fatalf("tick 3 = %+v, want checks-passed and terminal: the real classification under the drift tick must still count", tick3)
+	}
+}
+
+// TestWatcherEvaluateUnavailableNeverBreaksAStreak proves an operational
+// GitHub read failure is reported as KindUnavailable, is never terminal, and
+// — critically — never overwrites the Watcher's memory of the last real
+// observation, so a transient blip between two good ticks does not restart
+// the two-observation count.
+func TestWatcherEvaluateUnavailableNeverBreaksAStreak(t *testing.T) {
+	binding := fixedBinding("task-g", "claim-g", "acme/app", 7)
+	w := NewWatcher()
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "7", "open", false, fakeHeadA, "main", passingChecks)))
+	tick1, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 1): %v", err)
+	}
+	if tick1.Kind != KindChecksPassed || tick1.Terminal {
+		t.Fatalf("tick 1 = %+v, want checks-passed, not yet terminal", tick1)
+	}
+
+	writeFakeGH(t, fakeGHScript()) // no case at all: every call fails
+	tick2, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 2): %v", err)
+	}
+	if tick2.Kind != KindUnavailable || tick2.Terminal {
+		t.Fatalf("tick 2 = %+v, want unavailable, never terminal", tick2)
+	}
+	if tick2.Reason == "" {
+		t.Fatal("unavailable outcome carries no reason")
+	}
+
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "7", "open", false, fakeHeadA, "main", passingChecks)))
+	tick3, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate (tick 3): %v", err)
+	}
+	if tick3.Kind != KindChecksPassed || !tick3.Terminal {
+		t.Fatalf("tick 3 = %+v, want checks-passed and terminal: the tick-2 blip must not have reset the streak", tick3)
+	}
+}
+
+// TestEvaluateNeverConsultsTargetFreshnessOrAdvancement is a structural proof
+// of the coordinator's point 3: the watcher never asks GitHub for the
+// target branch's current head or for candidate-contains-target ancestry —
+// fakeGHCase wires up no handler for either endpoint, so if Evaluate (via
+// prsnapshot.Observe) ever called one, this test would fail on the fake's
+// "unexpected gh args" fallback instead of passing cleanly. A target
+// branch simply advancing past this pull request's base, or having no
+// strict freshness fence, is therefore structurally not this watcher's
+// concern: it never merges, so neither condition can ever surface as a CI
+// failure here.
+func TestEvaluateNeverConsultsTargetFreshnessOrAdvancement(t *testing.T) {
+	binding := fixedBinding("task-h", "claim-h", "acme/app", 8)
+	w := NewWatcher()
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "8", "open", false, fakeHeadA, "main", passingChecks)))
+	outcome, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if outcome.Kind != KindChecksPassed {
+		t.Fatalf("Kind = %q, want checks-passed", outcome.Kind)
+	}
+}
+
+// TestWatcherEvaluateUsesTheInjectedClock proves EvaluatedAt comes from
+// Watcher.Now, not a real timer — no test in this package depends on wall
+// clock time.
+func TestWatcherEvaluateUsesTheInjectedClock(t *testing.T) {
+	binding := fixedBinding("task-i", "claim-i", "acme/app", 9)
+	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	w := newFixedClockWatcher(fixed)
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "9", "open", false, fakeHeadA, "main", passingChecks)))
+	outcome, err := w.Evaluate(context.Background(), binding)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if !outcome.EvaluatedAt.Equal(fixed) {
+		t.Fatalf("EvaluatedAt = %v, want the injected clock's %v", outcome.EvaluatedAt, fixed)
 	}
 }
 
 // TestEvaluateRejectsBindingMissingIdentifiers proves Evaluate refuses a
 // binding with no repository or pull-request number before making any
-// GitHub call at all — there is no PATH override in this test, so a call
-// through to a real `gh` would fail loudly rather than silently succeed.
+// GitHub call at all.
 func TestEvaluateRejectsBindingMissingIdentifiers(t *testing.T) {
 	t.Parallel()
+	w := NewWatcher()
 	for _, binding := range []worktrees.RegisteredPullRequestBinding{
-		{Task: "task-d", Repository: "", PullRequest: 1},
-		{Task: "task-e", Repository: "acme/app", PullRequest: 0},
+		{Task: "task-j", Repository: "", PullRequest: 1},
+		{Task: "task-k", Repository: "acme/app", PullRequest: 0},
 	} {
-		if _, err := Evaluate(context.Background(), binding, EvaluateOptions{}); err == nil {
+		if _, err := w.Evaluate(context.Background(), binding); err == nil {
 			t.Fatalf("Evaluate(%+v) = nil error, want a refusal", binding)
 		}
 	}
 }
 
-// TestEvaluateReturnsErrorWhenPullRequestReadFails proves a GitHub read
-// failure surfaces as a Go error naming the task and pull request, not a
-// silently empty Outcome.
-func TestEvaluateReturnsErrorWhenPullRequestReadFails(t *testing.T) {
-	writeFakeGH(t, fakeGHScript()) // no case at all: every call falls through
-	binding := worktrees.RegisteredPullRequestBinding{
-		Task: "task-f", ClaimID: "claim-f", Repository: "acme/app", PullRequest: 5,
-	}
-	if _, err := Evaluate(context.Background(), binding, EvaluateOptions{}); err == nil {
-		t.Fatal("Evaluate = nil error, want the unreadable pull request to surface")
-	} else if !strings.Contains(err.Error(), "task-f") {
-		t.Fatalf("Evaluate error = %v, want it to name the task", err)
-	}
-}
-
-// TestEvaluateReturnsErrorWhenSliceExceedsForegroundCeiling proves Evaluate
-// surfaces orchestrate's own option-validation error unchanged, rather than
-// silently clamping an out-of-range EvaluateOptions.Slice.
-func TestEvaluateReturnsErrorWhenSliceExceedsForegroundCeiling(t *testing.T) {
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "6", fakeHeadA, "main", fakeTargetHeadA, `{"total_count":0,"check_runs":[]}`)))
-	binding := worktrees.RegisteredPullRequestBinding{
-		Task: "task-g", ClaimID: "claim-g", Repository: "acme/app", PullRequest: 6,
-	}
-	_, err := Evaluate(context.Background(), binding, EvaluateOptions{
-		Slice: orchestrate.MaxForegroundCheckWaitSlice + time.Minute,
-	})
-	if err == nil {
-		t.Fatal("Evaluate = nil error, want the oversized slice refused")
-	}
-}
-
-// TestPollReturnsErrorWhenBindingsCannotBeListed proves Poll surfaces a
+// TestTickReturnsErrorWhenBindingsCannotBeListed proves Tick surfaces a
 // binding-listing failure rather than reporting an empty, misleadingly clean
 // result set.
-func TestPollReturnsErrorWhenBindingsCannotBeListed(t *testing.T) {
+func TestTickReturnsErrorWhenBindingsCannotBeListed(t *testing.T) {
 	root := t.TempDir()
 	blocker := filepath.Join(root, "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A regular file where a directory component is expected makes
-	// wbhome.Resolve's path resolution fail outright.
-	if _, err := Poll(context.Background(), filepath.Join(blocker, "projects"), EvaluateOptions{}); err == nil {
-		t.Fatal("Poll = nil error, want the unresolvable projects root refused")
+	w := NewWatcher()
+	if _, err := w.Tick(context.Background(), filepath.Join(blocker, "projects")); err == nil {
+		t.Fatal("Tick = nil error, want the unresolvable projects root refused")
 	}
 }
 
-// TestPollEvaluatesOnlyRegisteredBindingsAcrossRepositories is the
+// TestTickEvaluatesOnlyRegisteredBindingsAcrossRepositories is the
 // end-to-end proof behind daemon-watches-only-registered-prs: two active
 // Work Log claims exist across two repositories, only one of them ever
 // records a pull-request binding via worktrees.RecordClaimPullRequestBinding,
-// and Poll must discover and evaluate exactly that one — the other
+// and Tick must discover and evaluate exactly that one — the other
 // repository's `gh` endpoints are never wired into the fake at all, so any
-// attempt to read it fails the fake script's fallback rather than silently
+// attempt to read it falls through to the fallback rather than silently
 // succeeding, proving there is no fleet-wide scan.
-func TestPollEvaluatesOnlyRegisteredBindingsAcrossRepositories(t *testing.T) {
+func TestTickEvaluatesOnlyRegisteredBindingsAcrossRepositories(t *testing.T) {
 	projectsRoot := newTwoRepoFixture(t)
 	ctx := context.Background()
 
@@ -248,14 +379,11 @@ func TestPollEvaluatesOnlyRegisteredBindingsAcrossRepositories(t *testing.T) {
 	}
 	registered := created[0]
 
-	createdOther, err := worktrees.Create(ctx, []string{"acme/other"}, worktrees.CreateOptions{
+	if _, err := worktrees.Create(ctx, []string{"acme/other"}, worktrees.CreateOptions{
 		ProjectsRoot: projectsRoot, Operation: "watch-unregistered", WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("create unregistered claim: %v", err)
 	}
-	unregistered := createdOther[0]
-	_ = unregistered
 
 	task, claimID, err := worktrees.RecordClaimPullRequestBinding(projectsRoot, registered.WorktreeDir, worktrees.ClaimPullRequestBinding{
 		Repository: "acme/app", PullRequest: 21, URL: "https://github.com/acme/app/pull/21",
@@ -267,14 +395,12 @@ func TestPollEvaluatesOnlyRegisteredBindingsAcrossRepositories(t *testing.T) {
 	// Only acme/app is wired into the fake: acme/other has no case at all, so
 	// any read against it falls through to the fallback "unexpected gh args"
 	// exit — which must never happen, because acme/other never got a binding.
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "21", fakeHeadA, "main", fakeTargetHeadA, `{"total_count":0,"check_runs":[]}`)))
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "21", "open", false, fakeHeadA, "main", passingChecks)))
 
-	results, err := Poll(ctx, projectsRoot, EvaluateOptions{
-		Slice: 5 * time.Second, CheckPollInterval: 50 * time.Millisecond,
-		StableRereadDelay: time.Millisecond, AllowUnfenced: true,
-	})
+	w := NewWatcher()
+	results, err := w.Tick(ctx, projectsRoot)
 	if err != nil {
-		t.Fatalf("Poll: %v", err)
+		t.Fatalf("Tick: %v", err)
 	}
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly the one registered binding (never the unregistered acme/other claim)", results)
@@ -286,16 +412,16 @@ func TestPollEvaluatesOnlyRegisteredBindingsAcrossRepositories(t *testing.T) {
 	if result.Binding.Task != task || result.Binding.ClaimID != claimID {
 		t.Fatalf("result.Binding = %+v, want task=%s claim=%s", result.Binding, task, claimID)
 	}
-	if result.Outcome.Status != orchestrate.PullRequestWaitPassed {
-		t.Fatalf("result.Outcome = %+v, want passed", result.Outcome)
+	if result.Outcome.Kind != KindChecksPassed {
+		t.Fatalf("result.Outcome = %+v, want checks-passed", result.Outcome)
 	}
 }
 
-// TestPollContinuesPastOneBindingsEvaluateError proves one unreachable
-// registered pull request never stops Poll from evaluating the rest: it
-// still returns a PollResult per binding, with the error contained to the
-// one that hit it.
-func TestPollContinuesPastOneBindingsEvaluateError(t *testing.T) {
+// TestTickReportsUnavailableForOneBindingWithoutStoppingTheRest proves one
+// unreachable registered pull request never stops Tick from evaluating the
+// rest: it still returns a PollResult per binding, with Kind=unavailable (and
+// no Err) contained to the one that hit it.
+func TestTickReportsUnavailableForOneBindingWithoutStoppingTheRest(t *testing.T) {
 	projectsRoot := newTwoRepoFixture(t)
 	ctx := context.Background()
 
@@ -327,14 +453,12 @@ func TestPollContinuesPastOneBindingsEvaluateError(t *testing.T) {
 
 	// acme/app is wired into the fake and evaluates cleanly; acme/other has
 	// no case at all, so its pull-request read fails through the fallback.
-	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "1", fakeHeadA, "main", fakeTargetHeadA, `{"total_count":0,"check_runs":[]}`)))
+	writeFakeGH(t, fakeGHScript(fakeGHCase("acme/app", "1", "open", false, fakeHeadA, "main", passingChecks)))
 
-	results, err := Poll(ctx, projectsRoot, EvaluateOptions{
-		Slice: 5 * time.Second, CheckPollInterval: 50 * time.Millisecond,
-		StableRereadDelay: time.Millisecond, AllowUnfenced: true,
-	})
+	w := NewWatcher()
+	results, err := w.Tick(ctx, projectsRoot)
 	if err != nil {
-		t.Fatalf("Poll: %v", err)
+		t.Fatalf("Tick: %v", err)
 	}
 	if len(results) != 2 {
 		t.Fatalf("results = %#v, want both registered bindings represented", results)
@@ -344,12 +468,12 @@ func TestPollContinuesPastOneBindingsEvaluateError(t *testing.T) {
 		byTask[result.Binding.Task] = result
 	}
 	ok, present := byTask[taskOK]
-	if !present || ok.Err != nil || ok.Binding.ClaimID != claimOK || ok.Outcome.Status != orchestrate.PullRequestWaitPassed {
+	if !present || ok.Err != nil || ok.Binding.ClaimID != claimOK || ok.Outcome.Kind != KindChecksPassed {
 		t.Fatalf("ok result = %+v, present=%t", ok, present)
 	}
 	broken, present := byTask[taskBroken]
-	if !present || broken.Err == nil || broken.Binding.ClaimID != claimBroken {
-		t.Fatalf("broken result = %+v, present=%t, want a populated Err and the binding preserved", broken, present)
+	if !present || broken.Err != nil || broken.Binding.ClaimID != claimBroken || broken.Outcome.Kind != KindUnavailable {
+		t.Fatalf("broken result = %+v, present=%t, want Kind=unavailable and no Err", broken, present)
 	}
 }
 
