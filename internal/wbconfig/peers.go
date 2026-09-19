@@ -1,9 +1,9 @@
 package wbconfig
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -53,40 +53,53 @@ func isLoopbackPeersHost(host string) bool {
 // ending or key order the operator wrote it in — untouched. Remote state,
 // claims and peer events are deliberately independent.
 //
-// The document is parsed with yaml.v3's Node API to find the exact line
-// range the existing "peers:" key (if any) occupies — matching it by its
-// decoded value, not by scanning literal text, so a quoted key, a CRLF
-// line ending, "peers :" with a space before the colon, or a single-line
-// flow-style value are all found correctly instead of being missed and
-// silently duplicated. The replaced range ends at the last line the
-// "peers:" value's own subtree actually occupies (nodeSubtreeEndLine), never
-// at "the next top-level key" or "EOF": those are wrong whenever anything
-// sits between the peers subtree and the next key that yaml.v3 does not
-// attribute to that key's own starting line — a comment immediately above
-// it, a blank line, a second "---" document, or a trailing comment block
-// when peers is last. Getting this wrong previously deleted exactly that
-// kind of content while still reporting success. Only the exact
-// peers-subtree range (or, if peers is absent, an insertion point before a
-// trailing "..." document-end marker, or at true EOF) is replaced; the rest
-// of the original text is copied through byte for byte. Sibling keys
-// already under "peers:" are preserved, not dropped, because the existing
-// node holding them is mutated in place rather than replaced.
+// Round 3 and round 4 each tried to derive the exact line range an existing
+// "peers:" key occupies from decoded YAML structure (a node's line number, or
+// the newlines embedded in a decoded scalar's value) and each time a
+// different construction — a multi-line quoted scalar, a folded plain
+// scalar, a block scalar — made that derived range wrong in one direction or
+// the other: too short (leaking a sibling's lines into the replacement and
+// duplicating them) or too long (deleting a second document, a trailing
+// comment block, or a comment that merely happens to sit nearby), sometimes
+// even producing a range past the end of the file's own line count.
 //
-// A root document written in flow style ("{remote: ..., peers: ...}"), or
-// one where "peers:" somehow shares a physical line with another top-level
-// key, is refused outright before any line arithmetic runs: a single-line
-// document has no safe per-key line range to replace.
+// Round 5's answer is to stop trying to handle arbitrary YAML. This function
+// supports exactly two shapes and refuses everything else outright, leaving
+// the file completely untouched:
 //
-// Before ever renaming the staged file into place, verifySpliceResult
-// re-parses the result and refuses — leaving the original file completely
-// untouched — if it does not decode back to exactly the url and token_file
-// just written, or if anything outside the "peers:" key changed. It checks
-// this two ways, deliberately without reusing splicePeersUpstream's own
-// line-range logic, so a bug in that logic cannot hide itself from its own
-// backstop: a structural, decode-based deep-equal of every other top-level
-// key's value, and an independent, freshly-computed byte-for-byte compare of
-// every comment and blank line outside the peers subtree (which the decode
-// check cannot see at all, since comments carry no decoded value).
+//   - Shape A: no top-level "peers:" key exists yet. A new block is appended
+//     — before a trailing "---" or "..." document marker if the file has
+//     one, otherwise at EOF.
+//   - Shape B: an existing block-style "peers:" key sits at column 0
+//     (matched by the literal, exact line "peers:" — no quoting, no
+//     trailing comment, no unusual spacing), and every line of its body, up
+//     to the first line whose first character is not a space, is either
+//     blank or a single-line "key: value" pair (a single-line plain or
+//     single-line quoted scalar, no escape sequences) — with at most one
+//     nested sub-block, "upstream:", whose own children follow the exact
+//     same single-line-scalar rule one level deeper. The block's extent is
+//     found with nothing but a plain line scan (isPeersBodyLine,
+//     scanPeersBlockEnd): never from a decoded node's line number or a
+//     decoded scalar's length, so a construction that confused the old
+//     line-range derivation cannot confuse this one — it simply fails to
+//     match this narrow grammar and falls through to the refusal below.
+//
+// Anything else — a flow-style root or a flow-style peers: value, a
+// multi-line quoted or plain scalar anywhere in the body, a block scalar, an
+// anchor, alias or tag, a comment inside the body or immediately above
+// "peers:", more than one "upstream:" child, or a body that fails to parse
+// as YAML at all — is refused with a clear, actionable message rather than
+// guessed at.
+//
+// verifyPeersUpstreamEdit then re-parses the result independently of every
+// line-scan decision splicePeersBody made — decoding every YAML document
+// (not just the first) and requiring every one but the first to be
+// unchanged, decoding the first document's top-level keys and every
+// peers: child besides "upstream" for a structural deep-equal, and
+// separately re-running the same plain line scan against both the original
+// and the updated text to require every byte outside the block's own range
+// to be identical — before the staged file is ever renamed into place. Any
+// mismatch refuses and leaves the original file untouched.
 func SetPeersUpstream(path, hubURL, tokenFile string) error {
 	if err := validatePeersUpstreamURL(hubURL); err != nil {
 		return fmt.Errorf("peers.upstream.url: %w", err)
@@ -106,11 +119,11 @@ func SetPeersUpstream(path, hubURL, tokenFile string) error {
 		return fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	updated, err := splicePeersUpstream(original, hubURL, tokenFile)
+	updated, err := rewritePeersUpstream(original, hubURL, tokenFile)
 	if err != nil {
 		return fmt.Errorf("update config %s: %w", path, err)
 	}
-	if err := verifySpliceResult(original, updated, hubURL, tokenFile); err != nil {
+	if err := verifyPeersUpstreamEdit(original, updated, hubURL, tokenFile); err != nil {
 		return fmt.Errorf("refusing to write config %s: %w", path, err)
 	}
 
@@ -144,257 +157,83 @@ func SetPeersUpstream(path, hubURL, tokenFile string) error {
 	return nil
 }
 
-// verifySpliceResult is SetPeersUpstream's pre-write safety check: it
-// re-parses updated exactly as an operator's next `wb peers list` would
-// (via parsePeersUpstream) and independently confirms nothing besides
-// "peers:" changed, through two checks that share no line-range logic with
-// splicePeersUpstream itself (see its doc comment for why that independence
-// matters).
-func verifySpliceResult(original, updated, hubURL, tokenFile string) error {
-	upstream, found, err := parsePeersUpstream([]byte(updated))
-	if err != nil {
-		return fmt.Errorf("result does not parse: %w", err)
-	}
-	if !found || upstream.URL != hubURL || upstream.TokenFile != tokenFile {
-		return fmt.Errorf("result peers.upstream = %+v (found=%t), want url=%q token_file=%q", upstream, found, hubURL, tokenFile)
-	}
-
-	// Structural check: decode both documents into plain values (not yaml.v3
-	// Nodes, and not via any of splicePeersUpstream's own line-range
-	// helpers) and require every key besides "peers" to be exactly equal.
-	// This catches a changed or vanished key regardless of how the splice
-	// computed its line range.
-	beforeKeys, err := decodeTopLevelKeys(original)
-	if err != nil {
-		return fmt.Errorf("re-check original: %w", err)
-	}
-	afterKeys, err := decodeTopLevelKeys(updated)
-	if err != nil {
-		return fmt.Errorf("re-check result: %w", err)
-	}
-	delete(beforeKeys, "peers")
-	delete(afterKeys, "peers")
-	if !reflect.DeepEqual(beforeKeys, afterKeys) {
-		return errors.New("a key other than peers changed")
-	}
-
-	// Textual check: a comment or a blank line carries no decoded value, so
-	// the structural check above cannot see one go missing. Compare every
-	// line outside the peers subtree byte for byte instead, computed fresh
-	// from each document's own parse.
-	beforeOutsidePeers, err := textOutsidePeersSubtree(original)
-	if err != nil {
-		return fmt.Errorf("re-check original: %w", err)
-	}
-	afterOutsidePeers, err := textOutsidePeersSubtree(updated)
-	if err != nil {
-		return fmt.Errorf("re-check result: %w", err)
-	}
-	// Trimmed only of trailing newline characters: inserting new content
-	// after a file that did not itself end with one requires adding exactly
-	// one newline first (new YAML content cannot start on the same physical
-	// line as existing content) — a fix-up, not a content change — so it
-	// must not itself trip this refusal. Any other difference still does.
-	if strings.TrimRight(beforeOutsidePeers, "\r\n") != strings.TrimRight(afterOutsidePeers, "\r\n") {
-		return errors.New("a comment or blank line outside peers: changed")
-	}
-	return nil
+// errUnsupportedPeersShape is rewritePeersUpstream's one refusal error,
+// returned for every document shape besides the two SetPeersUpstream's own
+// doc comment names.
+func errUnsupportedPeersShape(hubURL, tokenFile string) error {
+	return fmt.Errorf("wb.yaml's peers: block uses YAML this editor does not rewrite; set peers.upstream by hand to url=%q token_file=%q", hubURL, tokenFile)
 }
 
-// decodeTopLevelKeys decodes text's top-level keys into plain Go values (not
-// yaml.v3 Nodes), for verifySpliceResult's structural, line-arithmetic-free
-// comparison.
-func decodeTopLevelKeys(text string) (map[string]any, error) {
-	result := map[string]any{}
-	if strings.TrimSpace(text) == "" {
-		return result, nil
-	}
-	if err := yaml.Unmarshal([]byte(text), &result); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if result == nil {
-		result = map[string]any{}
-	}
-	return result, nil
-}
+// rewritePeersUpstream is SetPeersUpstream's core. See SetPeersUpstream's own
+// doc comment for the two shapes it supports and why everything else is
+// refused rather than guessed at.
+func rewritePeersUpstream(original, hubURL, tokenFile string) (string, error) {
+	refusal := errUnsupportedPeersShape(hubURL, tokenFile)
+	newline := lineEndingOf(original)
 
-// textOutsidePeersSubtree returns text with the top-level "peers:" key's
-// exact subtree range removed (or text unchanged if "peers:" is absent),
-// using nodeSubtreeEndLine — the same narrow, independently-auditable line
-// primitive splicePeersUpstream uses, but computed here from a fresh parse
-// of text rather than by calling into splicePeersUpstream's own boundary
-// decision, so this function's correctness does not depend on the splice
-// having chosen the same case (replace vs. insert, flow vs. block) it
-// actually ran.
-func textOutsidePeersSubtree(text string) (string, error) {
-	if strings.TrimSpace(text) == "" {
-		return text, nil
-	}
-	_, root, err := parseYAMLDocument(text)
-	if err != nil {
-		return "", err
-	}
-	index := findTopLevelKeyIndex(root, "peers")
-	if index < 0 {
-		return text, nil
-	}
-	if err := refuseIfPeersSpliceUnsafe(root, index); err != nil {
-		return "", err
-	}
-	lines := splitLinesKeepEnds(text)
-	startLine := root.Content[index].Line
-	endLineExclusive := nodeSubtreeEndLine(root.Content[index+1]) + 1
-	return joinLines(spliceLines(lines, startLine, endLineExclusive, nil, lineEndingOf(text))), nil
-}
-
-// splicePeersUpstream is SetPeersUpstream's core: it returns text with only
-// the top-level "peers:" key's mapping value updated (url and token_file
-// set or added under "upstream:", every other existing field of "peers:"
-// preserved) or, if "peers:" does not exist yet, added.
-func splicePeersUpstream(original, hubURL, tokenFile string) (string, error) {
-	newline := "\n"
-	if strings.Contains(original, "\r\n") {
-		newline = "\r\n"
+	if strings.TrimSpace(original) == "" {
+		return appendNewPeersBlock(nil, newline, hubURL, tokenFile), nil
 	}
 
-	_, root, err := parseYAMLDocument(original)
-	if err != nil {
-		return "", err
+	rootIsBlockMapping, peersExists, peersSupported := inspectPeersDocumentShape(original)
+	if !rootIsBlockMapping {
+		return "", refusal
 	}
-
-	upstreamValue := &yaml.Node{Kind: yaml.MappingNode}
-	setMappingScalar(upstreamValue, "url", hubURL)
-	setMappingScalar(upstreamValue, "token_file", tokenFile)
-
-	peersKeyIndex := findTopLevelKeyIndex(root, "peers")
-	if err := refuseIfPeersSpliceUnsafe(root, peersKeyIndex); err != nil {
-		return "", err
+	if !peersExists {
+		return appendNewPeersBlock(splitLinesKeepEnds(original), newline, hubURL, tokenFile), nil
 	}
-
-	var peersKey, peersValue *yaml.Node
-	var existingSubtreeEndLine int
-	if peersKeyIndex >= 0 {
-		peersKey = root.Content[peersKeyIndex]
-		peersValue = root.Content[peersKeyIndex+1]
-		// Captured before any mutation below: once setMappingScalar/append
-		// touch peersValue's Content, a freshly-constructed child node (the
-		// new "upstream:" value) has no Line of its own, so this must be
-		// computed from the pristine, just-parsed original tree.
-		existingSubtreeEndLine = nodeSubtreeEndLine(peersValue)
-		if isEmptyYAML(peersValue) {
-			// "peers:" with nothing after it (a null scalar): treat as an
-			// empty mapping the operator meant to fill in, not an error.
-			peersValue.Kind, peersValue.Tag, peersValue.Value, peersValue.Content = yaml.MappingNode, "", "", nil
-		} else if peersValue.Kind != yaml.MappingNode {
-			return "", errors.New("peers must be a mapping")
-		}
-		// Force block style even if the original was flow ("peers: {...}"):
-		// the rendering below always emits block style, and leaving a stale
-		// FlowStyle tag on the node would fight the encoder.
-		peersValue.Style = 0
-		if upstreamIndex := findMappingKeyIndex(peersValue, "upstream"); upstreamIndex >= 0 {
-			peersValue.Content[upstreamIndex+1] = upstreamValue
-		} else {
-			peersValue.Content = append(peersValue.Content, scalar("upstream"), upstreamValue)
-		}
-	} else {
-		peersKey = scalar("peers")
-		peersValue = &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{scalar("upstream"), upstreamValue}}
+	if !peersSupported {
+		return "", refusal
 	}
-
-	rendered, err := renderKeyValuePair(peersKey, peersValue)
-	if err != nil {
-		return "", err
-	}
-	renderedLines := splitLinesKeepEnds(convertNewlines(rendered, newline))
 
 	lines := splitLinesKeepEnds(original)
-	if peersKeyIndex >= 0 {
-		startLine := peersKey.Line
-		endLineExclusive := existingSubtreeEndLine + 1
-		return joinLines(spliceLines(lines, startLine, endLineExclusive, renderedLines, newline)), nil
+	keyLine, found := findExactPeersKeyLine(lines)
+	if !found {
+		return "", refusal
 	}
-	insertionLine := documentInsertionPoint(lines)
-	return joinLines(spliceLines(lines, insertionLine, insertionLine, renderedLines, newline)), nil
+	if keyLine > 0 && isCommentLine(lines[keyLine-1]) {
+		return "", refusal
+	}
+	bodyEnd := scanPeersBlockEnd(lines, keyLine+1, len(lines), 1)
+
+	body, err := parsePeersBody(lines, keyLine, bodyEnd)
+	if err != nil {
+		return "", refusal
+	}
+
+	return spliceUpstreamBlock(lines, bodyEnd, body, newline, hubURL, tokenFile), nil
 }
 
-// refuseIfPeersSpliceUnsafe reports an error when the document's shape makes
-// line-range splicing unsafe: a root written in flow style ("{a: 1, b: 2}"),
-// where every key can share one physical line and there is no per-key line
-// range to isolate at all, or — belt and suspenders, since this should only
-// be reachable given a flow-style root — "peers:" literally sharing its
-// start line with another top-level key. peersKeyIndex may be -1 (peers does
-// not exist yet); the flow-style check still applies to the insert path,
-// since inserting new block-style lines into what may render back out as a
-// single physical line is just as unsafe.
-func refuseIfPeersSpliceUnsafe(root *yaml.Node, peersKeyIndex int) error {
-	if root.Style&yaml.FlowStyle != 0 {
-		return errors.New("peers.upstream cannot be safely edited while the top-level document is written in flow style (\"{...}\"); rewrite it in block style first")
-	}
-	if peersKeyIndex < 0 {
-		return nil
-	}
-	peersLine := root.Content[peersKeyIndex].Line
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if i == peersKeyIndex {
-			continue
-		}
-		if root.Content[i].Line == peersLine {
-			return errors.New("peers.upstream cannot be safely edited while \"peers:\" shares a line with another top-level key")
-		}
-	}
-	return nil
-}
-
-// nodeSubtreeEndLine returns the highest source line node's own subtree
-// reaches: node's own starting line, plus any newlines embedded in a
-// multi-line scalar's decoded value, and the same computed recursively for
-// every child. It is the exact end of a key's own value in the original
-// source — never "the next key's line" or "EOF" — so a splice or a
-// verification check never reaches past that value into a comment, a blank
-// line, a second YAML document, or a key that merely happens to follow it.
-func nodeSubtreeEndLine(node *yaml.Node) int {
-	if node == nil {
-		return 0
-	}
-	end := node.Line
-	if node.Kind == yaml.ScalarNode {
-		end += strings.Count(node.Value, "\n")
-	}
-	for _, child := range node.Content {
-		if childEnd := nodeSubtreeEndLine(child); childEnd > end {
-			end = childEnd
-		}
-	}
-	return end
-}
-
-// parseYAMLDocument parses text into a document node and returns its root
-// mapping, creating an empty mapping for an empty/absent file. It refuses
-// anything whose top level is not a mapping.
-func parseYAMLDocument(text string) (*yaml.Node, *yaml.Node, error) {
+// inspectPeersDocumentShape decodes original with yaml.v3's Node API purely
+// to answer three structural questions that a plain line scan cannot: is the
+// root document a block-style mapping at all, does a top-level "peers" key
+// exist, and — if so — is its value a shape splicePeersUpstream's line scan
+// can safely edit (a block-style mapping, or YAML null/absent). This is the
+// only place decoded Node information is consulted; nothing here is ever
+// used to compute a line range — findExactPeersKeyLine and
+// scanPeersBlockEnd do that from the raw text alone.
+func inspectPeersDocumentShape(original string) (rootIsBlockMapping, peersExists, peersSupported bool) {
 	var document yaml.Node
-	if strings.TrimSpace(text) != "" {
-		if err := yaml.Unmarshal([]byte(text), &document); err != nil {
-			return nil, nil, fmt.Errorf("parse config: %w", err)
-		}
-	}
-	if len(document.Content) == 0 {
-		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	if err := yaml.Unmarshal([]byte(original), &document); err != nil || len(document.Content) == 0 {
+		return false, false, false
 	}
 	root := document.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return nil, nil, errors.New("top level must be a mapping")
+	if root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0 {
+		return false, false, false
 	}
-	return &document, root, nil
-}
-
-// findTopLevelKeyIndex returns the index of key's key-node within mapping's
-// Content (so its value is at index+1), matching by the node's decoded
-// value — not its raw source text — so a quoted key ("peers") or one with
-// unusual surrounding whitespace (peers :) is still found. -1 if absent.
-func findTopLevelKeyIndex(mapping *yaml.Node, key string) int {
-	return findMappingKeyIndex(mapping, key)
+	index := findMappingKeyIndex(root, "peers")
+	if index < 0 {
+		return true, false, false
+	}
+	value := root.Content[index+1]
+	switch {
+	case value.Kind == yaml.ScalarNode && (value.Tag == "!!null" || value.Value == ""):
+		return true, true, true
+	case value.Kind == yaml.MappingNode && value.Style&yaml.FlowStyle == 0:
+		return true, true, true
+	default:
+		return true, true, false
+	}
 }
 
 func findMappingKeyIndex(mapping *yaml.Node, key string) int {
@@ -406,39 +245,308 @@ func findMappingKeyIndex(mapping *yaml.Node, key string) int {
 	return -1
 }
 
-// isEmptyYAML reports whether node is YAML's null (an omitted or explicit
-// "~"/"null" value) — the shape "peers:" with nothing after it parses to.
-func isEmptyYAML(node *yaml.Node) bool {
-	return node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == "")
+// stripLineEnding removes a trailing "\r\n" or "\n" (and a lone trailing
+// "\r", for robustness) from one line, leaving its content only.
+func stripLineEnding(line string) string {
+	return strings.TrimRight(line, "\r\n")
 }
 
-// documentInsertionPoint is where a "peers:" key that does not exist yet is
-// inserted: before a trailing "..." document-end marker (which "puts" any
-// text appended after it into a second YAML document, invisible to a
-// single-document parse), else at true EOF.
-func documentInsertionPoint(lines []string) int {
-	if marker := documentEndMarkerLine(lines); marker > 0 {
-		return marker
+func isCommentLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(stripLineEnding(line)), "#")
+}
+
+// leadingSpaceCount counts a line's leading ' ' characters. A tab is not a
+// space and stops the count immediately, which is deliberate: YAML
+// indentation with tabs is invalid, and isPeersBodyLine's own tab check
+// refuses a body containing one rather than silently miscounting it.
+func leadingSpaceCount(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
 	}
-	return len(lines) + 1
+	return n
 }
 
-// documentEndMarkerLine returns the 1-indexed line number of a bare "..."
-// document-end marker line, or 0 if none exists.
-func documentEndMarkerLine(lines []string) int {
+// findExactPeersKeyLine returns the 0-indexed line that reads exactly
+// "peers:" (its line ending stripped) — no quoting, no trailing
+// whitespace or comment, no leading indent — or (-1, false) if no line
+// matches. A "peers" key that decodes correctly but is spelled, quoted,
+// commented or indented any other way is a real key inspectPeersDocument
+// Shape can see, which rewritePeersUpstream must then refuse rather than
+// silently duplicate by treating it as absent.
+func findExactPeersKeyLine(lines []string) (int, bool) {
 	for i, line := range lines {
-		if strings.TrimSpace(strings.TrimRight(line, "\r\n")) == "..." {
-			return i + 1
+		if stripLineEnding(line) == "peers:" {
+			return i, true
 		}
 	}
-	return 0
+	return -1, false
+}
+
+// scanPeersBlockEnd returns the first 0-indexed line in [start, limit) whose
+// content, once its line ending is stripped, is non-blank and has fewer
+// than minIndent leading spaces — purely a property of that line's own
+// text, never of any decoded value's length. Blank lines never end the
+// scan (they are valid body content); a document marker ("---", "...") or
+// any other column-0-or-shallower line always does, without needing its
+// own special case, because it necessarily has fewer leading spaces than
+// any minIndent of at least 1.
+func scanPeersBlockEnd(lines []string, start, limit, minIndent int) int {
+	for i := start; i < limit; i++ {
+		content := stripLineEnding(lines[i])
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		if leadingSpaceCount(content) < minIndent {
+			return i
+		}
+	}
+	return limit
+}
+
+// peersBody is what parsePeersBody found while validating an existing
+// peers: block's body against the narrow grammar SetPeersUpstream's doc
+// comment describes. It carries only what spliceUpstreamBlock needs to
+// place the new upstream: block — never any sibling's key or value, which
+// stays byte-identical in the original text because nothing here ever
+// reads it for any purpose but validation.
+type peersBody struct {
+	// innerIndent is the leading-space count peers' own immediate children
+	// sit at, or -1 if the body has no children at all (an empty or
+	// null-only "peers:").
+	innerIndent int
+	// hasUpstream and upstreamLine/upstreamBodyEnd describe an existing
+	// "upstream:" child's exact line range — [upstreamLine, upstreamBodyEnd)
+	// — covering a single inline line, a bare/null line, or a bare line plus
+	// its own nested single-line-scalar children, whichever it is.
+	hasUpstream     bool
+	upstreamLine    int
+	upstreamBodyEnd int
+}
+
+var errUnsupportedPeersBody = errors.New("unsupported peers: body")
+
+// parsePeersBody validates every line of the peers: block's body — lines
+// keyLine+1 up to (not including) bodyEnd — against the grammar
+// SetPeersUpstream's doc comment describes, using nothing but each line's
+// own leading-space count and content. It refuses (errUnsupportedPeersBody)
+// on the first line that does not match: a different indent than the
+// body's own established level, a tab, a comment, a value that is not a
+// single-line plain or single-line quoted scalar with no escape sequences,
+// a second "upstream:" child, or a non-"upstream:" child that itself opens
+// a nested block.
+func parsePeersBody(lines []string, keyLine, bodyEnd int) (peersBody, error) {
+	body := peersBody{innerIndent: -1, upstreamLine: -1}
+	i := keyLine + 1
+	for i < bodyEnd {
+		content := stripLineEnding(lines[i])
+		if strings.TrimSpace(content) == "" {
+			i++
+			continue
+		}
+		if strings.ContainsRune(content, '\t') {
+			return peersBody{}, errUnsupportedPeersBody
+		}
+		indent := leadingSpaceCount(content)
+		if body.innerIndent == -1 {
+			body.innerIndent = indent
+		}
+		if indent != body.innerIndent {
+			return peersBody{}, errUnsupportedPeersBody
+		}
+		key, _, bare, ok := parseSimplePeersLine(content[indent:])
+		if !ok {
+			return peersBody{}, errUnsupportedPeersBody
+		}
+		if key == "upstream" {
+			if body.hasUpstream {
+				return peersBody{}, errUnsupportedPeersBody
+			}
+			body.hasUpstream = true
+			body.upstreamLine = i
+			if !bare {
+				body.upstreamBodyEnd = i + 1
+				i++
+				continue
+			}
+			nestedEnd := scanPeersBlockEnd(lines, i+1, bodyEnd, indent+1)
+			if _, err := parseFlatPeersScalars(lines, i+1, nestedEnd); err != nil {
+				return peersBody{}, err
+			}
+			body.upstreamBodyEnd = nestedEnd
+			i = nestedEnd
+			continue
+		}
+		if bare {
+			// Only "upstream:" may open a nested block; any other bare key
+			// followed by more-indented lines is refused rather than
+			// guessed at.
+			if scanPeersBlockEnd(lines, i+1, bodyEnd, indent+1) > i+1 {
+				return peersBody{}, errUnsupportedPeersBody
+			}
+		}
+		i++
+	}
+	return body, nil
+}
+
+// parseFlatPeersScalars validates lines [start, end) as upstream's own
+// children: the same single-line-scalar grammar, one consistent indent, but
+// with no further nesting permitted at all (a bare key here — including a
+// stray "upstream:" typo one level too deep — is refused).
+func parseFlatPeersScalars(lines []string, start, end int) ([]string, error) {
+	var keys []string
+	innerIndent := -1
+	for i := start; i < end; i++ {
+		content := stripLineEnding(lines[i])
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		if strings.ContainsRune(content, '\t') {
+			return nil, errUnsupportedPeersBody
+		}
+		indent := leadingSpaceCount(content)
+		if innerIndent == -1 {
+			innerIndent = indent
+		}
+		if indent != innerIndent {
+			return nil, errUnsupportedPeersBody
+		}
+		key, _, bare, ok := parseSimplePeersLine(content[indent:])
+		if !ok || bare {
+			return nil, errUnsupportedPeersBody
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// parseSimplePeersLine matches one indent-stripped, line-ending-stripped
+// body line against "key:" (bare, nothing after the colon) or
+// "key: value" where value is a single-line plain or single-line quoted
+// scalar with no escape sequences. ok is false for anything else — no
+// colon, an invalid key name, no space after the colon, a comment anywhere
+// in the value, or a value using YAML syntax (a block scalar, a flow
+// collection, an anchor, an alias, a tag) this grammar deliberately does
+// not support.
+func parseSimplePeersLine(content string) (key, value string, bare, ok bool) {
+	colon := strings.IndexByte(content, ':')
+	if colon < 0 || !isSimplePeersKeyName(content[:colon]) {
+		return "", "", false, false
+	}
+	key = content[:colon]
+	rest := content[colon+1:]
+	if rest == "" {
+		return key, "", true, true
+	}
+	if rest[0] != ' ' {
+		return "", "", false, false
+	}
+	value = strings.TrimSpace(rest)
+	if value == "" {
+		return key, "", true, true
+	}
+	if !isSafePeersScalarValue(value) {
+		return "", "", false, false
+	}
+	return key, value, false, true
+}
+
+func isSimplePeersKeyName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case i > 0 && ((c >= '0' && c <= '9') || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isSafePeersScalarValue reports whether value (already trimmed) is a
+// single-line plain scalar or a single-line quoted scalar with no escape
+// sequences and no interior quote character — deliberately conservative:
+// a block scalar indicator, a flow-collection bracket, an anchor, an
+// alias, a tag, or a comment anywhere in the value is refused rather than
+// interpreted.
+func isSafePeersScalarValue(value string) bool {
+	if strings.ContainsAny(value, "#\t") {
+		return false
+	}
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		inner := value[1 : len(value)-1]
+		return !strings.ContainsRune(inner, rune(value[0])) && !strings.ContainsRune(inner, '\\')
+	}
+	if strings.ContainsAny(value[:1], "\"'|>{}[]&*!%@`,") {
+		return false
+	}
+	return !strings.Contains(value, ": ") && !strings.HasSuffix(value, ":")
+}
+
+// appendNewPeersBlock is shape A: lines may be nil (an empty or absent
+// file). The new block is inserted before a trailing "---" or "..."
+// document marker if one exists (anything after it belongs to a second
+// document a single-document edit must never touch), otherwise at EOF.
+func appendNewPeersBlock(lines []string, newline, hubURL, tokenFile string) string {
+	insertAt := documentInsertionPoint(lines)
+	block := []string{
+		"peers:" + newline,
+		"  upstream:" + newline,
+		"    url: " + hubURL + newline,
+		"    token_file: " + tokenFile + newline,
+	}
+	return joinLines(spliceLines(lines, insertAt, insertAt, block, newline))
+}
+
+// documentInsertionPoint returns the 0-indexed line to insert new top-level
+// content before: the first "---" or "..." marker line after line 0 (a
+// marker AT line 0 only opens the file's own single document and is not a
+// second one), or len(lines) for true EOF.
+func documentInsertionPoint(lines []string) int {
+	for i, line := range lines {
+		if i == 0 {
+			continue
+		}
+		trimmed := strings.TrimSpace(stripLineEnding(line))
+		if trimmed == "---" || trimmed == "..." {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+// spliceUpstreamBlock is shape B's edit: replace exactly body's existing
+// "upstream:" child's line range, or — if it has none yet — insert a new
+// one as the body's last child (at bodyEnd, which is correct whether the
+// body is empty or already has other children). Every other line, in the
+// peers: block or outside it, is untouched.
+func spliceUpstreamBlock(lines []string, bodyEnd int, body peersBody, newline, hubURL, tokenFile string) string {
+	indent := body.innerIndent
+	if indent < 0 {
+		indent = 2
+	}
+	inner := strings.Repeat(" ", indent)
+	deeper := strings.Repeat(" ", indent+2)
+	block := []string{
+		inner + "upstream:" + newline,
+		deeper + "url: " + hubURL + newline,
+		deeper + "token_file: " + tokenFile + newline,
+	}
+	start, end := bodyEnd, bodyEnd
+	if body.hasUpstream {
+		start, end = body.upstreamLine, body.upstreamBodyEnd
+	}
+	return joinLines(spliceLines(lines, start, end, block, newline))
 }
 
 // splitLinesKeepEnds splits text into physical lines, each retaining its
 // own original line terminator exactly (including none, for a final
-// unterminated line, and "\r\n" verbatim rather than normalising it) — so
-// line N here always corresponds exactly to yaml.Node.Line == N on the same
-// text.
+// unterminated line, and "\r\n" verbatim rather than normalising it).
 func splitLinesKeepEnds(text string) []string {
 	if text == "" {
 		return nil
@@ -457,25 +565,27 @@ func splitLinesKeepEnds(text string) []string {
 	return lines
 }
 
-// spliceLines returns lines with [startLine, endLineExclusive) (1-indexed)
-// replaced by insertLines — or, when startLine == endLineExclusive, with
-// insertLines inserted at that point without removing anything. It never
-// mutates lines. If the line immediately before the insertion point lacks a
-// terminator (the file did not end with a newline), one is added first, so
-// the inserted content never lands on the same physical line as what came
-// before it.
-func spliceLines(lines []string, startLine, endLineExclusive int, insertLines []string, newline string) []string {
-	before := append([]string(nil), lines[:startLine-1]...)
-	after := lines[endLineExclusive-1:]
-	if n := len(before); n > 0 && len(insertLines) > 0 {
+// spliceLines returns lines with the 0-indexed range [start, end) replaced
+// by insert — or, when start == end, with insert inserted at that point
+// without removing anything. It never mutates lines, and every index it is
+// called with in this file is derived from scanPeersBlockEnd/
+// documentInsertionPoint, which never return a value outside [0, len(lines)]
+// — so this never runs past the slice either way. If the line immediately
+// before the insertion point lacks a terminator (the file did not end with
+// one), one is added first, so inserted content never lands on the same
+// physical line as what came before it.
+func spliceLines(lines []string, start, end int, insert []string, newline string) []string {
+	before := append([]string(nil), lines[:start]...)
+	after := lines[end:]
+	if n := len(before); n > 0 && len(insert) > 0 {
 		last := before[n-1]
 		if !strings.HasSuffix(last, "\n") {
 			before[n-1] = last + newline
 		}
 	}
-	result := make([]string, 0, len(before)+len(insertLines)+len(after))
+	result := make([]string, 0, len(before)+len(insert)+len(after))
 	result = append(result, before...)
-	result = append(result, insertLines...)
+	result = append(result, insert...)
 	result = append(result, after...)
 	return result
 }
@@ -491,30 +601,153 @@ func lineEndingOf(text string) string {
 	return "\n"
 }
 
-func convertNewlines(text, newline string) string {
-	if newline == "\n" {
-		return text
+// verifyPeersUpstreamEdit is SetPeersUpstream's pre-write safety check. It
+// shares no line-range logic with rewritePeersUpstream's own decisions —
+// the exact coupling that let round 4's verifier hide round 4's own bug
+// from itself — and runs two independent checks instead: a structural,
+// fully-decoded deep-equal (every document but the first, every top-level
+// key but "peers", every peers: child but "upstream"), and a textual,
+// freshly-line-scanned byte-for-byte compare of everything outside the
+// peers: block's own range in each of original and updated, computed
+// separately for each.
+func verifyPeersUpstreamEdit(original, updated, hubURL, tokenFile string) error {
+	upstream, found, err := parsePeersUpstream([]byte(updated))
+	if err != nil {
+		return fmt.Errorf("result does not parse: %w", err)
 	}
-	return strings.ReplaceAll(text, "\n", newline)
+	if !found || upstream.URL != hubURL || upstream.TokenFile != tokenFile {
+		return fmt.Errorf("result peers.upstream = %+v (found=%t), want url=%q token_file=%q", upstream, found, hubURL, tokenFile)
+	}
+
+	originalDocs, err := decodeAllPeersDocuments(original)
+	if err != nil {
+		return fmt.Errorf("re-check original: %w", err)
+	}
+	updatedDocs, err := decodeAllPeersDocuments(updated)
+	if err != nil {
+		return fmt.Errorf("re-check result: %w", err)
+	}
+	if len(originalDocs) != len(updatedDocs) {
+		return errors.New("the number of YAML documents changed")
+	}
+	for i := 1; i < len(originalDocs); i++ {
+		if !reflect.DeepEqual(originalDocs[i], updatedDocs[i]) {
+			return fmt.Errorf("document %d changed", i+1)
+		}
+	}
+
+	originalFirst := firstPeersDocumentMap(originalDocs)
+	updatedFirst := firstPeersDocumentMap(updatedDocs)
+	if !reflect.DeepEqual(withoutPeersKey(originalFirst), withoutPeersKey(updatedFirst)) {
+		return errors.New("a key other than peers changed")
+	}
+	if !reflect.DeepEqual(peersChildrenExceptUpstream(originalFirst["peers"]), peersChildrenExceptUpstream(updatedFirst["peers"])) {
+		return errors.New("a peers: child other than upstream changed")
+	}
+
+	originalOutside, err := textOutsidePeersBlock(original)
+	if err != nil {
+		return fmt.Errorf("re-check original: %w", err)
+	}
+	updatedOutside, err := textOutsidePeersBlock(updated)
+	if err != nil {
+		return fmt.Errorf("re-check result: %w", err)
+	}
+	// Trimmed only of trailing newline characters: inserting new content
+	// after a file that did not itself end with one requires adding exactly
+	// one newline first (new YAML content cannot start on the same physical
+	// line as existing content) — a fix-up, not a content change — so it
+	// must not itself trip this refusal. Any other difference still does.
+	if strings.TrimRight(originalOutside, "\r\n") != strings.TrimRight(updatedOutside, "\r\n") {
+		return errors.New("text outside peers: changed")
+	}
+	return nil
 }
 
-// renderKeyValuePair renders exactly the one key/value pair as its own
-// two-space-indented YAML block (ending with a single "\n"), so it can be
-// spliced into an existing file without re-encoding — and thereby
-// reformatting — anything else in it.
-func renderKeyValuePair(key, value *yaml.Node) (string, error) {
-	temporaryRoot := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{key, value}}
-	temporaryDocument := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{temporaryRoot}}
-	var buffer bytes.Buffer
-	encoder := yaml.NewEncoder(&buffer)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(temporaryDocument); err != nil {
-		return "", fmt.Errorf("render peers block: %w", err)
+// decodeAllPeersDocuments decodes every YAML document text holds (a plain
+// file has exactly one; a "---"-or-"..."-separated stream may have more) —
+// never just the first, which is round 4's own independence gap: a bug that
+// only corrupts a second document was invisible to a verifier that decoded
+// nothing past the first. An empty or blank text is one implicit empty
+// document, matching parsePeersUpstream's own treatment of an absent file.
+func decodeAllPeersDocuments(text string) ([]any, error) {
+	if strings.TrimSpace(text) == "" {
+		return []any{map[string]any{}}, nil
 	}
-	if err := encoder.Close(); err != nil {
-		return "", fmt.Errorf("render peers block: %w", err)
+	decoder := yaml.NewDecoder(strings.NewReader(text))
+	var docs []any
+	for {
+		var doc any
+		if err := decoder.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		docs = append(docs, doc)
 	}
-	return buffer.String(), nil
+	if len(docs) == 0 {
+		docs = append(docs, map[string]any{})
+	}
+	return docs, nil
+}
+
+func firstPeersDocumentMap(docs []any) map[string]any {
+	if len(docs) == 0 {
+		return map[string]any{}
+	}
+	if m, ok := docs[0].(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
+}
+
+func withoutPeersKey(m map[string]any) map[string]any {
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		if k != "peers" {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func peersChildrenExceptUpstream(peersValue any) map[string]any {
+	m, ok := peersValue.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return withoutKey(m, "upstream")
+}
+
+func withoutKey(m map[string]any, key string) map[string]any {
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		if k != key {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// textOutsidePeersBlock returns text with the top-level "peers:" block's
+// exact range removed (or text unchanged if no line reads exactly
+// "peers:"), using the same plain-text primitives rewritePeersUpstream
+// itself uses (findExactPeersKeyLine, scanPeersBlockEnd) but invoked fresh
+// against text's own, independent parse — so verifyPeersUpstreamEdit's
+// correctness never depends on rewritePeersUpstream having chosen the same
+// case (shape A, shape B, or a refusal) it actually ran.
+func textOutsidePeersBlock(text string) (string, error) {
+	if strings.TrimSpace(text) == "" {
+		return text, nil
+	}
+	lines := splitLinesKeepEnds(text)
+	keyLine, found := findExactPeersKeyLine(lines)
+	if !found {
+		return text, nil
+	}
+	bodyEnd := scanPeersBlockEnd(lines, keyLine+1, len(lines), 1)
+	return joinLines(spliceLines(lines, keyLine, bodyEnd, nil, lineEndingOf(text))), nil
 }
 
 // PeersUpstreamConfig is the peers.upstream section `wb peers list` reads on
@@ -532,8 +765,8 @@ type peersConfigFile struct {
 
 // parsePeersUpstream decodes peers.upstream from raw YAML bytes and
 // validates it the same way SetPeersUpstream validates a value before
-// writing it, so LoadPeersUpstream and verifySpliceResult apply exactly one
-// rule between them.
+// writing it, so LoadPeersUpstream and verifyPeersUpstreamEdit apply
+// exactly one rule between them.
 func parsePeersUpstream(raw []byte) (PeersUpstreamConfig, bool, error) {
 	var file peersConfigFile
 	if err := yaml.Unmarshal(raw, &file); err != nil {

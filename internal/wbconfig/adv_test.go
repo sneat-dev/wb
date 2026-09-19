@@ -9,39 +9,86 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestAdversarialSplice is the adversarial-review reproduction suite for
-// round 3's finding 2: a text splice built on naive literal-line matching
-// silently produced a duplicate "peers:" key (and lost sibling keys, and
-// dropped content after a "..." document-end marker) on every one of these
-// inputs. SetPeersUpstream now locates the "peers:" key by its yaml.Node
-// decoded value and line range rather than by scanning literal text, so all
-// of these must succeed with a well-formed result and a byte-identical
-// remote: block, not merely "not crash".
-func TestAdversarialSplice(t *testing.T) {
-	remoteLF := "remote:\n    provider: git # c\n    repo: acme/state\n"
+// remoteLFFixture is a realistic, unrelated remote: block every case below
+// either precedes or follows the peers: block with, so a test can assert it
+// survived byte-for-byte.
+const remoteLFFixture = "remote:\n    provider: git # c\n    repo: acme/state\n"
+
+// TestSetPeersUpstreamSupportsShapeA is round 5's shape A: no top-level
+// "peers:" key exists yet, so a fresh block is appended.
+func TestSetPeersUpstreamSupportsShapeA(t *testing.T) {
 	cases := map[string]string{
-		"crlf-existing-peers": strings.ReplaceAll(remoteLF+"peers:\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n", "\n", "\r\n"),
-		"crlf-no-peers":       strings.ReplaceAll(remoteLF, "\n", "\r\n"),
-		"quoted-key":          remoteLF + "\"peers\":\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
-		"flow-style":          remoteLF + "peers: {upstream: {url: https://a.example, token_file: /x/y}}\n",
-		"comment-after-key":   remoteLF + "peers:   # mine\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
-		"col0-comment-inside": remoteLF + "peers:\n  upstream:\n# note\n    url: https://a.example\n    token_file: /x/y\n",
-		"sibling-key":         remoteLF + "peers:\n  other: 1\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
-		"no-trailing-newline": strings.TrimSuffix(remoteLF, "\n"),
-		"peers-before-remote": "peers:\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n" + remoteLF,
-		"doc-end-marker":      remoteLF + "...\n",
-		"doc-start-marker":    "---\n" + remoteLF,
-		"peers-null":          remoteLF + "peers:\n",
-		"peers-space-colon":   remoteLF + "peers :\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
-		// Round 4 (S1): the boundary used to run to the next top-level key or
-		// to EOF, so anything sitting inside that range but outside the
-		// peers value's own subtree — a second YAML document, a trailing
-		// comment block, or a comment immediately above the following key —
-		// was silently deleted. These three succeed cleanly, with their own
-		// dedicated t.Run below each asserting the at-risk content survives.
-		"second-doc-after-peers":       remoteLF + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n---\nother_doc: 1\n",
-		"trailing-comment-after-peers": remoteLF + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n\n# a trailing comment about peers\n# another comment line\n",
-		"comment-above-remote":         "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n# a comment right above remote\n" + remoteLF,
+		"empty file":              "",
+		"no peers, LF":            remoteLFFixture,
+		"no peers, CRLF":          strings.ReplaceAll(remoteLFFixture, "\n", "\r\n"),
+		"no trailing newline":     strings.TrimSuffix(remoteLFFixture, "\n"),
+		"before a doc-end marker": remoteLFFixture + "...\n",
+		"a leading doc-start marker is not a second document": "---\n" + remoteLFFixture,
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "wb.yaml")
+			if input != "" {
+				if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err != nil {
+				t.Fatalf("SetPeersUpstream = %v, want success", err)
+			}
+			assertSinglePeersKeyAndUpstream(t, path, input, "https://b.example", "/abs/tok")
+		})
+	}
+
+	t.Run("before a doc-end marker keeps the marker after the new content", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wb.yaml")
+		if err := os.WriteFile(path, []byte(remoteLFFixture+"...\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(out)
+		if !strings.HasSuffix(strings.TrimRight(text, "\n"), "...") {
+			t.Fatalf("the trailing ... document-end marker was lost or moved:\n%q", text)
+		}
+		if strings.Index(text, "peers:") > strings.Index(text, "...") {
+			t.Fatalf("peers: was written after the ... marker:\n%q", text)
+		}
+	})
+}
+
+// TestSetPeersUpstreamSupportsShapeB is round 5's shape B: an existing
+// block-style "peers:" key at column 0, whose body is nothing but blank
+// lines and single-line "key: value" pairs (with at most one nested
+// "upstream:" sub-block, itself the same shape one level deeper). Every one
+// of these must succeed, and each preserves whatever else was already
+// there.
+func TestSetPeersUpstreamSupportsShapeB(t *testing.T) {
+	cases := map[string]string{
+		"existing upstream, LF":          remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n",
+		"existing upstream, CRLF":        strings.ReplaceAll(remoteLFFixture+"peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n", "\n", "\r\n"),
+		"bare/null upstream":             remoteLFFixture + "peers:\n  upstream:\n",
+		"upstream on one inline line":    remoteLFFixture + "peers:\n  upstream: null\n",
+		"no upstream yet, a sibling key": remoteLFFixture + "peers:\n  other: 1\n",
+		"peers is entirely bare/null":    remoteLFFixture + "peers:\n",
+		"peers before remote":            "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n" + remoteLFFixture,
+		"no trailing newline":            strings.TrimSuffix(remoteLFFixture+"peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n", "\n"),
+		"4-space indent":                 remoteLFFixture + "peers:\n    upstream:\n        url: https://old.example\n        token_file: /old/tok\n",
+		"a quoted value already there":   remoteLFFixture + "peers:\n  upstream:\n    url: \"https://old.example\"\n    token_file: '/old/tok'\n",
+		// Round 5's own two "over-count" repro fixes: the boundary used to
+		// run to the next top-level key or EOF, deleting anything past the
+		// peers value's own subtree — a second document, or a trailing
+		// comment block. The new plain line scan never looks past the
+		// body's own last line at all, so both now succeed with the at-risk
+		// content preserved (asserted in dedicated sub-tests below).
+		"second document after peers":                  remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n---\nother_doc: 1\n",
+		"trailing comment after peers":                 remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n\n# a trailing comment about peers\n# another comment line\n",
+		"comment above the next key (not above peers)": "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n# a comment right above remote\n" + remoteLFFixture,
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -49,54 +96,16 @@ func TestAdversarialSplice(t *testing.T) {
 			if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := SetPeersUpstream(path, "https://b.example", "/abs/tok")
-			if err != nil {
-				t.Fatalf("SetPeersUpstream = %v, want success for this valid (if unusual) input", err)
+			if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err != nil {
+				t.Fatalf("SetPeersUpstream = %v, want success", err)
 			}
-			out, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var doc map[string]any
-			if err := yaml.Unmarshal(out, &doc); err != nil {
-				t.Fatalf("CORRUPT: result does not parse as YAML: %v\n%q", err, string(out))
-			}
-			// Exactly one "peers" key: yaml.Unmarshal into a map silently
-			// keeps only the LAST duplicate key rather than erroring, which
-			// is exactly how this bug hid before — assert the raw text has
-			// no second "peers:"/"\"peers\":" line instead of trusting the
-			// map decode alone.
-			peersLines := 0
-			for _, line := range strings.Split(string(out), "\n") {
-				trimmed := strings.TrimRight(strings.TrimSpace(line), "\r")
-				if trimmed == "peers:" || strings.HasPrefix(trimmed, "peers:") || strings.HasPrefix(trimmed, "\"peers\":") || strings.HasPrefix(trimmed, "peers ") {
-					peersLines++
-				}
-			}
-			if peersLines != 1 {
-				t.Fatalf("CORRUPT: result has %d lines starting a peers key, want exactly 1:\n%q", peersLines, string(out))
-			}
-
-			up, found, err := LoadPeersUpstream(path)
-			if err != nil || !found || up.URL != "https://b.example" || up.TokenFile != "/abs/tok" {
-				t.Fatalf("CORRUPT: LoadPeersUpstream = %+v, %t, %v", up, found, err)
-			}
-
-			idx := strings.Index(input, "remote:")
-			if idx >= 0 {
-				end := strings.Index(input[idx:], "repo: acme/state")
-				chunk := input[idx : idx+end+len("repo: acme/state")]
-				if !strings.Contains(string(out), chunk) {
-					t.Fatalf("remote: block changed:\nwant substring: %q\ngot:            %q", chunk, string(out))
-				}
-			}
+			assertSinglePeersKeyAndUpstream(t, path, input, "https://b.example", "/abs/tok")
 		})
 	}
 
-	t.Run("sibling-key preserves the sibling", func(t *testing.T) {
+	t.Run("no upstream yet, a sibling key preserves the sibling", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "wb.yaml")
-		input := remoteLF + "peers:\n  other: 1\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n"
+		input := remoteLFFixture + "peers:\n  other: 1\n"
 		if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -112,9 +121,9 @@ func TestAdversarialSplice(t *testing.T) {
 		}
 	})
 
-	t.Run("second-doc-after-peers keeps the second document", func(t *testing.T) {
+	t.Run("second document after peers keeps the second document", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "wb.yaml")
-		input := remoteLF + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n---\nother_doc: 1\n"
+		input := remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n---\nother_doc: 1\n"
 		if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -130,9 +139,9 @@ func TestAdversarialSplice(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing-comment-after-peers keeps the comment block", func(t *testing.T) {
+	t.Run("trailing comment after peers keeps the comment block", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "wb.yaml")
-		input := remoteLF + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n\n# a trailing comment about peers\n# another comment line\n"
+		input := remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n\n# a trailing comment about peers\n# another comment line\n"
 		if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -148,9 +157,9 @@ func TestAdversarialSplice(t *testing.T) {
 		}
 	})
 
-	t.Run("comment-above-remote keeps the comment", func(t *testing.T) {
+	t.Run("comment above the next key keeps the comment", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "wb.yaml")
-		input := "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n# a comment right above remote\n" + remoteLF
+		input := "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n# a comment right above remote\n" + remoteLFFixture
 		if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -165,53 +174,146 @@ func TestAdversarialSplice(t *testing.T) {
 			t.Fatalf("CORRUPT: the comment directly above remote: was lost:\n%q", string(out))
 		}
 	})
-
-	t.Run("doc-end-marker keeps the marker after the new content", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "wb.yaml")
-		if err := os.WriteFile(path, []byte(remoteLF+"...\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err != nil {
-			t.Fatal(err)
-		}
-		out, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(out)
-		if !strings.HasSuffix(strings.TrimRight(text, "\n"), "...") {
-			t.Fatalf("the trailing ... document-end marker was lost or moved:\n%q", text)
-		}
-		if strings.Index(text, "peers:") > strings.Index(text, "...") {
-			t.Fatalf("peers: was written after the ... marker, where a single-document parse would never see it:\n%q", text)
-		}
-		if _, found, err := LoadPeersUpstream(path); err != nil || !found {
-			t.Fatalf("LoadPeersUpstream after a doc-end marker = found=%t, %v", found, err)
-		}
-	})
 }
 
-// TestSetPeersUpstreamRefusesAFlowStyleRoot is round 4's S1, case 1: a
-// flow-style root document ("{remote: {...}, peers: {...}}") has no safe
-// per-key line range at all — every key can share one physical line — so
-// SetPeersUpstream must refuse outright and leave the file untouched,
-// rather than attempt a line-range splice that silently loses whatever else
-// shares that line (previously the whole remote: block).
-func TestSetPeersUpstreamRefusesAFlowStyleRoot(t *testing.T) {
+// assertSinglePeersKeyAndUpstream is the common post-condition every
+// success case above must satisfy: the result parses, has exactly one line
+// starting a peers key, LoadPeersUpstream reads back the value just
+// written, and — when input itself contained a "remote:" block — that
+// block survived byte for byte.
+func assertSinglePeersKeyAndUpstream(t *testing.T, path, input, wantURL, wantTokenFile string) {
+	t.Helper()
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("CORRUPT: result does not parse as YAML: %v\n%q", err, string(out))
+	}
+	peersLines := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimRight(strings.TrimSpace(line), "\r") == "peers:" {
+			peersLines++
+		}
+	}
+	if peersLines != 1 {
+		t.Fatalf("CORRUPT: result has %d lines starting a peers key, want exactly 1:\n%q", peersLines, string(out))
+	}
+	up, found, err := LoadPeersUpstream(path)
+	if err != nil || !found || up.URL != wantURL || up.TokenFile != wantTokenFile {
+		t.Fatalf("CORRUPT: LoadPeersUpstream = %+v, %t, %v", up, found, err)
+	}
+	idx := strings.Index(input, "remote:")
+	if idx >= 0 {
+		end := strings.Index(input[idx:], "repo: acme/state")
+		chunk := input[idx : idx+end+len("repo: acme/state")]
+		if !strings.Contains(string(out), chunk) {
+			t.Fatalf("remote: block changed:\nwant substring: %q\ngot:            %q", chunk, string(out))
+		}
+	}
+}
+
+// TestSetPeersUpstreamRefusesUnsupportedShapes is round 5's ruling in full:
+// "stop trying to handle arbitrary YAML. Support two simple shapes and
+// refuse everything else." Every one of these must be refused with a
+// non-zero error and leave the file completely untouched — never silently
+// wrong, and never a panic (TestWriteSkillsSyncCmd... — see the dedicated
+// panic-input case below, which is exactly the reviewer's repro for the
+// spliceLines index panic this suite also guards against).
+func TestSetPeersUpstreamRefusesUnsupportedShapes(t *testing.T) {
+	cases := map[string]string{
+		"quoted key":                                     remoteLFFixture + "\"peers\":\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
+		"space before colon":                             remoteLFFixture + "peers :\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
+		"peers value is flow-style":                      remoteLFFixture + "peers: {upstream: {url: https://a.example, token_file: /x/y}}\n",
+		"comment after peers:":                           remoteLFFixture + "peers:   # mine\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
+		"comment above peers:":                           remoteLFFixture + "# a note about peers\npeers:\n  upstream:\n    url: https://a.example\n    token_file: /x/y\n",
+		"column-0 comment inside the body":               remoteLFFixture + "peers:\n  upstream:\n# note\n    url: https://a.example\n    token_file: /x/y\n",
+		"root document is flow-style":                    "{remote: {provider: git}, peers: {upstream: {url: https://old.example, token_file: /old/tok}}}\n",
+		"top-level block scalar":                         "peers: |\n  something\n" + remoteLFFixture,
+		"multi-line flow collection":                     "peers: {upstream: {url: https://x,\n  token_file: /y}}\n" + remoteLFFixture,
+		"CRLF with a trailing inline comment on a value": strings.ReplaceAll("peers:\n  upstream:\n    url: https://x\n    token_file: /y   # comment\n"+remoteLFFixture, "\n", "\r\n"),
+		"anchor":                 remoteLFFixture + "peers:\n  upstream:\n    url: &anchor https://x\n    token_file: /y\n",
+		"alias":                  remoteLFFixture + "peers:\n  other: *anchor\n  upstream:\n    url: https://x\n    token_file: /y\n",
+		"explicit tag":           remoteLFFixture + "peers:\n  other: !!str foo\n  upstream:\n    url: https://x\n    token_file: /y\n",
+		"a second upstream: key": remoteLFFixture + "peers:\n  upstream:\n    url: https://x\n    token_file: /y\n  upstream:\n    url: https://z\n    token_file: /w\n",
+		"a non-upstream key opens a nested block": remoteLFFixture + "peers:\n  other:\n    nested: 1\n  upstream:\n    url: https://x\n    token_file: /y\n",
+		"a tab in the body":                       remoteLFFixture + "peers:\n\tupstream:\n\t\turl: https://x\n\t\ttoken_file: /y\n",
+		"unparsable YAML":                         "not: [valid\n",
+		"peers is a non-mapping scalar":           "peers: not-a-mapping\n",
+		"peers is a sequence":                     "peers:\n  - a\n  - b\n",
+		// Round 5's own two "over-count" reproductions: a multi-line quoted
+		// scalar spanning a "---" second document, and one spanning a
+		// trailing comment. Round 4's boundary silently deleted the
+		// content past the scalar's real end; this grammar refuses a
+		// multi-line quoted scalar outright instead of guessing where it
+		// really ends.
+		"multi-line quoted scalar before a second document":  remoteLFFixture + "peers:\n  note: \"a\n\nb\"\n---\nother_doc: 1\n",
+		"multi-line quoted scalar before a trailing comment": "peers:\n  note: \"a\nb\"\n# precious comment\n" + remoteLFFixture,
+		// Round 5's own two "under-count" reproductions: a block scalar and
+		// a folded plain scalar, both of which round 4's boundary
+		// under-estimated, corrupting a sibling by leaving part of the
+		// scalar's own continuation lines outside the replaced range.
+		"block scalar sibling":           remoteLFFixture + "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n  note: |-\n    a\n    b\n",
+		"folded plain multi-line scalar": remoteLFFixture + "peers:\n  note: a\n    b\n    c\n",
+		// Round 5's panic reproduction: an unterminated double-quoted
+		// scalar followed by several blank lines at EOF used to panic
+		// spliceLines with an out-of-bounds index. It must now refuse
+		// cleanly instead — see TestSetPeersUpstreamNeverPanics below for
+		// the explicit non-panic assertion on this exact input.
+		"unterminated quoted scalar at EOF": "peers:\n  note: \"\n\n\n\n",
+		// Round 5's "duplicated FootComment" reproduction: a comment
+		// indented as if it were still part of the body, after upstream's
+		// own nested children.
+		"an indented trailing comment inside the body": "peers:\n  upstream:\n    url: https://old.example\n    token_file: /old/tok\n  # trailing indented comment\n" + remoteLFFixture,
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "wb.yaml")
+			if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err == nil {
+				t.Fatalf("SetPeersUpstream = nil, want a refusal for this unsupported shape")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != input {
+				t.Fatalf("a refused Set must leave the file byte-identical:\nbefore: %q\nafter:  %q", input, string(after))
+			}
+		})
+	}
+}
+
+// TestSetPeersUpstreamNeverPanics is the reviewer's exact round 5 panic
+// reproduction: an unterminated double-quoted scalar followed by several
+// blank lines at EOF used to drive spliceLines past the end of the file's
+// own line count. recover() turns any regression back into a normal test
+// failure instead of crashing the whole test binary, so this stays a
+// reliable regression guard rather than something that just happens not to
+// panic today.
+func TestSetPeersUpstreamNeverPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("SetPeersUpstream panicked: %v", r)
+		}
+	}()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
-	original := "{remote: {provider: git}, peers: {upstream: {url: https://old.example, token_file: /old/tok}}}\n"
-	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+	input := "peers:\n  note: \"\n\n\n\n"
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := SetPeersUpstream(path, "https://b.example", "/abs/tok"); err == nil {
-		t.Fatal("expected a refusal for a flow-style root document")
+		t.Fatal("expected a refusal, not success, for an unterminated quoted scalar")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != original {
-		t.Fatalf("a refused Set must leave a flow-style root byte-identical:\nbefore: %q\nafter:  %q", original, string(after))
+	if string(after) != input {
+		t.Fatalf("a refused Set must leave the file byte-identical:\nbefore: %q\nafter:  %q", input, string(after))
 	}
 }
 
@@ -253,23 +355,6 @@ func TestSetPeersUpstreamReportsUnstageableConfig(t *testing.T) {
 	}
 }
 
-// TestParseYAMLDocumentRejectsANonMappingTopLevel covers the internal
-// helper's own error branch directly, beyond what SetPeersUpstream's
-// public-API tests reach.
-func TestParseYAMLDocumentRejectsANonMappingTopLevel(t *testing.T) {
-	if _, _, err := parseYAMLDocument("- a\n- b\n"); err == nil {
-		t.Fatal("expected a refusal for a top-level sequence")
-	}
-}
-
-// TestTextOutsidePeersSubtreePropagatesAParseFailure covers
-// textOutsidePeersSubtree's own error branch directly.
-func TestTextOutsidePeersSubtreePropagatesAParseFailure(t *testing.T) {
-	if _, err := textOutsidePeersSubtree("not: [valid\n"); err == nil {
-		t.Fatal("expected textOutsidePeersSubtree to propagate an unparsable document")
-	}
-}
-
 // TestLoadPeersUpstreamReportsAReadFailure covers LoadPeersUpstream's
 // generic-read-error branch (distinct from the ordinary "file does not
 // exist" case), using an unreadable file.
@@ -287,11 +372,11 @@ func TestLoadPeersUpstreamReportsAReadFailure(t *testing.T) {
 	}
 }
 
-// TestSetPeersUpstreamRefusalLeavesTheFileUntouched is round 3's explicit
-// pre-write safety requirement: if the result cannot be verified — here, by
-// injecting a case verifySpliceResult's re-check is built to catch — the
-// original file is left byte-for-byte untouched and SetPeersUpstream
-// returns a non-nil error, never a silently corrupted config.
+// TestSetPeersUpstreamRefusalLeavesTheFileUntouched is the pre-write safety
+// requirement for a refusal that happens before rewritePeersUpstream is
+// even reached (an invalid URL): the original file is left byte-for-byte
+// untouched and SetPeersUpstream returns a non-nil error, never a silently
+// corrupted config.
 func TestSetPeersUpstreamRefusalLeavesTheFileUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	original := "remote:\n  provider: git\n  repo: acme/state\n"
