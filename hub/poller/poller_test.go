@@ -694,15 +694,17 @@ func TestCanonicalRepositoryAcceptsEitherSpelling(t *testing.T) {
 }
 
 // TestRateLimitHeadersAreOptional keeps a proxy that strips them from being
-// read as "no budget left".
+// read as "no budget left". hub.ReadRateLimit itself is exercised more
+// thoroughly in hub/github_rate_limit_test.go; this pins that the poller
+// still gets the same answer through the shared seam.
 func TestRateLimitHeadersAreOptional(t *testing.T) {
-	if readRateLimit(http.Header{}).known {
+	if hub.ReadRateLimit(http.Header{}).Known {
 		t.Fatal("absent headers must not be read as a known budget")
 	}
 	header := http.Header{}
 	header.Set("X-RateLimit-Remaining", "10")
 	header.Set("X-RateLimit-Reset", "not-a-number")
-	if readRateLimit(header).known {
+	if hub.ReadRateLimit(header).Known {
 		t.Fatal("an unparsable reset must not be read as a known budget")
 	}
 }

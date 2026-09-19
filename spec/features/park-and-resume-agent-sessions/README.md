@@ -7,6 +7,7 @@ status: Approved
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=request-change) |
 **Status:** Approved
 **Source Ideas:** —
+**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (successor launch and pane delivery below move behind that Feature's pluggable transport interface; herdr becomes the default, tmux the kept alternative)
 
 ## Summary
 
@@ -31,6 +32,16 @@ receipt proves the complete target outcome.
 
 <!-- How the feature works. Group rules under ### topic headings; write each
      enforceable rule as a `#### REQ: <slug>` entry under its topic. -->
+
+> **Transport note.** Successor launch and every pane-delivery path below
+> (local resume, remote resume's successor attach) now run through one
+> pluggable transport interface specified in
+> [Herdr Session Transport](../herdr-session-transport/README.md). herdr is
+> that interface's default implementation; tmux is the kept alternative,
+> moved behind the interface with no behavior change. The REQs below still
+> describe today's tmux-hosted successor behavior exactly — they are not
+> duplicated in the new Feature, which instead specifies the interface, the
+> herdr implementation, and transport selection.
 
 ### Session lifecycle and bundle custody
 

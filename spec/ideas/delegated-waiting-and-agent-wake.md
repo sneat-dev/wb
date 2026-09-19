@@ -231,7 +231,7 @@ a **detached, land-later** waiter must not be built until a head-bound approval
 token and a lane identity a non-session process can present exist. They are
 filed as their own hardening work, not as a tax on the observation verb.
 
-## Proposed direction
+## Recommended Direction
 
 ### A single bounded waiting verb
 
@@ -326,7 +326,24 @@ multiplies that budget by five to save model turns has moved the cost, not
 removed it. Default poll intervals must be chosen against the API budget, not
 against responsiveness.
 
-## Non-goals
+## Alternatives Considered
+
+- **Return on the first change** across N targets. Rejected: N targets
+  produce N wakes, each restarting observation from cold, and a noisy target
+  starves the quiet one (see "Multi-target, all-terminal semantics").
+- **A detached background watcher.** Rejected for the same reason
+  `wb ci wait` refused to be one: a process outliving its slice needs an
+  owner, and a lost wake then costs more than one re-invocation.
+- **Ad-hoc `gh` polling loops.** The status quo this replaces: invisible to
+  WB and paid for in model turns.
+
+## MVP Scope
+
+`wb wait pr` and `wb wait checks`: one bounded, resumable slice per
+invocation, multi-target with all-terminal semantics, run by the harness as a
+background command so its exit wakes the agent. No daemon.
+
+## Not Doing (and Why)
 
 - No general workflow or rules engine.
 - No AI summarisation on the correctness path.
@@ -476,6 +493,24 @@ view, and per the refresh model above a status line cannot sustain one during
 idle. Closing that needs a push channel outside WB — a notification hook, or a
 periodic prompt — and is deliberately out of scope here: WB's job is to make the
 state true and queryable, not to own the operator's attention.
+
+## Key Assumptions to Validate
+
+| Tier | Assumption | How to validate |
+|------|------------|-----------------|
+| Must-be-true | A harness background command's exit reliably wakes the agent | Measure wakes against waits ended, per harness |
+| Must-be-true | A default poll interval exists that fits a seven-target wait inside the 5,000-calls-per-hour GitHub budget | Measure REST calls per observation and per hour for a realistic wait |
+| Should-be-true | Agents use `wb wait` once it exists instead of hand-rolled loops | Count `gh` polling loops against `wb wait` calls in transcripts before and after |
+
+## SpecScore Integration
+
+- **New Features this would create:** a delegated-waiting Feature covering
+  `wb wait` targets, slices, resume arguments and wait records.
+- **Existing Features affected:**
+  [Mechanical Worktree Merge](../features/mechanical-worktree-merge/README.md)
+  (`wb pr land` already chains bounded check-wait slices),
+  [Agent SDLC Throughput](../features/agent-sdlc-throughput/README.md).
+- **Dependencies:** the existing check verdict used by `wb ci wait`.
 
 ## Open Questions
 

@@ -11,6 +11,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | Plan | Status | Source | Date | Owner |
 |---|---|---|---|---|
 | [agent-session-move](agent-session-move.md) | Implemented | agent-session-move | 2026-08-25 | codex |
+| [herdr-session-transport](herdr-session-transport.md) | Draft | herdr-session-transport | 2026-09-19 | ai |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | mechanical-worktree-merge | 2026-08-27 | alex |
 | [park-and-resume-agent-sessions](park-and-resume-agent-sessions.md) | Executing | park-and-resume-agent-sessions | 2026-08-26 | codex |
 | [peer-connectivity](peer-connectivity.md) | Draft | peer-connectivity | 2026-09-18 | alex |

@@ -241,7 +241,11 @@ Scope:
   removing its pending record. A rename is a barrier.
 - **Heads:** add `workbench_repository_heads`, with forward-only updates by
   occurrence time and rename aliases.
-- **Markers:** they keep the event and its type (the 14-day history).
+- **Markers:** they keep the event and its type (the 14-day history). This
+  must cover at least Task 5's 72-hour redelivery window plus the span
+  between a delivery's original failure and its last redelivery attempt
+  within that window, or a redelivered event could arrive after its own
+  dedup marker has already been pruned.
 - **Janitor:** hourly and at start. It walks every machine credential and
   prunes markers, heads, and queues over the 10,000-document bound (setting
   `reset_pending`), in chunks. Blocked peers are skipped at enqueue.

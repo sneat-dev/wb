@@ -1,0 +1,1 @@
+{"id":"cli:pane:current","error":{"code":"server_not_running","message":"no herdr server is running at /tmp/does-not-exist-herdr.sock; run `herdr` to start or attach it"}}

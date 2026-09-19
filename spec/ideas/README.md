@@ -13,9 +13,9 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [agent-lane-verbs](agent-lane-verbs.md) | Draft | 2026-09-02 | alex | — |
 | [ci-validation-reuse](ci-validation-reuse.md) | Draft | 2026-09-05 | alex | — |
 | [claim-at-push-visibility](claim-at-push-visibility.md) | Draft | 2026-09-02 | alex | — |
-| [dependency-policy-check](dependency-policy-check.md) | Approved | 2026-08-21 | alex | — |
+| [daemon-as-coordinator](daemon-as-coordinator.md) | Specifying | 2026-09-18 | ai | herdr-session-transport |
 | [delegated-waiting-and-agent-wake](delegated-waiting-and-agent-wake.md) | Draft | 2026-09-18 | ai | — |
-| [daemon-as-coordinator](daemon-as-coordinator.md) | Draft | 2026-09-18 | ai | — |
+| [dependency-policy-check](dependency-policy-check.md) | Approved | 2026-08-21 | alex | — |
 | [developer-lifecycle-metrics](developer-lifecycle-metrics.md) | Draft | 2026-07-20 | alex | — |
 | [efficient-agent-pipeline](efficient-agent-pipeline.md) | Draft | 2026-09-17 | ai | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
