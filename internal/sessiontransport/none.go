@@ -39,21 +39,28 @@ func (NoneTransport) Inspect(context.Context, Target) (Inspection, error) {
 	return Inspection{}, nil
 }
 
-// MatchesReceiptIdentity implements [Transport]. none has no naming
-// convention to enforce, so every name trivially matches: there is nothing
-// to refute.
-func (NoneTransport) MatchesReceiptIdentity(string, string) bool {
-	return true
+// AddressFor implements [Transport]. none has no address derivable purely
+// from a WB session ID — there is no live pane to name at all — so it
+// returns "".
+func (NoneTransport) AddressFor(string) string {
+	return ""
 }
 
 // Deliver implements [Transport]. [NoneCapabilities] declares every
 // capability false, so [ResolveDeliveryMode] always resolves
-// [ModeRecordOnly] for it regardless of delivery.Class — every requested
-// delivery, including a caller mistake that assumes a submit or advisory
-// path exists, resolves to a recorded outcome and no error
-// (REQ:none-transport-is-first-class, AC:none-transport-records-only).
+// [ModeRecordOnly] for it regardless of delivery.Operation and
+// delivery.Class — every requested delivery, including a caller mistake
+// that assumes a submit or advisory path exists, resolves to a recorded
+// outcome and no error (REQ:none-transport-is-first-class,
+// AC:none-transport-records-only). The explicit zero-Target check below is
+// redundant for none specifically (its Outcome is always ModeRecordOnly
+// regardless), but is written the way every [Transport] implementation
+// must, as the reference example.
 func (NoneTransport) Deliver(_ context.Context, target Target, delivery Delivery) (Receipt, error) {
-	mode := ResolveDeliveryMode(NoneCapabilities(), delivery.Class)
+	mode := ResolveDeliveryMode(NoneCapabilities(), delivery.Operation, delivery.Class)
+	if target.IsZero() {
+		mode = ModeRecordOnly
+	}
 	return Receipt{
 		Operation: delivery.Operation,
 		Outcome:   mode,

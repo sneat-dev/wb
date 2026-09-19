@@ -13,8 +13,8 @@ import "testing"
 func TestResolveDeliveryModeTmuxNeverDeliversUnguarded(t *testing.T) {
 	t.Parallel()
 	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
-		if got := ResolveDeliveryMode(TmuxCapabilities(), class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), %q) = %q, want %q (tmux must never deliver unguarded)",
+		if got := ResolveDeliveryMode(TmuxCapabilities(), OperationWake, class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), wake, %q) = %q, want %q (tmux must never deliver unguarded)",
 				class, got, ModeRecordOnly)
 		}
 	}
@@ -25,10 +25,15 @@ func TestResolveDeliveryModeTmuxNeverDeliversUnguarded(t *testing.T) {
 // event class resolves record-only.
 func TestResolveDeliveryModeNoneTransportRecordsOnly(t *testing.T) {
 	t.Parallel()
-	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory, EventSuccessorMessage} {
-		if got := ResolveDeliveryMode(NoneCapabilities(), class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(NoneCapabilities(), %q) = %q, want %q",
-				class, got, ModeRecordOnly)
+	for _, pair := range []struct {
+		Operation Operation
+		Class     EventClass
+	}{
+		{OperationWake, EventOwnPROutcome}, {OperationWake, EventAdvisory}, {OperationMessage, EventSuccessorMessage},
+	} {
+		if got := ResolveDeliveryMode(NoneCapabilities(), pair.Operation, pair.Class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(NoneCapabilities(), %q, %q) = %q, want %q",
+				pair.Operation, pair.Class, got, ModeRecordOnly)
 		}
 	}
 }
@@ -41,8 +46,8 @@ func TestResolveDeliveryModeNoneTransportRecordsOnly(t *testing.T) {
 // never submitted, even though herdr can advise for every other class.
 func TestResolveDeliveryModeHerdrOwnPROutcomeIsRecordOnlyThisIteration(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities(), EventOwnPROutcome); got != ModeRecordOnly {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationWake, EventOwnPROutcome); got != ModeRecordOnly {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), wake, EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
 	}
 }
 
@@ -51,8 +56,8 @@ func TestResolveDeliveryModeHerdrOwnPROutcomeIsRecordOnlyThisIteration(t *testin
 // own-PR-outcome class is delivered advisory-only on herdr.
 func TestResolveDeliveryModeHerdrAdvisoryForEverythingElse(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities(), EventAdvisory); got != ModeAdvisory {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventAdvisory) = %q, want %q", got, ModeAdvisory)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationWake, EventAdvisory); got != ModeAdvisory {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), wake, EventAdvisory) = %q, want %q", got, ModeAdvisory)
 	}
 }
 
@@ -63,8 +68,8 @@ func TestResolveDeliveryModeHerdrAdvisoryForEverythingElse(t *testing.T) {
 // path").
 func TestResolveDeliveryModeHerdrNeverSubmitsSuccessorMessageEither(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities(), EventSuccessorMessage); got != ModeRecordOnly {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventSuccessorMessage) = %q, want %q", got, ModeRecordOnly)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeRecordOnly {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), message, EventSuccessorMessage) = %q, want %q", got, ModeRecordOnly)
 	}
 }
 
@@ -76,26 +81,57 @@ func TestResolveDeliveryModeHerdrNeverSubmitsSuccessorMessageEither(t *testing.T
 // value.
 func TestResolveDeliveryModeTmuxSubmitsSuccessorMessageOnly(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(TmuxCapabilities(), EventSuccessorMessage); got != ModeSubmit {
-		t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
+	if got := ResolveDeliveryMode(TmuxCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), message, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
 	}
 }
 
 // TestResolveDeliveryModeLineageSubmitNeverGroundsADaemonClass is the B1
 // review round's explicit probe, expressed directly against
 // ResolveDeliveryMode: a hypothetical transport that claims LineageSubmit
-// but nothing else must still never submit a daemon-originated event.
+// but nothing else must still never submit a daemon-originated event, even
+// when paired with OperationWake (the correct Operation for those classes).
 func TestResolveDeliveryModeLineageSubmitNeverGroundsADaemonClass(t *testing.T) {
 	t.Parallel()
 	caps := Capabilities{Kind: "hypothetical", LineageSubmit: true}
 	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
-		if got := ResolveDeliveryMode(caps, class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(LineageSubmit-only, %q) = %q, want %q", class, got, ModeRecordOnly)
+		if got := ResolveDeliveryMode(caps, OperationWake, class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(LineageSubmit-only, wake, %q) = %q, want %q", class, got, ModeRecordOnly)
 		}
 	}
-	// The one class LineageSubmit actually governs still resolves submit.
-	if got := ResolveDeliveryMode(caps, EventSuccessorMessage); got != ModeSubmit {
-		t.Errorf("ResolveDeliveryMode(LineageSubmit-only, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
+	// The one class LineageSubmit actually governs still resolves submit,
+	// paired with its own correct Operation.
+	if got := ResolveDeliveryMode(caps, OperationMessage, EventSuccessorMessage); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(LineageSubmit-only, message, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
+	}
+}
+
+// TestResolveDeliveryModeMismatchedOperationNeverSubmits is round 3's
+// explicit finding, expressed directly against ResolveDeliveryMode: a wake
+// mislabelled with EventSuccessorMessage must never inherit
+// EventSuccessorMessage's submit path just because the resolved transport
+// declares LineageSubmit — that path belongs only to OperationMessage.
+// Symmetrically, EventOwnPROutcome/EventAdvisory paired with the wrong
+// Operation (OperationMessage) must never resolve anything but record-only
+// either, however capable the transport.
+func TestResolveDeliveryModeMismatchedOperationNeverSubmits(t *testing.T) {
+	t.Parallel()
+	fullyCapable := Capabilities{
+		Kind: "hypothetical-fully-capable", LiveStatus: true, EmptyInputEvidence: true, AdvisoryDelivery: true, LineageSubmit: true,
+	}
+	mismatches := []struct {
+		Operation Operation
+		Class     EventClass
+	}{
+		{OperationWake, EventSuccessorMessage}, // round 3's exact finding
+		{OperationMessage, EventOwnPROutcome},
+		{OperationMessage, EventAdvisory},
+	}
+	for _, mismatch := range mismatches {
+		if got := ResolveDeliveryMode(fullyCapable, mismatch.Operation, mismatch.Class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(fully-capable, %q, %q) = %q, want %q (mismatched operation/class must never submit or advise)",
+				mismatch.Operation, mismatch.Class, got, ModeRecordOnly)
+		}
 	}
 }
 
@@ -109,8 +145,8 @@ func TestResolveDeliveryModeLineageSubmitNeverGroundsADaemonClass(t *testing.T) 
 func TestResolveDeliveryModeGuardIsUnconditionalNotCapabilitySpecific(t *testing.T) {
 	t.Parallel()
 	caps := Capabilities{Kind: "hypothetical", LiveStatus: true, EmptyInputEvidence: false, AdvisoryDelivery: true}
-	if got := ResolveDeliveryMode(caps, EventOwnPROutcome); got != ModeRecordOnly {
-		t.Errorf("ResolveDeliveryMode(live-status-only, EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
+	if got := ResolveDeliveryMode(caps, OperationWake, EventOwnPROutcome); got != ModeRecordOnly {
+		t.Errorf("ResolveDeliveryMode(live-status-only, wake, EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
 	}
 }
 
@@ -124,13 +160,13 @@ func TestResolveDeliveryModeGuardIsUnconditionalNotCapabilitySpecific(t *testing
 func TestResolveDeliveryModeSubmitsOnceEvidenceExists(t *testing.T) {
 	t.Parallel()
 	caps := Capabilities{Kind: "hypothetical-future-herdr", LiveStatus: true, EmptyInputEvidence: true, AdvisoryDelivery: true}
-	if got := ResolveDeliveryMode(caps, EventOwnPROutcome); got != ModeSubmit {
-		t.Errorf("ResolveDeliveryMode(fully-capable, EventOwnPROutcome) = %q, want %q", got, ModeSubmit)
+	if got := ResolveDeliveryMode(caps, OperationWake, EventOwnPROutcome); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(fully-capable, wake, EventOwnPROutcome) = %q, want %q", got, ModeSubmit)
 	}
 	// Every other class stays advisory even once submission exists for the
 	// own-PR-outcome class — submission is never generalized to it.
-	if got := ResolveDeliveryMode(caps, EventAdvisory); got != ModeAdvisory {
-		t.Errorf("ResolveDeliveryMode(fully-capable, EventAdvisory) = %q, want %q", got, ModeAdvisory)
+	if got := ResolveDeliveryMode(caps, OperationWake, EventAdvisory); got != ModeAdvisory {
+		t.Errorf("ResolveDeliveryMode(fully-capable, wake, EventAdvisory) = %q, want %q", got, ModeAdvisory)
 	}
 }
 
@@ -141,8 +177,36 @@ func TestResolveDeliveryModeUnknownOrEmptyClassRecordsOnly(t *testing.T) {
 	t.Parallel()
 	caps := Capabilities{Kind: "hypothetical", LiveStatus: true, EmptyInputEvidence: true, AdvisoryDelivery: true, LineageSubmit: true}
 	for _, class := range []EventClass{"", "some_unrecognized_class"} {
-		if got := ResolveDeliveryMode(caps, class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(fully-capable, %q) = %q, want %q", class, got, ModeRecordOnly)
+		for _, op := range []Operation{OperationWake, OperationMessage} {
+			if got := ResolveDeliveryMode(caps, op, class); got != ModeRecordOnly {
+				t.Errorf("ResolveDeliveryMode(fully-capable, %q, %q) = %q, want %q", op, class, got, ModeRecordOnly)
+			}
+		}
+	}
+}
+
+// TestDeliveryModeExceeds proves the ranking DeliveryModeExceeds encodes:
+// submit exceeds advisory and record-only; advisory exceeds record-only;
+// nothing exceeds submit; a mode never exceeds itself.
+func TestDeliveryModeExceeds(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		got, allowed DeliveryMode
+		want         bool
+	}{
+		{ModeRecordOnly, ModeRecordOnly, false},
+		{ModeRecordOnly, ModeAdvisory, false},
+		{ModeRecordOnly, ModeSubmit, false},
+		{ModeAdvisory, ModeRecordOnly, true},
+		{ModeAdvisory, ModeAdvisory, false},
+		{ModeAdvisory, ModeSubmit, false},
+		{ModeSubmit, ModeRecordOnly, true},
+		{ModeSubmit, ModeAdvisory, true},
+		{ModeSubmit, ModeSubmit, false},
+	}
+	for _, tc := range cases {
+		if got := DeliveryModeExceeds(tc.got, tc.allowed); got != tc.want {
+			t.Errorf("DeliveryModeExceeds(%q, %q) = %v, want %v", tc.got, tc.allowed, got, tc.want)
 		}
 	}
 }

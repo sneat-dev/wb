@@ -25,6 +25,16 @@ import (
 	"github.com/sneat-dev/wb/internal/sessiontransport"
 )
 
+// probeTarget is a plausible, non-zero Target passed to Deliver by every
+// check that wants a transport's capability-driven behavior to actually
+// manifest — [sessiontransport.Transport.Deliver]'s "MUST be ModeRecordOnly
+// for a zero Target" rule would otherwise mask every capability this suite
+// means to probe. [CheckZeroTargetAlwaysRecordsOnly] is the one check that
+// deliberately uses the zero Target instead, to prove that rule itself.
+func probeTarget(transport sessiontransport.Transport) sessiontransport.Target {
+	return sessiontransport.Target{Kind: transport.Kind(), ID: "contract-suite-probe-target"}
+}
+
 // Check is one probe against a sessiontransport.Transport implementation.
 // It returns a descriptive error on failure and nil on success, so it can
 // be tested directly (see suite_test.go) without a *testing.T at all.
@@ -40,10 +50,12 @@ type checkEntry struct {
 // one check directly in isolation.
 var Checks = []checkEntry{
 	{"KindMatchesCapabilities", CheckKindMatchesCapabilities},
-	{"DeliverNeverErrors", CheckDeliverNeverErrors},
+	{"DeliverNeverErrorsOrExceedsResolveDeliveryMode", CheckDeliverNeverErrors},
 	{"AdvisoryNeverExceedsDeclaredCapability", CheckAdvisoryNeverExceedsCapability},
 	{"SuccessorMessageNeverExceedsDeclaredCapability", CheckSuccessorMessageNeverExceedsCapability},
 	{"DaemonClassNeverUsesLineageSubmit", CheckDaemonClassNeverUsesLineageSubmit},
+	{"MismatchedOperationNeverSubmits", CheckMismatchedOperationNeverSubmits},
+	{"ZeroTargetAlwaysRecordsOnly", CheckZeroTargetAlwaysRecordsOnly},
 	{"ResolvePaneRequiresErrNoUniqueTargetWithEmptyIdentity", CheckResolvePaneRequiresNoUniqueTarget},
 }
 
@@ -91,19 +103,32 @@ func CheckKindMatchesCapabilities(_ context.Context, transport sessiontransport.
 }
 
 // CheckDeliverNeverErrors verifies Deliver never returns an error, for
-// either Operation and every EventClass — REQ:none-transport-is-first-class
-// generalized: a transport records rather than fails when it cannot
-// deliver live.
+// every Operation and EventClass, and that the reported Outcome never
+// exceeds ([sessiontransport.DeliveryModeExceeds]) what
+// [sessiontransport.ResolveDeliveryMode] computes from the transport's own
+// Capabilities, Operation and Class — this is what would have caught round
+// 3's finding directly: a transport that ignored Operation and let a
+// wake-labelled EventSuccessorMessage submit under a LineageSubmit
+// capability would report an Outcome exceeding the (correctly computed,
+// mismatched-operation) ModeRecordOnly bound.
 func CheckDeliverNeverErrors(ctx context.Context, transport sessiontransport.Transport) error {
+	caps := transport.Capabilities()
+	target := probeTarget(transport)
 	classes := []sessiontransport.EventClass{
 		sessiontransport.EventOwnPROutcome, sessiontransport.EventAdvisory, sessiontransport.EventSuccessorMessage,
 	}
 	for _, class := range classes {
 		for _, op := range []sessiontransport.Operation{sessiontransport.OperationMessage, sessiontransport.OperationWake} {
-			if _, err := transport.Deliver(ctx, sessiontransport.Target{}, sessiontransport.Delivery{
+			receipt, err := transport.Deliver(ctx, target, sessiontransport.Delivery{
 				Operation: op, Class: class, Key: "contract-suite-probe", Text: "contract-suite-probe",
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("Deliver(operation=%s, class=%s) returned an error, want none: %w", op, class, err)
+			}
+			allowed := sessiontransport.ResolveDeliveryMode(caps, op, class)
+			if sessiontransport.DeliveryModeExceeds(receipt.Outcome, allowed) {
+				return fmt.Errorf("Deliver(operation=%s, class=%s).Outcome = %q exceeds %q, the bound ResolveDeliveryMode computed from this transport's own Capabilities",
+					op, class, receipt.Outcome, allowed)
 			}
 		}
 	}
@@ -116,7 +141,7 @@ func CheckDeliverNeverErrors(ctx context.Context, transport sessiontransport.Tra
 // (AC:tmux-never-delivers-unguarded, AC:none-transport-records-only).
 func CheckAdvisoryNeverExceedsCapability(ctx context.Context, transport sessiontransport.Transport) error {
 	caps := transport.Capabilities()
-	receipt, err := transport.Deliver(ctx, sessiontransport.Target{}, sessiontransport.Delivery{
+	receipt, err := transport.Deliver(ctx, probeTarget(transport), sessiontransport.Delivery{
 		Operation: sessiontransport.OperationWake, Class: sessiontransport.EventAdvisory, Text: "contract-suite-probe",
 	})
 	if err != nil {
@@ -132,13 +157,13 @@ func CheckAdvisoryNeverExceedsCapability(ctx context.Context, transport sessiont
 }
 
 // CheckSuccessorMessageNeverExceedsCapability verifies an
-// EventSuccessorMessage delivery never reports Outcome = advisory (this
-// path has always been record-or-submit, never an unsubmitted paste), and
-// never reports Outcome = submit unless the transport declares
-// LineageSubmit.
+// EventSuccessorMessage delivery, correctly paired with OperationMessage,
+// never reports Outcome = advisory (this path has always been
+// record-or-submit, never an unsubmitted paste), and never reports
+// Outcome = submit unless the transport declares LineageSubmit.
 func CheckSuccessorMessageNeverExceedsCapability(ctx context.Context, transport sessiontransport.Transport) error {
 	caps := transport.Capabilities()
-	receipt, err := transport.Deliver(ctx, sessiontransport.Target{}, sessiontransport.Delivery{
+	receipt, err := transport.Deliver(ctx, probeTarget(transport), sessiontransport.Delivery{
 		Operation: sessiontransport.OperationMessage, Class: sessiontransport.EventSuccessorMessage,
 		Key: "contract-suite-probe", Text: "contract-suite-probe\n",
 	})
@@ -156,13 +181,15 @@ func CheckSuccessorMessageNeverExceedsCapability(ctx context.Context, transport 
 
 // CheckDaemonClassNeverUsesLineageSubmit verifies that a transport claiming
 // LineageSubmit still never submits a daemon-originated event
-// (EventOwnPROutcome or EventAdvisory): LineageSubmit is consulted only for
-// EventSuccessorMessage (AC:tmux-never-delivers-unguarded's guarantee holds
-// regardless of LineageSubmit — this is the probe the B1 review round asked
-// for by name).
+// (EventOwnPROutcome or EventAdvisory, correctly paired with
+// OperationWake): LineageSubmit is consulted only for EventSuccessorMessage
+// paired with OperationMessage (AC:tmux-never-delivers-unguarded's
+// guarantee holds regardless of LineageSubmit — this is the probe the B1
+// review round asked for by name).
 func CheckDaemonClassNeverUsesLineageSubmit(ctx context.Context, transport sessiontransport.Transport) error {
+	target := probeTarget(transport)
 	for _, class := range []sessiontransport.EventClass{sessiontransport.EventOwnPROutcome, sessiontransport.EventAdvisory} {
-		receipt, err := transport.Deliver(ctx, sessiontransport.Target{}, sessiontransport.Delivery{
+		receipt, err := transport.Deliver(ctx, target, sessiontransport.Delivery{
 			Operation: sessiontransport.OperationWake, Class: class, Text: "contract-suite-probe",
 		})
 		if err != nil {
@@ -170,6 +197,68 @@ func CheckDaemonClassNeverUsesLineageSubmit(ctx context.Context, transport sessi
 		}
 		if receipt.Outcome == sessiontransport.ModeSubmit {
 			return fmt.Errorf("Deliver(wake, %s) reported Outcome = submit; LineageSubmit must never ground a daemon-originated submit", class)
+		}
+	}
+	return nil
+}
+
+// CheckMismatchedOperationNeverSubmits is round 3's explicit regression
+// probe: a wake mislabelled with EventSuccessorMessage, and every other
+// non-canonical Operation/EventClass pairing, must never resolve
+// ModeSubmit just because the resolved transport declares the relevant
+// capability (LineageSubmit for the wake/successor-message pairing;
+// LiveStatus+EmptyInputEvidence or AdvisoryDelivery for the others) — that
+// capability only ever grounds a submit/advisory decision for the one
+// Operation its EventClass is actually paired with.
+func CheckMismatchedOperationNeverSubmits(ctx context.Context, transport sessiontransport.Transport) error {
+	target := probeTarget(transport)
+	mismatches := []struct {
+		Operation sessiontransport.Operation
+		Class     sessiontransport.EventClass
+	}{
+		{sessiontransport.OperationWake, sessiontransport.EventSuccessorMessage}, // round 3's exact finding
+		{sessiontransport.OperationMessage, sessiontransport.EventOwnPROutcome},
+		{sessiontransport.OperationMessage, sessiontransport.EventAdvisory},
+	}
+	for _, mismatch := range mismatches {
+		receipt, err := transport.Deliver(ctx, target, sessiontransport.Delivery{
+			Operation: mismatch.Operation, Class: mismatch.Class, Key: "contract-suite-probe", Text: "contract-suite-probe",
+		})
+		if err != nil {
+			return fmt.Errorf("Deliver(operation=%s, class=%s) returned an error, want none: %w", mismatch.Operation, mismatch.Class, err)
+		}
+		if receipt.Outcome == sessiontransport.ModeSubmit {
+			return fmt.Errorf("Deliver(operation=%s, class=%s) reported Outcome = submit; a non-canonical operation/class pairing must never submit",
+				mismatch.Operation, mismatch.Class)
+		}
+	}
+	return nil
+}
+
+// CheckZeroTargetAlwaysRecordsOnly verifies that Deliver against a zero
+// Target — no live pane was ever resolved — always reports
+// Outcome = record-only, regardless of what the transport's Capabilities
+// and the delivery's Operation/Class would otherwise allow: there is
+// nowhere to advise or submit into.
+func CheckZeroTargetAlwaysRecordsOnly(ctx context.Context, transport sessiontransport.Transport) error {
+	pairs := []struct {
+		Operation sessiontransport.Operation
+		Class     sessiontransport.EventClass
+	}{
+		{sessiontransport.OperationWake, sessiontransport.EventOwnPROutcome},
+		{sessiontransport.OperationWake, sessiontransport.EventAdvisory},
+		{sessiontransport.OperationMessage, sessiontransport.EventSuccessorMessage},
+	}
+	for _, pair := range pairs {
+		receipt, err := transport.Deliver(ctx, sessiontransport.Target{}, sessiontransport.Delivery{
+			Operation: pair.Operation, Class: pair.Class, Key: "contract-suite-probe", Text: "contract-suite-probe",
+		})
+		if err != nil {
+			return fmt.Errorf("Deliver(zero target, operation=%s, class=%s) returned an error, want none: %w", pair.Operation, pair.Class, err)
+		}
+		if receipt.Outcome != sessiontransport.ModeRecordOnly {
+			return fmt.Errorf("Deliver(zero target, operation=%s, class=%s).Outcome = %q, want %q: a zero Target has nowhere to advise or submit into",
+				pair.Operation, pair.Class, receipt.Outcome, sessiontransport.ModeRecordOnly)
 		}
 	}
 	return nil

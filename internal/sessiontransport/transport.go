@@ -68,18 +68,22 @@ type Identity struct {
 }
 
 // LaunchRequest is what a successor launch needs to start a new terminal
-// for a resumed or moved session. The fields mirror tmux's own
-// StartDetached(ctx, name, cwd, executable, args)
+// for a resumed or moved session. Cwd, Executable and Args mirror tmux's
+// own StartDetached(ctx, name, cwd, executable, args)
 // (internal/sessionlaunch/tmux.go) exactly, because that is the one
 // concrete launch mechanism this Feature moves behind the interface today;
 // herdr's Task 4 launch (if any) documents its own use of these same
 // fields, or extends this type when it genuinely needs something tmux
 // never did — not before that need is concrete.
+//
+// There is deliberately no Name field: the terminal's own name is
+// SuccessorWBSessionID run through [Transport.AddressFor] — the identical
+// derivation [MatchesReceiptIdentity] checks a receipt against — so
+// [Transport.Launch] derives it itself rather than trusting a
+// caller-supplied name that could disagree with AddressFor's own
+// convention.
 type LaunchRequest struct {
 	SuccessorWBSessionID string
-	// Name is the terminal session's own name — tmux's "wb-session-" +
-	// SuccessorWBSessionID.
-	Name string
 	// Cwd is the working directory the successor's process starts in.
 	Cwd string
 	// Executable is the absolute path to the process to start.
@@ -112,10 +116,24 @@ type Inspection struct {
 // one, live candidate for the given [Identity] — herdr's zero-or-multiple
 // `agent list` match (REQ:pane-resolved-by-session-identity-match), or
 // tmux's `list-panes` returning other than exactly one line
-// (internal/sessionmessage/tmux.go's Inspect: "want exactly one"). Callers
-// MUST treat this exactly like a no-live-owner outcome: resolve to
-// record-only, never guess among candidates, and never fall back to a
-// stale previously recorded target (AC:pane-resolved-uniquely-or-record-only).
+// (internal/sessionmessage/tmux.go's Inspect: "want exactly one").
+//
+// Scope: this governs daemon-wake resolution (Task 7's
+// EventOwnPROutcome/EventAdvisory delivery). A daemon-wake caller MUST
+// treat it exactly like a no-live-owner outcome — resolve to record-only,
+// never guess among candidates, and never fall back to a stale previously
+// recorded target (AC:pane-resolved-uniquely-or-record-only).
+//
+// It does NOT retroactively relax `wb session receive-message`'s
+// pre-existing successor-messaging behavior
+// (REQ:existing-successor-messaging-binding-path,
+// internal/sessionmessage/receive.go): today, a pane-count mismatch or a
+// paste failure there is a hard error, exactly as REQ:tmux-parity-preserved
+// requires, because today's MessageReceipt schema has no way to express a
+// non-fatal "recorded, not delivered" outcome. Only once Task 4's
+// `delivery: recorded` receipt state (REQ:recorded-only-receipt-state)
+// exists does an EventSuccessorMessage resolution failure stop being a
+// hard error and start following this same record-only rule.
 var ErrNoUniqueTarget = errors.New("sessiontransport: no unique live target for this identity")
 
 // Transport is the one Go interface REQ:single-transport-interface
@@ -147,14 +165,17 @@ type Transport interface {
 	// ResolvePane resolves identity to a live [Target]. It MUST return
 	// [ErrNoUniqueTarget] — never guess, and never fall back to a stale
 	// recorded target — when zero or more than one live candidate matches
-	// (REQ:pane-resolved-by-session-identity-match). "No live owner" and
-	// "ambiguous" both resolve to ErrNoUniqueTarget; the caller's job
-	// (Task 7) is to treat that as record-only.
+	// (REQ:pane-resolved-by-session-identity-match). See
+	// [ErrNoUniqueTarget]'s own doc for exactly which callers must treat
+	// that as record-only today, and which pre-existing caller does not yet.
 	ResolvePane(ctx context.Context, identity Identity) (Target, error)
 
 	// Launch starts a brand-new terminal for a successor session and
 	// returns the [Target] it resolves to (internal/sessionlaunch's
-	// StartDetached, moved behind this method by Task 3).
+	// StartDetached, moved behind this method by Task 3). It derives the
+	// terminal's own name itself, via
+	// AddressFor(request.SuccessorWBSessionID) — see [LaunchRequest] for
+	// why that field does not exist on the request instead.
 	Launch(ctx context.Context, request LaunchRequest) (Target, error)
 
 	// Inspect reports target's current liveness and, when it is not live,
@@ -164,37 +185,58 @@ type Transport interface {
 	// validateAbandonment all poll this repeatedly).
 	Inspect(ctx context.Context, target Target) (Inspection, error)
 
-	// MatchesReceiptIdentity reports whether name — a receipt-carried
-	// address (tmux's TmuxName is the only field these call sites check
-	// today) — is the exact address this transport would use for
-	// successorWBSessionID. tmux's convention is "wb-session-" + id
+	// AddressFor returns the deterministic address this transport would use
+	// to reach wbSessionID's live terminal, in this transport's own naming
+	// scheme. tmux's is "wb-session-" + wbSessionID
 	// (internal/sessionlaunch/launch.go:482,
 	// internal/sessionmove/route.go:428,
+	// internal/sessionmove/store.go:521,
 	// internal/sessionpark/protocol.go:167,
 	// internal/sessioncourier/receiver.go:121,
+	// internal/sessioncourier/message.go:106,
 	// internal/worktrees/session_custody.go,
-	// internal/worktrees/session_park_custody.go). herdr and none have no
-	// deterministic name to check and therefore always return true: there
-	// is nothing to refute, so nothing is ever rejected on their account.
-	MatchesReceiptIdentity(successorWBSessionID, name string) bool
+	// internal/worktrees/session_park_custody.go — every one of those
+	// builds or checks the identical "wb-session-"+id string today; Task 3
+	// routes them all through this one method instead). [Transport.Launch]
+	// derives a new terminal's own name by calling this itself, rather than
+	// accepting a name from its caller (see [LaunchRequest]). herdr and
+	// none have no address derivable purely from a WB session ID — herdr
+	// resolves a live pane by `agent_session` match instead
+	// (REQ:pane-resolved-by-session-identity-match) — so they return "".
+	AddressFor(wbSessionID string) string
 
 	// Deliver sends delivery to target. It recomputes the delivery mode
-	// itself from Capabilities() and delivery.Class via
+	// itself from Capabilities(), delivery.Operation and delivery.Class via
 	// [ResolveDeliveryMode] — it MUST NOT trust a caller-supplied mode,
 	// because none exists on [Delivery] to trust: the resolved mode could
 	// otherwise go stale between a caller's own check and this call.
 	// [ModeRecordOnly] MUST NOT touch a live pane at all, [ModeAdvisory]
 	// MUST NOT submit (REQ:advisory-mechanism-and-newline-boundary governs
 	// herdr's exact mechanism), and [ModeSubmit] is reachable only for
-	// [EventSuccessorMessage] on a transport declaring
-	// [Capabilities.LineageSubmit] (tmux, unchanged,
+	// [EventSuccessorMessage] paired with [OperationMessage] on a transport
+	// declaring [Capabilities.LineageSubmit] (tmux, unchanged,
 	// REQ:tmux-parity-preserved) or, once Deferred work lands, for
-	// [EventOwnPROutcome]. The returned [Receipt] reports the mode that was
-	// actually used, which MUST equal what [ResolveDeliveryMode] computed —
-	// a transport MUST NOT claim to have advised or submitted when its own
-	// declared capabilities forbid it (REQ:none-transport-is-first-class's
-	// "a supported, expected outcome... instead of failing the calling
-	// command" generalizes to every transport through this contract, not
-	// only none).
+	// [EventOwnPROutcome] paired with [OperationWake].
+	//
+	// The returned [Receipt] reports the mode that was actually used, which
+	// MUST NOT exceed ([DeliveryModeExceeds]) what [ResolveDeliveryMode]
+	// computed — a transport MUST NOT claim to have advised or submitted
+	// when its own declared capabilities (or the Operation/Class pairing)
+	// forbid it (REQ:none-transport-is-first-class's "a supported, expected
+	// outcome... instead of failing the calling command" generalizes to
+	// every transport through this contract, not only none). It MAY report
+	// a strictly less binding mode: whenever target [Target.IsZero] is
+	// true — there is nowhere to advise or submit into — Outcome MUST be
+	// [ModeRecordOnly] regardless of what [ResolveDeliveryMode] computed.
 	Deliver(ctx context.Context, target Target, delivery Delivery) (Receipt, error)
+}
+
+// MatchesReceiptIdentity reports whether name — a receipt-carried address —
+// is the exact address transport would use for successorWBSessionID:
+// name == transport.AddressFor(successorWBSessionID). It is a package-level
+// helper, not a Transport method, because [Transport.AddressFor] alone
+// already carries every transport-specific fact this comparison needs;
+// every implementation would otherwise repeat the identical one-line body.
+func MatchesReceiptIdentity(transport Transport, successorWBSessionID, name string) bool {
+	return name == transport.AddressFor(successorWBSessionID)
 }

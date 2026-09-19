@@ -31,7 +31,7 @@ func TestNoneTransportResolvePaneNeverFabricatesATarget(t *testing.T) {
 func TestNoneTransportLaunchNeverErrors(t *testing.T) {
 	t.Parallel()
 	target, err := (NoneTransport{}).Launch(context.Background(), LaunchRequest{
-		SuccessorWBSessionID: "wbs-successor", Name: "wb-session-wbs-successor", Cwd: "/tmp", Executable: "/bin/true",
+		SuccessorWBSessionID: "wbs-successor", Cwd: "/tmp", Executable: "/bin/true",
 	})
 	if err != nil {
 		t.Fatalf("Launch() error = %v, want nil (REQ:none-transport-is-first-class)", err)
@@ -52,10 +52,23 @@ func TestNoneTransportInspectNeverErrors(t *testing.T) {
 	}
 }
 
-func TestNoneTransportMatchesReceiptIdentityAlwaysTrue(t *testing.T) {
+func TestNoneTransportAddressForReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	if !(NoneTransport{}).MatchesReceiptIdentity("wbs-anything", "anything-at-all") {
-		t.Fatal("MatchesReceiptIdentity() = false, want true: none has no naming convention to refute")
+	if got := (NoneTransport{}).AddressFor("wbs-anything"); got != "" {
+		t.Fatalf("AddressFor() = %q, want empty: none has no address derivable from a WB session ID", got)
+	}
+}
+
+func TestMatchesReceiptIdentityAgainstNoneIsNeverTrueForANonEmptyName(t *testing.T) {
+	t.Parallel()
+	// MatchesReceiptIdentity is now name == AddressFor(id); none's
+	// AddressFor is always "", so only an equally-empty name ever matches -
+	// there is no name none's convention can ever legitimately produce.
+	if MatchesReceiptIdentity(NoneTransport{}, "wbs-anything", "anything-at-all") {
+		t.Fatal("MatchesReceiptIdentity(none, id, non-empty name) = true, want false")
+	}
+	if !MatchesReceiptIdentity(NoneTransport{}, "wbs-anything", "") {
+		t.Fatal("MatchesReceiptIdentity(none, id, \"\") = false, want true: AddressFor(id) is also \"\"")
 	}
 }
 

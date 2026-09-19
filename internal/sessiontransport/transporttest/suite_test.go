@@ -26,6 +26,12 @@ type fakeTransport struct {
 	// CheckSuccessorMessageNeverExceedsCapability and
 	// CheckDaemonClassNeverUsesLineageSubmit each need to catch.
 	forceOutcome sessiontransport.DeliveryMode
+	// ignoreOperationAndTarget reproduces round 3's exact finding: Deliver
+	// computes its mode from Class and Capabilities alone, exactly like the
+	// pre-fix two-argument ResolveDeliveryMode signature — ignoring both
+	// Operation (so a wake mislabelled EventSuccessorMessage still submits
+	// under LineageSubmit) and whether target is zero.
+	ignoreOperationAndTarget bool
 
 	resolveErr    error
 	resolveTarget sessiontransport.Target
@@ -60,7 +66,7 @@ func (fakeTransport) Inspect(context.Context, sessiontransport.Target) (sessiont
 	return sessiontransport.Inspection{}, nil
 }
 
-func (fakeTransport) MatchesReceiptIdentity(string, string) bool { return true }
+func (fakeTransport) AddressFor(id string) string { return "wb-session-" + id }
 
 func (f fakeTransport) Deliver(_ context.Context, target sessiontransport.Target, delivery sessiontransport.Delivery) (sessiontransport.Receipt, error) {
 	if f.deliverErr != nil {
@@ -68,9 +74,37 @@ func (f fakeTransport) Deliver(_ context.Context, target sessiontransport.Target
 	}
 	outcome := f.forceOutcome
 	if outcome == "" {
-		outcome = sessiontransport.ResolveDeliveryMode(f.caps, delivery.Class)
+		if f.ignoreOperationAndTarget {
+			outcome = bugriddenResolve(f.caps, delivery.Class)
+		} else {
+			outcome = sessiontransport.ResolveDeliveryMode(f.caps, delivery.Operation, delivery.Class)
+			if target.IsZero() {
+				outcome = sessiontransport.ModeRecordOnly
+			}
+		}
 	}
 	return sessiontransport.Receipt{Operation: delivery.Operation, Outcome: outcome, Target: target, At: time.Now().UTC()}, nil
+}
+
+// bugriddenResolve reproduces round 3's exact bug, ignoring Operation
+// entirely — the same shape the pre-fix two-argument ResolveDeliveryMode
+// signature had.
+func bugriddenResolve(caps sessiontransport.Capabilities, class sessiontransport.EventClass) sessiontransport.DeliveryMode {
+	switch class {
+	case sessiontransport.EventOwnPROutcome:
+		if caps.LiveStatus && caps.EmptyInputEvidence {
+			return sessiontransport.ModeSubmit
+		}
+	case sessiontransport.EventSuccessorMessage:
+		if caps.LineageSubmit {
+			return sessiontransport.ModeSubmit
+		}
+	case sessiontransport.EventAdvisory:
+		if caps.AdvisoryDelivery {
+			return sessiontransport.ModeAdvisory
+		}
+	}
+	return sessiontransport.ModeRecordOnly
 }
 
 var _ sessiontransport.Transport = fakeTransport{}
@@ -151,6 +185,33 @@ func TestCheckDeliverNeverErrorsCatchesAnErroringDeliver(t *testing.T) {
 	fake.deliverErr = errors.New("deliberately broken")
 	if err := CheckDeliverNeverErrors(context.Background(), fake); err == nil {
 		t.Fatal("CheckDeliverNeverErrors() = nil, want an error when Deliver errors")
+	}
+}
+
+// TestCheckDeliverNeverErrorsCatchesRound3sExactBug proves this check alone
+// would have caught round 3's finding: an Outcome that exceeds what
+// ResolveDeliveryMode computes for the given (operation, class) pair —
+// here, a wake mislabelled as a successor message submitting because the
+// transport ignored Operation.
+func TestCheckDeliverNeverErrorsCatchesRound3sExactBug(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake.ignoreOperationAndTarget = true
+	if err := CheckDeliverNeverErrors(context.Background(), fake); err == nil {
+		t.Fatal("CheckDeliverNeverErrors() = nil, want an error: Outcome exceeded the ResolveDeliveryMode bound")
+	}
+}
+
+// TestCheckDeliverNeverErrorsAllowsAConservativeDowngrade proves "MUST NOT
+// exceed" permits a transport to be more conservative than its
+// Capabilities strictly allow - always record-only, even when e.g.
+// AdvisoryDelivery is true - without failing this check.
+func TestCheckDeliverNeverErrorsAllowsAConservativeDowngrade(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities())
+	fake.forceOutcome = sessiontransport.ModeRecordOnly
+	if err := CheckDeliverNeverErrors(context.Background(), fake); err != nil {
+		t.Fatalf("CheckDeliverNeverErrors() = %v, want nil: a conservative downgrade must never fail this check", err)
 	}
 }
 
@@ -265,6 +326,77 @@ func TestCheckDaemonClassNeverUsesLineageSubmitCatchesDeliverError(t *testing.T)
 	fake.deliverErr = errors.New("deliberately broken")
 	if err := CheckDaemonClassNeverUsesLineageSubmit(context.Background(), fake); err == nil {
 		t.Fatal("CheckDaemonClassNeverUsesLineageSubmit() = nil, want an error when Deliver errors")
+	}
+}
+
+// --- CheckMismatchedOperationNeverSubmits (round 3's exact finding) ---
+
+func TestCheckMismatchedOperationNeverSubmitsPasses(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err != nil {
+		t.Fatalf("CheckMismatchedOperationNeverSubmits() = %v, want nil", err)
+	}
+}
+
+// TestCheckMismatchedOperationNeverSubmitsCatchesRound3sExactBug reproduces
+// round 3's finding exactly: Delivery{Operation: OperationWake, Class:
+// EventSuccessorMessage} against a transport that (like the pre-fix
+// ResolveDeliveryMode) ignores Operation must be caught, because tmux
+// declares LineageSubmit true.
+func TestCheckMismatchedOperationNeverSubmitsCatchesRound3sExactBug(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake.ignoreOperationAndTarget = true
+	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err == nil {
+		t.Fatal("CheckMismatchedOperationNeverSubmits() = nil, want an error: a wake mislabelled as a successor message must never submit")
+	}
+}
+
+func TestCheckMismatchedOperationNeverSubmitsCatchesDeliverError(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake.deliverErr = errors.New("deliberately broken")
+	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err == nil {
+		t.Fatal("CheckMismatchedOperationNeverSubmits() = nil, want an error when Deliver errors")
+	}
+}
+
+// --- CheckZeroTargetAlwaysRecordsOnly ---
+
+func TestCheckZeroTargetAlwaysRecordsOnlyPasses(t *testing.T) {
+	t.Parallel()
+	for _, fake := range []fakeTransport{
+		conformingFake(sessiontransport.KindNone, sessiontransport.NoneCapabilities()),
+		conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities()),
+		conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities()),
+	} {
+		if err := CheckZeroTargetAlwaysRecordsOnly(context.Background(), fake); err != nil {
+			t.Fatalf("CheckZeroTargetAlwaysRecordsOnly(%s) = %v, want nil", fake.Kind(), err)
+		}
+	}
+}
+
+// TestCheckZeroTargetAlwaysRecordsOnlyCatchesAMisbehavingTransport proves
+// this is the check that would catch a transport that computes its mode
+// purely from Capabilities/Operation/Class and never looks at target at
+// all — a fully-capable transport that ignores a zero Target and reports
+// Outcome = advisory anyway.
+func TestCheckZeroTargetAlwaysRecordsOnlyCatchesAMisbehavingTransport(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities())
+	fake.forceOutcome = sessiontransport.ModeAdvisory
+	if err := CheckZeroTargetAlwaysRecordsOnly(context.Background(), fake); err == nil {
+		t.Fatal("CheckZeroTargetAlwaysRecordsOnly() = nil, want an error when a zero-target delivery reports advisory")
+	}
+}
+
+func TestCheckZeroTargetAlwaysRecordsOnlyCatchesDeliverError(t *testing.T) {
+	t.Parallel()
+	fake := conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities())
+	fake.deliverErr = errors.New("deliberately broken")
+	if err := CheckZeroTargetAlwaysRecordsOnly(context.Background(), fake); err == nil {
+		t.Fatal("CheckZeroTargetAlwaysRecordsOnly() = nil, want an error when Deliver errors")
 	}
 }
 
