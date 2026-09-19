@@ -74,6 +74,18 @@ type repositoryEventIdentityState struct {
 type repositoryEventQueueState struct {
 	AcknowledgedSequence int64     `firestore:"acknowledged_sequence"`
 	AcknowledgedAt       time.Time `firestore:"acknowledged_at"`
+	// QueuedWork is the peer's queued-work count peer-connectivity#req:
+	// peer-is-persistent-state describes: "pieces of sync work, after
+	// coalescing, not yet acknowledged" — `wb peers list`'s LAG column.
+	// Nothing writes it yet (the coalescing enqueue transaction that
+	// increments it, and the reset transaction that recomputes it, are
+	// Task 3 and Task 4), but the field must exist on this struct now: this
+	// same document is read and unconditionally written back whole by
+	// Acknowledge below, so any field this struct does not declare would be
+	// silently dropped from the stored document on every acknowledgement —
+	// a later task's writer would inherit a reader/writer pair that erases
+	// its own counter.
+	QueuedWork int64 `firestore:"queued_work"`
 }
 
 type repositoryEventStore struct {
@@ -308,6 +320,44 @@ func (store repositoryEventStore) Acknowledge(ctx context.Context, machine Machi
 	}
 	return repositoryevent.AckResponse{Version: repositoryevent.ContractVersion, Cursor: request.Cursor}, nil
 }
+
+// QueuedWorkStore is the narrow read the peers read model needs: how much
+// queued work a machine's queue holds, for `wb peers list`'s LAG column
+// (peer-connectivity#req:peer-is-persistent-state, #req:peers-api).
+type QueuedWorkStore interface {
+	// QueuedWork reads workbench_repository_event_queues/<machineID>'s
+	// queued_work field. found is false when the machine has no queue-state
+	// document yet — LAG then shows "-", not zero, since "no document" and
+	// "a document reporting zero" are different facts once Task 3 starts
+	// writing it.
+	QueuedWork(ctx context.Context, machineID string) (count int64, found bool, err error)
+}
+
+// NewQueuedWorkStore wires QueuedWorkStore to the same backend document
+// store repositoryEventStore itself uses, reading the exact per-machine
+// queue-state document Acknowledge above reads and writes.
+func NewQueuedWorkStore(backend githubapp.DocumentStore) QueuedWorkStore {
+	return queuedWorkStore{backend: backend}
+}
+
+type queuedWorkStore struct{ backend githubapp.DocumentStore }
+
+func (store queuedWorkStore) QueuedWork(ctx context.Context, machineID string) (int64, bool, error) {
+	if store.backend == nil {
+		return 0, false, errRepositoryEventStoreUnavailable
+	}
+	var state repositoryEventQueueState
+	found, err := store.backend.Get(ctx, repositoryEventQueueCollection, machineID, &state)
+	if err != nil {
+		return 0, false, fmt.Errorf("read repository event queue state: %w", err)
+	}
+	if !found {
+		return 0, false, nil
+	}
+	return state.QueuedWork, true, nil
+}
+
+var _ QueuedWorkStore = queuedWorkStore{}
 
 func (store repositoryEventStore) IdentityRepositoryEventStatus(ctx context.Context, identityID string) (*StatusDelivery, []PendingRefresh, []StatusError, error) {
 	if store.backend == nil || identityID == "" {

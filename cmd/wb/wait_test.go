@@ -421,6 +421,128 @@ func TestWaitPRPrintsWhyABlockedHeadCannotMerge(t *testing.T) {
 	}
 }
 
+// TestWaitPRKeepsIdentityFieldsWhenOnlyChecksReadFails pins the round-3
+// regression: State/Head/Base/URL/Mergeable/Draft come from a successful
+// pull-request read, a fact independent of whether a later checks read on
+// that same open pull request fails. Before prsnapshot.Observe, `wait.go`
+// carried those fields into waitReadFailure's target; the first cut of the
+// prsnapshot move built a fresh, empty target and returned it straight from
+// waitReadFailure without ever copying them over. This proves the `--json`
+// output for that case still reports the pull request's own identity, not a
+// blank one.
+func TestWaitPRKeepsIdentityFieldsWhenOnlyChecksReadFails(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/13$'; then
+  echo '{"number":13,"state":"open","draft":true,"merged":false,"mergeable_state":"clean","html_url":"https://example.invalid/13","head":{"ref":"feature","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q 'check-runs'; then
+  echo 'gh: not found (HTTP 404)' >&2
+  exit 1
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"wait", "pr", "acme/app#13", "--slice", "300ms", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	if code == exitOK {
+		t.Fatalf("exit = %d, want a non-settled exit: the checks read never succeeds; stdout = %s", code, stdout.String())
+	}
+	var output waitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output = %q: %v", stdout.String(), err)
+	}
+	if len(output.Targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(output.Targets))
+	}
+	target := output.Targets[0]
+	if target.Status != waitStatusError {
+		t.Fatalf("status = %q, want error (a 404 is not transient): %+v", target.Status, target)
+	}
+	if target.State != "open" || !target.Draft {
+		t.Errorf("State/Draft = %q/%t, want open/true: identity fields must survive a checks-read failure", target.State, target.Draft)
+	}
+	if target.Head != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || target.Base != "main" {
+		t.Errorf("Head/Base = %q/%q, want the real observed values, not blank", target.Head, target.Base)
+	}
+	if target.URL != "https://example.invalid/13" || target.Mergeable != "clean" {
+		t.Errorf("URL/Mergeable = %q/%q, want the real observed values, not blank", target.URL, target.Mergeable)
+	}
+}
+
+// TestWaitPRChangedIgnoresAHeadThatWasNeverReallyBlank is the --until
+// changed half of the round-3 regression: a first observation that hits a
+// checks-read failure on an open pull request must still carry the real
+// head, so a later, successful observation of the identical head is not
+// mistaken for a change. Before the fix, the first observation's blank Head
+// field would differ from the second's real one and stop the wait on a
+// change that never actually happened.
+func TestWaitPRChangedIgnoresAHeadThatWasNeverReallyBlank(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "check-runs-calls")
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/14$'; then
+  echo '{"number":14,"state":"open","draft":false,"merged":false,"mergeable_state":"clean","html_url":"https://example.invalid/14","head":{"ref":"feature","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q 'check-runs'; then
+  count=0
+  if [ -f "` + state + `" ]; then count=$(cat "` + state + `"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "` + state + `"
+  if [ "$count" = "1" ]; then
+    echo 'gh: not found (HTTP 404)' >&2
+    exit 1
+  fi
+  echo '{"total_count":0,"check_runs":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/rules/branches/'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ]; then echo '{}'; exit 0; fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"wait", "pr", "acme/app#14", "--until", "changed", "--slice", "600ms", "--interval", "150ms", "--json"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("exit = %d, want %d (pending): the pull request's own facts never actually changed; stdout = %s stderr = %s", code, exitFindings, stdout.String(), stderr.String())
+	}
+	var output waitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output = %q: %v", stdout.String(), err)
+	}
+	if output.Status != waitStatusPending {
+		t.Fatalf("status = %q, want pending: a resolved checks read on an unchanged head is not a change", output.Status)
+	}
+	if len(output.Targets) != 1 || output.Targets[0].Status != waitStatusPending {
+		t.Fatalf("targets = %+v, want the single target still pending", output.Targets)
+	}
+}
+
 func TestWaitListTellsAQuietSessionApartFromAStoppedOne(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", home)

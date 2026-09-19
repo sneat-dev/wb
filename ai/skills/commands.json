@@ -62,6 +62,9 @@
     "migrate": [
       "wb-migrate"
     ],
+    "peers": [
+      "wb-fleet"
+    ],
     "pr": [
       "wb-merge"
     ],

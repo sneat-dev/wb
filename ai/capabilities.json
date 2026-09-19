@@ -2182,13 +2182,16 @@
             {
               "path": "wb daemon restart",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--if-running",
                 "--json"
               ],
               "modes": [
                 "Restarts with a durable queue ownership handoff",
-                "--if-running is safe after verified self-update"
+                "--if-running is safe after verified self-update",
+                "Hands a supervised (systemd/launchd) daemon back to its supervisor instead of launching a detached replacement",
+                "--force-detached overrides a refusal to start a detached daemon under a recorded supervisor"
               ]
             }
           ],
@@ -2200,6 +2203,7 @@
             {
               "command": "wb daemon restart --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--if-running",
                 "--json"
@@ -2356,12 +2360,15 @@
             {
               "path": "wb daemon start",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--json",
                 "--listen"
               ],
               "modes": [
-                "Idempotently starts the loopback daemon and hands off an older installed executable"
+                "Idempotently starts the loopback daemon and hands off an older installed executable",
+                "Refuses a detached start when the runtime's recorded owner is a systemd or launchd supervisor still confirmed present",
+                "--force-detached overrides that refusal"
               ]
             }
           ],
@@ -2373,6 +2380,7 @@
             {
               "command": "wb daemon start --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--json",
                 "--listen"
@@ -2431,7 +2439,9 @@
                 "Reports a daemon still serving the pre-resolver runtime directory, and why a start was refused while one is live",
                 "Reports whether the bench hub is mounted, with its store engine, store location, and listen address",
                 "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged",
-                "Reports whether webhook mode is on and the public URL GitHub delivers to"
+                "Reports whether webhook mode is on and the public URL GitHub delivers to",
+                "Reports supervisor=systemd|launchd|none, what the daemon recorded about its own start",
+                "Flags a supervisor_mismatch when the recorded supervisor disagrees with what this build can independently observe (Linux cgroup membership)"
               ]
             }
           ],
@@ -6673,6 +6683,447 @@
         }
       },
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
+    },
+    {
+      "id": "wb.peers.block",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers block",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Refuses a peer's sessions and HTTP calls over the daemon's owner-token RPC, keeping its record, cursor and lifetime counters."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers block --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers block laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "block, unblock and disconnect resolve <peer> by name or ID; on a laptop they act on the configured upstream locally instead of the (nonexistent) owner RPC."
+    },
+    {
+      "id": "wb.peers.disconnect",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers disconnect",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Closes a peer's live session only; the peer stays trusted and reconnects by itself. Reports \"no live session\" until Task 2 adds sessions."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers disconnect --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers disconnect laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Answers a clear \"no live session\" result for any known peer until Task 2's session registry lands."
+    },
+    {
+      "id": "wb.peers.get",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers get",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Shows one peer's full record, read through the local daemon's /api/v1/peers API. The reserved name \"upstream\" shows this machine's configured hub instead."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers get --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers get laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersGetRendersAPeerDetailOrTheUpstream",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Session, counters and admin_available are empty/false until Tasks 2, 6 and 7 fill them in."
+    },
+    {
+      "id": "wb.peers.invite",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers invite",
+              "flags": [
+                "--format",
+                "--json",
+                "--rotate",
+                "--token-file"
+              ],
+              "modes": [
+                "Mints a one-time peer credential on this hub over the owner-token RPC and prints the token once, or writes it privately to --token-file."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers invite --help",
+              "contains": [
+                "--rotate",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers invite laptop --token-file ~/.wb/credentials/laptop.token"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersInvitePrintsTokenOnceOrWritesTokenFile",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses an existing peer name without --rotate, the hub's own machine name, a name held by a non-peer credential, and the memory store engine."
+    },
+    {
+      "id": "wb.peers.join",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers join",
+              "flags": [
+                "--format",
+                "--json",
+                "--restart-daemon",
+                "--token-file",
+                "--token-stdin"
+              ],
+              "modes": [
+                "Verifies a one-time peer token against the hub's connect route, writes peers.upstream in wb.yaml without touching remote:, and restarts a running daemon."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers join --help",
+              "contains": [
+                "--token-stdin",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers join https://vm1.sneat.dev --token-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_join_test.go",
+              "name": "TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses a same-origin remote.provider: hub, since two receivers cannot consume one queue."
+    },
+    {
+      "id": "wb.peers.list",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers list",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Lists every downstream peer this hub knows, plus the upstream hub row when peers.upstream is configured."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers list --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersListRendersDownstreamAndUpstreamRows",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Reads through the local daemon's /api/v1/peers API; a daemon that is not reachable yields an empty downstream list rather than failing the command."
+    },
+    {
+      "id": "wb.peers.unblock",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers unblock",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Allows a blocked peer's sessions again over the owner-token RPC and sets reset_pending, so its next redial reconciles from the hub's heads."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers unblock --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers unblock laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "See wb.peers.block for the shared name/ID resolution and the laptop-local upstream path."
     },
     {
       "id": "wb.pr.create",

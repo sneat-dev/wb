@@ -14,15 +14,18 @@ package hub
 //
 // Keep this in step with the collection constants and path helpers in
 // installation_store.go, repository_event_store.go,
-// machine_credential_store.go, machine_snapshot_store.go and
-// poll_observation_store.go; the store tests assert every one of them is
-// listed.
+// machine_credential_store.go, machine_snapshot_store.go,
+// poll_observation_store.go and peer_store.go; the store tests assert every
+// one of them is listed.
 func Collections() []string {
 	return []string{
 		machineCredentialCollection,
 		machineEnrollmentCollection,
 		machineSnapshotCollection,
 		pollObservationCollection,
+
+		peerTrustCollection,
+		peerStatsCollection,
 
 		installationStateCollection,
 		installationIdentityCollection,

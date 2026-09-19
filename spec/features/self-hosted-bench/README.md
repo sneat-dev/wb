@@ -110,6 +110,17 @@ dashboard's viewer resolver in local mode returns a single fixed identity;
 there is no sign-in. Binding the hub to a non-loopback address is refused
 until an OAuth2 or OIDC provider is configured, which is a later feature.
 
+A self-hosted hub's loopback listener is reachable through a tunnel or a
+proxy, which is not proof that a caller is the local operator. So the HTTP
+route `POST /v0/workbench/machines/enroll` is **not mounted** on a self-hosted
+hub: self-hosted machine enrollment moves to the daemon's owner-token
+unix-socket RPC instead, alongside peer admission and trust changes (see
+[peer-connectivity](../peer-connectivity/README.md)#req:admin-requires-owner-credential).
+`ensureLocalEnrollment`'s own bootstrap of the daemon's own machine is
+unaffected: it always called the enrollment service in-process, never over
+HTTP. The hosted instance keeps the HTTP route mounted, gated by its own
+OAuth viewer.
+
 ### Polling ingester
 
 For every repository in the machine's published inventory the poller reads

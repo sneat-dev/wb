@@ -47,6 +47,14 @@ type HandlerOptions struct {
 	// handler accepts are narrated by RepositoryEventService instead, so each
 	// delivery produces exactly one line. Optional.
 	Narrate func(narrate.Line)
+	// DisableSelfHostedEnrollment unmounts POST MachineEnrollmentPath
+	// (peer-connectivity#req:admin-requires-owner-credential): a self-hosted
+	// hub's loopback listener is reachable through a tunnel or proxy, which is
+	// not proof of the local operator, so self-hosted enrollment moves to the
+	// daemon's owner-token RPC service instead. The zero value (false) mounts
+	// the route exactly as before, which is what the hosted instance's own
+	// OAuth-viewer-gated deployment keeps doing without changing a line here.
+	DisableSelfHostedEnrollment bool
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -57,7 +65,9 @@ func NewHandler(options HandlerOptions) http.Handler {
 	}
 	handler := apiHandler{options: options}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	if !options.DisableSelfHostedEnrollment {
+		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	}
 	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishSnapshot)
 	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.listSnapshots)
 	mux.HandleFunc("POST "+InstallationConnectPath, handler.connectInstallation)
@@ -69,7 +79,50 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux.HandleFunc("POST "+repositoryevent.AckPath, handler.ackEvents)
 	mux.HandleFunc("POST "+WebhookPath, handler.webhook)
 	mux.HandleFunc("GET "+StatusPath, handler.status)
+	mux.HandleFunc("GET "+PeersConnectPath, handler.peersConnect)
 	return cors(options.AllowedOrigin, mux)
+}
+
+// PeersConnectPath is the route peer-connectivity#req:invite-and-join adds
+// ahead of Task 2's WebSocket upgrade: "The verification route doesn't exist
+// yet. Add GET /v0/workbench/peers/connect to the hub handler: a request
+// without a WebSocket upgrade and with a valid peer bearer returns
+// 200 {schema_version, peer_id, name}." Task 2 adds the upgrade on the same
+// path; this probe stays as a cheap liveness/verification check. This is an
+// addition to the spec text, which only names the path as the session
+// route — see the PR description.
+const PeersConnectPath = APIPrefix + "/peers/connect"
+
+type peersConnectProbeResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	PeerID        string `json:"peer_id"`
+	Name          string `json:"name"`
+}
+
+// peersConnect answers `wb peers join`'s verification handshake until Task 2
+// adds the real WebSocket session. A request that asks for a WebSocket
+// upgrade is refused rather than silently probed, so a downstream node can
+// tell "not implemented yet" from "not authorized".
+func (h apiHandler) peersConnect(w http.ResponseWriter, r *http.Request) {
+	if isWebSocketUpgrade(r) {
+		writeError(w, http.StatusNotImplemented, "peer_session_not_implemented")
+		return
+	}
+	machine, ok := h.machine(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "peer_bearer_unavailable")
+		return
+	}
+	if !isPeerScopes(machine.Scopes) {
+		writeError(w, http.StatusForbidden, "not_a_peer_credential")
+		return
+	}
+	writeJSON(w, http.StatusOK, peersConnectProbeResponse{SchemaVersion: 1, PeerID: machine.ID, Name: machine.Name})
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 func (h apiHandler) status(w http.ResponseWriter, r *http.Request) {

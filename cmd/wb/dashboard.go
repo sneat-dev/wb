@@ -19,23 +19,28 @@ type dashboardOpenResult struct {
 }
 
 type dashboardCommandDependencies struct {
-	open     func(string) error
-	localURL func(context.Context, string) (string, error)
+	open func(string) error
+	// localURL also returns a non-fatal warning (sneat-dev/wb#622 review
+	// round 3, item M1): an implicit Start that found a live, healthy,
+	// supervised daemon under a different binary than this invocation's own
+	// returns that daemon with a warning rather than an error (review round
+	// 2, item 9), and this command must not silently drop it.
+	localURL func(context.Context, string) (url string, warning string, err error)
 }
 
 func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 	return dashboardCommandDependencies{
 		open: openBrowser,
-		localURL: func(ctx context.Context, root string) (string, error) {
+		localURL: func(ctx context.Context, root string) (string, string, error) {
 			result, err := newDaemonController(defaultDaemonDependencies(), root).Start(ctx, daemonDefaultListen)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			address := result.State.Listen
 			if address == "" {
 				address = daemonDefaultListen
 			}
-			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), nil
+			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), result.Warning, nil
 		},
 	}
 }
@@ -58,9 +63,13 @@ func newDashboardCmdWithDependencies(deps dashboardCommandDependencies) *cobra.C
 			}
 			target, scope := hostedDashboardURL, "hosted"
 			if local {
-				target, err = deps.localURL(command.Context(), projectsRoot)
+				var warning string
+				target, warning, err = deps.localURL(command.Context(), projectsRoot)
 				if err != nil {
 					return err
+				}
+				if warning != "" {
+					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", warning)
 				}
 				scope = "local"
 			}

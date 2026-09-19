@@ -843,7 +843,7 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		now:        func() time.Time { return time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC) },
 		executable: func() (string, error) { return executable, nil },
 		alive:      func(pid int) bool { return alive[pid] },
-		stop:       func(pid int) error { alive[pid] = false; return nil },
+		stop:       func(pid int, _ daemon.Supervisor, _ string) error { alive[pid] = false; return nil },
 		sleep:      func(time.Duration) {},
 		version:    func() versionInfo { return versionInfo{Version: "test", Revision: "test-revision"} },
 		token:      func() (string, error) { pid++; return strings.Repeat("a", 30) + string(rune(pid)), nil },
@@ -855,6 +855,17 @@ func daemonTestDependencies(t *testing.T, root string) daemonDependencies {
 		rawPolicy: func(string) (bool, string, error) {
 			return true, "test-policy", nil
 		},
+		getpid:  func() int { return 4242 },
+		getppid: func() int { return 1 },
+		// A fixed, always-unknown process start time by default: no test
+		// double should depend on the real process table for correctness, and
+		// a hard-coded fake PID (900-series, in these fixtures) must never be
+		// checked against whatever real process happens to hold that number
+		// on the machine running the suite (sneat-dev/wb#622 review minor).
+		processStartTime: func(int) (time.Time, bool) { return time.Time{}, false },
+		// The recorded supervisor is presumed still present unless a test
+		// deliberately exercises the stale-record escape.
+		supervisorPresent: func(daemon.Supervisor, string) (bool, string) { return true, "" },
 	}
 	deps.start = func(_ string, args []string, _ string) (int, error) {
 		// The supervisor unit no longer pins the lifecycle state path: it
