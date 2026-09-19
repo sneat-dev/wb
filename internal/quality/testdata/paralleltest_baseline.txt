@@ -160,6 +160,9 @@ internal/daemon::TestDqCovExecuteRecordsChildFailureAndBoundedOutput	calls t.Set
 internal/daemon::TestDqCovExecuteRevokesAuthorizationImmediatelyBeforeLaunch	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/daemon::TestDqCovExecuteSkipsWorkCancelledWhileWaitingForTheCPUBudget	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/daemon::TestDqCovFinishReportsFailedTerminalWrite	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/daemon::TestGovernedChildEnvironmentLeavesGOFLAGSAloneForNonGoCommands	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/daemon::TestGovernedChildEnvironmentRespectsCallersExplicitDashP	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/daemon::TestGovernedChildEnvironmentSetsGoParallelism	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/daemon::TestNormalWorkerSubmissionRequiresExplicitTarget	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/daemon::TestParseProcStatBootTime	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/daemon::TestParseProcStatStartTicksCountsFromTheLastClosingParen	serial pending case-by-case review (sneat-dev/wb#623 baseline)
@@ -1922,7 +1925,9 @@ internal/sessionmove::TestSmCovMsgLoadMessageUnderLockErrors/loads admitted outg
 internal/sessionmove::TestSmCovMsgLoadMessageUnderLockErrors/lock held for a different handoff	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestSmCovMsgLoadMessageUnderLockErrors/missing message directory	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestSmCovMsgLoadMessageUnderLockErrors/no durable handoff receipt	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/sessionmove::TestSmCovMsgOpenMessageEntryAtErrors	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/sessionmove::TestSmCovMsgOpenMessageEntryAtErrors	kept serial because a nested subtest must stay serial: missing entry without create
+internal/sessionmove::TestSmCovMsgOpenMessageEntryAtErrors/creates then reopens the entry	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/sessionmove::TestSmCovMsgOpenMessageEntryAtErrors/missing entry without create	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestSmCovMsgResumeOutgoingMessageUnderLockErrors	kept serial because a nested subtest must stay serial: invalid message id
 internal/sessionmove::TestSmCovMsgResumeOutgoingMessageUnderLockErrors/corrupt durable handoff receipt	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/sessionmove::TestSmCovMsgResumeOutgoingMessageUnderLockErrors/invalid message id	serial pending case-by-case review (sneat-dev/wb#623 baseline)
