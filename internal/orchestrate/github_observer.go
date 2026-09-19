@@ -57,3 +57,10 @@ func IsTransientReadFailure(err error) bool {
 	}
 	return errors.Is(err, githubobserver.ErrTransientRetriesExhausted) || isTransientReadReason(err.Error())
 }
+
+// IsTransientGitHubFailure includes both exhausted read retries and a write
+// whose provider/transport response was lost. Both are resumable; the latter
+// is deliberately not retried until authoritative state has been re-read.
+func IsTransientGitHubFailure(err error) bool {
+	return IsTransientReadFailure(err) || errors.Is(err, githubobserver.ErrTransientMutationOutcomeUnknown)
+}
