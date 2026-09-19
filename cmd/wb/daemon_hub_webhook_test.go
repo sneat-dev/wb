@@ -27,8 +27,20 @@ const testPrivateKeyPEM = "-----BEGIN RSA PRIVATE KEY-----\nnot-a-real-key\n----
 const pushPayload = `{"ref":"refs/heads/main","after":"0123456789abcdef0123456789abcdef01234567","repository":{"id":987,"full_name":"acme/app","default_branch":"main"},"installation":{"id":123}}`
 
 // appHubConfig writes a hub section with a complete GitHub App block and
-// returns the configuration path.
+// returns the configuration path. The private key is the package's fixed
+// placeholder, which parses as nothing: every test using it never signs
+// anything with it (the App verifier route those tests exercise 503s before
+// it would need to).
 func appHubConfig(t *testing.T, secret string) string {
+	t.Helper()
+	return appHubConfigWithKey(t, secret, testPrivateKeyPEM)
+}
+
+// appHubConfigWithKey is appHubConfig with the private key file's contents as
+// a parameter, for a test that must actually sign a JWT with it (the
+// missed-webhook redelivery sweep) and so needs a real RSA key rather than
+// the package's placeholder.
+func appHubConfigWithKey(t *testing.T, secret, privateKeyPEM string) string {
 	t.Helper()
 	state := t.TempDir()
 	token := filepath.Join(state, "github.token")
@@ -36,7 +48,7 @@ func appHubConfig(t *testing.T, secret string) string {
 	secretFile := filepath.Join(state, "webhook.secret")
 	for path, content := range map[string]string{
 		token:      "ghp_test\n",
-		key:        testPrivateKeyPEM,
+		key:        privateKeyPEM,
 		secretFile: secret + "\n",
 	} {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

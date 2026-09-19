@@ -62,6 +62,12 @@ type hubMount struct {
 type hubTuning struct {
 	APIBaseURL   string
 	PollInterval time.Duration
+	// RedeliverySweepInterval overrides the missed-webhook recovery sweep's
+	// hourly interval, the same way PollInterval overrides the poller's.
+	RedeliverySweepInterval time.Duration
+	// Now overrides the sweep's clock so a test can drive the 72-hour and
+	// 7-day windows without waiting on them.
+	Now func() time.Time
 }
 
 // Close releases the store engine. Safe on a nil mount so callers can defer
@@ -90,6 +96,14 @@ func (mount *hubMount) health(ctx context.Context) dashboard.HubHealth {
 	value := dashboard.HubHealth{Mounted: true, Polling: mount.Poller != nil, PollIntervalSeconds: mount.Interval.Seconds()}
 	if mount.Poller != nil {
 		value.RepositoriesPolled = mount.Poller.Repositories()
+	}
+	if sweeper := mount.Webhook.Sweeper(); sweeper != nil {
+		status := sweeper.Status()
+		value.WebhookRedelivery = &dashboard.HubRedeliverySweep{
+			LastSweepAt: status.LastSweepAt, Redelivered: status.Redelivered, Abandoned: status.Abandoned,
+			Uncounted:     status.Uncounted,
+			LastFailureAt: status.LastFailureAt, LastFailureClass: status.LastFailureClass,
+		}
 	}
 	if mount.status == nil {
 		return value
@@ -126,6 +140,19 @@ func (mount *hubMount) startPolling(ctx context.Context) {
 		return
 	}
 	go func() { _ = mount.Poller.Run(ctx) }()
+}
+
+// startRedeliverySweep runs the missed-webhook recovery sweep until ctx ends.
+// It is a no-op without a configured GitHub App, so callers need no branch.
+func (mount *hubMount) startRedeliverySweep(ctx context.Context) {
+	if mount == nil {
+		return
+	}
+	sweeper := mount.Webhook.Sweeper()
+	if sweeper == nil {
+		return
+	}
+	go func() { _ = sweeper.Run(ctx) }()
 }
 
 // StartLine is the single line the daemon prints on stderr when a hub is
@@ -243,7 +270,8 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	credentials, resolver, snapshots := hub.NewMachineStores(store)
 	states, bindings, _, lifecycle := hub.NewInstallationStores(store)
 	events, eventStatus := hub.NewRepositoryEventStore(store)
-	webhook, err := newWebhookMode(cfg, states, bindings, pepper)
+	redeliveries := hub.NewWebhookRedeliveryStore(store)
+	webhook, err := newWebhookMode(cfg, states, bindings, pepper, redeliveries, writer, tuning)
 	if err != nil {
 		return nil, err
 	}
