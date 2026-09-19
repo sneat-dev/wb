@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/hub"
+	"github.com/sneat-dev/wb/hub/narrate"
+	"github.com/sneat-dev/wb/hub/redeliver"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 )
 
 // webhookMode is everything hub.github.app adds to the mounted hub: the
 // secret every delivery is verified against, the installation service the
-// connect routes need.
+// connect routes need, and the missed-webhook recovery sweep, which only
+// makes sense once there is a webhook route deliveries can be missed from.
 //
 // A nil *webhookMode is the default journey — no App, no public URL — so
 // every accessor below is safe on it and the caller needs no branch.
@@ -25,12 +28,17 @@ type webhookMode struct {
 	secret        []byte
 	installations *hub.InstallationConnectionService
 	publicURL     string
+	sweeper       *redeliver.Sweeper
 }
 
 // newWebhookMode reads the App's two secret files and builds the wiring. It
 // returns (nil, nil) when no App is configured, and an error naming the file
 // — never its contents — when one cannot be used.
-func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bindings hub.InstallationBindingStore, pepper []byte) (*webhookMode, error) {
+//
+// redeliveries and writer build the missed-webhook recovery sweep, and
+// tuning lets a test point it at a fake GitHub App API and skip the hourly
+// wait; production passes nil.
+func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bindings hub.InstallationBindingStore, pepper []byte, redeliveries hub.WebhookRedeliveryStore, writer narrate.Writer, tuning *hubTuning) (*webhookMode, error) {
 	app := cfg.GitHub.App
 	if app == nil {
 		return nil, nil
@@ -52,6 +60,15 @@ func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bin
 	if len(secret) < hub.MinimumWebhookSecretBytes {
 		return nil, fmt.Errorf("hub GitHub App webhook secret file %s holds fewer than %d bytes; GitHub deliveries could not be verified against it", app.WebhookSecretFile, hub.MinimumWebhookSecretBytes)
 	}
+	sweeperOptions := redeliver.Options{
+		Client: &http.Client{Timeout: 30 * time.Second}, AppID: app.AppID, PrivateKeyPEM: privateKey,
+		Store: redeliveries, Narrate: writer.Write,
+	}
+	if tuning != nil {
+		sweeperOptions.APIBaseURL = tuning.APIBaseURL
+		sweeperOptions.Interval = tuning.RedeliverySweepInterval
+		sweeperOptions.Now = tuning.Now
+	}
 	return &webhookMode{
 		secret: secret,
 		// The connect, setup and callback routes additionally need an OAuth
@@ -68,6 +85,7 @@ func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bin
 			StateSecret: installationStateSecret(pepper),
 		},
 		publicURL: app.PublicURL,
+		sweeper:   redeliver.New(sweeperOptions),
 	}, nil
 }
 
@@ -87,6 +105,15 @@ func (mode *webhookMode) Installations() *hub.InstallationConnectionService {
 		return nil
 	}
 	return mode.installations
+}
+
+// Sweeper is the missed-webhook recovery loop, or nil without an App: there
+// is no webhook route to have missed a delivery on.
+func (mode *webhookMode) Sweeper() *redeliver.Sweeper {
+	if mode == nil {
+		return nil
+	}
+	return mode.sweeper
 }
 
 // StartSuffix is what the daemon's start line says about webhook mode, so an

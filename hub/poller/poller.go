@@ -180,10 +180,10 @@ func (poller *Poller) Tick(ctx context.Context) time.Duration {
 	poller.setRepositories(len(repositories))
 
 	transient := false
-	var budget rateLimit
+	var budget hub.RateLimit
 	for _, repository := range repositories {
 		observed, limit, observeErr := poller.observe(ctx, repository, token)
-		if limit.known {
+		if limit.Known {
 			budget = limit
 		}
 		if observeErr != nil {
@@ -202,12 +202,12 @@ func (poller *Poller) Tick(ctx context.Context) time.Duration {
 	// One request pair per repository per tick is the contract; when fewer
 	// than two ticks' worth of budget remains, wait for the window to reset
 	// rather than spend the operator's remaining calls on the next tick.
-	if budget.known && budget.remaining < rateLimitHeadroom*len(repositories) {
-		wait := budget.reset.Sub(poller.options.Now())
+	if budget.Known && budget.Remaining < rateLimitHeadroom*len(repositories) {
+		wait := budget.Reset.Sub(poller.options.Now())
 		if wait < 0 {
 			wait = 0
 		}
-		poller.narrate("github.com", "rate limited; next poll at "+budget.reset.Format("15:04:05"))
+		poller.narrate("github.com", "rate limited; next poll at "+budget.Reset.Format("15:04:05"))
 		return wait
 	}
 	return poller.options.Interval
@@ -253,10 +253,10 @@ func (poller *Poller) inventory(ctx context.Context) ([]string, error) {
 }
 
 // observe reads one repository and returns the plain-words action taken.
-func (poller *Poller) observe(ctx context.Context, repository, token string) (string, rateLimit, error) {
+func (poller *Poller) observe(ctx context.Context, repository, token string) (string, hub.RateLimit, error) {
 	owner, name, found := strings.Cut(strings.TrimPrefix(repository, "github.com/"), "/")
 	if !found || owner == "" || name == "" {
-		return "", rateLimit{}, fmt.Errorf("%q is not an owner/repository name", repository)
+		return "", hub.RateLimit{}, fmt.Errorf("%q is not an owner/repository name", repository)
 	}
 	var view struct {
 		ID            int64  `json:"id"`
@@ -274,7 +274,7 @@ func (poller *Poller) observe(ctx context.Context, repository, token string) (st
 		SHA string `json:"sha"`
 	}
 	commitLimit, err := poller.get(ctx, "/repos/"+owner+"/"+name+"/commits/"+view.DefaultBranch, token, &commit)
-	if commitLimit.known {
+	if commitLimit.Known {
 		limit = commitLimit
 	}
 	if err != nil {
@@ -365,13 +365,6 @@ func (poller *Poller) enqueue(ctx context.Context, event repositoryevent.Event) 
 	return nil
 }
 
-// rateLimit is what GitHub's headers said about the remaining budget.
-type rateLimit struct {
-	known     bool
-	remaining int
-	reset     time.Time
-}
-
 // transientError marks a status GitHub is expected to recover from, so the
 // poller retreats instead of giving up. It mirrors hub's own
 // transientGitHubStatus classification.
@@ -396,20 +389,20 @@ func (err *transportError) Error() string { return "reach github: " + err.err.Er
 func (err *transportError) Unwrap() error { return err.err }
 
 // get performs one authenticated GitHub request and decodes its body.
-func (poller *Poller) get(ctx context.Context, path, token string, out any) (rateLimit, error) {
+func (poller *Poller) get(ctx context.Context, path, token string, out any) (hub.RateLimit, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, poller.options.APIBaseURL+path, nil)
 	if err != nil {
-		return rateLimit{}, fmt.Errorf("build github request: %w", err)
+		return hub.RateLimit{}, fmt.Errorf("build github request: %w", err)
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := poller.options.Client.Do(request)
 	if err != nil {
-		return rateLimit{}, &transportError{err: err}
+		return hub.RateLimit{}, &transportError{err: err}
 	}
 	defer func() { _ = response.Body.Close() }()
-	limit := readRateLimit(response.Header)
+	limit := hub.ReadRateLimit(response.Header)
 	if response.StatusCode != http.StatusOK {
 		if transientGitHubStatus(response.StatusCode) {
 			return limit, transientError{status: response.StatusCode}
@@ -431,15 +424,6 @@ func transientGitHubStatus(status int) bool {
 		return true
 	}
 	return status >= 500
-}
-
-func readRateLimit(header http.Header) rateLimit {
-	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(header.Get("X-RateLimit-Remaining")))
-	reset, resetErr := strconv.ParseInt(strings.TrimSpace(header.Get("X-RateLimit-Reset")), 10, 64)
-	if remainingErr != nil || resetErr != nil {
-		return rateLimit{}
-	}
-	return rateLimit{known: true, remaining: remaining, reset: time.Unix(reset, 0)}
 }
 
 // eventID derives a stable, contract-legal identifier from repository, reason
