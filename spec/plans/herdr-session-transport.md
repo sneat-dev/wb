@@ -20,7 +20,10 @@ submitted delivery would need is deferred (founder, 2026-09-19: "Out of scope
 for performance work we focus now on"), so every own-PR-outcome event is
 recorded and made visible in existing listings, never pasted into a pane.
 Advisory delivery for every other event class, which never needed that
-evidence, still ships now.
+evidence, still ships now. No daemon-originated event is submitted into any
+pane; the one pre-existing exception is `wb session send`'s tmux successor
+-messaging path, which already submits today and is unaffected — its herdr
+counterpart is deferred alongside the same empty-input evidence gap.
 
 ## Journey
 
@@ -40,7 +43,7 @@ daemon to have acted yet.
 bindings it recorded itself (never a fleet-wide PR scan) and evaluates the
 outcome through WB's existing check-verdict logic. Observable good result:
 WB records one facts-only, identifiers-only entry — `sneat-dev/wb#NNN: checks
-passed` — and `wb session list`/`wb wait list` mark it delivered. **Nothing is
+passed` — and `wb session list`/`wb wait list` mark it recorded. **Nothing is
 submitted into the pane**: the empty-input evidence a submit would need does
 not exist yet, so this is record-only even though the agent is idle.
 
@@ -68,6 +71,15 @@ recorded only — never pasted — because tmux exposes no live status and no
 input-emptiness signal to guard even an advisory paste against a mid-typing
 human. This is the lead's default; the founder separately confirmed tmux
 stays supported, 2026-09-19 ("yes").
+
+**A predecessor sends the herdr-hosted agent a follow-up message through
+`wb session send`, unrelated to the daemon.** Observable good result: the
+courier's `wb session receive-message` durably records it and returns a
+receipt exactly as it does on tmux, but nothing is pasted or submitted; the
+next time the agent's `SessionStart` hook fires, its announcement names the
+recorded, unread message. tmux is unaffected — its pre-existing submit
+behavior (a `paste-buffer` payload that already ends in a newline) keeps
+working exactly as it does today.
 
 **A third session has neither herdr nor tmux — a bare shell.** Observable good
 result: the event is recorded only, `wb wait list` says so explicitly, and
@@ -118,12 +130,13 @@ socket or tmux server.
 **Status:** in_progress
 
 Already in progress in a separate lane (worktree `herdr-adapter`). A Go
-wrapper over the `herdr` CLI: `pane current/list/get`, `agent
+wrapper over the `herdr` CLI: `pane current/list/get/send-text`, `agent
 list/get/prompt/send-keys/wait`, version detection (`herdr --version`),
 identity-from-environment (`HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`,
 `HERDR_SOCKET_PATH`), and a fakeable exec seam so no test reaches the real
-herdr socket. Every other task below that needs herdr goes through this
-package, never through `os/exec` directly.
+herdr socket. Verified against the lane's current commit: `Client.PaneSendText`
+already rejects text containing a newline. Every other task below that needs
+herdr goes through this package, never through `os/exec` directly.
 
 ### Task 2: Define the transport interface and capability matrix
 
@@ -176,29 +189,37 @@ as it does today, unaffected by this default.
 ### Task 4: Wire the herdr transport onto the `internal/herdr` adapter
 
 **Id:** task-4
-**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only
+**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
 **Depends-On:** 1, 2
 **Status:** planning
 
 Implement the herdr transport against Task 1's adapter and Task 2's contract
 test suite: pane resolution for message/move/park/receive/launch,
-`agent prompt` for successor messaging's existing submit path (S1; unaffected
-by the deferred empty-input evidence, which only gates the daemon's own-PR
-submit), `pane send-text` for advisory delivery, and `agent list`/`agent get`
-for capability checks. Pane resolution MUST call `agent list` on the
-session's recorded `HERDR_SOCKET_PATH` and match uniquely on `agent_session`;
-zero or multiple matches resolve to record-only, never a guess.
+`pane send-text` for advisory delivery (control characters stripped, never a
+trailing newline), and `agent list`/`agent get` for capability checks. Pane
+resolution MUST call `agent list` on the session's recorded
+`HERDR_SOCKET_PATH` and match uniquely on `agent_session`; zero or multiple
+matches resolve to record-only, never a guess. No `agent prompt` submit path
+is built in this iteration — not for the daemon wake, and not for
+`wb session send`'s herdr side either, since both need the same deferred
+empty-input evidence. On herdr, `wb session receive-message`
+(`cmd/wb/session_message.go`) durably records a successor message and
+returns a receipt without pasting it; the recorded, unread message is
+surfaced through Task 5's extended `SessionStart` hook.
 
 ### Task 5: Automatic identity capture, selection, and session-start re-registration
 
 **Id:** task-5
-**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id
-**Depends-On:** 2, 3
+**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:subagent-resolves-to-parent-owner, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
+**Depends-On:** 2, 3, 4
 **Status:** planning
 
 Files: `internal/session/session.go`, `internal/session/exact.go`,
 `cmd/wb/session_register.go`, `cmd/wb/skills_hook_run.go`,
-`cmd/wb/skills_hook_install.go`. Builds on Task 3's already-refactored
+`cmd/wb/skills_hook_install.go`. Depends on Task 4 because the hook's
+announcement names a recorded, unread successor message, which only exists
+correctly once Task 4's herdr `receive-message` recording behavior is built.
+Builds on Task 3's already-refactored
 `internal/session` package rather than racing it. Extend `wb session
 register` and the session record with `HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`,
 `HERDR_SOCKET_PATH`, a resolved terminal ID, and the harness session ID
@@ -211,7 +232,10 @@ a second one. Extend WB's existing Claude Code `SessionStart` hook
 (`cmd/wb/skills_hook_run.go`, installed by `skills_hook_install.go`) to
 re-register the transport identity on a new `CLAUDE_CODE_SESSION_ID` in the
 same pane (e.g. after `/clear`) where it can resolve identity, falling back
-to its existing reminder-only behavior where it cannot.
+to its existing reminder-only behavior where it cannot. Also extend the
+hook's announcement to name any recorded, unread successor message for this
+session, so a herdr-hosted successor sees a follow-up message on its next
+start even though nothing was pasted or submitted to deliver it.
 
 ### Task 6: Read PR bindings and evaluate outcomes (the watcher)
 
@@ -231,7 +255,7 @@ parallel with Tasks 1–5.
 ### Task 7: Delivery resolution, the unconditional guard, and record-only outcomes
 
 **Id:** task-7
-**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:guards-are-unconditional-and-block-submission, herdr-session-transport#ac:move-successor-inherits-the-wake-binding, herdr-session-transport#ac:at-most-once-per-outcome, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:herdr-failure-at-delivery-is-record-only
+**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:guards-are-unconditional-and-block-submission, herdr-session-transport#ac:move-successor-inherits-the-wake-binding, herdr-session-transport#ac:no-live-owner-is-record-only, herdr-session-transport#ac:at-most-once-per-outcome, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:herdr-failure-at-delivery-is-record-only
 **Depends-On:** 4, 5, 6
 **Status:** planning
 
@@ -278,7 +302,7 @@ target PR, and last outcome.
 
 **Id:** task-10
 **Verifies:** herdr-session-transport#ac:missing-herdr-binary-fails-explicitly, herdr-session-transport#ac:unreachable-socket-fails-explicitly, herdr-session-transport#ac:version-drift-is-detected
-**Depends-On:** 1, 4
+**Depends-On:** 1, 4, 5
 **Status:** planning
 
 Give each herdr failure mode a distinct, actionable message at registration
@@ -292,8 +316,8 @@ herdr failure is Task 7's record-only rule, not a re-route.
 ### Task 11: Prove the whole journey end-to-end
 
 **Id:** task-11
-**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:tmux-behavior-is-unregressed, herdr-session-transport#ac:none-transport-records-only, herdr-session-transport#ac:wake-subscription-is-visible, herdr-session-transport#ac:daemon-watches-only-registered-prs
-**Depends-On:** 3, 6, 8, 9, 10
+**Verifies:** herdr-session-transport#ac:own-pr-outcome-is-recorded-and-visible, herdr-session-transport#ac:tmux-behavior-is-unregressed, herdr-session-transport#ac:none-transport-records-only, herdr-session-transport#ac:wake-subscription-is-visible, herdr-session-transport#ac:daemon-watches-only-registered-prs, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:no-live-owner-is-record-only
+**Depends-On:** 3, 5, 6, 8, 9, 10
 **Status:** planning
 
 Walk the Journey above against fake herdr and fake tmux adapters in one
@@ -317,8 +341,9 @@ not only on the reported outcome.
   scope: it needs a founder decision (see herdr-session-transport's Open
   Questions) before it can become a task.
 - The Feature's Deferred section (empty-input evidence mechanism; the
-  `state_change_seq` re-check) has no task here by design — both wait on
-  future work once the founder revisits the "out of scope for now" ruling.
+  `state_change_seq` re-check; the herdr side of successor messaging) has no
+  task here by design — all three wait on future work once the founder
+  revisits the out-of-scope ruling.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

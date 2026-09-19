@@ -20,12 +20,17 @@ tmux never could — live agent status (idle / working / blocked / done) via
 `agent list`/`agent get` — but **not** an empty-input signal: neither JSON
 call exposes one, and the founder ruled its detection mechanism out of scope
 for now (2026-09-19: "Out of scope for performance work we focus now on"; see
-Deferred). **Consequence for this iteration: nothing is ever submitted into a
-pane.** The MVP wake flow (`daemon-as-coordinator`, founder-agreed 2026-09-18)
-ships as record-only: register a task's PR at `wb pr create`, resolve session
-and pane at delivery, and record the outcome — visible in `wb session list`
-and `wb wait list` — when its own pull request settles. Submitting it into
-the pane is specified as future work behind the deferred guard, not built now.
+Deferred). **Consequence for this iteration: no daemon-originated event is
+submitted into any pane.** The MVP wake flow (`daemon-as-coordinator`,
+founder-agreed 2026-09-18) ships as record-only: register a task's PR at
+`wb pr create`, resolve session and pane at delivery, and record the outcome
+— visible in `wb session list` and `wb wait list` — when its own pull request
+settles. Submitting it into the pane is specified as future work behind the
+deferred guard, not built now. The single exception is pre-existing and
+unrelated to the daemon: `wb session send`'s tmux successor-messaging path
+already submits today (its payload has always ended in a newline) and keeps
+doing so unchanged; its herdr counterpart is deferred alongside the same
+empty-input evidence gap.
 
 ## Problem
 
@@ -37,10 +42,10 @@ the courier boundary — is written directly against tmux (`internal/session*`,
 `cmd/wb/session_*.go`, `internal/worktrees/session_*.go`; roughly 26
 production files). None of it can see a herdr pane, so none of it can carry
 the one capability herdr adds that tmux structurally cannot: knowing whether a
-session is idle, working, blocked, or done, and whether its input box is
-empty. Without that, the wake flow the founder already agreed to — "We already
-have idea to use herdr to send messages to agents to wake them up and to
-direct" — has no safe way to check its own delivery guards, on any transport.
+session is idle, working, blocked, or done. Without that, the wake flow the
+founder already agreed to — "We already have idea to use herdr to send
+messages to agents to wake them up and to direct" — has no safe way to check
+its own delivery guards, on any transport.
 
 The founder has not asked to drop tmux: "We should decide if we keep tmux as
 an alternative or migrate to herdr," and then, weighing it, "For me I don't
@@ -102,7 +107,9 @@ limitation stands unchanged: it "cannot register the session itself" because
 on its behalf" — where it cannot resolve identity, it MUST fall back to its
 existing behavior of reminding the agent to re-run `wb session register`
 itself. Until either path resolves the new session ID, the session degrades
-to record-only for delivery purposes rather than addressing a stale ID.
+to record-only for delivery purposes rather than addressing a stale ID. The
+same extended hook announcement also names any recorded, unread successor
+message per REQ:existing-successor-messaging-binding-path's herdr path.
 
 ### Pluggable terminal transport
 
@@ -110,7 +117,7 @@ The founder's words: "We should decide if we keep tmux as an alternative or
 migrate to herdr," and then, "For me I don't need tmux but we build open
 product and some people can be attached to it." Asked directly whether herdr
 is the default with tmux kept as an alternative, the founder confirmed,
-2026-09-19: "yes."
+2026-09-19: "yes".
 
 #### REQ: single-transport-interface
 
@@ -161,7 +168,7 @@ herdr's `agent list`/`agent get` JSON supplies live agent status; it does
 **not** supply an empty-input-box field — only `agent read`/`pane read` show
 pane content, from which emptiness would have to be inferred, and the exact
 inference mechanism is unsettled (see REQ:delivery-guards-enforced-and-rechecked
-and Open Questions). tmux supplies neither live status nor any empty-input
+and Deferred). tmux supplies neither live status nor any empty-input
 signal at all, and MUST NOT deliver daemon-originated messages by submission,
 by default (REQ:tmux-record-only-for-daemon-events). Wherever a capability
 the wake flow's guards depend on (idle/done state, positive evidence of an
@@ -203,13 +210,28 @@ authority boundary" analysis.
 pre-existing submitted (binding) delivery path, distinct from the daemon
 wake: it delivers a predecessor session's message to its receipt-recorded
 successor, guarded by that receipt's lineage rather than by
-REQ:prompt-restricted-to-own-pr-outcome's own-PR-outcome restriction. Its
-tmux behavior is unchanged by this Feature — it already submits today
-because its `paste-buffer` payload ends in a newline
-(`sessionmessage`'s `marshalJSON` terminates the message with `'\n'`). Its
-herdr implementation MUST use `agent prompt`, gated by the same idle/done and
-empty-input-evidence guards as the daemon wake
-(REQ:delivery-guards-enforced-and-rechecked).
+REQ:prompt-restricted-to-own-pr-outcome's own-PR-outcome restriction.
+
+**On tmux, its behavior is unchanged by this Feature.** It already submits
+today because its `paste-buffer` payload ends in a newline (`sessionmessage`'s
+`marshalJSON` terminates the message with `'\n'`), and REQ:tmux-parity-preserved
+keeps that behavior exactly as it is.
+
+**On herdr, no submit is built in this iteration**, for the same reason the
+daemon wake isn't: it would need the same deferred empty-input evidence
+(Deferred). The target-side receiver — the real command is
+`wb session receive-message` (`cmd/wb/session_message.go`), not
+`wb session receive` (`cmd/wb/session_receive.go`, which bootstraps a brand
+new successor from a full portable handoff bundle; a different flow) — MUST
+still durably record the message on herdr exactly as it does on tmux, and
+MUST NOT attempt `PaneSendText` or `AgentPrompt` to deliver it. The recorded,
+unread message MUST be surfaced through the same `SessionStart` hook
+mechanism REQ:reregister-on-session-start-hook already extends, since that is
+WB's one existing "inject text at session start" surface — a fresh or
+resumed session sees it named in the hook's announcement rather than the
+receiver pushing it live into a running pane. The herdr submit path
+(`agent prompt`, gated the same way as the daemon wake) is specified under
+Deferred, not built now.
 
 #### REQ: none-transport-is-first-class
 
@@ -230,7 +252,8 @@ so parity is proven rather than assumed.
 ### The MVP wake flow
 
 Exactly the flow `daemon-as-coordinator` records as founder-agreed
-(2026-09-18): "one flow, 'your PR has an outcome → your session wakes.'"
+(2026-09-18): "MVP (founder-agreed 2026-09-18): one flow, 'your PR has an
+outcome → your session wakes'."
 
 #### REQ: registration-at-pr-create
 
@@ -280,15 +303,17 @@ claim sees the outcome that arrived while nobody was watching.
 
 #### REQ: at-most-once-delivery-intent
 
-Before any submitted delivery, WB MUST durably persist a delivery intent
-keyed by (task, pull request, head SHA, outcome). An intent recorded without
-a matching delivery receipt is ambiguous — WB cannot tell whether the message
+There is exactly one intent key and one scope for it: (task, pull request,
+head SHA, outcome). Before any delivery attempt — record-only, in this
+iteration, or submitted once Deferred work lands — WB MUST durably persist a
+delivery intent under that key. The same key is the coalescing rule for the
+idea's "Loops" risk (`daemon-as-coordinator`, Further risks, Loops): at most
+one entry is ever produced per tuple, however many times the daemon observes
+it. Once submission exists, an intent recorded without a matching delivery
+receipt is additionally ambiguous — WB cannot tell whether the message
 reached the pane — and MUST NOT be retried automatically; herdr's own
 guidance for an ambiguous prompt result is exactly this, do not blindly
-submit it again. The same key is the coalescing rule for the idea's "Loops"
-risk (`daemon-as-coordinator`, Further risks, Loops): at most one wake is
-ever produced per (pull request, head SHA, outcome) tuple, however many times
-the daemon observes it.
+submit it again.
 
 #### REQ: delivery-guards-enforced-and-rechecked
 
@@ -394,7 +419,7 @@ fixtures, with the real session IDs in the sampled output replaced by fakes.
 WB MUST detect the installed herdr version before relying on any herdr
 transport call, and MUST record the version it detected. WB targets the
 socket-API command surface read from herdr 0.9.1's own help output (`agent
-list/get/prompt/send-keys/wait`, `pane current/list/get`). An older herdr
+list/get/prompt/send-keys/wait`, `pane current/list/get/send-text`). An older herdr
 missing a command WB depends on, or a newer herdr whose JSON schema no longer
 matches (an added, renamed, or retyped field WB's decoder rejects), MUST
 produce an explicit, distinguishable failure — never a silent misparse that
@@ -554,6 +579,29 @@ Then WB never performs a submitted delivery, and never an advisory paste
 either — by default it records the event only, and the capability matrix is
 the documented reason why
 
+### AC: advisory-message-strips-control-characters-and-never-submits
+
+**Requirements:** herdr-session-transport#req:advisory-mechanism-and-newline-boundary
+
+Scenario: An advisory message contains a control character
+Given a non-own-PR event's rendered text contains a carriage return, a line
+feed, or another control character
+When WB delivers it advisory-only on herdr
+Then those characters are stripped before the call, delivery goes through
+`pane send-text` (never `agent send-keys`), and the bytes sent never end in a
+newline
+
+### AC: successor-messaging-is-recorded-on-herdr-and-pulled-via-hook
+
+**Requirements:** herdr-session-transport#req:existing-successor-messaging-binding-path
+
+Scenario: A predecessor sends a follow-up message to a herdr-hosted successor
+Given a completed handoff with a herdr-transport successor
+When the courier invokes `wb session receive-message` on the target machine
+Then the message is durably recorded and a receipt is returned exactly as on
+tmux, but nothing is submitted or pasted into the pane; the successor's next
+`SessionStart` hook announcement names the recorded, unread message
+
 ### AC: herdr-failure-at-delivery-is-record-only
 
 **Requirements:** herdr-session-transport#req:explicit-transport-failure-modes
@@ -577,6 +625,18 @@ When the daemon resolves delivery for that task's registered PR outcome
 Then resolution follows the claim to the successor session's transport
 identity, not the predecessor's, and the successor is where the event is
 recorded and made visible
+
+### AC: no-live-owner-is-record-only
+
+**Requirements:** herdr-session-transport#req:no-live-owner-is-record-only
+
+Scenario: No session holds the task's claim at all
+Given a task's Work Log claim has no current live session — not a `/move`
+successor, nothing
+When the daemon resolves delivery for that task's registered PR outcome
+Then WB records the event once, does not retry indefinitely against the
+resolved-to-nothing target, and the record remains visible so the next
+session that picks up the task's claim sees it
 
 ### AC: daemon-watches-only-registered-prs
 
@@ -768,14 +828,15 @@ JSON captured from the real, read-only `herdr agent list` and
 
 ## Deferred
 
-Both items below were open questions; the founder closed them, 2026-09-19, by
-ruling the underlying work out of scope for now rather than answering the
-design question. They are specified here as a coherent shape so submission
-activates without a redesign later, but neither is built in this iteration.
+All three items below were open questions; the founder closed the first two,
+2026-09-19, by ruling the underlying work out of scope for now rather than
+answering the design question. They are specified here as a coherent shape so
+submission activates without a redesign later, but none is built in this
+iteration.
 
 ### Empty-input evidence mechanism
 
-The founder, 2026-09-19: "Out of scope for performance work we focus now on."
+The founder, 2026-09-19: "Out of scope for performance work we focus now on".
 
 Neither `herdr agent list` nor `agent get` exposes an input-box field — only
 `agent read`/`pane read` show pane content. The reviewed recommendation, not
@@ -789,7 +850,7 @@ submits (see AC:guards-are-unconditional-and-block-submission).
 
 ### Residual race between the final check and the send
 
-The founder, 2026-09-19: "Same out of scope."
+The founder, 2026-09-19: "Same out of scope".
 
 Once submission exists, the final idle/done and empty-input check
 immediately before sending should also capture the pane's `state_change_seq`
@@ -803,6 +864,20 @@ pane's `state_change_seq` changes before WB issues the send, WB detects the
 changed value and cancels rather than sending into a now-different pane
 state — with the residual window past that final check documented, not
 assumed closed.
+
+### Successor messaging's herdr submit path
+
+Not answered by the founder directly, but it depends on the same deferred
+mechanism above, so it waits with it.
+
+`wb session send`'s herdr implementation (REQ:existing-successor-messaging-binding-path)
+would use `agent prompt`, gated by the same idle/done and empty-input-evidence
+guards as the daemon wake. Since that evidence mechanism does not exist, this
+submit path is not built in this iteration either: on herdr, `wb session
+receive-message` durably records the message and the recipient sees it named
+in its `SessionStart` hook announcement, exactly as an own-PR-outcome event
+is recorded rather than delivered. tmux is unaffected — its existing submit
+behavior is pre-existing and outside this Feature's guard entirely.
 
 ## Open Questions
 
@@ -824,6 +899,10 @@ assumed closed.
 - Should WB pin a single supported herdr version, or a range? This Feature
   only requires that drift be detected and explicit (REQ:herdr-version-detected-and-bounded);
   it does not set an update or compatibility policy.
+- Should tmux get advisory paste later? REQ:tmux-record-only-for-daemon-events
+  is the lead's default, not a founder decision — tmux could instead paste
+  advisory (non-own-PR) events unsubmitted, the way herdr does, once someone
+  decides the mid-typing-human risk is acceptable there too.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
