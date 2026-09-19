@@ -279,34 +279,50 @@ unconditionally print "durably recorded and pasted to tmux". This is a schema
 change, owned by Task 4:
 
 - `MessageReceipt` MUST carry an explicit `delivery` field with exactly two
-  values, `pasted` or `recorded`.
-- When `delivery: pasted`, today's fields and validation apply unchanged —
-  `TmuxName`, `PaneID`, `PID`, and a non-zero `PastedAt` remain required, and
-  the existing receipt-matching checks are unchanged.
+  values, named `MessageDeliveryPasted = ""` and `MessageDeliveryRecorded =
+  "recorded"`. The empty string is deliberately the "pasted" value, not a
+  third, absent state: a Go zero-value `MessageReceipt` — and every receipt
+  that exists before this Feature, and every receipt from an unpatched peer —
+  therefore reads as `pasted` by construction, not by a special-cased default
+  written into the validator.
+- When `delivery` is `pasted` (present as the empty string, or absent
+  entirely — see decode/encode rules below), today's fields and validation
+  apply unchanged — `TmuxName`, `PaneID`, `PID`, and a non-zero `PastedAt`
+  remain required, and the existing receipt-matching checks are unchanged.
 - When `delivery: recorded`, `TmuxName`, `PaneID`, `PID`, and `PastedAt` MUST
   NOT be required, and the receipt-matching logic MUST NOT compare them —
-  only `RecordedAt` and the message digest are authoritative.
+  only `RecordedAt` and the message digest are authoritative. `recorded` is
+  not herdr-specific: any transport a patched receiver resolves to that
+  cannot paste — herdr today, or a resolved-to-`none` receiver — produces it.
 - Sender and receiver output MUST be honest per state: `pasted` keeps
   "durably recorded and pasted to tmux"; `recorded` MUST say something
   distinct, e.g. "durably recorded; not delivered — read with `wb session
   messages read <id>`".
-- A receipt with no `delivery` field at all — every receipt that exists
-  before this Feature, and every receipt from an unpatched peer — MUST read
-  as `pasted`. This is the default, not an inferred guess: the field's Go
-  zero value is `pasted`.
 - **No schema-version bump.** `MessageReceiptSchemaVersion` stays `1`, and
   `validateSchema` still requires an exact match, so an unpatched peer's
   `validate()` call is untouched by this change. The wire risk is
   `decodeJSON`'s `json.Decoder.DisallowUnknownFields()`
-  (`internal/sessionmove/types.go`): an unpatched peer decoding a receipt
-  that carries an unrecognized `delivery` key rejects the whole receipt
-  outright, whatever the key's value. `delivery` MUST therefore be declared
-  `omitempty` and a sending peer MUST omit it entirely when the value is
-  `pasted`, sending the key only for `recorded` — which an unpatched peer can
-  never produce or need to accept in the first place, since it has no herdr
-  transport to record instead of paste. Patched peers exchanging `pasted`
-  receipts are wire-identical to today; only a `recorded` receipt, which only
-  a patched peer speaking herdr ever sends, carries the new key.
+  (`internal/sessionmove/types.go`): a peer decoding a receipt that carries
+  an unrecognized `delivery` key rejects the whole receipt outright, whatever
+  the key's value. `delivery` MUST therefore be declared `omitempty` on
+  encode, and a literal `"delivery":"pasted"` MUST still be **accepted** on
+  decode (it is not wrong, merely never emitted) — only `recorded` is ever
+  actually written to the wire.
+- **Receipt direction and the risky case.** The receiver writes the receipt
+  (`wb session receive-message`, i.e. `sessionmessage.Receive`); the sender
+  only decodes what the receiver returns (`runSessionMessage`,
+  `cmd/wb/session_message.go`, verified against origin/main). The risk is
+  therefore a **patched receiver answering an unpatched sender**: if the
+  receiver resolves `delivery: recorded` (herdr, or its own `none`
+  transport) and returns that receipt, an unpatched sender's decoder rejects
+  the unrecognized `delivery` key outright and fails closed with a decode
+  error — it does not silently accept a malformed or misread result. The
+  message itself stays durably recorded on the receiver regardless, since
+  that write already happened before the receipt was returned. The sender's
+  `--resume <message-id>` retry replays the identical exchange and therefore
+  cannot succeed no matter how many times it is retried, because the
+  receiver will keep returning the same `recorded` receipt — the remedy is
+  to upgrade the sender, not to retry harder.
 - The incoming-direction "requires a durable paste intent" check
   (`internal/sessionmove/message.go:421`) applies only when `delivery:
   pasted`. A `recorded` receipt has no paste intent to require.
@@ -746,6 +762,20 @@ Then it decodes without error under `DisallowUnknownFields`, reads as
 `delivery: pasted`, and validates exactly as it did before this Feature; and
 a patched peer's own `pasted` receipt, sent to an unpatched peer, omits
 `delivery` entirely so the unpatched peer's decoder accepts it unchanged
+
+### AC: unpatched-sender-fails-closed-on-a-recorded-receipt
+
+**Requirements:** herdr-session-transport#req:recorded-only-receipt-state
+
+Scenario: A patched receiver answers an unpatched sender
+Given a patched receiver resolves `delivery: recorded` (herdr, or its own
+`none` transport) and durably records the message, then returns that receipt
+to an unpatched sender
+When the unpatched sender's `runSessionMessage` decodes the returned receipt
+Then decoding fails closed on the unrecognized `delivery` key rather than
+silently accepting it; the message remains durably recorded on the receiver
+regardless; and retrying with `--resume <message-id>` replays the identical
+exchange and cannot succeed until the sender itself is upgraded
 
 ### AC: herdr-failure-at-delivery-is-record-only
 

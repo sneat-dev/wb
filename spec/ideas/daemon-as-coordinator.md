@@ -1,11 +1,11 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Specifying
 ---
 
 # Idea: The daemon as coordinator — WB initiating contact with live sessions
 
-**Status:** Draft
+**Status:** Specifying
 **Date:** 2026-09-18
 **Owner:** ai
 **Promotes To:** herdr-session-transport

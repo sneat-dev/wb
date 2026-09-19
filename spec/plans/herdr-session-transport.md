@@ -194,7 +194,7 @@ submitting on tmux exactly as they do today, unaffected by this default.
 ### Task 4: Wire the herdr transport onto the `internal/herdr` adapter
 
 **Id:** task-4
-**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery, herdr-session-transport#ac:legacy-and-old-peer-receipts-still-validate
+**Verifies:** herdr-session-transport#ac:two-implementations-satisfy-the-same-interface, herdr-session-transport#ac:pane-resolved-uniquely-or-record-only, herdr-session-transport#ac:advisory-message-strips-control-characters-and-never-submits, herdr-session-transport#ac:successor-messaging-is-recorded-on-herdr-and-pulled-via-hook, herdr-session-transport#ac:recorded-only-receipt-is-honest-about-non-delivery, herdr-session-transport#ac:legacy-and-old-peer-receipts-still-validate, herdr-session-transport#ac:unpatched-sender-fails-closed-on-a-recorded-receipt
 **Depends-On:** 1, 2
 **Status:** planning
 
@@ -216,14 +216,24 @@ bump — `MessageReceiptSchemaVersion` stays `1`. Today's validation
 the tmux identity fields unconditionally, and the matching checks around
 lines 424 and 503 compare `TmuxName`/`PaneID`/`PID` unconditionally too; both
 become conditional on `delivery: pasted`, and the incoming-direction
-"requires a durable paste intent" check (line 421) applies only then. A
-receipt with no `delivery` key — every receipt on disk today, and every
-receipt from an unpatched peer — reads as `pasted` (the field's Go zero
-value). Because `decodeJSON` uses `DisallowUnknownFields`, a sender MUST omit
-`delivery` when its value is `pasted` and send the key only for `recorded`,
-which an unpatched peer never needs to accept since it has no herdr
-transport to produce one. Prove wire parity against a captured pre-Feature
-v1 receipt fixture. On herdr, `wb session receive-message`
+"requires a durable paste intent" check (line 421) applies only then. Name
+the values `MessageDeliveryPasted = ""` and `MessageDeliveryRecorded =
+"recorded"` — the empty string is deliberately "pasted", so a Go zero-value
+receipt, and every receipt on disk today, reads as `pasted` by construction.
+Because `decodeJSON` uses `DisallowUnknownFields`, encode `delivery` as
+`omitempty` and never emit it for `pasted`; a literal `"delivery":"pasted"`
+is still accepted on decode, it is just never written. Direction matters:
+the receiver (`wb session receive-message`, `sessionmessage.Receive`) writes
+the receipt; the sender (`runSessionMessage`, `cmd/wb/session_message.go`)
+only decodes it. The risky case is a **patched receiver answering an
+unpatched sender** — the receiver resolves `delivery: recorded` (herdr, or
+its own `none` transport, not herdr-only) and returns that receipt; the
+unpatched sender's decoder rejects the unrecognized key and fails closed
+with a decode error, the message stays durably recorded on the receiver
+regardless, and a `--resume` retry replays the identical exchange and cannot
+succeed until the sender is upgraded. Prove wire parity against a captured
+pre-Feature v1 receipt fixture, and prove the unpatched-sender failure mode
+with a fake old-shape decoder. On herdr, `wb session receive-message`
 (`cmd/wb/session_message.go`) durably records a successor message with
 `delivery: recorded` and returns a receipt without pasting it — sender and
 receiver output must say so honestly, not "durably recorded and pasted to
