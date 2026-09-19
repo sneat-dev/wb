@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/sneat-dev/wb/internal/daemon"
 )
 
 const windowsStillActive = 259
@@ -29,7 +31,7 @@ func daemonProcessAlive(pid int) bool {
 	return windows.GetExitCodeProcess(handle, &code) == nil && code == windowsStillActive
 }
 
-func stopDaemonProcess(pid int) error {
+func stopDaemonProcess(pid int, _ daemon.Supervisor, _ string) error {
 	if pid <= 0 {
 		return nil
 	}
@@ -41,6 +43,9 @@ func stopDaemonProcess(pid int) error {
 }
 
 func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
+	if err := daemonRefuseTestBinary(executable); err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return 0, err
 	}
@@ -50,6 +55,7 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 	}
 	command := exec.Command(executable, args...)
 	command.Stdout, command.Stderr, command.Stdin = log, log, nil
+	command.Env = daemonChildEnvironment()
 	if err := command.Start(); err != nil {
 		_ = log.Close()
 		return 0, err

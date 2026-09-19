@@ -61,6 +61,14 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 	if err != nil {
 		return nil, fmt.Errorf("start local daemon: %w", err)
 	}
+	if result.Warning != "" && progress != nil {
+		// A live, healthy, supervised daemon under a different binary than
+		// this invocation's own (sneat-dev/wb#622 review item 9): Start
+		// already refused to touch it and returned it as-is, so the
+		// operator gets a working connection — but should still see why it
+		// is not the daemon this exact CLI invocation would have started.
+		_, _ = fmt.Fprintln(progress, "wb:", result.Warning)
+	}
 	state, found, err := controller.store.Load()
 	if err != nil {
 		return nil, err
