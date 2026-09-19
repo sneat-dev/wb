@@ -28,7 +28,7 @@ func TestTailCovReleaseReportsRecordRemovalFailure(t *testing.T) {
 	if err := os.Chmod(lanes, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	defer func() { _ = os.Chmod(lanes, 0o700) }()
+	t.Cleanup(func() { _ = os.Chmod(lanes, 0o700) })
 
 	err := Release(home, "acme/app", "main", "wbs-a")
 	if os.Geteuid() == 0 {

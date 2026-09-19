@@ -70,7 +70,7 @@ func TestTailCovLoadDirectoryReportsInspectionFailure(t *testing.T) {
 	if err := os.Chmod(dir, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(dir, 0o700) }()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	_, err := LoadDirectory(dir)
 	if err == nil || !strings.Contains(err.Error(), "inspect a.md") {
@@ -91,7 +91,7 @@ func TestTailCovLoadDirectoryReportsUnreadableRecord(t *testing.T) {
 	if err := os.Chmod(path, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(path, 0o600) }()
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
 	_, err := LoadDirectory(dir)
 	if err == nil || !strings.Contains(err.Error(), "read secret.md") {

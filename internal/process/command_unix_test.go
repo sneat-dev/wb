@@ -21,7 +21,7 @@ func TestCommandContextCancellationTerminatesForkedChild(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
 	parentPIDPath := filepath.Join(filepath.Dir(pidPath), "parent.pid")
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 
 	command := CommandContext(ctx, os.Args[0], "-test.run=^TestProcessHelper$")
 	command.Env = append(os.Environ(), "WB_PROCESS_HELPER=fork-child", "WB_PROCESS_CHILD_PID_PATH="+pidPath, "WB_PROCESS_PARENT_PID_PATH="+parentPIDPath)

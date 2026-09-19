@@ -717,10 +717,10 @@ func TestMigrateBusyProcessRefusesAClone(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-	}()
+	})
 
 	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/busy"}})
 	if err != nil {
@@ -746,7 +746,7 @@ func TestMigrateApplyRejectsAConcurrentRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.release()
+	t.Cleanup(func() { lock.release() })
 
 	if _, err := Migrate(context.Background(), root, MigrateOptions{Apply: true}); err == nil {
 		t.Fatal("a concurrent --apply must fail while the lock is held")

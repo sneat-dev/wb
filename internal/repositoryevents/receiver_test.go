@@ -145,7 +145,7 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		t.Fatal("same-repository follow-up did not start")
 	}
 	processor.mu.Lock()
-	defer processor.mu.Unlock()
+	t.Cleanup(func() { processor.mu.Unlock() })
 	if processor.maxByRepo[first.Repository] != 1 || processor.maxActiveTotal < 2 {
 		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
 	}

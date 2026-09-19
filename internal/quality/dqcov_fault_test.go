@@ -80,7 +80,7 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesFlushFailure(t *testing.T) {
 		return
 	}
 	restore := dqCovLimitFileSize(t, 8)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	directory := t.TempDir()
 	output := filepath.Join(directory, "merged.cov")
@@ -108,7 +108,7 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesBlockWriteFailure(t *testing
 		return
 	}
 	restore := dqCovLimitFileSize(t, 8)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	directory := t.TempDir()
 	blocks := map[string]coverageBlock{}
@@ -133,7 +133,7 @@ func TestDqCovSaveValidationCacheSurfacesEvidenceWriteFailure(t *testing.T) {
 		return
 	}
 	restore := dqCovLimitFileSize(t, 0)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	cacheRoot := filepath.Join(t.TempDir(), "cache")
 	key := ValidationCacheKey{Repository: "example/cache", TargetRevision: "revision-1"}

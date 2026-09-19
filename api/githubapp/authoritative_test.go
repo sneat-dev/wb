@@ -64,7 +64,7 @@ func TestGitHubRESTProjectionReaderBuildsAuthoritativeSnapshot(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(func() { server.Close() })
 
 	reader := GitHubRESTProjectionReader{HTTP: server.Client(), Tokens: fixedGitHubToken{}, APIBase: server.URL, Now: func() time.Time { return time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC) }}
 	snapshot, err := reader.RefreshAuthoritativeProjection(context.Background(), WebhookDelivery{ID: "delivery", Event: "push", Payload: []byte(`{"repository":{"full_name":"acme/widgets"}}`)})

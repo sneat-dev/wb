@@ -196,7 +196,7 @@ func TestWtLogCovInterruptedSessionStageNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	names, err := interruptedSessionStageNames(directory)
 	if err != nil {
 		t.Fatal(err)

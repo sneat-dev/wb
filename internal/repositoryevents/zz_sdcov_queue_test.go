@@ -295,7 +295,7 @@ func TestSdCovQueueRunIgnoresNilProcessorAndDefaultsToOneWorker(t *testing.T) {
 		return ProcessResult{Detail: "pulled"}, nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	done := make(chan struct{})
 	go func() {
 		queue.Run(ctx, processor, nil)
@@ -345,7 +345,7 @@ func TestSdCovQueueWorkerWaitsForRetryThenClaimsNewWork(t *testing.T) {
 		return ProcessResult{Detail: "pulled"}, nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	done := make(chan struct{})
 	go func() {
 		queue.Run(ctx, processor, nil)

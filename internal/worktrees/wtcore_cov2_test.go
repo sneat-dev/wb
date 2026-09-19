@@ -141,7 +141,7 @@ func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	if _, err := materializeDirtyCapture(runDir, "not a claim id", material); err == nil {
 		t.Fatal("invalid claim id was accepted")
 	}

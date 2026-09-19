@@ -1231,11 +1231,11 @@ func TestGpCovRunGHReportsExitStatusAndStartFailure(t *testing.T) {
 func TestGpCovAttemptContextPreservesCallerDeadline(t *testing.T) {
 	t.Parallel()
 	parent, cancelParent := context.WithTimeout(context.Background(), time.Hour)
-	defer cancelParent()
+	t.Cleanup(func() { cancelParent() })
 	parentDeadline, _ := parent.Deadline()
 
 	ctx, cancel := (&Observer{}).attemptContext(parent, time.Millisecond)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	deadline, ok := ctx.Deadline()
 	if !ok || !deadline.Equal(parentDeadline) {
 		t.Fatalf("attempt deadline = %v (ok=%v), want the caller's %v", deadline, ok, parentDeadline)

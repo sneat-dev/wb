@@ -2091,7 +2091,7 @@ func TestAppendReadAndSummarizeMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	decoder := json.NewDecoder(file)
 	var first Event
 	if err := decoder.Decode(&first); err != nil || first.SchemaVersion != EventSchemaVersion {

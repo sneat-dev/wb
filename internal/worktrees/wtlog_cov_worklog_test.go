@@ -395,7 +395,7 @@ func TestWtLogCovPrivateDirectoryHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = root.Close() }()
+	t.Cleanup(func() { _ = root.Close() })
 
 	if _, err := openPrivateChild(root, "../escape", true); err == nil {
 		t.Fatal("unsafe private directory segment was accepted")

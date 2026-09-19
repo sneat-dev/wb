@@ -37,7 +37,7 @@ func TestHkCovStatusReportsRunningWorkerAndFindings(t *testing.T) {
 	if err := worker.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worker.Unlock() }()
+	t.Cleanup(func() { _ = worker.Unlock() })
 	status, err := dispatcher.Status(5)
 	if err != nil || status.Worker != "running" {
 		t.Fatalf("status=%+v err=%v", status, err)

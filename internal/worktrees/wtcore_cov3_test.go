@@ -261,7 +261,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worktrees.Close() }()
+	t.Cleanup(func() { _ = worktrees.Close() })
 	// A task path whose base is not a safe segment cannot be retired by name.
 	if removeEmptyTaskDirectory(&cleanupTaskHandle{worktrees: worktrees, task: worktrees, taskPath: root + "/"}) {
 		t.Fatal("an unsafe task directory name was retired")
@@ -275,7 +275,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = held.Close() }()
+	t.Cleanup(func() { _ = held.Close() })
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = emptyHandle.Close() }()
+	t.Cleanup(func() { _ = emptyHandle.Close() })
 	if !removeEmptyTaskDirectory(&cleanupTaskHandle{worktrees: worktrees, task: emptyHandle, taskPath: empty}) {
 		t.Fatal("an empty held task directory was not retired")
 	}

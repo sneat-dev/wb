@@ -84,7 +84,7 @@ func TestSdCovReceiverRunFallsBackForInvalidDurationsAndReturnsOnCancellation(t 
 func TestSdCovReceiverRunRetriesFailedPollsOnTheTimer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	var polls int
 	source := &sdCovSource{}
 	source.poll = func(cursor string, _ int, _ time.Duration) (repositoryevent.PollResponse, error) {
@@ -132,7 +132,7 @@ func TestSdCovReceiverRunRetriesFailedPollsOnTheTimer(t *testing.T) {
 func TestSdCovReceiverRunStopsWhenCancelledDuringRetryDelay(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	retrying := make(chan struct{}, 1)
 	source := &sdCovSource{}
 	source.poll = func(string, int, time.Duration) (repositoryevent.PollResponse, error) {
@@ -171,7 +171,7 @@ func TestSdCovReceiverRunStopsWhenCancelledDuringRetryDelay(t *testing.T) {
 func TestSdCovReceiverRunReportsProgressWhileWaiting(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	tickerSeen := make(chan struct{})
 	var once sync.Once
 	closingProgress := make(chan string, 8)

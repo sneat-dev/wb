@@ -632,11 +632,11 @@ func TestExecNodeRejectsPublishedDependentThatResolvesASecondSingleton(t *testin
 	if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if _, err := node.Unlink(context.Background(), consumer, "@acme/core"); err != nil {
 			t.Errorf("undo linked core: %v", err)
 		}
-	}()
+	})
 
 	err := node.LinkSiblings(context.Background(), consumer, []string{"@acme/core"})
 	if err == nil ||

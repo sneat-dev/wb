@@ -67,7 +67,7 @@ func TestStartWorkerIfIdleDoesNotSpawnDuplicateWorker(t *testing.T) {
 	if err := worker.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worker.Unlock() }()
+	t.Cleanup(func() { _ = worker.Unlock() })
 	var launches atomic.Int32
 	dispatcher.LaunchWorker = func(WorkerRequest) error { launches.Add(1); return nil }
 	started, err := dispatcher.startWorkerIfIdle()

@@ -256,7 +256,7 @@ func TestRPCovRemoveExactPathAtReportsADirectoryThatCannotBeOpened(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rootFile.Close() }()
+	t.Cleanup(func() { _ = rootFile.Close() })
 
 	err = removeExactPathAt(rootFile, root, "locked", manifest, 0)
 	if err == nil || !strings.Contains(err.Error(), "open untracked directory") {

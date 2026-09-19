@@ -348,7 +348,7 @@ func TestWtLogCovLinkedWorktreeGitFileAdminNameAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	canonical := &canonicalRepository{path: "/tmp/canonical"}
 	if _, err := linkedWorktreeGitFileAdminName(canonical, nil); err == nil {
 		t.Fatal("nil git file was accepted")
@@ -374,7 +374,7 @@ func TestWtLogCovLinkedWorktreeGitFileAdminNameAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = goodHandle.Close() }()
+	t.Cleanup(func() { _ = goodHandle.Close() })
 	name, err := linkedWorktreeGitFileAdminName(&canonicalRepository{path: canonicalRoot}, goodHandle)
 	if err != nil || name != "app-branch" {
 		t.Fatalf("admin name = %q err = %v", name, err)

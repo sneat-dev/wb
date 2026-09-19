@@ -114,7 +114,7 @@ func TestWTCoreCovHeldOperationLockLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	lock, err := AcquireOperationLock(directory, false)
 	if err != nil {
 		t.Fatalf("AcquireOperationLock: %v", err)

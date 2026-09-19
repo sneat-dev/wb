@@ -159,7 +159,7 @@ func TestSendUsesOnlyRecordedSynchestraRouteAndDurableDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	dispatch, err := fixture.store.LoadOutgoingMessageSynchestraDispatchUnderLock(lock, fixture.request.HandoffID, fixture.digest, options.MessageID)
 	if err != nil || dispatch.DispatchID != "dsp_message_123" {
 		t.Fatalf("durable message dispatch = %#v err=%v", dispatch, err)

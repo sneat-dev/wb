@@ -367,7 +367,7 @@ func TestRPCovPlanUntrackedRejectsExcessiveDepthAndBrokenParentPaths(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rootFile.Close() }()
+	t.Cleanup(func() { _ = rootFile.Close() })
 
 	var entries []UntrackedEntry
 	if err := collectPathAt(rootFile, root, "plain.txt", &entries, untrackedMaxDepth+1); err == nil ||
@@ -459,7 +459,7 @@ func TestRPCovRemoveExactPathAtRefusesUnsafeEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rootFile.Close() }()
+	t.Cleanup(func() { _ = rootFile.Close() })
 
 	planned, err := planUntracked(root, []string{"file.txt"})
 	if err != nil {
@@ -516,7 +516,7 @@ func TestRPCovRemoveExactPathAtRefusesUndeclaredAndChangedDirectoryChildren(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rootFile.Close() }()
+	t.Cleanup(func() { _ = rootFile.Close() })
 
 	planned, err := planUntracked(root, []string{"dir"})
 	if err != nil {

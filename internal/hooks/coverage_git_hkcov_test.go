@@ -96,14 +96,14 @@ func TestHkCovSetHooksPathAtReportsHelperFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = repoFile.Close() }()
+	t.Cleanup(func() { _ = repoFile.Close() })
 	regular := filepath.Join(t.TempDir(), "not-a-directory")
 	mustWrite(t, regular, "plain file\n")
 	regularFile, err := os.Open(regular)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = regularFile.Close() }()
+	t.Cleanup(func() { _ = regularFile.Close() })
 	if err := setHooksPathAt(repoFile, regularFile, "/tmp/hooks"); err == nil || !strings.Contains(err.Error(), "retained repository") {
 		t.Fatalf("setHooksPathAt(bad common descriptor) error = %v", err)
 	}

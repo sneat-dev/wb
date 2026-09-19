@@ -41,11 +41,11 @@ func TestMemoryEngineRunsAWholeStoreJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := closer.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	}()
+	})
 	_, _, snapshots := hub.NewMachineStores(store)
 	record := testSnapshot("machine-1")
 	if result, err := snapshots.StoreLatest(ctx, record); err != nil || !result.Updated {
@@ -94,7 +94,7 @@ func TestOpenVaultDBEngineIsConstructedWithoutReachingTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	_, _, snapshots := hub.NewMachineStores(store)
 	if _, err := snapshots.ListLatest(ctx); err == nil {
 		t.Fatal("a query against an unreachable OpenVaultDB succeeded")
@@ -121,7 +121,7 @@ func TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		t.Fatalf("store directory = %v, %v", info, err)
 	}
@@ -170,7 +170,7 @@ func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	_, _, snapshots := hub.NewMachineStores(store)
 	if _, err := snapshots.StoreLatest(ctx, testSnapshot("machine-1")); err != nil {
 		t.Fatalf("StoreLatest: %v", err)

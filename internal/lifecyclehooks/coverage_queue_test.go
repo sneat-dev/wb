@@ -154,7 +154,7 @@ func TestHkCovDrainReturnsQuietlyWhenWorkerLockHeld(t *testing.T) {
 	if err := worker.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worker.Unlock() }()
+	t.Cleanup(func() { _ = worker.Unlock() })
 	report, err := dispatcher.Drain(context.Background(), 1)
 	if err != nil || report.Executed != 0 || report.Enqueued != 0 {
 		t.Fatalf("report=%+v err=%v", report, err)
@@ -508,7 +508,7 @@ func TestHkCovCappedFilePartialWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	writer := &cappedFile{file: file, written: maxDiagnosticBytes - 2}
 	written, err := writer.Write([]byte("abcd"))
 	if err != nil || written != 4 || !writer.truncated || writer.written != maxDiagnosticBytes {
@@ -554,8 +554,8 @@ func TestHkCovOpenDiagnosticsCreatesPrivateLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = stdout.file.Close() }()
-	defer func() { _ = stderr.file.Close() }()
+	t.Cleanup(func() { _ = stdout.file.Close() })
+	t.Cleanup(func() { _ = stderr.file.Close() })
 	for _, path := range []string{stdout.file.Name(), stderr.file.Name()} {
 		info, err := os.Stat(path)
 		if err != nil || info.Mode().Perm() != 0o600 {

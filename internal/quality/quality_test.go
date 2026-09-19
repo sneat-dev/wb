@@ -1028,7 +1028,7 @@ func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
 	if entry.Status != StatusFailed || strings.Contains(entry.Detail, "check timed out") {
 		t.Fatalf("parent deadline did not win: %+v", entry)

@@ -104,7 +104,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 	queue.workers = 1
 	queue.acquire = func(context.Context) (func(), error) { return func() {}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	go queue.Run(ctx, localSyncProcessor(projects), nil)
 	deadline := time.Now().Add(3 * time.Second)
 	for {

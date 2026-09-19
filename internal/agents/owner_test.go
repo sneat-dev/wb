@@ -373,7 +373,7 @@ func TestBoundedLogCapsGrowthWithoutFailingTheWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	log := &boundedLog{writer: file, remaining: 10}
 
 	written, err := log.Write([]byte("0123456789ABCDEF"))

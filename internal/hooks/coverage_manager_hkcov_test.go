@@ -538,7 +538,7 @@ func TestHkCovManagedHookIdentityAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 
 	for _, name := range []string{"", ".", "sub/hook"} {
 		if _, err := managedHookIdentityAt(handle, name); err == nil || !strings.Contains(err.Error(), "invalid managed hook name") {
@@ -579,7 +579,7 @@ func TestHkCovVerifyManagedHookIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 
 	broken := managedHooksDirectory{path: dir, commonPath: other, common: handle, directory: handle}
 	if err := verifyManagedHookIdentity(broken, "pre-commit", absentManagedHookIdentity()); err == nil || !strings.Contains(err.Error(), "git common directory path changed") {
@@ -594,7 +594,7 @@ func TestHkCovVerifyManagedHookIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = regularHandle.Close() }()
+	t.Cleanup(func() { _ = regularHandle.Close() })
 	if identity, err := managedHookIdentityAt(regularHandle, "pre-commit"); err == nil || identity.exists {
 		t.Fatalf("managedHookIdentityAt(file descriptor) = %#v, %v; want an error", identity, err)
 	}
@@ -616,7 +616,7 @@ func TestHkCovManagedHooksDirectoryValidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 
 	if err := (managedHooksDirectory{repoPath: other, repo: handle, commonPath: dir, common: handle}).validate(); err == nil || !strings.Contains(err.Error(), "repository directory path changed") {
 		t.Fatalf("validate(repo swap) error = %v", err)
@@ -672,7 +672,7 @@ func TestHkCovOpenAbsoluteHooksDirectoryNoFollow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	info, err := handle.Stat()
 	if err != nil || !info.IsDir() {
 		t.Fatalf("opened descriptor = %#v, %v; want the directory", info, err)
@@ -779,7 +779,7 @@ func TestHkCovMoveExpectedManagedHookNoReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	managed := managedHooksDirectory{path: dir, commonPath: dir, common: handle, directory: handle}
 
 	if err := moveExpectedManagedHookNoReplace(managed, "missing", "backup", absentManagedHookIdentity(), nil); err == nil || !strings.Contains(err.Error(), "cannot quarantine absent managed hook") {
@@ -824,7 +824,7 @@ func TestHkCovQuarantineManagedHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	managed := managedHooksDirectory{path: dir, commonPath: dir, common: handle, directory: handle}
 
 	// An unexpected file where the hook is supposed to be absent is refused.
@@ -867,7 +867,7 @@ func TestHkCovReadManagedHookErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 
 	if _, err := readManagedHook(handle, "sub/hook"); err == nil || !strings.Contains(err.Error(), "invalid managed hook name") {
 		t.Fatalf("readManagedHook(bad name) error = %v", err)
@@ -893,7 +893,7 @@ func TestHkCovWriteExecutableAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	managed := managedHooksDirectory{path: dir, commonPath: dir, common: handle, directory: handle}
 
 	if err := writeExecutableAt(managed, "sub/hook", []byte("#!/bin/sh\n"), absentManagedHookIdentity(), nil); err == nil || !strings.Contains(err.Error(), "invalid managed hook name") {
@@ -940,7 +940,7 @@ func TestHkCovRemoveStaleManagedHooksAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 
 	actions := []string{}
 	if err := removeStaleManagedHooksAt(managedHooksDirectory{path: other, commonPath: dir, common: handle, directory: handle}, nil, &actions, nil, nil); err == nil || !strings.Contains(err.Error(), "managed hooks directory path changed") {
@@ -955,7 +955,7 @@ func TestHkCovRemoveStaleManagedHooksAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = regularHandle.Close() }()
+	t.Cleanup(func() { _ = regularHandle.Close() })
 	if identity, err := managedHookIdentityAt(regularHandle, "pre-commit"); err == nil || identity.exists {
 		t.Fatalf("managedHookIdentityAt(file descriptor) = %#v, %v; want an error", identity, err)
 	}
@@ -1022,7 +1022,7 @@ func TestHkCovRemoveStaleManagedHooksAtReportsUnwritablePreservation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = handle.Close() }()
+	t.Cleanup(func() { _ = handle.Close() })
 	mustWrite(t, filepath.Join(dir, "userful"), shimManagedSection("", "userful", "", "", "", false)+"echo user\n")
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
@@ -1037,7 +1037,7 @@ func TestHkCovRemoveStaleManagedHooksAtReportsUnwritablePreservation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = regularHandle.Close() }()
+	t.Cleanup(func() { _ = regularHandle.Close() })
 	if identity, err := managedHookIdentityAt(regularHandle, "pre-commit"); err == nil || identity.exists {
 		t.Fatalf("managedHookIdentityAt(file descriptor) = %#v, %v; want an error", identity, err)
 	}

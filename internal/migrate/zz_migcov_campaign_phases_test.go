@@ -750,7 +750,7 @@ func TestMigCovValidCampaignLockMetadataRejectsMalformedContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	if !validCampaignLockMetadata(file, "exact") {
 		t.Fatal("validCampaignLockMetadata(valid) = false")
 	}

@@ -56,11 +56,11 @@ func TestTailCovAppendReportsWriteFailure(t *testing.T) {
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit); err != nil {
 		t.Fatalf("setrlimit(RLIMIT_FSIZE, 0): %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 			t.Errorf("restore RLIMIT_FSIZE: %v", err)
 		}
-	}()
+	})
 
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	err := Append(path, Event{SchemaVersion: EventSchemaVersion, State: "requested"})

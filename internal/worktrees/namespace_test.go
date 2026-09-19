@@ -178,7 +178,7 @@ func TestOperationLockRefusesRetiredDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}

@@ -726,7 +726,7 @@ func TestSleepContextWaitsForTheDelayAndHonoursCancellation(t *testing.T) {
 	}
 
 	expired, expire := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer expire()
+	t.Cleanup(func() { expire() })
 	if err := sleepContext(expired, time.Hour); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("sleepContext(expired) = %v, want context.DeadlineExceeded", err)
 	}

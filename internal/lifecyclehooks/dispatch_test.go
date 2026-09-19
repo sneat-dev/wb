@@ -104,7 +104,7 @@ func TestWorkerDrainsNewerEventQueuedWhilePriorRevisionRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutex.Lock()
-	defer mutex.Unlock()
+	t.Cleanup(func() { mutex.Unlock() })
 	if strings.Join(newSHAs, ",") != "b,c" {
 		t.Fatalf("executed SHAs=%v, want [b c]", newSHAs)
 	}
