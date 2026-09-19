@@ -203,6 +203,10 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
 	if mergeErr != nil {
+		if IsTransientGitHubFailure(mergeErr) {
+			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+				fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
+		}
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, mergeErr)
 	}
 	if mergeRefusal != nil {

@@ -299,12 +299,12 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 }
 
 // withPullRequestLandResumeGuidance appends the exact resumable `wb pr land`
-// invocation to an error that reached the caller only because every
-// in-process retry for a transient GitHub read failure was exhausted. Any
-// other error (an authoritative GitHub failure, a refusal, a validation
-// error) is returned unchanged.
+// invocation to a transient GitHub failure: either exhausted in-process read
+// retries or a mutation whose response was lost and outcome remains unknown.
+// Any authoritative GitHub failure, refusal, or validation error is returned
+// unchanged.
 func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions, result PullRequestLandResult) error {
-	if err == nil || !errors.Is(err, githubobserver.ErrTransientRetriesExhausted) {
+	if err == nil || !IsTransientGitHubFailure(err) {
 		return err
 	}
 	number, numberErr := PullRequestNumber(options.PullRequest)
@@ -488,6 +488,14 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		defer func() {
 			_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
 		}()
+	}
+	if view.Merged {
+		// A prior invocation may have issued the exact leased merge write and
+		// then lost both its response and the first verification read. Resume
+		// from GitHub's authoritative merged state and finish the same remote
+		// reachability, canonical-sync, branch-retirement, and cleanup tail.
+		result.Evidence["recovery"] = "pull request was already merged when landing resumed"
+		return finalizeLandedPullRequest(ctx, options, result, view, view.Head.SHA, number)
 	}
 
 	if refusal := landPreflightRefusal(view, options.Repository, number); refusal != nil {
@@ -904,6 +912,14 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.MergeSHA = mergeSHA
 	}
 
+	return finalizeLandedPullRequest(ctx, options, result, view, head, number)
+}
+
+// finalizeLandedPullRequest proves and completes the observable landing
+// effects. It is shared by an ordinary successful merge call and recovery of
+// an exact pull request that a prior invocation merged before losing its
+// response, so the recovery cannot skip canonical sync or cleanup.
+func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, view PullRequestView, remoteHeadSHA, number string) (PullRequestLandResult, error) {
 	// Assert the observable effect rather than the exit status of the call that
 	// was supposed to produce it.
 	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Started, view.Base.Ref, 0, 0)
@@ -967,7 +983,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
-	if deleted, deleteErr := deleteRemoteBranch(ctx, options.Repository, view, landed); deleteErr != nil {
+	if deleted, deleteErr := deleteRemoteBranch(ctx, canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
 		return result, deleteErr
 	} else {
 		result.BranchDeleted = deleted
@@ -1249,6 +1265,10 @@ func mergePullRequest(ctx context.Context, repository, number, head, method, sub
 				command: "wb pr land " + repository + "#" + number,
 			}, nil
 		}
+		if githubobserver.IsTransientCommandFailure(ctx, response) {
+			return "", nil, fmt.Errorf("%w: merge %s#%s at %s: %s",
+				githubobserver.ErrTransientMutationOutcomeUnknown, repository, number, shortMergeRevision(head), message)
+		}
 		return "", &landRefusal{
 			code:    LandRefusalMergeRejected,
 			reason:  "GitHub refused the merge: " + message,
@@ -1285,7 +1305,7 @@ func commitIsOnBranch(ctx context.Context, repository, commit, branch string) (b
 // repository's to delete — and treats an already-absent ref as success,
 // because GitHub's own "automatically delete head branches" setting may have
 // removed it first.
-func deleteRemoteBranch(ctx context.Context, repository string, view, landed PullRequestView) (bool, error) {
+func deleteRemoteBranch(ctx context.Context, canonical, repository string, view, landed PullRequestView, expectedHeadSHA string) (bool, error) {
 	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, repository) {
 		return false, nil
 	}
@@ -1293,18 +1313,34 @@ func deleteRemoteBranch(ctx context.Context, repository string, view, landed Pul
 	if ref == "" || strings.EqualFold(ref, landed.Base.Ref) {
 		return false, nil
 	}
-	response := githubExecute(ctx, "", "api", "--method", "DELETE",
-		"repos/"+repository+"/git/refs/heads/"+ref)
-	if response.Err != nil && !branchAlreadyGone(response.Stdout, response.Stderr) {
-		return false, fmt.Errorf("delete branch %s: %s", ref,
-			strings.TrimSpace(string(response.Stderr)+string(response.Stdout)))
+	// Recovery may be resuming an older merged pull request after its branch
+	// name has been reused. A force-with-lease deletion makes the expected PR
+	// head and deletion one atomic remote operation; an unconditional API
+	// DELETE after a separate read would retain a destructive race window.
+	expected := strings.TrimSpace(expectedHeadSHA)
+	if expected == "" {
+		return false, fmt.Errorf("refuse to delete branch %s without the merged pull request head SHA", ref)
+	}
+	remoteRef := "refs/heads/" + ref
+	_, deleteErr := runGit(ctx, canonical, "push", "--force-with-lease="+remoteRef+":"+expected,
+		"origin", ":"+remoteRef)
+	if deleteErr != nil {
+		check := githubExecute(ctx, "", "api", "repos/"+repository+"/git/ref/heads/"+ref)
+		if check.Err != nil && branchAlreadyGone(check.Stdout, check.Stderr) {
+			return true, nil
+		}
+		return false, fmt.Errorf("delete branch %s at merged head %s: %w", ref, shortMergeRevision(expected), deleteErr)
 	}
 	// Verify the effect: ask for the ref and require it to be absent.
 	check := githubExecute(ctx, "", "api", "repos/"+repository+"/git/ref/heads/"+ref)
 	if check.Err == nil {
 		return false, fmt.Errorf("branch %s still exists on origin after its deletion was accepted", ref)
 	}
-	return true, nil
+	if branchAlreadyGone(check.Stdout, check.Stderr) {
+		return true, nil
+	}
+	return false, fmt.Errorf("verify branch %s is absent after deletion: %s", ref,
+		strings.TrimSpace(string(check.Stderr)+string(check.Stdout)))
 }
 
 func branchAlreadyGone(stdout, stderr []byte) bool {
