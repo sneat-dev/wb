@@ -16,10 +16,55 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-const daemonLaunchdLabel = "dev.sneat.wb.daemon"
+// runLaunchctl is the seam every launchctl invocation in this file goes
+// through, so a test can fake launchd's own responses instead of reaching a
+// real launch agent (sneat-dev/wb#622 review: a darwin test with real stop
+// semantics, faked at the launchctl seam).
+//
+// Its DEFAULT implementation is guarded by daemonRefuseTestBinary, generally
+// — not just at startDaemonProcess's own explicit call — so every caller
+// that reaches a real, unfaked launchctl invocation (stopDaemonProcess,
+// daemonProcessAlive, launchdPID's status probe) is covered uniformly
+// (sneat-dev/wb#622 review item 7): before this, only startDaemonProcess
+// guarded itself explicitly, so a test that forgot to fake runLaunchctl
+// before reaching any OTHER caller could still have touched a real launch
+// agent. A test that overrides runLaunchctl entirely (as every existing
+// darwin process test does) never reaches this guard at all — it is only the
+// real, unfaked exec.Command path that refuses.
+var runLaunchctl = func(args ...string) ([]byte, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = os.Args[0]
+	}
+	if guardErr := daemonRefuseTestBinary(executable); guardErr != nil {
+		return nil, guardErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runLaunchctlTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "launchctl", args...)
+	// See cmd/wb's runSystemctl doc for why WaitDelay, not just the context
+	// timeout, matters: a killed direct child does not close pipes a
+	// grandchild still holds open (sneat-dev/wb#622 review round 4).
+	command.WaitDelay = 2 * time.Second
+	return command.CombinedOutput()
+}
+
+// runLaunchctlTimeout bounds every runLaunchctl invocation. It is a variable
+// so a test can shrink it rather than waiting the real bound out.
+//
+// It MUST stay above daemonStopTimeout: this seam also carries `launchctl
+// bootout` (stopDaemonProcess, both wb's own job and a foreign one), which
+// blocks until the daemon it targets actually stops, and the daemon's own
+// drain can legitimately take up to daemonStopTimeout. A runLaunchctlTimeout
+// at or below that would kill bootout mid-drain, and the bootstrap that
+// follows it (startDaemonProcess, re-installing wb's own job) would then
+// fail with "already loaded" — breaking `wb daemon start`/`restart` on a
+// real Mac (sneat-dev/wb#622 review round 4 follow-up).
+var runLaunchctlTimeout = 30 * time.Second
 
 func daemonLaunchdPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -30,10 +75,17 @@ func daemonLaunchdPath() (string, error) {
 }
 
 func daemonLaunchdTarget() string {
-	return fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonLaunchdLabel)
+	return launchdTargetFor(daemonLaunchdLabel)
+}
+
+func launchdTargetFor(label string) string {
+	return fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
 }
 
 func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
+	if err := daemonRefuseTestBinary(executable); err != nil {
+		return 0, err
+	}
 	plistPath, err := daemonLaunchdPath()
 	if err != nil {
 		return 0, err
@@ -66,17 +118,23 @@ func startDaemonProcess(executable string, args []string, logPath string) (int, 
 		return 0, err
 	}
 	// Re-bootstrap the exact per-user service so an older executable or
-	// changed arguments cannot survive a start/handoff transition.
-	_ = exec.Command("launchctl", "bootout", daemonLaunchdTarget()).Run()
-	if output, err := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath).CombinedOutput(); err != nil {
+	// changed arguments cannot survive a start/handoff transition. This path
+	// is wb's own self-managed launchd job (daemonLaunchdLabel): it is the
+	// mechanism that already correctly hands a new binary to a running mac
+	// daemon, which is exactly why stopAndReplace treats this job as NOT
+	// "supervised" for handoff purposes (sneat-dev/wb#622 review item 1) —
+	// there is no separate external supervisor to hand off to here, wb IS the
+	// supervisor's installer.
+	_, _ = runLaunchctl("bootout", daemonLaunchdTarget())
+	if output, err := runLaunchctl("bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath); err != nil {
 		return 0, fmt.Errorf("bootstrap WB launch agent: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	if output, err := exec.Command("launchctl", "kickstart", "-k", daemonLaunchdTarget()).CombinedOutput(); err != nil {
+	if output, err := runLaunchctl("kickstart", "-k", daemonLaunchdTarget()); err != nil {
 		return 0, fmt.Errorf("start WB launch agent: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	deadline := time.Now().Add(daemonReadyTimeout)
 	for time.Now().Before(deadline) {
-		if pid, ok := launchdPID(); ok {
+		if pid, ok := launchdPID(daemonLaunchdTarget()); ok {
 			return pid, nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -122,8 +180,8 @@ func launchdPlistBytes(executable string, args []string, logPath string) []byte 
 	return body.Bytes()
 }
 
-func launchdPID() (int, bool) {
-	output, err := exec.Command("launchctl", "print", daemonLaunchdTarget()).CombinedOutput()
+func launchdPID(target string) (int, bool) {
+	output, err := runLaunchctl("print", target)
 	if err != nil {
 		return 0, false
 	}
@@ -148,12 +206,34 @@ func daemonProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	managedPID, running := launchdPID()
+	managedPID, running := launchdPID(daemonLaunchdTarget())
 	return running && managedPID == pid
 }
 
-func stopDaemonProcess(pid int) error {
-	if err := exec.Command("launchctl", "bootout", daemonLaunchdTarget()).Run(); err == nil {
+// stopDaemonProcess asks the process to exit. Its supervisor context decides
+// how:
+//
+//   - Supervisor is none, or launchd under wb's own label: the caller is
+//     about to bootstrap+kickstart a fresh replacement itself (the unsupervised
+//     stopAndReplace branch, or a plain `wb daemon stop`), so bootout-then-kill
+//     is correct — it fully unloads wb's own job so the imminent re-bootstrap
+//     cannot race a leftover instance.
+//   - Supervisor is a FOREIGN launchd label (a job wb did not install, under a
+//     label that is not daemonLaunchdLabel): wb must never bootout wb's own
+//     (different, and likely never-bootstrapped) target here, and a plain
+//     SIGTERM depends on that job's own KeepAlive configuration to restart it.
+//     `launchctl kickstart -k` on the FOREIGN job's own target is the
+//     unconditional, explicit ask that a genuine hand-off needs
+//     (sneat-dev/wb#622 review item 1).
+func stopDaemonProcess(pid int, supervisor daemon.Supervisor, label string) error {
+	if supervisor == daemon.SupervisorLaunchd && label != "" && label != daemonLaunchdLabel {
+		target := launchdTargetFor(label)
+		if output, err := runLaunchctl("kickstart", "-k", target); err != nil {
+			return fmt.Errorf("kickstart foreign launch agent %s: %w: %s", target, err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+	if _, err := runLaunchctl("bootout", daemonLaunchdTarget()); err == nil {
 		return nil
 	}
 	if pid <= 0 {

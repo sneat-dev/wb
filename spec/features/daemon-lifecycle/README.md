@@ -184,6 +184,155 @@ with `WB_HOME`. An explicitly supplied lifecycle state path MUST remain accepted
 for compatibility, and its presence MUST be reported, because a pinned path is
 the shape that caused both observed failures.
 
+#### REQ: supervisor-is-recorded-at-startup
+
+At `daemon serve` startup, the process MUST detect whether a supervisor
+started it — systemd or launchd — through an injectable environment seam, and
+MUST record the result (`none`, `systemd`, or `launchd`) in its own lifecycle
+record. Detection MUST run in the process a supervisor actually started: only
+that process observes the variables a supervisor sets before it execs its
+child ([#617](https://github.com/sneat-dev/wb/issues/617)).
+
+A bare environment variable is not sufficient evidence: both are observed to
+survive into a process that merely inherited its parent's environment without
+being started by the supervisor at all. systemd sets `INVOCATION_ID` on every
+unit it starts, and (systemd >= 248) `SYSTEMD_EXEC_PID` naming the exact PID
+it exec'd; detection MUST require `SYSTEMD_EXEC_PID` to be present *and* equal
+to this process's own PID — `INVOCATION_ID` alone, or a non-matching
+`SYSTEMD_EXEC_PID`, MUST report `none` (confirmed live: a shell or an agent
+process started inside a systemd-supervised session inherits `INVOCATION_ID`
+without `SYSTEMD_EXEC_PID` ever being set for it). A daemon run under systemd
+older than 248 is therefore always recorded as `none`: that systemd cannot
+supply the evidence this requirement demands. launchd sets `XPC_SERVICE_NAME`
+to the job label for a job it manages, and to the literal string `"0"` for a
+process it did not launch directly (treated as absent); detection MUST
+additionally require launchd to be this process's direct parent (PPID == 1,
+which is launchd on every targeted macOS version), the equivalent inheritance
+guard for a process that inherited the variable from a launchd-managed parent
+without being launched by launchd itself. A label prefixed `application.`
+MUST also be treated as absent regardless of parentage: that is macOS's own
+label for an ordinary foreground GUI application (an IDE, a terminal app),
+not a launch agent, and a `daemon serve` run from an IDE's integrated
+terminal MUST NOT be mistaken for one wb should try to kickstart or refuse
+under. When launchd is detected, the job label MUST also be recorded, because
+it is what distinguishes wb's own self-managed job (see REQ:
+restart-hands-off-to-a-live-supervisor) from a foreign one.
+
+A detached child this build starts itself (`wb daemon start`'s unsupervised
+path) MUST NOT inherit any of `INVOCATION_ID`, `SYSTEMD_EXEC_PID`,
+`JOURNAL_STREAM`, or `XPC_SERVICE_NAME` from the process that starts it, so it
+can never misdetect a supervision it does not actually have.
+
+#### REQ: status-reports-the-recorded-supervisor
+
+`wb daemon status` MUST report the managed daemon's recorded supervisor as
+`supervisor=systemd|launchd|none`, in both text and JSON, for every record —
+including one written before this field existed, which MUST be reported as
+`none` rather than left blank or guessed at.
+
+#### REQ: restart-hands-off-to-a-live-supervisor
+
+Every path that stops a running daemon in order to start its replacement —
+`wb daemon restart`, the self-update after-update hook, and `wb daemon
+start`'s executable-handoff branch — MUST consult the running daemon's
+recorded supervisor before choosing how to bring the replacement up. When it
+is `none`, the existing detached-start behavior is unchanged.
+
+wb's own self-managed launchd job (the fixed label its own installer uses)
+MUST also be treated as `none` for this decision, not as a supervisor to hand
+off to: wb's own re-bootstrap-and-kickstart cycle is what already correctly
+restarts it with a new binary, and there is no separate external supervisor
+in that case. Only a *foreign* launchd label — one wb did not install — and
+systemd are handed off to.
+
+For those, the path MUST first confirm that the daemon's recorded executable
+path, read from disk right now, matches this build's own content: a caller
+MUST NOT stop or replace a supervised daemon merely because its own binary
+differs from the recorded provenance, since that difference is equally true
+of a caller with no business touching that daemon at all. It is only safe to
+proceed when the installed executable at the recorded path has itself become
+this build's content — the shape a genuine self-update produces by replacing
+that path in place. When it has not, the running daemon MUST be left
+untouched, and how the mismatch is reported depends on how this path was
+reached: an EXPLICIT `wb daemon restart` or the self-update after-update hook
+— both asking, on purpose, to bring up a specific new binary — MUST report
+the mismatch as a failure with a non-success exit code, since the operator or
+the self-update explicitly asked for a restart that did not happen. An
+IMPLICIT `Start` call from a caller that never asked to manage this daemon's
+lifecycle at all (`wb dashboard --local`, or an RPC client's own automatic
+bootstrap) MUST NOT fail outright merely because THIS invocation's own binary
+differs from a live, healthy, supervised daemon's: the caller only wanted a
+working connection, and a healthy live daemon already answers that need. It
+MUST instead get the live daemon back, with the mismatch reported as a
+non-fatal warning rather than an error.
+
+Otherwise the path MUST stop the running process and then wait, bounded, with
+progress, and honoring context cancellation, for the supervisor's own
+replacement process to report ready under the new executable's provenance, an
+unrecycled process generation, and an owned health check — and MUST NOT start
+a detached daemon of its own while waiting or after the bound is reached. A
+ready, alive replacement running a *different* executable than targeted MUST
+fail fast with a message naming both, rather than waiting out the full bound.
+A bound reached without the supervisor's own replacement becoming ready MUST
+be reported as a distinct, actionable condition and exit with a non-success
+code, never silently fall back to a detached start
+([#617](https://github.com/sneat-dev/wb/issues/617), recurrence of
+[#546](https://github.com/sneat-dev/wb/issues/546)).
+
+#### REQ: detached-start-is-refused-under-a-supervisor
+
+`wb daemon start` MUST refuse to launch a detached process when the runtime's
+last recorded state names a supervisor (`systemd`, or `launchd` under a
+*foreign* label — wb's own self-managed launchd job MUST NOT be refused,
+since `wb daemon start` is itself how that job is (re)installed) and no live
+process of this build is already being handed off from. The refusal MUST name
+the recorded supervisor and say to restart the daemon through it, rather than
+through `wb daemon start`, and MUST name the specific unit when it is known
+(a launchd job label; nothing here records a systemd unit name).
+
+Before refusing, an independent check MUST confirm that the recorded
+supervisor can still be shown to exist at all; when it cannot, the record MUST
+be treated as stale and the start MUST proceed rather than refuse forever. An
+explicit override flag MUST also exist for an operator to bypass the refusal
+in a case that check cannot resolve either way, and the refusal message MUST
+name it.
+
+A refusal for a daemon that is confirmed alive, merely on a different
+`--listen` than requested, MUST say so plainly and MUST NOT be phrased as
+uncertainty about whether it is running at all.
+
+#### REQ: double-owner-state-is-detected
+
+`wb daemon status` MUST attempt to detect the double-owner state in which a
+live, otherwise-healthy daemon of this home's recorded supervisor disagrees
+with what this build can independently observe about it right now — evidence
+that a supervisor may exist for this runtime and be racing an unsupervised
+process for it.
+
+On a platform where it is possible, the check SHOULD confirm a *specific*
+supervisor unit's own existence and failure state directly, rather than only
+a coarser comparison: on Linux, when the daemon recorded `supervisor=none`,
+querying the configured or default systemd user unit's own state
+(`ActiveState`/`Result`/`NRestarts`) and flagging it as still fighting for the
+runtime when it is `failed`, or `activating` after at least one restart, is
+the precise detector this feature exists for — confirmed live: an orphaned,
+unsupervised `daemon serve` (PPID 1, running in a session scope, not the
+unit's own cgroup) served the port while its systemd unit sat crash-looping.
+This is a strictly narrower question than the coarser comparison below can
+answer, because that daemon's own cgroup shows no service membership at all.
+
+Confirming a specific supervisor unit's existence and failure state is not
+required to satisfy this requirement when doing so has no portable
+implementation, or when the specific check above is unavailable or does not
+apply (the recorded supervisor is not `none`): a narrower, best-effort
+comparison between the recorded supervisor and independently observed
+evidence about the process itself is an acceptable fallback implementation,
+in either direction (recorded `none` while independent evidence shows a
+systemd unit, and recorded `systemd` while it does not), provided its
+platform coverage and its limits — including any platform on which it can
+only report "unknown" — are documented where the comparison is implemented
+and in the change that introduces it.
+
 ## Acceptance Criteria
 
 ### AC: runtime-moves-with-the-home (verifies REQ:runtime-home-is-the-resolved-wb-home, REQ:runtime-path-is-reported-and-stable)
@@ -248,6 +397,104 @@ Scenario: A supervisor unit is written
 Given a machine on which a supervisor owns the daemon
 When WB writes that unit
 Then the unit carries the projects root and, where set, the explicit `WB_HOME`, and it does not carry the daemon's runtime directory or any path derived from a home resolved at install time
+
+### AC: supervisor-is-detected-and-reported (verifies REQ:supervisor-is-recorded-at-startup, REQ:status-reports-the-recorded-supervisor)
+
+Scenario: A systemd-started daemon records and reports it
+Given `daemon serve` starts with `INVOCATION_ID` set and `SYSTEMD_EXEC_PID` naming this process's own PID
+When `wb daemon status` runs against that daemon's lifecycle record
+Then it reports `supervisor=systemd`
+
+Scenario: An inherited `INVOCATION_ID` alone is not mistaken for supervision
+Given `daemon serve` starts with `INVOCATION_ID` set but no `SYSTEMD_EXEC_PID` naming this process, because it merely inherited the variable from a systemd-managed parent
+When `wb daemon status` runs against that daemon's lifecycle record
+Then it reports `supervisor=none`
+
+Scenario: An inherited `XPC_SERVICE_NAME` without launchd as the direct parent is not mistaken for supervision
+Given `daemon serve` starts with `XPC_SERVICE_NAME` set to a job label but its own parent process is not launchd (PID 1)
+When `wb daemon status` runs against that daemon's lifecycle record
+Then it reports `supervisor=none`
+
+Scenario: A daemon predating this field reports none
+Given a lifecycle record with no recorded supervisor
+When `wb daemon status` runs
+Then it reports `supervisor=none`
+
+### AC: a-supervised-restart-hands-off-not-doubles (verifies REQ:restart-hands-off-to-a-live-supervisor)
+
+Scenario: A supervised daemon is restarted
+Given a running daemon whose lifecycle record names a supervisor other than wb's own self-managed launchd job
+When `wb daemon restart` (or the self-update after-update hook) runs
+Then the running process is stopped, no detached replacement is started, and the command waits for a process matching the new executable's provenance to report ready before succeeding
+
+Scenario: The supervisor does not bring the daemon back
+Given a stopped, supervised daemon whose supervisor does not restart it within the bound
+When the restart path's wait expires
+Then it reports the timeout as a distinct condition, exits with a non-success code, and has started no detached daemon of its own
+
+Scenario: The supervisor's replacement is a different build than targeted
+Given a supervised daemon that was stopped so a specific new executable could take over
+When the supervisor's own replacement becomes ready first, running a different executable than the one targeted
+Then the restart path fails fast, naming both executables, rather than waiting out the full bound
+
+Scenario: The recorded executable does not yet match this build's own content, on an explicit restart
+Given a supervised daemon whose recorded executable path, read from disk right now, does not match this build's content
+When an EXPLICIT `wb daemon restart`, or the self-update after-update hook, considers stopping it
+Then it reports the mismatch as a failure with a non-success exit code and leaves the running daemon untouched, rather than stopping and replacing it
+
+Scenario: The recorded executable does not yet match this build's own content, on an implicit start
+Given a live, healthy, supervised daemon whose recorded executable path, read from disk right now, does not match this build's content
+When an IMPLICIT `Start` call from a caller that never asked to manage this daemon's lifecycle (`wb dashboard --local`, or an RPC client's own automatic bootstrap) reaches it
+Then it returns the live daemon with the mismatch reported as a warning, not an error, and leaves the running daemon untouched
+
+Scenario: wb's own self-managed launchd job is not treated as a foreign supervisor
+Given a running daemon whose lifecycle record names launchd under wb's own fixed job label
+When `wb daemon restart` runs
+Then it uses wb's ordinary bootstrap-and-kickstart cycle rather than waiting for a foreign supervisor to replace it
+
+### AC: a-detached-start-is-refused-under-a-supervisor (verifies REQ:detached-start-is-refused-under-a-supervisor)
+
+Scenario: `wb daemon start` is run while a supervisor owns the runtime
+Given a lifecycle record whose last recorded supervisor is `systemd`, or `launchd` under a foreign label, and no live process to hand off from, and that supervisor is independently confirmed to still exist
+When `wb daemon start` runs
+Then it refuses, names the recorded supervisor and its unit when known, and says to restart through it instead, or to pass `--force-detached` to override
+
+Scenario: The recorded supervisor can no longer be confirmed
+Given a lifecycle record naming a supervisor that an independent existence check can no longer find
+When `wb daemon start` runs
+Then it treats the record as stale and proceeds with a detached start rather than refusing forever
+
+Scenario: `wb daemon start` is run for wb's own self-managed launchd job
+Given a lifecycle record naming launchd under wb's own fixed job label
+When `wb daemon start` runs
+Then it is not refused, since `wb daemon start` is itself how that job is installed and kept current
+
+Scenario: The daemon is confirmed alive on a different `--listen`
+Given a lifecycle record naming a supervisor and a live, healthy process bound to a different `--listen` than requested
+When `wb daemon start` runs with the new `--listen`
+Then the refusal says the daemon is alive on the other address, rather than phrasing it as uncertainty about whether it is running at all
+
+### AC: a-double-owner-is-flagged-when-observable (verifies REQ:double-owner-state-is-detected)
+
+Scenario: A specific systemd unit is confirmed failed or crash-looping
+Given a live, otherwise-healthy daemon of this home whose recorded supervisor is `none`, and its configured or default systemd user unit queried directly as `failed`, or `activating` with at least one restart
+When `wb daemon status` runs
+Then it reports the disagreement as a distinct condition, naming the unit and its queried state
+
+Scenario: A live daemon's independently observed cgroup membership disagrees with what it recorded
+Given a live, otherwise-healthy daemon of this home whose recorded supervisor is `none`, and independently observed evidence (its cgroup membership, where available) that it is in fact systemd-managed
+When `wb daemon status` runs
+Then it reports the disagreement as a distinct condition, naming both what was recorded and what was observed
+
+Scenario: A recorded supervisor is no longer corroborated
+Given a live, otherwise-healthy daemon of this home whose recorded supervisor is `systemd`, and independently observed evidence that it is not currently systemd-managed
+When `wb daemon status` runs
+Then it reports the disagreement as a distinct condition
+
+Scenario: The platform offers no independent evidence
+Given a platform on which the independent check has no implementation
+When `wb daemon status` runs
+Then it reports the comparison as unknown rather than asserting agreement or disagreement
 
 ## Non-goals
 

@@ -2478,6 +2478,166 @@ machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
 
+### Running the daemon under a supervisor
+
+`daemon serve` detects whether a process supervisor started it and records
+the result in its own lifecycle state. `wb daemon status` reports it as
+`supervisor=systemd|launchd|none`. Detection requires more than a bare
+environment variable, because both are observed to survive into a process
+that merely inherited its parent's environment without being started by the
+supervisor itself:
+
+- **systemd** sets `INVOCATION_ID` on every unit it starts, and (systemd
+  **248 or newer**) also sets `SYSTEMD_EXEC_PID` naming the exact PID it
+  exec'd. Detection requires `SYSTEMD_EXEC_PID` to be present *and* equal to
+  the daemon's own PID — `INVOCATION_ID` alone reports `none`. **A daemon run
+  under systemd older than 248 is therefore always recorded as `none`**: that
+  systemd cannot supply the evidence this build requires to tell "started by
+  this exact unit" from "merely inherited the session's environment."
+- **launchd** sets `XPC_SERVICE_NAME` to the job label for a job it manages
+  (and to the literal string `"0"`, treated as absent, for a process it did
+  not launch directly). Detection additionally requires launchd to be the
+  daemon's *direct* parent (PPID 1, which is launchd on every targeted macOS
+  version), and treats a label prefixed `application.` (macOS's own label
+  for an ordinary foreground GUI application — an IDE, a terminal app) as
+  absent regardless of parentage, so a `daemon serve` run from an IDE's
+  integrated terminal is never mistaken for a launch agent.
+
+This is what lets `wb daemon restart` and the self-update after-update hook
+hand a supervised daemon back to its supervisor instead of starting a
+detached replacement behind it: when the running daemon is supervised —
+systemd, or launchd under a label other than wb's own self-managed one
+(`dev.sneat.wb.daemon`, which wb's own start/restart already correctly
+re-bootstraps and kickstarts itself) — those paths stop it and then wait
+(bounded, with progress) for the supervisor's own replacement to report ready
+under the new executable, rather than spawning one themselves.
+
+`wb daemon start` refuses a detached start when the runtime's last recorded
+owner is a supervisor other than wb's own launchd job, and either a live
+process is already being handed off from a different binary, or nothing is
+alive at all — restart it through that supervisor instead
+([#617](https://github.com/sneat-dev/wb/issues/617), recurrence of
+[#546](https://github.com/sneat-dev/wb/issues/546)). Before refusing, it
+independently confirms the recorded supervisor can still be shown to exist at
+all (a systemd user manager answering `is-system-running` with a recognized
+state, or `launchctl print` confirming the exact recorded label); a stale
+record that fails that check does not refuse, so an operator is never locked
+out of `wb daemon start` forever by a supervisor that is long gone.
+`--force-detached` is the explicit override for the cases that check cannot
+resolve either way.
+
+The canonical systemd user unit:
+
+```ini
+# ~/.config/systemd/user/wb-daemon.service
+[Unit]
+Description=WB daemon
+# Without a start-limit interval, a daemon that keeps failing to bind (for
+# example because something else already holds the port) restarts forever
+# every 5s. StartLimitIntervalSec/StartLimitBurst bound that: after
+# StartLimitBurst failures inside the interval, systemd stops restarting it
+# and the unit is left `failed`, which is itself the signal that something is
+# wrong. Both belong here in [Unit] for clarity, though systemd's own ignore
+# behavior for the two is NOT symmetric: StartLimitIntervalSec in [Service] is
+# silently ignored entirely (only the [Unit] copy is ever read), while
+# StartLimitBurst in [Service] is still honored there for backward
+# compatibility. Placing both in [Unit] avoids relying on that asymmetric,
+# easy-to-get-wrong behavior.
+StartLimitIntervalSec=300
+StartLimitBurst=12
+
+[Service]
+# --projects-root names the input the operator chose, exactly like the
+# launchd plist's WB_PROJECTS_ROOT below: the daemon still resolves its own
+# runtime directory from it at startup, so a later WB_HOME/root move cannot
+# leave this unit pointing at an abandoned directory. Set it explicitly if
+# `%h/projects` (the default this example assumes) is not where you run wb
+# from; an explicit WB_HOME can go in Environment= the same way.
+ExecStart=%h/go/bin/wb --projects-root %h/projects daemon serve --listen 127.0.0.1:8766
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now wb-daemon.service
+systemctl --user status wb-daemon.service
+systemctl --user restart wb-daemon.service   # hands the daemon a new executable
+```
+
+The equivalent launchd agent on macOS — this is the *shape* `wb daemon
+start`/`wb daemon restart` themselves already write and re-bootstrap
+(`cmd/wb/daemon_process_darwin.go`'s `launchdPlistBytes`), not a separate
+file to install by hand: a Mac developer never writes this plist directly,
+because those commands do it for them on every start and handoff.
+
+```xml
+<!-- ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.sneat.wb.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/go/bin/wb</string>
+    <string>--projects-root</string>
+    <string>/Users/YOU/projects</string>
+    <string>daemon</string>
+    <string>serve</string>
+    <string>--listen</string>
+    <string>127.0.0.1:8766</string>
+    <string>--managed-start</string>
+  </array>
+  <!-- Only present when WB_PROJECTS_ROOT is set in the environment that ran
+       `wb daemon start`/`restart`; it is the same operator-chosen input as
+       --projects-root above, not a path resolved at install time. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>WB_PROJECTS_ROOT</key><string>/Users/YOU/projects</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
+</dict></plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist
+launchctl kickstart -k gui/$(id -u)/dev.sneat.wb.daemon   # hands the daemon a new executable
+```
+
+No equivalent installer writes the systemd unit yet — install it by hand as
+shown, with `ExecStart` naming the same `wb` binary `wb daemon start` would
+use.
+
+**Known limit:** `wb daemon status`'s double-owner check (the shape of #617 —
+a live, unsupervised daemon fighting a supervisor for the same runtime) has
+two layers. On Linux, when the daemon recorded `supervisor=none`, it queries
+a *specific* systemd user unit's own state directly (`systemctl --user show
+-p ActiveState,Result,NRestarts <unit>` — the unit named by the
+`WB_DAEMON_SYSTEMD_UNIT` environment variable if set, or `wb-daemon.service`
+otherwise) and flags a unit that is `failed`, or `activating` after at least
+one restart, as still existing and fighting for the runtime — this is the
+detector that catches the confirmed live shape: an orphaned `daemon serve`
+(PPID 1, running in a session scope rather than the unit's own cgroup)
+serving the port while its own systemd unit sat crash-looping. Falling back
+from that (when the query is unavailable, or the recorded supervisor is not
+`none`), it compares the daemon's self-recorded supervisor against its own
+current cgroup membership (`/proc/<pid>/cgroup`'s unified `0::` line: its
+last path component must end in `.service`, and be neither the per-user
+manager's own `user@<uid>.service` nor an unrelated foreign unit, to count as
+"ours" — never a parent-PID check, since PID 1 *is* systemd on these hosts,
+so a parent-PID check cannot tell a real unit from an orphaned process merely
+reparented to it). On macOS and Windows neither check is implemented and the
+comparison is reported as unknown. `wb daemon start`/`restart`'s own
+pre-refusal existence check is coarser still: for systemd it can only confirm
+a user manager is reachable at all (`is-system-running` answering one of the
+known non-offline states), not a specific unit's existence, because nothing
+records a unit name for that purpose; for launchd it checks the exact
+recorded label via `launchctl print`. `--force-detached` is the explicit
+override for the cases either check cannot resolve.
+
 ## Bench hub
 
 `hub/` is the server side of bench: the GitHub App, OAuth, installation,

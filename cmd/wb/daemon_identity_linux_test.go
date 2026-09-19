@@ -23,6 +23,18 @@ func TestDaemonStatusTreatsARecycledPIDAsAnotherProcess(t *testing.T) {
 	// time is an hour earlier, so it definitely belongs to a different process.
 	deps.alive = func(pid int) bool { return pid == os.Getpid() }
 	deps.health = func(context.Context, string) error { return nil }
+	// daemonTestDependencies defaults processStartTime to an always-unknown
+	// stub, so a hard-coded FAKE PID (the 900-series fixtures used
+	// throughout this package's other tests) can never collide with a real,
+	// unrelated process on the machine running the suite. That default
+	// would defeat the entire point of THIS test, which deliberately uses
+	// its own REAL, live PID (os.Getpid()) specifically to exercise the
+	// real Linux implementation the AC above names — restore it
+	// (sneat-dev/wb#622 review round 5: the stub default silently broke
+	// this recycled-PID detection once assessIdentity started reading the
+	// seam, reporting "identity=current, cannot observe a process start
+	// time" instead of the recycled PID this test asserts).
+	deps.processStartTime = daemon.ProcessStartTime
 	controller := newDaemonController(deps, root)
 	current, err := controller.provenance()
 	if err != nil {
@@ -59,8 +71,19 @@ func TestDaemonStopDoesNotSignalARecycledPID(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	signalled := false
-	deps.stop = func(int) error { signalled = true; return nil }
+	deps.stop = func(int, daemon.Supervisor, string) error { signalled = true; return nil }
 	deps.alive = func(pid int) bool { return pid == os.Getpid() }
+	// See TestDaemonStatusTreatsARecycledPIDAsAnotherProcess for why this
+	// must restore the real implementation: without it, stop()'s own
+	// recycled-PID early return (which is exactly what this test asserts)
+	// is never taken, and stop() falls into its ordinary drain poll loop
+	// instead — which spins forever here, since this PID (the live test
+	// process itself) never goes "not alive" and daemonTestDependencies'
+	// default clock/sleep never advance on their own. That hung Linux CI
+	// for 35 minutes without naming a test (sneat-dev/wb#622 review round
+	// 5): this file's `//go:build linux` tag meant it never ran during
+	// this whole campaign's macOS-only local validation.
+	deps.processStartTime = daemon.ProcessStartTime
 	controller := newDaemonController(deps, root)
 	current, err := controller.provenance()
 	if err != nil {
