@@ -98,6 +98,15 @@ func LoadFile(path string, random io.Reader) (string, error) {
 	// completed publish from a winning racer or a stale plain file, so
 	// exactly one writer's ID is ever published and every loser reads the
 	// winner's file back instead.
+	return publishNodeID(tempPath, path, id)
+}
+
+// publishNodeID is LoadFile's final step, factored out so the loser side of
+// the publish race — which LoadFile's own public behaviour can only reach
+// through a genuine, timing-dependent two-goroutine race — can be exercised
+// directly and deterministically: call it with a path a winner has already
+// published to, and it takes exactly the loser's branch.
+func publishNodeID(tempPath, path, id string) (string, error) {
 	if err := os.Link(tempPath, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return readNodeID(path)
@@ -106,6 +115,20 @@ func LoadFile(path string, random io.Reader) (string, error) {
 	}
 	return id, nil
 }
+
+// fileChmod, fileWriteString, fileSync and fileClose are narrow test seams
+// for writeNodeIDTempFile's otherwise-unreachable defensive error branches: a
+// real filesystem never fails a chmod, write, sync or close on a temp file it
+// just created a moment earlier in the same function, so there is no
+// portable, deterministic way to force those branches through the real
+// filesystem alone. Production always leaves these at their zero value,
+// which does exactly what the direct *os.File call would.
+var (
+	fileChmod       = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
+	fileWriteString = func(file *os.File, s string) (int, error) { return io.WriteString(file, s) }
+	fileSync        = func(file *os.File) error { return file.Sync() }
+	fileClose       = func(file *os.File) error { return file.Close() }
+)
 
 // writeNodeIDTempFile writes id to a private, fsynced temporary file in dir
 // (the node-id file's own directory, so the later os.Link stays on one
@@ -118,22 +141,22 @@ func writeNodeIDTempFile(dir, id string) (string, error) {
 		return "", fmt.Errorf("create node identity temp file: %w", err)
 	}
 	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
+	if err := fileChmod(file, 0o600); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return "", fmt.Errorf("protect node identity temp file: %w", err)
 	}
-	if _, err := io.WriteString(file, id+"\n"); err != nil {
+	if _, err := fileWriteString(file, id+"\n"); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return "", fmt.Errorf("write node identity temp file: %w", err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := fileSync(file); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return "", fmt.Errorf("sync node identity temp file: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := fileClose(file); err != nil {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("close node identity temp file: %w", err)
 	}

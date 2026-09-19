@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -226,6 +227,186 @@ func TestLoadPropagatesAnUnresolvableProjectsRoot(t *testing.T) {
 	}
 	if _, err := Load(blocker, nil); err == nil {
 		t.Fatal("expected Load to fail when the projects root is a regular file")
+	}
+}
+
+// TestWriteNodeIDTempFileReportsEachBackendFailure covers
+// writeNodeIDTempFile's four post-create failure branches (Chmod, the write,
+// Sync, and Close), none of which a real filesystem can be made to fail
+// portably and deterministically moments after successfully creating the
+// same temp file — hence the package's own fileChmod/fileWriteString/
+// fileSync/fileClose test seams, restored after each subtest so the rest of
+// the suite keeps exercising the real *os.File methods.
+func TestWriteNodeIDTempFileReportsEachBackendFailure(t *testing.T) {
+	injected := errors.New("injected backend failure")
+
+	t.Run("chmod fails", func(t *testing.T) {
+		originalChmod := fileChmod
+		fileChmod = func(*os.File, os.FileMode) error { return injected }
+		t.Cleanup(func() { fileChmod = originalChmod })
+		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
+			t.Fatal("expected an error when Chmod fails")
+		}
+	})
+
+	t.Run("write fails", func(t *testing.T) {
+		originalWrite := fileWriteString
+		fileWriteString = func(*os.File, string) (int, error) { return 0, injected }
+		t.Cleanup(func() { fileWriteString = originalWrite })
+		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
+			t.Fatal("expected an error when the write fails")
+		}
+	})
+
+	t.Run("sync fails", func(t *testing.T) {
+		originalSync := fileSync
+		fileSync = func(*os.File) error { return injected }
+		t.Cleanup(func() { fileSync = originalSync })
+		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
+			t.Fatal("expected an error when Sync fails")
+		}
+	})
+
+	t.Run("close fails", func(t *testing.T) {
+		originalClose := fileClose
+		fileClose = func(*os.File) error { return injected }
+		t.Cleanup(func() { fileClose = originalClose })
+		if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err == nil {
+			t.Fatal("expected an error when Close fails")
+		}
+	})
+
+	// Confirms the seams are restored to real behaviour: this ordinary call
+	// must still succeed once every subtest above has cleaned up.
+	if _, err := writeNodeIDTempFile(t.TempDir(), "id"); err != nil {
+		t.Fatalf("writeNodeIDTempFile after seam restoration = %v, want nil", err)
+	}
+}
+
+// TestPublishNodeIDReadsWinnersIDOnALostRace covers publishNodeID's loser
+// branch directly: LoadFile's own top-of-function "already exists" fast path
+// makes a genuine two-goroutine race non-deterministic and, worse, usually
+// short-circuits before ever reaching os.Link at all (a second LoadFile call
+// against an already-published path returns via readNodeID up front, never
+// touching publishNodeID) — so a real race is not a reliable way to exercise
+// this branch. Simulating the winner's publish directly, then calling
+// publishNodeID as the loser would, exercises it deterministically instead.
+func TestPublishNodeIDReadsWinnersIDOnALostRace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node-id")
+
+	winnerTemp, err := writeNodeIDTempFile(dir, "11111111111111111111111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publishNodeID(winnerTemp, path, "11111111111111111111111111111111"); err != nil {
+		t.Fatal(err)
+	}
+
+	loserTemp, err := writeNodeIDTempFile(dir, "22222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// publishNodeID never removes tempPath itself either way — LoadFile's own
+	// defer does that — so the loser's leftover temp file is cleaned up here,
+	// exactly like a real LoadFile caller's defer would.
+	t.Cleanup(func() { _ = os.Remove(loserTemp) })
+	got, err := publishNodeID(loserTemp, path, "22222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "11111111111111111111111111111111" {
+		t.Fatalf("loser publish returned %q, want the winner's id", got)
+	}
+}
+
+// TestPublishNodeIDReportsAnUnrelatedLinkFailure covers publishNodeID's
+// non-EEXIST error branch: a link failure for any other reason (here, a
+// destination directory that does not exist) is reported, not swallowed.
+func TestPublishNodeIDReportsAnUnrelatedLinkFailure(t *testing.T) {
+	dir := t.TempDir()
+	tempPath, err := writeNodeIDTempFile(dir, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(tempPath) })
+	badPath := filepath.Join(dir, "missing-parent", "node-id")
+	if _, err := publishNodeID(tempPath, badPath, "id"); err == nil {
+		t.Fatal("expected an error when the destination directory does not exist")
+	}
+}
+
+// TestReadNodeIDReportsAnEmptyFile and TestReadNodeIDReportsInvalidHex cover
+// readNodeID's two content-validation branches the existing corrupt-file
+// test (wrong length) does not reach.
+func TestReadNodeIDReportsAnEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-id")
+	if err := os.WriteFile(path, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readNodeID(path); err == nil {
+		t.Fatal("expected an error for a blank node-id file")
+	}
+}
+
+func TestReadNodeIDReportsInvalidHex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node-id")
+	// Right length (byteLength*2), wrong alphabet: hex.DecodeString rejects
+	// 'z', but the earlier length check would not.
+	notHex := strings.Repeat("z", byteLength*2)
+	if err := os.WriteFile(path, []byte(notHex+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readNodeID(path); err == nil {
+		t.Fatal("expected an error for a correctly-sized but non-hex node-id file")
+	}
+}
+
+// TestPathAndLoadPropagateAnUnresolvableWBHome covers Path's and Load's own
+// error branch when wbhome.Root itself fails — distinct from
+// TestLoadPropagatesAnUnresolvableProjectsRoot, whose blocker file resolves
+// fine as a projects root (EvalSymlinks succeeds on an existing file) and so
+// only fails later, inside LoadFile's own MkdirAll. Pointing the projects
+// root through (not at) a file makes filepath.EvalSymlinks itself fail with
+// ENOTDIR, which is what actually makes wbhome.Root return an error.
+func TestPathAndLoadPropagateAnUnresolvableWBHome(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unresolvable := filepath.Join(blocker, "nested")
+
+	if _, err := Path(unresolvable); err == nil {
+		t.Fatal("expected Path to surface wbhome.Root's own resolution failure")
+	}
+	if _, err := Load(unresolvable, nil); err == nil {
+		t.Fatal("expected Load to surface wbhome.Root's own resolution failure")
+	}
+}
+
+// TestLoadFileReportsItsOwnMkdirAllFailure covers LoadFile's directory-create
+// branch directly — distinct from TestLoadFileReportsAnUnwritableDirectory,
+// whose blocker-file path actually fails earlier, inside readNodeID's own
+// initial read (a path through a file is ENOTDIR, not ErrNotExist, so
+// LoadFile returns before ever reaching its own MkdirAll call). A read-only
+// (but existing) parent directory instead lets that initial read miss
+// cleanly with ErrNotExist — path does not exist yet, but every existing
+// path component does — so LoadFile proceeds to mint an ID and only then
+// fails trying to create a new subdirectory it has no permission to create.
+func TestLoadFileReportsItsOwnMkdirAllFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory write permissions")
+	}
+	root := t.TempDir()
+	readOnlyParent := filepath.Join(root, "readonly")
+	if err := os.MkdirAll(readOnlyParent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnlyParent, 0o700) })
+	path := filepath.Join(readOnlyParent, "nested", "node-id")
+	if _, err := LoadFile(path, nil); err == nil {
+		t.Fatal("expected an error when LoadFile's own MkdirAll cannot create the missing directory")
 	}
 }
 
