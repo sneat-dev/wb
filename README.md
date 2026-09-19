@@ -561,6 +561,19 @@ courier after an SSH failure. A successful move reports `successor_started`;
 the predecessor remains active until a later receipt completes custody
 transfer.
 
+### herdr — a second session transport, not yet wired to any caller
+
+`wb session move`'s successor above runs in detached tmux. `internal/herdr`
+is a bounded adapter over a different transport: [herdr](https://herdr.dev),
+a terminal workspace manager for AI coding agents. It resolves the herdr
+binary, shells out to it as argv (never through a shell), and types its
+pane, agent and screen-text JSON responses — nothing more. No caller in this
+repository uses it yet, and it carries no delivery policy of its own (no
+rule about who may be woken or what a message may say): see
+`spec/ideas/daemon-as-coordinator.md` for the design questions a later task
+still has to answer before anything calls
+`Client.AgentPrompt`/`Client.PaneSendText`.
+
 ### `wb remote` — fleet state across machines
 
 Configure once in `~/.config/wb/wb.yaml`:
