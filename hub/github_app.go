@@ -79,6 +79,15 @@ func (verifier GitHubAppInstallationVerifier) VerifyAppInstallation(ctx context.
 	return installation, nil
 }
 
+// BuildAppJWT mints the short-lived JWT the GitHub App API authenticates
+// with — the same signing GitHubAppInstallationVerifier does for installation
+// verification, exported so another authenticated caller (the missed-webhook
+// redelivery sweep in hub/redeliver) reuses it rather than duplicating the
+// signing code. now is optional; nil means time.Now.
+func BuildAppJWT(appID int64, privateKeyPEM []byte, now func() time.Time) (string, error) {
+	return GitHubAppInstallationVerifier{AppID: appID, PrivateKeyPEM: privateKeyPEM, Now: now}.appJWT()
+}
+
 func (verifier GitHubAppInstallationVerifier) appJWT() (string, error) {
 	block, _ := pem.Decode(verifier.PrivateKeyPEM)
 	if block == nil {

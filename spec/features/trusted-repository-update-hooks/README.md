@@ -42,15 +42,20 @@ declarative Git-hook policy and cannot declare lifecycle executors.
 ### REQ: generic-executors
 
 WB MUST know only an executor name, an absolute executable path, an argument
-array, `cwd: repository`, `mode: coalesced`, a timeout, and `failure: warn`.
+array, `cwd: repository`, `mode: coalesced`, a timeout, and `failure: warn`,
+plus the version-2 fields of
+[REQ: version-2-extensions](#req-version-2-extensions).
 It MUST execute the binary directly without a shell, reject repository-local
 executables, reject files not owned by the current user or root and files
 writable by group or other users, and revalidate the resolved executable
 identity immediately before execution. It provides only a minimal environment
 plus `WB_HOOK_EVENT`,
 `WB_REPOSITORY`, `WB_CHECKOUT`, `WB_OLD_SHA`, `WB_NEW_SHA`, `WB_UPDATE_CAUSE`,
-and `WB_OPERATION_ID` when one exists. WB MUST NOT contain a built-in
-CodeGrapher registry, installer, updater, or graph-specific behavior. On
+and `WB_OPERATION_ID` when one exists, plus the version-2 variables of
+[REQ: version-2-extensions](#req-version-2-extensions). WB MUST NOT
+contain a built-in CodeGrapher registry, installer, updater, or
+graph-specific behavior (see
+[REQ: catalog-declared-templates](#req-catalog-declared-templates)). On
 Windows, WB MUST execute only direct `.exe` or `.com` files and MUST reject an
 owner or ACL that grants broad write access.
 
@@ -125,6 +130,33 @@ It MUST also provide an explicit resume operation for stranded durable work
 and a dry-run-by-default retention command. Failed attempts that have not yet
 been surfaced MUST be protected from collection. Receipts MUST have a per-ID
 index so an exact retry does not depend on scanning the append-only stream.
+
+### REQ: version-2-extensions
+
+This amendment is specified by
+[Code Index Freshness](../code-index-freshness/README.md) and is not yet
+implemented. A `hooks:` section declaring `version: 2` MAY use, and only it
+MAY use:
+
+- executor fields `priority`, `quiet_period` and `artifacts`;
+- binding key `match.checkouts`;
+- event variables `WB_CHECKOUT_KIND` and `WB_CANONICAL_CHECKOUT`, and the
+  receipt field `causes[]`.
+
+A `version: 1` section that uses any of them MUST be refused as invalid. A wb
+that does not support a section's declared version MUST refuse the section
+with a message naming that version and the first wb release that supports it.
+Releases before this amendment already refuse unknown keys (strict decode), so
+writers MUST NOT emit version 2 until every reader supports it; see
+machine-setup#req:version-skew.
+
+### REQ: catalog-declared-templates
+
+An executor template published as data by an installed fleet CLI's catalog
+entry, and written into the trusted user config by
+[Machine Setup](../machine-setup/README.md) when the user runs it, is user
+configuration, not a built-in registry. WB code MUST NOT ship such a template
+itself or branch on the tool's name.
 
 ## Acceptance Criteria
 

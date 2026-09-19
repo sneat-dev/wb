@@ -119,6 +119,10 @@ and remote ref under the lane lock. Prove a normal descendant-source refresh
 retains the PR/published predecessor and advances it with an ordinary non-force
 push, while malformed or drifted evidence refuses without mutation.
 
+## Deferred AC Coverage
+
+- mechanical-worktree-merge#ac:pr-route-defers-local-validation-to-authoritative-ci — added to the Feature on 2026-09-18, after this Plan was reconciled as Implemented; delivered outside this Plan's task list by a8e4c4c, a90bea0 and f3375eb with their own tests in `internal/orchestrate`, not as a new task tracked here.
+
 ## Open Questions
 
 None at this time.
