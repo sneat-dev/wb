@@ -181,8 +181,8 @@ class TestPrivacyReduction(unittest.TestCase):
         self.assertIn("<path>", reduced)
 
     def test_classify_bash_verb(self):
-        self.assertEqual(extract.classify_bash_verb("go test ./... -run TestFoo"), "go test -run")
-        self.assertEqual(extract.classify_bash_verb("go test ./..."), "go test (full)")
+        self.assertEqual(extract.classify_bash_verb("go test ./... -run TestFoo"), "go test ./... (module) -run")
+        self.assertEqual(extract.classify_bash_verb("go test ./..."), "go test ./... (module)")
         self.assertEqual(extract.classify_bash_verb("wb run -- go build ./..."), "wb run")
         self.assertEqual(extract.classify_bash_verb("wb pr land --json"), "wb pr land")
         self.assertEqual(extract.classify_bash_verb("gh run list --limit 5"), "gh run list")
@@ -830,6 +830,585 @@ class TestOutRefusesInsideGitRepo(unittest.TestCase):
             out_dir = Path(td) / "scratch-out"
             out_dir.mkdir(parents=True)
             self.assertFalse(extract.path_is_inside_git_repo(out_dir))
+
+
+class TestStallWindowBoundary(unittest.TestCase):
+    """NB1: a gap must be COUNTED only when the record that closes it is
+    inside the window, but the gap timer must still ADVANCE from every
+    record (in-window or not) -- otherwise a gap spanning the window
+    boundary either double-counts or gets measured against the wrong
+    "previous" timestamp."""
+
+    def test_gap_closed_out_of_window_is_not_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-boundary1000000.jsonl"
+            records = [
+                # opens IN the window
+                assistant_msg("2026-09-17T23:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "done for now"}]),
+                # closes OUT of the window (next day) -- must NOT be counted
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-18T00:10:00Z",
+                 "message": {"role": "user", "content": [{"type": "text", "text": "back"}]}},
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(sum(a.stalls_by_kind.values()), 0)
+
+    def test_gap_opened_out_of_window_closed_in_window_is_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-boundary2000000.jsonl"
+            records = [
+                # opens OUT of the window (previous day)
+                assistant_msg("2026-09-16T23:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "done for now"}]),
+                # closes IN the window, 70 minutes later -- must be counted,
+                # and its measured duration must reflect the actual 70-minute
+                # gap (proving the timer advanced from the out-of-window
+                # record too, not from some earlier in-window one).
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-17T00:10:00Z",
+                 "message": {"role": "user", "content": [{"type": "text", "text": "continue please"}]}},
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 17, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 17, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(sum(a.stalls_by_kind.values()), 1)
+            self.assertAlmostEqual(sum(a.stall_minutes_by_kind.values()), 70.0, delta=0.5)
+
+
+class TestNewlineAndOptionSeparators(unittest.TestCase):
+    """NM1: a bare top-level newline is a command separator (not swallowed
+    shell whitespace), and `timeout -k`/`nice -n`'s separate-token option
+    values must not be mistaken for the real command's verb."""
+
+    def test_heredoc_then_command_on_next_line_both_classified(self):
+        cmd = "cat > f.txt <<'EOF'\nsome fixture body\nEOF\ngo test ./..."
+        segments = list(extract.iter_command_segments(cmd))
+        verbs = [seg[0] for seg in segments]
+        self.assertIn("go", verbs)
+
+    def test_multiline_command_without_heredoc_both_lines_classified(self):
+        cmd = "git add -A\ngit commit -m 'msg'"
+        segments = list(extract.iter_command_segments(cmd))
+        verbs = [seg[0] for seg in segments]
+        self.assertEqual(verbs.count("git"), 2)
+
+    def test_nice_dash_n_option_value_not_mistaken_for_verb(self):
+        segments = list(extract.iter_command_segments("nice -n 19 go test ./..."))
+        verbs = [seg[0] for seg in segments]
+        self.assertIn("go", verbs)
+        self.assertNotIn("19", verbs)
+        self.assertNotIn("nice", verbs)
+
+    def test_timeout_dash_k_option_value_not_mistaken_for_verb(self):
+        segments = list(extract.iter_command_segments("timeout -k 5 60 go test ./..."))
+        verbs = [seg[0] for seg in segments]
+        self.assertIn("go", verbs)
+        self.assertNotIn("5", verbs)
+        self.assertNotIn("60", verbs)
+
+    def test_timeout_long_signal_option_value_not_mistaken_for_verb(self):
+        segments = list(extract.iter_command_segments("timeout --signal=TERM 60 go build ./..."))
+        verbs = [seg[0] for seg in segments]
+        self.assertIn("go", verbs)
+
+    def test_mid_word_hash_not_treated_as_comment(self):
+        # minor #2: shlex's default commenters='#' truncates at a bare '#',
+        # which real commands carry mid-word (an issue ref, a URL fragment).
+        toks = extract.tokenize_command("gh issue comment owner/repo#583 --body 'fixed'")
+        self.assertIn("owner/repo#583", toks)
+
+
+class TestPipeFilterSeparation(unittest.TestCase):
+    """NM2: a `|`-downstream segment (e.g. `head`/`grep` filtering a real
+    command's output) is a pipe FILTER, not a new command call -- it must
+    never land in the verb table or feed the sequence miner, and the
+    sequence miner must see exactly one entry per Bash CALL, not one per
+    segment."""
+
+    def test_pipe_stage_flag(self):
+        segments = list(extract.iter_command_segments("git log --oneline | head -20"))
+        self.assertEqual(len(segments), 2)
+        (verb1, _s1, _t1, is_pipe1, _tok1), (verb2, _s2, _t2, is_pipe2, _tok2) = segments
+        self.assertEqual(verb1, "git")
+        self.assertFalse(is_pipe1)
+        self.assertEqual(verb2, "head")
+        self.assertTrue(is_pipe2)
+
+    def test_pipe_filter_goes_to_pipe_filters_not_by_verb(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-pipe.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                 "input": {"command": "git log --oneline | head -20"}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1", "ok"),
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            self.assertIn("git", metrics["bash"]["by_verb"])
+            self.assertNotIn("cmd:head", metrics["bash"]["by_verb"])
+            self.assertIn("cmd:head", metrics["bash"]["pipe_filters"])
+
+    def test_sequence_miner_one_entry_per_call_not_per_segment(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-seq.jsonl"
+            records = []
+            # two Bash CALLS, each a multi-clause command with 2+ segments;
+            # the sequence miner must see 2 verb-order entries total (one
+            # per call's FIRST verb), not 4+ (one per segment).
+            for i, cmd in enumerate(["git status && git diff | head -5",
+                                      "git status && git diff | head -5"]):
+                ts = f"2026-09-12T10:0{i}:00Z"
+                records.append(assistant_msg(
+                    ts, "claude-sonnet-5",
+                    {"input_tokens": 10, "output_tokens": 5,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": cmd}}]))
+                records.append(user_tool_result(ts, f"t{i}", "ok"))
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            # only "git" (the first verb of each call) can appear in a
+            # top sequence; "head" (a pipe filter) must never appear
+            for seq in metrics["bash"]["top_multi_call_sequences"]:
+                self.assertNotIn("head", seq["sequence"])
+
+
+class TestGoTestScopeClassification(unittest.TestCase):
+    """NM3: `go test` is split by SCOPE (module/subtree/package), each
+    with a `-run` variant matched as an exact token, never a substring."""
+
+    def test_module_scope(self):
+        self.assertEqual(extract._classify_go_test_segment(["go", "test", "./..."]),
+                          "go test ./... (module)")
+
+    def test_subtree_scope(self):
+        self.assertEqual(extract._classify_go_test_segment(["go", "test", "./internal/foo/..."]),
+                          "go test (subtree)")
+
+    def test_package_scope(self):
+        self.assertEqual(extract._classify_go_test_segment(["go", "test", "."]),
+                          "go test (package)")
+        self.assertEqual(extract._classify_go_test_segment(["go", "test", "./internal/foo"]),
+                          "go test (package)")
+
+    def test_run_flag_matched_as_token_not_substring(self):
+        # a package path ending in "/..." that merely CONTAINS "run" must
+        # never be mistaken for a -run flag
+        label = extract._classify_go_test_segment(["go", "test", "./cmd/wb-runner/..."])
+        self.assertNotIn("-run", label)
+        self.assertEqual(label, "go test (subtree)")
+
+    def test_run_flag_detected_exact_token(self):
+        label = extract._classify_go_test_segment(["go", "test", "./...", "-run", "TestFoo"])
+        self.assertEqual(label, "go test ./... (module) -run")
+        label2 = extract._classify_go_test_segment(["go", "test", ".", "-run=TestBar"])
+        self.assertEqual(label2, "go test (package) -run")
+
+
+class TestRawCacheDeclaredFieldsOnly(unittest.TestCase):
+    """NM4: raw/ caches only the declared fields -- never a task name,
+    repo name, pid, session id, or resume_args."""
+
+    def test_sanitize_run_event_fields_drops_undeclared_fields(self):
+        rec = {
+            "timestamp": "2026-09-17T10:00:00Z", "state": "done", "kind": "pr",
+            "queue_wait_ms": 500,
+            "effort_id": "some-task-name", "repository": "dal-go/dalgo2http",
+            "run_id": "run-abc", "operation_id": "op-xyz", "pid": 12345,
+            "wb_session_id": "sess-secret", "resume_args": ["--to", "agent-x"],
+        }
+        sanitized = extract._sanitize_run_event_fields(rec)
+        self.assertEqual(sanitized, {
+            "timestamp": "2026-09-17T10:00:00Z", "state": "done",
+            "kind": "pr", "queue_wait_ms": 500,
+        })
+        dumped = json.dumps(sanitized)
+        for leaked in ("some-task-name", "dal-go/dalgo2http", "run-abc", "op-xyz",
+                       "12345", "sess-secret", "resume_args"):
+            self.assertNotIn(leaked, dumped)
+
+    def test_sanitize_pr_fields_flattens_search_envelope(self):
+        page = {"items": [
+            {"number": 572, "created_at": "2026-09-17T20:58:59Z",
+             "closed_at": "2026-09-18T05:46:45Z", "state": "closed",
+             "pull_request": {"merged_at": "2026-09-18T05:46:45Z"},
+             "body": "secret PR description", "user": {"login": "someone"}},
+        ]}
+        sanitized = extract._sanitize_pr_fields(page)
+        self.assertIn("items", sanitized)
+        item = sanitized["items"][0]
+        self.assertEqual(item["number"], 572)
+        self.assertEqual(item["merged_at"], "2026-09-18T05:46:45Z")
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("secret PR description", dumped)
+        self.assertNotIn("someone", dumped)
+
+
+class TestSubcommandAllowlistLeaks(unittest.TestCase):
+    """Minor 1: a specscore/codegrapher subcommand, or a git/gh/wb/bunx
+    subverb, must come from a known allowlist or fall back to a generic
+    placeholder -- never an arbitrary free-text argument."""
+
+    def test_specscore_quoted_free_text_argument_does_not_leak(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-specscore.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                 "input": {"command": 'specscore "launch secret project"'}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1", "ok"),
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            metrics_text = json.dumps(metrics)
+            self.assertNotIn("launch", metrics_text)
+            self.assertNotIn("secret project", metrics_text)
+
+    def test_allowlisted_sub_unknown_becomes_other(self):
+        self.assertEqual(extract._allowlisted_sub("bunx", "private-pkg-name"), "(other)")
+        self.assertEqual(extract._allowlisted_sub("git", "status"), "status")
+        self.assertEqual(extract._allowlisted_sub("gh", "totally-made-up-sub"), "(other)")
+        self.assertEqual(extract._allowlisted_sub("wb", "worktree"), "worktree")
+        # a tool not in the family map is passed through unfiltered
+        self.assertEqual(extract._allowlisted_sub("unknown-tool", "anything"), "anything")
+
+
+class TestCmdPrefixRename(unittest.TestCase):
+    """Minor 3: an allowlisted verb with no dedicated bucket is labelled
+    "cmd:<verb>", not "other:<verb>" (which reads as "unknown command")."""
+
+    def test_cmd_prefix_used_not_other(self):
+        verb = extract.classify_bash_verb("grep -rn foo .")
+        self.assertTrue(verb.startswith("cmd:"))
+        self.assertFalse(verb.startswith("other:"))
+
+    def test_no_other_colon_prefix_anywhere(self):
+        for cmd in ("grep -rn foo .", "head -20 file.txt", "cat file.txt"):
+            verb = extract.classify_bash_verb(cmd)
+            self.assertNotIn("other:", verb)
+
+
+class TestPriceConfigFamilyOverrideReachesPrefix(unittest.TestCase):
+    """Minor 5: a coarse family override (e.g. {"sonnet": {...}}) must
+    actually change the rate a real model string resolves to, since
+    price_rates_for_model() always tries the more specific prefix table
+    FIRST. Overriding `input` must also recompute the derived cache-write
+    rates, but must never touch a non-standard cache_read override."""
+
+    def setUp(self):
+        import copy
+        self._orig_family = copy.deepcopy(extract.PRICE_TABLE_USD_PER_MTOK)
+        self._orig_prefix = copy.deepcopy(extract.PRICE_TABLE_BY_PREFIX)
+
+    def tearDown(self):
+        extract.PRICE_TABLE_USD_PER_MTOK.clear()
+        extract.PRICE_TABLE_USD_PER_MTOK.update(self._orig_family)
+        extract.PRICE_TABLE_BY_PREFIX[:] = self._orig_prefix
+
+    def test_family_override_reaches_prefix_matched_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "prices.json"
+            cfg.write_text(json.dumps({"sonnet": {"input": 99.0, "output": 199.0}}), encoding="utf-8")
+            extract.load_price_overrides(cfg)
+            rates = extract.price_rates_for_model("claude-sonnet-5")
+            self.assertAlmostEqual(rates["input"], 99.0)
+            self.assertAlmostEqual(rates["output"], 199.0)
+
+    def test_input_override_recomputes_cache_write_rates(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "prices.json"
+            cfg.write_text(json.dumps({"sonnet": {"input": 4.0}}), encoding="utf-8")
+            extract.load_price_overrides(cfg)
+            rates = extract.price_rates_for_model("claude-sonnet-5")
+            self.assertAlmostEqual(rates["input"], 4.0)
+            self.assertAlmostEqual(rates["cache_write_5m"], 4.0 * 1.25)
+            self.assertAlmostEqual(rates["cache_write_1h"], 4.0 * 2.00)
+
+    def test_non_standard_cache_read_untouched_by_input_override(self):
+        # Fable 5.1's flat $0.25/MTok cache-read must survive an
+        # unrelated family-level input override.
+        before = extract.price_rates_for_model("claude-fable-5-1")["cache_read"]
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "prices.json"
+            cfg.write_text(json.dumps({"fable": {"input": 11.0}}), encoding="utf-8")
+            extract.load_price_overrides(cfg)
+            after = extract.price_rates_for_model("claude-fable-5-1")["cache_read"]
+            self.assertAlmostEqual(before, after)
+
+
+class TestGrepToReadWindow(unittest.TestCase):
+    """Minor 6: the grep-to-Read TTL budget must be decremented at the END
+    of a tool_use call, and only on a call that neither set nor consumed
+    it -- so a symbol-like grep followed by up to 3 LATER tool calls still
+    lets a matching Read count as a chain, not just 2."""
+
+    def _run(self, tool_calls):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-ttl.jsonl"
+            records = []
+            for i, (name, tinput) in enumerate(tool_calls):
+                ts = f"2026-09-12T10:{i:02d}:00Z"
+                records.append(assistant_msg(
+                    ts, "claude-sonnet-5",
+                    {"input_tokens": 10, "output_tokens": 5,
+                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    [{"type": "tool_use", "id": f"t{i}", "name": name, "input": tinput}]))
+                records.append(user_tool_result(ts, f"t{i}", "ok"))
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            return extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+
+    def test_read_on_third_later_call_still_counts(self):
+        metrics = self._run([
+            ("Bash", {"command": 'grep -rn "HandleRequest(" .'}),
+            ("Bash", {"command": "git status"}),
+            ("Bash", {"command": "git diff"}),
+            ("Read", {"file_path": "cmd/wb/main.go"}),
+        ])
+        chains = metrics["adoption"]["missed_opportunities"]["grep_to_read_chains_by_role_model"]
+        self.assertEqual(chains.get("main", {}).get("sonnet", 0), 1)
+
+    def test_read_far_beyond_window_does_not_count(self):
+        metrics = self._run([
+            ("Bash", {"command": 'grep -rn "HandleRequest(" .'}),
+            ("Bash", {"command": "git status"}),
+            ("Bash", {"command": "git diff"}),
+            ("Bash", {"command": "git log"}),
+            ("Bash", {"command": "git show"}),
+            ("Read", {"file_path": "cmd/wb/main.go"}),
+        ])
+        chains = metrics["adoption"]["missed_opportunities"]["grep_to_read_chains_by_role_model"]
+        self.assertEqual(chains.get("main", {}).get("sonnet", 0), 0)
+
+
+class TestHarnessAutobackgroundSignal(unittest.TestCase):
+    """Minor 8: the real harness auto-background signal is a literal
+    string in the Bash tool_result's OWN content -- never the assistant's
+    prior prose narrating what it did."""
+
+    def test_real_signal_in_tool_result_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-autobg.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                 "input": {"command": "sleep 300"}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1",
+                                  "Command did not complete within its 120s timeout "
+                                  "and was moved to the background (ID: abc123)."),
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            self.assertEqual(metrics["bash"]["harness_autobackgrounded_count"], 1)
+
+    def test_assistant_prose_does_not_trigger_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-autobg-prose.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text",
+                                  "text": "That command did not complete within its 120s timeout "
+                                          "and was moved to the background, so I'll check later."},
+                                {"type": "tool_use", "id": "t1", "name": "Bash",
+                                 "input": {"command": "git status"}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1", "clean"),
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            self.assertEqual(metrics["bash"]["harness_autobackgrounded_count"], 0)
+
+
+class TestTop10DedupAndKindPriority(unittest.TestCase):
+    """Minor 9: the top-10 "expensive patterns" table must label a
+    tool-result-size offender by role/MODEL/tool (never two identical-
+    looking rows for two different models), and must rank by a fixed
+    kind priority rather than blending incompatible units into one number."""
+
+    def test_distinct_models_produce_distinct_labels(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-main.jsonl"
+            big = "x" * 500_000
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat big"}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1", big),
+            ]
+            write_jsonl(session_path, records)
+
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            for model, agent_name in (("claude-sonnet-5", "agent-sonnetbig0000"),
+                                       ("claude-opus-5", "agent-opusbig00000")):
+                agent_path = agent_dir / f"{agent_name}.jsonl"
+                write_jsonl(agent_path, [
+                    assistant_msg("2026-09-12T10:00:00Z", model,
+                                   {"input_tokens": 10, "output_tokens": 5,
+                                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                                   [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                     "input": {"command": "cat big"}}]),
+                    user_tool_result("2026-09-12T10:00:01Z", "t1", big),
+                ])
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            labels = [c["pattern"] for c in metrics["top10_expensive_patterns"]
+                      if c["pattern"].startswith("tool result size:")]
+            self.assertEqual(len(labels), len(set(labels)), f"duplicate labels: {labels}")
+            self.assertTrue(any("opus" in lbl for lbl in labels))
+            self.assertTrue(any("sonnet" in lbl for lbl in labels))
+
+    def test_tokens_kind_ranks_above_tool_pattern_kind(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            proj = home / ".claude" / "projects" / "-fake-project"
+            proj.mkdir(parents=True)
+            session_path = proj / "session-rank.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 100000, "output_tokens": 50000,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}}]),
+                user_tool_result("2026-09-12T10:00:01Z", "t1", "clean"),
+            ]
+            write_jsonl(session_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            metrics = extract.run_extract(
+                since, until, home / "out", home,
+                repo="sneat-dev/wb", git_repo_path=home / "no-repo",
+                wb_state_dirs=[home / "no-wb"], offline=True,
+            )
+            top10 = metrics["top10_expensive_patterns"]
+            kinds = [c["kind"] for c in top10]
+            if "tokens" in kinds and "tool_pattern" in kinds:
+                self.assertLess(kinds.index("tokens"), kinds.index("tool_pattern"))
+
+
+class TestRealisticFixtureShapes(unittest.TestCase):
+    """Minor 10: fixtures must match the SHAPE real transcripts use --
+    iterations entries never carry a "model" key of their own unless the
+    real record does, and a <task-notification> wrapper's content is a
+    plain STRING, not a list of content blocks."""
+
+    def test_iterations_without_model_key_falls_back_to_outer_model(self):
+        bucket = extract.UsageBucket()
+        bucket.add({
+            "input_tokens": 100, "output_tokens": 50,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+            "iterations": [{"type": "message",
+                             "input_tokens": 100, "output_tokens": 50,
+                             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}],
+        }, model="claude-sonnet-5")
+        self.assertEqual(bucket.input_tokens, 100)
+        expected = 100 * extract.PRICE_TABLE_USD_PER_MTOK["sonnet"]["input"] / 1_000_000.0 + \
+            50 * extract.PRICE_TABLE_USD_PER_MTOK["sonnet"]["output"] / 1_000_000.0
+        self.assertAlmostEqual(bucket.cost_usd(), expected, places=6)
+
+    def test_notification_as_plain_string_content_classified(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            agent_dir = home / ".claude" / "projects" / "-fake-project" / "sess1" / "subagents"
+            agent_dir.mkdir(parents=True)
+            agent_path = agent_dir / "agent-strnotif0000000.jsonl"
+            records = [
+                assistant_msg("2026-09-12T10:00:00Z", "claude-sonnet-5",
+                               {"input_tokens": 10, "output_tokens": 5,
+                                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                               [{"type": "text", "text": "dispatched, moving on"}]),
+                # content is a plain STRING, as real <task-notification>
+                # deliveries are -- not a [{"type": "text", ...}] list.
+                {"type": "user", "isSidechain": False, "timestamp": "2026-09-12T10:10:05Z",
+                 "message": {"role": "user",
+                             "content": "<task-notification>\n<task-id>abc</task-id>\ndone\n</task-notification>"}},
+            ]
+            write_jsonl(agent_path, records)
+            since = datetime(2026, 9, 11, tzinfo=timezone.utc)
+            until = datetime(2026, 9, 18, 23, 59, 59, tzinfo=timezone.utc)
+            a = extract.process_agent_transcript(str(agent_path), since, until, "subagents_dir")
+            self.assertEqual(a.stalls_by_kind.get("waiting_notification", 0), 1)
 
 
 if __name__ == "__main__":

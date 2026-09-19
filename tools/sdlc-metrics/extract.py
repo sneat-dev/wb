@@ -76,6 +76,13 @@ PRICE_TABLE_BY_PREFIX: list = [
     ("claude-opus-5", _rates(5.00, 25.00)),
     ("claude-sonnet-5", _rates(2.00, 10.00)),
     ("claude-haiku-4-5", _rates(1.00, 5.00)),
+    # Fable 5.1 cache-read override: flat $0.25/MTok (0.025x input), not the
+    # standard 0.1x-of-input cache-read discount other families use here.
+    # This is a deliberate, founder-confirmed rate as of 2026-09-18 against
+    # the Claude API pricing reference -- round-2 review flagged the 0.1x
+    # alternative ($1.00/MTok) as a candidate, and it was declined in favor
+    # of keeping this flat $0.25/MTok figure. Do not "fix" this back to the
+    # 0.1x-of-input formula without re-confirming with the founder.
     ("claude-fable-5-1", _rates(10.00, 50.00, cache_read_usd=0.25)),
     ("claude-fable-5", _rates(10.00, 50.00)),
     # older generations -- kept as an explicit fallback so an old transcript
@@ -117,6 +124,30 @@ def price_rates_for_model(model: Optional[str]) -> dict:
 _PRICE_CONFIG_ENV = "SDLC_METRICS_PRICE_CONFIG"
 
 
+def _apply_rate_override(existing: dict, override: dict) -> dict:
+    """Merge a user override into one existing per-model/family rate dict.
+    minor #5: overriding just `input` must not leave cache_write_5m/1h
+    pointing at the OLD input price -- recompute those DERIVED rates from
+    the (possibly new) input, unless the override itself gives them
+    explicitly. `cache_read` is left untouched unless the override names
+    it: a model's non-standard cache-read pricing (e.g. Fable 5.1's flat
+    $0.25/MTok) must never be silently reset to the 0.1x default just
+    because `input` changed."""
+    merged = dict(existing)
+    input_usd = override.get("input", existing.get("input"))
+    output_usd = override.get("output", existing.get("output"))
+    merged["input"] = input_usd
+    merged["output"] = output_usd
+    if "cache_write_5m" not in override:
+        merged["cache_write_5m"] = round(input_usd * 1.25, 6)
+    if "cache_write_1h" not in override:
+        merged["cache_write_1h"] = round(input_usd * 2.00, 6)
+    for k, v in override.items():
+        merged[k] = v  # any explicitly given field wins outright, last
+    merged["cache_write"] = merged["cache_write_5m"]  # equal-to-5m fallback for old callers
+    return merged
+
+
 def load_price_overrides(path: Optional[Path]) -> None:
     candidates = []
     if path:
@@ -134,17 +165,31 @@ def load_price_overrides(path: Optional[Path]) -> None:
                 return
             for key, rates in overrides.items():
                 if key in PRICE_TABLE_USD_PER_MTOK:
-                    # a coarse family override, e.g. {"sonnet": {...}}
-                    PRICE_TABLE_USD_PER_MTOK[key].update(rates)
+                    # minor #5: a coarse family override, e.g.
+                    # {"sonnet": {...}}, must actually take effect for a
+                    # real model string -- price_rates_for_model() always
+                    # tries the more-specific PRICE_TABLE_BY_PREFIX entry
+                    # FIRST, so a family-only override that stopped at
+                    # PRICE_TABLE_USD_PER_MTOK would silently do nothing
+                    # for "claude-sonnet-5". Apply it to the family
+                    # fallback AND to every current-generation prefix
+                    # entry in that family (never a "legacy, verify" one,
+                    # which is deliberately priced differently).
+                    PRICE_TABLE_USD_PER_MTOK[key] = _apply_rate_override(PRICE_TABLE_USD_PER_MTOK[key], rates)
+                    for i, (prefix, existing) in enumerate(PRICE_TABLE_BY_PREFIX):
+                        if prefix in LEGACY_PRICE_PREFIXES:
+                            continue
+                        if model_family(prefix) == key:
+                            PRICE_TABLE_BY_PREFIX[i] = (prefix, _apply_rate_override(existing, rates))
                     continue
                 # a model-id-prefix override/addition, e.g.
                 # {"claude-sonnet-5-2": {...}}
                 for i, (prefix, existing) in enumerate(PRICE_TABLE_BY_PREFIX):
                     if prefix == key:
-                        existing.update(rates)
+                        PRICE_TABLE_BY_PREFIX[i] = (prefix, _apply_rate_override(existing, rates))
                         break
                 else:
-                    PRICE_TABLE_BY_PREFIX.append((key, dict(rates)))
+                    PRICE_TABLE_BY_PREFIX.append((key, _apply_rate_override({"input": 0.0, "output": 0.0}, rates)))
             eprint(f"price overrides loaded from {p}")
             return
 
@@ -200,6 +245,20 @@ QUOTED_RE = [re.compile(r'"[^"]*"'), re.compile(r"'[^']*'")]
 # short list of tools whose subcommand matters for this analysis.
 SUBVERB_TOOLS = {"wb", "git", "gh", "go", "npm", "pnpm", "bun", "bunx", "yarn"}
 CLI_KNOWLEDGE_TOOLS = {"specscore", "codegrapher"}
+# minor #1: the specscore/codegrapher subcommand recorded in adoption
+# stats must be one of these, or the generic "(other)" placeholder --
+# never an arbitrary word lifted from the command line (a quoted
+# free-text argument, once its quoting is lost by rejoining tokens into a
+# string, looks exactly like a second bareword and would otherwise leak
+# through, e.g. specscore "launch secret project" -> subcommand "launch").
+SPECSCORE_SUBCOMMANDS = {
+    "install", "self-update", "change-status", "code", "feature", "idea",
+    "plan", "spec", "task", "rule",
+}
+CODEGRAPHER_SUBCOMMANDS = {
+    "index", "status", "callers", "callees", "symbol", "symbols", "trace",
+    "search", "query", "graph", "refs", "definition", "impact",
+}
 
 # B4: a leading verb (the LEADING command word of a stripped segment) is
 # only ever surfaced verbatim in metrics.json/SUMMARY.md if it is a known
@@ -434,16 +493,62 @@ def strip_heredocs(cmd: str) -> str:
     return "\n".join(out)
 
 
+def _replace_top_level_newlines_with_semicolons(cmd: str) -> str:
+    """NM1: shlex's default whitespace includes '\\n', so a bare newline is
+    silently swallowed as ordinary whitespace between tokens rather than
+    ending one command and starting the next -- e.g. a heredoc's closing
+    delimiter line followed on the next physical line by a real command
+    (`cat > f <<'EOF' ... EOF\\ngo test ./...`) tokenises as ONE run-on
+    segment and the second line's verb is lost. Rewrite every newline that
+    is NOT inside an open quote into a literal `;` clause separator before
+    tokenising. A newline that IS inside an open quote is left alone --
+    it's part of that string's content, which shlex already handles."""
+    out = []
+    in_squote = False
+    in_dquote = False
+    escape = False
+    for ch in cmd:
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+        if ch == "\\" and not in_squote:
+            out.append(ch)
+            escape = True
+            continue
+        if ch == "'" and not in_dquote:
+            in_squote = not in_squote
+            out.append(ch)
+            continue
+        if ch == '"' and not in_squote:
+            in_dquote = not in_dquote
+            out.append(ch)
+            continue
+        if ch == "\n" and not in_squote and not in_dquote:
+            out.append(";")
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def tokenize_command(cmd: str) -> Optional[list]:
     """Quote-safe shell tokenisation (B4): shlex with punctuation_chars so
     control operators (&&, ||, ;, |, &) come back as their own tokens and a
     quoted string -- including one that starts a VAR='...' assignment --
-    stays a single token, never split into bare words. Returns None (callers
-    must emit "<unparsed>") if the command cannot be tokenised at all, e.g.
+    stays a single token, never split into bare words. Top-level newlines
+    are rewritten to `;` first (NM1) so a multi-line Bash call classifies
+    every physical line, not just the first. Returns None (callers must
+    emit "<unparsed>") if the command cannot be tokenised at all, e.g.
     unbalanced quotes."""
     try:
-        lex = shlex.shlex(strip_heredocs(cmd), posix=True, punctuation_chars=True)
+        cmd = _replace_top_level_newlines_with_semicolons(strip_heredocs(cmd))
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
+        # minor #2: shlex's default commenters='#' truncates the command at
+        # the first bare '#', which real commands carry mid-word all the
+        # time (an issue number like `owner/repo#583`, a URL fragment).
+        # This tool never needs shell-comment stripping, so disable it.
+        lex.commenters = ""
         return list(lex)
     except ValueError:
         return None
@@ -454,32 +559,58 @@ _CLAUSE_OPERATORS = {"&&", "||", ";"}
 _NOISE_PREFIX_HEADS = {"cd", "timeout", "env", "nice", "sudo"}
 
 
-def split_command_segments(cmd: str, operators: Optional[set] = None) -> list:
+def split_command_segments_with_ops(cmd: str, operators: Optional[set] = None) -> list:
     """Split a command line into its top-level segments (default: on &&,
-    ||, ;, |, & -- M2), quote-safe. Returns a list of token lists; [] if the
-    command could not be tokenised."""
+    ||, ;, |, & -- M2), quote-safe. Returns a list of (preceding_op, token
+    list) pairs; `preceding_op` is None for the very first segment. []
+    if the command could not be tokenised."""
     toks = tokenize_command(cmd)
     if toks is None:
         return []
     ops = operators if operators is not None else _SHELL_OPERATORS
     segments, current = [], []
+    preceding_op = None
     for t in toks:
         if t in ops:
             if current:
-                segments.append(current)
+                segments.append((preceding_op, current))
             current = []
+            preceding_op = t
         else:
             current.append(t)
     if current:
-        segments.append(current)
+        segments.append((preceding_op, current))
     return segments
+
+
+def split_command_segments(cmd: str, operators: Optional[set] = None) -> list:
+    """Split a command line into its top-level segments, quote-safe.
+    Returns a list of token lists only -- see split_command_segments_with_ops
+    for the preceding-operator info (NM2: needed to tell a pipe-downstream
+    filter apart from a genuine new command position)."""
+    return [toks for _op, toks in split_command_segments_with_ops(cmd, operators)]
+
+
+#  NM1: `timeout -k <seconds> <duration> cmd` and `timeout --signal=SIG
+#  <duration> cmd` both need their KILL/SIGNAL option's own value token
+#  consumed too, when it's given as a separate token rather than glued
+#  with '=' -- otherwise that value (a bare number) is mistaken for the
+#  command's own leading verb. Long forms glued with '=' (`--kill-after=5`)
+#  are already a single token and need no special-casing.
+_TIMEOUT_OPTS_WITH_SEPARATE_ARG = {"-k", "--kill-after", "-s", "--signal"}
+#  Likewise `nice -n <adjustment> cmd` -- but the traditional single-token
+#  form `nice -<adjustment> cmd` (e.g. `nice -19 cmd`) is already handled
+#  generically since it's one token starting with '-'.
+_NICE_OPTS_WITH_SEPARATE_ARG = {"-n", "--adjustment"}
 
 
 def strip_segment_prefix(tokens: list) -> list:
     """Drop leading `cd <dir>`, `timeout [flags] N`, `env [VAR=..]* [-i]`,
     `nice [-n N]`, `sudo`, and VAR=value assignment tokens from one segment,
     to find the real command it runs (M2: a leading `cd X &&` must not break
-    classification of the command that follows)."""
+    classification of the command that follows). NM1: an option that takes
+    its value as a SEPARATE token (`timeout -k 5`, `nice -n 19`) drops that
+    value too, so it never gets mistaken for the real command's verb."""
     toks = list(tokens)
     changed = True
     while toks and changed:
@@ -496,7 +627,10 @@ def strip_segment_prefix(tokens: list) -> list:
         elif head == "timeout":
             toks = toks[1:]
             while toks and toks[0].startswith("-"):
+                opt = toks[0]
                 toks = toks[1:]
+                if opt in _TIMEOUT_OPTS_WITH_SEPARATE_ARG and toks:
+                    toks = toks[1:]
             if toks:
                 toks = toks[1:]  # the duration argument
             changed = True
@@ -508,7 +642,10 @@ def strip_segment_prefix(tokens: list) -> list:
         elif head == "nice":
             toks = toks[1:]
             while toks and toks[0].startswith("-"):
+                opt = toks[0]
                 toks = toks[1:]
+                if opt in _NICE_OPTS_WITH_SEPARATE_ARG and toks:
+                    toks = toks[1:]
             changed = True
         elif head == "sudo":
             toks = toks[1:]
@@ -533,6 +670,51 @@ def _sanitize_verb(tok: str) -> str:
     return "<other>"
 
 
+# minor #1: subverb tables must never echo an arbitrary second/third
+# token verbatim -- a package name, branch name or free-text argument
+# would leak straight into by_subverb otherwise (e.g. `bunx
+# private-pkg-name` showing up as subverb "bunx private-pkg-name"). Only a
+# token in one of these known-subcommand sets is ever surfaced; anything
+# else becomes the generic "(other)" placeholder.
+GIT_SUBCOMMANDS = {
+    "status", "push", "pull", "fetch", "merge", "rebase", "log", "diff",
+    "commit", "add", "checkout", "branch", "stash", "clone", "init", "tag",
+    "show", "reset", "cherry-pick", "remote", "config", "grep", "blame",
+    "worktree", "rev-parse", "describe", "ls-files", "submodule", "mv", "rm",
+    "switch", "restore", "apply", "am", "bisect", "reflog",
+}
+GH_SUBCOMMANDS = {
+    "api", "run", "pr", "issue", "repo", "workflow", "release", "auth", "ci",
+    "gist", "label", "search", "browse", "secret", "variable", "cache",
+    "attestation", "ruleset", "project", "org", "codespace", "extension",
+    "alias", "completion", "status", "config",
+}
+WB_SUBCOMMANDS = {
+    "pr", "worktree", "run", "wait", "deps", "agent", "stream", "branch",
+    "sync", "status", "land", "create", "install", "upgrade", "self-update",
+    "hooks", "fleet", "daemon", "coverage", "report", "check", "verify",
+    "skills", "migrate", "config", "version",
+}
+NODE_PKG_SUBCOMMANDS = {
+    "install", "i", "add", "remove", "rm", "run", "build", "test", "exec",
+    "dlx", "start", "ci", "update", "up", "outdated", "list", "ls", "why",
+    "publish", "pack", "link", "unlink", "create", "init", "x", "audit",
+    "prune",
+}
+
+
+def _allowlisted_sub(tool: str, sub: str) -> str:
+    allowlist = {
+        "git": GIT_SUBCOMMANDS, "gh": GH_SUBCOMMANDS, "wb": WB_SUBCOMMANDS,
+        "npm": NODE_PKG_SUBCOMMANDS, "pnpm": NODE_PKG_SUBCOMMANDS,
+        "bun": NODE_PKG_SUBCOMMANDS, "bunx": NODE_PKG_SUBCOMMANDS,
+        "yarn": NODE_PKG_SUBCOMMANDS,
+    }.get(tool)
+    if allowlist is None or sub in allowlist:
+        return sub
+    return "(other)"
+
+
 def classify_segment_tokens(toks: list) -> tuple:
     """(verb, subverb) for one already-split, prefix-stripped segment's
     tokens. B4: the LEADING verb is only ever surfaced if it is on
@@ -550,7 +732,16 @@ def classify_segment_tokens(toks: list) -> tuple:
     if verb.lower() not in KNOWN_COMMAND_ALLOWLIST:
         return "<other>", "<other>"
     if verb in SUBVERB_TOOLS and len(toks) > 1:
-        sub = _sanitize_verb(toks[1])
+        raw_sub = _sanitize_verb(toks[1])
+        # minor #1: allowlist the SECOND token (the real subcommand) per
+        # tool family before it can ever reach the report -- a branch,
+        # package, or file name typed as the second argument must never
+        # leak verbatim into by_subverb. The THIRD token is never a
+        # tool-level subcommand of its own (it's an argument TO the
+        # second one, e.g. "list" in "gh run list") -- it only ever
+        # surfaces below through the explicit two_word allowlist, so it
+        # needs no separate gate here, just syntax sanitisation.
+        sub = _allowlisted_sub(verb, raw_sub) if raw_sub not in ("<other>", "<assignment>", "(empty)") else raw_sub
         third = _sanitize_verb(toks[2]) if len(toks) > 2 else None
         # go test/build/vet, git push/fetch/merge, gh api/run, wb pr/run/wait...
         if verb == "go" and sub in ("test", "build", "vet", "run", "mod", "vendor"):
@@ -572,21 +763,32 @@ def classify_segment_tokens(toks: list) -> tuple:
 
 
 def iter_command_segments(cmd: str):
-    """Yield (verb, subverb, joined_segment_str) for EVERY meaningful,
-    prefix-stripped segment of a command line, split on &&/||/;/|/& (M2):
-    `cd x && go test ./...` classifies its second segment as `go test`,
-    not `other:cd`. An unparsable command yields a single ("<unparsed>",
-    "<unparsed>", "") segment."""
+    """Yield (verb, subverb, joined_segment_str, is_pipe_stage, tokens) for
+    EVERY meaningful, prefix-stripped segment of a command line, split on
+    &&/||/;/|/& (M2): `cd x && go test ./...` classifies its second segment
+    as `go test`, not `cmd:cd`. `is_pipe_stage` is True for a segment
+    that follows a `|` (a pipe FILTER downstream of the real command, e.g.
+    `head`/`grep` in `git log | head`), False for one that starts a new
+    command position (the first segment, or one following &&/||/;/&) --
+    NM2: a pipe filter is not a new command call and must not be counted
+    as one in the verb table or the sequence miner. `tokens` is the raw
+    prefix-stripped token LIST (minor #1: a caller that needs the real
+    second token, e.g. a CLI subcommand, must read it from here, never by
+    re-splitting the joined string -- a quoted multi-word argument loses
+    its quoting once joined, so `specscore "launch secret project"` would
+    otherwise re-split into a fake subcommand "launch"). An unparsable
+    command yields a single ("<unparsed>", "<unparsed>", "", False, [])
+    segment."""
     toks = tokenize_command(cmd)
     if toks is None:
-        yield "<unparsed>", "<unparsed>", ""
+        yield "<unparsed>", "<unparsed>", "", False, []
         return
-    for seg in split_command_segments(cmd):
+    for preceding_op, seg in split_command_segments_with_ops(cmd):
         stripped = strip_segment_prefix(seg)
         if not stripped:
             continue
         verb, subverb = classify_segment_tokens(stripped)
-        yield verb, subverb, " ".join(stripped)
+        yield verb, subverb, " ".join(stripped), preceding_op == "|", stripped
 
 
 def leading_verb_and_subverb(cmd: str) -> tuple:
@@ -594,18 +796,47 @@ def leading_verb_and_subverb(cmd: str) -> tuple:
     splitting on &&/||/;/|/& and dropping cd/timeout/env/nice/sudo/VAR=
     prefixes. Kept for callers that only care about one representative
     segment; iter_command_segments() classifies every segment (M2)."""
-    for verb, subverb, _ in iter_command_segments(cmd):
+    for verb, subverb, _seg_str, _is_pipe_stage, _tokens in iter_command_segments(cmd):
         return verb, subverb
     return "(empty)", "(empty)"
 
 
-def _classify_bash_verb_segment(verb: str, subverb: str, seg_str: str) -> str:
+def _classify_go_test_segment(tokens: list) -> str:
+    """NM3: split `go test` by SCOPE instead of lumping every invocation
+    under the misleading "(full)" label -- most aren't whole-module runs.
+    `./...` (exactly) is a whole-MODULE run; any other `.../...` pattern
+    is a subtree run; anything else (a single directory/package path, or
+    no path at all) is a single-package run. `-run` is matched as an
+    exact TOKEN (`-run` or `-run=...`), never a substring -- a package
+    path like `./cmd/wb-runner/...` must never be mistaken for -run."""
+    scope = "package"
+    for t in tokens:
+        if t == "./...":
+            scope = "module"
+            break
+        if scope != "module" and t.endswith("/..."):
+            scope = "subtree"
+    has_run = any(t == "-run" or t.startswith("-run=") for t in tokens)
+    label = {
+        "module": "go test ./... (module)",
+        "subtree": "go test (subtree)",
+        "package": "go test (package)",
+    }[scope]
+    return f"{label} -run" if has_run else label
+
+
+def _classify_bash_verb_segment(verb: str, subverb: str, seg_str: str,
+                                 tokens: Optional[list] = None) -> str:
     """Coarse classification for one already-split, already-classified
     (verb, subverb) segment. Shared by classify_bash_verb() (first segment
     only, kept for backward compatibility) and process_transcript's
-    per-segment loop (M2)."""
+    per-segment loop (M2). `tokens` is the real token list when the caller
+    has one (NM3 needs exact-token `-run` matching, not a substring scan
+    of the rejoined string)."""
+    if tokens is None:
+        tokens = seg_str.split()
     if verb == "go" and "test" in subverb:
-        return "go test -run" if "-run" in seg_str else "go test (full)"
+        return _classify_go_test_segment(tokens)
     if subverb in ("wb pr land",):
         return "wb pr land"
     if subverb == "wb wait":
@@ -622,14 +853,16 @@ def _classify_bash_verb_segment(verb: str, subverb: str, seg_str: str) -> str:
         return "git"
     if verb in ("<other>", "<assignment>", "(empty)", "<unparsed>"):
         return verb
-    return f"other:{verb}" if verb.lower() in KNOWN_COMMAND_ALLOWLIST else "<other>"
+    # minor #3: "other:" reads as "unknown command" -- it's the opposite,
+    # an ALLOWLISTED verb with no dedicated bucket. "cmd:" says that.
+    return f"cmd:{verb}" if verb.lower() in KNOWN_COMMAND_ALLOWLIST else "<other>"
 
 
 def classify_bash_verb(cmd: str) -> str:
     """Backward-compatible coarse classification used for the top-level
     tool_patterns.bash_by_verb table (first segment only)."""
-    for verb, subverb, seg_str in iter_command_segments(cmd):
-        return _classify_bash_verb_segment(verb, subverb, seg_str)
+    for verb, subverb, seg_str, _is_pipe_stage, tokens in iter_command_segments(cmd):
+        return _classify_bash_verb_segment(verb, subverb, seg_str, tokens)
     return _classify_bash_verb_segment("(empty)", "(empty)", "")
 
 
@@ -744,6 +977,7 @@ class UsageBucket:
     cache_read_tokens: int = 0
     messages: int = 0
     cost_usd_accum: float = 0.0  # priced at add() time, per-message's own model (B3/M3)
+    cache_read_cost_usd_accum: float = 0.0  # the cache-read SLICE of cost_usd_accum, for the SUMMARY headline
 
     @property
     def cache_write_tokens(self) -> int:
@@ -793,13 +1027,14 @@ class UsageBucket:
         self.cache_write_1h_tokens += cache_write_1h
 
         rates = price_rates_for_model(model)
+        cache_read_cost = cache_read_tokens * rates["cache_read"] / 1_000_000.0
+        self.cache_read_cost_usd_accum += cache_read_cost
         self.cost_usd_accum += (
             input_tokens * rates["input"]
             + output_tokens * rates["output"]
             + cache_write_5m * rates.get("cache_write_5m", rates.get("cache_write", 0))
             + cache_write_1h * rates.get("cache_write_1h", rates.get("cache_write", 0))
-            + cache_read_tokens * rates["cache_read"]
-        ) / 1_000_000.0
+        ) / 1_000_000.0 + cache_read_cost
 
     def cost_usd(self, family: Optional[str] = None) -> float:
         """The accumulated cost, priced per-message at add() time. `family`
@@ -817,6 +1052,7 @@ class UsageBucket:
             "cache_read_tokens": self.cache_read_tokens,
             "messages": self.messages,
             "estimated_usd": round(self.cost_usd_accum, 4),
+            "estimated_cache_read_usd": round(self.cache_read_cost_usd_accum, 4),
         }
         return d
 
@@ -833,6 +1069,7 @@ def merge_bucket(dst: UsageBucket, src: UsageBucket) -> None:
     dst.cache_read_tokens += src.cache_read_tokens
     dst.messages += src.messages
     dst.cost_usd_accum += src.cost_usd_accum
+    dst.cache_read_cost_usd_accum += src.cache_read_cost_usd_accum
 
 
 # --------------------------------------------------------------------------
@@ -975,8 +1212,9 @@ def result_content_len(content: Any) -> int:
 
 
 def result_content_text_for_denial_check(content: Any) -> str:
-    """Only used transiently to test a short regex for a denial hint; the
-    matched text itself is never stored or written out."""
+    """Only used transiently to test a short regex (a permission-denial
+    hint, or minor #8's auto-background signal) against a tool_result's
+    own content; the matched text itself is never stored or written out."""
     if isinstance(content, str):
         return content[:400]
     if isinstance(content, list):
@@ -1013,8 +1251,18 @@ def iter_jsonl(path: str) -> Iterator[dict]:
 
 
 WAITING_RE = re.compile(r"waiting for (a )?notification", re.IGNORECASE)
-AUTOBG_TIMEOUT_RE = re.compile(r"(timed out|exceeded).{0,40}(foreground|timeout).{0,40}background|"
-                                r"running in the background|moved to background", re.IGNORECASE)
+# minor #8: the ORIGINAL pattern matched the assistant's own free-text
+# prose about backgrounding (e.g. narrating what it just did), not a real
+# signal from the harness -- confirmed wrong against real transcripts,
+# where the harness's own auto-background notice is a specific, literal
+# tool_result string: "Command did not complete within its <N>s timeout
+# and was moved to the background (ID: <id>)." Match THAT, and match it
+# against the Bash tool_result's own content, never the prior assistant
+# turn's prose (which is what `gap_prev_text` holds).
+AUTOBG_TIMEOUT_RE = re.compile(
+    r"did not complete within its \d+s timeout and was moved to the background",
+    re.IGNORECASE,
+)
 # a real `<task-notification>` wrapper (background command / subagent
 # completion), as delivered by the harness -- confirmed against real
 # transcripts, e.g. '<task-notification>\n<task-id>...'
@@ -1049,6 +1297,44 @@ def classify_stall_gap(rec: dict, msg: dict, pending_tool_ids: set, prev_text: s
         if tool_result_ids:
             return "tool_running"
     return "idle_until_resume"
+
+
+def advance_stall_gap(rec: dict, msg: dict, ts: Optional[datetime],
+                       since: datetime, until: datetime,
+                       gap_prev_ts: Optional[datetime], gap_prev_text: str,
+                       pending_tool_ids: set, role: str, session_id: str,
+                       loop_events: Optional[list] = None,
+                       counter: Optional[Counter] = None,
+                       minutes_counter: Optional[Counter] = None) -> tuple:
+    """NB1: the gap timer must be advanced by EVERY record with a
+    timestamp, of any type and on any day -- otherwise a genuine multi-day
+    gap (the agent's session simply idle overnight) looks, to the next
+    in-window record, like the FULL elapsed time since the last in-window
+    record was seen, which is wrong in the other direction too. But a gap
+    is only ever COUNTED as a stall when the record that closes it falls
+    inside the window -- a stall belongs to the day it was noticed on, not
+    the day the prior activity happened to be.
+
+    `minutes_counter`, when given, accumulates the gap's own duration (not
+    just a +1 count) under its kind -- counts alone can't be used to judge
+    wall-clock impact (a SUMMARY headline needs stall MINUTES, not just how
+    many).
+
+    Returns the (possibly updated) (gap_prev_ts, gap_prev_text) pair.
+    """
+    if ts is None:
+        return gap_prev_ts, gap_prev_text
+    if gap_prev_ts and in_window(ts, since, until):
+        gap_seconds = (ts - gap_prev_ts).total_seconds()
+        if gap_seconds > STALL_THRESHOLD_SECONDS:
+            kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
+            if loop_events is not None:
+                loop_events.append(("stall", role, session_id, kind, gap_seconds))
+            if counter is not None:
+                counter[kind] += 1
+            if minutes_counter is not None:
+                minutes_counter[kind] += gap_seconds / 60.0
+    return ts, extract_text(msg.get("content"))
 
 
 def extract_text(content: Any) -> str:
@@ -1163,10 +1449,13 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                         cpu_heavy_counter: Counter, loop_events: list,
                         pipe_counter: Counter, seq_miner: SequenceMiner,
                         adoption_agg: Optional["AdoptionAgg"] = None,
-                        default_model_family: str = "unknown") -> Optional[SessionStats]:
+                        default_model_family: str = "unknown",
+                        pipe_filter_totals: Optional[Counter] = None) -> Optional[SessionStats]:
     """Shared pass over one transcript file (main session or subagent),
     tagged with `role` ("main" or "subagent") for the tool-call breakdown."""
     st = SessionStats(session_id=session_id)
+    if pipe_filter_totals is None:
+        pipe_filter_totals = Counter()
     pending_tool_use: dict = {}  # tool_use_id -> (timestamp, name, input, adoption_meta)
     pending_tool_ids: set = set()  # tool_use ids not yet closed by a tool_result (M1)
     touched = False
@@ -1209,14 +1498,15 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
         msg = rec.get("message") or {}
 
         if rtype == "assistant":
+            # NB1: advance the gap timer from every record, in or out of
+            # window, before deciding whether THIS record's own data is
+            # in-window and worth accumulating.
+            gap_prev_ts, gap_prev_text = advance_stall_gap(
+                rec, msg, ts, since, until, gap_prev_ts, gap_prev_text,
+                pending_tool_ids, role, session_id, loop_events)
             if ts is None or not in_window(ts, since, until):
                 continue
             touched = True
-            if gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
-                loop_events.append(("stall", role, session_id, kind))
-            gap_prev_ts = ts
-            gap_prev_text = extract_text(msg.get("content"))
             model = msg.get("model")
             if model:
                 cur_family = model_family(model)
@@ -1233,16 +1523,19 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                 resolved_model = model or (prev_entry["model"] if prev_entry else None)
                 request_buffer[key] = {"usage": merged_usage, "ts": ts, "model": resolved_model}
 
-            if AUTOBG_TIMEOUT_RE.search(gap_prev_text or ""):
-                st.autobg_timeout_count += 1
-                autobg_timeout_total.append(1)
-
             for block in msg.get("content") or []:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_use":
-                    if symbol_lookup_ttl > 0:
-                        symbol_lookup_ttl -= 1
+                    # minor #6: the grep->Read window must count 3 FULL
+                    # tool calls after the grep, not 2 -- decrementing the
+                    # TTL at the TOP of this call (before this call's own
+                    # branch gets to check or set it) burns one call of
+                    # budget on the very call that's supposed to still be
+                    # inside the window. Only decrement once, at the END
+                    # of this call's processing, and only if this call
+                    # neither set a fresh TTL nor consumed it.
+                    ttl_touched_this_call = False
                     name = block.get("name") or "?"
                     tinput = block.get("input") or {}
                     st.tool_use_counts[name] += 1
@@ -1252,15 +1545,31 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                     if name == "Bash":
                         cmd = strip_heredocs(tinput.get("command") or "")
                         segments = list(iter_command_segments(cmd))
-                        # M2: classify EVERY segment of a `a && b && c` chain,
-                        # not just the first -- `cd x && go test ./...` must
-                        # not count as `other:cd`.
-                        for verb, subverb, seg_str in segments:
-                            coarse = _classify_bash_verb_segment(verb, subverb, seg_str)
+                        # M2: classify EVERY top-level command-position
+                        # segment of a `a && b && c` chain, not just the
+                        # first -- `cd x && go test ./...` must not count
+                        # as `cmd:cd`. NM2: a `|`-downstream segment
+                        # (e.g. `head`/`grep` filtering a pipeline) is not
+                        # a new command position -- it never gets its own
+                        # verb-table entry, only pipe_filter_totals, and it
+                        # is never fed to the sequence miner.
+                        first_call_verb = None
+                        for verb, subverb, seg_str, is_pipe_stage, seg_toks in segments:
+                            if is_pipe_stage:
+                                coarse = _classify_bash_verb_segment(verb, subverb, seg_str, seg_toks)
+                                pipe_filter_totals[coarse] += 1
+                                continue
+                            coarse = _classify_bash_verb_segment(verb, subverb, seg_str, seg_toks)
                             st.bash_verbs[coarse] += 1
                             bash_verb_totals[coarse] += 1
                             bash_subverb_totals[subverb] += 1
-                            session_bash_order.append(coarse)
+                            if first_call_verb is None:
+                                first_call_verb = coarse
+                        # NM2: the sequence miner works over Bash CALLS, one
+                        # entry per tool_use -- its first classified verb --
+                        # not per segment.
+                        if first_call_verb is not None:
+                            session_bash_order.append(first_call_verb)
 
                         # CPU-heavy / wb-run-wrapping at CLAUSE granularity
                         # (minor #1): `wb run` wraps only the clause it
@@ -1298,13 +1607,22 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             # as this tool_use's adoption_meta so the single
                             # tool_result size is attributed once, not
                             # multiply, across segments.
-                            for verb, subverb, seg_str in segments:
+                            for verb, subverb, seg_str, _is_pipe_stage, seg_toks in segments:
                                 if verb in CLI_KNOWLEDGE_TOOLS:
-                                    seg_toks = seg_str.split(None, 1)
-                                    sub = _sanitize_verb(seg_toks[1].split()[0]) if len(seg_toks) > 1 and seg_toks[1].split() else "(empty)"
+                                    # minor #1: read the subcommand from the
+                                    # real TOKEN list, never by re-splitting
+                                    # seg_str (which has already lost the
+                                    # quoting of any multi-word argument),
+                                    # and only surface it if it's a known
+                                    # subcommand -- else "(other)".
+                                    allowlist = (SPECSCORE_SUBCOMMANDS if verb == "specscore"
+                                                 else CODEGRAPHER_SUBCOMMANDS)
+                                    raw_sub = seg_toks[1] if len(seg_toks) > 1 else ""
+                                    sub = raw_sub if raw_sub in allowlist else "(other)"
                                     adoption_agg.record_direct_cli(role, cur_family, verb, sub)
                                     adoption_meta = ("direct_cli", (verb, sub))
                                     symbol_lookup_ttl = 0  # a real CLI query resolves any pending lookup
+                                    ttl_touched_this_call = True
                                 elif verb in ("rg", "grep") or subverb == "git grep":
                                     pattern = extract_bash_grep_pattern(seg_str)
                                     cls = classify_grep_pattern(pattern or "")
@@ -1312,6 +1630,7 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                                     adoption_meta = ("grep", cls)
                                     if cls == "symbol-like":
                                         symbol_lookup_ttl = 3
+                                        ttl_touched_this_call = True
                                     if "spec/" in seg_str:
                                         adoption_agg.spec_hunt_via_git_or_grep[(role, cur_family)] += 1
                                 elif subverb == "git log" and "spec/" in seg_str:
@@ -1326,6 +1645,7 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                                         elif looks_like_source_file(read_path) and symbol_lookup_ttl > 0:
                                             adoption_agg.grep_to_read_chains[(role, cur_family)] += 1
                                             symbol_lookup_ttl = 0
+                                            ttl_touched_this_call = True
 
                     if name == "Grep" and adoption_agg is not None:
                         pattern = tinput.get("pattern")
@@ -1335,6 +1655,7 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             adoption_meta = ("grep", cls)
                             if cls == "symbol-like":
                                 symbol_lookup_ttl = 3
+                                ttl_touched_this_call = True
                             spec_target = tinput.get("path") or tinput.get("glob") or ""
                             if "spec/" in spec_target:
                                 adoption_agg.spec_hunt_via_git_or_grep[(role, cur_family)] += 1
@@ -1348,6 +1669,7 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                         elif looks_like_source_file(file_path) and symbol_lookup_ttl > 0:
                             adoption_agg.grep_to_read_chains[(role, cur_family)] += 1
                             symbol_lookup_ttl = 0
+                            ttl_touched_this_call = True
 
                     if name == "Skill" and adoption_agg is not None:
                         skill_name = str(tinput.get("skill") or "")
@@ -1358,6 +1680,12 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
 
                     if name.startswith("mcp__codegrapher") and adoption_agg is not None:
                         adoption_agg.record_mcp(role, cur_family, name)
+
+                    # minor #6: only spend one call of the grep->Read
+                    # window's budget per call, and never on the call that
+                    # just set or consumed it (see the comment above).
+                    if not ttl_touched_this_call and symbol_lookup_ttl > 0:
+                        symbol_lookup_ttl -= 1
 
                     tid = block.get("id")
                     pending_tool_use[tid] = (ts, name, tinput, adoption_meta)
@@ -1372,12 +1700,20 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             resume_targets[resume_target_label(tinput.get("to"))] += 1
 
         else:  # user message: tool_result timing, error/denial, size
-            if ts and gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
-                loop_events.append(("stall", role, session_id, kind))
-            if ts:
-                gap_prev_ts = ts
-                gap_prev_text = extract_text(msg.get("content"))
+            # NB1: a user record (e.g. a tool_result, or a fresh resume via
+            # SendMessage) can close a gap that started on an earlier day;
+            # only count it as a stall if THIS closing record is in-window.
+            gap_prev_ts, gap_prev_text = advance_stall_gap(
+                rec, msg, ts, since, until, gap_prev_ts, gap_prev_text,
+                pending_tool_ids, role, session_id, loop_events)
+            # NB1: a session whose ONLY in-window activity is a user record
+            # (e.g. it closes a stall gap that opened the day before, with
+            # no assistant record of its own falling inside the window)
+            # must still count as "touched" -- otherwise the whole
+            # transcript is dropped as untouched and the very stall NB1
+            # exists to catch is silently lost downstream.
+            if ts is not None and in_window(ts, since, until):
+                touched = True
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
@@ -1403,6 +1739,14 @@ def process_transcript(path: str, since: datetime, until: datetime, role: str,
                             adoption_agg.grep_pattern_result_sizes[(role, cur_family, label)].add(size)
                         elif kind == "spec_path":
                             adoption_agg.spec_path_result_sizes[(role, cur_family, label)].add(size)
+                    if name == "Bash":
+                        # minor #8: check the harness's own literal signal
+                        # against THIS tool_result's own content, not a
+                        # prior assistant turn's prose (see AUTOBG_TIMEOUT_RE).
+                        result_text = result_content_text_for_denial_check(block.get("content"))
+                        if AUTOBG_TIMEOUT_RE.search(result_text):
+                            st.autobg_timeout_count += 1
+                            autobg_timeout_total.append(1)
                     if name == "Bash" and start and ts:
                         dur = (ts - start).total_seconds()
                         if dur >= 30:
@@ -1460,6 +1804,7 @@ class AgentStats:
     day_usage: dict = field(default_factory=lambda: defaultdict(UsageBucket))  # minor #3
     tool_uses: int = 0
     stalls_by_kind: Counter = field(default_factory=Counter)  # M1: tool_running/idle_until_resume/waiting_notification
+    stall_minutes_by_kind: Counter = field(default_factory=Counter)  # SUMMARY headline: minutes, not just counts
     dispatch_tool_use_id: Optional[str] = None
     agent_type: Optional[str] = None
     description_present: bool = False
@@ -1508,14 +1853,12 @@ def process_agent_transcript(path: str, since: datetime, until: datetime, source
         msg = rec.get("message") or {}
 
         if rtype == "assistant":
+            gap_prev_ts, gap_prev_text = advance_stall_gap(
+                rec, msg, ts, since, until, gap_prev_ts, gap_prev_text,
+                pending_tool_ids, "subagent", agent_id, counter=a.stalls_by_kind, minutes_counter=a.stall_minutes_by_kind)
             if ts is None or not in_window(ts, since, until):
                 continue
             touched = True
-            if gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
-                a.stalls_by_kind[kind] += 1
-            gap_prev_ts = ts
-            gap_prev_text = extract_text(msg.get("content"))
             model = msg.get("model")
             if model:
                 models[model] += 1
@@ -1541,12 +1884,16 @@ def process_agent_transcript(path: str, since: datetime, until: datetime, source
                     pending_tool_ids.add(tid)
         else:  # user: closes pending tool_use ids, and may itself be a
                # task-notification or a fresh resume that ends a stall gap
-            if ts and gap_prev_ts and (ts - gap_prev_ts).total_seconds() > STALL_THRESHOLD_SECONDS:
-                kind = classify_stall_gap(rec, msg, pending_tool_ids, gap_prev_text)
-                a.stalls_by_kind[kind] += 1
-            if ts:
-                gap_prev_ts = ts
-                gap_prev_text = extract_text(msg.get("content"))
+            gap_prev_ts, gap_prev_text = advance_stall_gap(
+                rec, msg, ts, since, until, gap_prev_ts, gap_prev_text,
+                pending_tool_ids, "subagent", agent_id, counter=a.stalls_by_kind, minutes_counter=a.stall_minutes_by_kind)
+            # NB1: a subagent transcript whose ONLY in-window activity is
+            # this closing user record (its assistant turn fell the day
+            # before) must still count as "touched" -- else the whole
+            # transcript, and the in-window stall it just closed, is
+            # dropped.
+            if ts is not None and in_window(ts, since, until):
+                touched = True
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
@@ -1731,11 +2078,18 @@ def process_wb_worklogs(wb_state_dirs: list, since: datetime, until: datetime,
                     continue
                 wait_kinds[d.get("kind") or "unknown"] += 1
                 if raw_dir:
+                    # NM4: a wait-snapshot file carries `pid`,
+                    # `wb_session_id`, `targets` and `resume_args` -- the
+                    # last two can name any repo/PR the fleet is watching,
+                    # not just this one. Declare and keep only the two
+                    # fields this pass actually reads: `kind` and
+                    # `started_at` (never the whole file).
                     dest_dir = raw_dir / "waits"
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     try:
                         dest = dest_dir / (hashlib.sha1(fp.encode()).hexdigest()[:16] + ".json")
-                        dest.write_bytes(Path(fp).read_bytes())
+                        trimmed = {"kind": d.get("kind"), "started_at": d.get("started_at")}
+                        dest.write_text(json.dumps(trimmed, sort_keys=True), encoding="utf-8")
                     except Exception:
                         pass
     if any_waits_dir:
@@ -1796,6 +2150,21 @@ def process_hook_events(path: Path, since: datetime, until: datetime) -> dict:
     }
 
 
+def _sanitize_run_event_fields(rec: dict) -> dict:
+    """NM4: a `wb run` receipt carries `repository` (any repo the fleet has
+    touched, not just this one), `effort_id` (a task/worktree name),
+    `run_id` and `operation_id` (WB session-shaped ids) -- none of which
+    this pass reads. Declare and keep only the four fields it actually
+    computes from: timestamp (for the window check), state, kind, and
+    queue_wait_ms."""
+    return {
+        "timestamp": rec.get("timestamp"),
+        "state": rec.get("state"),
+        "kind": rec.get("kind"),
+        "queue_wait_ms": rec.get("queue_wait_ms"),
+    }
+
+
 def process_surviving_run_events(projects_root: Path, since: datetime, until: datetime,
                                   raw_dir: Optional[Path], offline: bool = False) -> dict:
     """`wb run` command-mode receipts live at <worktree>/.wb/local/run/events.jsonl
@@ -1804,13 +2173,22 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
 
     Minor #10: with --offline, replay the copies this pass already cached
     under raw/wb_run_events/ on an earlier live run, instead of re-globbing
-    (and finding nothing, since worktrees are commonly gone by the next run)."""
+    (and finding nothing, since worktrees are commonly gone by the next run).
+
+    NM4: the raw/ cache holds only the four declared fields
+    (_sanitize_run_event_fields) for IN-WINDOW events -- never the whole
+    file, never repository/effort_id/run_id/operation_id, and never an
+    out-of-window event. Restricting both the live count and the cache to
+    the same in-window set (rather than caching everything and filtering
+    on read) is what keeps an --offline replay's numbers identical to the
+    live run's: both count exactly what got cached, nothing more."""
     if offline:
         if not raw_dir:
             return {"unavailable": "--offline given but no raw/ cache directory to replay from"}
         files = sorted(glob.glob(str(raw_dir / "wb_run_events" / "*.jsonl")))
         if not files:
             return {"unavailable": f"--offline given but no cached raw/wb_run_events/ files under {scrub_home_path(str(raw_dir))}"}
+        surviving_files = None  # not meaningful when replaying a merged cache
     else:
         # worktree layout is <task>/<host>/<owner>/<repo>/.wb/local/run/events.jsonl
         # (e.g. .worktrees/my-task/github.com/sneat-dev/wb/.wb/...); glob
@@ -1820,14 +2198,15 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
                                   recursive=True))
         if not files:
             return {"unavailable": f"no surviving <worktree>/.wb/local/run/events.jsonl files under {scrub_home_path(str(projects_root))}/.worktrees"}
-    total = 0
+        surviving_files = len(files)
     in_window_count = 0
     by_state = Counter()
     by_kind = Counter()
     queue_waits_ms = []
+    cached_rows: list = []  # trimmed, in-window rows to persist, keyed by source file below
+    per_file_rows: dict = defaultdict(list)
     for fp in files:
         for rec in iter_jsonl(fp):
-            total += 1
             ts = parse_ts(rec.get("timestamp"))
             if not in_window(ts, since, until):
                 continue
@@ -1837,23 +2216,38 @@ def process_surviving_run_events(projects_root: Path, since: datetime, until: da
             qw = rec.get("queue_wait_ms")
             if isinstance(qw, (int, float)):
                 queue_waits_ms.append(qw)
-        if raw_dir and not offline:
-            dest_dir = raw_dir / "wb_run_events"
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            if raw_dir and not offline:
+                per_file_rows[fp].append(_sanitize_run_event_fields(rec))
+    if raw_dir and not offline:
+        # Write a cache file for every surviving file, even ones that
+        # contributed zero in-window rows: an empty cache file still tells
+        # a later --offline run "this worktree existed and had no in-window
+        # events", so its events_in_window/by_state/by_kind stay 0/{}/{}
+        # -- the same as this live run -- instead of falling through to
+        # "no cached files" and returning an "unavailable" shape that the
+        # live run never produces. Writing nothing here (the old behaviour)
+        # is what broke --offline reproducibility when a run genuinely saw
+        # zero in-window `wb run` events.
+        dest_dir = raw_dir / "wb_run_events"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for fp in files:
+            rows = per_file_rows.get(fp, [])
             try:
                 dest = dest_dir / (hashlib.sha1(fp.encode()).hexdigest()[:16] + ".jsonl")
-                dest.write_bytes(Path(fp).read_bytes())
+                dest.write_text("\n".join(json.dumps(r, sort_keys=True) for r in rows) + ("\n" if rows else ""),
+                                 encoding="utf-8")
             except Exception:
                 pass
     return {
-        "surviving_files": len(files),
-        "events_on_disk_total": total,
+        "surviving_files": surviving_files,
         "events_in_window": in_window_count,
         "by_state_in_window": dict(by_state),
         "by_kind_in_window": dict(by_kind.most_common(20)),
         "queue_wait_ms_median": statistics.median(queue_waits_ms) if queue_waits_ms else None,
         "note": "lower bound only: events for any worktree already cleaned up before this "
-                "extraction ran are gone" + (" (replayed from raw/ cache: --offline)" if offline else ""),
+                "extraction ran are gone, and the raw/ cache (and this count) only ever "
+                "holds events already inside the window"
+                + (" (replayed from raw/ cache: --offline)" if offline else ""),
     }
 
 
@@ -1865,13 +2259,23 @@ def _sanitize_pr_fields(pr: dict) -> dict:
     """M4: `raw/pulls.json` previously stored the FULL PR object, including
     the PR body (may contain anything the author wrote). Cache only the
     fields this pass actually reads: number and the three lifecycle
-    timestamps."""
+    timestamps. minor #7: PRs now come from the Search API (`search/issues`
+    with a `created:` range), whose issue-shaped items nest `merged_at`
+    under `pull_request` rather than at the top level -- read either
+    shape so this works whether the item came from the search endpoint
+    or (for an older raw/pulls.json cache, or a test fixture) the plain
+    pulls endpoint."""
     if not isinstance(pr, dict):
         return pr
+    if "items" in pr:  # minor #7: one gh --paginate page of search/issues is an envelope
+        return {"items": [_sanitize_pr_fields(it) for it in pr.get("items") or []]}
+    merged_at = pr.get("merged_at")
+    if merged_at is None and isinstance(pr.get("pull_request"), dict):
+        merged_at = pr["pull_request"].get("merged_at")
     return {
         "number": pr.get("number"),
         "created_at": pr.get("created_at"),
-        "merged_at": pr.get("merged_at"),
+        "merged_at": merged_at,
         "closed_at": pr.get("closed_at"),
         "state": pr.get("state"),
     }
@@ -1948,21 +2352,30 @@ def gh_api_paginated(endpoint: str, params: Optional[dict] = None, cache_path: O
 def process_github(repo: str, since: datetime, until: datetime, raw_dir: Path, offline: bool) -> dict:
     result: dict = {}
     try:
-        prs = gh_api_paginated(
-            f"repos/{repo}/pulls",
-            params={"state": "all", "sort": "created", "direction": "desc", "per_page": "100"},
+        # minor #7: the Search API's `created:` range qualifier filters
+        # server-side to the window, instead of paginating the repo's
+        # ENTIRE PR history via the plain `pulls` endpoint (which has no
+        # date filter) and discarding most pages client-side.
+        q = f"repo:{repo} is:pr created:{since.date()}..{until.date()}"
+        raw_pages = gh_api_paginated(
+            "search/issues",
+            params={"q": q, "per_page": "100"},
             cache_path=raw_dir / "pulls.json", offline=offline, sanitize=_sanitize_pr_fields,
         )
     except Exception as e:
-        return {"unavailable": f"gh api pulls failed: {e}"}
+        return {"unavailable": f"gh api pulls (search) failed: {e}"}
 
-    window_prs = []
-    for pr in prs:
-        created = parse_ts(pr.get("created_at"))
-        if created and created < since - timedelta(days=60):
-            break
-        if created and in_window(created, since, until):
-            window_prs.append(pr)
+    # each gh --paginate page of search/issues is a {"items": [...]} envelope
+    prs = []
+    for page in raw_pages:
+        if isinstance(page, dict) and "items" in page:
+            prs.extend(page["items"])
+        else:
+            prs.append(page)
+
+    # server-side filtering already applied the window; this is a
+    # defensive re-check, not a client-side substitute for it.
+    window_prs = [pr for pr in prs if in_window(parse_ts(pr.get("created_at")), since, until)]
 
     merge_times_h = []
     merged, closed_unmerged, still_open = 0, 0, 0
@@ -2214,7 +2627,8 @@ def build_tools_section(tool_agg: ToolCallAgg) -> dict:
 def build_bash_section(bash_verb_totals: Counter, bash_subverb_totals: Counter,
                         long_bash: list, autobg_total: list, autobg_timeout_total: list,
                         cpu_heavy_counter: Counter, loop_events: list,
-                        pipe_counter: Counter, seq_miner: SequenceMiner) -> dict:
+                        pipe_counter: Counter, seq_miner: SequenceMiner,
+                        pipe_filter_totals: Optional[Counter] = None) -> dict:
     loop_count = sum(1 for e in loop_events if e[0] == "loop")
     loop_durations = [e[3] for e in loop_events if e[0] == "loop_duration"]
     total = cpu_heavy_counter.get("total", 0)
@@ -2230,6 +2644,13 @@ def build_bash_section(bash_verb_totals: Counter, bash_subverb_totals: Counter,
 
     return {
         "by_verb": dict(bash_verb_totals),
+        # NM2: `|`-downstream filters (e.g. `head`/`grep` piped from a
+        # real command) are counted separately here, one entry per
+        # command POSITION in the pipeline (not per Bash call) -- they are
+        # never folded into by_verb, which counts real command positions
+        # only, and they never feed the sequence miner (which works over
+        # whole Bash CALLS -- see top_multi_call_sequences).
+        "pipe_filters": dict(pipe_filter_totals or {}),
         "by_subverb": dict(bash_subverb_totals.most_common(40)),
         "long_commands_ge_30s": {
             "count": len(long_bash),
@@ -2276,17 +2697,65 @@ def build_stalls_section(loop_events: list) -> dict:
     subagents -- both were previously collapsed into a single noisy
     >5-minute-gap count, and main-loop stalls were dropped entirely."""
     by_role_kind: Counter = Counter()
+    minutes_by_role_kind: Counter = Counter()
     for e in loop_events:
         if e[0] != "stall":
             continue
-        _, role, _session_id, kind = e
+        _, role, _session_id, kind, gap_seconds = e
         by_role_kind[(role, kind)] += 1
+        minutes_by_role_kind[(role, kind)] += gap_seconds / 60.0
     out = {}
     for role in ("main", "subagent"):
         kinds = {k: by_role_kind.get((role, k), 0)
                  for k in ("tool_running", "idle_until_resume", "waiting_notification")}
-        out[role] = {"total": sum(kinds.values()), "by_kind": kinds}
+        minutes = {k: round(minutes_by_role_kind.get((role, k), 0.0), 1)
+                   for k in ("tool_running", "idle_until_resume", "waiting_notification")}
+        out[role] = {"total": sum(kinds.values()), "by_kind": kinds, "minutes_by_kind": minutes}
     return out
+
+
+def build_headline_section(since: datetime, until: datetime,
+                            tokens_main_by_model: dict, tokens_subagent_by_model: dict,
+                            total_cost: float, stalls_section: dict,
+                            gh_stats: dict, wb_stats: dict) -> dict:
+    """A reviewer coming back a week later needs the total before the
+    12-item unavailable list buries it. Computed once here and rendered
+    as the FIRST section of SUMMARY.md (and the first key other than
+    window/generated_at in metrics.json), with `unavailable` moved last."""
+    days = max(1, (until.date() - since.date()).days + 1)
+    main_usd = sum(d["estimated_usd"] for d in tokens_main_by_model.values())
+    subagent_usd = sum(d["estimated_usd"] for d in tokens_subagent_by_model.values())
+    cache_read_usd = (sum(d.get("estimated_cache_read_usd", 0.0) for d in tokens_main_by_model.values())
+                       + sum(d.get("estimated_cache_read_usd", 0.0) for d in tokens_subagent_by_model.values()))
+    output_tokens = (sum(d["output_tokens"] for d in tokens_main_by_model.values())
+                      + sum(d["output_tokens"] for d in tokens_subagent_by_model.values()))
+
+    merged_prs = None
+    if isinstance(gh_stats, dict) and "unavailable" not in gh_stats:
+        merged_prs = gh_stats.get("prs", {}).get("merged")
+    sealed_worktrees = None
+    if isinstance(wb_stats, dict) and "unavailable" not in wb_stats:
+        sealed_worktrees = wb_stats.get("sealed")
+
+    def _usd_per(n):
+        return round(total_cost / n, 2) if n else None
+
+    return {
+        "total_usd": round(total_cost, 2),
+        "usd_per_day": round(total_cost / days, 2),
+        "usd_main": round(main_usd, 2),
+        "usd_subagent": round(subagent_usd, 2),
+        "cache_read_share_of_usd": round(cache_read_usd / total_cost, 3) if total_cost else None,
+        "output_tokens_total": output_tokens,
+        "usd_per_merged_pr": _usd_per(merged_prs),
+        "usd_per_sealed_worktree": _usd_per(sealed_worktrees),
+        "merged_prs_in_window": merged_prs,
+        "sealed_worktrees_in_window": sealed_worktrees,
+        "stall_minutes_by_kind": {
+            "main": stalls_section["main"]["minutes_by_kind"],
+            "subagent": stalls_section["subagent"]["minutes_by_kind"],
+        },
+    }
 
 
 def build_adoption_section(adoption_agg: AdoptionAgg, codegrapher_status: dict) -> dict:
@@ -2392,6 +2861,7 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
     cpu_heavy_counter: Counter = Counter()
     loop_events: list = []
     pipe_counter: Counter = Counter()
+    pipe_filter_totals: Counter = Counter()  # NM2: pipe-downstream segments, kept apart from the verb table
     seq_miner = SequenceMiner()
     adoption_agg = AdoptionAgg()
 
@@ -2407,7 +2877,7 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
                                  autobg_total, autobg_timeout_total,
                                  dispatch_targets, resume_targets,
                                  cpu_heavy_counter, loop_events, pipe_counter, seq_miner,
-                                 adoption_agg=adoption_agg)
+                                 adoption_agg=adoption_agg, pipe_filter_totals=pipe_filter_totals)
         if st:
             sessions.append(st)
             for fam, bucket in st.model_usage.items():
@@ -2439,7 +2909,8 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
                             autobg_total, autobg_timeout_total,
                             dispatch_targets, resume_targets,
                             cpu_heavy_counter, loop_events, pipe_counter, seq_miner,
-                            adoption_agg=adoption_agg, default_model_family=fam)
+                            adoption_agg=adoption_agg, default_model_family=fam,
+                            pipe_filter_totals=pipe_filter_totals)
 
     tokens_by_day_model_role: dict = {}
     for (day, fam, role), bucket in global_day_usage.items():
@@ -2480,7 +2951,8 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
     tools_section = build_tools_section(tool_agg)
     bash_section = build_bash_section(bash_verb_totals, bash_subverb_totals, long_bash,
                                        autobg_total, autobg_timeout_total, cpu_heavy_counter,
-                                       loop_events, pipe_counter, seq_miner)
+                                       loop_events, pipe_counter, seq_miner,
+                                       pipe_filter_totals=pipe_filter_totals)
     # M1: stalls classified as tool_running / idle_until_resume /
     # waiting_notification, for BOTH the main loop (previously collected
     # but dropped) and subagents (previously a single noisy >5min-gap
@@ -2521,18 +2993,38 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
             "kind": "wall_clock",
         })
     for off in tools_section["top_result_size_offenders"][:5]:
+        # minor #9: the label must include the MODEL, not just role/tool --
+        # otherwise two distinct offenders (e.g. subagent/Bash under sonnet
+        # and under opus) render as identical-looking duplicate rows.
         top_candidates.append({
-            "pattern": f"tool result size:{off['role']}/{off['tool']}",
+            "pattern": f"tool result size:{off['role']}/{off['model']}/{off['tool']}",
             "estimated_tokens": off["estimated_total_tokens"],
             "count": off["calls"],
             "kind": "context_bloat",
         })
 
+    # minor #9: the OLD sort key summed raw token counts, wall-clock
+    # minutes*1000, wall-clock hours*60000 and call counts*10 into one
+    # number -- arbitrary weights across incompatible units (a raw token
+    # count is not commensurable with a hand-picked "hours are worth
+    # 60000 points" constant). Rank honestly instead: group by `kind`
+    # first (tokens -- the only kind with a real dollar figure -- ranks
+    # highest, in a fixed, documented priority order), then within each
+    # kind by that kind's own natural magnitude. No cross-unit blending.
+    _TOP10_KIND_PRIORITY = {"tokens": 0, "context_bloat": 1, "wall_clock": 2, "tool_pattern": 3}
+
+    def _magnitude(c):
+        kind = c.get("kind")
+        if kind == "tokens":
+            return c.get("estimated_usd", 0) or 0
+        if kind == "context_bloat":
+            return c.get("estimated_tokens", 0) or 0
+        if kind == "wall_clock":
+            return (c.get("wall_clock_hours", 0) or 0) * 3600 + (c.get("wall_clock_minutes", 0) or 0) * 60
+        return c.get("count", 0) or 0
+
     def sort_key(c):
-        return ((c.get("estimated_tokens", 0) or 0)
-                 + (c.get("wall_clock_minutes", 0) or 0) * 1000
-                 + (c.get("wall_clock_hours", 0) or 0) * 60000
-                 + (c.get("count", 0) or 0) * 10)
+        return (-_TOP10_KIND_PRIORITY.get(c.get("kind"), 99), _magnitude(c))
     top10 = sorted(top_candidates, key=sort_key, reverse=True)[:10]
 
     unavailable = []
@@ -2612,9 +3104,18 @@ def run_extract(since: datetime, until: datetime, out_dir: Path, home: Path,
     if isinstance(codex_stats, dict) and "unavailable" in codex_stats:
         unavailable.append({"metric": "Codex CLI token usage", "reason": codex_stats["unavailable"]})
 
+    # "Is SUMMARY.md useful a week later?" -- a reviewer needs the total
+    # before the unavailable list buries it. Computed once here, rendered
+    # first (metrics.json keeps `unavailable` last too, moved below).
+    headline_section = build_headline_section(
+        since, until, tokens_main_by_model, tokens_subagent_by_model,
+        total_cost, stalls_section, gh_stats, wb_stats,
+    )
+
     metrics = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "repo": repo,
+        "headline": headline_section,
         "window": {"since": since.isoformat(), "until": until.isoformat()},
         "inputs": {
             "main_session_files": len(main_files),
@@ -2684,6 +3185,28 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
     lines.append("")
     lines.append(f"Generated {metrics['generated_at']}. Runtime {metrics['runtime_seconds']}s.")
     lines.append("")
+
+    # "Is SUMMARY.md useful a week later?" -- the headline is the FIRST
+    # thing on the page, not buried after a 12-item unavailable list.
+    h = metrics.get("headline") or {}
+    lines.append("## Headline")
+    lines.append("")
+    lines.append(f"- **Total: ${h.get('total_usd')}** (${h.get('usd_per_day')}/day) "
+                  f"-- main ${h.get('usd_main')}, subagent ${h.get('usd_subagent')}")
+    cr_share = h.get("cache_read_share_of_usd")
+    lines.append(f"- Cache-read share of total $: {cr_share * 100:.1f}%" if cr_share is not None
+                  else "- Cache-read share of total $: n/a (no cost this window)")
+    lines.append(f"- Total output tokens: {h.get('output_tokens_total', 0):,}")
+    upp = h.get("usd_per_merged_pr")
+    lines.append(f"- $ per merged PR: {('$' + str(upp)) if upp is not None else 'n/a'} "
+                  f"({h.get('merged_prs_in_window')} merged in window)")
+    upw = h.get("usd_per_sealed_worktree")
+    lines.append(f"- $ per sealed worktree: {('$' + str(upw)) if upw is not None else 'n/a'} "
+                  f"({h.get('sealed_worktrees_in_window')} sealed in window)")
+    sm = h.get("stall_minutes_by_kind", {})
+    lines.append(f"- Stall minutes by kind -- main: {sm.get('main', {})}, subagent: {sm.get('subagent', {})}")
+    lines.append("")
+
     lines.append("## Top 10 most expensive patterns (estimated tokens / wall-clock)")
     lines.append("")
     lines.append("| # | Pattern | Kind | Detail |")
@@ -2694,12 +3217,6 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
             if k in c:
                 detail_bits.append(f"{k}={c[k]}")
         lines.append(f"| {i} | {c['pattern']} | {c['kind']} | {', '.join(detail_bits)} |")
-    lines.append("")
-
-    lines.append("## Unavailable metrics (input to the logging-gap analysis)")
-    lines.append("")
-    for u in metrics["unavailable"]:
-        lines.append(f"- **{u['metric']}**: {u['reason']}")
     lines.append("")
 
     lines.append("## Tokens and cost")
@@ -2885,6 +3402,14 @@ def render_summary(metrics: dict, since: datetime, until: datetime) -> str:
         lines.append(f"- unavailable: {g['unavailable']}")
     else:
         lines.append(f"- commits: {g['commits']}, merge commits: {g['merge_commits']}, PR references: {g['pr_references']}")
+    lines.append("")
+
+    # "Unavailable" goes LAST -- it's an input to the logging-gap analysis,
+    # not the thing a reviewer needs first (see "Headline" at the top).
+    lines.append("## Unavailable metrics (input to the logging-gap analysis)")
+    lines.append("")
+    for u in metrics["unavailable"]:
+        lines.append(f"- **{u['metric']}**: {u['reason']}")
     lines.append("")
 
     return "\n".join(lines)

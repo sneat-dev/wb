@@ -19,7 +19,13 @@ tools/sdlc-metrics/extract.py --since 2026-09-11 --until 2026-09-18 --out <dir>
 The same inputs (same files on disk, same `--since`/`--until`) produce the
 same output, modulo GitHub state changing between runs — raw API responses
 are cached under `<out>/raw/`, so a later run can replay them with
-`--offline` instead of calling `gh` again.
+`--offline` instead of calling `gh` again. This holds for a window that has
+fully closed (no session inside it is still being appended to); a stall or
+gap is only ever counted when the record that closes it falls inside the
+window, so activity on OTHER days can no longer change a window's own
+counts (a real defect an earlier pass had: a multi-day-old gap between
+sessions was being miscounted as a same-day stall, inflating the count and
+making it drift between runs while a later day's session was still live).
 
 Flags:
 
@@ -95,9 +101,18 @@ point `--out` at a scratch or reports directory (for example
   transcript. Duration = last usage timestamp minus first, within the window.
   Dispatch = an `Agent` tool_use in a main-loop (or parent-agent) transcript;
   resume = a `SendMessage` tool_use whose input has a `to` field. A **stall**
-  is a gap over 5 minutes between an agent's own assistant messages while its
-  transcript was still being written; it is separately flagged when the prior
-  message's text matched `waiting for (a )?notification`.
+  is a gap over 5 minutes between two records of ANY type (assistant or
+  user), timed across the WHOLE transcript so a gap spanning a day
+  boundary is measured correctly — but only ever COUNTED when the record
+  that CLOSES the gap falls inside the window (a stall belongs to the day
+  it was noticed on, never to whatever day the prior activity happened to
+  be). Each stall is classified into exactly one of three kinds:
+  `tool_running` (closed by a tool_result for an already-open tool_use),
+  `waiting_notification` (closed by a real `<task-notification>` wrapper,
+  or the prior turn said it was waiting for one), or `idle_until_resume`
+  (anything else, most commonly a fresh user turn via SendMessage after
+  the agent went idle at the end of a turn). The main loop's own stalls
+  are reported the same way, under `orchestrator.stalls`.
 - **Tool calls** (`tools`): every `tool_use`/`tool_result` pair, grouped by
   `(role, model family, tool name)`. Result size is the character length of
   the tool_result content (never the content itself); `estimated_total_tokens`
@@ -110,9 +125,22 @@ point `--out` at a scratch or reports directory (for example
   raw input is never written out, only a 16-hex-character digest.
 - **Bash, in depth** (`bash`): `by_subverb` groups `wb`, `git`, `gh` and `go`
   commands by their first one-to-three tokens (e.g. `wb pr land`, `git push`,
-  `gh run list`, `go test`). A command line is split on `&&`/`||`/`;`/`|`
-  into clauses first, and each clause is classified on its own (so a leading
-  `cd dir &&` no longer hides the real command). CPU-heavy commands are
+  `gh run list`, `go test`), each token allowlisted per tool family so a
+  branch/package/file name typed as an argument can never leak into the
+  subverb itself. `by_verb`'s allowlisted-but-uncategorised bucket is
+  labelled `cmd:<verb>` (e.g. `cmd:jq`) — an ALLOWLISTED command with no
+  dedicated bucket, not an unknown one; a verb not on the allowlist at all
+  is `<other>`. `go test` is split by scope: `go test ./... (module)`
+  (exactly `./...`), `go test (subtree)` (`.../...` anywhere else), or
+  `go test (package)` (anything else, e.g. `go test -v .`), each with a
+  `-run` variant matched as an exact TOKEN (`-run`/`-run=...`), never a
+  substring — a package path like `./cmd/wb-runner/...` is never mistaken
+  for the `-run` flag. A command line is split on `&&`/`||`/`;`/`|` — and
+  on a bare newline, so two physical lines pasted into one Bash call (a
+  heredoc's closing line followed by a real command on the next line) both
+  classify — into clauses first, and each clause is classified on its own
+  (so a leading `cd dir &&`, or `nice -n 19`/`timeout -k 5 60`, no longer
+  hides the real command). CPU-heavy commands are
   `go test|build|vet`, `golangci-lint`, and `npm|pnpm|bun(x)|yarn (run
   )?build|test`; `wb run` coverage is the share of CPU-heavy clauses that
   ARE prefixed by `wb run --` within that same clause (each clause is
@@ -121,9 +149,15 @@ point `--out` at a scratch or reports directory (for example
   combined with `sleep`, a bare
   `kill -0` watch, or a `gh run list` / `gh api ...runs` / `gh pr checks`
   poll. Pipe truncation checks whether any pipeline segment after the first
-  starts with `tail` or `head`. Multi-call sequences are 2–4-gram windows
-  over each session's ordered, coarsely-classified Bash calls, kept only when
-  a sequence recurs (count >= 2) across the window.
+  starts with `tail` or `head`. A `|`-downstream pipe filter (e.g. `head` in
+  `git log | head`) is never counted as its own command position in
+  `by_verb`/`by_subverb` — it has its own separate count under
+  `bash.pipe_filters` instead, so a pipeline's filter stage never inflates
+  the verb table. Multi-call sequences (`top_multi_call_sequences`) are
+  2–4-gram windows over each session's ordered Bash CALLS — one entry per
+  `tool_use`, labelled by its FIRST classified verb only, never one entry
+  per segment or per pipe stage — kept only when a sequence recurs
+  (count >= 2) across the window.
 - **Pipeline and CI** (`pipeline_and_ci`): PR time-to-merge from
   `created_at`/`merged_at`; Actions run duration from `run_started_at` to
   `updated_at`; wasted minutes = duration of `cancelled` + `failure`
@@ -212,14 +246,22 @@ Any filesystem path that reaches `metrics.json` or `SUMMARY.md` (error
 messages, checked-repo paths, WB state-dir paths) has its `$HOME` prefix
 replaced with `~` first, so it never carries the machine's username.
 
-**`<out>/raw/` is local-only and must not be shared or committed.** It caches
-the GitHub API responses this run fetched, trimmed to the fields the
-extractor actually reads (PR number and lifecycle timestamps/state for
-`pulls.json`; run id, name, event, conclusion, timestamps and `head_sha` for
-`actions_runs.json` — never the full PR body or a commit author's email).
+**`<out>/raw/` is local-only and must not be shared or committed.** Every
+file under it is trimmed to the fields the extractor actually reads before
+it is ever written to disk — never a whole-file/whole-record copy. This is
+the complete list of files `raw/` can hold and what each keeps (NM4 --
+declared here so no future field can quietly widen it without review):
+
+| File | Kept fields | Dropped (never written) |
+|---|---|---|
+| `raw/pulls.json` | `number`, `created_at`, `merged_at`, `closed_at`, `state` | the full PR body, author |
+| `raw/actions_runs.json` | `id`, `name`, `event`, `conclusion`, `run_started_at`, `updated_at`, `head_sha` | `head_commit.author` (a real email/name) |
+| `raw/waits/<hash>.json` | `kind`, `started_at` | `pid`, `wb_session_id`, `targets`, `resume_args` (these can name any repo/PR the fleet is watching) |
+| `raw/wb_run_events/<hash>.jsonl` | `timestamp`, `state`, `kind`, `queue_wait_ms`, one line per IN-WINDOW event only | `repository`, `effort_id` (a task/worktree name), `run_id`, `operation_id` |
+
 That trimming keeps casual disclosure out, but `raw/` is still a cache of
-GitHub data scoped to one run, not a publishable artifact: treat the whole
-`<out>/` directory, including `raw/`, as private to the person who ran the
+this run's own data, not a publishable artifact: treat the whole `<out>/`
+directory, including `raw/`, as private to the person who ran the
 extractor, the same as `metrics.json` and `SUMMARY.md`.
 
 Verb/subverb classification (the "top verbs" and `by_subverb` counts) uses a
