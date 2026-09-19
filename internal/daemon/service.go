@@ -386,15 +386,24 @@ func (service *Service) execute(id string) {
 	service.active[id] = active{cancel: cancel}
 	service.mu.Unlock()
 
-	units := int(item.Operation.CpuUnits)
-	if units == 0 {
-		units = runqueue.Units(item.Argv, runqueue.Budget())
+	self := runqueue.Participant{PID: os.Getpid(), Summary: classify(item.Argv), Worktree: item.WorkingDir}
+	var admission runqueue.Admission
+	var err error
+	if explicit := int(item.Operation.CpuUnits); explicit != 0 {
+		// The caller declared its own CPU need directly (the trusted raw
+		// execution fallback) — honor it via the plain budget-sum pool
+		// rather than reclassifying argv adaptively.
+		admission, err = runqueue.AdmitExplicit(ctx, service.projects, explicit, self)
+	} else {
+		admission, err = runqueue.Admit(ctx, service.projects, item.Argv, self, nil)
 	}
-	lease, waited, err := runqueue.Acquire(ctx, service.projects, units, runqueue.Budget())
 	if err != nil {
-		service.finish(id, daemonv1.OperationState_OPERATION_STATE_CANCELLED, 1, nil, nil, waited, err)
+		service.finish(id, daemonv1.OperationState_OPERATION_STATE_CANCELLED, 1, nil, nil, admission.Waited, err)
 		return
 	}
+	units := admission.Units
+	waited := admission.Waited
+	lease := admission.Lease
 	defer lease.Release()
 	if authorizeErr := service.authorize(); authorizeErr != nil {
 		service.failAuthorization(id, authorizeErr)
@@ -424,7 +433,7 @@ func (service *Service) execute(id string) {
 	service.notifyLocked()
 	argv := append([]string(nil), item.Argv...)
 	workingDir := item.WorkingDir
-	environment := governedChildEnvironment(os.Environ(), item.Environment, id, units)
+	environment := governedChildEnvironment(os.Environ(), argv, item.Environment, id, units)
 	service.mu.Unlock()
 
 	var stdout, stderr tailBuffer
@@ -632,14 +641,18 @@ func allowedEnvironment(input map[string]string) (map[string]string, error) {
 	return result, nil
 }
 
-func governedChildEnvironment(base []string, additions map[string]string, operationID string, units int) []string {
+func governedChildEnvironment(base []string, argv []string, additions map[string]string, operationID string, units int) []string {
 	result := mergeEnvironment(base, additions)
-	result = mergeEnvironment(result, map[string]string{
-		"GOMAXPROCS":      fmt.Sprint(units),
+	cpuAdditions := map[string]string{
+		"GOMAXPROCS":      runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units),
 		"NX_PARALLEL":     fmt.Sprint(units),
 		"WB_CPU_UNITS":    fmt.Sprint(units),
 		"WB_OPERATION_ID": operationID,
-	})
+	}
+	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
+		cpuAdditions["GOFLAGS"] = goFlags
+	}
+	result = mergeEnvironment(result, cpuAdditions)
 	return result
 }
 
