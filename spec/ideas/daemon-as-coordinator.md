@@ -1,14 +1,14 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Specifying
 ---
 
 # Idea: The daemon as coordinator — WB initiating contact with live sessions
 
-**Status:** Draft
+**Status:** Specifying
 **Date:** 2026-09-18
 **Owner:** ai
-**Promotes To:** —
+**Promotes To:** herdr-session-transport
 **Supersedes:** —
 **Related Ideas:** extends:delegated-waiting-and-agent-wake
 
@@ -464,6 +464,17 @@ templates.
   (the claim chain delivery follows).
 - **Dependencies:** the task→PR binding recorded by `wb pr create`
   (sneat-dev/wb#601); herdr on the machine.
+- **Realized as:** `spec/features/herdr-session-transport` (see **Promotes
+  To**, above), not the "daemon session-notification Feature" named above —
+  it also owns the pluggable herdr/tmux transport this idea's MVP assumed.
+  Two corrections that Feature's research made, recorded here rather than
+  rewriting this idea's original reasoning: the empty-input evidence this
+  idea assumed herdr would supply does not exist in `agent list`/`agent get`,
+  and the founder answered on 2026-09-19: "Out of scope for performance
+  work we focus now on". So the MVP ships **record-only** in its first iteration — no daemon-originated
+  message is submitted into any pane; and the "inject without submitting
+  (advisory)" row's `herdr agent send-keys` is superseded by `pane
+  send-text`, which sends literal text rather than interpreted key presses.
 
 ## Open Questions
 
