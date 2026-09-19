@@ -405,8 +405,10 @@ func TestSpCovResumeUnderLockValidatesSuccessorLineage(t *testing.T) {
 		"negative pid":      {PID: -3, WBSessionID: "wbs-x"},
 		"padded session id": {PID: 1, WBSessionID: " wbs-x"},
 	} {
+		// Left serial: the trailing successful resume below must observe
+		// the pre-resume store state, and a parallel t.Run would return
+		// before its body (and this rejection) actually ran.
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			if _, err := store.ResumeUnderLock(lock, successor, time.Now()); err == nil {
 				t.Fatalf("invalid successor accepted: %#v", successor)
 			}
@@ -464,8 +466,10 @@ func TestSpCovClaimResumeRouteRejectsUnsafeModesAndTargets(t *testing.T) {
 			return store.claimResumeRouteUnderLock(lock, ResumeRouteRemote, "target", string(sessionmove.CourierSSH), sessionmove.SSHConfig{}, time.Now())
 		},
 	} {
+		// Left serial: the trailing checks below claim a real route on the
+		// same store/lock and write to the same aggregate path, and must
+		// run only after every rejection case above has actually executed.
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			if _, _, err := call(); err == nil {
 				t.Fatal("unsafe remote route claimed")
 			}
@@ -807,8 +811,10 @@ func TestSpCovPrepareRemoteUnderLockRejectsUnsafeRoutes(t *testing.T) {
 			return store.PrepareRemoteUnderLock(lock, "target", "", courier, sessionmove.SSHConfig{}, time.Now())
 		},
 	} {
+		// Left serial: the trailing checks below prepare a real remote
+		// route on the same store/lock and must run only after every
+		// rejection case above has actually executed.
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			if _, err := call(); err == nil {
 				t.Fatal("unsafe remote route prepared")
 			}

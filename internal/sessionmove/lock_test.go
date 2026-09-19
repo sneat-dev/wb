@@ -31,7 +31,7 @@ func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	if !lock.HeldForStore(root, request, digest) {
 		t.Fatal("exact admitted store authority was not recognized")
 	}

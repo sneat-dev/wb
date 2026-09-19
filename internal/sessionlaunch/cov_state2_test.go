@@ -114,7 +114,7 @@ func TestSlCovSaveReadyWithoutPlanFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	if _, err := attempt.saveReady(slCovPlan("handoff-123"), slCovDigest("plan"), slCovReadyRecord(slCovPlan("handoff-123"), 1, time.Now())); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("saveReady without a plan = %v", err)
 	}
@@ -283,7 +283,7 @@ func TestSlCovSaveStartedSurfacesCorruptStartedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = fence.Close() }()
+	t.Cleanup(func() { _ = fence.Close() })
 	if _, err := attempt.saveReady(plan, planDigest, record); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestSlCovOpenLaunchStateWithoutAttemptsDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	if state.attempts != nil {
 		t.Fatalf("attempts directory unexpectedly present: %v", state.attempts)
 	}
@@ -412,7 +412,7 @@ func TestSlCovExecFenceRejectsNonPrivateLockFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	lockPath := filepath.Join(slCovAttemptDir(root, attempt.id), execDirectoryName, "171.lock")
 	slCovWrite(t, lockPath, 0o644, "")
 	if _, err := attempt.acquireExecFence(171); err == nil {

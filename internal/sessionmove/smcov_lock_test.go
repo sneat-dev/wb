@@ -84,7 +84,7 @@ func TestSmCovLockHeldForSessionRequiresExactAggregateAndDigest(t *testing.T) {
 	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	var nilLock *ExecutionLock
 	if nilLock.HeldForSession(fixture.root, fixture.request.HandoffID, string(fixture.digest)) {
@@ -115,7 +115,7 @@ func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
 	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	lock := fixture.smCovAcquire(t)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	var nilLock *ExecutionLock
 	if retained, err := nilLock.RetainSessionDir(fixture.root, fixture.request.HandoffID, string(fixture.digest)); err == nil {
@@ -150,7 +150,7 @@ func TestSmCovLockRetainSessionDirRequiresExactBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RetainSessionDir on the bound aggregate: %v", err)
 	}
-	defer func() { _ = retained.Close() }()
+	t.Cleanup(func() { _ = retained.Close() })
 	wantInfo, err := os.Stat(smCovHandoffDir(fixture))
 	if err != nil {
 		t.Fatalf("stat handoff directory %s: %v", smCovHandoffDir(fixture), err)
@@ -670,10 +670,13 @@ func TestSmCovLockAcquireWaitsInterruptiblyForContendedFence(t *testing.T) {
 	t.Parallel()
 	fixture := smCovNewLockFixture(t)
 	held := fixture.smCovAcquire(t)
-	defer func() { _ = held.Close() }()
+	t.Cleanup(func() { _ = held.Close() })
 
+	// These three subtests are left serial: "fence is reusable after
+	// release" closes the fence the other two depend on staying held for
+	// contention, and only serial, declaration-order execution guarantees
+	// it runs last.
 	t.Run("cancelled context", func(t *testing.T) {
-		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		lock, err := fixture.store.AcquireExecutionLock(ctx, fixture.request.HandoffID, fixture.digest)
@@ -693,7 +696,6 @@ func TestSmCovLockAcquireWaitsInterruptiblyForContendedFence(t *testing.T) {
 	})
 
 	t.Run("expired timeout", func(t *testing.T) {
-		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
 		lock, err := fixture.store.AcquireExecutionLock(ctx, fixture.request.HandoffID, fixture.digest)
@@ -710,7 +712,6 @@ func TestSmCovLockAcquireWaitsInterruptiblyForContendedFence(t *testing.T) {
 	})
 
 	t.Run("fence is reusable after release", func(t *testing.T) {
-		t.Parallel()
 		if err := held.Close(); err != nil {
 			t.Fatalf("release held fence: %v", err)
 		}
@@ -732,7 +733,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open handoff directory %s: %v", dir, err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 
 	firstFD, err := openExecutionLockAt(int(handoff.Fd()))
 	if err != nil {
@@ -742,7 +743,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 	if first == nil {
 		t.Fatalf("wrap first execution lock fd %d", firstFD)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 
 	secondFD, err := openExecutionLockAt(int(handoff.Fd()))
 	if err != nil {
@@ -752,7 +753,7 @@ func TestSmCovLockOpenExecutionLockAtReusesStableInode(t *testing.T) {
 	if second == nil {
 		t.Fatalf("wrap second execution lock fd %d", secondFD)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 
 	firstInfo, err := first.Stat()
 	if err != nil {
@@ -799,7 +800,7 @@ func TestSmCovLockOpenExecutionLockAtReportsCreationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open unwritable handoff directory %s: %v", dir, err)
 	}
-	defer func() { _ = handoff.Close() }()
+	t.Cleanup(func() { _ = handoff.Close() })
 
 	fd, err := openExecutionLockAt(int(handoff.Fd()))
 	if err == nil {
@@ -1025,12 +1026,12 @@ func TestSmCovLockSameFileRejectsNilAndDistinctDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first temp file: %v", err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 	second, err := os.CreateTemp(t.TempDir(), "smcov-same-file-*")
 	if err != nil {
 		t.Fatalf("create second temp file: %v", err)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 
 	if sameFile(nil, first) {
 		t.Fatalf("sameFile(nil, file) = true, want false")

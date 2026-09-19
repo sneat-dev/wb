@@ -402,12 +402,12 @@ func TestSlCovFinalizeStartedAndInspectStartedRejectMissingArtifacts(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	attempt, err := state.createAttempt()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	if _, _, err := finalizeStarted(state, attempt, fx.plan, fx.planDigest, launcherRelease{}, fx.deps.now()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("finalizeStarted without release = %v", err)
 	}
@@ -447,7 +447,7 @@ func TestSlCovResolveAuthorityPrivateHandoverRequiresLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	resolved, err := resolveAuthority(Options{Store: store, Request: request, RequestDigest: digest, ExecutionLock: lock})
 	if err != nil {
 		t.Fatal(err)
@@ -522,10 +522,12 @@ func TestSlCovSelectAttemptForStartRejectsMalformedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 
+	// These three subtests share one openLaunchState fixture and mutate the
+	// same on-disk paths (started.json, attempts/garbage) in sequence, so
+	// they are left serial rather than parallel.
 	t.Run("corrupt started marker", func(t *testing.T) {
-		t.Parallel()
 		slCovWrite(t, filepath.Join(slCovStateDir(fx.store.Root), "started.json"), 0o600, "{}\n")
 		defer func() { _ = os.Remove(filepath.Join(slCovStateDir(fx.store.Root), "started.json")) }()
 		if _, _, _, _, err := selectAttemptForStart(context.Background(), fx.options(nil), fx.deps, state, fx.plan, fx.planDigest); err == nil {
@@ -534,7 +536,6 @@ func TestSlCovSelectAttemptForStartRejectsMalformedHistory(t *testing.T) {
 	})
 
 	t.Run("malformed attempt history", func(t *testing.T) {
-		t.Parallel()
 		if err := os.Mkdir(filepath.Join(slCovStateDir(fx.store.Root), attemptsDirectoryName, "garbage"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -545,7 +546,6 @@ func TestSlCovSelectAttemptForStartRejectsMalformedHistory(t *testing.T) {
 	})
 
 	t.Run("unopenable latest attempt", func(t *testing.T) {
-		t.Parallel()
 		if err := os.Mkdir(filepath.Join(slCovStateDir(fx.store.Root), attemptsDirectoryName, "garbage"), 0o700); err != nil {
 			t.Fatal(err)
 		}

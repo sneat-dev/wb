@@ -427,7 +427,6 @@ func TestGpCovResolveForProcessStopsWhenAProcessCannotBeInspected(t *testing.T) 
 }
 
 func TestGpCovResolveOrRegisterRefusesAResumedRegistrationAtTheSamePID(t *testing.T) {
-	t.Parallel()
 	testenv.Isolate(t)
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{
@@ -460,7 +459,6 @@ func TestGpCovResolveOrRegisterRefusesAResumedRegistrationAtTheSamePID(t *testin
 }
 
 func TestGpCovResolveOrRegisterReportsARegistrationFailure(t *testing.T) {
-	t.Parallel()
 	testenv.Isolate(t)
 	blocked := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {

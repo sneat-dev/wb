@@ -121,8 +121,10 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 			t.Fatal("accepted a foreign branch")
 		}
 	})
+	// Left serial (not parallel with its siblings): it writes an untracked
+	// file into the shared repo worktree that a sibling ("legacy empty
+	// pinned branch falls back") asserts is clean.
 	t.Run("dirty pinned worktree", func(t *testing.T) {
-		t.Parallel()
 		slCovWrite(t, filepath.Join(repo, "untracked.txt"), 0o644, "dirty\n")
 		t.Cleanup(func() { _ = os.Remove(filepath.Join(repo, "untracked.txt")) })
 		if err := verifyPinnedWorktree(context.Background(), plan); err == nil || !strings.Contains(err.Error(), "dirty") {

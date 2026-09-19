@@ -205,7 +205,7 @@ func TestSlCovReadPrivateArtifactAtEnforcesPrivateRegularFileShape(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	slCovWrite(t, filepath.Join(root, "good"), 0o600, "private")
 	slCovWrite(t, filepath.Join(root, "wide"), 0o644, "private")
 	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o700); err != nil {
@@ -251,7 +251,7 @@ func TestSlCovValidatePrivateLaunchFileRejectsClosedDescriptorAndBadMode(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	if err := validatePrivateLaunchFile(int(file.Fd()), "wide", 0); err == nil {
 		t.Fatal("validatePrivateLaunchFile accepted mode 0644")
 	}
@@ -261,7 +261,7 @@ func TestSlCovValidatePrivateLaunchFileRejectsClosedDescriptorAndBadMode(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = goodFile.Close() }()
+	t.Cleanup(func() { _ = goodFile.Close() })
 	if err := validatePrivateLaunchFile(int(goodFile.Fd()), "good", 0); err != nil {
 		t.Fatalf("validatePrivateLaunchFile(good) = %v", err)
 	}
@@ -317,7 +317,7 @@ func TestSlCovLaunchAccessorsExposeDirectoryIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	if directory, err := attempt.directory(""); err != nil || directory != attempt.root {
 		t.Fatalf("attempt.directory(\"\") = %v %v", directory, err)
 	}

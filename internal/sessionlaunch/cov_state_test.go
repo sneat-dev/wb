@@ -527,7 +527,7 @@ func TestSlCovSaveStartedReplaysAndRejectsDivergence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = fence.Close() }()
+	t.Cleanup(func() { _ = fence.Close() })
 	if _, err := attempt.saveReady(plan, planDigest, record); err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ func TestSlCovOpenPrivateDirectoryAtEnforcesPrivateShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parent.Close() }()
+	t.Cleanup(func() { _ = parent.Close() })
 	if _, err := openPrivateDirectoryAt(int(parent.Fd()), "absent", false); err == nil {
 		t.Fatal("accepted a missing directory")
 	}
@@ -873,7 +873,7 @@ func TestSlCovExecFenceSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	bad := &launchAttempt{state: state}
 	if _, err := bad.acquireExecFence(1); err == nil {
 		t.Fatal("acquireExecFence accepted a nil exec directory")

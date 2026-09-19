@@ -101,7 +101,7 @@ func TestSlCovOpenPrivateDirectoryAtSurfacesCreationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parentFile.Close() }()
+	t.Cleanup(func() { _ = parentFile.Close() })
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestSlCovSelectAttemptForStartVerifyPinnedRetryFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	if _, _, _, _, err := selectAttemptForStart(context.Background(), fx.options(nil), fx.deps, state, fx.plan, fx.planDigest); err == nil || !strings.Contains(err.Error(), "verify corrected pinned worktree") {
 		t.Fatalf("verify pinned retry failure = %v", err)
 	}

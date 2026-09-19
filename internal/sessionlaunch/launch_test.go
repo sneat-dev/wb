@@ -68,7 +68,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	worktree := filepath.Join(root, "worktree")
 	if err := os.MkdirAll(filepath.Join(worktree, ".wb", "handoffs"), 0o755); err != nil {

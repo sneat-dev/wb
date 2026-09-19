@@ -273,8 +273,10 @@ func TestSmCovRouteLoadRouteUnderLockAuthority(t *testing.T) {
 		}
 	})
 
+	// Left serial relative to each other (and to one another only):
+	// "missing route" deletes the durable route file that "exact authority"
+	// needs on disk, so "exact authority" must fully complete first.
 	t.Run("exact authority", func(t *testing.T) {
-		t.Parallel()
 		loaded, err := store.LoadRouteUnderLock(lock, request.HandoffID, digest)
 		if err != nil || !reflect.DeepEqual(loaded, validRoute(request, digest)) {
 			t.Fatalf("LoadRouteUnderLock = %#v, error %v", loaded, err)
@@ -282,7 +284,6 @@ func TestSmCovRouteLoadRouteUnderLockAuthority(t *testing.T) {
 	})
 
 	t.Run("missing route", func(t *testing.T) {
-		t.Parallel()
 		if err := os.Remove(filepath.Join(store.Root, request.HandoffID, routeFileName)); err != nil {
 			t.Fatal(err)
 		}
@@ -1051,10 +1052,10 @@ func TestSmCovRouteValidateSuccessorAddressBranches(t *testing.T) {
 
 func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 
 	t.Run("read missing route file", func(t *testing.T) {
 		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1067,6 +1068,7 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 
 	t.Run("oversized route", func(t *testing.T) {
 		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1082,6 +1084,7 @@ func TestSmCovRoutePublishAndReadRouteArtifacts(t *testing.T) {
 
 	t.Run("immutable publication replays identical bytes", func(t *testing.T) {
 		t.Parallel()
+		dir := t.TempDir()
 		handle, err := os.Open(dir)
 		if err != nil {
 			t.Fatal(err)

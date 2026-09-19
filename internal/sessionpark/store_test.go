@@ -168,7 +168,7 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), firstAt.Add(2*time.Hour))
 	if err != nil || !replayed.Replay || replayed.Digest != first.Digest {
 		t.Fatalf("replayed admission = %#v, err=%v", replayed, err)
@@ -193,7 +193,7 @@ func TestSourceStoreRemoteRouteBindsExactSSHEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	firstAt := time.Unix(100, 0).UTC()
 	endpointA := sessionmove.SSHConfig{Host: "host-a.example", User: "user_alpha_sentinel"}
 	first, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), endpointA, firstAt)
@@ -510,7 +510,7 @@ func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	if _, err := store.PrepareRemoteUnderLock(lock, "target-b", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(300, 0)); err == nil {
 		t.Fatal("resumed source admitted a competing target")
 	}

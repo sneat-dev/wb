@@ -14,7 +14,6 @@ import (
 // request must fail inside sessionreceive.Receive rather than panicking on a
 // nil seam.
 func TestSDCovLoopbackFallsBackToInProcessReceive(t *testing.T) {
-	t.Parallel()
 	testenv.Isolate(t)
 	deliverer := LoopbackDeliverer{
 		LocalMachine: "laptop",

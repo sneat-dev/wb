@@ -276,7 +276,7 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -400,7 +400,7 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	refs, err := state.listAttempts()
 	if err != nil || len(refs) != 1 {
 		t.Fatalf("attempts=%#v error=%v", refs, err)
@@ -499,7 +499,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = state.Close() }()
+	t.Cleanup(func() { _ = state.Close() })
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -508,7 +508,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 	abandonment, err := first.loadAbandonment()
 	if err != nil || abandonment.PID != pid || abandonment.PlanDigest != fixture.planDigest || abandonment.ReadyDigest != "" {
 		t.Fatalf("abandonment=%#v error=%v", abandonment, err)

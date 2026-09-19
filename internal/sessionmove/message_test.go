@@ -141,7 +141,7 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	message := validMessage(request)
 	messageRaw, err := EncodeMessage(message)
@@ -211,8 +211,9 @@ func TestMessageStorePersistsExactOutboxInboxIntentAndReceipts(t *testing.T) {
 		{"inbox record", func(value *MessageReceipt) { value.RecordedAt = value.RecordedAt.Add(time.Second) }},
 		{"paste intent", func(value *MessageReceipt) { value.PaneID = "%8" }},
 	} {
+		// Left serial: all four cases share one receiptPath under the
+		// admitted message's lock and mutate it in place.
 		t.Run("load refuses forged "+test.name, func(t *testing.T) {
-			t.Parallel()
 			forged := receipt
 			test.mutate(&forged)
 			raw, err := EncodeMessageReceipt(forged)

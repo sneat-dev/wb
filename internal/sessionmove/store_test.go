@@ -633,7 +633,7 @@ func TestAppendAndLoadUnderLockUseExactAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	want, err := store.AppendEventUnderLock(lock, request.HandoffID, digest, HandoffEvent{
 		Phase: PhaseReceived,
 		At:    time.Date(2026, 8, 25, 10, 2, 0, 0, time.UTC),
@@ -811,7 +811,7 @@ func TestAppendAndLoadUnderLockRefuseHandoffPathSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	handoffPath := filepath.Join(root, request.HandoffID)
 	retainedPath := handoffPath + ".retained"
 	if err := os.Rename(handoffPath, retainedPath); err != nil {
@@ -1212,7 +1212,7 @@ func TestEnsureHandoverUnderLockMaterializesPrivateFileReadableByReadHandover(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
 	if err != nil {
@@ -1265,7 +1265,7 @@ func TestEnsureHandoverUnderLockRejectsRequestWithNoInlineContent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	if _, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest); err == nil {
 		t.Fatal("EnsureHandoverUnderLock accepted a request with no inline handover content")
@@ -1289,7 +1289,7 @@ func TestReadHandoverRejectsAModifiedPrivateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
 	if err != nil {
 		t.Fatal(err)

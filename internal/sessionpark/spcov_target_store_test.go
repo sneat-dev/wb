@@ -197,8 +197,9 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 	}
 
 	envelopePath := filepath.Join(store.Root, id, EnvelopeFileName)
+	// These three subtests share and mutate envelopePath in place, so they
+	// are left serial rather than racing each other.
 	t.Run("envelope missing", func(t *testing.T) {
-		t.Parallel()
 		moved := envelopePath + "-backup"
 		if err := os.Rename(envelopePath, moved); err != nil {
 			t.Fatal(err)
@@ -209,7 +210,6 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 		}
 	})
 	t.Run("envelope bytes changed", func(t *testing.T) {
-		t.Parallel()
 		original, err := os.ReadFile(envelopePath)
 		if err != nil {
 			t.Fatal(err)
@@ -221,7 +221,6 @@ func TestSpCovTargetAcquireRejectsUnsafeAggregates(t *testing.T) {
 		}
 	})
 	t.Run("envelope identity conflicts with aggregate", func(t *testing.T) {
-		t.Parallel()
 		otherBundle := remoteTestBundle(t)
 		otherBundle.ParkedSessionID = "park-other-source"
 		otherBundle.Source.WBSessionID = "wbs-other-source"
@@ -451,8 +450,10 @@ func TestSpCovTargetEnsureSuccessorContextUnderLock(t *testing.T) {
 		},
 		"member reference": func(value []ReceiptMember) { value[0].TargetWorkLogReference = "bogus" },
 	} {
+		// Left serial: the trailing checks below publish and then
+		// overwrite the same successor-context path on this store/lock,
+		// and must run only after every rejection case has executed.
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			candidate := append([]ReceiptMember(nil), members...)
 			mutate(candidate)
 			if _, _, err := store.EnsureSuccessorContextUnderLock(lock, request, admission.Digest, candidate); err == nil {
@@ -682,7 +683,7 @@ func TestSpCovOpenTargetLockCreatesAndRejectsDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = aggregate.Close() }()
+	t.Cleanup(func() { _ = aggregate.Close() })
 
 	fd, err := openTargetLock(int(aggregate.Fd()))
 	if err != nil {
@@ -732,7 +733,7 @@ func TestSpCovReadBoundedRegularRejectsUnusableHandles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	if _, err := readBoundedRegular(directory, 16); err == nil {
 		t.Fatal("directory accepted as a bounded regular file")
 	}
@@ -743,7 +744,7 @@ func TestSpCovReadBoundedRegularRejectsUnusableHandles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = oversizedFile.Close() }()
+	t.Cleanup(func() { _ = oversizedFile.Close() })
 	if _, err := readBoundedRegular(oversizedFile, 4); err == nil {
 		t.Fatal("oversized artifact accepted")
 	}
@@ -756,7 +757,7 @@ func TestSpCovWriteImmutableAndExactPrivateArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 
 	created, err := writeImmutableAt(directory, "first.json", []byte("body\n"), 0o600)
 	if err != nil || !created {
@@ -812,7 +813,7 @@ func TestSpCovLoadReceiptAtBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	receipt, err := loadReceiptAt(directory)
 	if err != nil || receipt != nil {
 		t.Fatalf("receipt=%#v err=%v", receipt, err)
@@ -866,7 +867,7 @@ func TestSpCovOpenOrCreateRegularAtRejectsNonRegularDeviceNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = dev.Close() }()
+	t.Cleanup(func() { _ = dev.Close() })
 	fd, err := openOrCreateRegularAt(int(dev.Fd()), "null", 0o600)
 	if err == nil {
 		_ = unix.Close(fd)

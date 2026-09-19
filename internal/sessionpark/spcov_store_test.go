@@ -382,7 +382,7 @@ func TestSpCovOpenPrivateDirectoryAtModesAndFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parent.Close() }()
+	t.Cleanup(func() { _ = parent.Close() })
 	if _, err := openPrivateDirectoryAt(parent, "missing"); err == nil {
 		t.Fatal("missing private directory accepted")
 	}

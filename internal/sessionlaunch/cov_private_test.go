@@ -478,7 +478,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 	if err := os.Chdir(fx.worktree); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chdir(previous) }()
+	t.Cleanup(func() { _ = os.Chdir(previous) })
 	if err := verifyLauncherWorktree(fx.plan, fx.request, fx.store); err != nil {
 		t.Fatalf("tracked handover = %v", err)
 	}
@@ -491,8 +491,10 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 			t.Fatal("accepted a foreign cwd")
 		}
 	})
+	// "missing handover" and "changed handover digest" both mutate the same
+	// on-disk handover file inside fx.worktree, so they are left serial
+	// rather than racing each other.
 	t.Run("missing handover", func(t *testing.T) {
-		t.Parallel()
 		path := filepath.Join(fx.worktree, filepath.FromSlash(fx.request.HandoverPath))
 		original, err := os.ReadFile(path)
 		if err != nil {
@@ -507,7 +509,6 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		}
 	})
 	t.Run("changed handover digest", func(t *testing.T) {
-		t.Parallel()
 		path := filepath.Join(fx.worktree, filepath.FromSlash(fx.request.HandoverPath))
 		original, err := os.ReadFile(path)
 		if err != nil {
