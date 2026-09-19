@@ -151,6 +151,40 @@ type RemoteCheck struct {
 	Link       string `json:"link,omitempty" yaml:"link,omitempty"`
 	AppID      int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 	CheckRunID int64  `json:"check_run_id,omitempty" yaml:"check_run_id,omitempty"`
+	// WorkflowName is the GitHub Actions workflow name that produced this
+	// check (sneat-dev/wb#627): the workflow backing a check-run's suite, or
+	// a synthetic workflow-run entry's own name. Empty for a third-party
+	// check-run app or a commit-status-derived check, neither of which
+	// belongs to an Actions workflow, so --workflow can never select them.
+	// Present on every receipt, filtered or not — additive, never a breaking
+	// change to the unfiltered result.
+	WorkflowName string `json:"workflow_name,omitempty" yaml:"workflow_name,omitempty"`
+	// WorkflowID is the GitHub Actions workflow's numeric ID backing this
+	// check, alongside WorkflowName (sneat-dev/wb#627). Filter matching
+	// prefers this over the name where both are known — two workflows can
+	// share a display name, and the ID is what GitHub itself uses to group
+	// runs. Zero for a third-party check-run or a commit-status-derived
+	// check.
+	WorkflowID int64 `json:"workflow_id,omitempty" yaml:"workflow_id,omitempty"`
+	// WorkflowEvent is the GitHub Actions event ("push", "pull_request", ...)
+	// that triggered the run backing this check, alongside WorkflowID
+	// (sneat-dev/wb#627 B1-R, red-team round 2 on PR #629). Filter retention
+	// keys an owning workflow run on (WorkflowID, WorkflowEvent), not
+	// WorkflowID alone: GitHub can run the same workflow ID for more than one
+	// event on the same head. Empty wherever WorkflowID is zero.
+	WorkflowEvent string `json:"workflow_event,omitempty" yaml:"workflow_event,omitempty"`
+	// WorkflowRunConclusion is the owning GitHub Actions run's own top-level
+	// conclusion (e.g. "failure", "success", "cancelled"), alongside
+	// WorkflowID/WorkflowEvent (sneat-dev/wb#627 M3, red-team round 3 on PR
+	// #629). It backs the "a skipped selected check must not report passed
+	// when its run failed" rule: Bucket buckets a "skipped" job conclusion as
+	// "skipping", indistinguishable on its own from an intentionally-skipped
+	// job, but a "skipping" bucket whose WorkflowRunConclusion indicates the
+	// run itself failed or was cancelled is treated as failed instead — the
+	// same verdict an unfiltered wait reaches by observing the upstream
+	// job's own failing check-run directly. Empty wherever WorkflowID is
+	// zero.
+	WorkflowRunConclusion string `json:"workflow_run_conclusion,omitempty" yaml:"workflow_run_conclusion,omitempty"`
 }
 
 // CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
@@ -184,6 +218,26 @@ type RequiredRemoteCheck struct {
 	IntegrationID int64  `json:"integration_id,omitempty" yaml:"integration_id,omitempty"`
 }
 
+// CheckWaitFilter records that a check wait was scoped to a --workflow/--check
+// subset of the exact head's checks and required checks (sneat-dev/wb#627),
+// and how many each selected. Present in a JSON receipt only when a filter
+// was requested (additive, omitempty).
+type CheckWaitFilter struct {
+	Workflows []string `json:"workflows,omitempty" yaml:"workflows,omitempty"`
+	Checks    []string `json:"checks,omitempty" yaml:"checks,omitempty"`
+	// MatchedChecks is how many observed checks the filter selected on the
+	// observation this receipt reports. Zero never means the filter can
+	// never pass: a workflow-run-triggered workflow, or one that is simply
+	// slow to register, can still appear later in the same bounded slice —
+	// see PullRequestWaitResult.Reason for the current diagnostic, which the
+	// wait keeps polling behind rather than treating as a dead end
+	// (sneat-dev/wb#627 M2/M3, red-team rounds 1 and 2 on PR #629).
+	MatchedChecks int `json:"matched_checks" yaml:"matched_checks"`
+	// RequiredChecks is how many of the target's required checks the filter
+	// selected; completeness is evaluated only over this subset.
+	RequiredChecks int `json:"matched_required_checks" yaml:"matched_required_checks"`
+}
+
 // PullRequestWaitOptions identifies exactly one direct-push or pull-request
 // head whose observed checks are read by a bounded foreground invocation. A
 // caller resumes a pending result with the same repository, target, PR (when
@@ -200,7 +254,17 @@ type PullRequestWaitOptions struct {
 	// AllowUnfenced permits a validation-only PR check receipt when the target
 	// branch has no server-enforced strict freshness fence. Merge callers leave
 	// this false; it is an explicit opt-in for wait-only validation.
-	AllowUnfenced     bool
+	AllowUnfenced bool
+	// Workflow restricts the wait to check runs produced by these exact
+	// GitHub Actions workflow names (sneat-dev/wb#627), repeatable. Empty
+	// means every workflow, matching today's unfiltered behaviour exactly.
+	Workflow []string
+	// Check restricts the wait to check-run names and commit-status contexts
+	// matching one of these exact names or simple "*" globs (sneat-dev/wb#627),
+	// repeatable. Empty means every check, matching today's unfiltered
+	// behaviour exactly. Workflow and Check combine with AND: when both are
+	// set, a check must satisfy both to be selected.
+	Check             []string
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	// StableRereadDelay overrides the shortened wait before the confirming
@@ -252,7 +316,16 @@ type PullRequestWaitResult struct {
 	PolicyAuthorityUnavailable string                `json:"policy_authority_unavailable,omitempty" yaml:"policy_authority_unavailable,omitempty"`
 	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
 	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
-	Reason                     string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	// Filter is present only when the wait was scoped by --workflow/--check
+	// (sneat-dev/wb#627); an unfiltered receipt carries no filter field at
+	// all (the field is additive and does not otherwise change unfiltered
+	// pass/fail/pending decisions — see RemoteCheck.WorkflowName/WorkflowID/
+	// WorkflowEvent for the additive fields present on every receipt,
+	// filtered or not, sneat-dev/wb#627 minor 3, red-team round 3 on PR
+	// #629). Checks and RequiredChecks above already carry the selected
+	// subset; this states that a filter was in force and how many it matched.
+	Filter *CheckWaitFilter `json:"filter,omitempty" yaml:"filter,omitempty"`
+	Reason string           `json:"reason,omitempty" yaml:"reason,omitempty"`
 	// Evidence carries auxiliary receipt facts that are not part of the wait
 	// outcome itself. "github_read_retries" mirrors the same key on
 	// PullRequestLandResult: the count and last cause of in-process transient

@@ -51,10 +51,73 @@ func newCIWaitCmd() *cobra.Command {
 	var slice, interval time.Duration
 	var jsonOut bool
 	var format string
+	var workflows, checkPatterns []string
 	command := &cobra.Command{
-		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>]",
+		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>] [--workflow <name>]... [--check <pattern>]...",
 		Short: "Wait one bounded foreground slice for checks on an exact head",
 		Long: `Observe all GitHub checks for exactly one pull-request or direct-push head.
+
+Pass --workflow (repeatable, exact GitHub Actions workflow name; two
+workflows that share a name are both selected) or --check (repeatable, exact
+check-run name/commit-status context, or a glob where "*" matches any run of
+characters, including "/" — everything else is literal; no "?", "[...]",
+escapes, or regex) to narrow the wait to a subset of the head's checks, for
+example when only a release or deploy job matters and other checks are still
+running. Required-check completeness is then evaluated only over the
+required checks the filter selects, and the JSON result carries a "filter"
+block naming what matched. What "wait for" means differs by how a check is
+named: an exact --check waits only for that one job, so an unrelated sibling
+job in the same Actions run — still in progress, or the whole run stuck on an
+environment approval — never holds up the wait once that job itself is
+terminal. A --check glob instead keeps its owning Actions run open until the
+run itself finishes, since a glob can still match a job the run has not
+registered yet, such as one gated by "needs:" on an earlier job in the same
+run — the case #627 exists for. --workflow always waits for the whole run,
+since that is its meaning regardless of --check. With several --check
+patterns, a pass requires every exact (non-glob) pattern to have matched at
+least one observed check, not merely one of them — a mistyped or
+not-yet-registered exact name is reported pending, naming the pattern (plus
+any nearby observed name it almost matches, such as a matrix job "build
+(ubuntu)" or a reusable-workflow-qualified "caller / build"), rather than
+letting an unrelated matched pattern wave the wait through. The same "every
+name must match" rule applies to several --workflow names: one finishing
+never passes the wait while another named workflow — for example one that
+only starts via workflow_run after the first finishes — has produced no
+observed check at all yet; when --workflow and --check are combined, this
+means every named workflow needs some job matching the --check patterns, or
+that workflow's name simply never clears. While --check is active, a
+still-registering Actions run with no job of its own yet is also kept open,
+but only among the workflows an active --workflow filter itself allows: a
+job can never be selected under a workflow --workflow excludes, so a jobless
+run under a different, excluded workflow is dropped rather than held open.
+Among allowed workflows this is deliberately coarse — an exact or glob
+--check selection can be held pending by any other still-registering run on
+the head, under the same or a different (allowed) workflow, not only one
+related to what has already matched, since WB cannot know in advance which
+run a job will register under. A skipped job a selected --check or
+--workflow names is not automatically a pass: while its owning Actions run
+has not yet concluded, the wait reports it pending, not passed — the common
+real-CI shape is an earlier job failing and a downstream job it "needs:"
+turning up "skipped" well before a slow sibling job in the same run
+finishes, and reading the skip as a pass in that window would let a filtered
+wait finish before an unfiltered wait watching the same commit ever would.
+Once the run concludes, a skip is reported failed if the run itself
+concluded failure or was cancelled (including when the skip was caused by
+an unrelated sibling job's failure in the same run, not only a job the
+selection's own "needs:" graph depends on — WB cannot tell the two apart
+without evaluating that graph), and a selection where every check is
+"skipping" and the run concluded is also reported failed even when the run's
+own conclusion was not itself a failure — the common shape of a
+workflow_run Release job gated "if: conclusion == 'success'" after CI
+failed, where nothing in it individually reads as failed but nothing in it
+ever ran either. This matches the verdict an unfiltered wait reaches by
+observing the upstream job's own check-run directly. A filter that selects
+nothing at all is never a vacuous pass either: it keeps observing, at the
+normal cadence, until a matching check registers or the slice ends —
+reported pending with "no check matching the filter has registered yet",
+never a claim that the filter can never match. Never pass these flags to a
+landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
+evaluates the full required set.
 
 Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
@@ -82,7 +145,7 @@ it. This command never starts a detached watcher or background loop.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
+			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval, workflows, checkPatterns)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
 			machineOutput := jsonOut || format == "json"
@@ -91,6 +154,7 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
+				Workflow: workflows, Check: checkPatterns,
 				Slice: slice, CheckPollInterval: interval, Progress: progress.report, OperationProgress: progress.operationReporter("ci wait"),
 			})
 			if err != nil {
@@ -100,7 +164,7 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.finish(result)
 			output := ciWaitOutput{SchemaVersion: 1, ObservedAt: time.Now().UTC(), PullRequestWaitResult: result}
 			if result.Status == orchestrate.PullRequestWaitPending {
-				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, machineOutput)
+				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, workflows, checkPatterns, machineOutput)
 			}
 			if machineOutput {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -125,10 +189,12 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
+	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name (workflows sharing a name are all selected); waits for the whole Actions run; never pass this to a landing route")
+	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name (waits only for that job; every exact pattern must match to pass), or a glob where * matches any run of characters including / and everything else is literal, no regex (waits for the owning Actions run to finish); never pass this to a landing route")
 	return command
 }
 
-func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration) error {
+func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string) error {
 	owner, name, validRepository := strings.Cut(strings.TrimSpace(repository), "/")
 	if !validRepository || owner == "" || name == "" || strings.Contains(name, "/") {
 		return fmt.Errorf("--repo must be owner/repository")
@@ -151,13 +217,37 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 	if interval >= slice {
 		return fmt.Errorf("--interval must be shorter than --slice so WB can confirm a stable terminal reread")
 	}
+	for _, workflow := range workflows {
+		if strings.TrimSpace(workflow) == "" {
+			return fmt.Errorf("--workflow must not be empty")
+		}
+	}
+	for _, pattern := range checkPatterns {
+		// Every "--check" value is syntactically valid: "*" matches any run
+		// of characters (including "/"), and every other rune — including
+		// "[", "]", "?" and "\" — is literal. There is no character-class,
+		// escape, or "?" syntax to reject, so an exact name containing "["
+		// or "\" is an ordinary literal pattern (sneat-dev/wb#627 B2,
+		// red-team finding on PR #629: this used to validate with
+		// path.Match, which both split "*" on "/" and rejected those
+		// characters as glob syntax errors).
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("--check must not be empty")
+		}
+	}
 	return nil
 }
 
-func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, jsonOut bool) []string {
+func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string, jsonOut bool) []string {
 	args := []string{"wb", "ci", "wait", "--repo", repository, "--target", target, "--head", head, "--slice", slice.String(), "--interval", interval.String()}
 	if pullRequest != "" {
 		args = append(args, "--pr", pullRequest)
+	}
+	for _, workflow := range workflows {
+		args = append(args, "--workflow", workflow)
+	}
+	for _, pattern := range checkPatterns {
+		args = append(args, "--check", pattern)
 	}
 	if jsonOut {
 		args = append(args, "--json")
@@ -172,6 +262,11 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 	}
 	if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s: %s\n", output.Status, output.Repository, identity, output.Reason); err != nil {
 		return err
+	}
+	if output.Filter != nil {
+		if err := printCIWaitFilter(command, *output.Filter); err != nil {
+			return err
+		}
 	}
 	if len(output.ResumeArgs) > 0 {
 		quoted := make([]string, 0, len(output.ResumeArgs))
@@ -216,6 +311,21 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 		}
 	}
 	return nil
+}
+
+// printCIWaitFilter reports the --workflow/--check scoping a wait applied
+// (sneat-dev/wb#627): the text counterpart of the JSON "filter" block.
+func printCIWaitFilter(command *cobra.Command, filter orchestrate.CheckWaitFilter) error {
+	line := "filter:"
+	if len(filter.Workflows) > 0 {
+		line += " workflow=" + strings.Join(filter.Workflows, ",")
+	}
+	if len(filter.Checks) > 0 {
+		line += " check=" + strings.Join(filter.Checks, ",")
+	}
+	line += fmt.Sprintf(" matched %d check(s), %d required check(s)", filter.MatchedChecks, filter.RequiredChecks)
+	_, err := fmt.Fprintln(command.OutOrStdout(), line)
+	return err
 }
 
 func shellQuoteCIWaitArg(value string) string {

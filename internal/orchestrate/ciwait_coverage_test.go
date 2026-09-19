@@ -295,3 +295,205 @@ func TestOrchCovCommitStatusBucketNamesEveryState(t *testing.T) {
 		}
 	}
 }
+
+// TestOrchCovWorkflowRunConclusionFailedNamesEveryConclusion is a direct
+// unit test of workflowRunConclusionFailed (sneat-dev/wb#627 M3, round 3 on
+// PR #629): coverage follow-up, since the fake-gh integration tests only
+// exercise "failure" and "" before this test was added.
+func TestOrchCovWorkflowRunConclusionFailedNamesEveryConclusion(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		conclusion string
+		want       bool
+	}{
+		{conclusion: "", want: false},
+		{conclusion: "success", want: false},
+		{conclusion: "neutral", want: false},
+		{conclusion: "skipped", want: false},
+		{conclusion: "mystery", want: false},
+		{conclusion: "cancelled", want: true},
+		{conclusion: "timed_out", want: true},
+		{conclusion: "action_required", want: true},
+		{conclusion: "failure", want: true},
+		{conclusion: "startup_failure", want: true},
+		{conclusion: "stale", want: true},
+	} {
+		if got := workflowRunConclusionFailed(test.conclusion); got != test.want {
+			t.Fatalf("workflowRunConclusionFailed(%q) = %v, want %v", test.conclusion, got, test.want)
+		}
+	}
+}
+
+// TestOrchCovCheckBucketTerminalNamesEveryBucket is a direct unit test of
+// checkBucketTerminal, a coverage follow-up (round 3 on PR #629): the
+// fake-gh integration tests reach it only through "pending" and one
+// terminal bucket per scenario.
+func TestOrchCovCheckBucketTerminalNamesEveryBucket(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		bucket string
+		want   bool
+	}{
+		{bucket: "pass", want: true},
+		{bucket: "skipping", want: true},
+		{bucket: "fail", want: true},
+		{bucket: "cancel", want: true},
+		{bucket: "pending", want: false},
+		{bucket: "mystery", want: false},
+		{bucket: "", want: false},
+	} {
+		if got := checkBucketTerminal(test.bucket); got != test.want {
+			t.Fatalf("checkBucketTerminal(%q) = %v, want %v", test.bucket, got, test.want)
+		}
+	}
+}
+
+// TestOrchCovSimpleGlobMatchHandlesEveryPatternShape is a direct unit test
+// of simpleGlobMatch, a coverage follow-up (round 3 on PR #629): exercises
+// the leading-star, trailing-star, middle-star, no-star, and multi-star
+// branches the fake-gh integration tests only sample a couple of.
+func TestOrchCovSimpleGlobMatchHandlesEveryPatternShape(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		pattern string
+		value   string
+		want    bool
+	}{
+		{name: "exact match, no star", pattern: "build", value: "build", want: true},
+		{name: "exact mismatch, no star", pattern: "build", value: "test", want: false},
+		{name: "leading star", pattern: "*build", value: "release / build", want: true},
+		{name: "leading star, no match", pattern: "*build", value: "release / test", want: false},
+		{name: "trailing star", pattern: "build*", value: "build (ubuntu)", want: true},
+		{name: "trailing star, no match", pattern: "build*", value: "test (ubuntu)", want: false},
+		{name: "bare star matches everything", pattern: "*", value: "anything at all", want: true},
+		{name: "bare star matches empty", pattern: "*", value: "", want: true},
+		{name: "middle star", pattern: "Release / * / build", value: "Release / linux amd64 / build", want: true},
+		{name: "middle star, segment absent", pattern: "Release / * / build", value: "Release / build", want: false},
+		{name: "multiple stars", pattern: "*build*coverage*", value: "pre build mid coverage post", want: true},
+		{name: "multiple stars, missing middle segment", pattern: "*build*coverage*", value: "pre build only", want: false},
+		{name: "star crosses slash", pattern: "Release / *", value: "Release / Smoke test published artifact (linux/amd64)", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := simpleGlobMatch(test.pattern, test.value); got != test.want {
+				t.Fatalf("simpleGlobMatch(%q, %q) = %v, want %v", test.pattern, test.value, got, test.want)
+			}
+		})
+	}
+}
+
+// TestOrchCovUnmatchedWorkflowNamesRequiresEveryWorkflow is a direct unit
+// test of unmatchedWorkflowNames (sneat-dev/wb#627 M1, round 3 on PR #629):
+// coverage follow-up for the empty-input and multi-workflow branches the
+// fake-gh integration tests reach only once each.
+func TestOrchCovUnmatchedWorkflowNamesRequiresEveryWorkflow(t *testing.T) {
+	t.Parallel()
+	if got := unmatchedWorkflowNames(nil, nil); got != nil {
+		t.Fatalf("unmatchedWorkflowNames(nil, nil) = %#v, want nil", got)
+	}
+	checks := []RemoteCheck{
+		{Name: "check-run:build", WorkflowName: "CI"},
+		{Name: "check-run:lint", WorkflowName: "CI"},
+	}
+	if got := unmatchedWorkflowNames(checks, []string{"CI"}); len(got) != 0 {
+		t.Fatalf("unmatchedWorkflowNames all matched = %#v, want empty", got)
+	}
+	got := unmatchedWorkflowNames(checks, []string{"CI", "Release"})
+	if want := []string{"Release"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("unmatchedWorkflowNames = %#v, want %#v", got, want)
+	}
+	got = unmatchedWorkflowNames(checks, []string{"Deploy", "Release"})
+	if want := []string{"Deploy", "Release"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unmatchedWorkflowNames = %#v, want %#v", got, want)
+	}
+}
+
+// TestOrchCovNearbyObservedCheckNamesFindsSubstringHints and
+// TestOrchCovDescribeUnmatchedExactCheckPatternsFormatsHints are direct
+// unit tests of the two minor-4 hint helpers (sneat-dev/wb#627, round 3 on
+// PR #629): coverage follow-up for branches (empty pattern, exact-match
+// exclusion, dedup, the three-item cap, and the no-hint fallback) the
+// fake-gh integration tests do not each exercise.
+func TestOrchCovNearbyObservedCheckNamesFindsSubstringHints(t *testing.T) {
+	t.Parallel()
+	if got := nearbyObservedCheckNames(nil, ""); got != nil {
+		t.Fatalf("nearbyObservedCheckNames with empty pattern = %#v, want nil", got)
+	}
+	observed := []RemoteCheck{
+		{Name: "check-run:build (ubuntu)"},
+		{Name: "check-run:build (macos)"},
+		{Name: "check-run:build (ubuntu)"}, // duplicate name, must be deduped
+		{Name: "check-run:build"},          // exact match, must be excluded
+		{Name: "check-run:lint"},           // no substring match
+	}
+	got := nearbyObservedCheckNames(observed, "build")
+	want := []string{"build (ubuntu)", "build (macos)"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("nearbyObservedCheckNames = %#v, want %#v", got, want)
+	}
+
+	// The cap is three, even when more than three distinct names match.
+	many := []RemoteCheck{
+		{Name: "check-run:build (a)"},
+		{Name: "check-run:build (b)"},
+		{Name: "check-run:build (c)"},
+		{Name: "check-run:build (d)"},
+	}
+	if got := nearbyObservedCheckNames(many, "build"); len(got) != 3 {
+		t.Fatalf("nearbyObservedCheckNames capped = %#v, want 3 entries", got)
+	}
+
+	if got := nearbyObservedCheckNames(observed, "no-such-substring"); len(got) != 0 {
+		t.Fatalf("nearbyObservedCheckNames with no match = %#v, want empty", got)
+	}
+}
+
+func TestOrchCovDescribeUnmatchedExactCheckPatternsFormatsHints(t *testing.T) {
+	t.Parallel()
+	if got := describeUnmatchedExactCheckPatterns(nil, nil); got != "" {
+		t.Fatalf("describeUnmatchedExactCheckPatterns with no unmatched = %q, want empty", got)
+	}
+	observed := []RemoteCheck{{Name: "check-run:build (ubuntu)"}}
+	got := describeUnmatchedExactCheckPatterns(observed, []string{"build"})
+	if want := "build (observed: build (ubuntu))"; got != want {
+		t.Fatalf("describeUnmatchedExactCheckPatterns = %q, want %q", got, want)
+	}
+	got = describeUnmatchedExactCheckPatterns(observed, []string{"deploy"})
+	if want := "deploy"; got != want {
+		t.Fatalf("describeUnmatchedExactCheckPatterns with no hint = %q, want %q", got, want)
+	}
+	got = describeUnmatchedExactCheckPatterns(observed, []string{"build", "deploy"})
+	if want := "build (observed: build (ubuntu)), deploy"; got != want {
+		t.Fatalf("describeUnmatchedExactCheckPatterns multi = %q, want %q", got, want)
+	}
+}
+
+// TestOrchCovPendingWorkflowRunHintNamesTheFirstStillRegisteringRun is a
+// direct unit test of pendingWorkflowRunHint (sneat-dev/wb#627 minor 2,
+// round 4 on PR #629): the empty-input, no-hint, first-match, and
+// missing-name/missing-event fallback branches.
+func TestOrchCovPendingWorkflowRunHintNamesTheFirstStillRegisteringRun(t *testing.T) {
+	t.Parallel()
+	if got := pendingWorkflowRunHint(nil); got != "" {
+		t.Fatalf("pendingWorkflowRunHint(nil) = %q, want empty", got)
+	}
+	if got := pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "check-run:build", Bucket: "pass"},
+		{Name: "workflow-run:1:push", Bucket: "pass"},
+	}); got != "" {
+		t.Fatalf("pendingWorkflowRunHint with nothing pending = %q, want empty", got)
+	}
+	got := pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "check-run:build", Bucket: "pending"},
+		{Name: "workflow-run:2:pull_request", Bucket: "pending", WorkflowName: "Deploy", WorkflowEvent: "pull_request"},
+	})
+	if want := `run "Deploy" (pull_request) has not registered a job yet`; got != want {
+		t.Fatalf("pendingWorkflowRunHint = %q, want %q", got, want)
+	}
+	got = pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "workflow-run:3:", Bucket: "pending"},
+	})
+	if want := `run "unnamed workflow" (unknown event) has not registered a job yet`; got != want {
+		t.Fatalf("pendingWorkflowRunHint with no name/event = %q, want %q", got, want)
+	}
+}
