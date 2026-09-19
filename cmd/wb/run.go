@@ -51,13 +51,34 @@ func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Comma
 WB while preserving its standard streams and exit code.
 
 Recipe mode is a dry-run by default; --apply lands the recipe. Command mode
-records privacy-safe receipts and admits CPU-heavy work against a machine-wide
-CPUCount-1 budget. It is synchronous by default; --async submits through the
-authenticated durable local daemon queue for the explicitly selected sandboxed
-wb worker connect process to execute. Command arguments are durable journal
-data; pass secrets through the worker's inherited environment, never argv. The
-client uses the protected local socket first and reports when sandbox transport
-denial selects the authenticated project-root file bridge.
+records privacy-safe receipts and admits CPU-heavy work. On a machine with
+fewer than 8 CPUs, every governed command follows the original spec table
+unchanged, admitted against a machine-wide CPUCount-1 budget (focused 1,
+broad 2, coverage/race the whole budget). On a machine with 8 or more CPUs,
+that fixed budget does not apply: a focused job (a single-package Go
+test/vet, or a light lint) is always admitted immediately at max(1,
+NumCPU/8) and never waits behind a heavy one, and a "heavy" job (a broad
+Go/Node test or build, or any coverage/race run) is instead admitted
+adaptively out of the full NumCPU: when k heavy jobs (itself included) are
+running or waiting at the moment it is admitted, it gets min(share(k),
+1.5xNumCPU minus the sum of already-running heavy jobs' own allocations) —
+share(k) is NumCPU at k=1, 2/3 of NumCPU at k=2, and half of NumCPU at
+k>=3 — so one heavy job alone gets the whole machine, and a burst of them
+share it, never exceeding 150% of NumCPU in total. A candidate below
+NumCPU/4 waits instead, in strict FIFO order among heavy waiters. Each
+job's own GOMAXPROCS and Go -p equal its allocation once admitted, fixed
+for its whole run because a running process's GOMAXPROCS cannot change
+after the fact — so a later arrival admitted at a smaller share does not
+shrink an already-running job, and the machine can briefly run above 100%
+(bounded by the 150% cap above) until the earlier job finishes; this is
+accepted because these commands mostly wait on I/O and subprocesses rather
+than pure CPU. It is synchronous by default; --async
+submits through the authenticated durable local daemon queue for the
+explicitly selected sandboxed wb worker connect process to execute. Command
+arguments are durable journal data; pass secrets through the worker's
+inherited environment, never argv. The client uses the protected local
+socket first and reports when sandbox transport denial selects the
+authenticated project-root file bridge.
 
 A CPU-heavy command mode invocation reports its place in the shared CPU
 budget on stderr: a queued line naming its position and what it is waiting
@@ -226,9 +247,8 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 	if telemetryErr != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: command telemetry start failed: %v\n", telemetryErr)
 	}
-	budget := runqueue.Budget()
-	units := runqueue.Units(args, budget)
-	if units > 0 {
+	kind := runqueue.Classify(args)
+	if kind != runqueue.KindNone {
 		floor, skippedReason := hostload.Resolve(configPath)
 		if loadErr := hostload.Check(nil, floor, allowSaturatedHost); loadErr != nil {
 			_ = recorder.Finish(exitFindings, 0, 0, time.Now())
@@ -243,7 +263,7 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 	}
 	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(args), Worktree: cwd}
 	queueProgress := newRunQueueProgressWithHeartbeat(cmd.ErrOrStderr(), !quiet, configPath, runQueueHeartbeat())
-	lease, waited, leaseErr := acquireWithQueueVisibility(cmd.Context(), projectsRoot, units, budget, self, queueProgress)
+	lease, units, waited, leaseErr := admitWithQueueVisibility(cmd.Context(), projectsRoot, args, self, queueProgress)
 	admittedAt := time.Now()
 	recorder.RecordAdmission(units, waited)
 	if leaseErr == nil {
@@ -254,8 +274,6 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 		return fmt.Errorf("wait for WB CPU capacity: %w", leaseErr)
 	}
 	defer lease.Release()
-	announcement := lease.Announce(self)
-	defer announcement.Cleanup()
 
 	interactive := console.Interactive(cmd.ErrOrStderr(), false)
 	child := process.CommandContextInteractive(cmd.Context(), interactive, args[0], args[1:]...)
@@ -266,8 +284,26 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 
 	if err = child.Start(); err == nil {
 		done := make(chan struct{})
-		if units > 0 || interactive {
+		// progressDone closes only once the goroutine below (when started)
+		// has fully returned — not merely once `done` is closed, which a
+		// select can race against an already-dispatched tick. Review
+		// finding (PR #628 re-review round 4, Serious 1): this goroutine
+		// used to call lease.Heartbeat() itself, racing Lease.Release's
+		// own cleanup (a heartbeat write already in flight when the child
+		// exited could still land after Release ran extraRelease — a
+		// genuine data race on the legacy pool, and a resurrected "ghost"
+		// heavy holder file, reproduced by the reviewer in 241 of 300
+		// runs). The holder record is refreshed by the Lease's own
+		// background self-heartbeat (runqueue.Lease.armHeartbeat, started
+		// automatically at admission) regardless of whether this goroutine
+		// runs at all, so it must never touch lease itself — it is now a
+		// courtesy print only, and joined before Release runs regardless,
+		// so no write to cmd.ErrOrStderr() can outlive this function's own
+		// use of it either.
+		progressDone := make(chan struct{})
+		if interactive {
 			go func() {
+				defer close(progressDone)
 				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
 				for {
@@ -275,21 +311,16 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 					case <-done:
 						return
 					case <-ticker.C:
-						// Refresh the holder record on every tick so a
-						// long-running command never ages past staleAfter
-						// and gets reaped by another WB process as if it
-						// had died; the "still running" line is a separate,
-						// interactive-only courtesy on the same cadence.
-						announcement.Heartbeat()
-						if interactive {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
-						}
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
 					}
 				}
 			}()
+		} else {
+			close(progressDone)
 		}
 		err = child.Wait()
 		close(done)
+		<-progressDone
 	}
 	exitCode := 0
 	if err != nil {
@@ -336,7 +367,7 @@ func runQueueHeartbeat() time.Duration {
 	return universalProgressHeartbeat
 }
 
-// queueAdmissionGrace is how long acquireWithQueueVisibility waits before
+// queueAdmissionGrace is how long admitWithQueueVisibility waits before
 // deciding a command must announce itself as queued rather than admitted
 // immediately. Most `wb run --` invocations find the CPU budget free; this
 // grace period keeps the common case silent (a single "admitted (queue
@@ -344,39 +375,40 @@ func runQueueHeartbeat() time.Duration {
 // has time to read.
 const queueAdmissionGrace = 200 * time.Millisecond
 
-// acquireWithQueueVisibility wraps runqueue.Acquire with the human-readable
+// admitWithQueueVisibility wraps runqueue.Admit with the human-readable
 // receipts described in cmd/wb/run_queue_progress.go: an immediate
 // admitted/queued line, a heartbeat at most every progress.heartbeat while
 // still queued, and the caller prints the admitted-after-wait line itself
-// once this returns. units <= 0 skips every line — nothing was queued.
-func acquireWithQueueVisibility(ctx context.Context, projectsRoot string, units, budget int, self runqueue.Participant, progress *runQueueProgress) (*runqueue.Lease, time.Duration, error) {
-	if units <= 0 {
-		return &runqueue.Lease{}, 0, nil
-	}
-
-	ticket := runqueue.Register(projectsRoot, self)
+// once this returns. A command runqueue.Classify finds ungoverned
+// (KindNone) skips every line — nothing was queued.
+func admitWithQueueVisibility(ctx context.Context, projectsRoot string, argv []string, self runqueue.Participant, progress *runQueueProgress) (*runqueue.Lease, int, time.Duration, error) {
+	ticket := runqueue.RegisterForAdmission(projectsRoot, argv, self)
 	defer ticket.Forget()
 
-	type acquireResult struct {
-		lease  *runqueue.Lease
-		waited time.Duration
-		err    error
+	if runqueue.Classify(argv) == runqueue.KindNone {
+		admission, err := runqueue.Admit(ctx, projectsRoot, argv, self, ticket)
+		return admission.Lease, admission.Units, admission.Waited, err
 	}
-	resultCh := make(chan acquireResult, 1)
+
+	type admitResult struct {
+		admission runqueue.Admission
+		err       error
+	}
+	resultCh := make(chan admitResult, 1)
 	go func() {
-		lease, waited, err := runqueue.Acquire(ctx, projectsRoot, units, budget)
-		resultCh <- acquireResult{lease: lease, waited: waited, err: err}
+		admission, err := runqueue.Admit(ctx, projectsRoot, argv, self, ticket)
+		resultCh <- admitResult{admission: admission, err: err}
 	}()
 
 	select {
 	case result := <-resultCh:
 		progress.admittedImmediately()
-		return result.lease, result.waited, result.err
+		return result.admission.Lease, result.admission.Units, result.admission.Waited, result.err
 	case <-time.After(queueAdmissionGrace):
 	}
 
 	queuedAt := time.Now()
-	progress.queued(self.Summary, ticket.Snapshot(budget))
+	progress.queued(self.Summary, ticket.Snapshot(runqueue.Budget()))
 
 	ticker := time.NewTicker(progress.heartbeatEvery)
 	defer ticker.Stop()
@@ -386,13 +418,13 @@ func acquireWithQueueVisibility(ctx context.Context, projectsRoot string, units,
 			if result.err == nil {
 				progress.admittedAfterWait(time.Since(queuedAt))
 			}
-			return result.lease, result.waited, result.err
+			return result.admission.Lease, result.admission.Units, result.admission.Waited, result.err
 		case <-ticker.C:
 			// Refresh the ticket alongside reporting on it, so a still-waiting
 			// command's registration never ages past staleAfter and gets
 			// reaped by another WB process as if this one had died.
 			ticket.Heartbeat()
-			progress.heartbeat(time.Since(queuedAt), ticket.Snapshot(budget))
+			progress.heartbeat(time.Since(queuedAt), ticket.Snapshot(runqueue.Budget()))
 		}
 	}
 }
@@ -417,20 +449,19 @@ func runQueueSummary(args []string) string {
 }
 
 func printRunQueue(cmd *cobra.Command, jsonOut bool) error {
-	budget := runqueue.Budget()
-	listing := runqueue.ListQueue(projectsRoot, budget)
+	listing := runqueue.ListQueue(projectsRoot, runqueue.Budget())
 	if jsonOut {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(listing)
 	}
 	out := cmd.OutOrStdout()
-	if _, err := fmt.Fprintf(out, "WB CPU queue · budget %d\n", listing.Budget); err != nil {
+	if _, err := fmt.Fprintf(out, "WB CPU queue · budget %d · heavy k %d\n", listing.Budget, listing.HeavyK); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(out, "running (%d):\n", len(listing.Running)); err != nil {
 		return err
 	}
 	for _, entry := range listing.Running {
-		if _, err := fmt.Fprintf(out, "  pid %-8d %-16s %-8s %s\n", entry.PID, entry.Summary, entry.Age.Round(time.Second), entry.Worktree); err != nil {
+		if _, err := fmt.Fprintf(out, "  pid %-8d %-16s %-8s units %-3d %s\n", entry.PID, entry.Summary, entry.Age.Round(time.Second), entry.Units, entry.Worktree); err != nil {
 			return err
 		}
 	}
@@ -451,14 +482,10 @@ func governedEnvironment(environment []string, operationID string, args []string
 		return environment
 	}
 	environment = withEnvironmentValue(environment, "WB_CPU_UNITS", fmt.Sprint(units))
-	environment = withEnvironmentValue(environment, "GOMAXPROCS", fmt.Sprint(units))
+	environment = withEnvironmentValue(environment, "GOMAXPROCS", runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(environment, "GOMAXPROCS"), units))
 	environment = withEnvironmentValue(environment, "NX_PARALLEL", fmt.Sprint(units))
-	if len(args) > 0 && filepath.Base(args[0]) == "go" {
-		goFlags := strings.TrimSpace(os.Getenv("GOFLAGS"))
-		if goFlags != "" {
-			goFlags += " "
-		}
-		environment = withEnvironmentValue(environment, "GOFLAGS", goFlags+"-p=1")
+	if goFlags := runqueue.GovernGoFlags(args, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
+		environment = withEnvironmentValue(environment, "GOFLAGS", goFlags)
 	}
 	return environment
 }
