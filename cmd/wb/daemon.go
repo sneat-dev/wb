@@ -93,10 +93,24 @@ func daemonRefuseTestBinary(executable string) error {
 // unresponsive or wedged systemd user manager (sneat-dev/wb#622 review round
 // 3, item M4) — a status check is exactly the kind of call an operator
 // expects back promptly even when something is badly wrong.
+//
+// exec.CommandContext on its own only kills the DIRECT child; if systemctl
+// (or a fake standing in for it) itself forks a grandchild that inherits the
+// stdout/stderr pipes CombinedOutput reads, killing the direct child does
+// not close those pipes, and Wait blocks until the grandchild independently
+// exits — which can be far longer than runSystemctlTimeout, or never
+// (sneat-dev/wb#622 review round 4: this exact shape hung Linux CI for 35
+// minutes via this seam's own test). cmd.WaitDelay (Go 1.20+) bounds how
+// long Wait, after the process is killed, waits for the output-copying
+// goroutines before forcibly closing the pipes and returning anyway — the
+// general fix, not just a test-only workaround, since a REAL wedged
+// systemctl could fork a real grandchild the same way.
 var runSystemctl = func(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runSystemctlTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput() //nolint:gosec // fixed argv plus a configured/default unit name, no shell.
+	command := exec.CommandContext(ctx, "systemctl", args...) //nolint:gosec // fixed argv plus a configured/default unit name, no shell.
+	command.WaitDelay = 2 * time.Second
+	return command.CombinedOutput()
 }
 
 // runSystemctlTimeout bounds every runSystemctl invocation. It is a variable
@@ -149,8 +163,15 @@ func daemonSupervisorPresent(supervisor daemon.Supervisor, label string) (presen
 		// every platform, and runLaunchctl only exists under
 		// daemon_process_darwin.go's darwin build tag. A raw exec.Command
 		// here fails harmlessly (launchctl does not exist) on linux/windows,
-		// exactly as it always has.
-		if _, err := exec.Command("launchctl", "print", target).CombinedOutput(); err != nil { //nolint:gosec // fixed argv plus a recorded launchd label, no shell.
+		// exactly as it always has. Bounded the same way runSystemctl is
+		// (context timeout plus WaitDelay): this existence check must not
+		// hang indefinitely on a wedged launchctl either (sneat-dev/wb#622
+		// review round 4).
+		ctx, cancel := context.WithTimeout(context.Background(), runSystemctlTimeout)
+		defer cancel()
+		command := exec.CommandContext(ctx, "launchctl", "print", target) //nolint:gosec // fixed argv plus a recorded launchd label, no shell.
+		command.WaitDelay = 2 * time.Second
+		if _, err := command.CombinedOutput(); err != nil {
 			return false, label
 		}
 		return true, label

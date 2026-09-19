@@ -1336,6 +1336,18 @@ func TestDaemonSupervisorPresentSystemdWhenSystemctlIsAbsent(t *testing.T) {
 // through the seam with a real (but fast-killed) subprocess, not a fake
 // runSystemctl override, since the whole point is to prove the DEFAULT
 // closure's own timeout wiring.
+//
+// The fake script uses `exec sleep`, not a bare `sleep` command, so the
+// shell replaces its own process image rather than forking sleep as a
+// child: a forked grandchild inherits the stdout/stderr pipes
+// CombinedOutput reads, and killing only the DIRECT child (what
+// exec.CommandContext does on its own) leaves that grandchild holding them
+// open — Wait then blocks until the grandchild independently exits, which
+// hung this exact test for 35 minutes on Linux CI (sneat-dev/wb#622 review
+// round 4) despite runSystemctlTimeout firing correctly. `exec` is the
+// belt; runSystemctl's own command.WaitDelay (see daemon.go) is the
+// suspenders — the actual fix for a REAL wedged systemctl that forks a real
+// grandchild, which this test cannot control the shape of.
 func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 	previousTimeout := runSystemctlTimeout
 	runSystemctlTimeout = 50 * time.Millisecond
@@ -1343,7 +1355,7 @@ func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 
 	dir := t.TempDir()
 	fakeSystemctl := filepath.Join(dir, "systemctl")
-	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1352,8 +1364,8 @@ func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 	if _, err := runSystemctl("--user", "is-system-running"); err == nil {
 		t.Fatal("expected the hanging fake systemctl to be killed by the timeout")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("runSystemctl took %s, want it bounded near runSystemctlTimeout (%s)", elapsed, runSystemctlTimeout)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("runSystemctl took %s, want it bounded near runSystemctlTimeout (%s) plus WaitDelay", elapsed, runSystemctlTimeout)
 	}
 }
 

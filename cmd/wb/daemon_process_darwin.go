@@ -43,8 +43,19 @@ var runLaunchctl = func(args ...string) ([]byte, error) {
 	if guardErr := daemonRefuseTestBinary(executable); guardErr != nil {
 		return nil, guardErr
 	}
-	return exec.Command("launchctl", args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), runLaunchctlTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "launchctl", args...)
+	// See cmd/wb's runSystemctl doc for why WaitDelay, not just the context
+	// timeout, matters: a killed direct child does not close pipes a
+	// grandchild still holds open (sneat-dev/wb#622 review round 4).
+	command.WaitDelay = 2 * time.Second
+	return command.CombinedOutput()
 }
+
+// runLaunchctlTimeout bounds every runLaunchctl invocation. It is a variable
+// so a test can shrink it rather than waiting the real bound out.
+var runLaunchctlTimeout = 5 * time.Second
 
 func daemonLaunchdPath() (string, error) {
 	home, err := os.UserHomeDir()
