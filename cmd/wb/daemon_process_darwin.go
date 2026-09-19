@@ -55,7 +55,16 @@ var runLaunchctl = func(args ...string) ([]byte, error) {
 
 // runLaunchctlTimeout bounds every runLaunchctl invocation. It is a variable
 // so a test can shrink it rather than waiting the real bound out.
-var runLaunchctlTimeout = 5 * time.Second
+//
+// It MUST stay above daemonStopTimeout: this seam also carries `launchctl
+// bootout` (stopDaemonProcess, both wb's own job and a foreign one), which
+// blocks until the daemon it targets actually stops, and the daemon's own
+// drain can legitimately take up to daemonStopTimeout. A runLaunchctlTimeout
+// at or below that would kill bootout mid-drain, and the bootstrap that
+// follows it (startDaemonProcess, re-installing wb's own job) would then
+// fail with "already loaded" — breaking `wb daemon start`/`restart` on a
+// real Mac (sneat-dev/wb#622 review round 4 follow-up).
+var runLaunchctlTimeout = 30 * time.Second
 
 func daemonLaunchdPath() (string, error) {
 	home, err := os.UserHomeDir()

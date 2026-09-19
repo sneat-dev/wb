@@ -177,3 +177,14 @@ func TestStopDaemonProcessGuardsAgainstATestBinaryWithoutFakingRunLaunchctl(t *t
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// runLaunchctlTimeout also bounds `launchctl bootout` (stopDaemonProcess),
+// which blocks until the daemon it targets actually stops. It must stay
+// above daemonStopTimeout, or a bootout gets killed mid-drain and the
+// bootstrap that follows fails with "already loaded" — breaking `wb daemon
+// start`/`restart` on a real Mac (sneat-dev/wb#622 review round 4 follow-up).
+func TestRunLaunchctlTimeoutStaysAboveDaemonStopTimeout(t *testing.T) {
+	if runLaunchctlTimeout <= daemonStopTimeout {
+		t.Fatalf("runLaunchctlTimeout = %s, must be greater than daemonStopTimeout = %s", runLaunchctlTimeout, daemonStopTimeout)
+	}
+}
