@@ -351,7 +351,7 @@ message as binding becomes harder for the founder to control, not easier. The
 division above — advisory by default, a short enumerated binding set — is what
 keeps the founder the highest authority in the loop.
 
-## Proposed direction
+## Recommended Direction
 
 **MVP (founder-agreed 2026-09-18): one flow, "your PR has an outcome → your
 session wakes".** It replaces the channel server below as the first step,
@@ -416,13 +416,54 @@ wait.died            advisory   a waiter you registered is gone
 Each carries identifiers only — repository, number, SHA, check name, event id.
 No provider prose. Details are fetched, never pushed.
 
-## Non-goals
+## Alternatives Considered
+
+- **Claude Code channels** (`claude --channels plugin:<server>`). Tested:
+  a channel notification did not wake an idle session, so it survives only as
+  the fallback for sessions outside herdr.
+- **tmux paste through `internal/sessionmessage`.** Fully general, but the
+  founder's sessions run in herdr, not tmux, so it does not reach them.
+- **Relaying provider text** (titles, bodies, log lines) into the session.
+  Rejected: text delivered as the founder's input, written by whoever wrote
+  the pull request, is prompt injection with the founder's authority (see
+  "The serious risk: authority laundering").
+
+## MVP Scope
+
+The founder-agreed single flow in Recommended Direction: "your PR has an
+outcome → your session wakes", registered against the task at `wb pr create`,
+resolved to session and herdr pane at delivery, same machine only, delivered
+only to an idle session with an empty input box, from fixed identifier-only
+templates.
+
+## Not Doing (and Why)
 
 - Relaying provider text into a session, in any form.
 - A general message bus between sessions.
 - Instructions: the daemon reports, except for the enumerated binding refusals.
 - Replacing `wb wait`. A session that chose to block should keep blocking; this
   is for what a session did not think to ask about.
+
+## Key Assumptions to Validate
+
+| Tier | Assumption | How to validate |
+|------|------------|-----------------|
+| Must-be-true | `herdr agent prompt` wakes an idle session reliably | Verified once (about a second); repeat across idle, done and compacted sessions |
+| Must-be-true | task → claim → session → pane resolution survives compaction, resume, `/move` and `/park`→`/pickup` | Journey test through each transition, asserting the wake reaches the claim's current owner |
+| Should-be-true | A closed, identifier-only vocabulary carries enough for the session to act | Count, over a week, how often a woken session had to run a follow-up read before acting |
+
+## SpecScore Integration
+
+- **New Features this would create:** a daemon session-notification Feature
+  covering registration, delivery guards, templates and visibility.
+- **Existing Features affected:**
+  [Daemon Lifecycle Identity](../features/daemon-lifecycle/README.md) (the
+  daemon that watches and delivers),
+  [Agent Session Move](../features/agent-session-move/README.md) and
+  [Park and Resume Agent Sessions](../features/park-and-resume-agent-sessions/README.md)
+  (the claim chain delivery follows).
+- **Dependencies:** the task→PR binding recorded by `wb pr create`
+  (sneat-dev/wb#601); herdr on the machine.
 
 ## Open Questions
 
