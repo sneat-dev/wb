@@ -429,7 +429,8 @@ and, once the total-allocation question came up:
 > "Should we allow 2nd runner in parallel with 50% cpu? So 1st 100% and
 > total 150%."
 
-Formalized: with N = the machine's logical CPU count (`runtime.NumCPU`), a
+Lead design, formalized from the founder's words: with N = the machine's
+logical CPU count (`runtime.NumCPU`), a
 heavy job's allocation depends on k, the number of heavy jobs that will be
 running or waiting once it is admitted (itself included):
 

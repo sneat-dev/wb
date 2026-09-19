@@ -214,6 +214,29 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// reapStaleTempFile removes a hidden ".tmp-*" sibling atomicWriteFile left
+// behind by a process killed between CreateTemp and Rename (the normal
+// path either completes the rename or cleans the temp file up inline on
+// error). Review finding (PR #628 re-review, Minor 4). Anything younger
+// than staleAfter might still be a write genuinely in flight from another
+// process, so only an older leftover — one no live writer could still be
+// producing — is removed; readTicketsIn/readHolderRecords call this for
+// every dot-prefixed name they skip while listing their directory anyway,
+// so the reap costs nothing beyond the listing they already do.
+func reapStaleTempFile(dir string, entry os.DirEntry) {
+	if !strings.HasPrefix(entry.Name(), ".tmp-") {
+		return
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return
+	}
+	if time.Since(info.ModTime()) < staleAfter {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, entry.Name()))
+}
+
 // registerAt is Register generalized to any namespace/directory; RegisterHeavy
 // (heavy.go) is its only other caller.
 func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self Participant) *Ticket {
@@ -304,7 +327,11 @@ func readTicketsIn(dir string) []ticketRecord {
 	}
 	tickets := make([]ticketRecord, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			reapStaleTempFile(dir, entry)
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -382,7 +409,11 @@ func readHolderRecords(dir string) []Holder {
 	}
 	holders := make([]Holder, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			reapStaleTempFile(dir, entry)
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())

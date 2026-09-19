@@ -132,11 +132,13 @@ func classifyGo(arguments []string) Kind {
 	return KindFocused
 }
 
-// goflagsRaceOrCover reports whether the GOFLAGS environment variable
-// itself (as opposed to an explicit argv flag) carries -race or -cover, so
-// a caller that sets it ambiently still gets the heavy classification.
+// goflagsRaceOrCover reports whether the effective GOFLAGS — the GOFLAGS
+// environment variable, or (review finding, PR #628 re-review, Minor 3)
+// the `go env -w GOFLAGS` persisted default when the environment variable
+// itself is unset — carries -race or -cover, so a caller that sets it
+// ambiently either way still gets the heavy classification.
 func goflagsRaceOrCover() bool {
-	fields := strings.Fields(os.Getenv("GOFLAGS"))
+	fields := strings.Fields(EffectiveGOFLAGS())
 	return hasPrefix(fields, "-race") || hasPrefix(fields, "-cover")
 }
 
@@ -194,13 +196,35 @@ func hasExplicitNxTarget(arguments []string) bool {
 	return false
 }
 
+// nodeTestRunnerValueFlags lists jest/mocha/vitest flags that consume a
+// following value — a config path, project name, reporter, pattern, or
+// similar — never a positional file/path argument that would scope the
+// run to one area. Review finding (PR #628 re-review, Minor 2): without
+// this, `jest -c jest.config.js`, `mocha --config .mocharc.yml`, and
+// `vitest --project core` were wrongly classified as focused, because
+// their flag's own value looked like a scoping file/path argument.
+var nodeTestRunnerValueFlags = map[string]bool{
+	"-c": true, "--config": true,
+	"-t": true, "--testnamepattern": true,
+	"--project": true, "--reporter": true, "--pool": true,
+	"--maxworkers": true, "--rootdir": true, "--testpathpattern": true,
+	"--grep": true, "--fgrep": true,
+	"-r": true, "--require": true,
+	"--timeout": true,
+}
+
 // classifyNodeTestRunner classifies a direct vitest/jest/mocha invocation.
 // Review finding (PR #628, S3): a bare `jest`, `mocha`, or `vitest run`
 // with no file or path argument runs the whole suite and is heavy; an
 // explicit file or path argument scopes it to one area and is focused.
 func classifyNodeTestRunner(arguments []string) Kind {
-	for _, argument := range arguments {
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
 		if strings.HasPrefix(argument, "-") {
+			base, _, hasValueInline := strings.Cut(argument, "=")
+			if !hasValueInline && nodeTestRunnerValueFlags[strings.ToLower(base)] && index+1 < len(arguments) {
+				index++ // skip the flag's own value, not a scoping path
+			}
 			continue
 		}
 		if argument == "run" || argument == "test" {
@@ -230,11 +254,14 @@ func classifyNodePackageManager(arguments []string) Kind {
 	if !hasAny(arguments, "test", "run", "build", "lint", "e2e", "affected") {
 		return KindNone
 	}
-	joined := strings.ToLower(strings.Join(arguments, " "))
-	if strings.Contains(joined, "build") || strings.Contains(joined, "e2e") || strings.Contains(joined, "affected") {
+	// Review finding (PR #628 re-review, Minor 2): match whole tokens, not
+	// substrings of a joined command line — "pnpm test -- src/builder.
+	// spec.ts" must not classify broad merely because "builder.spec.ts"
+	// contains the substring "build".
+	if hasAny(arguments, "build", "e2e", "affected") {
 		return KindBroad
 	}
-	if strings.Contains(joined, "test") || strings.Contains(joined, "lint") {
+	if hasAny(arguments, "test", "lint") {
 		if hasNodeWorkspaceScope(arguments) {
 			return KindFocused
 		}
@@ -245,12 +272,17 @@ func classifyNodePackageManager(arguments []string) Kind {
 
 // hasNodeWorkspaceScope reports whether arguments carry an explicit
 // workspace/filter flag or a file/path argument that narrows an npm/pnpm/
-// yarn/bun/npx invocation to less than the whole workspace.
+// yarn/bun/npx invocation to less than the whole workspace. Review finding
+// (PR #628 re-review, Minor 2): bare `-w` (pnpm's `--workspace-root`
+// shorthand) does the opposite of narrowing — `pnpm -w test` runs the
+// whole suite from the workspace root — so it is deliberately not treated
+// as a scoping flag here, unlike npm's `--workspace=<name>`/`--workspace
+// <name>`, which does name one specific workspace.
 func hasNodeWorkspaceScope(arguments []string) bool {
 	for _, argument := range arguments {
 		lower := strings.ToLower(argument)
 		switch {
-		case lower == "--filter", lower == "-w", lower == "--workspace", lower == "--scope",
+		case lower == "--filter", lower == "--workspace", lower == "--scope",
 			strings.HasPrefix(lower, "--filter="), strings.HasPrefix(lower, "--workspace="), strings.HasPrefix(lower, "--scope="):
 			return true
 		case strings.Contains(argument, "/"), strings.HasSuffix(argument, ".ts"), strings.HasSuffix(argument, ".js"):
@@ -340,6 +372,22 @@ type Lease struct {
 	// blind to it (a reproduced 18+18+9=45 against a 27 cap). A Lease now
 	// heartbeats itself for as long as it is held, so no caller can forget.
 	stopHeartbeat chan struct{}
+	// heartbeatDone is closed by the armHeartbeat goroutine right before it
+	// returns, once it has actually observed stopHeartbeat closed — never
+	// merely because Release asked it to. Release waits on this before
+	// running extraRelease. Review finding (PR #628 re-review, Serious 1):
+	// closing stopHeartbeat alone only asks the goroutine to stop on its
+	// next select iteration; it does not wait for an already-in-flight
+	// fn() call to finish first. Without this wait, Release could run
+	// extraRelease — which frees or nils exactly what fn() reads/writes —
+	// concurrently with a heartbeat write already underway when Release
+	// was called: a genuine data race for the legacy pool (Cleanup nils
+	// Announcement.paths while Heartbeat reads it), and for the heavy pool
+	// a heartbeat's atomicWriteFile can rename a holder file back into
+	// existence just after removeHeavyHolder deleted it, resurrecting a
+	// "ghost" holder that then counts against the 150% cap and the 3-job
+	// bound for up to staleAfter (30s).
+	heartbeatDone chan struct{}
 }
 
 // leaseHeartbeatInterval is how often armHeartbeat refreshes a held Lease's
@@ -353,8 +401,11 @@ var leaseHeartbeatInterval = 10 * time.Second
 func (lease *Lease) armHeartbeat(fn func()) {
 	lease.heartbeat = fn
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	lease.stopHeartbeat = stop
+	lease.heartbeatDone = done
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(leaseHeartbeatInterval)
 		defer ticker.Stop()
 		for {
@@ -375,6 +426,11 @@ func (lease *Lease) Release() {
 	if lease.stopHeartbeat != nil {
 		close(lease.stopHeartbeat)
 		lease.stopHeartbeat = nil
+		// Wait for the goroutine to actually exit — including any fn()
+		// call already in flight when Release was called — before running
+		// extraRelease below. See heartbeatDone's doc comment.
+		<-lease.heartbeatDone
+		lease.heartbeatDone = nil
 	}
 	for index := len(lease.files) - 1; index >= 0; index-- {
 		_ = unix.Flock(int(lease.files[index].Fd()), unix.LOCK_UN)
@@ -463,17 +519,32 @@ type Admission struct {
 }
 
 // RegisterForAdmission registers argv's waiting ticket in the namespace its
-// Kind uses — nil for KindNone/KindFocused, which never wait — so a caller
-// that wants to render its own queued/heartbeat progress lines (only `wb
-// run` does today) can call Ticket.Snapshot while Admit is in flight. The
-// caller must call Forget on whatever is returned exactly once, regardless
-// of outcome; Forget on a nil Ticket is a safe no-op.
+// Kind uses — nil for KindNone always, and for KindFocused only on a large
+// machine (numCPU >= 8), where a focused job is admitted instantly and
+// never waits — so a caller that wants to render its own queued/heartbeat
+// progress lines (only `wb run` does today) can call Ticket.Snapshot while
+// Admit is in flight. The caller must call Forget on whatever is returned
+// exactly once, regardless of outcome; Forget on a nil Ticket is a safe
+// no-op.
 func RegisterForAdmission(projectsRoot string, argv []string, self Participant) *Ticket {
 	kind := Classify(argv)
 	switch {
-	case kind == KindNone || kind == KindFocused:
+	case kind == KindNone:
 		return nil
-	case kind.IsHeavy() && !smallMachine():
+	case smallMachine():
+		// Review finding (PR #628 re-review, Minor 1): on a small machine
+		// every governed kind — KindFocused included — goes through the
+		// same legacy Acquire pool as any other small-machine job (see
+		// Admit's own smallMachine()-first ordering, the S2 fix); it is
+		// not "outside the queue" the way a large machine's focused job
+		// is. Returning nil unconditionally for KindFocused here made a
+		// small-machine focused job invisible to `wb run --queue` and to
+		// other waiters' reported queue positions — a regression from
+		// origin/main.
+		return Register(projectsRoot, self)
+	case kind == KindFocused:
+		return nil
+	case kind.IsHeavy():
 		return RegisterHeavy(projectsRoot, self)
 	default:
 		return Register(projectsRoot, self)

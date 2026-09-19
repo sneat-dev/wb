@@ -14,7 +14,8 @@ import (
 
 // This file implements the adaptive heavy-job queue for a large machine
 // (numCPU >= smallMachineThreshold), sneat-dev/wb#621. The founder's own
-// words on the issue, verbatim, 2026-09-18 (everything else below —
+// words, verbatim, relayed during implementation on 2026-09-18 (everything
+// else below —
 // the k-tiered share rule, the 150%-cap formula, the N/4 floor, the 3-job
 // bound, the backfill-with-aging replacement, the "fixed at start"
 // behavior, and the N<8 rule — is the lead's design, not a founder quote,
