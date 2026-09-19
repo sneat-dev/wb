@@ -9,6 +9,7 @@ status: Approved
 **Status:** Approved
 **Source Ideas:** —
 **Supersedes:** —
+**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (the tmux-specific behavior below moves behind that Feature's pluggable transport interface; herdr becomes the default, tmux the kept alternative)
 **Grade:** B
 
 ## Summary
@@ -30,6 +31,16 @@ the source session appear transferred, and a retry must never start a second
 successor for the same handoff.
 
 ## Behavior
+
+> **Transport note.** Every tmux-specific behavior below (successor start,
+> pane messaging, paste-into-pane delivery) now runs through one pluggable
+> transport interface specified in
+> [Herdr Session Transport](../herdr-session-transport/README.md). herdr is
+> that interface's default implementation; tmux is the kept alternative,
+> moved behind the interface with no behavior change. The REQs below still
+> describe today's tmux behavior exactly — they are not duplicated in the new
+> Feature, which instead specifies the interface, the herdr implementation,
+> and transport selection.
 
 ### Session and target identity
 

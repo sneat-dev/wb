@@ -1,0 +1,1 @@
+{"id":"cli:agent:read","result":{"type":"pane_read","read":{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","source":"recent_unwrapped","format":"text","text":"synthetic screen text for testing only — field shape verified via `herdr api schema --json`, not captured from a live `agent read` (forbidden by safety.md)","revision":2,"truncated":false}}}
