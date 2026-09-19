@@ -207,8 +207,10 @@ func TestDqCovLoadValidationCacheMissesEveryWeakenedRecord(t *testing.T) {
 		}
 	}
 
+	// Left serial: this and the write() calls below all mutate the same
+	// recordPath in sequence; a parallel subtest here would race the
+	// trailing write() calls in this function's own body.
 	t.Run("invalid json", func(t *testing.T) {
-		t.Parallel()
 		if err := os.WriteFile(recordPath, []byte("{not json"), 0o644); err != nil {
 			t.Fatal(err)
 		}

@@ -65,13 +65,19 @@ func TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands(t *testing.T) {
 // cheaply: a retained profile is reused in place, and a profile the shim did not
 // rewrite is rejected as unparsable.
 func TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile(t *testing.T) {
-	root := t.TempDir()
-	writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/retained\n\ngo 1.24\n")
-	dqCovFakeGo(t, root)
-	retained := filepath.Join(root, "retained.out")
+	newModuleRoot := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		writeQualityFile(t, filepath.Join(root, "go.mod"), "module example.test/retained\n\ngo 1.24\n")
+		dqCovFakeGo(t, root)
+		return root
+	}
 
+	// Left serial: newModuleRoot's fake go shim calls t.Setenv("PATH", ...),
+	// which Go's testing package forbids combining with t.Parallel.
 	t.Run("valid profile retained in place", func(t *testing.T) {
-		t.Parallel()
+		root := newModuleRoot(t)
+		retained := filepath.Join(root, "retained.out")
 		writeQualityFile(t, retained, "mode: set\nexample/a.go:1.1,2.2 4 3\nexample/b.go:1.1,2.2 1 0\n")
 		report := CoverWithOptions(context.Background(), "example/retained", root, RunOptions{CoverageProfile: retained})
 		if report.Status != StatusPassed || report.Statements != 5 || report.Covered != 4 {
@@ -83,7 +89,8 @@ func TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile(t *testing.
 	})
 
 	t.Run("unparsable profile fails", func(t *testing.T) {
-		t.Parallel()
+		root := newModuleRoot(t)
+		retained := filepath.Join(root, "retained.out")
 		writeQualityFile(t, retained, "mode: set\nthis line has too many fields here\n")
 		report := CoverWithOptions(context.Background(), "example/retained", root, RunOptions{CoverageProfile: retained})
 		if report.Status != StatusFailed || !strings.Contains(report.Error, "invalid coverage profile") {
