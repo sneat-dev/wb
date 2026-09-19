@@ -29,6 +29,8 @@ Choose one command that answers the question:
 | Reserve a task fleet-wide before starting work | `wb remote claim <task>` | [remote.md](references/remote.md) |
 | Give up a task claim | `wb remote release <task>` | [remote.md](references/remote.md) |
 | See who holds every task claim | `wb remote claims` | [remote.md](references/remote.md) |
+| Admit a peer, or join a hub as one | `wb peers invite` / `wb peers join` | [peers.md](references/peers.md) |
+| List, inspect, block or unblock a peer | `wb peers list` / `get` / `block` / `unblock` / `disconnect` | [peers.md](references/peers.md) |
 
 Do not run overlapping `verify` and `check` commands unless they answer
 different questions. Start with one repository; add `--fleet` and a filter

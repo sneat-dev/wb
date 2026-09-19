@@ -50,6 +50,14 @@ type Options struct {
 	// so a reverse proxy in front of it never needs disk access of its own.
 	// Empty disables the endpoint (503).
 	LogPath string
+	// Peers serves /api/v1/peers and /api/v1/peers/{id}
+	// (peer-connectivity#req:peers-api's "mounted...on every node"). The
+	// caller always supplies one, backed by an empty-list source when this
+	// daemon has no hub mounted, so a laptop-only install answers "no
+	// downstream peers" instead of falling through to the index page below.
+	// A nil value keeps the previous behaviour (unmounted, 404s into the
+	// index) purely as a defensive default; every real caller sets it.
+	Peers http.Handler
 }
 
 // defaultLogTailBytes bounds an unqualified /api/v1/log request. It is large
@@ -159,6 +167,19 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("GET /api/v1/overview", server.overview)
 	mux.HandleFunc("GET /api/v1/log", server.log)
+	if options.Peers != nil {
+		// GET-qualified patterns: an unqualified "/api/v1/peers" pattern
+		// conflicts with the mux's own "GET /" catch-all registered above
+		// ("matches more methods... but has a more specific path" — Go
+		// 1.22's ServeMux refuses that ambiguity outright, panicking at
+		// startup). options.Peers already answers 405 to a non-GET request
+		// on its own (internal/peers.NewHandler's method check); a
+		// non-GET request that never reaches it instead gets the mux's
+		// ordinary 404, which is an acceptable, harmless difference for a
+		// route with no non-GET method at all.
+		mux.Handle("GET /api/v1/peers", options.Peers)
+		mux.Handle("GET /api/v1/peers/", options.Peers)
+	}
 	return securityHeaders(withMounts(options.Mounts, mux))
 }
 

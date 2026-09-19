@@ -27,6 +27,8 @@ import (
 	"github.com/sneat-dev/wb/internal/dashboard"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/hubconfig"
+	"github.com/sneat-dev/wb/internal/nodeidentity"
+	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
 	"github.com/sneat-dev/wb/internal/repositoryevents"
@@ -2453,6 +2455,24 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// Narration goes to stderr, which is where the detached daemon's log file
 	// already points, so there is no second writer to mirror into.
 	narrator := narrate.Writer{Out: command.ErrOrStderr(), Quiet: quiet}
+	// Every daemon carries a stable node ID (peer-connectivity#req:node-
+	// identity), generated once here and again — idempotently — on the
+	// laptop's first `wb peers join`. A failure to create it is reported
+	// (always, --quiet included: this is a startup diagnostic on stderr, not
+	// one of the per-event console lines --quiet silences) but does not stop
+	// the daemon: node identity matters once Task 2 opens a session, not to
+	// any surface this task adds. Task 2 makes this fatal instead.
+	//
+	// The path is built from location.Home rather than calling
+	// nodeidentity.Load(projectsRoot, nil) a second time: location was
+	// already resolved once, above, from the same projectsRoot every other
+	// value in this function depends on, so there is exactly one resolution
+	// to get right (and exactly one place a test already has to guard, per
+	// the daemon-launch incident) rather than two that could silently
+	// diverge if the global were ever empty.
+	if _, err := nodeidentity.LoadFile(nodeidentity.PathFromHome(location.Home), nil); err != nil {
+		_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: node identity unavailable:", err)
+	}
 	mount, err := mountHub(command.Context(), hubConfigPath(), address, narrator, deps.hubTuning)
 	if err != nil {
 		_ = listener.Close()
@@ -2464,14 +2484,30 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	// daemonStartLogPath is the cross-platform accessor (daemonLogPath is
 	// !darwin-only; darwin's launchd unit owns a fixed, home-derived path).
 	logPath, _ := daemonStartLogPath(projectsRoot)
+	// The peers read API is mounted unconditionally — with or without a hub
+	// section — per peer-connectivity#req:peers-api's "mounted...on every
+	// node": a laptop-only install answers "no downstream peers" instead of
+	// falling through to the dashboard's HTML index (the bug a laptop-side
+	// `wb peers list`/`get` hit before this fallback existed).
+	peersSource := mount.peersSource()
+	if peersSource == nil {
+		peersSource = emptyPeersSource{}
+	}
+	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
 		Mounts: mount.handlers(), Hub: mount.hubHealth(), LogPath: logPath,
+		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(rpcPath, authenticatedDaemonHandler(ownerToken, rpcHandler))
+	// The peer admin routes share the same owner-token authentication and the
+	// same unix-socket listener, and are therefore never reachable over the
+	// TCP dashboard listener (peer-connectivity#req:admin-requires-owner-
+	// credential).
+	rpcMux.Handle(peersRPCPrefix, authenticatedDaemonHandler(ownerToken, newPeerAdminHTTPHandler(mount)))
 	fileBridge, err := newDaemonFileBridgeServer(projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
 	if err != nil {
 		_ = listener.Close()
