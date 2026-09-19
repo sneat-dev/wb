@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -333,6 +334,47 @@ func TestAnnouncementHeartbeatKeepsALiveHolderFromAging(t *testing.T) {
 	staleAfter = time.Minute
 	if state := Peek(root, 1); len(state.Holders) != 1 {
 		t.Fatalf("Peek = %+v, want the heartbeat-refreshed holder to survive", state)
+	}
+}
+
+// TestReadTicketsReapsAnOldOrphanedTempFile pins the re-review's Minor 4
+// finding: atomicWriteFile's hidden ".tmp-*" sibling can be left behind if
+// the writing process is killed between CreateTemp and Rename. A leftover
+// older than staleAfter — one no live writer could still be producing —
+// is removed the next time anything lists this directory; a fresh one
+// (still possibly a write genuinely in flight) is left alone.
+func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
+	root := t.TempDir()
+	previous := staleAfter
+	staleAfter = 20 * time.Millisecond
+	defer func() { staleAfter = previous }()
+
+	live := Register(root, Participant{PID: os.Getpid(), Summary: "go test"})
+	defer live.Forget()
+
+	dir := ticketDir(root)
+	oldTemp := filepath.Join(dir, ".tmp-old")
+	if err := os.WriteFile(oldTemp, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-2 * staleAfter)
+	if err := os.Chtimes(oldTemp, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	freshTemp := filepath.Join(dir, ".tmp-fresh")
+	if err := os.WriteFile(freshTemp, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if state := Peek(root, 1); state.Total != 1 {
+		t.Fatalf("Peek = %+v, want only the live ticket counted (temp files must never count)", state)
+	}
+
+	if _, err := os.Stat(oldTemp); !os.IsNotExist(err) {
+		t.Fatalf("old .tmp-* file still present after a directory listing, stat error=%v", err)
+	}
+	if _, err := os.Stat(freshTemp); err != nil {
+		t.Fatalf("fresh .tmp-* file was removed too early: %v", err)
 	}
 }
 

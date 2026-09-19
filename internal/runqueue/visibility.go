@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -36,8 +37,15 @@ type Participant struct {
 }
 
 // Holder is a Participant currently holding one or more CPU lease slots.
+// Units is the CPU share this holder was fixed at, at admission time; the
+// legacy budget-sum pool leaves it zero (its QueueEntry.Units is instead
+// derived by counting held slot files — see groupRunningHolders), while a
+// heavy holder on a large machine always stores its real, computed share
+// here, since it holds exactly one bookkeeping record regardless of how
+// many CPUs that share represents.
 type Holder struct {
 	Participant
+	Units     int       `json:"units,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -100,13 +108,49 @@ func holderPathFor(lockPath string) string {
 	return strings.TrimSuffix(lockPath, ".lock") + ".holder.json"
 }
 
-// Ticket is one caller's registered wait for CPU units, used only for queue
-// visibility; it never gates admission itself.
+// ticketNamespace tells a Ticket, and the functions that read its queue
+// state, which pool it belongs to: the legacy budget-sum pool (small
+// machines, and any other plain Acquire caller such as
+// internal/repositoryevents), or the adaptive heavy-job FIFO pool a large
+// machine (numCPU >= smallMachineThreshold) uses instead (see heavy.go).
+// The two never share directories, so a heavy job's admission never
+// contends with an unrelated caller's plain Acquire on the same slot files.
+type ticketNamespace int
+
+const (
+	namespaceLegacy ticketNamespace = iota
+	namespaceHeavy
+)
+
+// Ticket is one caller's registered wait, used for queue visibility and, in
+// the heavy namespace only, for strict FIFO ordering (see admitHeavy). The
+// legacy namespace's Ticket never gates admission itself.
+//
+// Review finding (PR #628, S5): admitHeavy's own loop and a caller's
+// external progress ticker (cmd/wb/run.go) can both call Heartbeat/Forget on
+// the same *Ticket concurrently. mu guards every read and write of path so
+// Forget can never race a concurrent Heartbeat into "recreating" a ticket
+// (Heartbeat always re-checks path under the same lock Forget clears it
+// under, so once cleared it stays cleared).
 type Ticket struct {
+	mu           sync.Mutex
 	projectsRoot string
+	namespace    ticketNamespace
 	path         string
 	createdAt    time.Time
 	self         Participant
+}
+
+// pathLocked returns the ticket's current path under mu, for admitHeavy's
+// own head-of-queue comparisons (same package, but still concurrent with
+// Heartbeat/Forget from another goroutine).
+func (ticket *Ticket) pathLocked() string {
+	if ticket == nil {
+		return ""
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	return ticket.path
 }
 
 type ticketRecord struct {
@@ -116,17 +160,88 @@ type ticketRecord struct {
 	path      string
 }
 
-// Register records a waiter so State/Snapshot can report queue position and
-// depth while units > 0. Callers must call Forget once they stop waiting,
-// admitted or not — typically via defer immediately after Register.
-// Registration is best-effort: a failure to write the ticket file degrades
-// to an invisible waiter (Snapshot reports Position 0) rather than blocking
-// or failing the caller, since visibility must never become a new way for
-// `wb run` to hang or refuse work.
+// Register records a legacy-pool waiter so State/Snapshot can report queue
+// position and depth while units > 0. Callers must call Forget once they
+// stop waiting, admitted or not — typically via defer immediately after
+// Register. Registration is best-effort: a failure to write the ticket file
+// degrades to an invisible waiter (Snapshot reports Position 0) rather than
+// blocking or failing the caller, since visibility must never become a new
+// way for `wb run` to hang or refuse work.
 func Register(projectsRoot string, self Participant) *Ticket {
+	return registerAt(projectsRoot, namespaceLegacy, ticketDir(projectsRoot), self)
+}
+
+// atomicWriteFile writes data to path by writing it to a hidden sibling
+// temp file in the same directory and renaming it into place (rename is
+// atomic within one directory on every filesystem this package runs on).
+// A reader that lists dir with os.ReadDir at the wrong instant may still
+// observe the temp file, so every directory-listing reader here (
+// readTicketsIn, readHolderRecords) skips names starting with "." — never
+// a real ticket or holder record. Bug found via -race on PR #628's new
+// concurrent-admission tests: registerAt's and Heartbeat's/
+// heartbeatHeavyHolder's plain os.WriteFile truncates a file in place, and
+// a heartbeat loop rewrites the very file readTicketsIn/readHolderRecords
+// list and parse every ~100ms while another heavy job's admission decision
+// is being computed; a reader that opened the file mid-truncate saw
+// invalid JSON, and its json.Unmarshal error silently dropped an otherwise
+// live waiter or holder from the k/room count (reproduced as
+// TestAdmitHeavySimultaneousArrivalsRespectTheCap's three-way case
+// occasionally admitting 9+12+6 instead of 9+9+9).
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temporary.Name()
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Chmod(tempPath, perm); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
+}
+
+// reapStaleTempFile removes a hidden ".tmp-*" sibling atomicWriteFile left
+// behind by a process killed between CreateTemp and Rename (the normal
+// path either completes the rename or cleans the temp file up inline on
+// error). Review finding (PR #628 re-review, Minor 4). Anything younger
+// than staleAfter might still be a write genuinely in flight from another
+// process, so only an older leftover — one no live writer could still be
+// producing — is removed; readTicketsIn/readHolderRecords call this for
+// every dot-prefixed name they skip while listing their directory anyway,
+// so the reap costs nothing beyond the listing they already do.
+func reapStaleTempFile(dir string, entry os.DirEntry) {
+	if !strings.HasPrefix(entry.Name(), ".tmp-") {
+		return
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return
+	}
+	if time.Since(info.ModTime()) < staleAfter {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, entry.Name()))
+}
+
+// registerAt is Register generalized to any namespace/directory; RegisterHeavy
+// (heavy.go) is its only other caller.
+func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self Participant) *Ticket {
 	now := time.Now().UTC()
-	ticket := &Ticket{projectsRoot: projectsRoot, createdAt: now, self: self}
-	dir := ticketDir(projectsRoot)
+	ticket := &Ticket{projectsRoot: projectsRoot, namespace: namespace, createdAt: now, self: self}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ticket
 	}
@@ -137,7 +252,7 @@ func Register(projectsRoot string, self Participant) *Ticket {
 	if err != nil {
 		return ticket
 	}
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
+	if err := atomicWriteFile(path, payload, 0o600); err != nil {
 		return ticket
 	}
 	ticket.path = path
@@ -147,7 +262,12 @@ func Register(projectsRoot string, self Participant) *Ticket {
 // Forget removes the waiter's ticket. Safe to call more than once and on a
 // Ticket whose registration never succeeded.
 func (ticket *Ticket) Forget() {
-	if ticket == nil || ticket.path == "" {
+	if ticket == nil {
+		return
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	if ticket.path == "" {
 		return
 	}
 	_ = os.Remove(ticket.path)
@@ -163,35 +283,44 @@ func (ticket *Ticket) Forget() {
 // past staleAfter and be reaped as if its process had died, which only
 // affects visibility, never admission.
 func (ticket *Ticket) Heartbeat() {
-	if ticket == nil || ticket.path == "" {
+	if ticket == nil {
+		return
+	}
+	ticket.mu.Lock()
+	defer ticket.mu.Unlock()
+	if ticket.path == "" {
 		return
 	}
 	payload, err := json.Marshal(ticketRecord{Participant: ticket.self, CreatedAt: ticket.createdAt, UpdatedAt: time.Now().UTC()})
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(ticket.path, payload, 0o600)
+	_ = atomicWriteFile(ticket.path, payload, 0o600)
 }
 
 // Snapshot reports this ticket's current position and the queue depth, plus
-// the Participants currently holding CPU lease slots. Safe to call
-// repeatedly (e.g. from a heartbeat); it reflects other WB processes'
-// registrations and slot holdings on disk at the moment of the call.
+// the Participants currently holding CPU lease slots in this ticket's own
+// namespace. Safe to call repeatedly (e.g. from a heartbeat); it reflects
+// other WB processes' registrations and slot holdings on disk at the moment
+// of the call.
 func (ticket *Ticket) Snapshot(budget int) State {
 	if ticket == nil {
 		return State{}
 	}
-	return snapshot(ticket.projectsRoot, ticket.path, budget)
+	return snapshot(ticket.projectsRoot, ticket.namespace, ticket.pathLocked(), budget)
 }
 
-// Peek reports queue state without registering a waiter — used by `wb run
-// --queue` and by the initial "admitted (queue empty)" check.
+// Peek reports legacy-pool queue state without registering a waiter — used
+// by `wb run --queue` and by the initial "admitted (queue empty)" check.
 func Peek(projectsRoot string, budget int) State {
-	return snapshot(projectsRoot, "", budget)
+	return snapshot(projectsRoot, namespaceLegacy, "", budget)
 }
 
-func readTickets(projectsRoot string) []ticketRecord {
-	dir := ticketDir(projectsRoot)
+// readTicketsIn lists every live ticket record in dir, oldest first,
+// reaping a dead PID's record along the way. It is the shared engine behind
+// readTickets (the legacy pool) and the heavy pool's waiting-ticket reads
+// (heavy.go).
+func readTicketsIn(dir string) []ticketRecord {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -199,6 +328,10 @@ func readTickets(projectsRoot string) []ticketRecord {
 	tickets := make([]ticketRecord, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			reapStaleTempFile(dir, entry)
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -231,6 +364,10 @@ func readTickets(projectsRoot string) []ticketRecord {
 	return tickets
 }
 
+func readTickets(projectsRoot string) []ticketRecord {
+	return readTicketsIn(ticketDir(projectsRoot))
+}
+
 func readHolders(projectsRoot string, budget int) []Holder {
 	if budget < 1 {
 		budget = 1
@@ -261,9 +398,54 @@ func readHolders(projectsRoot string, budget int) []Holder {
 	return holders
 }
 
-func snapshot(projectsRoot, selfPath string, budget int) State {
-	tickets := readTickets(projectsRoot)
-	state := State{Total: len(tickets), Holders: readHolders(projectsRoot, budget)}
+// readHolderRecords lists every live holder record directly inside dir,
+// oldest first — the heavy pool's holders live one JSON file per holder
+// (heavy.go's readHeavyHolders), unlike the legacy pool's readHolders,
+// which derives each holder from a numbered slot lock file instead.
+func readHolderRecords(dir string) []Holder {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	holders := make([]Holder, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			reapStaleTempFile(dir, entry)
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var holder Holder
+		if err := json.Unmarshal(raw, &holder); err != nil {
+			continue
+		}
+		if !isLive(holder.PID, holder.UpdatedAt) {
+			_ = os.Remove(path)
+			continue
+		}
+		holders = append(holders, holder)
+	}
+	sort.Slice(holders, func(i, j int) bool { return holders[i].StartedAt.Before(holders[j].StartedAt) })
+	return holders
+}
+
+func snapshot(projectsRoot string, namespace ticketNamespace, selfPath string, budget int) State {
+	var tickets []ticketRecord
+	var holders []Holder
+	if namespace == namespaceHeavy {
+		tickets = readTicketsIn(heavyWaitingDir(projectsRoot))
+		holders = readHeavyHolders(projectsRoot)
+	} else {
+		tickets = readTickets(projectsRoot)
+		holders = readHolders(projectsRoot, budget)
+	}
+	state := State{Total: len(tickets), Holders: holders}
 	if selfPath != "" {
 		for index, ticket := range tickets {
 			if ticket.path == selfPath {
@@ -305,7 +487,7 @@ func (lease *Lease) Announce(self Participant) *Announcement {
 		if err != nil {
 			continue
 		}
-		if err := os.WriteFile(holderPath, payload, 0o600); err != nil {
+		if err := atomicWriteFile(holderPath, payload, 0o600); err != nil {
 			continue
 		}
 		announcement.paths = append(announcement.paths, holderPath)
@@ -326,7 +508,7 @@ func (announcement *Announcement) Heartbeat() {
 		return
 	}
 	for _, path := range announcement.paths {
-		_ = os.WriteFile(path, payload, 0o600)
+		_ = atomicWriteFile(path, payload, 0o600)
 	}
 }
 
@@ -343,39 +525,89 @@ func (announcement *Announcement) Cleanup() {
 }
 
 // QueueEntry is one running or waiting governed command, for `wb run
-// --queue`.
+// --queue`. Units is the number of CPU-budget slots a running holder
+// currently occupies; it is omitted (zero) for a waiting entry, which has
+// not been granted any slots yet.
 type QueueEntry struct {
 	PID      int           `json:"pid"`
 	Summary  string        `json:"summary"`
 	Worktree string        `json:"worktree,omitempty"`
+	Units    int           `json:"units,omitempty"`
 	Age      time.Duration `json:"age_ns"`
 }
 
 // QueueListing is the inspectable state of the CPU lease queue for `wb run
-// --queue`: who currently holds a slot, and who is waiting, oldest first.
+// --queue`: who currently holds a slot, and who is waiting, oldest first,
+// across both the legacy budget-sum pool and the large-machine heavy pool.
+// HeavyK is the current k (sneat-dev/wb#621): every heavy job alive, running
+// or waiting, right now — the same live count a heavy job arriving this
+// instant would be sized against.
 type QueueListing struct {
 	Budget  int          `json:"budget"`
 	Running []QueueEntry `json:"running"`
 	Waiting []QueueEntry `json:"waiting"`
+	HeavyK  int          `json:"heavy_k,omitempty"`
 }
 
-// ListQueue reports every currently announced holder and registered waiter.
-// It is read-only and safe to call from a separate `wb run --queue`
-// invocation while other WB processes hold or wait for slots.
+// ListQueue reports every currently announced holder and registered waiter,
+// legacy and heavy alike. It is read-only and safe to call from a separate
+// `wb run --queue` invocation while other WB processes hold or wait for
+// slots.
+//
+// readHolders returns one record per held slot (Announce writes one holder
+// file per unit in the lease), so a multi-unit legacy holder would
+// otherwise print once per unit it holds. groupRunningHolders collapses
+// those into one QueueEntry per distinct holder (PID + StartedAt identifies
+// one Announce call, i.e. one lease) and sums the collapsed records' Units.
+// A heavy holder needs no such collapsing — it is already exactly one
+// record — but shares the same helper for a uniform QueueEntry shape.
 func ListQueue(projectsRoot string, budget int) QueueListing {
 	now := time.Now().UTC()
 	listing := QueueListing{Budget: budget, Running: []QueueEntry{}, Waiting: []QueueEntry{}}
-	for _, holder := range readHolders(projectsRoot, budget) {
-		listing.Running = append(listing.Running, QueueEntry{
-			PID: holder.PID, Summary: holder.Summary, Worktree: holder.Worktree,
-			Age: now.Sub(holder.StartedAt),
-		})
-	}
+	listing.Running = append(listing.Running, groupRunningHolders(readHolders(projectsRoot, budget), now)...)
+	listing.Running = append(listing.Running, groupRunningHolders(readHeavyHolders(projectsRoot), now)...)
 	for _, ticket := range readTickets(projectsRoot) {
 		listing.Waiting = append(listing.Waiting, QueueEntry{
 			PID: ticket.PID, Summary: ticket.Summary, Worktree: ticket.Worktree,
 			Age: now.Sub(ticket.CreatedAt),
 		})
 	}
+	heavyWaiting := readTicketsIn(heavyWaitingDir(projectsRoot))
+	for _, ticket := range heavyWaiting {
+		listing.Waiting = append(listing.Waiting, QueueEntry{
+			PID: ticket.PID, Summary: ticket.Summary, Worktree: ticket.Worktree,
+			Age: now.Sub(ticket.CreatedAt),
+		})
+	}
+	listing.HeavyK = len(readHeavyHolders(projectsRoot)) + len(heavyWaiting)
 	return listing
+}
+
+// groupRunningHolders collapses readHolders'/readHeavyHolders' one-row-per-
+// record output into one QueueEntry per distinct holder (PID + StartedAt
+// identifies one Announce call, i.e. one lease), preserving oldest-first
+// order (via first sight of each holder's key) and summing each holder's
+// own Units — a legacy holder record leaves Units unset (0), so each of its
+// slot files contributes 1; a heavy holder stores its real share directly,
+// and holds exactly one record, so it is unaffected by the fallback.
+func groupRunningHolders(holders []Holder, now time.Time) []QueueEntry {
+	entries := make([]QueueEntry, 0, len(holders))
+	index := make(map[string]int, len(holders))
+	for _, holder := range holders {
+		perRecordUnits := holder.Units
+		if perRecordUnits <= 0 {
+			perRecordUnits = 1
+		}
+		key := fmt.Sprintf("%d@%d", holder.PID, holder.StartedAt.UnixNano())
+		if position, ok := index[key]; ok {
+			entries[position].Units += perRecordUnits
+			continue
+		}
+		index[key] = len(entries)
+		entries = append(entries, QueueEntry{
+			PID: holder.PID, Summary: holder.Summary, Worktree: holder.Worktree,
+			Units: perRecordUnits, Age: now.Sub(holder.StartedAt),
+		})
+	}
+	return entries
 }

@@ -41,9 +41,16 @@ overrides are refused and never enter the daemon request. The external administr
 is only for the trusted `wb daemon operation submit` raw fallback; agents and
 WB commands must not create it. CPU-heavy work shares a cross-process budget of
 `CPUCount-1`; WB leaves one logical CPU for the harness and OS and exports the
-admitted units to supported tools. `wb run --history` summarizes privacy-safe
-wall and CPU cost from the current worktree without exposing raw arguments or
-output. The filesystem lease remains the worker-level safety belt.
+admitted units to supported tools. A focused job (a single-package Go test/vet,
+or a light lint) always admits immediately at `max(1, NumCPU/8)`. On a machine
+with 8+ CPUs, a "heavy" job (a broad Go/Node test or build, or coverage/race)
+is admitted adaptively instead of at a fixed weight: it gets a share based on
+how many heavy jobs are alive at that moment, capped so concurrently running
+heavy jobs never sum past 150% of NumCPU (`wb run --help` has the exact
+formula); on a machine with fewer than 8 CPUs the original fixed table applies
+unchanged. `wb run --history` summarizes privacy-safe wall and CPU cost from
+the current worktree without exposing raw arguments or output. The filesystem
+lease remains the worker-level safety belt.
 
 A CPU-heavy synchronous invocation reports its place in that shared budget on
 stderr — even without a terminal, so a redirected log still shows progress

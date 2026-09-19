@@ -44,12 +44,38 @@ func TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots(t *tes
 }
 
 func TestWorkerChildKeepsInheritedSecretsLocal(t *testing.T) {
-	environment := workerChildEnvironment([]string{"PATH=/bin", "GITHUB_TOKEN=worker-secret"}, "wbo-test", 2)
+	environment := workerChildEnvironment([]string{"PATH=/bin", "GITHUB_TOKEN=worker-secret"}, []string{"/bin/true"}, "wbo-test", 2)
 	joined := strings.Join(environment, "\n")
 	for _, want := range []string{"GITHUB_TOKEN=worker-secret", "WB_OPERATION_ID=wbo-test", "WB_CPU_UNITS=2", "GOMAXPROCS=2"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("worker environment is missing %q: %s", want, joined)
 		}
+	}
+}
+
+// TestWorkerChildSetsGoParallelismForGoCommands proves workerChildEnvironment
+// applies the same GOFLAGS -p=<units> rule cmd/wb/run.go's governedEnvironment
+// does, preserving the caller's own GOFLAGS and letting an explicit -p win —
+// so a worker-executed `go test` gets the same child parallelism a
+// synchronous `wb run --` command does (sneat-dev/wb#621).
+func TestWorkerChildSetsGoParallelismForGoCommands(t *testing.T) {
+	t.Setenv("GOFLAGS", "-mod=readonly")
+	environment := workerChildEnvironment([]string{"PATH=/bin"}, []string{"go", "test", "./..."}, "wbo-test", 4)
+	joined := strings.Join(environment, "\n")
+	if !strings.Contains(joined, "GOFLAGS=-mod=readonly -p=4") {
+		t.Fatalf("worker environment is missing the derived GOFLAGS: %s", joined)
+	}
+}
+
+// TestWorkerChildNeverSetsGOFLAGSForNonGoCommands proves the GOFLAGS
+// injection is scoped to the go tool: a worker running some other command
+// must not pick up a stray GOFLAGS it never asked for.
+func TestWorkerChildNeverSetsGOFLAGSForNonGoCommands(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	environment := workerChildEnvironment([]string{"PATH=/bin"}, []string{"pytest", "-q"}, "wbo-test", 2)
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(joined, "GOFLAGS=") {
+		t.Fatalf("worker environment set GOFLAGS for a non-go command: %s", joined)
 	}
 }
 

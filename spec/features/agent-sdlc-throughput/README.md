@@ -399,7 +399,8 @@ WB v0.105.0 raw-execution policy remains available only through `wb daemon
 operation submit` as a trusted recovery fallback.
 
 The four-vCPU default has three CPU units, preserving one core for interactive
-work:
+work. On a machine with fewer than 8 CPUs, WB keeps this table exactly, with
+no adaptive sharing:
 
 | Work class | Units | Limit |
 |---|---:|---|
@@ -411,10 +412,76 @@ work:
 | Git fetch/remote observation | network slot | Four by default. |
 | Git/common-dir mutation | classified | One writer per canonical repository. |
 
-WB sets `GOMAXPROCS`, Go `-p`, and supported Node/Nx/Vitest workers from the
-allocation. One scheduler slot cannot hide eight test processes. The existing
-dependency-stream cap of at most two Go builds, one Angular build, and three
-validation lanes remains the upper bound.
+On a machine with 8 or more CPUs, a "heavy" job (a broad Go/Node test or
+build, or any coverage or race run) is instead admitted adaptively. This
+replaced an earlier fixed-weight design after three agent lanes serialized
+behind one `go test ./...` for about 45 minutes on a nearly idle 18-core
+machine (sneat-dev/wb#621), observed at a load average of 2.7 with 56%
+memory free. The founder:
+
+> "Can we make it smarter? If no queue we can start 100%. If something is
+> running and queue has more than 2 items start 2 with 2/3. If all finished
+> and in queue only one item start with 100%. If 3 items in queue start 3
+> each 50% of cores"
+
+and, once the total-allocation question came up:
+
+> "Should we allow 2nd runner in parallel with 50% cpu? So 1st 100% and
+> total 150%"
+
+Lead design, formalized from the founder's words: with N = the machine's
+logical CPU count (`runtime.NumCPU`), a
+heavy job's allocation depends on k, the number of heavy jobs that will be
+running or waiting once it is admitted (itself included):
+
+| k | Share |
+|---:|---:|
+| 1 | N (100%) |
+| 2 | N × 2/3 |
+| ≥3 | N / 2 |
+
+A newly admitted heavy job actually gets `min(share(k), 1.5×N -
+allocated_heavy)`, where `allocated_heavy` is the sum of already-running heavy
+jobs' own fixed allocations — so the total across concurrently running heavy
+jobs never exceeds 150% of N. If that result is below N/4, the job waits
+instead, in strict FIFO order among heavy waiters (lead design: this
+replaces the backfill-with-aging admission from the earlier brief entirely —
+strict FIFO among heavy waiters, and focused jobs never wait behind heavy
+ones). At most 3 heavy
+jobs ever run at once, kept only as a defensive bound — the share floor (N/2
+at k≥3) and the 150% cap already make a 4th concurrent heavy job impossible.
+
+A focused job (a single-package Go test/vet, or a light lint) is not heavy:
+it always gets `max(1, N/8)`, is admitted immediately, and never waits behind
+a heavy job or takes a heavy slot.
+
+Allocation is fixed at admission and never revised for a job already
+running, because a running process's `GOMAXPROCS` cannot be changed. A job
+admitted alone at 100% keeps that share even after others arrive and are
+admitted at a smaller one; a burst can therefore briefly leave the machine
+oversubscribed. Lead design accepts this trade-off: these commands mostly
+wait on I/O and subprocesses, not pure CPU, so the oversubscription is brief
+and rarely binding in practice.
+
+WB sets `GOMAXPROCS`, Go `-p`, and Nx's own `NX_PARALLEL` from the
+allocation — no Vitest-specific worker-count variable is set today, since
+Vitest does not read `NX_PARALLEL` — and the caller's own explicit `-p` or
+`GOMAXPROCS` still wins over the derived value. One scheduler slot cannot
+hide eight test processes. The existing dependency-stream cap of at most
+two Go builds, one Angular build, and three validation lanes remains the
+upper bound.
+
+**Known limitation (sneat-dev/wb#642 follow-up):** the heavy pool above, the
+small-machine budget-sum `Acquire` pool, and any other caller sharing that
+same plain unit-weighted capacity (for example `internal/repositoryevents`)
+are three separate accounting namespaces on disk. A heavy job and a legacy
+`Acquire` caller never contend with, or see, each other's admissions, so
+the machine-wide picture `wb run --queue` shows is per-pool, not global.
+Unifying them into one accounting surface is tracked separately rather than
+folded into this fix.
+
+`wb run --queue` shows each running holder's fixed allocation alongside the
+current k (every heavy job alive, running or waiting, right now).
 
 Admission uses weighted fair queuing by session with aging. Recovery,
 interactive human work, ready-to-land candidates, and blocking focused tests

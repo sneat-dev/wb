@@ -203,8 +203,20 @@ func executeWorkerAssignment(command *cobra.Command, client daemonv1connect.Daem
 	heartbeatDone := make(chan struct{})
 	go workerHeartbeatLoop(ctx, command.ErrOrStderr(), client, registration, assignment, &progress, cancel, heartbeatErrors, heartbeatDone)
 
-	units := int(assignment.CpuUnits)
-	lease, _, err := runqueue.Acquire(ctx, projectsRoot, units, runqueue.Budget())
+	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(assignment.Argv), Worktree: assignment.WorkingDirectory}
+	// Review finding (PR #628, M4): the daemon may hand a worker an
+	// explicit, caller-declared CpuUnits (the trusted raw-execution
+	// fallback); honor it directly via the plain budget-sum pool, the same
+	// way internal/daemon/service.go's own executor does, instead of
+	// reclassifying argv adaptively.
+	var admission runqueue.Admission
+	var err error
+	if explicit := int(assignment.CpuUnits); explicit != 0 {
+		admission, err = runqueue.AdmitExplicit(ctx, projectsRoot, explicit, self)
+	} else {
+		admission, err = runqueue.Admit(ctx, projectsRoot, assignment.Argv, self, nil)
+	}
+	units := admission.Units
 	if err == nil {
 		progress.Store("running")
 	}
@@ -213,10 +225,10 @@ func executeWorkerAssignment(command *cobra.Command, client daemonv1connect.Daem
 	if err == nil {
 		child := process.CommandContext(ctx, assignment.Argv[0], assignment.Argv[1:]...)
 		child.Dir = assignment.WorkingDirectory
-		child.Env = workerChildEnvironment(os.Environ(), assignment.OperationId, units)
+		child.Env = workerChildEnvironment(os.Environ(), assignment.Argv, assignment.OperationId, units)
 		child.Stdout, child.Stderr = &stdout, &stderr
 		err = child.Run()
-		lease.Release()
+		admission.Lease.Release()
 		exitCode = 0
 		if err != nil {
 			exitCode = 1
@@ -328,11 +340,15 @@ func workerPermitsDirectory(roots []string, cwd string) (bool, error) {
 	return false, nil
 }
 
-func workerChildEnvironment(base []string, operationID string, units int) []string {
-	return mergeWorkerEnvironment(base, map[string]string{
-		"GOMAXPROCS": fmt.Sprint(units), "NX_PARALLEL": fmt.Sprint(units),
+func workerChildEnvironment(base []string, argv []string, operationID string, units int) []string {
+	additions := map[string]string{
+		"GOMAXPROCS": runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units), "NX_PARALLEL": fmt.Sprint(units),
 		"WB_CPU_UNITS": fmt.Sprint(units), "WB_OPERATION_ID": operationID,
-	})
+	}
+	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
+		additions["GOFLAGS"] = goFlags
+	}
+	return mergeWorkerEnvironment(base, additions)
 }
 
 func mergeWorkerEnvironment(base []string, additions map[string]string) []string {

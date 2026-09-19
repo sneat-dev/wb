@@ -272,7 +272,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	}
 	quickRace, _ := jobs["race"].(map[string]any)
 	assert("quick race command", workflowContractTestCommands(t, quickRace), []string{
-		"go test -race -timeout 15m ./internal/deps/... ./internal/githubobserver/... ./internal/lifecyclehooks/... ./internal/fleetsync/...",
+		"go test -race -timeout 15m ./internal/deps/... ./internal/githubobserver/... ./internal/lifecyclehooks/... ./internal/fleetsync/... ./internal/runqueue/...",
 	})
 
 	racePath := filepath.Join(repoRoot, ".github", "workflows", "race.yml")
