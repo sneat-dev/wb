@@ -75,8 +75,8 @@ func TestBeginStampsProvenanceFromEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-run-1")
 	t.Setenv("AI_AGENT", "claude-code")
 	t.Setenv("CLAUDE_EFFORT", "low")
-	t.Setenv("WB_AGENT_ID", "agent-9")
-	t.Setenv("WB_TOOL_USE_ID", "toolu_3")
+	t.Setenv("WB_SUBAGENT_ID", "agent-9")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_3")
 
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

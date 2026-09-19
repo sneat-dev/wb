@@ -47,8 +47,8 @@ func TestEventLogStampsProvenanceFromEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-stream-1")
 	t.Setenv("AI_AGENT", "claude-code")
 	t.Setenv("CLAUDE_EFFORT", "medium")
-	t.Setenv("WB_AGENT_ID", "agent-7")
-	t.Setenv("WB_TOOL_USE_ID", "toolu_9")
+	t.Setenv("WB_SUBAGENT_ID", "agent-7")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_9")
 
 	log := &FileEventLog{Path: filepath.Join(t.TempDir(), "events.jsonl")}
 	if err := log.Append(Event{Stream: "s", Verb: "stream start", Outcome: "success"}); err != nil {
