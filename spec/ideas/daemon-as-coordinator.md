@@ -470,8 +470,8 @@ templates.
   Two corrections that Feature's research made, recorded here rather than
   rewriting this idea's original reasoning: the empty-input evidence this
   idea assumed herdr would supply does not exist in `agent list`/`agent get`,
-  so the founder ruled its mechanism out of scope for now (2026-09-19) and
-  the MVP ships **record-only** in its first iteration — no daemon-originated
+  and the founder answered on 2026-09-19: "Out of scope for performance
+  work we focus now on". So the MVP ships **record-only** in its first iteration — no daemon-originated
   message is submitted into any pane; and the "inject without submitting
   (advisory)" row's `herdr agent send-keys` is superseded by `pane
   send-text`, which sends literal text rather than interpreted key presses.
