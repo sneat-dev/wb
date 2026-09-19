@@ -427,7 +427,7 @@ memory free. The founder:
 and, once the total-allocation question came up:
 
 > "Should we allow 2nd runner in parallel with 50% cpu? So 1st 100% and
-> total 150%."
+> total 150%"
 
 Lead design, formalized from the founder's words: with N = the machine's
 logical CPU count (`runtime.NumCPU`), a
