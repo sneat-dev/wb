@@ -2,8 +2,9 @@
 // session layer addresses a terminal through (REQ:single-transport-interface),
 // the typed capability matrix each implementation declares
 // (REQ:transport-capability-matrix), and the capability-driven guard that
-// decides record-only vs. advisory vs. submit delivery for a
-// daemon-originated event (REQ:delivery-guards-enforced-and-rechecked). See
+// decides record-only vs. advisory vs. submit delivery for every event
+// class, daemon-originated or the pre-existing successor-messaging path
+// alike (REQ:delivery-guards-enforced-and-rechecked). See
 // spec/features/herdr-session-transport/README.md and
 // spec/plans/herdr-session-transport.md (Task 2) for the Feature and Plan
 // this package implements.
@@ -11,18 +12,32 @@
 // # What this package ships
 //
 // [Transport] is the interface every session code path that addresses a
-// terminal must go through. [Capabilities] is the typed matrix an
-// implementation declares. [NoneTransport] is the first shipped
+// terminal must go through: [Transport.ResolvePane] and [Transport.Launch]
+// find or start a live [Target], [Transport.Inspect] polls its liveness,
+// [Transport.MatchesReceiptIdentity] confirms a receipt-carried name
+// against the transport's own naming convention, and [Transport.Deliver]
+// sends text at whatever [DeliveryMode] its own [Capabilities] and the
+// delivery's [EventClass] resolve to — recomputed inside Deliver itself,
+// never trusted from a caller. [Capabilities] is the typed matrix an
+// implementation declares, including [Capabilities.LineageSubmit], the
+// pre-existing successor-messaging submit path's own capability, distinct
+// from the daemon-wake capabilities. [NoneTransport] is the first shipped
 // implementation (REQ:none-transport-is-first-class). [ResolveDeliveryMode]
-// is the guard every daemon-originated delivery path calls before touching
-// a pane, encoding the rule that absence of empty-input evidence is itself
-// a guard failure, never grounds to submit
-// (REQ:delivery-guards-enforced-and-rechecked). [ResolveOverride] and
-// [LoadOverride] are the explicit `wb.yaml` `session.transport` /
-// command-flag override and its fail-closed validation
-// (REQ:explicit-transport-override). [Suite] is the shared contract test
-// both remaining implementations must pass
-// (REQ:two-transport-implementations).
+// is the guard every delivery path calls before touching a pane, encoding
+// two rules: absence of empty-input evidence is itself a guard failure for
+// the daemon's own-PR-outcome class, never grounds to submit
+// (REQ:delivery-guards-enforced-and-rechecked); and LineageSubmit is
+// consulted only for [EventSuccessorMessage], never for a daemon-originated
+// class, so a transport claiming it (tmux) still never delivers a daemon
+// event unguarded (AC:tmux-never-delivers-unguarded).
+// [ResolveOverride] and [LoadOverride] are the explicit `wb.yaml`
+// `session.transport` / command-flag override and its fail-closed
+// validation (REQ:explicit-transport-override), applying a default
+// per-[Kind] prerequisite check even when the caller passes no check of its
+// own. internal/sessiontransport/transporttest.Suite is the shared contract
+// test both remaining implementations must pass
+// (REQ:two-transport-implementations); it lives in its own package so this
+// one never carries a "testing" dependency into production code.
 //
 // # What this package does not ship
 //
@@ -43,11 +58,13 @@
 //
 // [HerdrCapabilities] and [TmuxCapabilities] describe what Task 4's and
 // Task 3's implementations will declare once built. This package states
-// them now so [ResolveDeliveryMode] and [Suite] have something concrete to
-// prove the mechanism against ahead of that wiring — see
+// them now so [ResolveDeliveryMode] and the contract suite have something
+// concrete to prove the mechanism against ahead of that wiring — see
 // AC:tmux-never-delivers-unguarded and AC:none-transport-records-only,
 // which this package's own tests exercise directly. Once Task 3 or Task 4
 // lands, its own [Transport.Capabilities] method is the live source of
-// truth, not these package-level values; a future change to a value here
-// should be paired with the implementation it documents.
+// truth, not these package-level functions; a future change to one should
+// be paired with the implementation it documents. They are functions, not
+// exported vars, so nothing outside this package can corrupt the shared
+// declaration for the rest of the process.
 package sessiontransport

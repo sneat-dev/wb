@@ -105,6 +105,63 @@ func TestLoadOverrideMalformedYAMLIsAnError(t *testing.T) {
 	}
 }
 
+// TestLoadOverrideUnknownFieldFailsClosed proves S3: a typo in the session
+// section, such as "transprot", fails closed with an error rather than
+// silently decoding as "no override configured" (KnownFields(true),
+// following internal/lifecyclehooks/config.go's pattern).
+func TestLoadOverrideUnknownFieldFailsClosed(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "session:\n  transprot: tmux\n")
+	kind, ok, err := LoadOverride(path)
+	if err == nil {
+		t.Fatalf("LoadOverride(typo'd field) = (%q, %v, nil), want a strict-decode error", kind, ok)
+	}
+}
+
+// TestLoadOverrideTopLevelSessionNotAMappingIsAnError exercises
+// mappingValue's "top level must be a mapping" branch directly through
+// LoadOverride: a document whose top level is a bare scalar or sequence,
+// not a mapping, cannot contain a `session:` key at all.
+func TestLoadOverrideTopLevelSessionNotAMappingIsAnError(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "- just\n- a\n- sequence\n")
+	_, _, err := LoadOverride(path)
+	if err == nil {
+		t.Fatal("LoadOverride(non-mapping top level) error = nil, want an error")
+	}
+}
+
+// TestLoadOverrideEmptyFileIsNotAnError exercises the "document has no
+// content at all" branch: an empty file parses to a Node with no Content,
+// which is not an error — there is simply nothing to find.
+func TestLoadOverrideEmptyFileIsNotAnError(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "")
+	kind, ok, err := LoadOverride(path)
+	if err != nil {
+		t.Fatalf("LoadOverride(empty file) error = %v, want nil", err)
+	}
+	if ok || kind != "" {
+		t.Fatalf("LoadOverride(empty file) = (%q, %v), want (\"\", false)", kind, ok)
+	}
+}
+
+// TestLoadOverrideExplicitNullSessionIsNotAnError exercises the
+// "sessionNode.Tag == !!null" branch: `session:` with nothing after it
+// decodes to an explicit YAML null, which is "no override configured", not
+// a decode error.
+func TestLoadOverrideExplicitNullSessionIsNotAnError(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "session:\n")
+	kind, ok, err := LoadOverride(path)
+	if err != nil {
+		t.Fatalf("LoadOverride(null session) error = %v, want nil", err)
+	}
+	if ok || kind != "" {
+		t.Fatalf("LoadOverride(null session) = (%q, %v), want (\"\", false)", kind, ok)
+	}
+}
+
 // TestResolveOverrideExplicitTmuxOverrideFailsClosedWithNoTmuxBinary proves
 // AC:explicit-override-fails-closed directly: `wb.yaml` names
 // session.transport: tmux, no tmux binary is on PATH, and resolving the
@@ -167,14 +224,44 @@ func TestResolveOverrideRejectsAnUnshippedTransport(t *testing.T) {
 	}
 }
 
-func TestResolveOverrideWithNilCheckAcceptsAnyShippedKind(t *testing.T) {
+// TestResolveOverrideNilCheckAcceptsNoneUnconditionally proves half of M5
+// hermetically: none has no runtime prerequisite at all, so
+// defaultPrerequisiteCheck(KindNone) always returns nil regardless of the
+// host's real tmux/herdr installation state — CheckTmuxBinary and
+// CheckHerdrBinary both report nil immediately for any Kind other than
+// their own.
+func TestResolveOverrideNilCheckAcceptsNoneUnconditionally(t *testing.T) {
 	t.Parallel()
-	resolved, err := ResolveOverride(KindHerdr, nil)
+	resolved, err := ResolveOverride(KindNone, nil)
 	if err != nil {
-		t.Fatalf("ResolveOverride error = %v, want nil", err)
+		t.Fatalf("ResolveOverride(none, nil) error = %v, want nil", err)
 	}
-	if resolved != KindHerdr {
-		t.Fatalf("ResolveOverride = %q, want %q", resolved, KindHerdr)
+	if resolved != KindNone {
+		t.Fatalf("ResolveOverride(none, nil) = %q, want %q", resolved, KindNone)
+	}
+}
+
+// TestResolveOverrideNilCheckAppliesDefaultRatherThanSkipping proves M5's
+// actual claim — nil does not mean "skip validation" — by substituting a
+// fake default check for the duration of this test. It does not call
+// t.Parallel: it mutates the package-level defaultPrerequisiteCheck var,
+// which every other test in this package (and any parallel one) could
+// otherwise observe mid-mutation.
+func TestResolveOverrideNilCheckAppliesDefaultRatherThanSkipping(t *testing.T) {
+	original := defaultPrerequisiteCheck
+	t.Cleanup(func() { defaultPrerequisiteCheck = original })
+	fakeFailure := errors.New("fake default prerequisite failure")
+	defaultPrerequisiteCheck = func(Kind) error { return fakeFailure }
+
+	resolved, err := ResolveOverride(KindHerdr, nil)
+	if err == nil {
+		t.Fatalf("ResolveOverride(herdr, nil) succeeded with %q; want the default check enforced, not skipped", resolved)
+	}
+	if !errors.Is(err, fakeFailure) {
+		t.Fatalf("ResolveOverride(herdr, nil) error = %v, want it to wrap the fake default failure", err)
+	}
+	if resolved != "" {
+		t.Fatalf("ResolveOverride(herdr, nil) resolved = %q alongside an error, want empty", resolved)
 	}
 }
 
@@ -197,6 +284,68 @@ func TestCheckTmuxBinaryDefaultsToExecLookPath(t *testing.T) {
 	// A nil lookPath must not panic; it falls back to exec.LookPath, whose
 	// outcome depends on the host and is not asserted here.
 	_ = CheckTmuxBinary(nil)(KindTmux)
+}
+
+func TestCheckHerdrBinaryIgnoresOtherKinds(t *testing.T) {
+	t.Parallel()
+	neverCalled := func(string) (string, bool) {
+		t.Fatal("CheckHerdrBinary's lookup must not be called for a non-herdr Kind")
+		return "", false
+	}
+	if err := CheckHerdrBinary(neverCalled)(KindTmux); err != nil {
+		t.Fatalf("CheckHerdrBinary(...)(KindTmux) = %v, want nil", err)
+	}
+	if err := CheckHerdrBinary(neverCalled)(KindNone); err != nil {
+		t.Fatalf("CheckHerdrBinary(...)(KindNone) = %v, want nil", err)
+	}
+}
+
+// TestCheckHerdrBinaryFailsClosedOnAnInvalidBinPath keeps the test
+// hermetic by making the stat on HERDR_BIN_PATH fail with something other
+// than "does not exist": internal/herdr.ResolveBinary falls back to a real
+// PATH lookup only for a stale (not-exist) HERDR_BIN_PATH, and this repo's
+// host may or may not actually have herdr installed. A NUL byte makes
+// os.Stat fail with "invalid argument" instead, so ResolveBinary returns
+// that error directly without ever touching the real PATH.
+func TestCheckHerdrBinaryFailsClosedOnAnInvalidBinPath(t *testing.T) {
+	t.Parallel()
+	invalidBinPath := func(key string) (string, bool) {
+		if key == "HERDR_BIN_PATH" {
+			return "/definitely\x00invalid", true
+		}
+		return "", false
+	}
+	err := CheckHerdrBinary(invalidBinPath)(KindHerdr)
+	if err == nil {
+		t.Fatal("CheckHerdrBinary(invalid HERDR_BIN_PATH)(KindHerdr) = nil, want an error")
+	}
+	if !errors.Is(err, ErrOverridePrerequisiteUnavailable) {
+		t.Fatalf("CheckHerdrBinary error = %v, want ErrOverridePrerequisiteUnavailable", err)
+	}
+}
+
+func TestCheckHerdrBinarySucceedsWhenResolved(t *testing.T) {
+	t.Parallel()
+	binPath := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake herdr binary fixture: %v", err)
+	}
+	fakeEnv := func(key string) (string, bool) {
+		if key == "HERDR_BIN_PATH" {
+			return binPath, true
+		}
+		return "", false
+	}
+	if err := CheckHerdrBinary(fakeEnv)(KindHerdr); err != nil {
+		t.Fatalf("CheckHerdrBinary(resolvable)(KindHerdr) = %v, want nil", err)
+	}
+}
+
+func TestCheckHerdrBinaryDefaultsToOSLookupEnv(t *testing.T) {
+	t.Parallel()
+	// A nil lookup must not panic; it falls back to herdr.OSLookupEnv,
+	// whose outcome depends on the host and is not asserted here.
+	_ = CheckHerdrBinary(nil)(KindHerdr)
 }
 
 func TestComposeChecksStopsAtFirstFailure(t *testing.T) {

@@ -8,12 +8,13 @@ import "testing"
 // the daemon never performs a submitted delivery — and, per
 // REQ:tmux-record-only-for-daemon-events, never an advisory paste either.
 // Every daemon-originated event, including the own-PR-outcome class, must
-// resolve record-only.
+// resolve record-only, even though tmux declares LineageSubmit true for its
+// unrelated, pre-existing successor-messaging path.
 func TestResolveDeliveryModeTmuxNeverDeliversUnguarded(t *testing.T) {
 	t.Parallel()
 	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
-		if got := ResolveDeliveryMode(TmuxCapabilities, class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(TmuxCapabilities, %q) = %q, want %q (tmux must never deliver unguarded)",
+		if got := ResolveDeliveryMode(TmuxCapabilities(), class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), %q) = %q, want %q (tmux must never deliver unguarded)",
 				class, got, ModeRecordOnly)
 		}
 	}
@@ -24,9 +25,9 @@ func TestResolveDeliveryModeTmuxNeverDeliversUnguarded(t *testing.T) {
 // event class resolves record-only.
 func TestResolveDeliveryModeNoneTransportRecordsOnly(t *testing.T) {
 	t.Parallel()
-	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
-		if got := ResolveDeliveryMode(NoneCapabilities, class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(NoneCapabilities, %q) = %q, want %q",
+	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory, EventSuccessorMessage} {
+		if got := ResolveDeliveryMode(NoneCapabilities(), class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(NoneCapabilities(), %q) = %q, want %q",
 				class, got, ModeRecordOnly)
 		}
 	}
@@ -40,8 +41,8 @@ func TestResolveDeliveryModeNoneTransportRecordsOnly(t *testing.T) {
 // never submitted, even though herdr can advise for every other class.
 func TestResolveDeliveryModeHerdrOwnPROutcomeIsRecordOnlyThisIteration(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities, EventOwnPROutcome); got != ModeRecordOnly {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities, EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), EventOwnPROutcome); got != ModeRecordOnly {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventOwnPROutcome) = %q, want %q", got, ModeRecordOnly)
 	}
 }
 
@@ -50,18 +51,61 @@ func TestResolveDeliveryModeHerdrOwnPROutcomeIsRecordOnlyThisIteration(t *testin
 // own-PR-outcome class is delivered advisory-only on herdr.
 func TestResolveDeliveryModeHerdrAdvisoryForEverythingElse(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities, EventAdvisory); got != ModeAdvisory {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities, EventAdvisory) = %q, want %q", got, ModeAdvisory)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), EventAdvisory); got != ModeAdvisory {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventAdvisory) = %q, want %q", got, ModeAdvisory)
+	}
+}
+
+// TestResolveDeliveryModeHerdrNeverSubmitsSuccessorMessageEither proves that
+// herdr's live status and advisory capability do not leak into
+// EventSuccessorMessage: only LineageSubmit governs that class, and herdr
+// does not declare it (Deferred: "Successor messaging's herdr submit
+// path").
+func TestResolveDeliveryModeHerdrNeverSubmitsSuccessorMessageEither(t *testing.T) {
+	t.Parallel()
+	if got := ResolveDeliveryMode(HerdrCapabilities(), EventSuccessorMessage); got != ModeRecordOnly {
+		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), EventSuccessorMessage) = %q, want %q", got, ModeRecordOnly)
+	}
+}
+
+// TestResolveDeliveryModeTmuxSubmitsSuccessorMessageOnly proves B1's fix:
+// tmux's LineageSubmit grounds ModeSubmit for EventSuccessorMessage — its
+// pre-existing, unaffected paste-with-newline path — and only that class;
+// TestResolveDeliveryModeTmuxNeverDeliversUnguarded above already proves the
+// daemon-originated classes stay record-only on the identical Capabilities
+// value.
+func TestResolveDeliveryModeTmuxSubmitsSuccessorMessageOnly(t *testing.T) {
+	t.Parallel()
+	if got := ResolveDeliveryMode(TmuxCapabilities(), EventSuccessorMessage); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
+	}
+}
+
+// TestResolveDeliveryModeLineageSubmitNeverGroundsADaemonClass is the B1
+// review round's explicit probe, expressed directly against
+// ResolveDeliveryMode: a hypothetical transport that claims LineageSubmit
+// but nothing else must still never submit a daemon-originated event.
+func TestResolveDeliveryModeLineageSubmitNeverGroundsADaemonClass(t *testing.T) {
+	t.Parallel()
+	caps := Capabilities{Kind: "hypothetical", LineageSubmit: true}
+	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
+		if got := ResolveDeliveryMode(caps, class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(LineageSubmit-only, %q) = %q, want %q", class, got, ModeRecordOnly)
+		}
+	}
+	// The one class LineageSubmit actually governs still resolves submit.
+	if got := ResolveDeliveryMode(caps, EventSuccessorMessage); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(LineageSubmit-only, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
 	}
 }
 
 // TestResolveDeliveryModeGuardIsUnconditionalNotCapabilitySpecific proves
-// the guard rule generically, independent of any shipped transport: absence
-// of positive empty-input evidence is itself a guard failure for the
-// own-PR-outcome class, even when live status is otherwise available. This
-// documents why AC:guards-are-unconditional-and-block-submission holds
-// "regardless of whether the owning session is idle, working, blocked, or
-// done" — LiveStatus alone is never sufficient.
+// the own-PR-outcome guard rule generically, independent of any shipped
+// transport: absence of positive empty-input evidence is itself a guard
+// failure, even when live status is otherwise available. This documents
+// why AC:guards-are-unconditional-and-block-submission holds "regardless of
+// whether the owning session is idle, working, blocked, or done" —
+// LiveStatus alone is never sufficient.
 func TestResolveDeliveryModeGuardIsUnconditionalNotCapabilitySpecific(t *testing.T) {
 	t.Parallel()
 	caps := Capabilities{Kind: "hypothetical", LiveStatus: true, EmptyInputEvidence: false, AdvisoryDelivery: true}
@@ -90,31 +134,61 @@ func TestResolveDeliveryModeSubmitsOnceEvidenceExists(t *testing.T) {
 	}
 }
 
+// TestResolveDeliveryModeUnknownOrEmptyClassRecordsOnly proves M3: an
+// unrecognized or empty EventClass is never grounds to advise or submit,
+// even against a fully-capable Capabilities value.
+func TestResolveDeliveryModeUnknownOrEmptyClassRecordsOnly(t *testing.T) {
+	t.Parallel()
+	caps := Capabilities{Kind: "hypothetical", LiveStatus: true, EmptyInputEvidence: true, AdvisoryDelivery: true, LineageSubmit: true}
+	for _, class := range []EventClass{"", "some_unrecognized_class"} {
+		if got := ResolveDeliveryMode(caps, class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(fully-capable, %q) = %q, want %q", class, got, ModeRecordOnly)
+		}
+	}
+}
+
 func TestDeclaredCapabilitiesMatrixShape(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		caps Capabilities
 	}{
-		{"herdr", HerdrCapabilities},
-		{"tmux", TmuxCapabilities},
-		{"none", NoneCapabilities},
+		{"herdr", HerdrCapabilities()},
+		{"tmux", TmuxCapabilities()},
+		{"none", NoneCapabilities()},
 	}
 	for _, tc := range cases {
 		if tc.caps.EmptyInputEvidence {
 			t.Errorf("%s capabilities declare EmptyInputEvidence = true; the Feature defers that mechanism entirely", tc.name)
 		}
 	}
-	if !HerdrCapabilities.LiveStatus {
+	if !HerdrCapabilities().LiveStatus {
 		t.Error("herdr capabilities must declare LiveStatus: herdr's agent list/get supply it")
 	}
-	if TmuxCapabilities.LiveStatus {
+	if TmuxCapabilities().LiveStatus {
 		t.Error("tmux capabilities must not declare LiveStatus: tmux structurally cannot report it")
 	}
-	if TmuxCapabilities.AdvisoryDelivery {
+	if TmuxCapabilities().AdvisoryDelivery {
 		t.Error("tmux capabilities must not declare AdvisoryDelivery by default (REQ:tmux-record-only-for-daemon-events)")
 	}
-	if NoneCapabilities != (Capabilities{Kind: KindNone}) {
-		t.Errorf("NoneCapabilities = %#v, want every capability field false", NoneCapabilities)
+	if !TmuxCapabilities().LineageSubmit {
+		t.Error("tmux capabilities must declare LineageSubmit: its successor-messaging paste already submits today")
+	}
+	if HerdrCapabilities().LineageSubmit {
+		t.Error("herdr capabilities must not declare LineageSubmit: no herdr submit path is built in this iteration")
+	}
+	if NoneCapabilities() != (Capabilities{Kind: KindNone}) {
+		t.Errorf("NoneCapabilities() = %#v, want every capability field false", NoneCapabilities())
+	}
+}
+
+func TestCapabilitiesFunctionsReturnIndependentValues(t *testing.T) {
+	t.Parallel()
+	// M4: these are functions, not shared mutable vars, so mutating one
+	// caller's copy must never affect the next caller's.
+	first := HerdrCapabilities()
+	first.LiveStatus = false
+	if second := HerdrCapabilities(); !second.LiveStatus {
+		t.Fatal("mutating one HerdrCapabilities() result affected a later call; want independent values")
 	}
 }

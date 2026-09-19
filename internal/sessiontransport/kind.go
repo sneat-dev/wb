@@ -14,10 +14,15 @@ const (
 	KindNone  Kind = "none"
 )
 
-// Kinds lists every transport WB ships. [ResolveOverride] rejects any value
-// outside this set; it carries no preference order — that belongs to
-// automatic selection (REQ:automatic-transport-selection, Task 5's).
-var Kinds = []Kind{KindHerdr, KindTmux, KindNone}
+// Kinds returns every transport WB ships, in a fresh slice each call.
+// [ResolveOverride] rejects any value outside this set; it carries no
+// preference order — that belongs to automatic selection
+// (REQ:automatic-transport-selection, Task 5's). It is a function, not an
+// exported slice var, so no caller can corrupt the shipped set for the rest
+// of the process by mutating what it got back.
+func Kinds() []Kind {
+	return []Kind{KindHerdr, KindTmux, KindNone}
+}
 
 // Valid reports whether k names a transport WB actually ships. An override
 // naming anything else is invalid input, never a fourth, unimplemented

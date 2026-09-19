@@ -17,7 +17,7 @@ type NoneTransport struct{}
 func (NoneTransport) Kind() Kind { return KindNone }
 
 // Capabilities implements [Transport], returning [NoneCapabilities].
-func (NoneTransport) Capabilities() Capabilities { return NoneCapabilities }
+func (NoneTransport) Capabilities() Capabilities { return NoneCapabilities() }
 
 // ResolvePane implements [Transport]. none never has a live pane, so it
 // reports [ErrNoUniqueTarget] rather than fabricating one; every caller
@@ -33,16 +33,30 @@ func (NoneTransport) Launch(context.Context, LaunchRequest) (Target, error) {
 	return Target{}, nil
 }
 
-// Deliver implements [Transport]. Every requested [DeliveryMode] —
-// including a caller mistake that asks for [ModeAdvisory] or [ModeSubmit]
-// against a transport that declares neither capability — resolves to
-// [ModeRecordOnly] and no error: REQ:none-transport-is-first-class's rule,
-// generalized by [Transport.Deliver]'s own contract
-// (AC:none-transport-records-only).
+// Inspect implements [Transport]. none never started anything, so nothing
+// is ever live and nothing ever left terminal evidence behind either.
+func (NoneTransport) Inspect(context.Context, Target) (Inspection, error) {
+	return Inspection{}, nil
+}
+
+// MatchesReceiptIdentity implements [Transport]. none has no naming
+// convention to enforce, so every name trivially matches: there is nothing
+// to refute.
+func (NoneTransport) MatchesReceiptIdentity(string, string) bool {
+	return true
+}
+
+// Deliver implements [Transport]. [NoneCapabilities] declares every
+// capability false, so [ResolveDeliveryMode] always resolves
+// [ModeRecordOnly] for it regardless of delivery.Class — every requested
+// delivery, including a caller mistake that assumes a submit or advisory
+// path exists, resolves to a recorded outcome and no error
+// (REQ:none-transport-is-first-class, AC:none-transport-records-only).
 func (NoneTransport) Deliver(_ context.Context, target Target, delivery Delivery) (Receipt, error) {
+	mode := ResolveDeliveryMode(NoneCapabilities(), delivery.Class)
 	return Receipt{
 		Operation: delivery.Operation,
-		Outcome:   ModeRecordOnly,
+		Outcome:   mode,
 		Target:    target,
 		At:        time.Now().UTC(),
 	}, nil

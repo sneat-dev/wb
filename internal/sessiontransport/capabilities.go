@@ -33,11 +33,27 @@ type Capabilities struct {
 	// (REQ:tmux-record-only-for-daemon-events): it has no live status and
 	// no input evidence at all, so there is nothing to guard even an
 	// advisory paste against a mid-typing human. This field governs only
-	// daemon-originated delivery; it does not describe `wb session send`'s
-	// or `recall`'s pre-existing, differently guarded successor-messaging
-	// submit path (REQ:existing-successor-messaging-binding-path), which is
-	// unaffected and keeps working on tmux exactly as it does today.
+	// daemon-originated delivery ([EventOwnPROutcome], [EventAdvisory]); it
+	// has no bearing on [LineageSubmit].
 	AdvisoryDelivery bool
+
+	// LineageSubmit reports whether this transport submits the pre-existing
+	// successor-messaging path — `wb session send`'s and `recall`'s
+	// target-side write ([EventSuccessorMessage],
+	// REQ:existing-successor-messaging-binding-path) — guarded by that
+	// receipt's lineage rather than by the daemon wake's own-PR-outcome
+	// restriction. tmux declares this true: its paste-buffer payload
+	// already ends in a newline today
+	// (internal/sessionmove/types.go:622's marshalJSON) and
+	// REQ:tmux-parity-preserved keeps that unchanged. herdr and none
+	// declare it false: no herdr submit path is built in this iteration
+	// (Deferred: "Successor messaging's herdr submit path"), and none never
+	// submits anything. LineageSubmit is never consulted for
+	// [EventOwnPROutcome] or [EventAdvisory] — only [EventSuccessorMessage]
+	// — so a transport declaring it true still never submits a
+	// daemon-originated event (AC:tmux-never-delivers-unguarded's guarantee
+	// extends to this field too).
+	LineageSubmit bool
 
 	// PaneEnumeration reports whether this transport can enumerate live
 	// panes/agents to resolve a session's identity to a unique target
@@ -47,37 +63,51 @@ type Capabilities struct {
 	PaneEnumeration bool
 }
 
-// HerdrCapabilities is the capability matrix Task 4's herdr transport
+// HerdrCapabilities returns the capability matrix Task 4's herdr transport
 // declares. Task 2 states it here as the documented contract Task 4
-// implements against; Task 4 owns actually wiring the herdr transport.
-var HerdrCapabilities = Capabilities{
-	Kind:               KindHerdr,
-	LiveStatus:         true,
-	EmptyInputEvidence: false,
-	AdvisoryDelivery:   true,
-	PaneEnumeration:    true,
+// implements against; Task 4 owns actually wiring the herdr transport. It
+// is a function, not an exported var, so no caller can corrupt the shared
+// declaration by mutating what it got back (a struct assignment already
+// copies by value, but an exported var remains directly assignable from
+// any importer — a function returning a fresh value each call closes that
+// off entirely).
+func HerdrCapabilities() Capabilities {
+	return Capabilities{
+		Kind:               KindHerdr,
+		LiveStatus:         true,
+		EmptyInputEvidence: false,
+		AdvisoryDelivery:   true,
+		LineageSubmit:      false,
+		PaneEnumeration:    true,
+	}
 }
 
-// TmuxCapabilities is the capability matrix Task 3's tmux transport
+// TmuxCapabilities returns the capability matrix Task 3's tmux transport
 // declares by default (REQ:tmux-record-only-for-daemon-events): no live
 // status, no empty-input evidence, and — the lead's default, not a fixed
 // founder decision (see the Feature's Open Questions) — no advisory
 // delivery either, so every daemon-originated event resolves record-only on
-// tmux (AC:tmux-never-delivers-unguarded). This does not describe `wb
-// session send`'s/`recall`'s pre-existing, differently guarded
-// successor-messaging submit path
-// (REQ:existing-successor-messaging-binding-path), which this matrix does
-// not govern at all.
-var TmuxCapabilities = Capabilities{
-	Kind:               KindTmux,
-	LiveStatus:         false,
-	EmptyInputEvidence: false,
-	AdvisoryDelivery:   false,
-	PaneEnumeration:    false,
+// tmux (AC:tmux-never-delivers-unguarded). LineageSubmit is true: tmux's
+// pre-existing successor-messaging paste already submits today and keeps
+// doing so unchanged (REQ:tmux-parity-preserved) — a fact about a
+// different, differently guarded path
+// (REQ:existing-successor-messaging-binding-path), not a relaxation of the
+// daemon-wake guarantee above.
+func TmuxCapabilities() Capabilities {
+	return Capabilities{
+		Kind:               KindTmux,
+		LiveStatus:         false,
+		EmptyInputEvidence: false,
+		AdvisoryDelivery:   false,
+		LineageSubmit:      true,
+		PaneEnumeration:    false,
+	}
 }
 
-// NoneCapabilities is the capability matrix [NoneTransport] declares
-// (REQ:none-transport-is-first-class): nothing is live, so every
-// daemon-originated event resolves record-only
-// (AC:none-transport-records-only).
-var NoneCapabilities = Capabilities{Kind: KindNone}
+// NoneCapabilities returns the capability matrix [NoneTransport] declares
+// (REQ:none-transport-is-first-class): nothing is live, so every event —
+// daemon-originated or the pre-existing successor-messaging path alike —
+// resolves record-only (AC:none-transport-records-only).
+func NoneCapabilities() Capabilities {
+	return Capabilities{Kind: KindNone}
+}

@@ -32,18 +32,29 @@ func TestKindString(t *testing.T) {
 func TestKindsListsEveryShippedTransportExactlyOnce(t *testing.T) {
 	t.Parallel()
 	seen := map[Kind]bool{}
-	for _, kind := range Kinds {
+	for _, kind := range Kinds() {
 		if !kind.Valid() {
-			t.Errorf("Kinds contains %q, which Kind.Valid() rejects", kind)
+			t.Errorf("Kinds() contains %q, which Kind.Valid() rejects", kind)
 		}
 		if seen[kind] {
-			t.Errorf("Kinds lists %q more than once", kind)
+			t.Errorf("Kinds() lists %q more than once", kind)
 		}
 		seen[kind] = true
 	}
 	for _, kind := range []Kind{KindHerdr, KindTmux, KindNone} {
 		if !seen[kind] {
-			t.Errorf("Kinds is missing shipped transport %q", kind)
+			t.Errorf("Kinds() is missing shipped transport %q", kind)
 		}
+	}
+}
+
+func TestKindsReturnsIndependentValues(t *testing.T) {
+	t.Parallel()
+	// M4's guarantee, applied to Kinds() too: mutating one caller's slice
+	// must never affect a later caller's.
+	first := Kinds()
+	first[0] = "corrupted"
+	if second := Kinds(); second[0] == "corrupted" {
+		t.Fatal("mutating one Kinds() result affected a later call; want independent slices")
 	}
 }
