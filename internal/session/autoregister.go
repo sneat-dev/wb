@@ -171,6 +171,17 @@ func LookupByWBSessionID(dir, wbSessionID string) (Record, bool) {
 // depending on what happens to be running above the test binary.
 var harnessAncestor = findHarnessAncestor
 
+// FindHarnessAncestor is the exported form of findHarnessAncestor, for a
+// caller outside this package that needs to know whether a real harness
+// process sits above one it is about to attribute work to before deciding to
+// register a session at all — e.g. internal/worktrees' claim-time
+// auto-registration (wb#631, wb#645 review m7), which must not create a
+// session record for wb's own short-lived PID when no harness is found above
+// it.
+func FindHarnessAncestor(startPID int) (int, string) {
+	return findHarnessAncestor(startPID)
+}
+
 // findHarnessAncestor reports the closest ancestor of startPID whose executable
 // name is one WB can name as a harness, and the runtime name it records for it.
 //

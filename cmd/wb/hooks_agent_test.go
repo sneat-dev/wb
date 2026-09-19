@@ -443,3 +443,75 @@ func TestMergeAgentHookSettingsRefusesAnUnparseableFile(t *testing.T) {
 		t.Fatal("an unparseable settings file was accepted")
 	}
 }
+
+// TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches pins wb#645's
+// review r2 (NM1/minor 2): when exec.LookPath("wb") resolves to the same
+// file the hook itself is, the rewrite must use the bare "wb" name so it
+// still matches a user's own `Bash(wb run:*)` permission rule, not the
+// absolute path.
+func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) {
+	binDir := t.TempDir()
+	self := filepath.Join(t.TempDir(), "wb-binary")
+	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write self: %v", err)
+	}
+	onPath := filepath.Join(binDir, "wb")
+	if err := os.Symlink(self, onPath); err != nil {
+		t.Fatalf("symlink onto PATH: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if got := resolveWBExecutableForHook(self); got != "" {
+		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want \"\" (bare wb)", self, got)
+	}
+}
+
+// TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent covers the
+// other half of the same decision: when PATH's "wb" is a genuinely different
+// file (or there is none), the absolute path this hook actually is must be
+// used, so the rewrite still runs the guard that made the decision.
+func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) {
+	binDir := t.TempDir()
+	self := filepath.Join(t.TempDir(), "wb-binary")
+	if err := os.WriteFile(self, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write self: %v", err)
+	}
+	other := filepath.Join(binDir, "wb")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\necho different\n"), 0o755); err != nil {
+		t.Fatalf("write a different wb on PATH: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if got := resolveWBExecutableForHook(self); got != self {
+		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q", self, got, self)
+	}
+
+	t.Setenv("PATH", "")
+	if got := resolveWBExecutableForHook(self); got != self {
+		t.Fatalf("resolveWBExecutableForHook(%q) with no PATH match = %q, want %q", self, got, self)
+	}
+}
+
+// TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf covers the
+// two remaining branches: an empty self (hookExecutable() could not resolve
+// anything at all, so there is nothing to compare or quote) and a self path
+// that no longer exists on disk (os.Stat fails), both of which must fall
+// back to returning self unchanged rather than panicking or misreporting a
+// match.
+func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) {
+	if got := resolveWBExecutableForHook(""); got != "" {
+		t.Fatalf("resolveWBExecutableForHook(\"\") = %q, want \"\"", got)
+	}
+
+	binDir := t.TempDir()
+	onPath := filepath.Join(binDir, "wb")
+	if err := os.WriteFile(onPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write a wb on PATH: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if got := resolveWBExecutableForHook(missing); got != missing {
+		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q (self unchanged)", missing, got, missing)
+	}
+}

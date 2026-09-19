@@ -20,6 +20,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	// Aliased: this file already uses "provenance" as a local variable name
+	// for model provenance (modelProvenanceCallerDeclared/-Unknown), unrelated
+	// to wb#631's harness-identity package.
+	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -171,6 +177,26 @@ type workLogClaim struct {
 	ParentClaimID   string                          `json:"parent_claim_id,omitempty"`
 	AcquiredVia     string                          `json:"acquired_via,omitempty"`
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, read at zero cost from the environment by
+	// internal/provenance.FromEnv, never a prompt or response body. Additive
+	// and omitempty, so an older WB reading this claim sees nothing new and a
+	// claim written before this change decodes with every one of them empty
+	// — no schema version bump was needed for that.
+	//
+	// HarnessSessionID is stable across every subagent one harness session
+	// dispatches, unlike WBSessionID above, which every subagent shares
+	// because it derives from the orchestrator's PID.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	// ToolUseID identifies the exact tool call that created this claim, set
+	// by the agent guard's export prefix (internal/agentguard, wb#637) when
+	// this claim was created from a subagent's Bash call.
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	// WBVersion is the wb binary that wrote this claim.
+	WBVersion string `json:"wb_version,omitempty"`
 }
 
 // workLogIdentityCorrection is immutable evidence. Field presence, rather
@@ -1041,6 +1067,103 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 	return recordWorkLogWithHooks(home, task, result, options, workLogPublicationHooks{})
 }
 
+// autoRegisterSessionFromEnv registers the harness process above this one
+// from the same zero-cost environment declarations internal/provenance reads
+// (wb#631), when nothing has already registered live and the environment
+// carries at least one harness signal (HarnessSessionID or Harness).
+//
+// wb#645's review (Major 2, minor m7) found the earlier version wrong two
+// ways: it registered wb's own short-lived PID as the session whenever no
+// recognisable harness sat above it (a junk session row for every claim from
+// a shell wb was not launched under), and it wrote the raw AI_AGENT value
+// (e.g. "claude-code_2-1-276_agent") straight into the runtime field, which
+// sessionlaunch.NormalizeRuntime then rejects, breaking `wb session move`
+// for that session. This version walks the ancestor chain first with
+// session.FindHarnessAncestor and returns ok=false outright when no
+// recognised harness process is found — never falling back to registering
+// wb's own PID — and normalises the runtime it stores through
+// normalizeHarnessRuntime, storing the raw declaration only in the claim's
+// own Harness field (recordWorkLogWithHooks), never in the session registry.
+//
+// This also never marks the registration RegisteredAtPark: that flag means
+// "this session's only footprint is a park it never registered ahead of",
+// and a claim-time registration is not that — see session.Record's own doc.
+//
+// It returns ok=false on any error or when nothing was declared — recording
+// provenance must never block the claim it would have enriched.
+// findHarnessAncestorForClaim is session.FindHarnessAncestor behind a
+// package-level indirection, so a test can substitute a fake process tree
+// without depending on what happens to be running above the test binary
+// itself — the same seam internal/session's own tests use for the identical
+// walk.
+var findHarnessAncestorForClaim = session.FindHarnessAncestor
+
+func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (session.Record, bool) {
+	if fields.HarnessSessionID == "" && fields.Harness == "" {
+		return session.Record{}, false
+	}
+	ancestorPID, ancestorRuntime := findHarnessAncestorForClaim(os.Getpid())
+	if ancestorPID <= 0 {
+		return session.Record{}, false
+	}
+	dir := filepath.Join(home, session.DirName)
+	// session.Lookup (not ResolveForProcess, which would keep walking up the
+	// process tree past ancestorPID) reports the exact record at this PID,
+	// if any, and whether it currently qualifies as a live, non-parked,
+	// non-resumed session. A record whose own Lifecycle is "parked" or
+	// "resumed" is never merged into: wb#645's review (r2, NM2) found the
+	// earlier version called session.Register directly, which merges into
+	// whatever record already sits at ancestorPID regardless of lifecycle —
+	// so a claim created while that PID's session was parked silently took
+	// over the parked row's WBSessionID and overwrote its Runtime/Model with
+	// the new claim's, corrupting a session someone will resume later.
+	if existing, live := session.Lookup(dir, ancestorPID); live {
+		return existing, true
+	} else if existing.Lifecycle == "parked" || existing.Lifecycle == "resumed" {
+		return session.Record{}, false
+	}
+	runtime := normalizeHarnessRuntime(fields.Harness)
+	if runtime == "" {
+		runtime = ancestorRuntime
+	}
+	if runtime == "" {
+		runtime = session.Unknown
+	}
+	registered, err := session.Register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown})
+	if err != nil {
+		return session.Record{}, false
+	}
+	return registered, true
+}
+
+// normalizeHarnessRuntime maps a raw AI_AGENT declaration to one of WB's
+// closed runtime names, or "" when it cannot be told (wb#645 review Major 2).
+// AI_AGENT is not one of those closed names itself — Claude Code's own value
+// has carried a version and role suffix ("claude-code_2-1-276_agent") — so a
+// known prefix is checked first, then sessionlaunch.NormalizeRuntime's own
+// exact aliases as a fallback for anything this prefix table misses. The raw
+// value is never lost: recordWorkLogWithHooks still stores it verbatim in the
+// claim's own Harness field, this function only decides what goes into the
+// session registry's Runtime field, which sessionlaunch's own callers
+// (`wb session move`, et al.) require to be one of the closed names.
+func normalizeHarnessRuntime(rawHarness string) string {
+	trimmed := strings.TrimSpace(rawHarness)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "claude"):
+		return sessionlaunch.RuntimeClaudeCode
+	case strings.HasPrefix(lower, "codex"):
+		return sessionlaunch.RuntimeCodex
+	}
+	if normalized, err := sessionlaunch.NormalizeRuntime("", trimmed); err == nil {
+		return normalized
+	}
+	return ""
+}
+
 func recordWorkLogWithHooks(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks) (WorkLogPublicationOutcome, error) {
 	var outcome WorkLogPublicationOutcome
 	now := time.Now().UTC()
@@ -1080,17 +1203,37 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 	if identity, ok := RegisteredIdentity(); ok {
 		sessionID = strings.TrimSpace(identity.WBSessionID)
 	}
+	fields := wbprovenance.FromEnv()
+	if sessionID == "" {
+		// wb#631: a claim created by a session nothing has registered is
+		// exactly the SDLC logging-gap analysis's finding — `wb session
+		// register` ran in only 7 of 188 transcripts. Registering it here,
+		// from the same zero-cost environment declarations, makes
+		// registration a side effect of the first claim a session creates
+		// rather than a separate step an agent has to remember. Best-effort:
+		// a registration failure never blocks the claim it would have
+		// enriched.
+		if registered, ok := autoRegisterSessionFromEnv(home, fields); ok {
+			sessionID = registered.WBSessionID
+		}
+	}
+	agentID := strings.TrimSpace(options.AgentID)
+	if agentID == "" {
+		agentID = fields.AgentID
+	}
 	claim := workLogClaim{Version: 2, EffortID: effort, RunID: run, ClaimID: claimID, Task: task,
 		Repository: result.Repository, Worktree: result.WorktreeDir, Branch: result.Branch,
 		Base: result.Base, BaseSHA: result.BaseSHA, Lifecycle: "active", RecordedAt: now,
-		Initiator: strings.TrimSpace(options.Initiator), AgentID: strings.TrimSpace(options.AgentID),
+		Initiator: strings.TrimSpace(options.Initiator), AgentID: agentID,
 		AgentRuntime: strings.TrimSpace(options.AgentRuntime), Model: model,
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
 		TaskSummary:   taskSummary,
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
-		AcquiredVia: strings.TrimSpace(options.AcquiredVia)}
+		AcquiredVia:      strings.TrimSpace(options.AcquiredVia),
+		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
+		EffortLevel: fields.EffortLevel, ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion}
 	claims, err := openPrivateChild(runDir, "claims", true)
 	if err != nil {
 		return outcome, err

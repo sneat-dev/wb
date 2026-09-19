@@ -14,8 +14,84 @@ import (
 	"testing"
 	"time"
 
+	wbprovenance "github.com/sneat-dev/wb/internal/provenance"
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+// TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime pins
+// wb#645's review Major 2: AI_AGENT carries a raw, versioned value ("claude-
+// code_2-1-276_agent") that sessionlaunch.NormalizeRuntime rejects outright,
+// so normalizeHarnessRuntime maps a known prefix first and only falls back to
+// NormalizeRuntime's own exact aliases for anything the prefix table misses.
+func TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime(t *testing.T) {
+	cases := map[string]string{
+		"claude-code_2-1-276_agent": "claude-code",
+		"claude-code":               "claude-code",
+		"Claude-Code":               "claude-code",
+		"codex_1-0-0":               "codex",
+		"claude":                    "claude-code",
+		"":                          "",
+		"some-unrecognised-harness": "",
+	}
+	for raw, want := range cases {
+		t.Run(raw, func(t *testing.T) {
+			if got := normalizeHarnessRuntime(raw); got != want {
+				t.Fatalf("normalizeHarnessRuntime(%q) = %q, want %q", raw, got, want)
+			}
+		})
+	}
+}
+
+// TestAutoRegisterSessionFromEnvSkipsWithNoHarnessAncestor pins wb#645's
+// review minor m7: with no recognised harness process above this one,
+// auto-registration must not fall back to registering wb's own short-lived
+// PID as a live session — it returns ok=false outright, leaving no junk
+// session row behind. findHarnessAncestorForClaim is substituted rather than
+// relying on the real process tree above the test binary, which this
+// repository's own CI or a nested `wb` invocation could make ambiguous.
+func TestAutoRegisterSessionFromEnvSkipsWithNoHarnessAncestor(t *testing.T) {
+	previous := findHarnessAncestorForClaim
+	findHarnessAncestorForClaim = func(int) (int, string) { return 0, "" }
+	defer func() { findHarnessAncestorForClaim = previous }()
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := wbprovenance.Fields{HarnessSessionID: "sess-abc123", Harness: "claude-code_2-1-276_agent"}
+	if _, ok := autoRegisterSessionFromEnv(home, fields); ok {
+		t.Fatal("autoRegisterSessionFromEnv registered a session with no recognised harness ancestor above it")
+	}
+}
+
+// TestAutoRegisterSessionFromEnvNormalisesTheRuntimeWithAHarnessAncestor
+// pins wb#645's review Major 2 end to end: with a recognised harness
+// ancestor, the session registry's Runtime field carries the normalised
+// closed name, not the raw AI_AGENT declaration, and the registration is
+// never marked RegisteredAtPark — a claim-time registration is not a park
+// inference.
+func TestAutoRegisterSessionFromEnvNormalisesTheRuntimeWithAHarnessAncestor(t *testing.T) {
+	previous := findHarnessAncestorForClaim
+	findHarnessAncestorForClaim = func(int) (int, string) { return os.Getpid(), "" }
+	defer func() { findHarnessAncestorForClaim = previous }()
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := wbprovenance.Fields{HarnessSessionID: "sess-abc123", Harness: "claude-code_2-1-276_agent"}
+	registered, ok := autoRegisterSessionFromEnv(home, fields)
+	if !ok {
+		t.Fatal("autoRegisterSessionFromEnv did not register with a recognised harness ancestor")
+	}
+	if registered.Runtime != "claude-code" {
+		t.Fatalf("registered.Runtime = %q, want the normalised %q, not the raw AI_AGENT value", registered.Runtime, "claude-code")
+	}
+	if registered.RegisteredAtPark {
+		t.Fatal("a claim-time auto-registration was marked RegisteredAtPark")
+	}
+}
 
 func TestNormalizeTaskSummaryRejectsPromptLikeOrUnsafeValues(t *testing.T) {
 	for _, value := range []string{"Fix discovery", "line one\nline two", "token=ghp_private", "Use ghp_abcdefghijklmnopqrstuvwxyz123456 for testing", "Bearer abcdefghijklmnopqrstuvwxyz123456", "password: private", strings.Repeat("x", MaxTaskSummaryRunes+1)} {
@@ -271,6 +347,170 @@ func TestWorkLogClaimPrefersLiveCreatingSessionOverCallerValue(t *testing.T) {
 	}
 	if claim.WBSessionID != "wbs-live" {
 		t.Fatalf("claim WBSessionID = %q, want live resolver session", claim.WBSessionID)
+	}
+}
+
+// TestWorkLogClaimCarriesProvenanceFieldsFromEnv is wb#631's acceptance
+// test: a claim created with CLAUDE_CODE_SESSION_ID, WB_SUBAGENT_ID and
+// WB_SUBAGENT_TOOL_USE_ID set carries all three plus wb_version. The
+// variable names are WB_SUBAGENT_ID/WB_SUBAGENT_TOOL_USE_ID, not
+// WB_AGENT_ID/WB_TOOL_USE_ID — see internal/provenance's own doc for why
+// (wb#645 review Blocker 3: WB_AGENT_ID already names the owner-identity
+// variable a session declares to claim a worktree).
+func TestWorkLogClaimCarriesProvenanceFieldsFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-abc123")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "high")
+	t.Setenv("WB_SUBAGENT_ID", "agent-42")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_01ABC")
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "provenance-task", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "provenance-task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{EffortID: "provenance-task", RunID: "run", Model: "unknown"}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := outcome.claim
+	if claim.HarnessSessionID != "sess-abc123" || claim.Harness != "claude-code" || claim.EffortLevel != "high" ||
+		claim.AgentID != "agent-42" || claim.ToolUseID != "toolu_01ABC" {
+		t.Fatalf("claim did not carry every declared provenance field: %+v", claim)
+	}
+	if claim.WBVersion == "" {
+		t.Fatal("claim WBVersion must never be empty")
+	}
+}
+
+// TestWorkLogClaimWithoutEnvHasNoProvenanceFieldsExceptWBVersion is the other
+// half of wb#631's acceptance test: a claim created with nothing declared
+// carries no invented identity. WBVersion is the one field this writer
+// always sets — see recordWorkLogWithHooks' own comment on wbprovenance.
+func TestWorkLogClaimWithoutEnvHasNoProvenanceFieldsExceptWBVersion(t *testing.T) {
+	for _, name := range []string{"CLAUDE_CODE_SESSION_ID", "AI_AGENT", "CLAUDE_EFFORT", "WB_SUBAGENT_ID", "WB_SUBAGENT_TOOL_USE_ID"} {
+		t.Setenv(name, "")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	outcome, err := recordWorkLogWithHooks(home, "no-provenance-task", CreateResult{
+		Repository: "acme/app", WorktreeDir: worktree, Branch: "no-provenance-task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{EffortID: "no-provenance-task", RunID: "run", Model: "unknown"}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := outcome.claim
+	if claim.HarnessSessionID != "" || claim.Harness != "" || claim.EffortLevel != "" || claim.ToolUseID != "" {
+		t.Fatalf("claim invented a provenance field with nothing declared: %+v", claim)
+	}
+	if claim.WBVersion == "" {
+		t.Fatal("claim WBVersion must never be empty")
+	}
+}
+
+// TestAutoRegisterSessionFromEnvNeverMergesIntoAParkedRow pins wb#645's r2
+// review (NM2): claim-time auto-registration must never merge into a row
+// whose own Lifecycle is "parked" or "resumed" — that would silently take
+// over the parked session's WBSessionID and overwrite its Runtime/Model with
+// the new claim's, corrupting a session someone will resume later.
+func TestAutoRegisterSessionFromEnvNeverMergesIntoAParkedRow(t *testing.T) {
+	previous := findHarnessAncestorForClaim
+	findHarnessAncestorForClaim = func(int) (int, string) { return os.Getpid(), "" }
+	defer func() { findHarnessAncestorForClaim = previous }()
+
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, session.DirName)
+	if _, err := session.Register(dir, session.Record{
+		PID: os.Getpid(), Runtime: "codex", Model: "gpt-5.5",
+		Lifecycle: "parked", WBSessionID: "wbs-parked-1",
+	}); err != nil {
+		t.Fatalf("seed a parked row: %v", err)
+	}
+
+	fields := wbprovenance.Fields{HarnessSessionID: "sess-abc123", Harness: "claude-code_2-1-276_agent"}
+	if _, ok := autoRegisterSessionFromEnv(home, fields); ok {
+		t.Fatal("autoRegisterSessionFromEnv registered a claim into a parked session row")
+	}
+
+	after, _ := session.Lookup(dir, os.Getpid())
+	if after.Runtime != "codex" || after.Model != "gpt-5.5" || after.Lifecycle != "parked" || after.WBSessionID != "wbs-parked-1" {
+		t.Fatalf("the parked row was modified: %+v", after)
+	}
+}
+
+// TestSubagentStampEnvVarsDoNotDeclareAnIdentity pins wb#645's review fix 4:
+// the agent guard's subagent-ID stamp (internal/agentguard) exports
+// WB_SUBAGENT_ID and WB_SUBAGENT_TOOL_USE_ID, deliberately outside the
+// WB_AGENT_* family IdentityFromEnv reads (EnvAgentID = "WB_AGENT_ID"). This
+// proves the two families stay disjoint from this package's own side, the
+// way `wb worktree log finalize --apply`-style admission needs them to:
+// setting the stamp's variables must never make IdentityFromEnv or
+// Declared() report a declared identity, which is exactly what
+// wb#645's review Blocker 3 found happened when the stamp reused
+// WB_AGENT_ID — that flipped `--mode auto` to agent mode and then failed
+// admission for a subagent that never separately registered a session.
+func TestSubagentStampEnvVarsDoNotDeclareAnIdentity(t *testing.T) {
+	for _, name := range []string{EnvAgentPID, EnvAgentRuntime, EnvAgentModel, EnvAgentID, EnvSessionID} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("WB_SUBAGENT_ID", "agent-42")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_01ABC")
+
+	identity := IdentityFromEnv()
+	if identity.Declared() {
+		t.Fatalf("the subagent-ID stamp's own environment variables were read as a declared identity: %+v", identity)
+	}
+	if identity.AgentID != "" {
+		t.Fatalf("IdentityFromEnv.AgentID = %q, want empty — WB_SUBAGENT_ID must never be read as WB_AGENT_ID", identity.AgentID)
+	}
+}
+
+// TestReadingAnOldVersionClaimStillDecodes proves a claim written before
+// wb#631 — no provenance keys at all — still decodes cleanly, with every new
+// field simply empty. The new fields are additive and omitempty, so no
+// schema version bump was needed for them.
+func TestReadingAnOldVersionClaimStillDecodes(t *testing.T) {
+	legacy := `{
+		"version": 1,
+		"effort_id": "old-task",
+		"run_id": "run",
+		"claim_id": "claim-old",
+		"task": "old-task",
+		"repository": "acme/app",
+		"worktree": "/tmp/worktree",
+		"branch": "old-task",
+		"base": "main",
+		"base_sha": "` + strings.Repeat("a", 40) + `",
+		"lifecycle": "active",
+		"recorded_at": "2026-01-01T00:00:00Z",
+		"model": "unknown"
+	}`
+	var claim workLogClaim
+	if err := json.Unmarshal([]byte(legacy), &claim); err != nil {
+		t.Fatalf("a pre-wb#631 claim failed to decode: %v", err)
+	}
+	if claim.HarnessSessionID != "" || claim.Harness != "" || claim.EffortLevel != "" ||
+		claim.AgentID != "" || claim.ToolUseID != "" || claim.WBVersion != "" {
+		t.Fatalf("an old-version claim produced non-empty provenance fields: %+v", claim)
+	}
+	if claim.Version != 1 || claim.ClaimID != "claim-old" {
+		t.Fatalf("the old claim's own fields were disturbed: %+v", claim)
 	}
 }
 
