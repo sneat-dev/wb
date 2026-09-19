@@ -2,12 +2,15 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // wmEngineGH is a scripted GitHub for the worktree-merge PR route's shared
@@ -93,9 +96,25 @@ case "$*" in
     printf '1' >"$S/pr-created"
     printf '%s\n' "$WB_TEST_PR" ;;
   'api repos/acme/app/pulls/41 --include'|'api repos/acme/app/pulls/41')
+	if [ -f "$S/pr-view-fail-count" ]; then
+	  failures=$(cat "$S/pr-view-fail-count")
+	  if [ "$failures" -gt 0 ]; then
+	    printf '%s' "$((failures - 1))" >"$S/pr-view-fail-count"
+	    echo 'gh: Bad Gateway (HTTP 502)' >&2
+	    exit 1
+	  fi
+	fi
     printf '{"number":41,"node_id":"PR_kwDOtest41","state":"%s","draft":false,"locked":false,"title":"candidate","body":"","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
       "$state" "$merged" "$merge_sha" "$head_ref" "$head" ;;
   'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+	if [ -f "$S/pr-view-fail-count" ]; then
+	  failures=$(cat "$S/pr-view-fail-count")
+	  if [ "$failures" -gt 0 ]; then
+	    printf '%s' "$((failures - 1))" >"$S/pr-view-fail-count"
+	    echo 'gh: Bad Gateway (HTTP 502)' >&2
+	    exit 1
+	  fi
+	fi
     if [ "$merged" = true ]; then
       printf '{"state":"MERGED","mergedAt":"2026-09-18T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$head" "$merge_sha"
     else
@@ -186,6 +205,10 @@ case "$*" in
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' \
       "$status" "$(git --git-dir="$WB_TEST_REMOTE" rev-parse "$left")" "$(git --git-dir="$WB_TEST_REMOTE" merge-base "$left" "$right" 2>/dev/null || git --git-dir="$WB_TEST_REMOTE" rev-parse "$left")" ;;
   'api --method PUT repos/acme/app/pulls/41/merge'*)
+	if [ -f "$S/merge-transient" ]; then
+	  echo 'gh: Bad Gateway (HTTP 502)' >&2
+	  exit 1
+	fi
     if [ "$(cat "$S/merged")" = true ]; then
       printf '{"message":"Pull Request is not mergeable"}\n'; exit 1
     fi
@@ -201,6 +224,11 @@ case "$*" in
     printf 'true' >"$S/merged"
     printf 'CLOSED' >"$S/pr-state"
     printf '%s\n' "$(whoami 2>/dev/null || echo wb-test)" >"$S/merged-by"
+	if [ -f "$S/merge-transient-after-success" ]; then
+	  if [ -f "$S/repeated-transient-reads" ]; then printf '20' >"$S/pr-view-fail-count"; fi
+	  echo 'gh: Bad Gateway (HTTP 502)' >&2
+	  exit 1
+	fi
     printf '{"sha":"%s","merged":true,"message":"Pull Request successfully merged"}\n' "$head" ;;
   'api graphql'*)
     case "$*" in
@@ -327,6 +355,84 @@ func TestLandWorktreeMergePullRequestRouteDelegatesToTheSharedEngine(t *testing.
 	}
 	if gh.readState(t, "auto-merge") != "armed" {
 		t.Fatalf("auto-merge was never armed")
+	}
+}
+
+func TestLandWorktreeMergePullRequestLeavesTransientMergeWritePending(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "transient-merge-source", "feature/transient-merge", "transient.txt", "transient\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "merge-transient", "1")
+
+	pending, err := ResumeWorktreeMerge(context.Background(), wmEngineLandOptions(fixture, receipt.ReceiptPath))
+	if err == nil || !errors.Is(err, githubobserver.ErrTransientMutationOutcomeUnknown) {
+		t.Fatalf("transient merge write error = %v, want resumable unknown-outcome error", err)
+	}
+	if pending.Status != WorktreeMergeChecksPending {
+		t.Fatalf("transient merge write status = %s, want %s", pending.Status, WorktreeMergeChecksPending)
+	}
+	if !strings.Contains(err.Error(), "wb worktree merge resume "+receipt.ReceiptPath) {
+		t.Fatalf("transient merge write error lacks exact resume command: %v", err)
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil || persisted.Status != WorktreeMergeChecksPending {
+		t.Fatalf("persisted transient receipt = %+v err=%v", persisted, readErr)
+	}
+}
+
+func TestLandWorktreeMergePullRequestAdoptsTransientWriteThatSucceeded(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "transient-success-source", "feature/transient-success", "transient-success.txt", "transient success\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "merge-transient-after-success", "1")
+
+	landed, err := ResumeWorktreeMerge(context.Background(), wmEngineLandOptions(fixture, receipt.ReceiptPath))
+	if err != nil {
+		t.Fatalf("adopt transient merge write success: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded || landed.LandingSHA == "" {
+		t.Fatalf("adopted transient merge write = %+v, want landed receipt", landed)
+	}
+}
+
+func TestLandWorktreeMergeRepeatedTransientRecoveryStaysPending(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "repeated-transient-source", "feature/repeated-transient", "repeated.txt", "repeated transient\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "merge-transient-after-success", "1")
+	gh.writeState(t, "repeated-transient-reads", "1")
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+
+	first, firstErr := ResumeWorktreeMerge(context.Background(), options)
+	if firstErr == nil || first.Status != WorktreeMergeChecksPending {
+		t.Fatalf("first transient recovery = %+v err=%v", first, firstErr)
+	}
+	second, secondErr := ResumeWorktreeMerge(context.Background(), options)
+	if secondErr == nil || !IsTransientGitHubFailure(secondErr) || second.Status != WorktreeMergeChecksPending {
+		t.Fatalf("second transient recovery = %+v err=%v, want checks_pending", second, secondErr)
+	}
+	gh.writeState(t, "pr-view-fail-count", "0")
+	third, thirdErr := ResumeWorktreeMerge(context.Background(), options)
+	if thirdErr != nil || third.Status != WorktreeMergeLanded || third.LandingSHA == "" {
+		t.Fatalf("third recovery did not adopt the exact merged PR: %+v err=%v", third, thirdErr)
 	}
 }
 

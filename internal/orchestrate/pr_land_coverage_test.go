@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,6 +120,49 @@ func TestOrchCovMergePullRequestClassifiesEveryRefusal(t *testing.T) {
 	}
 }
 
+func TestMergePullRequestLeavesTransientWriteOutcomeResumable(t *testing.T) {
+	for _, stderr := range []string{"gh: Internal Server Error (HTTP 500)", "gh: Bad Gateway (HTTP 502)"} {
+		t.Run(stderr, func(t *testing.T) {
+			state := orchCovScriptState(t, orchCovPutMergeScript)
+			state.answer(t, "exit", "1")
+			state.answer(t, "stdout", "")
+			state.answer(t, "stderr", stderr)
+
+			sha, refusal, err := mergePullRequest(context.Background(), "acme/app", "7", "candidate", "squash", "subject", "body")
+			if sha != "" || refusal != nil {
+				t.Fatalf("transient merge write = sha %q refusal %+v, want neither", sha, refusal)
+			}
+			if err == nil || !errors.Is(err, githubobserver.ErrTransientMutationOutcomeUnknown) {
+				t.Fatalf("transient merge write error = %v, want resumable unknown-outcome error", err)
+			}
+		})
+	}
+}
+
+func TestMergePullRequestTreatsCallerDeadlineAfterDispatchAsUnknown(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "mutation-dispatched")
+	script := `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = PUT ]; then
+  printf dispatched >"$ORCHCOV_MUTATION_MARKER"
+  sleep 5
+fi
+exit 30
+`
+	orchCovInstallGH(t, script)
+	t.Setenv("ORCHCOV_MUTATION_MARKER", marker)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	sha, refusal, err := mergePullRequest(ctx, "acme/app", "7", "candidate", "squash", "subject", "body")
+	if sha != "" || refusal != nil || err == nil || !errors.Is(err, githubobserver.ErrTransientMutationOutcomeUnknown) {
+		t.Fatalf("deadline after merge dispatch = sha %q refusal=%+v err=%v", sha, refusal, err)
+	}
+	if contents, readErr := os.ReadFile(marker); readErr != nil || string(contents) != "dispatched" {
+		t.Fatalf("merge mutation was not dispatched before deadline: contents=%q err=%v", contents, readErr)
+	}
+}
+
 const orchCovOneEndpointScript = `#!/bin/sh
 S="$ORCHCOV_GH_STATE"
 cat "$S/body"
@@ -169,11 +213,8 @@ func TestOrchCovCommitIsOnBranchFailsClosedOnAnUnusableComparison(t *testing.T) 
 
 const orchCovDeleteBranchScript = `#!/bin/sh
 S="$ORCHCOV_GH_STATE"
-if [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = DELETE ]; then
-  if [ -s "$S/delete-stderr" ]; then cat "$S/delete-stderr" >&2; fi
-  exit "$(cat "$S/delete-exit")"
-fi
 if [ "$1" = api ]; then
+  if [ -s "$S/check-stdout" ]; then cat "$S/check-stdout"; fi
   if [ -s "$S/check-stderr" ]; then cat "$S/check-stderr" >&2; fi
   exit "$(cat "$S/check-exit")"
 fi
@@ -181,70 +222,210 @@ echo "unexpected gh args: $*" >&2
 exit 30
 `
 
+const orchCovDeleteBranchGitScript = `#!/bin/sh
+S="$ORCHCOV_GH_STATE"
+if [ "$*" = "remote get-url --push origin" ]; then
+  printf '%s\n' "$*" > "$S/git-remote-args"
+  cat "$S/git-remote"
+  exit 0
+fi
+if [ "$1 $2" = "config --get-regexp" ]; then
+  exit 1
+fi
+printf '%s\n' "$*" > "$S/git-args"
+if [ -s "$S/git-stdout" ]; then cat "$S/git-stdout"; fi
+if [ -s "$S/git-stderr" ]; then cat "$S/git-stderr" >&2; fi
+exit "$(cat "$S/git-exit")"
+`
+
+func orchCovInstallDeleteGit(t *testing.T, state orchCovGHState) {
+	t.Helper()
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(gh), "git"), []byte(orchCovDeleteBranchGitScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state.answer(t, "git-stdout", "")
+	state.answer(t, "git-stderr", "")
+	state.answer(t, "git-remote", "https://user:secret@example.test/acme/app.git")
+}
+
 func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("head with no repository deleted=%t err=%v", deleted, err)
 	}
 	view = orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"fork/app"}},"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("fork head deleted=%t err=%v", deleted, err)
 	}
 	view = orchCovPullRequestView(t, `{"head":{"ref":"main","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
-	if deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err != nil || deleted {
+	if deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("target branch deleted=%t err=%v", deleted, err)
 	}
 }
 
 func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
-	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
-
 	t.Run("deleted and absent", func(t *testing.T) {
 		state := orchCovScriptState(t, orchCovDeleteBranchScript)
-		state.answer(t, "delete-exit", "0")
-		state.answer(t, "delete-stderr", "")
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "0")
 		state.answer(t, "check-exit", "1")
-		state.answer(t, "check-stderr", "")
-		deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed)
+		state.answer(t, "check-stdout", "")
+		state.answer(t, "check-stderr", "Not Found")
+		deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
+		}
+		args, err := os.ReadFile(filepath.Join(state.dir, "git-args"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotArgs := strings.TrimSpace(string(args))
+		if !strings.HasPrefix(gotArgs, "push --force-with-lease=refs/heads/candidate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa wb-landing-") ||
+			!strings.HasSuffix(gotArgs, " :refs/heads/candidate") {
+			t.Fatalf("git args = %q, want an isolated wb-landing-* remote", gotArgs)
+		}
+		remoteArgs, err := os.ReadFile(filepath.Join(state.dir, "git-remote-args"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(remoteArgs)) != "remote get-url --push origin" {
+			t.Fatalf("remote args = %q", strings.TrimSpace(string(remoteArgs)))
+		}
+	})
+	t.Run("verification read failed", func(t *testing.T) {
+		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "0")
+		state.answer(t, "check-exit", "1")
+		state.answer(t, "check-stdout", "")
+		state.answer(t, "check-stderr", "gh: HTTP 502 Bad Gateway")
+		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+			!strings.Contains(err.Error(), "verify branch candidate is absent") {
+			t.Fatalf("verification error = %v", err)
 		}
 	})
 	t.Run("already gone", func(t *testing.T) {
 		state := orchCovScriptState(t, orchCovDeleteBranchScript)
-		state.answer(t, "delete-exit", "1")
-		state.answer(t, "delete-stderr", "Reference does not exist")
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "1")
+		state.answer(t, "git-stderr", "stale info")
 		state.answer(t, "check-exit", "1")
+		state.answer(t, "check-stdout", "")
 		state.answer(t, "check-stderr", "Not Found")
-		deleted, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed)
+		deleted, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
 		}
 	})
 	t.Run("delete refused", func(t *testing.T) {
 		state := orchCovScriptState(t, orchCovDeleteBranchScript)
-		state.answer(t, "delete-exit", "1")
-		state.answer(t, "delete-stderr", "gh: Resource not accessible by integration (HTTP 403)")
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "1")
+		state.answer(t, "git-stderr", "remote rejected")
 		state.answer(t, "check-exit", "0")
+		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 		state.answer(t, "check-stderr", "")
-		if _, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err == nil ||
-			!strings.Contains(err.Error(), "delete branch candidate") {
+		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+			!strings.Contains(err.Error(), "delete branch candidate at merged head") {
 			t.Fatalf("refused deletion error = %v", err)
+		}
+	})
+	t.Run("delete failure redacts push URL credentials", func(t *testing.T) {
+		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "1")
+		state.answer(t, "git-stderr", "fatal: unable to access https://user:secret@example.test/acme/app.git")
+		state.answer(t, "check-exit", "0")
+		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		state.answer(t, "check-stderr", "")
+		_, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA)
+		if err == nil {
+			t.Fatal("credential-bearing push failure succeeded")
+		}
+		if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "user:") {
+			t.Fatalf("push credentials leaked: %v", err)
+		}
+		if !strings.Contains(err.Error(), "<redacted-origin-push-url>") {
+			t.Fatalf("redaction marker missing: %v", err)
 		}
 	})
 	t.Run("still present", func(t *testing.T) {
 		state := orchCovScriptState(t, orchCovDeleteBranchScript)
-		state.answer(t, "delete-exit", "0")
-		state.answer(t, "delete-stderr", "")
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "0")
 		state.answer(t, "check-exit", "0")
+		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 		state.answer(t, "check-stderr", "")
-		if _, err := deleteRemoteBranch(context.Background(), "acme/app", view, landed); err == nil ||
+		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "still exists on origin") {
 			t.Fatalf("unverified deletion error = %v", err)
 		}
 	})
+	t.Run("advanced after merge", func(t *testing.T) {
+		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		orchCovInstallDeleteGit(t, state)
+		state.answer(t, "git-exit", "1")
+		state.answer(t, "git-stderr", "stale info")
+		state.answer(t, "check-exit", "0")
+		state.answer(t, "check-stdout", `{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`)
+		state.answer(t, "check-stderr", "")
+		if _, err := deleteRemoteBranch(context.Background(), ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
+			!strings.Contains(err.Error(), "stale info") {
+			t.Fatalf("advanced branch error = %v", err)
+		}
+	})
+}
+
+func TestDeleteRemoteBranchIgnoresAPreexistingLandingRemote(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed")
+	canonical := filepath.Join(root, "canonical")
+	origin := filepath.Join(root, "origin.git")
+	malicious := filepath.Join(root, "malicious.git")
+	writeEngineFile(t, filepath.Join(seed, "README.md"), "initial\n")
+	runEngineGit(t, seed, "init", "-b", "main")
+	runEngineGit(t, seed, "config", "user.name", "WB Test")
+	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
+	runEngineGit(t, seed, "add", "README.md")
+	runEngineGit(t, seed, "commit", "-m", "initial")
+	runEngineGit(t, root, "clone", "--bare", seed, origin)
+	runEngineGit(t, root, "clone", "--bare", seed, malicious)
+	runEngineGit(t, root, "clone", origin, canonical)
+	runEngineGit(t, canonical, "config", "user.name", "WB Test")
+	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
+	runEngineGit(t, canonical, "checkout", "-b", "candidate")
+	writeEngineFile(t, filepath.Join(canonical, "candidate.txt"), "candidate\n")
+	runEngineGit(t, canonical, "add", "candidate.txt")
+	runEngineGit(t, canonical, "commit", "-m", "candidate")
+	head := strings.TrimSpace(runEngineGit(t, canonical, "rev-parse", "HEAD"))
+	runEngineGit(t, canonical, "push", "origin", "candidate")
+	runEngineGit(t, canonical, "push", malicious, "candidate")
+	runEngineGit(t, canonical, "remote", "add", "wb-landing", malicious)
+	runEngineGit(t, canonical, "remote", "set-url", "--add", "--push", "wb-landing", malicious)
+
+	state := orchCovScriptState(t, orchCovDeleteBranchScript)
+	state.answer(t, "check-exit", "1")
+	state.answer(t, "check-stdout", "")
+	state.answer(t, "check-stderr", "Not Found")
+	view := orchCovPullRequestView(t, fmt.Sprintf(`{"head":{"ref":"candidate","sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`, head))
+	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
+	deleted, err := deleteRemoteBranch(context.Background(), canonical, "acme/app", view, landed, head)
+	if err != nil || !deleted {
+		t.Fatalf("deleted=%t err=%v", deleted, err)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, canonical, "ls-remote", origin, "refs/heads/candidate")); got != "" {
+		t.Fatalf("origin candidate still exists: %s", got)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, canonical, "ls-remote", malicious, "refs/heads/candidate")); !strings.HasPrefix(got, head+"\t") {
+		t.Fatalf("pre-existing wb-landing target was changed: %s", got)
+	}
 }
 
 func TestOrchCovBranchAlreadyGoneRecognisesBothSpellings(t *testing.T) {
@@ -321,7 +502,7 @@ func TestOrchCovPullRequestLandResumeCommandCarriesEveryOption(t *testing.T) {
 	}
 }
 
-func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyExhaustedReads(t *testing.T) {
+func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyTransientFailures(t *testing.T) {
 	t.Parallel()
 	if got := withPullRequestLandResumeGuidance(nil, PullRequestLandOptions{}, PullRequestLandResult{}); got != nil {
 		t.Fatalf("nil error became %v", got)
@@ -335,6 +516,12 @@ func TestOrchCovWithPullRequestLandResumeGuidanceAnnotatesOnlyExhaustedReads(t *
 	if !errors.Is(got, githubobserver.ErrTransientRetriesExhausted) ||
 		!strings.Contains(got.Error(), "resumable: wb pr land acme/app#7 --keep") {
 		t.Fatalf("exhausted transient error = %v", got)
+	}
+	unknownMutation := fmt.Errorf("%w: HTTP 502", githubobserver.ErrTransientMutationOutcomeUnknown)
+	got = withPullRequestLandResumeGuidance(unknownMutation, PullRequestLandOptions{Repository: "acme/app", PullRequest: "7"}, PullRequestLandResult{})
+	if !errors.Is(got, githubobserver.ErrTransientMutationOutcomeUnknown) ||
+		!strings.Contains(got.Error(), "resumable: wb pr land acme/app#7") {
+		t.Fatalf("unknown transient mutation error = %v", got)
 	}
 	// An unaddressable selector cannot name a resume command, so the error is
 	// returned unchanged rather than decorated with a guess.

@@ -2,8 +2,10 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -242,6 +244,19 @@ func mergeOrAdoptAutoMerge(
 	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
 	merge, mergeRefused, mergeErr := mergePullRequest(ctx, options.Repository, number, head, mergeMethod, subject, body)
 	if mergeErr != nil {
+		if errors.Is(mergeErr, githubobserver.ErrTransientMutationOutcomeUnknown) {
+			// The merge write may have succeeded before its response was lost.
+			// Re-read instead of issuing a second mutation. Only an exact merged
+			// head is safe to adopt; otherwise preserve the resumable unknown
+			// outcome for a later invocation.
+			merged, readErr := ReadPullRequest(ctx, options.Repository, number)
+			if readErr == nil && merged.Merged && merged.Head.SHA == head {
+				return "", nil, nil
+			}
+			if readErr != nil {
+				return "", nil, fmt.Errorf("%w; verify merge outcome: %v", mergeErr, readErr)
+			}
+		}
 		return "", nil, mergeErr
 	}
 	if mergeRefused != nil {
