@@ -290,13 +290,12 @@ func (api *fakeGitHubAppAPI) server() *httptest.Server {
 				result = override
 			}
 			api.nextID++
-			// +1ns: a real redelivery is answered strictly after the sweep's
-			// own "now" that triggered it (the request has to travel and come
-			// back), so this fake's own evidence must not tie with the
-			// LastAttemptAt the sweep saved using that same "now" moment.
-			// Without this, a GUID could never count its own latest attempt
-			// as evidence of itself.
-			api.attempts = append(api.attempts, fakeDelivery{id: api.nextID, guid: guid, deliveredAt: api.now().Add(time.Nanosecond), redelivery: true, statusCode: result, event: event})
+			// Whole seconds, deliberately: GitHub's own delivered_at never
+			// carries sub-second precision, and self-evidence must work
+			// correctly even when this exactly ties the "now" the sweep used
+			// to save LastAttemptAt (id comparison, not time comparison, is
+			// what makes that safe — see reachable() in redeliver.go).
+			api.attempts = append(api.attempts, fakeDelivery{id: api.nextID, guid: guid, deliveredAt: api.now(), redelivery: true, statusCode: result, event: event})
 		}
 		writer.WriteHeader(http.StatusAccepted)
 	})
@@ -673,6 +672,55 @@ func TestAnsweredStatusCountsAsEvidenceAndAbandonsAfterThreeAttempts(t *testing.
 	}
 }
 
+// TestSelfEvidenceCountsAcrossAClockTie is round 4's fix: the id-based
+// self-evidence check must not depend on GitHub's whole-second delivered_at
+// lining up with the hub's own sub-second LastAttemptAt. Two scenarios,
+// either of which used to lose the GUID's own evidence under the old
+// timestamp comparison: GitHub's clock running seconds behind the local one,
+// and the two landing in exactly the same second. Attempts must count in
+// both.
+func TestSelfEvidenceCountsAcrossAClockTie(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		githubAt func(local time.Time) time.Time
+	}{
+		{"github clock 2s behind", func(local time.Time) time.Time { return local.Add(-2 * time.Second) }},
+		{"github clock ties exactly", func(local time.Time) time.Time { return local }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			start := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+			localClock := newSteppingClock(start)
+			// The fake's own "now" (what it stamps a redeliver-created
+			// attempt's delivered_at with) is deliberately a different clock
+			// than the sweeper's Now, modeling GitHub's clock skew relative
+			// to the hub's local one.
+			githubClock := &steppingClock{now: testCase.githubAt(start)}
+			api := newFakeGitHubAppAPI(githubClock.Now)
+			api.seed("guid-skewed", "push", http.StatusServiceUnavailable, start.Add(-1*time.Minute))
+			api.redeliverOutcome["guid-skewed"] = http.StatusServiceUnavailable
+			server := api.server()
+			defer server.Close()
+
+			store := newFakeStore()
+			sweeper := New(Options{
+				Client: server.Client(), APIBaseURL: server.URL,
+				AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+				Store: store, Now: localClock.Now, Interval: time.Hour,
+			})
+
+			for pass := 1; pass <= 2; pass++ {
+				sweeper.Sweep(background())
+				localClock.Advance(time.Hour)
+				githubClock.Advance(time.Hour)
+			}
+			record, found := store.get("guid-skewed")
+			if !found || record.Attempts != 2 {
+				t.Fatalf("record = %+v, found=%t, want Attempts=2: a clock skew or exact tie must not lose the GUID's own evidence", record, found)
+			}
+		})
+	}
+}
+
 // TestGatewayStatusesDoNotCountAsAnswered is S1(a)'s boundary: 502 and 530
 // (Cloudflare's own "no origin to reach" extension status) are gateway/tunnel
 // non-answers, not evidence the operator's own endpoint said anything at all,
@@ -758,6 +806,48 @@ func TestUncountedGUIDIsAbandonedAfterSeventyTwoHoursSinceFirstDelivery(t *testi
 	}
 	if abandoned != 1 {
 		t.Fatalf("abandon-by-age lines = %d, want exactly 1", abandoned)
+	}
+}
+
+// TestFirstDeliveredAtUsesTheEarliestAttemptNotTheLatest is round 4's minor
+// item 1: on first sight of a GUID, FirstDeliveredAt must come from the
+// smallest DeliveredAt this hub can see for that GUID, not from whichever
+// attempt happens to be its current latest. A GUID can already have more
+// than one attempt in the 72-hour window the first time a sweep looks at it
+// — here, an operator's own manual redelivery from GitHub's Advanced tab,
+// 60 hours after the original failure and an hour before this hub's first
+// sweep ever sees it.
+func TestFirstDeliveredAtUsesTheEarliestAttemptNotTheLatest(t *testing.T) {
+	t0 := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	clock := newSteppingClock(t0.Add(61 * time.Hour))
+	api := newFakeGitHubAppAPI(clock.Now)
+	api.seed("guid-manually-redelivered", "push", http.StatusInternalServerError, t0)
+	api.seed("guid-manually-redelivered", "push", http.StatusInternalServerError, t0.Add(60*time.Hour))
+	server := api.server()
+	defer server.Close()
+
+	store := newFakeStore()
+	sweeper := New(Options{
+		Client: server.Client(), APIBaseURL: server.URL,
+		AppID: 1234, PrivateKeyPEM: testAppPrivateKeyPEM,
+		Store: store, Now: clock.Now, Interval: time.Hour,
+	})
+
+	sweeper.Sweep(background())
+	record, found := store.get("guid-manually-redelivered")
+	if !found || !record.FirstDeliveredAt.Equal(t0) {
+		t.Fatalf("record after first sight = %+v, found=%t, want FirstDeliveredAt=%s (the original failure, not the T0+60h manual redelivery)", record, found, t0)
+	}
+
+	// T0+72h+1m: 72 hours have passed since the true first delivery (T0),
+	// even though the manual redelivery is barely 12 hours old. This must
+	// abandon; the bug this test guards against would compute FirstDeliveredAt
+	// as T0+60h and wait until T0+132h instead.
+	clock.Advance(11*time.Hour + time.Minute)
+	sweeper.Sweep(background())
+	record, found = store.get("guid-manually-redelivered")
+	if !found || !record.Abandoned {
+		t.Fatalf("record at T0+72h+1m = %+v, found=%t, want abandoned", record, found)
 	}
 }
 

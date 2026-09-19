@@ -34,6 +34,16 @@ type WebhookRedeliveryRecord struct {
 	// LastAttemptAt is when this record was last written, whether by a
 	// redelivery or by being marked abandoned. It is the retention clock.
 	LastAttemptAt time.Time `firestore:"last_attempt_at"`
+	// LastAttemptDeliveryID is the GitHub delivery attempt id that was this
+	// GUID's latest listed attempt the last time this hub acted on it. A
+	// later sweep counts a redelivery attempt against this GUID only when
+	// its now-latest listed attempt was answered and carries a different id
+	// than this one: an id comparison, not a timestamp comparison, because
+	// GitHub's delivered_at has whole-second resolution on GitHub's own
+	// clock while this hub's own attempt time is local and sub-second, so a
+	// fast redeliver round trip routinely lands in the same GitHub-clock
+	// second as the request that caused it.
+	LastAttemptDeliveryID int64 `firestore:"last_attempt_delivery_id"`
 	// FirstDeliveredAt is the delivered_at of this GUID's earliest attempt
 	// this hub has seen, set once when the record is first created and never
 	// overwritten after. Because every uncounted redelivery creates a new

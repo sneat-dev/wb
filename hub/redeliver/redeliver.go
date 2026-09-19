@@ -13,11 +13,19 @@
 // spends while that is true, because "the hub keeps answering with an error"
 // must not look identical to "GitHub keeps failing this one delivery for
 // some other reason". reachable answers that from evidence already in the
-// same listing: any delivery attempt the hub itself answered — a 2xx, or an
+// same listing: any answered delivery attempt — a 2xx, or an
 // application-level rejection like 401 or 503, but not a gateway/tunnel
-// non-answer (502, 504, 530, or no status at all) — newer than or as new as
-// this GUID's own last recorded attempt, including that GUID's own latest
-// attempt. Without that evidence the sweep still redelivers, since the
+// non-answer (502, 504, 530, or no status at all) — including this GUID's
+// own latest attempt. A GUID's own evidence is identified by delivery
+// attempt id, not by comparing timestamps: GitHub's own delivered_at is
+// whole seconds on GitHub's clock, while the hub's own recorded attempt
+// time is local and sub-second, so the two tie whenever a redeliver lands
+// in the same GitHub-clock second as the attempt that requested it — which
+// a fast round trip makes the common case, not the rare one. Comparing the
+// id of the GUID's latest listed attempt against the id that was latest the
+// last time this hub acted on it sidesteps clock resolution entirely: any
+// answered attempt with a different id is new evidence, whatever second it
+// landed in. Without that evidence the sweep still redelivers, since the
 // delivery may succeed even though nothing has recently, but it does not
 // spend one of MaxAttempts on it.
 //
@@ -280,11 +288,11 @@ func (sweeper *Sweeper) sweepOnce(ctx context.Context) error {
 		sweepErr = err
 	} else {
 		cutoff := now.Add(-MaxDeliveryAge)
-		failed, newestAnsweredAt, listErr := sweeper.listRecentDeliveries(ctx, state, cutoff)
+		failed, newestAnsweredAt, earliestDeliveredAt, listErr := sweeper.listRecentDeliveries(ctx, state, cutoff)
 		if listErr != nil {
 			sweepErr = listErr
 		} else {
-			redelivered, abandoned, uncounted, sweepErr = sweeper.actOn(ctx, state, now, failed, newestAnsweredAt)
+			redelivered, abandoned, uncounted, sweepErr = sweeper.actOn(ctx, state, now, failed, newestAnsweredAt, earliestDeliveredAt)
 		}
 	}
 	if uncounted > 0 {
@@ -376,13 +384,21 @@ func (item deliveryItem) subject() string {
 // by construction its latest attempt, so grouping needs no sorting.
 //
 // newestAnsweredAt is the most recent DeliveredAt among any GUID's latest
-// attempt that the hub answered at all (not only a success) — the evidence
-// reachable uses to tell "the endpoint is answering" from "nothing has ever
-// gotten through".
-func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenState, cutoff time.Time) (failed []deliveryItem, newestAnsweredAt time.Time, err error) {
+// attempt that the hub answered at all (not only a success) — cross-GUID
+// evidence reachable uses to tell "the endpoint is answering" from "nothing
+// has ever gotten through", supplementing the id-based check of a GUID's own
+// evidence.
+//
+// earliestDeliveredAt is the smallest DeliveredAt seen per GUID across every
+// attempt in the window, not only its latest one: a GUID redelivered by hand
+// or by an earlier sweep can have several entries in the same 72-hour
+// listing, and FirstDeliveredAt must capture the original failure, not
+// whichever attempt happens to be newest.
+func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenState, cutoff time.Time) (failed []deliveryItem, newestAnsweredAt time.Time, earliestDeliveredAt map[string]time.Time, err error) {
 	url := sweeper.options.APIBaseURL + "/app/hook/deliveries?per_page=" + strconv.Itoa(perPage)
 	seen := make(map[string]bool)
 	seenURLs := make(map[string]bool)
+	earliestDeliveredAt = make(map[string]time.Time)
 	var latest []deliveryItem
 	for url != "" && len(seenURLs) < maxPages {
 		if seenURLs[url] {
@@ -392,12 +408,12 @@ func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenSt
 		}
 		seenURLs[url] = true
 		if err := sweeper.ensureToken(ctx, state); err != nil {
-			return nil, time.Time{}, err
+			return nil, time.Time{}, nil, err
 		}
 		var page []deliveryItem
 		next, getErr := sweeper.get(ctx, url, state.value, &page)
 		if getErr != nil {
-			return nil, time.Time{}, getErr
+			return nil, time.Time{}, nil, getErr
 		}
 		stop := false
 		for _, item := range page {
@@ -405,7 +421,13 @@ func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenSt
 				stop = true
 				break
 			}
-			if strings.TrimSpace(item.GUID) == "" || seen[item.GUID] {
+			if strings.TrimSpace(item.GUID) == "" {
+				continue
+			}
+			if existing, ok := earliestDeliveredAt[item.GUID]; !ok || item.DeliveredAt.Before(existing) {
+				earliestDeliveredAt[item.GUID] = item.DeliveredAt
+			}
+			if seen[item.GUID] {
 				continue
 			}
 			seen[item.GUID] = true
@@ -425,19 +447,35 @@ func (sweeper *Sweeper) listRecentDeliveries(ctx context.Context, state *tokenSt
 			failed = append(failed, item)
 		}
 	}
-	return failed, newestAnsweredAt, nil
+	return failed, newestAnsweredAt, earliestDeliveredAt, nil
 }
 
 // reachable reports whether the listing gives evidence the operator's
-// endpoint is answering at all, relative to one GUID's last recorded
-// attempt (the zero time for a GUID never attempted before, so any answered
-// delivery anywhere in the window counts, including the GUID's own latest
-// attempt). Without that evidence a redeliver call still goes out — the
-// delivery may succeed even though nothing else has — but it must not spend
-// one of MaxAttempts, or an outage longer than MaxAttempts intervals would
-// abandon a GUID for a reason that has nothing to do with that GUID.
-func reachable(newestAnsweredAt, lastAttemptAt time.Time) bool {
-	return newestAnsweredAt.After(lastAttemptAt)
+// endpoint is answering at all. Two independent checks feed it, either one
+// sufficient:
+//
+//   - cross-GUID: some other delivery's latest attempt was answered more
+//     recently than this GUID's own last recorded attempt (the zero time for
+//     a GUID never attempted before, so any answered delivery anywhere in
+//     the window counts).
+//   - self: this GUID's own latest listed attempt (item) was answered and is
+//     not the same attempt this hub already knew about (previousAttemptID).
+//     This is id-based rather than time-based on purpose: GitHub's
+//     delivered_at has whole-second resolution on GitHub's own clock, so
+//     comparing it against the hub's local, sub-second LastAttemptAt ties
+//     whenever a redeliver lands in the same second as the request that
+//     caused it — the common case, not a rare one. Two different attempt ids
+//     can never tie.
+//
+// Without evidence a redeliver call still goes out — the delivery may
+// succeed even though nothing else has — but it must not spend one of
+// MaxAttempts, or an outage longer than MaxAttempts intervals would abandon
+// a GUID for a reason that has nothing to do with that GUID.
+func reachable(newestAnsweredAt, lastAttemptAt time.Time, item deliveryItem, previousAttemptID int64) bool {
+	if newestAnsweredAt.After(lastAttemptAt) {
+		return true
+	}
+	return item.answered() && item.ID != previousAttemptID
 }
 
 // actOn redelivers each failed GUID, honoring these rules in order: an
@@ -452,7 +490,7 @@ func reachable(newestAnsweredAt, lastAttemptAt time.Time) bool {
 // (401/403/429/5xx, or a transport error) — GitHub's own per-delivery
 // rejection of a redeliver call (400/404/422) is counted, possibly
 // abandoned, narrated, and the loop continues to the next GUID.
-func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.Time, failed []deliveryItem, newestAnsweredAt time.Time) (redelivered, abandoned, uncounted int, err error) {
+func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.Time, failed []deliveryItem, newestAnsweredAt time.Time, earliestDeliveredAt map[string]time.Time) (redelivered, abandoned, uncounted int, err error) {
 	now = now.UTC()
 	for _, item := range failed {
 		record, found, loadErr := sweeper.options.Store.LoadWebhookRedelivery(ctx, item.GUID)
@@ -463,17 +501,19 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 			continue
 		}
 		var lastAttemptAt, firstDeliveredAt time.Time
+		var previousAttemptID int64
 		attempts := 0
 		if found {
 			lastAttemptAt = record.LastAttemptAt
 			firstDeliveredAt = record.FirstDeliveredAt
+			previousAttemptID = record.LastAttemptDeliveryID
 			attempts = record.Attempts
 		} else {
-			firstDeliveredAt = item.DeliveredAt
+			firstDeliveredAt = earliestDeliveredAt[item.GUID]
 		}
 
 		if now.Sub(firstDeliveredAt) > MaxDeliveryAge {
-			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 				return redelivered, abandoned, uncounted, storeErr(saveErr)
 			}
 			sweeper.narrate(item, now, "abandoned: older than 72h")
@@ -484,7 +524,7 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 			continue
 		}
 		if attempts >= MaxAttempts {
-			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: true, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 				return redelivered, abandoned, uncounted, storeErr(saveErr)
 			}
 			sweeper.narrate(item, now, fmt.Sprintf("abandoned after %d attempts", attempts))
@@ -492,11 +532,11 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 			continue
 		}
 
-		if !reachable(newestAnsweredAt, lastAttemptAt) {
+		if !reachable(newestAnsweredAt, lastAttemptAt, item, previousAttemptID) {
 			// No evidence the endpoint is answering at all: ask GitHub
 			// anyway (the delivery may succeed) but record only the
 			// gap-enforcing timestamp, never the spent attempt.
-			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+			if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 				return redelivered, abandoned, uncounted, storeErr(saveErr)
 			}
 			status, callErr := sweeper.redeliver(ctx, state, item.ID)
@@ -514,7 +554,7 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 		// between the save and the response can never grant a fourth real
 		// attempt.
 		nextAttempts := attempts + 1
-		if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+		if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: false, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 			return redelivered, abandoned, uncounted, storeErr(saveErr)
 		}
 		status, callErr := sweeper.redeliver(ctx, state, item.ID)
@@ -525,7 +565,7 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 				// about this GUID, so the pre-saved attempt above must not
 				// stand. LastAttemptAt still advances, so the gap rule still
 				// applies and a hammering retry loop cannot form.
-				if rollbackErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); rollbackErr != nil {
+				if rollbackErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: attempts, Abandoned: false, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); rollbackErr != nil {
 					return redelivered, abandoned, uncounted, storeErr(rollbackErr)
 				}
 			}
@@ -533,7 +573,7 @@ func (sweeper *Sweeper) actOn(ctx context.Context, state *tokenState, now time.T
 		}
 		if status == http.StatusBadRequest || status == http.StatusNotFound || status == http.StatusUnprocessableEntity {
 			if nextAttempts >= MaxAttempts {
-				if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: true, LastAttemptAt: now, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
+				if saveErr := sweeper.options.Store.SaveWebhookRedelivery(ctx, hub.WebhookRedeliveryRecord{GUID: item.GUID, Attempts: nextAttempts, Abandoned: true, LastAttemptAt: now, LastAttemptDeliveryID: item.ID, FirstDeliveredAt: firstDeliveredAt}); saveErr != nil {
 					return redelivered, abandoned, uncounted, storeErr(saveErr)
 				}
 				sweeper.narrate(item, now, fmt.Sprintf("abandoned after %d attempts (github rejected redelivery, status %d)", nextAttempts, status))

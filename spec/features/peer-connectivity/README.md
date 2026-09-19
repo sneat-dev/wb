@@ -449,17 +449,23 @@ On start and then hourly, a hub in webhook mode MUST do the following:
    per delivery, so a crash-loop restart cannot ask GitHub for the same
    delivery faster than the sweep's own cadence.
 4. Count an attempt against the 3-attempt limit only when the same listing
-   shows evidence the operator's endpoint is currently answering: some other
-   delivery, any GUID, that the hub itself answered — a success, or an
-   application-level rejection such as 401 or 503, but not a gateway or
-   tunnel non-answer — more recently than this delivery's own last attempt
-   (or, for a delivery never attempted before, any such answer at all within
-   the window). Without that evidence the hub still redelivers — the
-   delivery may succeed even though nothing else recently has — but does not
-   spend an attempt on it, so an outage longer than 3 sweep intervals cannot
-   exhaust the budget by itself. A delivery is retried again on later sweeps
-   while its latest attempt still fails, up to 3 counted attempts, and is
-   then narrated as abandoned.
+   shows evidence the operator's endpoint is currently answering: any
+   answered delivery, including this GUID's own latest attempt — a success,
+   or an application-level rejection such as 401 or 503, but not a gateway
+   or tunnel non-answer. A different GUID's evidence is judged by whether it
+   answered more recently than this delivery's own last attempt (or, for a
+   delivery never attempted before, any such answer at all within the
+   window); this GUID's own evidence is judged by whether its latest listed
+   attempt carries a different delivery attempt id than the one this hub
+   last acted on, not by comparing timestamps — GitHub's delivered_at is
+   whole seconds on GitHub's own clock, so a fast redeliver routinely lands
+   in the same second as the request that caused it, and a timestamp
+   comparison would lose that evidence every time. Without evidence the hub
+   still redelivers — the delivery may succeed even though nothing else
+   recently has — but does not spend an attempt on it, so an outage longer
+   than 3 sweep intervals cannot exhaust the budget by itself. A delivery is
+   retried again on later sweeps while its latest attempt still fails, up to
+   3 counted attempts, and is then narrated as abandoned.
 5. The 72-hour window in step 1 is measured from each delivery's OWN first
    delivery, not from its latest attempt: every redelivery gets a fresh
    `delivered_at`, so a delivery the hub never answers at all would otherwise
