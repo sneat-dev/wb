@@ -337,10 +337,6 @@ func TestAnnouncementHeartbeatKeepsALiveHolderFromAging(t *testing.T) {
 	}
 }
 
-// TestConcurrentReadersDoNotErrorWhileStaleEntriesAreReaped exercises the
-// race the review asked for directly: many goroutines calling Peek at once
-// while a dead-PID ticket is present must never panic or otherwise fail —
-// os.Remove losing the race to another reaper is expected and silent.
 // TestReadTicketsReapsAnOldOrphanedTempFile pins the re-review's Minor 4
 // finding: atomicWriteFile's hidden ".tmp-*" sibling can be left behind if
 // the writing process is killed between CreateTemp and Rename. A leftover
@@ -382,6 +378,10 @@ func TestReadTicketsReapsAnOldOrphanedTempFile(t *testing.T) {
 	}
 }
 
+// TestConcurrentReadersDoNotErrorWhileStaleEntriesAreReaped exercises the
+// race the review asked for directly: many goroutines calling Peek at once
+// while a dead-PID ticket is present must never panic or otherwise fail —
+// os.Remove losing the race to another reaper is expected and silent.
 func TestConcurrentReadersDoNotErrorWhileStaleEntriesAreReaped(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 5; i++ {

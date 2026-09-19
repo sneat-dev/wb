@@ -106,7 +106,7 @@ func Classify(argv []string) Kind {
 	case "nx":
 		return classifyNx(arguments)
 	case "npm", "pnpm", "yarn", "bun", "npx":
-		return classifyNodePackageManager(arguments)
+		return classifyNodePackageManager(tool, arguments)
 	case "cargo":
 		if hasAny(arguments, "test", "build", "check", "clippy") {
 			return KindBroad
@@ -241,7 +241,7 @@ func classifyNodeTestRunner(arguments []string) Kind {
 // `npx vitest run` with no workspace filter or file argument runs across
 // the whole workspace and is heavy; only an explicit --filter/-w/--scope
 // flag or a file/path argument narrows it to one package.
-func classifyNodePackageManager(arguments []string) Kind {
+func classifyNodePackageManager(tool string, arguments []string) Kind {
 	if len(arguments) == 0 {
 		return KindNone
 	}
@@ -251,18 +251,23 @@ func classifyNodePackageManager(arguments []string) Kind {
 	case "vitest", "jest", "mocha":
 		return classifyNodeTestRunner(arguments[1:])
 	}
-	if !hasAny(arguments, "test", "run", "build", "lint", "e2e", "affected") {
+	if !hasAnyScriptToken(arguments, "test", "run", "build", "lint", "e2e", "affected") {
 		return KindNone
 	}
-	// Review finding (PR #628 re-review, Minor 2): match whole tokens, not
-	// substrings of a joined command line — "pnpm test -- src/builder.
-	// spec.ts" must not classify broad merely because "builder.spec.ts"
-	// contains the substring "build".
-	if hasAny(arguments, "build", "e2e", "affected") {
+	// Review finding (PR #628 re-review round 3, Minor 2): match whole
+	// tokens, not substrings of a joined command line — "pnpm test --
+	// src/builder.spec.ts" must not classify broad merely because
+	// "builder.spec.ts" contains the substring "build". hasAnyScriptToken
+	// (review finding, round 4, Serious 2) additionally recognizes an
+	// npm/pnpm/yarn-style scoped script name like "build:prod" or
+	// "test:unit"/"test:ci" as matching its "build"/"test" keyword, so
+	// `npm run build:prod`, `pnpm run test:unit`, and `pnpm test:ci` are
+	// governed instead of falling through to KindNone.
+	if hasAnyScriptToken(arguments, "build", "e2e", "affected") {
 		return KindBroad
 	}
-	if hasAny(arguments, "test", "lint") {
-		if hasNodeWorkspaceScope(arguments) {
+	if hasAnyScriptToken(arguments, "test", "lint") {
+		if hasNodeWorkspaceScope(tool, arguments) {
 			return KindFocused
 		}
 		return KindBroad
@@ -270,20 +275,43 @@ func classifyNodePackageManager(arguments []string) Kind {
 	return KindNone
 }
 
+// hasAnyScriptToken reports whether arguments contains a token that is
+// exactly one of targets, or an npm/pnpm/yarn-style scoped script name
+// beginning with "target:" (e.g. "build:prod", "test:unit", "test:ci").
+// Review finding (PR #628 re-review round 4, Serious 2): plain token
+// equality (hasAny) left `npm run build:prod`, `pnpm run test:unit`, and
+// `pnpm test:ci` classified as KindNone (ungoverned), since none of
+// "build:prod"/"test:unit"/"test:ci" equals "build"/"test" exactly.
+func hasAnyScriptToken(arguments []string, targets ...string) bool {
+	for _, argument := range arguments {
+		for _, target := range targets {
+			if argument == target || strings.HasPrefix(argument, target+":") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // hasNodeWorkspaceScope reports whether arguments carry an explicit
 // workspace/filter flag or a file/path argument that narrows an npm/pnpm/
-// yarn/bun/npx invocation to less than the whole workspace. Review finding
-// (PR #628 re-review, Minor 2): bare `-w` (pnpm's `--workspace-root`
-// shorthand) does the opposite of narrowing — `pnpm -w test` runs the
-// whole suite from the workspace root — so it is deliberately not treated
-// as a scoping flag here, unlike npm's `--workspace=<name>`/`--workspace
-// <name>`, which does name one specific workspace.
-func hasNodeWorkspaceScope(arguments []string) bool {
-	for _, argument := range arguments {
+// yarn/bun/npx invocation to less than the whole workspace. tool
+// disambiguates bare "-w", whose meaning is package-manager-specific
+// (review finding, PR #628 re-review round 4, Minor 1): npm's `-w <name>`
+// (equivalent to `--workspace <name>`/`--workspace=<name>`) names one
+// specific workspace and narrows scope, so `npm -w foo test` is focused —
+// but pnpm's bare `-w` (short for `--workspace-root`, taking no value)
+// does the opposite: `pnpm -w test` runs the whole suite from the
+// workspace root. Treating every package manager's `-w` the same way
+// wrongly classified `npm -w foo test` as broad.
+func hasNodeWorkspaceScope(tool string, arguments []string) bool {
+	for index, argument := range arguments {
 		lower := strings.ToLower(argument)
 		switch {
 		case lower == "--filter", lower == "--workspace", lower == "--scope",
 			strings.HasPrefix(lower, "--filter="), strings.HasPrefix(lower, "--workspace="), strings.HasPrefix(lower, "--scope="):
+			return true
+		case lower == "-w" && tool == "npm" && index+1 < len(arguments):
 			return true
 		case strings.Contains(argument, "/"), strings.HasSuffix(argument, ".ts"), strings.HasSuffix(argument, ".js"):
 			return true
@@ -552,8 +580,8 @@ func RegisterForAdmission(projectsRoot string, argv []string, self Participant) 
 }
 
 // Admit requests to run argv under the admission policy designed for
-// sneat-dev/wb#621 (lead design, formalizing the founder's messages on the
-// issue):
+// sneat-dev/wb#621 (lead design, formalizing the founder's messages
+// relayed during implementation):
 //
 //   - KindNone is a no-op: Units 0, nothing to release, no wait.
 //   - KindFocused is admitted immediately with its fixed share

@@ -423,3 +423,56 @@ func TestReadHeavyHoldersReapsACrashedHolder(t *testing.T) {
 		t.Fatalf("fresh admission after a crashed holder = %d units, want 18 (whole machine)", admission.Units)
 	}
 }
+
+// TestExternalHeartbeatTickerJoinedBeforeReleaseLeavesNoGhostHolder pins
+// the round-4 re-review's Serious 1 finding on cmd/wb/run.go's own
+// "still running" ticker — a second, caller-managed heartbeat goroutine
+// distinct from Lease's internal self-heartbeat (armHeartbeat) that
+// Release's heartbeatDone wait cannot know about or wait for on its own.
+// Before this round, run.go's ticker called lease.Heartbeat() itself and
+// was never joined before the deferred lease.Release() ran; the reviewer's
+// probe left a ghost heavy holder file (Heartbeat's atomicWriteFile
+// renaming it back into existence just after Release's removeHeavyHolder
+// deleted it) in 241 of 300 runs. The fix removed run.go's Heartbeat()
+// call and, independently, joined its ticker goroutine before proceeding;
+// this test pins the general safe pattern any caller-managed heartbeat
+// ticker must follow — join it, so it can never still be mid-Heartbeat()
+// when Release runs — with a 1-microsecond ticker so the race would
+// reproduce reliably rather than depending on 300-run timing luck.
+func TestExternalHeartbeatTickerJoinedBeforeReleaseLeavesNoGhostHolder(t *testing.T) {
+	defer SetNumCPUForTest(18)()
+	root := t.TempDir()
+	for i := 0; i < 200; i++ {
+		self := heavyTestParticipant("external-ticker")
+		ticket := RegisterForAdmission(root, broadArgv, self)
+		admission, err := Admit(context.Background(), root, broadArgv, self, ticket)
+		ticket.Forget()
+		if err != nil {
+			t.Fatalf("iteration %d: Admit = %v", i, err)
+		}
+
+		done := make(chan struct{})
+		tickerDone := make(chan struct{})
+		go func() {
+			defer close(tickerDone)
+			ticker := time.NewTicker(time.Microsecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					admission.Lease.Heartbeat()
+				}
+			}
+		}()
+		time.Sleep(50 * time.Microsecond) // let at least one tick land
+		close(done)
+		<-tickerDone // join before Release, matching run.go's fixed shape
+		admission.Lease.Release()
+
+		if holders := readHeavyHolders(root); len(holders) != 0 {
+			t.Fatalf("iteration %d: holder file still present after Release: %v", i, holders)
+		}
+	}
+}

@@ -138,6 +138,12 @@ func TestClassifyFixesReReviewMinor2Findings(t *testing.T) {
 		{"mocha --config value is not a scoping path", []string{"mocha", "--config", ".mocharc.yml"}, KindBroad},
 		{"vitest --project value is not a scoping path", []string{"vitest", "--project", "core"}, KindBroad},
 		{"pnpm test -- a spec file is focused despite containing \"build\"", []string{"pnpm", "test", "--", "src/builder.spec.ts"}, KindFocused},
+		{"npm run build:prod is governed, not KindNone", []string{"npm", "run", "build:prod"}, KindBroad},
+		{"pnpm run test:unit is governed, not KindNone", []string{"pnpm", "run", "test:unit"}, KindBroad},
+		{"pnpm test:ci is governed, not KindNone", []string{"pnpm", "test:ci"}, KindBroad},
+		{"a bare spec-file argument alone still does not match", []string{"pnpm", "src/builder.spec.ts"}, KindNone},
+		{"npm -w foo test is focused (npm's -w names one workspace)", []string{"npm", "-w", "foo", "test"}, KindFocused},
+		{"pnpm -w test is still broad (pnpm's bare -w is the workspace root)", []string{"pnpm", "-w", "test"}, KindBroad},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -148,13 +154,6 @@ func TestClassifyFixesReReviewMinor2Findings(t *testing.T) {
 	}
 }
 
-// TestSmallMachineFocusedJobWaitsForRoom pins the S2 fix directly through
-// Admit: on a small machine (numCPU < 8) a focused job is not exempt from
-// budget admission the way it is on a large machine (see
-// TestFocusedJobsNeverWaitBehindHeavyOnes) — it goes through the same
-// budget-sum Acquire pool as every other small-machine job and waits its
-// turn when the whole budget is already held. Review finding (PR #628,
-// M8).
 // TestRegisterForAdmissionMakesSmallMachineFocusedJobsVisible pins the
 // re-review's Minor 1 finding: RegisterForAdmission returned nil for
 // KindFocused unconditionally, even on a small machine, where a focused
@@ -193,6 +192,13 @@ func TestRegisterForAdmissionMakesSmallMachineFocusedJobsVisible(t *testing.T) {
 	})
 }
 
+// TestSmallMachineFocusedJobWaitsForRoom pins the S2 fix directly through
+// Admit: on a small machine (numCPU < 8) a focused job is not exempt from
+// budget admission the way it is on a large machine (see
+// TestFocusedJobsNeverWaitBehindHeavyOnes) — it goes through the same
+// budget-sum Acquire pool as every other small-machine job and waits its
+// turn when the whole budget is already held. Review finding (PR #628,
+// M8).
 func TestSmallMachineFocusedJobWaitsForRoom(t *testing.T) {
 	defer SetNumCPUForTest(4)()
 	root := t.TempDir()

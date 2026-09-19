@@ -284,8 +284,26 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 
 	if err = child.Start(); err == nil {
 		done := make(chan struct{})
-		if units > 0 || interactive {
+		// progressDone closes only once the goroutine below (when started)
+		// has fully returned — not merely once `done` is closed, which a
+		// select can race against an already-dispatched tick. Review
+		// finding (PR #628 re-review round 4, Serious 1): this goroutine
+		// used to call lease.Heartbeat() itself, racing Lease.Release's
+		// own cleanup (a heartbeat write already in flight when the child
+		// exited could still land after Release ran extraRelease — a
+		// genuine data race on the legacy pool, and a resurrected "ghost"
+		// heavy holder file, reproduced by the reviewer in 241 of 300
+		// runs). The holder record is refreshed by the Lease's own
+		// background self-heartbeat (runqueue.Lease.armHeartbeat, started
+		// automatically at admission) regardless of whether this goroutine
+		// runs at all, so it must never touch lease itself — it is now a
+		// courtesy print only, and joined before Release runs regardless,
+		// so no write to cmd.ErrOrStderr() can outlive this function's own
+		// use of it either.
+		progressDone := make(chan struct{})
+		if interactive {
 			go func() {
+				defer close(progressDone)
 				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
 				for {
@@ -293,21 +311,16 @@ func runExternalCommand(cmd *cobra.Command, args []string, configPath string, al
 					case <-done:
 						return
 					case <-ticker.C:
-						// Refresh the holder record on every tick so a
-						// long-running command never ages past staleAfter
-						// and gets reaped by another WB process as if it
-						// had died; the "still running" line is a separate,
-						// interactive-only courtesy on the same cadence.
-						lease.Heartbeat()
-						if interactive {
-							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
-						}
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
 					}
 				}
 			}()
+		} else {
+			close(progressDone)
 		}
 		err = child.Wait()
 		close(done)
+		<-progressDone
 	}
 	exitCode := 0
 	if err != nil {
