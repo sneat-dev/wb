@@ -214,6 +214,13 @@ func TestPaneSendTextEmptyPaneID(t *testing.T) {
 	}
 }
 
+func TestPaneSendTextRejectsLeadingHyphenPaneID(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if err := client.PaneSendText(context.Background(), "-x", "hi"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("PaneSendText(paneID starting with -) error = %v, want ErrUnknownTarget", err)
+	}
+}
+
 func TestPaneSendTextRejectsInvalidText(t *testing.T) {
 	client := newTestClient(t, newFakeRunner(t))
 	if err := client.PaneSendText(context.Background(), "w1:p2", "two\nlines"); !errors.Is(err, ErrInvalidPromptText) {
@@ -243,6 +250,13 @@ func TestPaneGetEmptyID(t *testing.T) {
 	client := newTestClient(t, newFakeRunner(t))
 	if _, err := client.PaneGet(context.Background(), ""); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("PaneGet(\"\") error = %v, want ErrUnknownTarget", err)
+	}
+}
+
+func TestPaneGetRejectsLeadingHyphenID(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if _, err := client.PaneGet(context.Background(), "-x"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("PaneGet(paneID starting with -) error = %v, want ErrUnknownTarget", err)
 	}
 }
 

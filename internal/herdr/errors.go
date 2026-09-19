@@ -15,8 +15,12 @@ var (
 	// no herdr server is running behind it.
 	ErrServerUnreachable = errors.New("herdr: socket unreachable or server not running")
 
-	// ErrUnknownTarget means herdr rejected a pane, agent, workspace or tab
-	// target because it does not (or no longer) exists.
+	// ErrUnknownTarget means either herdr rejected a pane, agent, workspace
+	// or tab target because it does not (or no longer) exists, or this
+	// package refused to ask herdr at all because the target/pane id
+	// argument was empty or began with "-" (see [ValidateTarget]) — a
+	// value herdr's CLI parser could parse as a flag rather than
+	// positional text.
 	ErrUnknownTarget = errors.New("herdr: unknown target")
 
 	// ErrUnsupportedVersion means the resolved herdr binary reports a

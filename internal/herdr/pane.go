@@ -72,8 +72,8 @@ func (c *Client) PaneList(ctx context.Context, workspaceID string) ([]Pane, erro
 
 // PaneGet reports one pane by ID, via `herdr pane get <pane_id>`.
 func (c *Client) PaneGet(ctx context.Context, paneID string) (Pane, error) {
-	if paneID == "" {
-		return Pane{}, fmt.Errorf("%w: pane id is empty", ErrUnknownTarget)
+	if err := ValidateTarget("pane id", paneID); err != nil {
+		return Pane{}, err
 	}
 	result, err := c.call(ctx, "pane", "get", paneID)
 	if err != nil {
@@ -96,8 +96,8 @@ func (c *Client) PaneGet(ctx context.Context, paneID string) (Pane, error) {
 // character, so a caller can never smuggle extra lines into a live pane
 // through this call either.
 func (c *Client) PaneSendText(ctx context.Context, paneID, text string) error {
-	if paneID == "" {
-		return fmt.Errorf("%w: pane id is empty", ErrUnknownTarget)
+	if err := ValidateTarget("pane id", paneID); err != nil {
+		return err
 	}
 	if err := ValidatePromptText(text); err != nil {
 		return err

@@ -115,6 +115,13 @@ func TestAgentGetEmptyTarget(t *testing.T) {
 	}
 }
 
+func TestAgentGetRejectsLeadingHyphenTarget(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if _, err := client.AgentGet(context.Background(), "-x"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("AgentGet(target starting with -) error = %v, want ErrUnknownTarget", err)
+	}
+}
+
 func TestAgentGetNotFound(t *testing.T) {
 	runner := newFakeRunner(t).on([]string{"agent", "get", "nonexistent-target-xyz"}, fakeCall{
 		stdout: mustReadTestdata(t, "error_agent_not_found.json"),
@@ -159,6 +166,13 @@ func TestAgentReadEmptyTarget(t *testing.T) {
 	client := newTestClient(t, newFakeRunner(t))
 	if _, err := client.AgentRead(context.Background(), "", ReadSourceVisible); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("AgentRead(\"\") error = %v, want ErrUnknownTarget", err)
+	}
+}
+
+func TestAgentReadRejectsLeadingHyphenTarget(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if _, err := client.AgentRead(context.Background(), "-x", ReadSourceVisible); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("AgentRead(target starting with -) error = %v, want ErrUnknownTarget", err)
 	}
 }
 
@@ -207,6 +221,9 @@ func TestAgentPromptRejectsInvalidText(t *testing.T) {
 	if err := client.AgentPrompt(context.Background(), "", "hello"); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("AgentPrompt(target=\"\") error = %v, want ErrUnknownTarget", err)
 	}
+	if err := client.AgentPrompt(context.Background(), "-x", "hello"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("AgentPrompt(target starting with -) error = %v, want ErrUnknownTarget", err)
+	}
 }
 
 func TestAgentPromptRejectsLeadingHyphen(t *testing.T) {
@@ -248,6 +265,9 @@ func TestAgentSendKeysValidatesEveryKey(t *testing.T) {
 	if err := client.AgentSendKeys(context.Background(), "", "esc"); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("AgentSendKeys(target=\"\") error = %v, want ErrUnknownTarget", err)
 	}
+	if err := client.AgentSendKeys(context.Background(), "-x", "esc"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("AgentSendKeys(target starting with -) error = %v, want ErrUnknownTarget", err)
+	}
 	if err := client.AgentSendKeys(context.Background(), "reviewer"); !errors.Is(err, ErrInvalidKeyName) {
 		t.Fatalf("AgentSendKeys(no keys) error = %v, want ErrInvalidKeyName", err)
 	}
@@ -271,6 +291,13 @@ func TestAgentWaitEmptyTarget(t *testing.T) {
 	client := newTestClient(t, newFakeRunner(t))
 	if _, err := client.AgentWait(context.Background(), ""); !errors.Is(err, ErrUnknownTarget) {
 		t.Fatalf("AgentWait(\"\") error = %v, want ErrUnknownTarget", err)
+	}
+}
+
+func TestAgentWaitRejectsLeadingHyphenTarget(t *testing.T) {
+	client := newTestClient(t, newFakeRunner(t))
+	if _, err := client.AgentWait(context.Background(), "-x"); !errors.Is(err, ErrUnknownTarget) {
+		t.Fatalf("AgentWait(target starting with -) error = %v, want ErrUnknownTarget", err)
 	}
 }
 

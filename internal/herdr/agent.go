@@ -43,8 +43,8 @@ func (c *Client) AgentList(ctx context.Context) ([]Agent, error) {
 // AgentGet reports one agent by its unique live name or the pane ID
 // currently hosting it, via `herdr agent get <target>`.
 func (c *Client) AgentGet(ctx context.Context, target string) (Agent, error) {
-	if target == "" {
-		return Agent{}, fmt.Errorf("%w: agent target is empty", ErrUnknownTarget)
+	if err := ValidateTarget("agent target", target); err != nil {
+		return Agent{}, err
 	}
 	result, err := c.call(ctx, "agent", "get", target)
 	if err != nil {
@@ -67,8 +67,8 @@ func (c *Client) AgentGet(ctx context.Context, target string) (Agent, error) {
 // fixtures only, defensively enough that an unexpected real shape becomes
 // [ErrUnparseableOutput] rather than a wrong answer.
 func (c *Client) AgentRead(ctx context.Context, target string, source ReadSource) (ScreenText, error) {
-	if target == "" {
-		return ScreenText{}, fmt.Errorf("%w: agent target is empty", ErrUnknownTarget)
+	if err := ValidateTarget("agent target", target); err != nil {
+		return ScreenText{}, err
 	}
 	result, err := c.call(ctx, "agent", "read", target, "--source", source.cliArg())
 	if err != nil {
@@ -91,8 +91,8 @@ func (c *Client) AgentRead(ctx context.Context, target string, source ReadSource
 // exactly what makes this call binding on whoever reads target's pane,
 // which is a decision for this package's caller, not for this method.
 func (c *Client) AgentPrompt(ctx context.Context, target, text string) error {
-	if target == "" {
-		return fmt.Errorf("%w: agent target is empty", ErrUnknownTarget)
+	if err := ValidateTarget("agent target", target); err != nil {
+		return err
 	}
 	if err := ValidatePromptText(text); err != nil {
 		return err
@@ -106,8 +106,8 @@ func (c *Client) AgentPrompt(ctx context.Context, target, text string) error {
 // Every key must pass [ValidateKeyName]; this method never forwards
 // arbitrary text as a "key".
 func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...string) error {
-	if target == "" {
-		return fmt.Errorf("%w: agent target is empty", ErrUnknownTarget)
+	if err := ValidateTarget("agent target", target); err != nil {
+		return err
 	}
 	if len(keys) == 0 {
 		return fmt.Errorf("%w: at least one key is required", ErrInvalidKeyName)
@@ -136,8 +136,8 @@ func (c *Client) AgentSendKeys(ctx context.Context, target string, keys ...strin
 // report — and decoded defensively enough that a different real shape
 // becomes [ErrUnparseableOutput], never a panic or a silently wrong Agent.
 func (c *Client) AgentWait(ctx context.Context, target string, until ...AgentStatus) (Agent, error) {
-	if target == "" {
-		return Agent{}, fmt.Errorf("%w: agent target is empty", ErrUnknownTarget)
+	if err := ValidateTarget("agent target", target); err != nil {
+		return Agent{}, err
 	}
 	args := []string{"agent", "wait", target}
 	for _, status := range until {

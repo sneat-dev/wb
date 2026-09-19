@@ -24,14 +24,17 @@ func prependToPATH(t *testing.T, directory string) {
 // resolution already makes the fake script win, and the fake script never
 // reads these variables — but if any of that ever regressed, a child
 // process must still be unable to reach the real server or address a real
-// pane: HERDR_SOCKET_PATH is pointed at a socket that cannot exist, and
-// the pane/tab/workspace IDs are cleared.
+// pane, session, or client socket: every ambient identity variable this
+// package knows about (see ambientIdentityEnvVars in runner.go) is
+// cleared or pointed at something that cannot exist.
 func neutralizeAmbientHerdr(t *testing.T) {
 	t.Helper()
 	t.Setenv(envSocketPath, filepath.Join(t.TempDir(), "unreachable-by-construction.sock"))
 	t.Setenv(envPaneID, "")
 	t.Setenv(envTabID, "")
 	t.Setenv(envWorkspaceID, "")
+	t.Setenv(envSession, "")
+	t.Setenv(envClientSocketPath, "")
 }
 
 // fakeHerdrScript is a POSIX shell script standing in for the real herdr
