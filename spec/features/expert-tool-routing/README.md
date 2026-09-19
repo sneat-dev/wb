@@ -14,11 +14,10 @@ status: Draft
 ## Summary
 
 Agents use the cheapest tool for the job because the message arrives from
-several angles: a one-line principle, a job-to-tool router shipped as data,
-trigger-phrase skill descriptions, a point-of-use nudge, a `Tools:` block when
-work starts, WB verbs that call the expert tool themselves, and an efficient
-path that is always present. Adoption is measured. WB owns the router data
-and the mechanism; the normative rule lives in a rules repository outside wb.
+several angles: a principle, a job-to-tool router as data, trigger-phrase
+skill descriptions, a point-of-use nudge, a `Tools:` block, WB verbs that call
+expert tools themselves, and an always-present efficient path, with adoption
+measured. WB owns data and mechanism; the rule lives outside wb.
 
 ## Problem
 
@@ -88,14 +87,14 @@ Other tools' skills are tracked by issue (codegrapher #48).
 ### REQ: point-of-use-nudge
 
 `wb hooks agent pre-tool-use` MUST support an expert-tool nudge behind
-`agent_guard.nudges.expert_tools: off|on` in the trusted user `wb.yaml`,
-default `off` (open decision 7). The key lives in `wb.yaml`, whose top level
-is not strictly decoded, rather than in the strictly decoded hooks policy's
-`agent:` section, so an older wb ignores it. It changes the guard's matcher
-(on adds `Grep`), so it takes effect through `wb hooks agent install`, and
-machine-setup's `agent-guard` item reports drift when they disagree. For a Bash `grep`/`rg`, or a native `Grep` call, whose
-pattern is identifier-shaped, in a repository where a routed row's executor
-is `fresh` in the checkout or in its canonical clone, the guard MUST emit only
+`agent_guard.nudges.expert_tools: off|on` in the trusted user `wb.yaml`
+(default `off`, open decision 7); `wb.yaml`'s top level is not strictly
+decoded, unlike the hooks policy's `agent:` section, so older wb ignores it.
+Turning it on adds `Grep` to the guard's matcher through
+`wb hooks agent install`; machine-setup's `agent-guard` item reports drift
+when they disagree. For a Bash `grep`/`rg` or native `Grep` call with an
+identifier-shaped pattern, in a repository where a routed row's executor is
+`fresh` in the checkout or its canonical clone, the guard MUST emit only
 `hookSpecificOutput.additionalContext` naming the row (with `-p <canonical
 clone>` when only the canonical index is fresh) and MUST NOT emit
 `permissionDecision`, so the user's normal permission prompt is unchanged.
@@ -126,11 +125,15 @@ narrowed by `check.test_selection` in the trusted user `wb.yaml`
 (`{run, args, timeout, gated_by: <lifecycle executor>}`), written by
 machine-setup's `selector:<cli>` item. It lives outside `hooks:`, so it is
 not a lifecycle executor and not versioned with it; `run` passes the trust
-checks of trusted-repository-update-hooks#req:generic-executors. Contract:
-stdin, changed paths one per line; stdout, a JSON array of Go package
-patterns; exit `0`. WB MUST fall back to full scope, stating why, when the
-`gated_by` executor is not `fresh` in this checkout, or the selector fails,
-times out or returns nothing. JSON output and `check.yaml` (under
+checks and gets the minimal environment of
+trusted-repository-update-hooks#req:generic-executors, plus `WB_CHECKOUT` and
+`WB_BASE_SHA`. Contract: stdin, changed paths one per line; stdout, a JSON
+array of package patterns, each `./…`-relative or an import path inside the
+module; exit `0`. WB MUST fall back to full scope, stating why, when the
+`gated_by` executor is not `fresh` in this checkout (so in worktrees until
+worktree bindings are enabled, open decision 6), or the selector fails, times
+out, returns nothing, or returns a pattern outside the module or starting
+with `-`. JSON output and `check.yaml` (under
 `--report-dir`) record `selection: graph|full` and the reason. CI keeps full
 scope.
 
@@ -277,8 +280,6 @@ counts and contains no transcript text.
 
 ## Delivery Slices
 
-Each slice is one PR and ships with the ACs named.
-
 1. Router data and docs, the principle pointer, `routes[]` and `--routes`,
    the trigger-phrase test — principle-pointer-present, router-searchable,
    skill-trigger-guard.
@@ -287,14 +288,12 @@ Each slice is one PR and ships with the ACs named.
 4. After decision 7 — nudge-off-by-default, nudge-is-context-only-and-once,
    no-nudge-without-fresh-index, followed-is-recorded.
 5. `wb check --changed` — graph-selection-falls-back.
-6. efficient-path-drift-reported ships with machine-setup slice 1.
+   (efficient-path-drift-reported ships with machine-setup slice 1.)
 
 ## Open Questions
 
-- **Nudges (open decision 7).** Recommendation: allow them once the
-  canonical-index fallback ships, so a nudge never points at a missing index.
-- The 10:1 adoption threshold is a placeholder; should `--changed` selection
-  run in CI once its recall is proven?
+- **Nudges (open decision 7):** allow once the canonical-index fallback ships.
+- Is 10:1 the right adoption threshold? Should `--changed` run in CI later?
 
 ---
 *This document follows the https://specscore.md/feature-specification*

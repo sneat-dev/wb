@@ -101,13 +101,16 @@ Every path an item writes MUST be resolved on the machine running it:
 `wb setup` MUST write `hooks.version: 2` keys
 (trusted-repository-update-hooks#req:version-2-extensions) only when every
 executable that reads that config supports them: the PATH-first `wb` (as the
-hook shims resolve it), `WB_EXECUTABLE` when set, and the daemon's recorded
-executable read from its state file without contacting the daemon. Support
-means the version `<exe> version --format json` reports is a release at or
-above a constant compiled into wb; a development, unparsable or missing
-version is unsupported. Otherwise setup writes a version-1 config and reports
-`deferred-version-skew`, naming each older executable and its remedy.
-Shadowed `wb` copies are notes, never inputs.
+hook shims resolve it) and `WB_EXECUTABLE` when set, each by the version
+`<exe> version --format json` reports; and the running daemon, by
+`provenance.version` in its state file, read without contacting it. If the
+binary now at the daemon's recorded executable reports a different version,
+the daemon runs older code and counts as unsupported until
+`wb daemon restart`. Support means a release at or above a constant compiled
+into wb; a development, unparsable or missing version is unsupported.
+Otherwise setup writes a version-1 config and reports
+`deferred-version-skew`, naming each executable and its remedy. Shadowed
+`wb` copies are notes, never inputs.
 
 ### REQ: check-is-offline-and-read-only
 
@@ -181,11 +184,11 @@ modification time, no receipt is written, and every item reports `ok`.
 
 **Requirements:** machine-setup#req:check-is-offline-and-read-only
 
-**Given** a converged Linux machine whose excludes file lost the codegrapher
-entry's declared glob, and a running daemon
+**Given** a converged Linux machine whose guard registration was removed, and
+a running daemon
 **When** the user runs `strace -f -e trace=connect wb setup --check --format json`
 from outside any worktree, and again from inside one
-**Then** both exit `1` with `gitignore:codegrapher` as `drift`; the trace has
+**Then** both exit `1` with `agent-guard:claude` as `drift`; the trace has
 no `connect` to an `AF_INET`/`AF_INET6` address or to the daemon's socket;
 no file changes, including the heartbeat. On macOS and Windows, the same
 command with networking disabled produces the same output.
@@ -204,12 +207,11 @@ exits `0` on both.
 
 **Requirements:** machine-setup#req:per-machine-resolution, machine-setup#req:version-skew
 
-**Given** specscore first on `PATH` with a second copy off `PATH`; an older
-`wb` shadowed behind the PATH-first one; and, separately, codegrapher only in
-two directories, neither on `PATH`
+**Given** specscore first on `PATH` with a second copy off `PATH`; and,
+separately, codegrapher only in two directories, neither on `PATH`
 **When** the user runs `wb setup --format json` in each case
-**Then** the first reports `cli:specscore` `ok` and the lifecycle item not
-deferred, each with a `shadowed` note; the second reports `ambiguous` for
+**Then** the first reports `cli:specscore` `ok` with a `shadowed` note and
+exits `0`; the second reports `ambiguous` for
 path-writing items, names `--prefer`, writes nothing for them and exits `1`;
 rerunning with `--prefer codegrapher=<path>` converges.
 
@@ -229,13 +231,16 @@ the symlink, which stays a symlink, and leaves a timestamped backup.
 
 **Requirements:** machine-setup#req:version-skew, machine-setup#req:scope-and-backfill
 
-**Given** a daemon whose recorded executable is a wb release below the
-version-2 constant, and separately `WB_EXECUTABLE` pointing at a development
-build
+**Given**, in turn: a daemon whose `provenance.version` is below the
+version-2 constant although its on-disk binary was since upgraded;
+`WB_EXECUTABLE` pointing at a development build; and an older `wb` shadowed
+behind a supported PATH-first `wb`
 **When** the user runs `wb setup` in each case
-**Then** `wb.yaml` contains no version-2 key, no backfill is queued, the
-lifecycle and backfill items report `deferred-version-skew` naming that
-executable, `<that exe> hooks lifecycle check` exits `0`, and setup exits `1`.
+**Then** in the first two, `wb.yaml` has no version-2 key, no backfill is
+queued, the lifecycle and backfill items report `deferred-version-skew`
+naming the daemon (with `wb daemon restart`) or the executable, and setup
+exits `1`; in the third, version-2 keys are written and the older copy is a
+`shadowed` note.
 
 ### AC: nothing-published
 
@@ -265,8 +270,6 @@ each naming the offending flag.
 **Then** it finds no match.
 
 ## Delivery Slices
-
-Each slice is one PR and ships with the ACs named.
 
 1. `cli:*`, `agent-guard:*`, `skills:` via `wb skills sync`, `daemon` from
    its state file; no catalog dependency — check-is-offline,

@@ -10,6 +10,7 @@ status: Draft
 **Source Ideas:** —
 **Related Ideas:** [graph-assisted-fleet-optimization](../../ideas/graph-assisted-fleet-optimization.md) (Draft; not promoted by this Feature)
 **Depends On:** [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) (amended there by `version-2-extensions`)
+**Related:** [Machine Setup](../machine-setup/README.md) installs the profile and executor; [Disk Reclaim](../disk-reclaim/README.md) enforces the artifacts budget; [Expert Tool Routing](../expert-tool-routing/README.md) consumes freshness.
 
 ## Summary
 
@@ -28,20 +29,17 @@ The founder: "Wb should update graphs on pull, merge, commit, etc."
 
 `checkout-updated` is emitted today by `wb sync`, daemon repository-event
 sync, the canonical fast-forward of `wb pr land`, `wb pr create --land` and
-`wb worktree merge`/`wb land`, and explicit `wb hooks lifecycle backfill`. It
-is not emitted when an agent or person runs `git pull`, `merge`, `commit`,
-`rebase` or `checkout` directly, when `wb worktree create` makes a checkout,
-or when `wb stream` rebases a stream branch. No worktree has ever had an
-index. The 2026-09-18 SDLC logging-gap analysis counted 3,015 symbol greps
+`wb worktree merge`/`wb land`, and `wb hooks lifecycle backfill`; not by
+direct `git` moves, `wb worktree create` or `wb stream`. No worktree has an
+index; the 2026-09-18 SDLC logging-gap analysis counted 3,015 symbol greps
 against 0 codegrapher analysis calls in a week. On wb, `codegrapher init`
 costs 52 s wall, 41 s CPU and 134 MB; an incremental `sync` 3.3 s.
 
-**Sequencing.** WB's own verbs already keep canonical clones fresh, and a
-worktree can query its canonical clone's index at no cost (option 0 below).
-So option 0 ships first, through the router in
-[Expert Tool Routing](../expert-tool-routing/README.md). The Git-hook profile
-mainly adds freshness after a person's direct `git pull` in a canonical clone
-until worktree indexing is decided.
+**Sequencing.** WB's verbs already keep canonical clones fresh and a worktree
+can query its canonical clone's index (option 0 below), so option 0 ships
+first, through [Expert Tool Routing](../expert-tool-routing/README.md). Until
+worktree indexing is decided, the Git-hook profile mainly covers a person's
+direct `git pull` in a canonical clone.
 
 ## Behavior
 
@@ -59,8 +57,17 @@ the first parent of `HEAD` for `post-commit` (empty for a root commit; not
 the pre-move `HEAD` during amend or rebase), the first `post-rewrite` stdin
 pair's old SHA. `post-checkout` emits only for branch checkouts (third
 argument `1`) that changed `HEAD`. Opting out (`profiles.exclude:
-[lifecycle]`) is the user's own policy write and is visible to
-`wb hooks check`.
+[lifecycle]`) is the user's own policy write; releases before `lifecycle`
+cannot decode it and fail closed on `pre-commit`/`pre-push`, so
+`wb hooks check` warns when it is set and an older `wb` is first on `PATH`.
+
+Rollout: for one release after `lifecycle` ships, `wb hooks check`, the
+stream preflight and the fleet rollup report a missing or stale
+default-profile shim as a note, not `hook-missing`/`hook-stale`;
+machine-setup's `git-hooks` item or `wb hooks repair --fleet` installs them.
+An older `wb` first on `PATH` exits `2` for an unknown post-* hook, which the
+shim maps to a warning. Every checkout, commit and merge now starts `wb`,
+even with no binding, within the budget below.
 
 ### REQ: verb-emission
 
@@ -127,17 +134,8 @@ receipt's new SHA equals `HEAD`), `stale` (it is an ancestor of `HEAD`;
 `git reset` or a force-moved branch), `pending` (queued or running),
 `failed`, or `never`, from receipts only; WB MUST NOT open an executor's
 artifacts. JSON: `lifecycle: [{executor, state, receipt_sha, head_sha,
-behind}]`. A stale, diverged or failed executor on a canonical clone counts
-as attention.
-
-## Interaction with Other Features
-
-| Feature | Interaction |
-|---|---|
-| [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) | Same event, trust model, queue and receipts; this Feature specifies the version-2 fields that Feature's amendment admits. |
-| [Machine Setup](../machine-setup/README.md) | Installs the `lifecycle` profile and writes the executor from the tool's catalog-declared template, with bounded backfill. |
-| [Disk Reclaim](../disk-reclaim/README.md) | Enforces the artifacts budget. |
-| [Expert Tool Routing](../expert-tool-routing/README.md) | Consumes freshness for nudges, the `wb create` Tools block and test selection. |
+behind}]`, `behind` null unless `stale`. A stale, diverged or failed
+executor on a canonical clone counts as attention.
 
 ## Acceptance Criteria
 
@@ -148,7 +146,7 @@ as attention.
 **Given** a canonical clone with the `lifecycle` profile and a binding whose
 executor appends `$WB_OLD_SHA $WB_NEW_SHA $WB_UPDATE_CAUSE` to a file
 **When** `git pull` fast-forwards `HEAD` from A to B
-**Then** within the quiet period plus 5 s the file holds exactly the line
+**Then** within 5 s (plus any quiet period) the file holds exactly the line
 `A B git:post-merge`, and `wb fleet status --format json` reports the
 executor `fresh` at B.
 
@@ -259,16 +257,15 @@ with `{"state":"stale","receipt_sha":"A","head_sha":"B","behind":3}`.
 
 ## Delivery Slices
 
-Each slice is one PR and ships with the ACs named.
-
 1. Freshness in `wb fleet status`, which is all option 0 needs —
    wb-stays-tool-agnostic and the staleness half of
    budget-and-staleness-visible.
-2. The `lifecycle` profile, the post-* exit-0 mapping and `notify` —
-   git-pull-refreshes, each-git-move-emits, root-commit-has-empty-old-sha,
+2. The `lifecycle` profile, the post-* exit-0 mapping, `notify` and the
+   rollout notes — git-pull-refreshes, root-commit-has-empty-old-sha,
    git-never-blocked-or-failed, notify-writes-at-most-the-enqueue.
-3. Version-2 fields, admission, checkout kinds, the artifacts budget and verb
-   emission — burst-coalesces, background-priority-and-admission,
+3. Version-2 fields (`quiet_period`, `causes[]`), admission, checkout kinds,
+   the artifacts budget and verb emission — each-git-move-emits,
+   burst-coalesces, background-priority-and-admission,
    existing-bindings-unchanged, verbs-emit-once, the budget half of
    budget-and-staleness-visible.
 
