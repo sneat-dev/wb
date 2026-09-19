@@ -76,13 +76,9 @@ PRICE_TABLE_BY_PREFIX: list = [
     ("claude-opus-5", _rates(5.00, 25.00)),
     ("claude-sonnet-5", _rates(2.00, 10.00)),
     ("claude-haiku-4-5", _rates(1.00, 5.00)),
-    # Fable 5.1 cache-read override: flat $0.25/MTok (0.025x input), not the
-    # standard 0.1x-of-input cache-read discount other families use here.
-    # This is a deliberate, founder-confirmed rate as of 2026-09-18 against
-    # the Claude API pricing reference -- round-2 review flagged the 0.1x
-    # alternative ($1.00/MTok) as a candidate, and it was declined in favor
-    # of keeping this flat $0.25/MTok figure. Do not "fix" this back to the
-    # 0.1x-of-input formula without re-confirming with the founder.
+    # Fable 5.1 cache read: $0.25/MTok per the Claude API pricing reference
+    # as read on 2026-09-18 (differs from the usual 0.1x rule; verify when
+    # updating prices).
     ("claude-fable-5-1", _rates(10.00, 50.00, cache_read_usd=0.25)),
     ("claude-fable-5", _rates(10.00, 50.00)),
     # older generations -- kept as an explicit fallback so an old transcript
