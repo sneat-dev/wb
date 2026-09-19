@@ -1383,8 +1383,11 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 		}
 	})
 
+	// Left serial relative to each other: both act on the same
+	// (MessageDirectionOutgoing, fixture.message.MessageID) entry, and
+	// "creates then reopens" would otherwise race "missing entry without
+	// create" into finding the entry it expects absent.
 	t.Run("missing entry without create", func(t *testing.T) {
-		t.Parallel()
 		directory, err := openMessageEntryAt(handoff, MessageDirectionOutgoing, fixture.message.MessageID, false)
 		if err == nil || !strings.Contains(err.Error(), "open message") {
 			t.Fatalf("missing entry error = %v (directory=%v)", err, directory)
@@ -1392,7 +1395,6 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 	})
 
 	t.Run("creates then reopens the entry", func(t *testing.T) {
-		t.Parallel()
 		created, err := openMessageEntryAt(handoff, MessageDirectionOutgoing, fixture.message.MessageID, true)
 		if err != nil {
 			t.Fatalf("create entry: %v", err)
