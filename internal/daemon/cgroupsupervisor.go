@@ -41,21 +41,45 @@ var systemdUserManagerUnit = regexp.MustCompile(`^user@[0-9]+\.service$`)
 //     it is not evidence that OUR unit is managing this process, so it is
 //     treated the same as no service membership at all.
 func ParseCgroupSupervisor(contents string, expectedUnit string) (Supervisor, bool) {
+	unit, known := ParseCgroupUnit(contents)
+	if !known {
+		return "", false
+	}
+	if unit == "" || unit != strings.TrimSpace(expectedUnit) {
+		return SupervisorNone, true
+	}
+	return SupervisorSystemd, true
+}
+
+// ParseCgroupUnit is ParseCgroupSupervisor's raw half: it returns the
+// unit-shaped last path component of the unified (cgroup v2 "0::") hierarchy
+// line, WITHOUT comparing it against any expected name — so a caller that
+// wants to know "what unit, if any, is this process actually in" (a daemon
+// recording its OWN unit at serve startup, sneat-dev/wb#622 review round 3
+// item M3) does not have to already know the name it is looking for, the way
+// ParseCgroupSupervisor's caller must.
+//
+// known=false only when there is no readable cgroup evidence at all (empty
+// input, or no "0::" line). known=true with unit="" means the process IS in
+// a cgroup, just not one shaped like a specific service unit: a component
+// that is not a service at all (an app.slice, a *.scope — the shape a
+// session scope, or a process merely reparented to PID 1, runs inside), or
+// the per-user manager's own unit (user@<uid>.service, which wraps every
+// process in the login session and confirms nothing about any specific
+// unit).
+func ParseCgroupUnit(contents string) (unit string, known bool) {
 	line, ok := unifiedCgroupLine(contents)
 	if !ok {
 		return "", false
 	}
 	component := lastPathComponent(line)
 	if component == "" || !strings.HasSuffix(component, ".service") {
-		return SupervisorNone, true
+		return "", true
 	}
 	if systemdUserManagerUnit.MatchString(component) {
-		return SupervisorNone, true
+		return "", true
 	}
-	if component != strings.TrimSpace(expectedUnit) {
-		return SupervisorNone, true
-	}
-	return SupervisorSystemd, true
+	return component, true
 }
 
 // unifiedCgroupLine returns the "0::" (cgroup v2 unified hierarchy) line's

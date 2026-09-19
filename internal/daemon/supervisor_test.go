@@ -60,6 +60,19 @@ func TestDetectSupervisorLaunchdRequiresLaunchdParent(t *testing.T) {
 	}
 }
 
+// An "application."-prefixed label is macOS's own label for an ordinary
+// foreground GUI application (an IDE, a terminal app), not a launch agent —
+// treated as absent even with launchd as the direct parent (ppid 1), so a
+// `daemon serve` run from an IDE's integrated terminal is never mistaken for
+// one wb should try to kickstart or refuse under (sneat-dev/wb#622 review
+// item 6, round-3 regression test for item M5).
+func TestDetectSupervisorApplicationPrefixIsNotSupervisedEvenWithLaunchdAsParent(t *testing.T) {
+	kind, execPID, label := detectWith(map[string]string{"XPC_SERVICE_NAME": "application.com.example.SomeIDE.12345"}, 4242, 1)
+	if kind != SupervisorNone || execPID != "" || label != "" {
+		t.Fatalf("detect = %s, %q, %q; want none, \"\", \"\"", kind, execPID, label)
+	}
+}
+
 func TestDetectSupervisorNone(t *testing.T) {
 	kind, execPID, label := detectWith(nil, 4242, 1)
 	if kind != SupervisorNone || execPID != "" || label != "" {

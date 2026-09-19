@@ -24,3 +24,20 @@ func ObservedCgroupSupervisor(pid int, expectedUnit string) (Supervisor, bool) {
 	}
 	return ParseCgroupSupervisor(string(data), expectedUnit)
 }
+
+// ObservedCgroupUnit independently observes the raw systemd unit name (if
+// any) pid is currently running inside, regardless of what unit a caller
+// expects. It is what lets a daemon record its OWN actual unit at `daemon
+// serve` startup (sneat-dev/wb#622 review round 3, item M3), rather than a
+// later, separate `wb daemon status` invocation guessing from its own
+// environment.
+func ObservedCgroupUnit(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
+	if err != nil {
+		return "", false
+	}
+	return ParseCgroupUnit(string(data))
+}

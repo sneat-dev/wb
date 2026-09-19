@@ -48,7 +48,7 @@ func (kind Supervisor) Valid() bool {
 // environment without being started by the supervisor at all.
 //
 //   - systemd sets INVOCATION_ID (systemd.exec(5)) on every unit it starts, and
-//     since systemd 246 also sets SYSTEMD_EXEC_PID to the exact PID it exec'd.
+//     since systemd 248 also sets SYSTEMD_EXEC_PID to the exact PID it exec'd.
 //     Confirmed on a live host: a shell or an agent process started *inside* a
 //     systemd-supervised session inherits INVOCATION_ID from its parent without
 //     SYSTEMD_EXEC_PID ever being set for it. Detection therefore requires

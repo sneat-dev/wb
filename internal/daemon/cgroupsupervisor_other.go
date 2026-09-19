@@ -10,3 +10,7 @@ package daemon
 // `known=false` tells a caller to report this as "unknown" rather than as an
 // observed absence of a supervisor.
 func ObservedCgroupSupervisor(int, string) (Supervisor, bool) { return "", false }
+
+// ObservedCgroupUnit: see ObservedCgroupSupervisor's doc — not implemented on
+// this platform.
+func ObservedCgroupUnit(int) (string, bool) { return "", false }

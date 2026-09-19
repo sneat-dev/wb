@@ -87,9 +87,21 @@ func daemonRefuseTestBinary(executable string) error {
 // through, so a test can fake systemd's own responses instead of reaching a
 // real systemd user manager (mirrors runLaunchctl in
 // daemon_process_darwin.go; sneat-dev/wb#622 review items 2 and 5).
+//
+// Bounded by runSystemctlTimeout: `wb daemon status` and `wb daemon
+// start`/`restart`'s existence check must never hang indefinitely on an
+// unresponsive or wedged systemd user manager (sneat-dev/wb#622 review round
+// 3, item M4) — a status check is exactly the kind of call an operator
+// expects back promptly even when something is badly wrong.
 var runSystemctl = func(args ...string) ([]byte, error) {
-	return exec.Command("systemctl", args...).CombinedOutput() //nolint:gosec // fixed argv plus a configured/default unit name, no shell.
+	ctx, cancel := context.WithTimeout(context.Background(), runSystemctlTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput() //nolint:gosec // fixed argv plus a configured/default unit name, no shell.
 }
+
+// runSystemctlTimeout bounds every runSystemctl invocation. It is a variable
+// so a test can shrink it rather than waiting the real bound out.
+var runSystemctlTimeout = 3 * time.Second
 
 // daemonIsSystemRunningStates lists the `systemctl --user is-system-running`
 // answers that mean the systemd user manager itself is genuinely present and
@@ -155,10 +167,24 @@ const daemonDefaultSystemdUnit = "wb-daemon.service"
 // checks: the WB_DAEMON_SYSTEMD_UNIT environment variable when the operator
 // has set one, or daemonDefaultSystemdUnit otherwise. This build has no other
 // daemon configuration file to read a unit name from (sneat-dev/wb#622
-// review item 2).
+// review item 2). A configured value missing the ".service" suffix (an
+// operator writing "wb-daemon" rather than "wb-daemon.service") is
+// normalized by appending it: systemctl accepts either form, but this
+// build's own unit-identity comparisons (ParseCgroupUnit's cgroup path
+// component, State.SystemdUnit) always carry the suffix, and an unnormalized
+// configured value would never match either (sneat-dev/wb#622 review round
+// 3, item M3).
+//
+// This is the CALLING invocation's own environment, which is not necessarily
+// the daemon's: prefer State.SystemdUnit — the unit the daemon observed
+// itself running inside at its own serve startup — wherever a live daemon's
+// own record is available (see Status's use of it).
 func daemonSystemdUnitName(getenv func(string) string) string {
 	if getenv != nil {
 		if configured := strings.TrimSpace(getenv("WB_DAEMON_SYSTEMD_UNIT")); configured != "" {
+			if !strings.HasSuffix(configured, ".service") {
+				configured += ".service"
+			}
 			return configured
 		}
 	}
@@ -399,6 +425,14 @@ type daemonDependencies struct {
 	// failed and crash-looping (sneat-dev/wb#622 review item 2).
 	systemdUnitName  func() string
 	systemdUnitState func(unit string) (daemon.SystemdUnitState, bool)
+	// observedCgroupUnit lets `daemon serve` record the systemd unit it is
+	// ACTUALLY running inside (from its own /proc/self/cgroup) at startup,
+	// so a later `wb daemon status` invocation can prefer that over its own
+	// configured/default guess — which is wrong whenever the status
+	// invocation's own environment does not carry the same
+	// WB_DAEMON_SYSTEMD_UNIT the daemon itself was supervised under
+	// (sneat-dev/wb#622 review round 3, item M3).
+	observedCgroupUnit func(pid int) (string, bool)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
@@ -435,10 +469,11 @@ func defaultDaemonDependencies() daemonDependencies {
 		observedSupervisor: func(pid int) (daemon.Supervisor, bool) {
 			return daemon.ObservedCgroupSupervisor(pid, daemonSystemdUnitName(os.Getenv))
 		},
-		processStartTime:  daemon.ProcessStartTime,
-		supervisorPresent: daemonSupervisorPresent,
-		systemdUnitName:   func() string { return daemonSystemdUnitName(os.Getenv) },
-		systemdUnitState:  daemonObservedSystemdUnitState,
+		processStartTime:   daemon.ProcessStartTime,
+		supervisorPresent:  daemonSupervisorPresent,
+		systemdUnitName:    func() string { return daemonSystemdUnitName(os.Getenv) },
+		systemdUnitState:   daemonObservedSystemdUnitState,
+		observedCgroupUnit: daemon.ObservedCgroupUnit,
 	}
 }
 
@@ -602,7 +637,7 @@ func newDaemonStopCmd(deps daemonDependencies) *cobra.Command {
 			// stop command is the only way this actually stays stopped.
 			switch result.State.Supervisor {
 			case daemon.SupervisorSystemd:
-				_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb: daemon stop: this daemon is recorded as owned by a systemd user service; its Restart=always policy will bring it back — use `systemctl --user stop <the wb-daemon unit>` to actually stop it")
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon stop: this daemon is recorded as owned by a systemd user service; its Restart=always policy will bring it back — use `systemctl --user stop %s` to actually stop it\n", daemonSystemdUnitName(os.Getenv))
 			case daemon.SupervisorLaunchd:
 				label := result.State.SupervisorLabel
 				// wb's own self-managed launchd job (and an old/legacy record
@@ -1377,7 +1412,17 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 		// all, because the orphan's own cgroup shows no service membership
 		// (sneat-dev/wb#622 review item 2).
 		if recorded == daemon.SupervisorNone && controller.deps.systemdUnitState != nil && controller.deps.systemdUnitName != nil {
-			unit := controller.deps.systemdUnitName()
+			// Prefer the daemon's OWN observed unit (State.SystemdUnit,
+			// recorded from its own /proc/self/cgroup at serve startup) over
+			// this invocation's own configured/default guess: a status
+			// invocation run without the same WB_DAEMON_SYSTEMD_UNIT the
+			// daemon itself was supervised under would otherwise query the
+			// WRONG unit and see a false "no systemd service membership"
+			// (sneat-dev/wb#622 review round 3, item M3).
+			unit := state.SystemdUnit
+			if strings.TrimSpace(unit) == "" {
+				unit = controller.deps.systemdUnitName()
+			}
 			if unitState, known := controller.deps.systemdUnitState(unit); known && daemon.SystemdUnitLooksOrphaned(unitState) {
 				result.SupervisorMismatch = fmt.Sprintf(
 					"this daemon recorded supervisor=none at startup, but its systemd user unit %s is %s (NRestarts=%d); a supervisor for this home exists and is failing to keep it up (sneat-dev/wb#617)",
@@ -1601,7 +1646,7 @@ func (controller daemonController) StartWithProgress(ctx context.Context, listen
 			// path: when it is supervised, the supervisor restarts it with
 			// the new binary rather than this process starting a detached
 			// replacement behind the supervisor's back (sneat-dev/wb#617).
-			supervisor := state.ReportedSupervisor()
+			supervisor := controller.effectiveSupervisor(state)
 			supervised := supervisor == daemon.SupervisorSystemd ||
 				(supervisor == daemon.SupervisorLaunchd && state.SupervisorLabel != daemonLaunchdLabel)
 			if supervised && !daemonSupervisedInstalledBinaryMatches(state, current) {
@@ -1696,7 +1741,7 @@ func (controller daemonController) refuseDetachedStartUnderSupervisor(state daem
 	case daemon.SupervisorSystemd:
 		name := unitName
 		if strings.TrimSpace(name) == "" {
-			name = "<the wb-daemon unit>"
+			name = daemonSystemdUnitName(os.Getenv)
 		}
 		return fmt.Sprintf(
 			"refusing to start a detached daemon: %s is a systemd user service; restart it through that supervisor instead of `wb daemon start` — e.g. `systemctl --user restart %s` — or pass --force-detached to override",
@@ -1765,6 +1810,50 @@ func (controller daemonController) RestartWithProgress(ctx context.Context, ifRu
 	return controller.stopAndReplace(ctx, state, daemonListenOrDefault(state.Listen), current, "restart", progress)
 }
 
+// effectiveSupervisor resolves what a LIVE daemon should be treated as
+// supervised by for a stop-and-replace decision, falling back to an
+// independent observation when the recorded supervisor is empty, legacy, or
+// `none` (all three normalize to SupervisorNone via state.ReportedSupervisor).
+//
+// Without this fallback, the FIRST self-update into a build that records
+// this field at all recreates #617 on a systemd host: a pre-#622 `wb daemon
+// serve` never wrote the field at all, and even a build that does write it
+// reports `none` for any systemd older than 248 (see DetectSupervisor's
+// doc) — in both cases the daemon has been supervised the whole time, but
+// its own record cannot say so. `wb daemon restart` (and the self-update
+// hook, which just shells out to it) would then SIGTERM the real,
+// systemd-managed process and launch a detached --managed-start child,
+// which fails to bind once systemd's own Restart=always brings the
+// original back (sneat-dev/wb#622 review round 3, item S1).
+//
+// The fallback only applies while the daemon is ALIVE: state.PID's cgroup is
+// only meaningful for a running process, and `wb daemon status` already
+// uses the identical cgroup check as its own double-owner fallback (see
+// Status's use of observedSupervisor), so this reuses the exact same
+// evidence rather than inventing a second one.
+//
+// launchd has no equivalent independent check in this build: confirming "is
+// state.PID's parent PID 1, and what launchd label (if any) does it have"
+// would require reading an ARBITRARY pid's parent and XPC service name from
+// a SEPARATE process, which nothing here implements (the self-detection
+// DetectSupervisor performs only works for the CALLING process's own PID).
+// An empty/legacy record for a launchd-supervised daemon is therefore NOT
+// upgraded here, and callers must not assume launchd gets the same
+// protection systemd does.
+func (controller daemonController) effectiveSupervisor(state daemon.State) daemon.Supervisor {
+	recorded := state.ReportedSupervisor()
+	if recorded != daemon.SupervisorNone {
+		return recorded
+	}
+	if state.PID <= 0 || controller.deps.observedSupervisor == nil {
+		return recorded
+	}
+	if observed, known := controller.deps.observedSupervisor(state.PID); known && observed == daemon.SupervisorSystemd {
+		return daemon.SupervisorSystemd
+	}
+	return recorded
+}
+
 // daemonSupervisedInstalledBinaryMatches reads a supervised daemon's recorded
 // executable from disk RIGHT NOW and reports whether it already has this
 // build's own content — the shape a genuine self-update produces, since it
@@ -1805,7 +1894,7 @@ func daemonSupervisedInstalledBinaryMatches(state daemon.State, current daemon.P
 // bootout the daemon's own job and then wait forever for a replacement
 // nothing would ever start).
 func (controller daemonController) stopAndReplace(ctx context.Context, state daemon.State, listen string, current daemon.Provenance, action string, progress func(string)) (daemonResult, error) {
-	supervisor := state.ReportedSupervisor()
+	supervisor := controller.effectiveSupervisor(state)
 	supervised := supervisor == daemon.SupervisorSystemd ||
 		(supervisor == daemon.SupervisorLaunchd && state.SupervisorLabel != daemonLaunchdLabel)
 	if supervised {
@@ -2217,13 +2306,27 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		getppid = os.Getppid
 	}
 	supervisorKind, supervisorExecPID, supervisorLabel := daemon.DetectSupervisor(deps.getenv, getpid(), getppid())
+	// Recorded ALONGSIDE detection, in the same process, for the same reason:
+	// only this process can read its own /proc/self/cgroup, and a later, separate
+	// `wb daemon status` invocation has no portable way to ask for anyone
+	// else's (sneat-dev/wb#622 review round 3, item M3). Best-effort: an
+	// empty result (this platform's check is not implemented, or this
+	// process is not in a service unit's own cgroup) leaves the field empty,
+	// and a reader falls back to its own configured/default guess.
+	observedCgroupUnit := deps.observedCgroupUnit
+	if observedCgroupUnit == nil {
+		observedCgroupUnit = daemon.ObservedCgroupUnit
+	}
+	systemdUnit, _ := observedCgroupUnit(getpid())
 	if !managedStart {
 		state = daemon.NewStartingAt(optionalDaemonState(state, found), address, provenance, ownerToken, location.Home, location.StatePath, deps.now())
 		state.Supervisor, state.SupervisorExecPID, state.SupervisorLabel = supervisorKind, supervisorExecPID, supervisorLabel
+		state.SystemdUnit = systemdUnit
 		state.MarkReadyWithProcess(os.Getpid(), daemonProcessStartedAt(os.Getpid()), deps.now())
 	} else {
 		state.WBHome, state.StatePath = location.Home, location.StatePath
 		state.Supervisor, state.SupervisorExecPID, state.SupervisorLabel = supervisorKind, supervisorExecPID, supervisorLabel
+		state.SystemdUnit = systemdUnit
 		state.MarkStartingPID(os.Getpid(), deps.now())
 	}
 	if err := store.Save(state); err != nil {

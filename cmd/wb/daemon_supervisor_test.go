@@ -68,6 +68,125 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 	}
 }
 
+// `daemon serve` records its OWN observed systemd unit (from its own
+// /proc/self/cgroup, via the observedCgroupUnit seam) at startup — not a
+// later, separate `wb daemon status` invocation's own configured/default
+// guess, which may not even agree with reality (sneat-dev/wb#622 review
+// round 3, item M3).
+func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "wb-supervisor-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	pinDaemonHome(t, root)
+	previousRoot := projectsRoot
+	projectsRoot = root
+	t.Cleanup(func() { projectsRoot = previousRoot })
+
+	deps := daemonTestDependencies(t, root)
+	deps.observedCgroupUnit = func(pid int) (string, bool) {
+		if pid != 4242 {
+			t.Fatalf("observedCgroupUnit probed unexpected pid %d", pid)
+		}
+		return "wb.service", true
+	}
+	deps.getpid = func() int { return 4242 }
+	deps.getppid = func() int { return 1 }
+
+	address := freeLoopbackAddress(t)
+	command := &cobra.Command{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	command.SetContext(ctx)
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+
+	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	served := make(chan error, 1)
+	go func() { served <- serveDashboard(command, deps, address, store, "owner-token", true, false) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("serveDashboard: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("serveDashboard did not return after its context was cancelled")
+		}
+	})
+	waitForHealth(t, address)
+
+	state, found, err := store.Load()
+	if err != nil || !found {
+		t.Fatalf("state after serve: found=%t err=%v", found, err)
+	}
+	if state.SystemdUnit != "wb.service" {
+		t.Fatalf("recorded systemd unit = %q, want wb.service", state.SystemdUnit)
+	}
+}
+
+// A configured WB_DAEMON_SYSTEMD_UNIT missing the ".service" suffix is
+// normalized by appending it: systemctl accepts either form, but this
+// build's own unit-identity comparisons always carry the suffix
+// (sneat-dev/wb#622 review round 3, item M3).
+func TestDaemonSystemdUnitNameNormalizesAMissingServiceSuffix(t *testing.T) {
+	unsuffixed := func(name string) string {
+		if name == "WB_DAEMON_SYSTEMD_UNIT" {
+			return "my-custom-wb"
+		}
+		return ""
+	}
+	if got := daemonSystemdUnitName(unsuffixed); got != "my-custom-wb.service" {
+		t.Fatalf("unit name = %q, want the .service suffix appended", got)
+	}
+	suffixed := func(name string) string {
+		if name == "WB_DAEMON_SYSTEMD_UNIT" {
+			return "my-custom-wb.service"
+		}
+		return ""
+	}
+	if got := daemonSystemdUnitName(suffixed); got != "my-custom-wb.service" {
+		t.Fatalf("unit name = %q, want it left unchanged", got)
+	}
+}
+
+// `wb daemon status` MUST prefer the daemon's OWN recorded unit
+// (State.SystemdUnit) over this invocation's own configured/default guess:
+// a status invocation run without the same WB_DAEMON_SYSTEMD_UNIT the
+// daemon itself was supervised under would otherwise query the WRONG unit
+// and see a false "no systemd service membership" (sneat-dev/wb#622 review
+// round 3, item M3).
+func TestDaemonStatusPrefersTheDaemonsOwnRecordedSystemdUnitOverTheInvokersConfig(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	state := daemonTestState(t, root, daemonDefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.now())
+	state.SystemdUnit = "wb.service"
+	state.MarkReadyWithProcess(901, deps.now(), deps.now())
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	deps.alive = func(pid int) bool { return pid == 901 }
+	deps.observedSupervisor = func(int) (daemon.Supervisor, bool) { return daemon.SupervisorNone, true }
+	deps.systemdUnitName = func() string { return "wb-daemon.service" }
+	deps.systemdUnitState = func(unit string) (daemon.SystemdUnitState, bool) {
+		if unit != "wb.service" {
+			t.Fatalf("systemdUnitState probed %q, want the daemon's own recorded unit wb.service", unit)
+		}
+		return daemon.SystemdUnitState{ActiveState: "failed", NRestarts: 3}, true
+	}
+
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SupervisorMismatch == "" || !strings.Contains(result.SupervisorMismatch, "wb.service") {
+		t.Fatalf("mismatch = %q, want it naming the daemon's own recorded unit", result.SupervisorMismatch)
+	}
+}
+
 // A systemd INVOCATION_ID inherited from a parent shell — without
 // SYSTEMD_EXEC_PID naming THIS process — must not be recorded as systemd
 // supervision of this daemon (sneat-dev/wb#622 review item 3, confirmed on a
@@ -322,6 +441,197 @@ func TestRestartOfASupervisedDaemonWaitsForTheSupervisorInsteadOfLaunching(t *te
 	}
 	if !result.ReadyVerified || result.State.PID != 902 || !result.AutomaticVersionHandoff {
 		t.Fatalf("supervised restart result = %#v", result)
+	}
+}
+
+// The first self-update into a build that records the supervisor field at
+// all must not recreate #617 on a systemd host: a pre-#622 build's record
+// has an EMPTY (legacy) supervisor field, which normalizes to `none` via
+// ReportedSupervisor — exactly what an unsupervised daemon also reports.
+// Without an independent fallback, `wb daemon restart` (and the self-update
+// hook, which just shells out to it) would SIGTERM the real systemd-managed
+// process and then launch a detached --managed-start child, which then
+// fails to bind once systemd's own Restart=always brings the original back
+// (sneat-dev/wb#622 review round 3, item S1).
+func TestStopAndReplaceTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSystemd(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	now := deps.now()
+	deps.now = func() time.Time { return now }
+	controller := newDaemonController(deps, root)
+
+	old := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, "", now) // legacy: predates the field
+	old.MarkReadyWithProcess(901, now, now)
+	if err := controller.store.Save(old); err != nil {
+		t.Fatal(err)
+	}
+	alive := map[int]bool{901: true}
+	deps.alive = func(pid int) bool { return alive[pid] }
+	deps.stop = func(pid int, supervisor daemon.Supervisor, label string) error {
+		alive[901] = false
+		return nil
+	}
+	deps.observedSupervisor = func(pid int) (daemon.Supervisor, bool) {
+		if pid != 901 {
+			t.Fatalf("observedSupervisor probed unexpected pid %d", pid)
+		}
+		return daemon.SupervisorSystemd, true
+	}
+	replaced := false
+	deps.sleep = func(d time.Duration) {
+		now = now.Add(d)
+		if replaced {
+			return
+		}
+		replaced = true
+		replacement, _, loadErr := controller.store.Load()
+		if loadErr != nil {
+			t.Errorf("load before replacement: %v", loadErr)
+			return
+		}
+		current, provErr := controller.provenance()
+		if provErr != nil {
+			t.Errorf("provenance: %v", provErr)
+			return
+		}
+		replacement.Provenance = current
+		replacement.Supervisor = daemon.SupervisorSystemd
+		replacement.MarkReadyWithProcess(902, now, now)
+		alive[902] = true
+		if saveErr := controller.store.Save(replacement); saveErr != nil {
+			t.Errorf("save replacement: %v", saveErr)
+		}
+	}
+	deps.start = func(string, []string, string) (int, error) {
+		t.Fatal("a legacy record independently confirmed as systemd-managed must not launch a detached daemon")
+		return 0, nil
+	}
+	deps.ownedHealth = func(context.Context, string, int, uint64) error { return nil }
+	controller.deps = deps
+
+	result, err := controller.RestartWithProgress(context.Background(), false, nil, false)
+	if err != nil {
+		t.Fatalf("legacy-record supervised restart: %v", err)
+	}
+	if !result.ReadyVerified || result.State.PID != 902 || !result.AutomaticVersionHandoff {
+		t.Fatalf("legacy-record supervised restart result = %#v", result)
+	}
+}
+
+// The same fallback applies to Start's executable-handoff branch (an
+// implicit `wb dashboard --local` or RPC bootstrap after a self-update hook
+// timeout would otherwise reach exactly this shape).
+func TestDaemonStartHandoffTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSystemd(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	now := deps.now()
+	deps.now = func() time.Time { return now }
+	controller := newDaemonController(deps, root)
+
+	old := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, "", now)
+	old.MarkReadyWithProcess(901, now, now)
+	if err := controller.store.Save(old); err != nil {
+		t.Fatal(err)
+	}
+	alive := map[int]bool{901: true}
+	deps.alive = func(pid int) bool { return alive[pid] }
+	deps.stop = func(pid int, supervisor daemon.Supervisor, label string) error {
+		alive[901] = false
+		return nil
+	}
+	deps.observedSupervisor = func(pid int) (daemon.Supervisor, bool) { return daemon.SupervisorSystemd, true }
+	replaced := false
+	deps.sleep = func(d time.Duration) {
+		now = now.Add(d)
+		if replaced {
+			return
+		}
+		replaced = true
+		replacement, _, loadErr := controller.store.Load()
+		if loadErr != nil {
+			t.Errorf("load before replacement: %v", loadErr)
+			return
+		}
+		current, provErr := controller.provenance()
+		if provErr != nil {
+			t.Errorf("provenance: %v", provErr)
+			return
+		}
+		replacement.Provenance = current
+		replacement.Supervisor = daemon.SupervisorSystemd
+		replacement.MarkReadyWithProcess(902, now, now)
+		alive[902] = true
+		if saveErr := controller.store.Save(replacement); saveErr != nil {
+			t.Errorf("save replacement: %v", saveErr)
+		}
+	}
+	deps.start = func(string, []string, string) (int, error) {
+		t.Fatal("an implicit Start against a legacy record independently confirmed as systemd-managed must not launch a detached daemon")
+		return 0, nil
+	}
+	deps.ownedHealth = func(context.Context, string, int, uint64) error { return nil }
+	controller.deps = deps
+
+	result, err := controller.Start(context.Background(), daemonDefaultListen)
+	if err != nil {
+		t.Fatalf("legacy-record supervised start handoff: %v", err)
+	}
+	if !result.ReadyVerified || result.State.PID != 902 || !result.AutomaticVersionHandoff {
+		t.Fatalf("legacy-record supervised start handoff result = %#v", result)
+	}
+}
+
+// A genuinely unsupervised daemon (recorded none, and independently
+// confirmed as not systemd-managed — or with no independent observation
+// available at all) must keep taking the ordinary detached-launch path:
+// the fallback must not manufacture supervision that was never there.
+func TestStopAndReplaceLeavesAGenuinelyUnsupervisedRecordUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		observed func(int) (daemon.Supervisor, bool)
+	}{
+		{"cgroup confirms no systemd membership", func(int) (daemon.Supervisor, bool) { return daemon.SupervisorNone, true }},
+		{"no independent observation available", func(int) (daemon.Supervisor, bool) { return "", false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := daemonTestRoot(t)
+			deps := daemonTestDependencies(t, root)
+			controller := newDaemonController(deps, root)
+
+			old := daemonSupervisorTestInstalledOld(t, root, daemonDefaultListen, daemon.SupervisorNone, deps.now())
+			old.MarkReadyWithProcess(901, deps.now(), deps.now())
+			if err := controller.store.Save(old); err != nil {
+				t.Fatal(err)
+			}
+			aliveSet := map[int]bool{901: true}
+			deps.alive = func(pid int) bool { return aliveSet[pid] }
+			deps.stop = func(pid int, _ daemon.Supervisor, _ string) error { aliveSet[901] = false; return nil }
+			deps.observedSupervisor = tc.observed
+			launched := false
+			deps.start = func(_ string, args []string, _ string) (int, error) {
+				launched = true
+				for _, argument := range args {
+					if argument == "--lifecycle-state" {
+						t.Fatalf("daemon start pinned a resolved lifecycle path: %v", args)
+					}
+				}
+				aliveSet[902] = true
+				return 902, nil
+			}
+			deps.ownedHealth = func(context.Context, string, int, uint64) error { return nil }
+			controller.deps = deps
+
+			result, err := controller.RestartWithProgress(context.Background(), false, nil, false)
+			if err != nil {
+				t.Fatalf("unsupervised restart: %v", err)
+			}
+			if !launched {
+				t.Fatal("a genuinely unsupervised daemon must still be replaced by a detached launch")
+			}
+			if result.State.PID != 902 {
+				t.Fatalf("result = %#v", result)
+			}
+		})
 	}
 }
 
@@ -1017,6 +1327,33 @@ func TestDaemonSupervisorPresentSystemdWhenSystemctlIsAbsent(t *testing.T) {
 	present, _ := daemonSupervisorPresent(daemon.SupervisorSystemd, "")
 	if present {
 		t.Fatal("systemctl being absent must report not present")
+	}
+}
+
+// runSystemctl's DEFAULT implementation must not hang indefinitely on an
+// unresponsive or wedged systemd user manager: it is bounded by
+// runSystemctlTimeout (sneat-dev/wb#622 review round 3, item M4). Exercised
+// through the seam with a real (but fast-killed) subprocess, not a fake
+// runSystemctl override, since the whole point is to prove the DEFAULT
+// closure's own timeout wiring.
+func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
+	previousTimeout := runSystemctlTimeout
+	runSystemctlTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { runSystemctlTimeout = previousTimeout })
+
+	dir := t.TempDir()
+	fakeSystemctl := filepath.Join(dir, "systemctl")
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	if _, err := runSystemctl("--user", "is-system-running"); err == nil {
+		t.Fatal("expected the hanging fake systemctl to be killed by the timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("runSystemctl took %s, want it bounded near runSystemctlTimeout (%s)", elapsed, runSystemctlTimeout)
 	}
 }
 

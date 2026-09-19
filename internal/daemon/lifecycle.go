@@ -122,6 +122,18 @@ type State struct {
 	// knows how to re-bootstrap with a new binary) from a foreign one wb must
 	// hand off to instead of touching directly (sneat-dev/wb#622 review item 1).
 	SupervisorLabel string `json:"supervisor_label,omitempty"`
+
+	// SystemdUnit is the systemd unit name this process observed ITSELF
+	// running inside, from its own /proc/self/cgroup, at `daemon serve`
+	// startup -- independent of any config a LATER, separate `wb daemon
+	// status` invocation's own environment happens to carry. A later reader
+	// checking this daemon's unit health MUST prefer this field over its own
+	// configured/default unit name: unit identity read from the status
+	// invoker's own environment gives a false negative for a daemon
+	// correctly supervised under a unit name the status invocation was never
+	// told about (sneat-dev/wb#622 review round 3, item M3). Empty when this
+	// process is not in a systemd service unit's own cgroup at all.
+	SystemdUnit string `json:"systemd_unit,omitempty"`
 }
 
 // ReportedSupervisor is Supervisor normalized for a reader: an empty or
