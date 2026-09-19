@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,119 +120,26 @@ func ListRegisteredPullRequestBindings(projectsRoot string) ([]RegisteredPullReq
 }
 
 // listRegisteredPullRequestBindingsInHome is
-// ListRegisteredPullRequestBindings for exactly one resolved home. It walks
-// the same worklogs/<task>/runs/<run>/claims layout
-// listActiveClaimSummariesInHome does, but reads each active claim's
-// ".pull_request.json" sidecar instead of the claim itself, and reports
-// nothing for a claim that has no such sidecar.
+// ListRegisteredPullRequestBindings for exactly one resolved home. It shares
+// walkActiveWorkLogClaims (internal/worktrees/active_claims.go) with
+// ListActiveClaimSummaries — the same enumeration, symlink rejection, and
+// terminal-skip rule — and reads each active claim's ".pull_request.json"
+// sidecar instead of the claim itself, reporting nothing for a claim that has
+// no such sidecar.
 func listRegisteredPullRequestBindingsInHome(home string) ([]RegisteredPullRequestBinding, error) {
-	worklogsRoot := filepath.Join(home, "worklogs")
-	efforts, err := os.ReadDir(worklogsRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	worklogs, err := openDirectDirectoryNoFollow(worklogsRoot)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = worklogs.Close() }()
 	result := make([]RegisteredPullRequestBinding, 0)
-	for _, effort := range efforts {
-		if !safeActiveDirectoryEntry(effort) || !validSafeSegment(effort.Name()) {
-			continue
+	err := walkActiveWorkLogClaims(home, func(claims *os.File, claimID string, claim workLogClaim) {
+		var binding ClaimPullRequestBinding
+		if readJSONAt(claims, claimID+pullRequestBindingSuffix, &binding) != nil {
+			return
 		}
-		effortDir, openErr := openPrivateChild(worklogs, effort.Name(), false)
-		if openErr != nil {
-			continue
-		}
-		runsDir, openErr := openPrivateChild(effortDir, "runs", false)
-		_ = effortDir.Close()
-		if errors.Is(openErr, os.ErrNotExist) {
-			continue
-		}
-		if openErr != nil {
-			return nil, openErr
-		}
-		runsRoot := filepath.Join(worklogsRoot, effort.Name(), "runs")
-		runs, readErr := os.ReadDir(runsRoot)
-		if errors.Is(readErr, os.ErrNotExist) {
-			_ = runsDir.Close()
-			continue
-		}
-		if readErr != nil {
-			_ = runsDir.Close()
-			return nil, readErr
-		}
-		for _, run := range runs {
-			if !safeActiveDirectoryEntry(run) || !validSafeSegment(run.Name()) {
-				continue
-			}
-			runRoot := filepath.Join(runsRoot, run.Name())
-			runDir, runErr := openPrivateChild(runsDir, run.Name(), false)
-			if runErr != nil {
-				continue
-			}
-			claimsRoot := filepath.Join(runRoot, "claims")
-			claims, claimsErr := openPrivateChild(runDir, "claims", false)
-			if errors.Is(claimsErr, os.ErrNotExist) {
-				_ = runDir.Close()
-				continue
-			}
-			if claimsErr != nil {
-				_ = runDir.Close()
-				_ = runsDir.Close()
-				return nil, claimsErr
-			}
-			claimEntries, entriesErr := os.ReadDir(claimsRoot)
-			if entriesErr != nil {
-				_ = claims.Close()
-				_ = runDir.Close()
-				_ = runsDir.Close()
-				return nil, entriesErr
-			}
-			terminals, terminalErr := openPrivateChild(runDir, "terminals", false)
-			if terminalErr != nil && !errors.Is(terminalErr, os.ErrNotExist) {
-				_ = claims.Close()
-				_ = runDir.Close()
-				_ = runsDir.Close()
-				return nil, terminalErr
-			}
-			for _, entry := range claimEntries {
-				claimID := strings.TrimSuffix(entry.Name(), ".json")
-				if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || entry.Name() != claimID+".json" || !validClaimID(claimID) {
-					continue
-				}
-				var claim workLogClaim
-				if readJSONAt(claims, entry.Name(), &claim) != nil || validateStaticWorkLogClaim(claim, effort.Name(), run.Name()) != nil || claim.Task != effort.Name() {
-					continue
-				}
-				if terminals != nil {
-					var terminal workLogTerminalRecord
-					if terminalReadErr := readJSONAt(terminals, entry.Name(), &terminal); terminalReadErr == nil {
-						continue
-					} else if !errors.Is(terminalReadErr, os.ErrNotExist) {
-						continue
-					}
-				}
-				var binding ClaimPullRequestBinding
-				if readJSONAt(claims, claimID+pullRequestBindingSuffix, &binding) != nil {
-					continue
-				}
-				result = append(result, RegisteredPullRequestBinding{
-					Task: claim.Task, ClaimID: claimID, Repository: binding.Repository,
-					PullRequest: binding.PullRequest, URL: binding.URL, RecordedAt: binding.RecordedAt,
-				})
-			}
-			if terminals != nil {
-				_ = terminals.Close()
-			}
-			_ = claims.Close()
-			_ = runDir.Close()
-		}
-		_ = runsDir.Close()
+		result = append(result, RegisteredPullRequestBinding{
+			Task: claim.Task, ClaimID: claimID, Repository: binding.Repository,
+			PullRequest: binding.PullRequest, URL: binding.URL, RecordedAt: binding.RecordedAt,
+		})
+	})
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }
