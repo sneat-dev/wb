@@ -68,24 +68,58 @@ matched. What "wait for" means differs by how the check is named:
   "every name must match" rule exact `--check` patterns already have. This
   matters for a workflow that only starts via `workflow_run` after another
   one finishes: without the rule, the first workflow finishing would pass
-  the wait before GitHub has even created the second workflow's run.
+  the wait before GitHub has even created the second workflow's run. When
+  `--workflow` and `--check` are combined, "every name must match" means
+  every named workflow needs some job matching the `--check` patterns — a
+  workflow whose jobs never match any pattern simply never clears, and the
+  wait names it in the pending reason.
 
 **While `--check` is active**, a still-registering Actions run that has no
 job of its own yet is also kept open, regardless of whether it "owns" a
-match: an exact or glob `--check` can be held pending by any other
-still-registering run on the head — under the same workflow on a different
-trigger event, or a different workflow altogether — not only one related to
-what has already matched. WB cannot know in advance which run a job will
-register under, so this is deliberately coarse; it is documented here rather
-than left as a surprise.
+match — but only among the workflows an active `--workflow` filter itself
+allows: a job can never be selected under a workflow `--workflow` excludes
+(both filters are an AND), so a jobless run under a different, excluded
+workflow is dropped rather than held open. Among allowed workflows, an exact
+or glob `--check` can still be held pending by any other still-registering
+run on the head — under the same workflow on a different trigger event, or a
+different allowed workflow altogether — not only one related to what has
+already matched. WB cannot know in advance which run a job will register
+under, so this is deliberately coarse; it is documented here rather than
+left as a surprise. When a slice times out on a run held open this way, the
+pending reason names which run and why ("run \"Deploy\" (pull_request) has
+not registered a job yet").
 
-**A skipped job is not automatically a pass either.** When a selected
-`--check` names a job GitHub reports `skipped`, and the owning Actions run
-itself concluded `failure` or was cancelled — the common shape of a job
-skipped because a job it `needs:` failed — the wait reports it failed, not
-passed. This matches what an unfiltered wait already sees, since it also
-observes the upstream job's own failing check-run directly; a filtered wait
-that dropped that check-run must reach the same verdict some other way.
+**A skipped job is not automatically a pass.** When a selected `--check` or
+`--workflow` names a job GitHub reports `skipped`, the wait's verdict
+depends on the owning Actions run's own top-level status:
+
+- **The run has not concluded yet.** The wait reports **pending**, not
+  passed. This is the common real-CI shape: an earlier job fails and a
+  `needs:`-gated downstream job reads `skipped` well before a slow sibling
+  job in the same run finishes, so the run's own conclusion is still empty.
+  Reading the skip as a pass in that window let a filtered wait finish
+  before an unfiltered wait watching the same commit ever would — round 4's
+  red-team finding on sneat-dev/wb#629.
+- **The run concluded `failure` or was cancelled.** The wait reports
+  **failed**, not passed. This covers a job skipped because a job it
+  `needs:` failed, and — deliberately, failing closed — a job skipped for
+  any other reason while an unrelated sibling job in the *same* run also
+  failed: WB cannot tell "skipped because of the job this selection cares
+  about" apart from "skipped because of an unrelated sibling" without
+  evaluating the `needs:` graph itself, so both fail the wait rather than
+  risk a false pass.
+- **The run concluded, but not as a failure, and every selected check is
+  `skipping`.** The wait still reports **failed**, with the reason "every
+  selected check was skipped." This is the common shape of a
+  `workflow_run` Release job gated `if: conclusion == 'success'` after CI
+  failed: GitHub marks every Release job `skipped` and the run itself does
+  not conclude `failure` — nothing in the selection individually reads as
+  failed, but nothing in it ever ran either, and "is the release built?"
+  must answer no.
+
+This matches the verdict an unfiltered wait reaches by observing the
+upstream job's own check-run directly; a filtered wait that dropped that
+check-run must reach the same verdict some other way.
 
 A filter that selects nothing is never a vacuous pass. It keeps observing, at
 the normal poll cadence, until a matching check registers or the slice ends,

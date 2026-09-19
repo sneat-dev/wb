@@ -403,8 +403,8 @@ func TestOrchCovUnmatchedWorkflowNamesRequiresEveryWorkflow(t *testing.T) {
 		t.Fatalf("unmatchedWorkflowNames = %#v, want %#v", got, want)
 	}
 	got = unmatchedWorkflowNames(checks, []string{"Deploy", "Release"})
-	if len(got) != 2 {
-		t.Fatalf("unmatchedWorkflowNames = %#v, want both unmatched", got)
+	if want := []string{"Deploy", "Release"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unmatchedWorkflowNames = %#v, want %#v", got, want)
 	}
 }
 
@@ -465,5 +465,35 @@ func TestOrchCovDescribeUnmatchedExactCheckPatternsFormatsHints(t *testing.T) {
 	got = describeUnmatchedExactCheckPatterns(observed, []string{"build", "deploy"})
 	if want := "build (observed: build (ubuntu)), deploy"; got != want {
 		t.Fatalf("describeUnmatchedExactCheckPatterns multi = %q, want %q", got, want)
+	}
+}
+
+// TestOrchCovPendingWorkflowRunHintNamesTheFirstStillRegisteringRun is a
+// direct unit test of pendingWorkflowRunHint (sneat-dev/wb#627 minor 2,
+// round 4 on PR #629): the empty-input, no-hint, first-match, and
+// missing-name/missing-event fallback branches.
+func TestOrchCovPendingWorkflowRunHintNamesTheFirstStillRegisteringRun(t *testing.T) {
+	t.Parallel()
+	if got := pendingWorkflowRunHint(nil); got != "" {
+		t.Fatalf("pendingWorkflowRunHint(nil) = %q, want empty", got)
+	}
+	if got := pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "check-run:build", Bucket: "pass"},
+		{Name: "workflow-run:1:push", Bucket: "pass"},
+	}); got != "" {
+		t.Fatalf("pendingWorkflowRunHint with nothing pending = %q, want empty", got)
+	}
+	got := pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "check-run:build", Bucket: "pending"},
+		{Name: "workflow-run:2:pull_request", Bucket: "pending", WorkflowName: "Deploy", WorkflowEvent: "pull_request"},
+	})
+	if want := `run "Deploy" (pull_request) has not registered a job yet`; got != want {
+		t.Fatalf("pendingWorkflowRunHint = %q, want %q", got, want)
+	}
+	got = pendingWorkflowRunHint([]RemoteCheck{
+		{Name: "workflow-run:3:", Bucket: "pending"},
+	})
+	if want := `run "unnamed workflow" (unknown event) has not registered a job yet`; got != want {
+		t.Fatalf("pendingWorkflowRunHint with no name/event = %q, want %q", got, want)
 	}
 }

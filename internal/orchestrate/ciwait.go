@@ -226,10 +226,13 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		reportPullRequestWaitProgress(options, observations, result, 0)
 		failed := false
 		pending := false
+		failureReason := "observed GitHub checks failed or were cancelled"
+		selectedSkipping := 0
 		for _, check := range checks {
 			switch check.Bucket {
 			case "pass":
 			case "skipping":
+				selectedSkipping++
 				// GitHub reports a job "skipped" both when it was
 				// intentionally conditional and when an earlier job it
 				// `needs:` failed and the scheduler never ran it. Bucket
@@ -239,8 +242,26 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				// wait that dropped that check-run must not let its skipped
 				// downstream job read as a pass instead (sneat-dev/wb#627
 				// M3, red-team round 3 on PR #629 — "is the release built?"
-				// must not answer yes when the build failed).
-				if workflowRunConclusionFailed(check.WorkflowRunConclusion) {
+				// must not answer yes when the build failed). Until the
+				// owning run has itself concluded, a skipped job is treated
+				// as pending, not passed (B1, red-team round 4 on PR #629):
+				// the common real-CI shape is an upstream job failing at
+				// minute one while a sibling job in the same run keeps
+				// running for several more minutes, so the run's own
+				// conclusion is still empty — reading the skip as a pass in
+				// that window let the wait finish before the run (and
+				// therefore an unfiltered wait watching the same commit)
+				// ever reached its own failing verdict. This intentionally
+				// fails closed on a skip caused by an unrelated sibling's
+				// failure in the same run too (minor 4 on PR #629): the
+				// filter selects a job, not a job's own upstream `needs:`
+				// graph, and WB cannot tell "skipped because the job this
+				// selection cares about upstream failed" apart from
+				// "skipped because an unrelated job in the same run failed"
+				// without evaluating the `needs:` graph itself.
+				if check.WorkflowID != 0 && check.WorkflowRunConclusion == "" {
+					pending = true
+				} else if workflowRunConclusionFailed(check.WorkflowRunConclusion) {
 					failed = true
 				}
 			case "fail", "cancel":
@@ -249,8 +270,20 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				pending = true
 			}
 		}
+		// A selection that is entirely "skipping", with every owning run
+		// already concluded, is not a pass (minor 5, red-team round 4 on PR
+		// #629): the common shape is a `workflow_run` Release job gated
+		// `if: conclusion == 'success'` after CI failed, where GitHub marks
+		// every job in the Release run "skipped" and the run itself
+		// concludes non-failure — "is the release built?" must answer no,
+		// not yes, even though nothing in the selection is individually
+		// buckets "fail"/"cancel".
+		if !failed && !pending && len(checks) > 0 && selectedSkipping == len(checks) {
+			failed = true
+			failureReason = "every selected check was skipped"
+		}
 		if failed {
-			failedResult := failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled")
+			failedResult := failedCommitWaitResult(result, failureReason)
 			failedResult.FailureDetails = failedCheckDetails(sliceCtx, options.Repository, checks)
 			reportPullRequestWaitProgress(options, observations, failedResult, 0)
 			return failedResult, nil
@@ -382,6 +415,9 @@ func waitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				result.Reason = "no GitHub checks have registered for the exact head"
 			default:
 				result.Reason = "observed GitHub checks are still pending"
+				if hint := pendingWorkflowRunHint(checks); hint != "" {
+					result.Reason += ": " + hint
+				}
 			}
 		}
 		if terminal && stableObservations >= 2 {
@@ -783,8 +819,13 @@ func filterSelectedChecks(checks []RemoteCheck, workflows, patterns []string) []
 		// which run a job will register under. This documented trade-off
 		// means an exact or glob --check selection can be held pending by
 		// any other still-registering Actions run on the head, not only a
-		// run related to what has already matched.
-		if !hasJob[key] && len(patterns) > 0 {
+		// run related to what has already matched — but only among the
+		// workflows an active --workflow filter itself allows (minor 1,
+		// red-team round 4 on PR #629): a job can never be selected under a
+		// workflow --workflow excludes (checkSelected is an AND of both
+		// filters), so retaining a jobless run under an excluded workflow
+		// name only holds the wait open for something it could never match.
+		if !hasJob[key] && len(patterns) > 0 && (len(workflows) == 0 || containsExact(workflows, check.WorkflowName)) {
 			selectedIndex[index] = true
 			continue
 		}
@@ -953,6 +994,32 @@ func checkSelected(check RemoteCheck, workflows, patterns []string) bool {
 // opposed to one job's individual check-run.
 func isWorkflowRunEntry(check RemoteCheck) bool {
 	return strings.HasPrefix(check.Name, "workflow-run:")
+}
+
+// pendingWorkflowRunHint names the first still-registering Actions run
+// found among checks, for the generic "observed GitHub checks are still
+// pending" reason (sneat-dev/wb#627 minor 2, red-team round 4 on PR #629):
+// without it, a wait held open only by filterSelectedChecks's jobless-run
+// retention (M2) gave no clue which run, or why, until the slice timed out
+// — the synthetic "workflow-run:<id>:<event>" entry was the only evidence,
+// and nothing surfaced it in the reason text. Returns "" when no
+// workflow-run entry in checks is still pending.
+func pendingWorkflowRunHint(checks []RemoteCheck) string {
+	for _, check := range checks {
+		if !isWorkflowRunEntry(check) || check.Bucket != "pending" {
+			continue
+		}
+		name := check.WorkflowName
+		if name == "" {
+			name = "unnamed workflow"
+		}
+		event := check.WorkflowEvent
+		if event == "" {
+			event = "unknown event"
+		}
+		return fmt.Sprintf("run %q (%s) has not registered a job yet", name, event)
+	}
+	return ""
 }
 
 // checkBucketTerminal reports whether bucket is one of the terminal buckets

@@ -881,6 +881,64 @@ exit 30
 	}
 }
 
+// TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter covers minor 1
+// (red-team round 4 on PR #629): same fixture shape as
+// TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen, but with an active
+// `--workflow Docs` alongside `--check deploy*`. The jobless "Prod" run is
+// under a DIFFERENT workflow ("Prod"), which `--workflow Docs` excludes
+// outright — a job under "Prod" could never be selected by the combined AND
+// filter, so retaining its jobless run only holds the wait open for
+// something it could never match. The wait must pass once the Docs job is
+// terminal, not wait out the whole slice on an excluded workflow's run.
+func TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/workflowgated/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/workflowgated/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"id":1,"name":"deploy-docs","status":"completed","conclusion":"success","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":601}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":2,"workflow_runs":[{"id":7001,"name":"Docs","workflow_id":40,"event":"push","status":"completed","conclusion":"success","check_suite_id":601,"created_at":"2026-01-01T00:00:00Z"},{"id":7002,"name":"Prod","workflow_id":41,"event":"push","status":"pending","conclusion":"","check_suite_id":602,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/workflowgated", "--target", "main", "--head", ciWaitHead,
+		"--workflow", "Docs", "--check", "deploy*", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if code != exitOK || output.Status != "passed" {
+		t.Fatalf("an active --workflow must exclude a jobless run under a different workflow from retention: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	for _, check := range output.Checks {
+		if strings.HasPrefix(check.Name, "workflow-run:41:") {
+			t.Fatalf("the excluded Prod workflow's jobless run must not be retained when --workflow Docs is active: %#v", output.Checks)
+		}
+	}
+}
+
 // TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents covers M2(b)
 // (red-team round 3 on PR #629, new since round 2): an exact `--check build`
 // matches the push run's "build" job, which has passed. The same workflow's
@@ -943,12 +1001,25 @@ exit 30
 
 // TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone covers minor 1 (red-
 // team round 3 on PR #629): two runs share a WorkflowID but differ by event.
-// An exact `--check deploy` matches and passes in the push run. The
+// A `--check deploy*` GLOB matches and passes in the push run. The
 // pull_request run — same WorkflowID — has already registered a DIFFERENT,
-// unrelated, still-running job ("verify"): it is not jobless, and it is not
-// owned by the "deploy" match, because ownership keys on (WorkflowID, Event),
-// not WorkflowID alone. The wait must pass once "deploy" is terminal, not
-// wait on "verify".
+// unrelated, still-running job ("verify") and so is not jobless, but it is
+// not owned by the "deploy" match either, because ownership keys on
+// (WorkflowID, Event), not WorkflowID alone. The wait must pass once
+// "deploy" is terminal, not wait on "verify". The pattern is deliberately a
+// glob, not an exact name (red-team round 4 minor 6 on PR #629): an exact
+// pattern never exercises globOwnedRuns at all, so a key that dropped Event
+// (collapsing both runs onto WorkflowID 50 alone) would still pass this test
+// — `ownedRuns[50]` would already be true from the deploy match, and neither
+// `workflowOwnedRuns` nor `globOwnedRuns` nor `anyUnmatchedExact` would flip
+// true for an already-fully-matched exact pattern, so the pull_request run's
+// synthetic entry would still be dropped by accident, not because the key
+// was correct. With a glob, `globOwnedRuns[key]` DOES get set for the
+// deploy match's key — and if Event were dropped from that key, it would
+// collapse onto the very same key the pull_request run's synthetic entry
+// also collapses to, marking that entry "owned" and mistakenly retaining
+// it — turning this test's expected "passed" into "pending" if Event is
+// ever dropped from the key.
 func TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
@@ -982,7 +1053,7 @@ exit 30
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
 		"ci", "wait", "--repo", "acme/sharedworkflowid", "--target", "main", "--head", ciWaitHead,
-		"--check", "deploy", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+		"--check", "deploy*", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
 	}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
@@ -992,7 +1063,7 @@ exit 30
 		t.Fatalf("an unrelated in_progress job under the same WorkflowID but a different event must not hold the wait: code %d output=%+v stderr=%s", code, output, stderr.String())
 	}
 	if len(output.Checks) != 1 || output.Checks[0].Name != "check-run:deploy" {
-		t.Fatalf("passed receipt should carry only the matched deploy job: %#v", output.Checks)
+		t.Fatalf("passed receipt should carry only the matched deploy job, not the unrelated pull_request run's entry: %#v", output.Checks)
 	}
 }
 
@@ -1107,6 +1178,175 @@ exit 30
 	}
 	if output.Status != "failed" || code == exitOK {
 		t.Fatalf("skipped-by-upstream-failure should fail, matching what an unfiltered wait would see: %+v", output)
+	}
+}
+
+// TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails
+// is a probe test for B1 (red-team round 4 on PR #629): the round-3 M3 fix
+// only compared a skipped check's owning run conclusion against the failing
+// values, so a run still `in_progress` (conclusion "") read as a pass the
+// instant "publish" showed up "skipped" — the common real-CI shape, since
+// "build" failing and "publish" (which needs: build) turning up "skipped"
+// both typically register well before a slow sibling "race" job in the same
+// run finishes. An unfiltered wait would still be pending in this window,
+// watching "race"; a filtered `--check publish` wait must reach the same
+// verdict, not a premature pass. Three invocations: (1) build failed,
+// publish skipped, race still in_progress, run itself in_progress — must
+// stay pending; (2) the run has now concluded failure — must fail; (3)
+// "re-run failed jobs" put the run back in_progress with publish skipped
+// again — must return to pending, not a stale pass or fail from before the
+// rerun.
+func TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/skipchain/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/skipchain/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  case "${WB_CI_WAIT_INVOCATION:-1}" in
+    1|3)
+      echo '{"total_count":3,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}},{"id":2,"name":"publish","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}},{"id":3,"name":"race","status":"in_progress","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}}]}'
+      ;;
+    *)
+      echo '{"total_count":3,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}},{"id":2,"name":"publish","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}},{"id":3,"name":"race","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":900}}]}'
+      ;;
+  esac
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  case "${WB_CI_WAIT_INVOCATION:-1}" in
+    1|3)
+      echo '{"total_count":1,"workflow_runs":[{"id":12001,"name":"Release","workflow_id":30,"event":"push","status":"in_progress","conclusion":"","check_suite_id":900,"created_at":"2026-01-01T00:00:00Z"}]}'
+      ;;
+    *)
+      echo '{"total_count":1,"workflow_runs":[{"id":12001,"name":"Release","workflow_id":30,"event":"push","status":"completed","conclusion":"failure","check_suite_id":900,"created_at":"2026-01-01T00:00:00Z"}]}'
+      ;;
+  esac
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	runWait := func(t *testing.T, invocation string) ciWaitOutput {
+		t.Helper()
+		t.Setenv("WB_CI_WAIT_INVOCATION", invocation)
+		var stdout, stderr bytes.Buffer
+		code := run([]string{
+			"ci", "wait", "--repo", "acme/skipchain", "--target", "main", "--head", ciWaitHead,
+			"--check", "publish", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+		}, &stdout, &stderr)
+		var output ciWaitOutput
+		if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+			t.Fatalf("invocation %s: output=%q stderr=%q: %v", invocation, stdout.String(), stderr.String(), err)
+		}
+		if (output.Status == "passed") != (code == exitOK) {
+			t.Fatalf("invocation %s: exit code %d inconsistent with status %q", invocation, code, output.Status)
+		}
+		return output
+	}
+
+	// Invocation 1: build failed, publish is skipped, but the owning
+	// "Release" run itself is still in_progress (race has not finished).
+	// The B1 fix must report pending here, not a premature pass.
+	pending := runWait(t, "1")
+	if pending.Status != "pending" {
+		t.Fatalf("a skipped selected check whose owning run has not concluded must be pending, not %q: %+v", pending.Status, pending)
+	}
+
+	// Invocation 2: the "Release" run has now concluded failure. The wait
+	// must fail, matching what an unfiltered wait watching "race" would
+	// also see once the run concludes.
+	failed := runWait(t, "2")
+	if failed.Status != "failed" {
+		t.Fatalf("a skipped selected check whose owning run concluded failure must fail, not %q: %+v", failed.Status, failed)
+	}
+
+	// Invocation 3: GitHub's "re-run failed jobs" put the run back
+	// in_progress with "publish" still reporting skipped from before the
+	// rerun. The wait must return to pending, not keep reporting the
+	// invocation-2 failure or a stale pass.
+	rerun := runWait(t, "3")
+	if rerun.Status != "pending" {
+		t.Fatalf("a re-run that returns the owning run to in_progress must be pending again, not %q: %+v", rerun.Status, rerun)
+	}
+}
+
+// TestCIWaitWorkflowWhollySkippedRunFailsNotPasses covers minor 5 (red-team
+// round 4 on PR #629): every job `--workflow Release` selects reports
+// "skipped" (a `workflow_run` Release gated `if: conclusion == 'success'`
+// after CI failed, so GitHub never runs any Release job at all), and the
+// Release run itself has concluded — a conclusion GitHub uses for a wholly
+// skipped run, itself not one of workflowRunConclusionFailed's failing
+// values, so nothing in the per-check loop reports "fail". Without an
+// explicit check for "every selected check was skipping", this would pass —
+// answering "is the release built?" with yes when nothing in it ever ran.
+// The wait must fail instead, naming the reason.
+func TestCIWaitWorkflowWhollySkippedRunFailsNotPasses(t *testing.T) {
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/wholeskip/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/wholeskip/rules/branches/main?per_page=100'; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":2,"check_runs":[{"id":1,"name":"publish","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":1001}},{"id":2,"name":"notify","status":"completed","conclusion":"skipped","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":1001}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
+  echo '{"total_count":1,"workflow_runs":[{"id":13001,"name":"Release","workflow_id":60,"event":"workflow_run","status":"completed","conclusion":"skipped","check_suite_id":1001,"created_at":"2026-01-01T00:00:00Z"}]}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 30
+`
+	writeCIWaitFilterExecutable(t, script)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"ci", "wait", "--repo", "acme/wholeskip", "--target", "main", "--head", ciWaitHead,
+		"--workflow", "Release", "--slice", ciWaitFastFailSlice.String(), "--interval", ciWaitRereadInterval.String(), "--json",
+	}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("output=%q: %v", stdout.String(), err)
+	}
+	if output.Status == "passed" {
+		t.Fatalf("a wholly skipped selected run must never pass: code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if output.Status != "failed" || code == exitOK {
+		t.Fatalf("a wholly skipped selected run should fail, not just stay pending: %+v", output)
+	}
+	if !strings.Contains(output.Reason, "every selected check was skipped") {
+		t.Fatalf("failure reason should name the whole-selection skip: %q", output.Reason)
 	}
 }
 

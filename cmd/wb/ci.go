@@ -83,20 +83,38 @@ letting an unrelated matched pattern wave the wait through. The same "every
 name must match" rule applies to several --workflow names: one finishing
 never passes the wait while another named workflow — for example one that
 only starts via workflow_run after the first finishes — has produced no
-observed check at all yet. While --check is active, a still-registering
-Actions run with no job of its own yet is also kept open regardless of
-whether anything has already matched elsewhere: an exact or glob --check
-selection can be held pending by any other still-registering run on the
-head, under the same or a different workflow, not only one related to what
-has already matched — WB cannot know in advance which run a job will
-register under. A skipped job a selected --check names is not automatically
-a pass either: when its owning Actions run itself concluded failure or was
-cancelled (the common shape of a job skipped because a job it "needs:"
-failed), the wait reports it failed, the same verdict an unfiltered wait
-reaches by observing the upstream job's own failing check-run directly. A
-filter that selects nothing at all is never a vacuous pass either: it keeps
-observing, at the normal cadence, until a matching check registers or the
-slice ends — reported pending with "no check matching the filter has registered yet",
+observed check at all yet; when --workflow and --check are combined, this
+means every named workflow needs some job matching the --check patterns, or
+that workflow's name simply never clears. While --check is active, a
+still-registering Actions run with no job of its own yet is also kept open,
+but only among the workflows an active --workflow filter itself allows: a
+job can never be selected under a workflow --workflow excludes, so a jobless
+run under a different, excluded workflow is dropped rather than held open.
+Among allowed workflows this is deliberately coarse — an exact or glob
+--check selection can be held pending by any other still-registering run on
+the head, under the same or a different (allowed) workflow, not only one
+related to what has already matched, since WB cannot know in advance which
+run a job will register under. A skipped job a selected --check or
+--workflow names is not automatically a pass: while its owning Actions run
+has not yet concluded, the wait reports it pending, not passed — the common
+real-CI shape is an earlier job failing and a downstream job it "needs:"
+turning up "skipped" well before a slow sibling job in the same run
+finishes, and reading the skip as a pass in that window would let a filtered
+wait finish before an unfiltered wait watching the same commit ever would.
+Once the run concludes, a skip is reported failed if the run itself
+concluded failure or was cancelled (including when the skip was caused by
+an unrelated sibling job's failure in the same run, not only a job the
+selection's own "needs:" graph depends on — WB cannot tell the two apart
+without evaluating that graph), and a selection where every check is
+"skipping" and the run concluded is also reported failed even when the run's
+own conclusion was not itself a failure — the common shape of a
+workflow_run Release job gated "if: conclusion == 'success'" after CI
+failed, where nothing in it individually reads as failed but nothing in it
+ever ran either. This matches the verdict an unfiltered wait reaches by
+observing the upstream job's own check-run directly. A filter that selects
+nothing at all is never a vacuous pass either: it keeps observing, at the
+normal cadence, until a matching check registers or the slice ends —
+reported pending with "no check matching the filter has registered yet",
 never a claim that the filter can never match. Never pass these flags to a
 landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
 evaluates the full required set.

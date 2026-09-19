@@ -938,8 +938,10 @@
                 "An exact --check waits only for that one job -- a still-running sibling job in the same suite, or the whole Actions run stuck on an environment approval, never holds up the wait once the selected job itself is terminal; with several exact patterns every one must match before the wait can pass (sneat-dev/wb#627 B1-R)",
                 "A --check glob or --workflow instead keeps its owning Actions run open while non-terminal, since either could still match a job -- for example one gated by needs: -- that has not registered yet; --workflow always means the whole run",
                 "With several --workflow names, every one must have produced an observed check before the wait can pass, the same completeness rule exact --check patterns already had (sneat-dev/wb#627 M1)",
-                "While --check is active, a still-registering Actions run with no job of its own yet is kept open regardless of ownership -- a glob that already matched in one run, or an exact name that already matched under one event, can still be held pending by a different still-registering run on the head, documented rather than silent (sneat-dev/wb#627 M2)",
-                "A selected --check on a job GitHub reports skipped is not automatically a pass: when the owning Actions run itself concluded failure or was cancelled (skipped because an earlier needs: job failed), the wait reports failed, matching what an unfiltered wait sees from the earlier job's own failing check-run (sneat-dev/wb#627 M3)",
+                "While --check is active, a still-registering Actions run with no job of its own yet is kept open regardless of ownership, but only among the workflows an active --workflow filter itself allows -- a job under an excluded workflow can never be selected, so its jobless run is dropped rather than held open (sneat-dev/wb#627 M2, minor 1)",
+                "A selected --check or --workflow on a job GitHub reports skipped is pending, not a pass, while the owning Actions run has not itself concluded (the common shape: an earlier job fails and a needs:-gated downstream job reads skipped well before a slow sibling job in the same run finishes) (sneat-dev/wb#627 M3, B1 round 4)",
+                "Once the owning run concludes, a skip is reported failed if the run concluded failure or was cancelled -- including a skip caused by an unrelated sibling job's failure in the same run, not only the selection's own needs: dependency, since WB cannot tell the two apart without evaluating that graph (sneat-dev/wb#627 M3, minor 4)",
+                "A selection where every check is skipping and the owning run has concluded is also reported failed even when the run's own conclusion was not itself a failure -- the common shape of a workflow_run Release job gated on the prior run's success after that run failed (sneat-dev/wb#627 minor 5)",
                 "A filter that selects nothing keeps polling at the normal cadence until a match registers or the slice ends, pending with \"no check matching the filter has registered yet\" -- never a vacuous pass and never a claim the filter can never match"
               ]
             }
@@ -976,6 +978,9 @@
                 "another named workflow",
                 "still-registering run",
                 "not automatically",
+                "excluded workflow is dropped",
+                "not passed",
+                "a selection where every check is",
                 "no check matching the filter has registered yet",
                 "Never pass these flags"
               ]
@@ -1093,6 +1098,21 @@
             {
               "path": "cmd/wb/ci_wait_filter_test.go",
               "name": "TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/ci_wait_filter_test.go",
+              "name": "TestCIWaitWorkflowWhollySkippedRunFailsNotPasses",
               "kind": "integration"
             },
             {
