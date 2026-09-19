@@ -134,11 +134,41 @@ func TestGovernedEnvironmentCapsChildParallelism(t *testing.T) {
 		"WB_CPU_UNITS=2",
 		"GOMAXPROCS=2",
 		"NX_PARALLEL=2",
-		"GOFLAGS=-mod=readonly -p=1",
+		// -p follows the allocation (units), not a hardcoded -p=1: forcing
+		// single-package parallelism was the root cause of sneat-dev/wb#621
+		// (a broad `go test ./...` building one package at a time on an
+		// otherwise idle 18-core machine).
+		"GOFLAGS=-mod=readonly -p=2",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("environment is missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+// TestGovernedEnvironmentRespectsCallersExplicitDashP proves the caller's own
+// -p wins: governedEnvironment must not append a second -p when the caller
+// already pinned one.
+func TestGovernedEnvironmentRespectsCallersExplicitDashP(t *testing.T) {
+	t.Setenv("GOFLAGS", "-p=8")
+	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "build", "./..."}, 5)
+	joined := strings.Join(environment, "\n")
+	if !strings.Contains(joined, "GOFLAGS=-p=8") {
+		t.Fatalf("environment does not preserve the caller's -p=8: %s", joined)
+	}
+	if strings.Contains(joined, "-p=5") {
+		t.Fatalf("environment overrode the caller's explicit -p: %s", joined)
+	}
+}
+
+// TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands proves the
+// GOFLAGS/-p injection is scoped to the go tool, not every governed command.
+func TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"pytest", "-q"}, 2)
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(joined, "GOFLAGS=") {
+		t.Fatalf("environment set GOFLAGS for a non-go command: %s", joined)
 	}
 }
 
