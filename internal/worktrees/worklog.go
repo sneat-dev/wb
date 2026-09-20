@@ -1143,7 +1143,21 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 // immutable private claim and live Git identity. A missing projection denotes
 // a legacy pre-Work-Log checkout; every other mismatch is a hard resume error.
 func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection, string, error) {
-	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	return activeWorkLogClaimWithMode(home, worktree, false)
+}
+
+func activeWorkLogClaimReadOnly(home, worktree string) (workLogClaim, workLogProjection, string, error) {
+	return activeWorkLogClaimWithMode(home, worktree, true)
+}
+
+func activeWorkLogClaimWithMode(home, worktree string, readOnly bool) (workLogClaim, workLogProjection, string, error) {
+	var projection workLogProjection
+	var err error
+	if readOnly {
+		projection, err = readWorkLogProjectionForReadOnlyClaim(worktree)
+	} else {
+		projection, err = readWorkLogProjectionForClaim(home, worktree)
+	}
 	if err != nil {
 		return workLogClaim{}, workLogProjection{}, "", err
 	}
@@ -1177,7 +1191,21 @@ func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection,
 // error. Callers such as `wb worktree list`/`summary`/`log show` use this to
 // surface finalize evidence for a worktree that has not yet been cleaned up.
 func readWorkLogTerminalRecord(home, worktree string) (*workLogTerminalRecord, error) {
-	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	return readWorkLogTerminalRecordWithMode(home, worktree, false)
+}
+
+func readWorkLogTerminalRecordReadOnly(home, worktree string) (*workLogTerminalRecord, error) {
+	return readWorkLogTerminalRecordWithMode(home, worktree, true)
+}
+
+func readWorkLogTerminalRecordWithMode(home, worktree string, readOnly bool) (*workLogTerminalRecord, error) {
+	var projection workLogProjection
+	var err error
+	if readOnly {
+		projection, err = readWorkLogProjectionForReadOnlyClaim(worktree)
+	} else {
+		projection, err = readWorkLogProjectionForClaim(home, worktree)
+	}
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil, nil
 	}

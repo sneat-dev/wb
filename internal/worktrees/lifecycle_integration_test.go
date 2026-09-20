@@ -2926,11 +2926,15 @@ func remoteBranchForTest(t *testing.T, repository, branch string) string {
 // target by construction, and the landed commit carries more than that
 // candidate's tree, so the exact-tree rebase receipt cannot describe it.
 func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateResult, string, string, time.Time) {
+	return prepareAbsorbedCandidateWithWorkLog(t, task, WorkLogOptions{Model: "unknown"})
+}
+
+func prepareAbsorbedCandidateWithWorkLog(t *testing.T, task string, workLog WorkLogOptions) (*gitFixture, CreateResult, string, string, time.Time) {
 	t.Helper()
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+		Operation:    task, WorkLog: workLog,
 	})
 	if err != nil {
 		t.Fatal(err)
