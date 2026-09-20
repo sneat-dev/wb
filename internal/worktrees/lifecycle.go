@@ -3493,7 +3493,7 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 	// compatibility branch is intentionally limited to the parked-session claim
 	// and does not override ordinary manifests or an explicit --base choice.
 	if manifestBase != "" && strings.TrimSpace(home) != "" {
-		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil && claim.AcquiredVia == "parked_session_resume" {
+		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree); claimErr == nil && claim.AcquiredVia == "parked_session_resume" {
 			return fallback, nil
 		}
 	}
@@ -3506,7 +3506,7 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 	// full corroboration before any destructive operation. Claims are consulted
 	// here only when a legacy checkout has no manifest.
 	if manifestBase == "" && strings.TrimSpace(home) != "" {
-		claim, _, _, claimErr := activeWorkLogClaim(home, worktree)
+		claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree)
 		switch {
 		case claimErr == nil:
 			claimBase = strings.TrimSpace(claim.Base)
@@ -3720,10 +3720,10 @@ func inspectLifecycleWorktree(
 	// exists so park can identify the intended member before attempting custody
 	// capture; legacy claims simply leave this field empty.
 	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
-		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
+		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, worktree); claimErr == nil {
 			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
 			result.TaskSummary = claim.TaskSummary
-		} else if terminal, terminalErr := readWorkLogTerminalRecord(home, worktree); terminalErr == nil && terminal != nil {
+		} else if terminal, terminalErr := readWorkLogTerminalRecordReadOnly(home, worktree); terminalErr == nil && terminal != nil {
 			result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
 			result.TaskSummary = terminal.TaskSummary
 			if terminal.FinalizeReport != nil {
