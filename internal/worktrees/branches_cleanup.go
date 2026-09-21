@@ -746,12 +746,12 @@ func rejectSymlinkAncestors(path string) error {
 	}
 }
 
-func copyFileSHA256(source, destination string) (string, error) {
+func copyFileSHA256(source, destination string) (digest string, resultErr error) {
 	input, err := os.Open(source)
 	if err != nil {
 		return "", err
 	}
-	defer input.Close()
+	defer func() { resultErr = errors.Join(resultErr, input.Close()) }()
 	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err
