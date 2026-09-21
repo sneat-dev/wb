@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 
 func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	command := newFleetDefaultBranchCmd()
-	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "format", "json"} {
+	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}
@@ -182,6 +183,38 @@ func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T
 	}
 }
 
+func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *testing.T) {
+	original := defaultBranchListRemote
+	t.Cleanup(func() { defaultBranchListRemote = original })
+	defaultBranchListRemote = func(owner string) ([]discover.Repo, error) {
+		if owner != "large" {
+			return nil, errors.New("unexpected owner")
+		}
+		listed := make([]discover.Repo, 1000)
+		for i := range listed {
+			listed[i] = discover.Repo{Org: owner, Name: fmt.Sprintf("repo-%04d", i)}
+		}
+		return listed, nil
+	}
+	repos, failures, err := discoverDefaultBranchFleet("", []string{"large"}, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 0 || len(failures) != 1 || !strings.Contains(failures[0].Error, "1000 entries") {
+		t.Fatalf("partial owner listing was not refused: repos=%#v failures=%#v", repos, failures)
+	}
+}
+
+func TestFleetDefaultBranchRequiresDigestForReconciliationReceipt(t *testing.T) {
+	root := newRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fleet", "default-branch", "--repo", "acme/app", "--apply", "--reconcile-from", "receipt.json"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "--reconcile-sha256") {
+		t.Fatalf("missing receipt digest was accepted: %v", err)
+	}
+}
+
 func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 	original := defaultBranchRead
 	t.Cleanup(func() { defaultBranchRead = original })
@@ -313,12 +346,196 @@ func TestFleetDefaultBranchRootFilterRestrictsExactRepositoryScope(t *testing.T)
 
 func TestDefaultBranchResumeSourceRefusesMissingOrStaleBindings(t *testing.T) {
 	current := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "current"}
-	prior := &defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "old", Actions: []string{"renamed"}}}}
+	prior := &defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", Disposition: "compliant", ObservedDefault: "master", Desired: "main", VerifiedDefault: "main", OldHead: "old", NewHead: "old",
+		Actions: []string{"renamed master to main", "verified default branch and head"},
+	}}}
 	if source, head, reason := defaultBranchResumeSource(prior, current); source != "" || head != "" || !strings.Contains(reason, "no longer matches") {
 		t.Fatalf("stale resume = %q %q %q", source, head, reason)
 	}
 	if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply"}, current); source != "" || head != "" || !strings.Contains(reason, "no applied migration record") {
 		t.Fatalf("missing resume = %q %q %q", source, head, reason)
+	}
+}
+
+func TestReadDefaultBranchReportRequiresExactCallerDigestBeforeParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	raw := []byte(`{"schema_version":1,"mode":"apply","repositories":[]}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchReport(path, ""); err == nil {
+		t.Fatal("missing digest was accepted")
+	}
+	if _, err := readDefaultBranchReport(path, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("wrong digest = %v", err)
+	}
+	if _, err := readDefaultBranchReport(path, defaultBranchDigest(raw)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
+	current := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "same"}
+	verified := defaultBranchRepository{
+		Repository: "acme/app", Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main",
+		OldHead: "same", NewHead: "same", Actions: []string{"renamed master to main", "verified default branch and head"},
+	}
+	if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{verified}}, current); source != "master" || head != "same" || reason != "" {
+		t.Fatalf("verified resume = %q %q %q", source, head, reason)
+	}
+	for name, mutate := range map[string]func(*defaultBranchRepository){
+		"noncompliant":       func(v *defaultBranchRepository) { v.Disposition = "drift" },
+		"unverified default": func(v *defaultBranchRepository) { v.VerifiedDefault = "" },
+		"wrong head":         func(v *defaultBranchRepository) { v.NewHead = "other" },
+		"forged action":      func(v *defaultBranchRepository) { v.Actions = []string{"renamed master to main"} },
+		"same source":        func(v *defaultBranchRepository) { v.ObservedDefault = "main" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := verified
+			mutate(&candidate)
+			if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{candidate}}, current); source != "" || head != "" || !strings.Contains(reason, "verified successful") {
+				t.Fatalf("forged resume = %q %q %q", source, head, reason)
+			}
+		})
+	}
+}
+
+func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
+	originalRead, originalConfig, originalGit, originalProjects := defaultBranchRead, defaultBranchConfigPath, defaultBranchGit, projectsRoot
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchConfigPath, defaultBranchGit, projectsRoot = originalRead, originalConfig, originalGit, originalProjects
+	})
+	projectsRoot = t.TempDir()
+	clone := filepath.Join(projectsRoot, "acme", "app")
+	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main", OldHead: "same", NewHead: "same", Actions: []string{"renamed master to main", "verified default branch and head"},
+	}}}
+	priorRaw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorPath := filepath.Join(t.TempDir(), "mac-apply.json")
+	if err := os.WriteFile(priorPath, priorRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	var calls []string
+	defaultBranchGit = func(_ context.Context, dir string, args ...string) (string, error) {
+		if dir != clone {
+			return "", errors.New("unexpected clone " + dir)
+		}
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "remote get-url origin":
+			return "git@github.com:acme/app.git", nil
+		case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain", "log --branches --not --remotes --format=%H", "branch --set-upstream-to=origin/main main":
+			return "", nil
+		case "worktree list --porcelain":
+			return "worktree " + clone + "\nbranch refs/heads/master", nil
+		case "branch --show-current":
+			return "master", nil
+		case "rev-parse origin/main", "rev-parse master":
+			return "same", nil
+		case "for-each-ref --format=%(refname:strip=2) refs/heads":
+			return "master", nil
+		case "branch -m master main":
+			return "", nil
+		default:
+			return "", errors.New("unexpected git " + call)
+		}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: priorPath, reconcileSHA256: defaultBranchDigest(priorRaw)}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Repositories[0].CanonicalClones; len(got) != 1 || got[0].Disposition != "compliant" || !strings.Contains(strings.Join(got[0].Actions, " "), "renamed local master") {
+		t.Fatalf("VM reconciliation = %#v", got)
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "branch -m master main") {
+		t.Fatalf("VM did not rename its safe local branch: %v", calls)
+	}
+}
+
+func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testing.T) {
+	originalGit, originalProjects := defaultBranchGit, projectsRoot
+	t.Cleanup(func() { defaultBranchGit, projectsRoot = originalGit, originalProjects })
+	projectsRoot = t.TempDir()
+	githubClone := filepath.Join(projectsRoot, "acme", "app")
+	legacyMirror := filepath.Join(projectsRoot, "other", "app")
+	gitlabClone := filepath.Join(projectsRoot, "gitlab.com", "acme", "app")
+	mismatchedClone := filepath.Join(projectsRoot, "github.com", "acme", "mismatch")
+	unreadableClone := filepath.Join(projectsRoot, "github.com", "acme", "unreadable")
+	for _, clone := range []string{githubClone, legacyMirror, gitlabClone, mismatchedClone, unreadableClone} {
+		if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defaultBranchGit = func(_ context.Context, dir string, args ...string) (string, error) {
+		if strings.Join(args, " ") != "remote get-url origin" {
+			return "", errors.New("unexpected git call")
+		}
+		switch dir {
+		case githubClone:
+			return "git@github.com:acme/app.git", nil
+		case legacyMirror:
+			return "git@gitlab.com:other/app.git", nil
+		case mismatchedClone:
+			return "git@github.com:acme/other.git", nil
+		case unreadableClone:
+			return "", errors.New("origin is unavailable")
+		default:
+			return "", errors.New("cross-forge clone should not be queried")
+		}
+	}
+	clones, err := defaultBranchLocalClones("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clones.Eligible["acme/app"]; len(got) != 1 || got[0].Path != githubClone {
+		t.Fatalf("eligible clones = %#v", clones)
+	}
+	if got := clones.Blocked["acme/mismatch"]; len(got) != 1 || got[0].Path != mismatchedClone || got[0].Disposition != "blocked" {
+		t.Fatalf("mismatched canonical origin was not visible: %#v", clones)
+	}
+	if got := clones.Blocked["acme/unreadable"]; len(got) != 1 || got[0].Path != unreadableClone || got[0].Disposition != "error" {
+		t.Fatalf("unreadable github canonical origin was not visible: %#v", clones)
+	}
+}
+
+func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
+	original := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = original })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		case "repos/acme/app/rules/branches/master?per_page=100":
+			return []byte("[\n]"), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	result := defaultBranchRepository{Repository: "acme/app"}
+	if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err != nil {
+		t.Fatalf("whitespace empty rules array blocked migration: %v", err)
 	}
 }
 

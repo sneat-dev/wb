@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -31,6 +34,7 @@ const defaultBranchSchemaVersion = 1
 type defaultBranchOptions struct {
 	apply, json, includeUser, allOrgs bool
 	branch, reportDir, reconcileFrom  string
+	reconcileSHA256                   string
 	owners, repositories              []string
 	parallel                          int
 }
@@ -145,6 +149,12 @@ When the desired branch is absent, WB uses GitHub's branch-rename endpoint only 
 			if options.reconcileFrom != "" && !options.apply {
 				return usageError("--reconcile-from requires --apply")
 			}
+			if options.reconcileFrom != "" && !validDefaultBranchDigest(options.reconcileSHA256) {
+				return usageError("--reconcile-from requires --reconcile-sha256 with the exact 64-character SHA-256 of that report")
+			}
+			if options.reconcileFrom == "" && options.reconcileSHA256 != "" {
+				return usageError("--reconcile-sha256 requires --reconcile-from")
+			}
 			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
 			if err != nil {
 				return err
@@ -171,6 +181,7 @@ When the desired branch is absent, WB uses GitHub's branch-rename endpoint only 
 	command.Flags().IntVar(&options.parallel, "parallel", parallel, "maximum GitHub repositories to inspect or apply concurrently (1-16)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/default-branch)")
 	command.Flags().StringVar(&options.reconcileFrom, "reconcile-from", "", "resume canonical-clone reconciliation from an earlier default-branch apply report")
+	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
 	addJSONFormatFlags(command, &options.json)
 	return command
 }
@@ -180,7 +191,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
-	prior, err := readDefaultBranchReport(options.reconcileFrom)
+	prior, err := readDefaultBranchReport(options.reconcileFrom, options.reconcileSHA256)
 	if err != nil {
 		return defaultBranchReport{}, err
 	}
@@ -215,6 +226,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 	}
 	close(jobs)
 	wg.Wait()
+	attachDefaultBranchLocalBlockers(&report, locals.Blocked)
 	if options.apply {
 		path, err := defaultBranchReportPath(options.reportDir)
 		if err != nil {
@@ -245,12 +257,12 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 				sourceDefault, sourceHead, resumeReason = defaultBranchResumeSource(prior, report.Repositories[i])
 			}
 			if sourceDefault != "" {
-				reconcileDefaultBranchCanonicals(ctx, &report.Repositories[i], locals[strings.ToLower(report.Repositories[i].Repository)], sourceDefault, sourceHead, func() error {
+				reconcileDefaultBranchCanonicals(ctx, &report.Repositories[i], locals.Eligible[strings.ToLower(report.Repositories[i].Repository)], sourceDefault, sourceHead, func() error {
 					summarizeDefaultBranch(&report)
 					return persistDefaultBranchReport(report)
 				})
 			} else if resumeReason != "" {
-				for _, clone := range locals[strings.ToLower(report.Repositories[i].Repository)] {
+				for _, clone := range locals.Eligible[strings.ToLower(report.Repositories[i].Repository)] {
 					report.Repositories[i].CanonicalClones = append(report.Repositories[i].CanonicalClones, defaultBranchCanonical{Path: clone.Path, Disposition: "blocked", Error: resumeReason})
 				}
 			}
@@ -275,13 +287,19 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 	return report, nil
 }
 
-func readDefaultBranchReport(path string) (*defaultBranchReport, error) {
+func readDefaultBranchReport(path, expectedDigest string) (*defaultBranchReport, error) {
 	if path == "" {
 		return nil, nil
+	}
+	if !validDefaultBranchDigest(expectedDigest) {
+		return nil, errors.New("--reconcile-from requires --reconcile-sha256 with the exact 64-character SHA-256 of that report")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read --reconcile-from report: %w", err)
+	}
+	if actual := defaultBranchDigest(raw); !strings.EqualFold(actual, expectedDigest) {
+		return nil, fmt.Errorf("--reconcile-from SHA-256 mismatch: got %s", actual)
 	}
 	var report defaultBranchReport
 	if err := json.Unmarshal(raw, &report); err != nil {
@@ -301,8 +319,8 @@ func defaultBranchResumeSource(prior *defaultBranchReport, current defaultBranch
 		if !strings.EqualFold(previous.Repository, current.Repository) {
 			continue
 		}
-		if previous.ObservedDefault == "" || previous.ObservedDefault == current.Desired || !validDefaultBranch(previous.ObservedDefault) || previous.Desired != current.Desired || previous.OldHead == "" || len(previous.Actions) == 0 {
-			return "", "", "--reconcile-from does not contain a valid applied source/default binding for this repository"
+		if previous.Disposition != "compliant" || previous.ObservedDefault == "" || previous.ObservedDefault == current.Desired || !validDefaultBranch(previous.ObservedDefault) || !validDefaultBranch(previous.Desired) || previous.Desired != current.Desired || previous.VerifiedDefault != current.Desired || previous.OldHead == "" || previous.NewHead != previous.OldHead || !defaultBranchMigrationActionsVerified(previous) {
+			return "", "", "--reconcile-from does not contain a verified successful migration record for this repository"
 		}
 		if previous.OldHead != current.OldHead {
 			return "", "", "--reconcile-from source SHA no longer matches the refreshed remote default; rerun the audit before reconciling this clone"
@@ -312,26 +330,93 @@ func defaultBranchResumeSource(prior *defaultBranchReport, current defaultBranch
 	return "", "", "--reconcile-from has no applied migration record for this repository"
 }
 
-func defaultBranchLocalClones(filter string) (map[string][]discover.Repo, error) {
+func defaultBranchMigrationActionsVerified(repository defaultBranchRepository) bool {
+	verified := []string{"verified default branch and head"}
+	rename := append([]string{"renamed " + repository.ObservedDefault + " to " + repository.Desired}, verified...)
+	switchDefault := append([]string{"set default branch to existing same-SHA " + repository.Desired}, verified...)
+	return slicesEqual(repository.Actions, rename) || slicesEqual(repository.Actions, switchDefault)
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validDefaultBranchDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func defaultBranchDigest(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+type defaultBranchLocalCloneSet struct {
+	Eligible map[string][]discover.Repo
+	Blocked  map[string][]defaultBranchCanonical
+}
+
+func attachDefaultBranchLocalBlockers(report *defaultBranchReport, blockers map[string][]defaultBranchCanonical) {
+	for i := range report.Repositories {
+		key := strings.ToLower(report.Repositories[i].Repository)
+		report.Repositories[i].CanonicalClones = append(report.Repositories[i].CanonicalClones, blockers[key]...)
+	}
+}
+
+func defaultBranchLocalClones(filter string) (defaultBranchLocalCloneSet, error) {
+	result := defaultBranchLocalCloneSet{Eligible: map[string][]discover.Repo{}, Blocked: map[string][]defaultBranchCanonical{}}
 	if strings.TrimSpace(projectsRoot) == "" {
-		return map[string][]discover.Repo{}, nil
+		return result, nil
 	}
 	local, err := discover.ScanLocal(projectsRoot)
 	if err != nil {
-		return nil, fmt.Errorf("scan local canonical clones: %w", err)
+		return result, fmt.Errorf("scan local canonical clones: %w", err)
 	}
-	bySlug := make(map[string][]discover.Repo)
 	for _, clone := range local {
 		if filter != "" && !strings.Contains(clone.Slug(), filter) {
 			continue
 		}
+		if clone.Host != "" && !strings.EqualFold(clone.Host, "github.com") {
+			continue
+		}
+		origin, err := defaultBranchGit(context.Background(), clone.Path, "remote", "get-url", "origin")
+		if err != nil {
+			if strings.EqualFold(clone.Host, "github.com") {
+				key := strings.ToLower(clone.Slug())
+				result.Blocked[key] = append(result.Blocked[key], defaultBranchCanonical{Path: clone.Path, Disposition: "error", Error: "read canonical origin: " + err.Error()})
+			}
+			continue
+		}
+		remote, err := gitremote.Parse(origin)
+		if err != nil || remote.Identity.Host() != "github.com" || !strings.EqualFold(remote.Identity.Repository, clone.Slug()) {
+			if strings.EqualFold(clone.Host, "github.com") {
+				key := strings.ToLower(clone.Slug())
+				message := "canonical origin does not prove github.com/" + clone.Slug()
+				if err != nil {
+					message += ": " + err.Error()
+				}
+				result.Blocked[key] = append(result.Blocked[key], defaultBranchCanonical{Path: clone.Path, Disposition: "blocked", Error: message})
+			}
+			continue
+		}
 		key := strings.ToLower(clone.Slug())
-		bySlug[key] = append(bySlug[key], clone)
+		result.Eligible[key] = append(result.Eligible[key], clone)
 	}
-	for key := range bySlug {
-		sort.Slice(bySlug[key], func(i, j int) bool { return bySlug[key][i].Path < bySlug[key][j].Path })
+	for key := range result.Eligible {
+		sort.Slice(result.Eligible[key], func(i, j int) bool { return result.Eligible[key][i].Path < result.Eligible[key][j].Path })
 	}
-	return bySlug, nil
+	return result, nil
 }
 
 func loadDefaultBranchConfig(path string) (defaultBranchConfig, error) {
@@ -428,6 +513,10 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 		listed, err := defaultBranchListRemote(owner)
 		if err != nil {
 			failures = append(failures, defaultBranchRepository{Repository: owner + "/*", Disposition: "error", Error: "list GitHub repositories: " + err.Error()})
+			continue
+		}
+		if len(listed) >= 1000 {
+			failures = append(failures, defaultBranchRepository{Repository: owner + "/*", Disposition: "error", Error: "GitHub repository listing reached 1000 entries and may be incomplete; WB will not audit or apply a partial owner scope"})
 			continue
 		}
 		for _, repo := range listed {
@@ -600,15 +689,31 @@ func defaultBranchSafety(ctx context.Context, result *defaultBranchRepository, m
 			}
 		}
 	}
-	for _, endpoint := range []string{"repos/" + slug + "/pages", "repos/" + slug + "/branches/" + url.PathEscape(old) + "/protection", "repos/" + slug + "/rules/branches/" + url.PathEscape(old) + "?per_page=100"} {
+	for _, endpoint := range []string{"repos/" + slug + "/pages", "repos/" + slug + "/branches/" + url.PathEscape(old) + "/protection"} {
 		body, err := defaultBranchRead(ctx, endpoint)
-		if err == nil && len(body) > 0 && string(body) != "[]" {
+		if err == nil && len(strings.TrimSpace(string(body))) > 0 {
 			result.Impacts = append(result.Impacts, "inspect before apply: "+endpoint)
 			return fmt.Errorf("pages, classic protection, or effective rules require an explicit migration; WB will not weaken or assume renamed coverage")
 		}
 		if err != nil && !isDefaultBranchNotFound(err) {
 			return fmt.Errorf("inspect branch impact: %w", err)
 		}
+	}
+	rulesEndpoint := "repos/" + slug + "/rules/branches/" + url.PathEscape(old) + "?per_page=100"
+	rules, err := defaultBranchRead(ctx, rulesEndpoint)
+	if err != nil {
+		if !isDefaultBranchNotFound(err) {
+			return fmt.Errorf("inspect branch impact: %w", err)
+		}
+		return nil
+	}
+	var effectiveRules []json.RawMessage
+	if err := json.Unmarshal(rules, &effectiveRules); err != nil {
+		return fmt.Errorf("decode effective branch rules: %w", err)
+	}
+	if len(effectiveRules) > 0 {
+		result.Impacts = append(result.Impacts, "inspect before apply: "+rulesEndpoint)
+		return errors.New("pages, classic protection, or effective rules require an explicit migration; WB will not weaken or assume renamed coverage")
 	}
 	return nil
 }
