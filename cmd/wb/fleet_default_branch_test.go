@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -35,7 +36,7 @@ func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 			t.Errorf("missing --%s", name)
 		}
 	}
-	if !strings.Contains(command.Long, "read-only") || !strings.Contains(command.Long, "never rewrites") {
+	if !strings.Contains(command.Long, "read-only") || !strings.Contains(command.Long, "never rewrites") || !strings.Contains(command.Long, "accepted response") {
 		t.Fatal("help omits safety contract")
 	}
 	var cfg defaultBranchConfig
@@ -197,6 +198,185 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 	}
 	if got := strings.Join(result.Actions, "\n"); got != "renamed master to main\nverified default branch and head" {
 		t.Fatalf("actions = %q", got)
+	}
+}
+
+func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *testing.T) {
+	originalRead, originalExecute, originalWait := defaultBranchRead, defaultBranchExecute, defaultBranchRenameWait
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchRenameWait = originalRead, originalExecute, originalWait
+	})
+	state, mutations, waits := 0, 0, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			if state == 2 {
+				return []byte(`{"default_branch":"main"}`), nil
+			}
+			return []byte(`{"default_branch":"master"}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"source"}}`), nil
+		case "repos/acme/app/branches/main":
+			if state == 0 {
+				return nil, errors.New("HTTP 404")
+			}
+			return []byte(`{"commit":{"sha":"source"}}`), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if got := strings.Join(args, " "); got != "api --method POST repos/acme/app/branches/master/rename -f new_name=main" {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + got)}
+		}
+		state = 1
+		return githubobserver.CommandResponse{}
+	}
+	defaultBranchRenameWait = func(context.Context, time.Duration) error {
+		waits++
+		state = 2
+		return nil
+	}
+	planned := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+	result := applyDefaultBranch(context.Background(), planned)
+	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || mutations != 1 || waits != 1 {
+		t.Fatalf("delayed visibility result=%#v mutations=%d waits=%d", result, mutations, waits)
+	}
+}
+
+func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *testing.T) {
+	originalNow, originalWait, originalRead := defaultBranchRenameNow, defaultBranchRenameWait, defaultBranchRead
+	t.Cleanup(func() {
+		defaultBranchRenameNow, defaultBranchRenameWait, defaultBranchRead = originalNow, originalWait, originalRead
+	})
+	clock := time.Now()
+	calls := 0
+	defaultBranchRenameNow = func() time.Time {
+		calls++
+		if calls == 1 {
+			return clock
+		}
+		return clock.Add(30 * time.Second)
+	}
+	waits := 0
+	defaultBranchRenameWait = func(context.Context, time.Duration) error { waits++; return nil }
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"master"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"source"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	planned := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}
+	result, err := waitForDefaultBranchRename(context.Background(), planned)
+	if err != nil || result.Disposition != "drift" || result.ObservedDefault != "master" || result.OldHead != "source" || waits != 0 {
+		t.Fatalf("timeout result=%#v err=%v waits=%d", result, err, waits)
+	}
+}
+
+func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T) {
+	for name, failAfterResponse := range map[string]bool{"before response": false, "after response": true} {
+		t.Run(name, func(t *testing.T) {
+			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			mutated := false
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch endpoint {
+				case "repos/acme/app":
+					if mutated {
+						return []byte(`{"default_branch":"main"}`), nil
+					}
+					return []byte(`{"default_branch":"master"}`), nil
+				case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
+					if endpoint == "repos/acme/app/branches/main" && !mutated {
+						return nil, errors.New("HTTP 404")
+					}
+					return []byte(`{"commit":{"sha":"source"}}`), nil
+				case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+					return []byte(`[]`), nil
+				default:
+					if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+						return nil, errors.New("HTTP 404")
+					}
+					if strings.Contains(endpoint, "/rules/branches/") {
+						return []byte(`[]`), nil
+					}
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			executions := 0
+			defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+				executions++
+				mutated = true
+				return githubobserver.CommandResponse{}
+			}
+			result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}, func(repository defaultBranchRepository) error {
+				if repository.RenameAccepted == failAfterResponse {
+					return errors.New("receipt unavailable")
+				}
+				return nil
+			})
+			if result.Disposition != "error" || !strings.Contains(result.Error, "persist") || (!failAfterResponse && executions != 0) || (failAfterResponse && executions != 1) {
+				t.Fatalf("result=%#v executions=%d", result, executions)
+			}
+		})
+	}
+}
+
+func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPending(t *testing.T) {
+	original := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = original })
+	planned := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "source"}
+	for name, test := range map[string]struct {
+		metadata    string
+		metadataErr error
+		target      []byte
+		targetErr   error
+		want        string
+	}{
+		"transient target absence": {metadata: `{"default_branch":"master"}`, want: "pending"},
+		"target head changed":      {metadata: `{"default_branch":"main"}`, target: []byte(`{"commit":{"sha":"changed"}}`), want: "blocked"},
+		"default changed":          {metadata: `{"default_branch":"trunk"}`, target: []byte(`{"commit":{"sha":"source"}}`), want: "blocked"},
+		"metadata unavailable":     {metadataErr: errors.New("HTTP 503"), want: "error"},
+		"metadata malformed":       {metadata: `{}`, want: "error"},
+		"target read unavailable":  {metadata: `{"default_branch":"master"}`, targetErr: errors.New("HTTP 500"), want: "error"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch endpoint {
+				case "repos/acme/app":
+					if test.metadataErr != nil {
+						return nil, test.metadataErr
+					}
+					return []byte(test.metadata), nil
+				case "repos/acme/app/branches/main":
+					if test.targetErr != nil {
+						return nil, test.targetErr
+					}
+					if test.target == nil {
+						return nil, errors.New("HTTP 404")
+					}
+					return test.target, nil
+				default:
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			if result := readDefaultBranchRenameVisibility(context.Background(), planned, time.Now().Add(time.Second)); result.Disposition != test.want {
+				t.Fatalf("visibility = %#v", result)
+			}
+		})
 	}
 }
 
@@ -572,7 +752,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 		want   string
 	}{
 		"mutation rejected":  {want: "mutation rejected"},
-		"post proof differs": {mutate: func(observed *string) { *observed = "main" }, want: "post-read branch head differs"},
+		"post proof differs": {mutate: func(observed *string) { *observed = "main" }, want: "branch head changed while waiting"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
@@ -1008,10 +1188,155 @@ func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 	}
 }
 
-func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
-	originalRead, originalConfig, originalGit, originalProjects := defaultBranchRead, defaultBranchConfigPath, defaultBranchGit, projectsRoot
+func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testing.T) {
+	original := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = original })
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	current := defaultBranchRepository{Repository: "acme/app", Disposition: "compliant", ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha}
+	prior := &defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", Disposition: "error", Error: defaultBranchLegacyRenamePostProofError, ObservedDefault: "master", Desired: "main", OldHead: sha,
+	}}}
+	reads := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		reads++
+		if endpoint != "repos/acme/app/git/ref/heads/master" {
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+		return nil, errors.New("HTTP 404")
+	}
+	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "master" || head != sha || reason != "" || reads != 1 {
+		t.Fatalf("legacy resume = %q %q %q reads=%d", source, head, reason, reads)
+	}
+	responsePending := *prior
+	responsePending.Repositories = append([]defaultBranchRepository(nil), prior.Repositories...)
+	responsePending.Repositories[0].RenameAccepted = true
+	responsePending.Repositories[0].Disposition = "error"
+	responsePending.Repositories[0].Error = "read renamed target branch: context deadline exceeded"
+	reads = 0
+	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &responsePending, current); source != "master" || head != sha || reason != "" || reads != 1 {
+		t.Fatalf("pending response resume = %q %q %q reads=%d", source, head, reason, reads)
+	}
+	for name, mutate := range map[string]func(*defaultBranchReport, *defaultBranchRepository){
+		"wrong schema":       func(r *defaultBranchReport, _ *defaultBranchRepository) { r.SchemaVersion = 2 },
+		"changed head":       func(_ *defaultBranchReport, c *defaultBranchRepository) { c.OldHead = strings.Repeat("a", 40) },
+		"malformed old head": func(r *defaultBranchReport, _ *defaultBranchRepository) { r.Repositories[0].OldHead = "short" },
+		"target existed":     func(r *defaultBranchReport, _ *defaultBranchRepository) { r.Repositories[0].TargetExists = true },
+		"forged action": func(r *defaultBranchReport, _ *defaultBranchRepository) {
+			r.Repositories[0].Actions = []string{"renamed master to main"}
+		},
+		"wrong error": func(r *defaultBranchReport, _ *defaultBranchRepository) { r.Repositories[0].Error = "other" },
+		"pre mutation": func(r *defaultBranchReport, _ *defaultBranchRepository) {
+			r.Repositories[0].Disposition, r.Repositories[0].Error = "drift", "default-branch mutation pending"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidateReport := *prior
+			candidateReport.Repositories = append([]defaultBranchRepository(nil), prior.Repositories...)
+			candidateCurrent := current
+			mutate(&candidateReport, &candidateCurrent)
+			reads = 0
+			if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &candidateReport, candidateCurrent); source != "" || head != "" || reason == "" || reads != 0 {
+				t.Fatalf("forged legacy resume = %q %q %q reads=%d", source, head, reason, reads)
+			}
+		})
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if endpoint != "repos/acme/app/git/ref/heads/master" {
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+		return []byte(`{"ref":"refs/heads/master"}`), nil
+	}
+	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "old source ref still exists") {
+		t.Fatalf("present old ref was accepted: %q %q %q", source, head, reason)
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if endpoint != "repos/acme/app/git/ref/heads/master" {
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+		return nil, errors.New("HTTP 503")
+	}
+	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), prior, current); source != "" || head != "" || !strings.Contains(reason, "could not prove") {
+		t.Fatalf("unavailable old ref proof was accepted: %q %q %q", source, head, reason)
+	}
+	if source, head, reason := defaultBranchLegacyRenameResume(context.Background(), &defaultBranchReport{SchemaVersion: 1, Mode: "apply"}, current); source != "" || head != "" || !strings.Contains(reason, "no applied") {
+		t.Fatalf("missing legacy receipt record was accepted: %q %q %q", source, head, reason)
+	}
+	if validDefaultBranchCommit(strings.Repeat("g", 40)) {
+		t.Fatal("non-hex receipt SHA was accepted")
+	}
+}
+
+func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchConfigPath, defaultBranchGit, projectsRoot = originalRead, originalConfig, originalGit, originalProjects
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+	})
+	projectsRoot = t.TempDir()
+	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"master"}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"` + sha + `"}}`), nil
+		case "repos/acme/app/branches/main":
+			return nil, errors.New("HTTP 404")
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutations := 0
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{Err: errors.New("remote mutation must not run during reconcile")}
+	}
+	for name, test := range map[string]struct {
+		repository string
+		oldHead    string
+	}{
+		"accepted response still pending": {repository: "acme/app", oldHead: sha},
+		"stale receipt":                   {repository: "acme/app", oldHead: strings.Repeat("a", 40)},
+		"missing receipt repository":      {repository: "other/app", oldHead: sha},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prior := defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{{
+				Repository: "acme/app", Disposition: "pending", Error: defaultBranchRenameResponsePendingError, RenameAccepted: true,
+				ObservedDefault: "master", Desired: "main", OldHead: test.oldHead,
+			}}}
+			prior.Repositories[0].Repository = test.repository
+			raw, err := json.Marshal(prior)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "receipt.json")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mutations = 0
+			report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: path, reconcileSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mutations != 0 || report.Repositories[0].Disposition != "blocked" || !strings.Contains(report.Repositories[0].Error, "remote read-only") {
+				t.Fatalf("report=%#v mutations=%d", report.Repositories[0], mutations)
+			}
+		})
+	}
+}
+
+func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalGit, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, projectsRoot
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, defaultBranchGit, projectsRoot = originalRead, originalExecute, originalConfig, originalGit, originalProjects
 	})
 	projectsRoot = t.TempDir()
 	clone := filepath.Join(projectsRoot, "acme", "app")
@@ -1040,6 +1365,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
+	remoteHead := "same"
 	var calls []string
 	defaultBranchGit = func(_ context.Context, dir string, args ...string) (string, error) {
 		if dir != clone {
@@ -1057,7 +1383,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 		case "branch --show-current":
 			return "master", nil
 		case "rev-parse origin/main", "rev-parse master":
-			return "same", nil
+			return remoteHead, nil
 		case "for-each-ref --format=%(refname:strip=2) refs/heads":
 			return "master", nil
 		case "branch -m master main":
@@ -1075,6 +1401,62 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(calls, "\n"), "branch -m master main") {
 		t.Fatalf("VM did not rename its safe local branch: %v", calls)
+	}
+	legacy := defaultBranchReport{SchemaVersion: 1, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", Disposition: "error", Error: defaultBranchLegacyRenamePostProofError, ObservedDefault: "master", Desired: "main", OldHead: "0123456789abcdef0123456789abcdef01234567",
+	}}}
+	legacyRaw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "mac-failed-post-proof.json")
+	if err := os.WriteFile(legacyPath, legacyRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"0123456789abcdef0123456789abcdef01234567"}}`), nil
+		case "repos/acme/app/git/ref/heads/master":
+			return nil, errors.New("HTTP 404")
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	remoteHead = "0123456789abcdef0123456789abcdef01234567"
+	calls = nil
+	recovered, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: legacyPath, reconcileSHA256: defaultBranchDigest(legacyRaw)}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recovered.Repositories[0]; got.ObservedDefault != "master" || got.VerifiedDefault != "main" || got.NewHead != "0123456789abcdef0123456789abcdef01234567" || got.RecoveredFrom != legacyPath || got.RecoveredSHA256 != defaultBranchDigest(legacyRaw) || !defaultBranchMigrationActionsVerified(got) || len(got.CanonicalClones) != 1 || got.CanonicalClones[0].Disposition != "compliant" {
+		t.Fatalf("legacy receipt recovery = %#v", got)
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "branch -m master main") {
+		t.Fatalf("legacy receipt did not reconcile the verified local branch: %v", calls)
+	}
+	secondRaw, err := json.Marshal(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPath := filepath.Join(t.TempDir(), "mac-recovered.json")
+	if err := os.WriteFile(secondPath, secondRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remoteMutations := 0
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		remoteMutations++
+		return githubobserver.CommandResponse{Err: errors.New("unexpected remote mutation")}
+	}
+	calls = nil
+	secondHop, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, branch: "main", parallel: 1, reportDir: t.TempDir(), reconcileFrom: secondPath, reconcileSHA256: defaultBranchDigest(secondRaw)}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteMutations != 0 || len(secondHop.Repositories[0].CanonicalClones) != 1 || secondHop.Repositories[0].CanonicalClones[0].Disposition != "compliant" || !strings.Contains(strings.Join(calls, "\n"), "branch -m master main") {
+		t.Fatalf("second hop=%#v remoteMutations=%d calls=%v", secondHop.Repositories[0], remoteMutations, calls)
 	}
 }
 

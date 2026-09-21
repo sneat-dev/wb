@@ -4514,7 +4514,7 @@
             "flags": ["--all-orgs", "--apply", "--branch", "--format", "--json", "--org", "--parallel", "--reconcile-from", "--reconcile-sha256", "--repo", "--report-dir", "--user"],
             "modes": [
               "Audit is read-only. Desired policy uses --branch, then fleet.organizations.<owner>.default_branch, then fleet.default_branch.",
-              "Apply requires explicit --all-orgs, --org, --repo, or --user scope and writes a unique durable report before mutation. A prior apply report can resume a bounded canonical-clone reconciliation only with --reconcile-from and its caller-held exact-byte --reconcile-sha256.",
+              "Apply needs explicit --all-orgs, --org, --repo, or --user scope and writes a durable report before mutation. GitHub rename visibility may lag: WB records an accepted response, performs bounded read-only checks, and does not retry. --reconcile-from needs its exact-byte --reconcile-sha256 and fresh proof, is remote read-only, and blocks any refreshed repository that is not compliant.",
               "Differing target SHA, archived repositories, source-head pull requests including a fork's upstream, Pages/protection/rules impacts, and concrete old-branch workflow references are explicit refusals."
             ]
           }],
