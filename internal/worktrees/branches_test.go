@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,202 @@ func TestBranchListClassifiesEveryEvidenceClass(t *testing.T) {
 		if got[branch] != disposition {
 			t.Errorf("branch %s disposition = %q, want %q", branch, got[branch], disposition)
 		}
+	}
+}
+
+func TestBranchListExactRepositoryAndBranchSelectorsDoNotUseFilterSemantics(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/exact")
+	writeAndCommit(t, fixture.canonical, "exact.txt", "v1\n", "exact")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "feature/exact")
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote,
+		Repository: "acme/app", Branch: "feature/exact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].Repository != "acme/app" || outcome.Entries[0].Branch != "feature/exact" {
+		t.Fatalf("exact selection = %#v", outcome.Entries)
+	}
+	if _, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Repository: "widget"}); err == nil {
+		t.Fatal("unqualified --repo was accepted")
+	}
+}
+
+func TestArchiveReviewedBranchRestoresExactHeadOutsideSourceClone(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/recovery")
+	head := writeAndCommit(t, fixture.canonical, "recovery.txt", "v1\n", "recovery")
+	receipt := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receipt, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := supersessionFileSHA256(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := archiveReviewedBranch(context.Background(), t.TempDir(), fixture.canonical, BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery", SHA: head, TargetSHA: head, SupersessionReceipt: receipt, SupersessionSHA256: digest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsLocal(dir) {
+		t.Fatalf("archive path must be absolute: %s", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "source.bundle")); err != nil {
+		t.Fatalf("bundle missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatalf("manifest missing: %v", err)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest reviewedBranchRecoveryManifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.RestoredHead != head || manifest.VerifiedAt.IsZero() {
+		t.Fatalf("manifest does not record independent restore verification: %#v", manifest)
+	}
+}
+
+func TestArchiveReviewedBranchRefusesUnsafeRecoveryLocations(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/recovery-location")
+	head := writeAndCommit(t, fixture.canonical, "recovery-location.txt", "v1\n", "recovery")
+	receipt := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receipt, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := supersessionFileSHA256(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery-location", SHA: head, TargetSHA: head, SupersessionReceipt: receipt, SupersessionSHA256: digest}}
+	if _, err := archiveReviewedBranch(context.Background(), fixture.canonical, fixture.canonical, result); err == nil {
+		t.Fatal("source clone recovery path was accepted")
+	}
+
+	gitTest(t, fixture.canonical, "checkout", "main")
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitTest(t, fixture.canonical, "worktree", "add", linked, "feature/recovery-location")
+	if _, err := archiveReviewedBranch(context.Background(), filepath.Join(linked, "reports"), fixture.canonical, result); err == nil {
+		t.Fatal("linked source worktree recovery path was accepted")
+	}
+
+	outside := t.TempDir()
+	link := filepath.Join(t.TempDir(), "report-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveReviewedBranch(context.Background(), link, fixture.canonical, result); err == nil {
+		t.Fatal("symlinked recovery path was accepted")
+	}
+}
+
+func TestPeerEvidenceRequiresFreshExactSafeLocalHostEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	sha := "0123456789012345678901234567890123456789"
+	base := BranchCleanupOptions{Scope: BranchScopeRemote, Repository: "acme/app", Branch: "feature/x", RequireHosts: []string{branchEvidenceHost()}}
+	result := []BranchCleanupResult{{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/x", Scope: BranchScopeRemote, SHA: sha}}}
+	write := func(t *testing.T, outcome BranchListOutcome) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "peer.json")
+		data, err := json.Marshal(outcome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	good := BranchListOutcome{Host: branchEvidenceHost(), GeneratedAt: now, Repository: "acme/app", Branch: "feature/x", Entries: []BranchEntry{{Repository: "acme/app", Branch: "feature/x", Scope: BranchScopeRemote, SHA: sha, Disposition: BranchContained}}}
+	base.PeerEvidence = []string{write(t, good)}
+	if err := validatePeerEvidence(base, result, now); err != nil {
+		t.Fatal(err)
+	}
+	stale := good
+	stale.GeneratedAt = now.Add(-6 * time.Minute)
+	base.PeerEvidence = []string{write(t, stale)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("stale evidence accepted")
+	}
+	inUse := good
+	inUse.Entries[0].Disposition = BranchInUse
+	base.PeerEvidence = []string{write(t, inUse)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("in-use evidence accepted")
+	}
+	moved := good
+	moved.Entries[0].SHA = "1111111111111111111111111111111111111111"
+	base.PeerEvidence = []string{write(t, moved)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("mismatched evidence accepted")
+	}
+	unknown := good
+	unknown.Entries[0].Disposition = ""
+	base.PeerEvidence = []string{write(t, unknown)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("unknown peer disposition accepted")
+	}
+	wrongTarget := good
+	wrongTarget.Entries[0].TargetSHA = "1111111111111111111111111111111111111111"
+	result[0].TargetSHA = sha
+	base.PeerEvidence = []string{write(t, wrongTarget)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("peer evidence with mismatched target accepted")
+	}
+	wrongBase := good
+	wrongBase.Base = "master"
+	base.PeerEvidence = []string{write(t, wrongBase)}
+	if err := validatePeerEvidence(base, result, now); err == nil {
+		t.Fatal("peer evidence with mismatched base accepted")
+	}
+}
+
+func TestReviewedCleanupOptionsAndPlanFailClosed(t *testing.T) {
+	for _, scope := range []string{BranchScopeRemote, BranchScopeAll} {
+		if _, err := normalizeBranchCleanupOptions(BranchCleanupOptions{ProjectsRoot: t.TempDir(), Scope: scope, Repository: "acme/app", Branch: "feature/x", SupersededBy: "receipt.json"}); err == nil {
+			t.Fatalf("%s reviewed cleanup accepted without peer evidence", scope)
+		}
+	}
+	entries := []BranchEntry{
+		{Repository: "acme/app", Branch: "feature/x", Scope: BranchScopeRemote, Disposition: "", SupersededAtOrigin: true},
+		{Repository: "acme/app", Branch: "feature/y", Scope: BranchScopeRemote, Disposition: BranchSuperseded, SupersededAtOrigin: true},
+	}
+	planned := planBranchCleanup(entries, branchSweepOptions{})
+	if planned[0].Eligible {
+		t.Fatal("empty disposition was eligible for reviewed cleanup")
+	}
+	if !planned[1].Eligible {
+		t.Fatal("explicit superseded disposition was not eligible")
+	}
+}
+
+func TestReviewedRemoteForkGuardFailsClosed(t *testing.T) {
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$WB_TEST_REPOSITORY_METADATA\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_TEST_REPOSITORY_METADATA", `{"fork":true}`)
+	if err := reviewedRemoteForkGuard(context.Background(), t.TempDir(), "acme/app"); err == nil {
+		t.Fatal("fork origin was accepted for reviewed remote retirement")
+	}
+	t.Setenv("WB_TEST_REPOSITORY_METADATA", `{}`)
+	if err := reviewedRemoteForkGuard(context.Background(), t.TempDir(), "acme/app"); err == nil {
+		t.Fatal("missing fork metadata was accepted")
+	}
+	t.Setenv("WB_TEST_REPOSITORY_METADATA", `{"fork":false}`)
+	if err := reviewedRemoteForkGuard(context.Background(), t.TempDir(), "acme/app"); err != nil {
+		t.Fatalf("non-fork origin rejected: %v", err)
 	}
 }
 

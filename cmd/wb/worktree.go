@@ -1532,7 +1532,7 @@ unverified, never assumed published. Run it after every push.`,
 			return nil
 		},
 	}
-	command.Flags().StringVar(&base, "base", "main", "protected canonical base branch")
+	command.Flags().StringVar(&base, "base", "", "protected canonical base branch (default: origin/HEAD, then main)")
 	command.Flags().BoolVar(&quiet, "quiet", false, "write nothing when the checkout is valid")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")

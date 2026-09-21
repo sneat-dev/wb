@@ -571,11 +571,16 @@
                 "--absorbed-by",
                 "--apply",
                 "--base",
+                "--branch",
                 "--format",
                 "--older-than",
+                "--peer-evidence",
+                "--repo",
                 "--receipts",
                 "--report-dir",
-                "--scope"
+                "--require-host",
+                "--scope",
+                "--superseded-by"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required for every deletion in every scope",
@@ -585,7 +590,10 @@
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
                 "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
-                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome"
+                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome",
+                "--superseded-by requires exact --repo and --branch, validates a trusted reviewer receipt, archives and restores the exact source head before deletion, and rechecks receipt bytes and all guards",
+                "Reviewed retirement in remote or all scope requires fresh machine-generated --peer-evidence for every explicit --require-host; missing, stale, mismatched, or unsafe evidence refuses deletion immediately before the leased push",
+                "Recovery reports are rejected inside the source clone or any linked worktree and through symlink ancestors; the manifest records fsynced SHA-bound bundle and receipt digests plus an independent restore verification"
               ]
             }
           ],
@@ -604,7 +612,10 @@
                 "pull-request evidence",
                 "never removes, moves, or modifies any working tree",
                 "--receipts",
-                "--absorbed-by"
+                "--absorbed-by",
+                "--superseded-by",
+                "--peer-evidence",
+                "--require-host"
               ]
             }
           ],
@@ -683,9 +694,11 @@
               "path": "wb branch list",
               "flags": [
                 "--base",
+                "--branch",
                 "--format",
                 "--older-than",
                 "--only",
+                "--repo",
                 "--scope"
               ],
               "modes": [
