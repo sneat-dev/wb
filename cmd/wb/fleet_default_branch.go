@@ -76,6 +76,9 @@ type defaultBranchRepository struct {
 	Archived        bool                     `json:"archived,omitempty"`
 	Fork            bool                     `json:"fork,omitempty"`
 	TargetExists    bool                     `json:"target_exists,omitempty"`
+	RenameAccepted  bool                     `json:"rename_accepted,omitempty"`
+	RecoveredFrom   string                   `json:"recovered_from,omitempty"`
+	RecoveredSHA256 string                   `json:"recovered_sha256,omitempty"`
 	Impacts         []string                 `json:"impacts,omitempty"`
 	Actions         []string                 `json:"actions,omitempty"`
 	CanonicalClones []defaultBranchCanonical `json:"canonical_clones,omitempty"`
@@ -113,6 +116,17 @@ var (
 	defaultBranchExecute = func(ctx context.Context, args ...string) githubobserver.CommandResponse {
 		return githubobserver.Execute(ctx, "", args...)
 	}
+	defaultBranchRenameWait = func(ctx context.Context, duration time.Duration) error {
+		timer := time.NewTimer(duration)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
+	defaultBranchRenameNow  = time.Now
 	defaultBranchConfigPath = wbconfig.DefaultPath
 	defaultBranchGit        = func(ctx context.Context, dir string, args ...string) (string, error) {
 		command := exec.CommandContext(ctx, "git", args...)
@@ -132,7 +146,9 @@ func newFleetDefaultBranchCmd() *cobra.Command {
 
 The desired branch comes from wb.yaml fleet.default_branch, overridden by fleet.organizations.<owner>.default_branch; --branch has highest precedence. Apply requires explicit --org, --repo, or --user scope and writes a durable report before each mutation.
 
-When the desired branch is absent, WB uses GitHub's branch-rename endpoint only after fresh repository and branch reads. If it already exists at the same SHA, WB may change the repository default only after confirming protection/ruleset coverage. A different target SHA, an archived repository, an open source-default PR (including fork-to-parent PRs), Pages source, or a protection/ruleset impact is a refusal. Workflow references are reported only; WB never rewrites branch strings blindly.`, Args: cobra.NoArgs,
+When the desired branch is absent, WB uses GitHub's branch-rename endpoint only after fresh repository and branch reads. If it already exists at the same SHA, WB may change the repository default only after confirming protection/ruleset coverage. A different target SHA, an archived repository, an open source-default PR (including fork-to-parent PRs), Pages source, or a protection/ruleset impact is a refusal. Workflow references are reported only; WB never rewrites branch strings blindly.
+
+GitHub may make an accepted rename visible asynchronously. WB records the accepted response, waits with bounded read-only checks, and never retries the mutation. --reconcile-from accepts only an exact-byte, SHA-256-bound apply receipt and fresh remote proof before reconciling a canonical clone; it is remote read-only and records a blocker while any refreshed repository is not compliant.`, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			options.owners = requestedDefaultBranchOwners(cmd, options.owners)
 			if options.parallel < 1 || options.parallel > 16 {
@@ -241,21 +257,39 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 		for i := range report.Repositories {
 			sourceDefault, sourceHead := "", ""
 			if report.Repositories[i].Disposition == "drift" {
-				report.Repositories[i] = applyDefaultBranch(ctx, report.Repositories[i])
-				summarizeDefaultBranch(&report)
-				if err := persistDefaultBranchReport(report); err != nil {
-					return report, err
-				}
-				if len(report.Repositories[i].Actions) > 0 {
-					if _, err := fmt.Fprintf(progress, "default-branch: applied %s\n", report.Repositories[i].Repository); err != nil {
+				if prior != nil {
+					report.Repositories[i].Disposition = "blocked"
+					report.Repositories[i].Error = "--reconcile-from is remote read-only, but the refreshed remote rename is not compliant; WB will not resend the mutation"
+				} else {
+					report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+						report.Repositories[i] = updated
+						summarizeDefaultBranch(&report)
+						return persistDefaultBranchReport(report)
+					})
+					summarizeDefaultBranch(&report)
+					if err := persistDefaultBranchReport(report); err != nil {
 						return report, err
 					}
-					sourceDefault, sourceHead = report.Repositories[i].ObservedDefault, report.Repositories[i].OldHead
+					if len(report.Repositories[i].Actions) > 0 {
+						if _, err := fmt.Fprintf(progress, "default-branch: applied %s\n", report.Repositories[i].Repository); err != nil {
+							return report, err
+						}
+						sourceDefault, sourceHead = report.Repositories[i].ObservedDefault, report.Repositories[i].OldHead
+					}
 				}
 			}
 			resumeReason := ""
 			if sourceDefault == "" && report.Repositories[i].Disposition == "compliant" && prior != nil {
 				sourceDefault, sourceHead, resumeReason = defaultBranchResumeSource(prior, report.Repositories[i])
+				if sourceDefault == "" {
+					legacySource, legacyHead, legacyReason := defaultBranchLegacyRenameResume(ctx, prior, report.Repositories[i])
+					if legacySource != "" {
+						sourceDefault, sourceHead, resumeReason = legacySource, legacyHead, legacyReason
+						recordDefaultBranchLegacyRenameProof(&report.Repositories[i], legacySource, legacyHead, options.reconcileFrom, options.reconcileSHA256)
+					} else {
+						resumeReason = legacyReason
+					}
+				}
 			}
 			if sourceDefault != "" {
 				reconcileDefaultBranchCanonicals(ctx, &report.Repositories[i], locals.Eligible[strings.ToLower(report.Repositories[i].Repository)], sourceDefault, sourceHead, func() error {
@@ -331,11 +365,74 @@ func defaultBranchResumeSource(prior *defaultBranchReport, current defaultBranch
 	return "", "", "--reconcile-from has no applied migration record for this repository"
 }
 
+const (
+	defaultBranchLegacyRenamePostProofError = "rename response succeeded but post-read default/head proof did not converge: "
+	defaultBranchRenameResponsePendingError = "default-branch mutation response received; awaiting visibility convergence"
+)
+
+// defaultBranchLegacyRenameResume accepts only the v1 receipt shape produced
+// after GitHub accepted a rename but had not yet made it visible to the
+// immediate post-read. The caller has already bound prior to exact report
+// bytes through --reconcile-sha256.
+func defaultBranchLegacyRenameResume(ctx context.Context, prior *defaultBranchReport, current defaultBranchRepository) (string, string, string) {
+	if prior == nil || prior.SchemaVersion != 1 || prior.Mode != "apply" || current.Disposition != "compliant" || current.ObservedDefault != current.Desired || current.OldHead == "" {
+		return "", "", "--reconcile-from does not contain a verified successful migration record for this repository"
+	}
+	for _, previous := range prior.Repositories {
+		if !strings.EqualFold(previous.Repository, current.Repository) {
+			continue
+		}
+		if !defaultBranchLegacyRenamePendingRecord(previous) || previous.Desired != current.Desired || previous.OldHead != current.OldHead {
+			return "", "", "--reconcile-from does not contain the exact failed post-rename proof record for this repository"
+		}
+		_, err := defaultBranchRead(ctx, "repos/"+current.Repository+"/git/ref/heads/"+url.PathEscape(previous.ObservedDefault))
+		if err == nil {
+			return "", "", "--reconcile-from old source ref still exists; do not infer a completed rename"
+		}
+		if !isDefaultBranchNotFound(err) {
+			return "", "", "--reconcile-from could not prove the old source ref is absent: " + err.Error()
+		}
+		return previous.ObservedDefault, previous.OldHead, ""
+	}
+	return "", "", "--reconcile-from has no applied migration record for this repository"
+}
+
+func defaultBranchLegacyRenamePendingRecord(previous defaultBranchRepository) bool {
+	postProofFailure := previous.Disposition == "error" && previous.Error == defaultBranchLegacyRenamePostProofError
+	postResponsePending := previous.RenameAccepted && (previous.Disposition == "pending" || previous.Disposition == "error")
+	return (postProofFailure || postResponsePending) && !previous.TargetExists && previous.NewHead == "" && previous.VerifiedDefault == "" && len(previous.Actions) == 0 && previous.ObservedDefault != previous.Desired && validDefaultBranch(previous.ObservedDefault) && validDefaultBranch(previous.Desired) && validDefaultBranchCommit(previous.OldHead)
+}
+
+func recordDefaultBranchLegacyRenameProof(repository *defaultBranchRepository, sourceDefault, sourceHead, receiptPath, receiptSHA256 string) {
+	repository.ObservedDefault = sourceDefault
+	repository.VerifiedDefault = repository.Desired
+	repository.OldHead = sourceHead
+	repository.NewHead = sourceHead
+	repository.Disposition = "compliant"
+	repository.Error = ""
+	repository.RecoveredFrom = receiptPath
+	repository.RecoveredSHA256 = receiptSHA256
+	repository.Actions = []string{"verified prior rename " + sourceDefault + " to " + repository.Desired, "verified current default branch and head"}
+}
+
+func validDefaultBranchCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') && (character < 'A' || character > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 func defaultBranchMigrationActionsVerified(repository defaultBranchRepository) bool {
 	verified := []string{"verified default branch and head"}
 	rename := append([]string{"renamed " + repository.ObservedDefault + " to " + repository.Desired}, verified...)
 	switchDefault := append([]string{"set default branch to existing same-SHA " + repository.Desired}, verified...)
-	return slicesEqual(repository.Actions, rename) || slicesEqual(repository.Actions, switchDefault)
+	prior := []string{"verified prior rename " + repository.ObservedDefault + " to " + repository.Desired, "verified current default branch and head"}
+	return slicesEqual(repository.Actions, rename) || slicesEqual(repository.Actions, switchDefault) || (repository.RecoveredFrom != "" && validDefaultBranchDigest(repository.RecoveredSHA256) && slicesEqual(repository.Actions, prior))
 }
 
 func slicesEqual(left, right []string) bool {
@@ -742,6 +839,10 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 	return regexp.MustCompile(`(?mi)(^|[^[:alnum:]_.-])` + escaped + `($|[^[:alnum:]_.-])`).MatchString(contents)
 }
 func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defaultBranchRepository {
+	return applyDefaultBranchWithCheckpoint(ctx, repo, nil)
+}
+
+func applyDefaultBranchWithCheckpoint(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {
 	owner, name, ok := strings.Cut(repo.Repository, "/")
 	if !ok || owner == "" || name == "" {
 		repo.Disposition = "error"
@@ -764,13 +865,42 @@ func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defau
 	if repo.TargetExists {
 		args = []string{"api", "--method", "PATCH", "repos/" + repo.Repository, "-f", "default_branch=" + repo.Desired}
 	}
+	repo.Error = "default-branch mutation pending"
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition = "error"
+			repo.Error = "persist pending default-branch mutation: " + err.Error()
+			return repo
+		}
+	}
 	response := defaultBranchExecute(ctx, args...)
 	if response.Err != nil {
 		repo.Disposition = "error"
 		repo.Error = githubCommandMessage(response)
 		return repo
 	}
-	verified := inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+	repo.RenameAccepted = !repo.TargetExists
+	repo.Disposition = "pending"
+	repo.Error = defaultBranchRenameResponsePendingError
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition = "error"
+			repo.Error = "persist default-branch mutation response: " + err.Error()
+			return repo
+		}
+	}
+	var verified defaultBranchRepository
+	if repo.TargetExists {
+		verified = inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+	} else {
+		var waitErr error
+		verified, waitErr = waitForDefaultBranchRename(ctx, repo)
+		if waitErr != nil {
+			repo.Disposition = "error"
+			repo.Error = "wait for renamed branch visibility: " + waitErr.Error()
+			return repo
+		}
+	}
 	if verified.Disposition != "compliant" {
 		repo.Disposition = "error"
 		repo.Error = "rename response succeeded but post-read default/head proof did not converge: " + verified.Error
@@ -782,6 +912,7 @@ func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defau
 		return repo
 	}
 	repo.Disposition = "compliant"
+	repo.Error = ""
 	repo.VerifiedDefault = verified.ObservedDefault
 	repo.NewHead = verified.NewHead
 	if repo.TargetExists {
@@ -790,6 +921,74 @@ func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defau
 		repo.Actions = []string{"renamed " + repo.ObservedDefault + " to " + repo.Desired, "verified default branch and head"}
 	}
 	return repo
+}
+
+func waitForDefaultBranchRename(ctx context.Context, planned defaultBranchRepository) (defaultBranchRepository, error) {
+	deadline := defaultBranchRenameNow().Add(30 * time.Second)
+	observed := readDefaultBranchRenameVisibility(ctx, planned, deadline)
+	for defaultBranchRenameStillPending(planned, observed) {
+		remaining := deadline.Sub(defaultBranchRenameNow())
+		if remaining <= 0 {
+			break
+		}
+		if remaining > 250*time.Millisecond {
+			remaining = 250 * time.Millisecond
+		}
+		if err := defaultBranchRenameWait(ctx, remaining); err != nil {
+			return observed, err
+		}
+		observed = readDefaultBranchRenameVisibility(ctx, planned, deadline)
+	}
+	return observed, nil
+}
+
+func readDefaultBranchRenameVisibility(ctx context.Context, planned defaultBranchRepository, deadline time.Time) defaultBranchRepository {
+	readContext, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	observed := defaultBranchRepository{Repository: planned.Repository, Desired: planned.Desired}
+	body, err := defaultBranchRead(readContext, "repos/"+planned.Repository)
+	if err != nil {
+		observed.Disposition, observed.Error = "error", err.Error()
+		return observed
+	}
+	var meta defaultBranchRepoMetadata
+	if err := json.Unmarshal(body, &meta); err != nil || !validDefaultBranch(meta.DefaultBranch) {
+		observed.Disposition, observed.Error = "error", "decode repository default branch"
+		return observed
+	}
+	observed.ObservedDefault = meta.DefaultBranch
+	if meta.DefaultBranch != planned.ObservedDefault && meta.DefaultBranch != planned.Desired {
+		observed.Disposition, observed.Error = "blocked", "repository default changed while waiting for rename visibility"
+		return observed
+	}
+	head, err := readDefaultBranchRef(readContext, planned.Repository, planned.Desired)
+	if err != nil {
+		if isDefaultBranchNotFound(err) {
+			observed.Disposition, observed.Error = "pending", "renamed target branch is not visible yet"
+			return observed
+		}
+		observed.Disposition, observed.Error = "error", err.Error()
+		return observed
+	}
+	observed.OldHead, observed.NewHead = head, head
+	if head != planned.OldHead {
+		observed.Disposition, observed.Error = "blocked", "repository branch head changed while waiting for rename visibility"
+		return observed
+	}
+	if meta.DefaultBranch == planned.Desired {
+		observed.Disposition = "compliant"
+		return observed
+	}
+	if meta.DefaultBranch == planned.ObservedDefault {
+		observed.Disposition = "drift"
+		return observed
+	}
+	observed.Disposition, observed.Error = "blocked", "repository default changed while waiting for rename visibility"
+	return observed
+}
+
+func defaultBranchRenameStillPending(planned, observed defaultBranchRepository) bool {
+	return observed.Disposition == "pending" || (observed.Disposition == "drift" && observed.ObservedDefault == planned.ObservedDefault && observed.OldHead == planned.OldHead)
 }
 
 // reconcileDefaultBranchCanonicals changes only the old default branch in a

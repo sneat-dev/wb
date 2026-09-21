@@ -21,6 +21,19 @@ branch. Repositories without an initial commit are also exception rows, even
 when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
 blindly.
 
+GitHub can make an accepted branch rename visible asynchronously. WB records
+that accepted response, performs bounded read-only convergence checks, and
+never sends the rename again. A failed convergence report is usable only when
+its caller supplies the exact report SHA-256 and fresh proof shows the desired
+default/head and the old Git ref is absent. A recovered report records the
+source receipt path and digest and marks the prior rename as verified; it does
+not claim the recovery host performed the remote rename.
+
+`--reconcile-from` is remote read-only. It never submits a remote mutation,
+including for a repository missing from or malformed in the receipt. If a
+fresh read still shows the old default, the report records a blocker until
+remote visibility converges.
+
 After a remote change, WB refreshes each matching local canonical clone and
 renames its old default only when the clone is clean, exact at the remote SHA,
 has no linked worktree, and has no destination branch. A second host can resume
