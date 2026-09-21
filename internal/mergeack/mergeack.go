@@ -58,8 +58,10 @@ type Source struct {
 // blob on the target), "lines_absorbed" (every line the source added to a
 // `*.jsonl` append-only ledger, relative to the merge-base, is present
 // verbatim as a line in the target's copy -- AddedLines and MatchedLines
-// record the counts), or "derived_excused" (an operator-audited
-// `--derived-path` exclusion for a known generated-index shape).
+// record the counts), "go_dependency_upgrade" (a jointly verified,
+// monotonic root go.mod/go.sum dependency upgrade), or "derived_excused"
+// (an operator-audited `--derived-path` exclusion for a known generated-index
+// shape).
 type PathProof struct {
 	Path         string `json:"path"`
 	Method       string `json:"method"`
@@ -87,10 +89,10 @@ type SourceProof struct {
 
 // Acknowledgement is a separate, append-only acknowledgement for an
 // unpublished prepare-phase conflict receipt whose every receipted source
-// worktree is already gone from disk, yet whose exact receipted content is
+// worktree is already gone from disk, yet whose receipted changes are
 // proved, source by source, to already be reachable from the freshly fetched
-// current remote target either by graph ancestry or by identical-blob
-// content absorption. ReceiptStatus is carried as a plain string so this leaf
+// current remote target either by graph ancestry or a recorded per-path
+// absorption proof. ReceiptStatus is carried as a plain string so this leaf
 // package never needs internal/orchestrate's WorktreeMergeStatus type;
 // callers convert at the boundary.
 type Acknowledgement struct {
@@ -348,9 +350,15 @@ func Load(path string, receipt ReceiptIdentity) (Acknowledgement, error) {
 		if proof.Method == "content_absorbed" && (proof.MergeBaseSHA == "" || proof.PathCount == 0 || len(proof.PathProofs) != proof.PathCount) {
 			return Acknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s content-absorbed proof lacks its merge base, path count, or path proofs", path)
 		}
+		goUpgradePaths := map[string]bool{}
 		for _, pathProof := range proof.PathProofs {
 			switch pathProof.Method {
 			case "blob_absorbed":
+			case "go_dependency_upgrade":
+				if (pathProof.Path != "go.mod" && pathProof.Path != "go.sum") || pathProof.AddedLines != 0 || pathProof.MatchedLines != 0 || goUpgradePaths[pathProof.Path] {
+					return Acknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an invalid Go dependency-upgrade path %q", path, pathProof.Path)
+				}
+				goUpgradePaths[pathProof.Path] = true
 			case "lines_absorbed":
 				if pathProof.AddedLines != pathProof.MatchedLines {
 					return Acknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unproved lines-absorbed path %q", path, pathProof.Path)
@@ -362,6 +370,9 @@ func Load(path string, receipt ReceiptIdentity) (Acknowledgement, error) {
 			default:
 				return Acknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s has an unknown path proof method %q", path, pathProof.Method)
 			}
+		}
+		if len(goUpgradePaths) > 0 && (!goUpgradePaths["go.mod"] || !goUpgradePaths["go.sum"]) {
+			return Acknowledgement{}, fmt.Errorf("absorbed-conflict acknowledgement %s must prove go.mod and go.sum upgrades together", path)
 		}
 	}
 	return ack, nil
