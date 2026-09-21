@@ -29,7 +29,7 @@ func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	cfg.Fleet.Organizations = map[string]struct {
 		DefaultBranch string `yaml:"default_branch"`
 	}{"legacy": {DefaultBranch: "trunk"}}
-	if got := effectiveDefaultBranch("", cfg, "legacy"); got != "trunk" {
+	if got := effectiveDefaultBranch("", cfg, "LeGaCy"); got != "trunk" {
 		t.Fatalf("org default = %q", got)
 	}
 	if got := effectiveDefaultBranch("release", cfg, "legacy"); got != "release" {

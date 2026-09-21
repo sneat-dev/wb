@@ -352,8 +352,12 @@ func effectiveDefaultBranch(explicit string, cfg defaultBranchConfig, org string
 	if value := strings.TrimSpace(explicit); value != "" {
 		return value
 	}
-	if value := strings.TrimSpace(cfg.Fleet.Organizations[org].DefaultBranch); value != "" {
-		return value
+	for configuredOwner, configured := range cfg.Fleet.Organizations {
+		if strings.EqualFold(strings.TrimSpace(configuredOwner), strings.TrimSpace(org)) {
+			if value := strings.TrimSpace(configured.DefaultBranch); value != "" {
+				return value
+			}
+		}
 	}
 	return strings.TrimSpace(cfg.Fleet.DefaultBranch)
 }
