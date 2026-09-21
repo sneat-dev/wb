@@ -60,6 +60,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
+| `fleet default-branch` | yes | yes | yes | yes |
 | `fleet prs` | rejected | rejected | yes | yes |
 | `remote publish`, `remote status`, `remote machines`, `remote enroll` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |

@@ -224,7 +224,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true, "disk": true,
 		"verify receipt": true, "repo transfer cleanup": true,
-		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "remote publish": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"remote status": true, "remote machines": true, "remote enroll": true,
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"peers invite": true, "peers join": true, "peers list": true, "peers get": true,
@@ -256,13 +256,13 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"hooks lifecycle backfill": true,
 		"coverage":                 true, "verify": true, "check": true, "status": true,
-		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "remote publish": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
 		"branch list": true, "branch cleanup": true,
 		"archive clean": true,
 	},
-	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true},
+	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true, "fleet default-branch": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
 	// would make scripts need command-specific conditionals for no benefit.
@@ -307,13 +307,13 @@ func persistentFlagNeedsFleet(flag, commandID string) bool {
 	case "filter":
 		switch commandID {
 		case "ci audit", "hooks install", "hooks check", "hooks repair", "coverage", "verify", "check", "status",
-			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
+			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy", "fleet default-branch":
 			return true
 		}
 	case "projects-root":
 		switch commandID {
 		case "ci audit", "coverage", "verify", "check", "status",
-			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
+			"fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy", "fleet default-branch":
 			return true
 		}
 	}
@@ -324,7 +324,7 @@ func persistentCommandSelectedFleet(cmd *cobra.Command, commandID string, args [
 	switch commandID {
 	case "status":
 		return len(args) == 0
-	case "fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy":
+	case "fleet", "fleet overview", "fleet stats", "fleet status", "fleet merge-policy", "fleet default-branch":
 		return true
 	case "repo status":
 		return false
