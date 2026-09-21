@@ -68,10 +68,11 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 }
 
 func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) {
-	originalRead, originalExecute, originalConfig := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath
+	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
 	t.Cleanup(func() {
-		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath = originalRead, originalExecute, originalConfig
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
 	})
+	projectsRoot = t.TempDir()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -336,14 +337,17 @@ func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T)
 }
 
 func TestFleetDefaultBranchRootFilterRestrictsExactRepositoryScope(t *testing.T) {
-	originalFilter, originalProjects := filterFlag, projectsRoot
-	t.Cleanup(func() { filterFlag, projectsRoot = originalFilter, originalProjects })
-	projectsRoot = ""
+	originalFilter, originalProjects, originalConfig := filterFlag, projectsRoot, defaultBranchConfigPath
+	t.Cleanup(func() {
+		filterFlag, projectsRoot, defaultBranchConfigPath = originalFilter, originalProjects, originalConfig
+	})
+	testProjectsRoot := t.TempDir()
+	defaultBranchConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
 	root := newRootCmd()
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--filter", "selected", "fleet", "default-branch", "--repo", "acme/other", "--branch", "main", "--json"})
+	root.SetArgs([]string{"--projects-root", testProjectsRoot, "--filter", "selected", "fleet", "default-branch", "--repo", "acme/other", "--branch", "main", "--json"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
