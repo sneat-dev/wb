@@ -31,6 +31,7 @@ func newFleetCmd() *cobra.Command {
   wb fleet stats    inventory and attention counts only
   wb fleet status   attention worklist (same shape as historical wb status)
   wb fleet merge-policy audit/apply GitHub merge settings and ruleset conflicts
+  wb fleet default-branch audit/apply configured GitHub default branch changes
 
 Default stats stay local: inventory, Git attention, layout placement, and
 managed worktrees. Pass --remote for sync-drift counts (contacts GitHub) or
@@ -53,6 +54,7 @@ worklist and wb sync --dry-run for a full sync plan.`,
 	command.AddCommand(newFleetStatusCmd())
 	command.AddCommand(newFleetPRsCmd())
 	command.AddCommand(newFleetMergePolicyCmd())
+	command.AddCommand(newFleetDefaultBranchCmd())
 	return command
 }
 
