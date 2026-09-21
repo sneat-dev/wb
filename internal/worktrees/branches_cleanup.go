@@ -377,7 +377,7 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 	if err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(verify)
+	defer func() { _ = os.RemoveAll(verify) }()
 	if _, err := git(ctx, verify, "init", "--bare"); err != nil {
 		return "", err
 	}
