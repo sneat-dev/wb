@@ -28,7 +28,7 @@ func newBranchCmd() *cobra.Command {
 }
 
 func newBranchListCmd() *cobra.Command {
-	var base, scope, only, format string
+	var base, scope, only, format, repository, branch string
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "list",
@@ -73,6 +73,7 @@ reserved for the report.`,
 			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only,
 				OlderThan: olderThan, Filter: filterFlag, Progress: progress,
+				Repository: repository, Branch: branch,
 			})
 			if err != nil {
 				return err
@@ -94,11 +95,14 @@ reserved for the report.`,
 	command.Flags().StringVar(&only, "only", "", "show only this disposition: contained, absorbed, unique, protected, in-use, or unreadable")
 	command.Flags().DurationVar(&olderThan, "older-than", 0, "show only branches at least this old (0 shows every age)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository selector")
+	command.Flags().StringVar(&branch, "branch", "", "exact branch ref selector")
 	return command
 }
 
 func newBranchCleanupCmd() *cobra.Command {
-	var base, scope, reportDir, format, absorbedBy string
+	var base, scope, reportDir, format, absorbedBy, supersededBy, repository, branch string
+	var peerEvidence, requireHosts []string
 	var apply, receipts bool
 	var olderThan time.Duration
 	command := &cobra.Command{
@@ -168,8 +172,11 @@ in-use and therefore never a candidate.`,
 			outcome, err := worktrees.BranchCleanup(command.Context(), worktrees.BranchCleanupOptions{
 				Receipts:     receipts,
 				AbsorbedBy:   absorbedBy,
+				SupersededBy: supersededBy,
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Apply: apply,
 				OlderThan: olderThan, ReportDir: reportDir, Filter: filterFlag, Progress: progress,
+				Repository: repository, Branch: branch,
+				PeerEvidence: peerEvidence, RequireHosts: requireHosts,
 				Now: func() time.Time { return now },
 			})
 			if err != nil {
@@ -202,6 +209,11 @@ in-use and therefore never a candidate.`,
 	command.Flags().BoolVar(&apply, "apply", false, "delete every eligible branch; the default is a dry-run plan")
 	command.Flags().BoolVar(&receipts, "receipts", false, "prove landings via GitHub pull-request receipts, making receipted branches eligible (one query per candidate)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify this merged pull request number or exact landing commit absorbed a branch's content, making a content-proven squash-absorbed branch eligible even with no worktree left (same proof as 'wb worktree cleanup --absorbed-by')")
+	command.Flags().StringVar(&supersededBy, "superseded-by", "", "trusted-reviewer receipt for one exact intentionally superseded branch; requires --repo and --branch")
+	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository selector")
+	command.Flags().StringVar(&branch, "branch", "", "exact branch ref selector")
+	command.Flags().StringSliceVar(&peerEvidence, "peer-evidence", nil, "machine-generated exact branch-list JSON from one required host; repeat per host")
+	command.Flags().StringSliceVar(&requireHosts, "require-host", nil, "host ID required in peer evidence; repeat per host")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum branch age required for eligibility (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "branch cleanup audit directory (default <wb-home>/reports/branch-cleanup/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

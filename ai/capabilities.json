@@ -573,8 +573,11 @@
                 "--base",
                 "--format",
                 "--older-than",
+                "--peer-evidence",
+                "--repo",
                 "--receipts",
                 "--report-dir",
+                "--require-host",
                 "--scope"
               ],
               "modes": [
@@ -585,7 +588,9 @@
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
                 "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
-                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome"
+                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome",
+                "--superseded-by requires exact --repo and --branch, validates a trusted reviewer receipt, archives and restores the exact source head before deletion, and rechecks receipt bytes and all guards",
+                "Named remote retirement can require fresh machine-generated --peer-evidence for explicit --require-host IDs; missing, stale, mismatched, or unsafe evidence refuses deletion"
               ]
             }
           ],

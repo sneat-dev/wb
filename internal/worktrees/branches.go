@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ type BranchListOptions struct {
 	Only         string // one disposition name; empty means every disposition
 	OlderThan    time.Duration
 	Filter       string
+	// Repository and Branch are exact selectors for a single branch. Filter
+	// retains its substring semantics for fleet inventory only.
+	Repository string
+	Branch     string
 	// Progress receives incremental "[n/N] repository" lines as the sweep
 	// works, plus a closing summary. Nil disables progress reporting.
 	Progress io.Writer
@@ -97,11 +102,21 @@ type BranchEntry struct {
 	// wrong or dishonest pointer can therefore only fail closed, never widen
 	// eligibility, and the rejection is reported rather than silently
 	// swallowed.
-	AbsorbedByRejection string `json:"absorbed_by_rejection,omitempty"`
+	AbsorbedByRejection   string `json:"absorbed_by_rejection,omitempty"`
+	SupersessionReceipt   string `json:"supersession_receipt,omitempty"`
+	SupersessionReviewer  string `json:"supersession_reviewer,omitempty"`
+	SupersessionReceiptID string `json:"supersession_receipt_id,omitempty"`
+	SupersessionSHA256    string `json:"supersession_sha256,omitempty"`
+	SupersessionRejection string `json:"supersession_rejection,omitempty"`
+	SupersededAtOrigin    bool   `json:"superseded_at_origin,omitempty"`
 }
 
 // BranchListOutcome is the full result of one sweep.
 type BranchListOutcome struct {
+	Host        string         `json:"host"`
+	GeneratedAt time.Time      `json:"generated_at"`
+	Repository  string         `json:"repository,omitempty"`
+	Branch      string         `json:"branch,omitempty"`
 	Base        string         `json:"base"`
 	Scope       string         `json:"scope"`
 	Entries     []BranchEntry  `json:"entries"`
@@ -153,6 +168,19 @@ func normalizeBranchListOptions(options BranchListOptions) (BranchListOptions, e
 		return BranchListOptions{}, fmt.Errorf("--older-than cannot be negative")
 	}
 	options.Filter = strings.TrimSpace(options.Filter)
+	options.Repository = strings.TrimSpace(options.Repository)
+	options.Branch = strings.TrimSpace(options.Branch)
+	if options.Repository != "" {
+		parts := strings.Split(options.Repository, "/")
+		if len(parts) != 2 || !validRepositorySegment(parts[0]) || !validRepositorySegment(parts[1]) {
+			return BranchListOptions{}, fmt.Errorf("invalid --repo %q; use owner/repository", options.Repository)
+		}
+	}
+	if options.Branch != "" {
+		if err := branchValidationError(context.Background(), "branch", options.Branch); err != nil {
+			return BranchListOptions{}, err
+		}
+	}
 	return options, nil
 }
 
@@ -166,6 +194,8 @@ type branchSweepOptions struct {
 	Only         string
 	OlderThan    time.Duration
 	Filter       string
+	Repository   string
+	Branch       string
 	Progress     io.Writer
 	Now          time.Time
 	// Receipts enables landing-receipt classification, which costs a GitHub
@@ -179,7 +209,8 @@ type branchSweepOptions struct {
 	// receipt to check and never substitutes for one: every candidate is
 	// still proved on evidence, so a wrong or dishonest pointer can only fail
 	// closed for that candidate. See #req:attested-absorption-requires-exact-entry-point.
-	AbsorbedBy string
+	AbsorbedBy   string
+	SupersededBy string
 }
 
 // Leave one second of scheduling margin below the public ten-second ceiling.
@@ -198,6 +229,7 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 		ProjectsRoot: options.ProjectsRoot, Base: options.Base, Scope: options.Scope,
 		Only: options.Only, OlderThan: options.OlderThan, Filter: options.Filter,
 		Progress: options.Progress, Now: started,
+		Repository: options.Repository, Branch: options.Branch,
 	}
 	entries, diagnostics, err := classifyFleetBranches(ctx, sweep)
 	if err != nil {
@@ -207,9 +239,18 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 	filtered := applyListDisplayFilters(entries, sweep)
 	sortBranchEntries(filtered)
 	return BranchListOutcome{
+		Host: branchEvidenceHost(), GeneratedAt: started, Repository: options.Repository, Branch: options.Branch,
 		Base: options.Base, Scope: options.Scope, Entries: filtered,
 		Diagnostics: diagnostics, Totals: totals, ElapsedMS: time.Since(started).Milliseconds(),
 	}, nil
+}
+
+func branchEvidenceHost() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(host)
 }
 
 func applyListDisplayFilters(entries []BranchEntry, sweep branchSweepOptions) []BranchEntry {
@@ -266,6 +307,16 @@ func classifyFleetBranchesWithPaths(ctx context.Context, sweep branchSweepOption
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("discover repositories below %s: %w", sweep.ProjectsRoot, err)
 	}
+	selected := repositories[:0]
+	for _, repository := range repositories {
+		if sweep.Repository == "" || repository.Slug() == sweep.Repository {
+			selected = append(selected, repository)
+		}
+	}
+	if sweep.Repository != "" && len(selected) == 0 {
+		return nil, nil, nil, fmt.Errorf("selected repository %q was not discovered", sweep.Repository)
+	}
+	repositories = selected
 	paths := make(map[string]string, len(repositories))
 	for _, repository := range repositories {
 		paths[repository.Slug()] = repository.Path
@@ -413,6 +464,9 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 		}
 		pullRequestCache := map[string][]githubPullRequest{}
 		for _, ref := range local {
+			if sweep.Branch != "" && ref.Name != sweep.Branch {
+				continue
+			}
 			entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeLocal, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
 		}
 	}
@@ -421,9 +475,19 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 		if diagnostic != "" {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, diagnostic))
 		}
+		// Remote retirement deletes the same named ref. It therefore must see
+		// local worktrees and live claims too; a remote-only plan may never
+		// bypass an in-use guard merely because it enumerated origin refs.
+		checkedOut, checkedOutDiagnostic := checkedOutLocalBranches(ctx, repository.Path)
+		if checkedOutDiagnostic != "" {
+			diagnostics = append(diagnostics, fmt.Sprintf("%s: %s", slug, checkedOutDiagnostic))
+		}
 		pullRequestCache := map[string][]githubPullRequest{}
 		for _, ref := range remote {
-			entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, nil, pullRequestCache))
+			if sweep.Branch != "" && ref.Name != sweep.Branch {
+				continue
+			}
+			entries = append(entries, classifyBranch(ctx, repository, sweep, ref, BranchScopeRemote, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache))
 		}
 	}
 	return entries, strings.Join(diagnostics, "; ")
@@ -520,21 +584,42 @@ func classifyBranch(
 		entry.Evidence = protectedEvidence(ref.Name, sweep.Base, canonicalHEAD)
 		return entry
 	}
-	if scope == BranchScopeLocal {
-		task, claimed := inUse[branchInUseKey(repository.Slug(), ref.Name)]
-		if claimed || checkedOut[ref.Name] {
-			entry.Disposition = BranchInUse
-			entry.Task = task
-			switch {
-			case claimed:
-				entry.Evidence = fmt.Sprintf("checked out or claimed by WB task %s", task)
-				entry.Reason = fmt.Sprintf("owned by wb worktree task %s; use `wb worktree cleanup %s` or `wb worktree abort %s`, never wb branch cleanup", task, task, task)
-			default:
-				entry.Evidence = "checked out in a linked worktree"
-				entry.Reason = "checked out in a linked worktree; wb branch cleanup never touches a working tree"
-			}
+	task, claimed := inUse[branchInUseKey(repository.Slug(), ref.Name)]
+	if claimed || checkedOut[ref.Name] {
+		entry.Disposition = BranchInUse
+		entry.Task = task
+		switch {
+		case claimed:
+			entry.Evidence = fmt.Sprintf("checked out or claimed by WB task %s", task)
+			entry.Reason = fmt.Sprintf("owned by wb worktree task %s; use `wb worktree cleanup %s` or `wb worktree abort %s`, never wb branch cleanup", task, task, task)
+		default:
+			entry.Evidence = "checked out in a linked worktree"
+			entry.Reason = "checked out in a linked worktree; wb branch cleanup never touches a working tree"
+		}
+		return entry
+	}
+	if sweep.SupersededBy != "" {
+		receipt, rejection, err := branchSupersessionReceipt(ctx, sweep.SupersededBy, ListResult{
+			Repository: repository.Slug(), Branch: ref.Name, HeadSHA: ref.SHA,
+			Base: sweep.Base, RemoteTargetSHA: targetSHA, CanonicalDir: repository.Path,
+		})
+		if err != nil {
+			entry.Disposition, entry.Evidence = BranchUnreadable, fmt.Sprintf("read supersession receipt: %v", err)
 			return entry
 		}
+		if rejection == "" {
+			entry.SupersededAtOrigin = true
+			entry.SupersessionReceipt, entry.SupersessionReviewer, entry.SupersessionReceiptID = sweep.SupersededBy, receipt.Approval.Actor, receipt.Approval.ReceiptID
+			digest, digestErr := supersessionFileSHA256(sweep.SupersededBy)
+			if digestErr != nil {
+				entry.Disposition, entry.Evidence = BranchUnreadable, fmt.Sprintf("digest supersession receipt: %v", digestErr)
+				return entry
+			}
+			entry.SupersessionSHA256 = digest
+			entry.Evidence = "trusted reviewer receipt binds the exact source, target, replacements, and complete residual inventory"
+			return entry
+		}
+		entry.SupersessionRejection = rejection
 	}
 
 	contained, err := isAncestor(ctx, repository.Path, ref.SHA, targetSHA)

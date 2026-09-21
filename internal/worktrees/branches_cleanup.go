@@ -2,7 +2,9 @@ package worktrees
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +26,8 @@ type BranchCleanupOptions struct {
 	OlderThan    time.Duration
 	ReportDir    string
 	Filter       string
+	Repository   string
+	Branch       string
 	Progress     io.Writer
 	// Receipts enables landing-receipt classification, making receipted
 	// branches eligible alongside contained ones. Off by default because it
@@ -41,6 +45,11 @@ type BranchCleanupOptions struct {
 	// it never runs unless explicitly passed, and a pointer that fails to
 	// verify for a given candidate refuses only that candidate.
 	AbsorbedBy string
+	// SupersededBy is a trusted-reviewer receipt for a deliberately split
+	// branch. It requires one exact repository/ref selector.
+	SupersededBy string
+	PeerEvidence []string
+	RequireHosts []string
 	// Now is injectable so age eligibility is deterministic under test.
 	Now func() time.Time
 }
@@ -51,11 +60,12 @@ type BranchCleanupOptions struct {
 // #req:absorbed-is-report-only and #req:receipted-requires-a-proved-landing.
 type BranchCleanupResult struct {
 	BranchEntry
-	Eligible   bool   `json:"eligible"`
-	SkipReason string `json:"skip_reason,omitempty"`
-	Applied    bool   `json:"applied"`
-	Outcome    string `json:"outcome"` // planned, deleted, skipped, or failed
-	Error      string `json:"error,omitempty"`
+	Eligible       bool   `json:"eligible"`
+	SkipReason     string `json:"skip_reason,omitempty"`
+	Applied        bool   `json:"applied"`
+	Outcome        string `json:"outcome"` // planned, deleted, skipped, or failed
+	Error          string `json:"error,omitempty"`
+	RecoveryBundle string `json:"recovery_bundle,omitempty"`
 }
 
 // BranchCleanupOutcome is the full result of one plan or apply run.
@@ -73,14 +83,32 @@ type BranchCleanupOutcome struct {
 func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupOptions, error) {
 	base, err := normalizeBranchListOptions(BranchListOptions{
 		ProjectsRoot: options.ProjectsRoot, Base: options.Base, Scope: options.Scope,
-		OlderThan: options.OlderThan, Filter: options.Filter,
+		OlderThan: options.OlderThan, Filter: options.Filter, Repository: options.Repository, Branch: options.Branch,
 	})
 	if err != nil {
 		return BranchCleanupOptions{}, err
 	}
 	options.ProjectsRoot, options.Base, options.Scope = base.ProjectsRoot, base.Base, base.Scope
 	options.OlderThan, options.Filter = base.OlderThan, base.Filter
+	options.Repository, options.Branch = base.Repository, base.Branch
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
+	options.SupersededBy = strings.TrimSpace(options.SupersededBy)
+	options.PeerEvidence = compactStrings(options.PeerEvidence)
+	options.RequireHosts = compactStrings(options.RequireHosts)
+	if options.SupersededBy != "" && (options.Repository == "" || options.Branch == "") {
+		return BranchCleanupOptions{}, errors.New("--superseded-by requires exact --repo owner/name and --branch ref selectors")
+	}
+	if options.SupersededBy != "" && options.Scope == BranchScopeRemote && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
+		return BranchCleanupOptions{}, errors.New("reviewed remote retirement requires --peer-evidence and --require-host")
+	}
+	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
+		if options.Scope != BranchScopeRemote || options.Repository == "" || options.Branch == "" {
+			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host require exact --scope remote --repo owner/name --branch ref")
+		}
+		if len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0 {
+			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host must be supplied together")
+		}
+	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -116,6 +144,8 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		ProjectsRoot: normalized.ProjectsRoot, Base: normalized.Base, Scope: normalized.Scope,
 		OlderThan: normalized.OlderThan, Filter: normalized.Filter, Progress: normalized.Progress, Now: now,
 		Receipts: normalized.Receipts, AbsorbedBy: normalized.AbsorbedBy,
+		Repository: normalized.Repository, Branch: normalized.Branch,
+		SupersededBy: normalized.SupersededBy,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
@@ -148,6 +178,20 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		return BranchCleanupOutcome{}, err
 	}
 
+	if err := validatePeerEvidence(normalized, results, now); err != nil {
+		for index := range results {
+			if results[index].Eligible && results[index].Scope == BranchScopeRemote {
+				results[index].Eligible = false
+				results[index].Outcome = "failed"
+				results[index].Error = err.Error()
+			}
+		}
+		if _, writeErr := writeBranchCleanupReport(reportDir, normalized, now, results); writeErr != nil {
+			return BranchCleanupOutcome{}, writeErr
+		}
+		return BranchCleanupOutcome{Base: normalized.Base, Scope: normalized.Scope, Apply: true, Results: results, Diagnostics: diagnostics, Totals: tallyCleanupOutcomes(results), ReportPath: reportPath, ElapsedMS: time.Since(started).Milliseconds()}, nil
+	}
+	normalized.ReportDir = reportDir
 	applyBranchCleanup(ctx, results, paths, normalized, now)
 
 	if _, err := writeBranchCleanupReport(reportDir, normalized, now, results); err != nil {
@@ -175,7 +219,7 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 	for _, entry := range entries {
 		result := BranchCleanupResult{BranchEntry: entry, Outcome: "skipped"}
 		switch {
-		case entry.Disposition != BranchContained && entry.Disposition != BranchReceipted:
+		case !entry.SupersededAtOrigin && entry.Disposition != BranchContained && entry.Disposition != BranchReceipted:
 			result.SkipReason = skipReasonForDisposition(entry)
 		case sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan:
 			result.SkipReason = fmt.Sprintf("branch is younger than --older-than %s", sweep.OlderThan)
@@ -252,15 +296,105 @@ func applyBranchCleanup(ctx context.Context, results []BranchCleanupResult, path
 			result.Outcome, result.Error = "failed", "repository path was not retained from the plan"
 			continue
 		}
+		if result.SupersededAtOrigin {
+			bundle, err := archiveReviewedBranch(ctx, options.ReportDir, path, *result)
+			if err != nil {
+				result.Outcome, result.Error = "failed", fmt.Sprintf("create verified recovery bundle: %v", err)
+				continue
+			}
+			result.RecoveryBundle = bundle
+		}
 		if result.Scope == BranchScopeLocal {
-			applyLocalBranchDeletion(ctx, path, result)
+			applyLocalBranchDeletion(ctx, path, result, options)
 			continue
 		}
-		applyRemoteBranchDeletion(ctx, path, result)
+		applyRemoteBranchDeletion(ctx, path, result, options)
 	}
 }
 
-func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult) {
+type reviewedBranchRecoveryManifest struct {
+	Repository    string `json:"repository"`
+	Branch        string `json:"branch"`
+	Head          string `json:"head"`
+	Target        string `json:"target"`
+	Receipt       string `json:"receipt"`
+	ReceiptSHA256 string `json:"receipt_sha256"`
+	Bundle        string `json:"bundle"`
+	BundleSHA256  string `json:"bundle_sha256"`
+}
+
+// archiveReviewedBranch preserves the exact source independently of the
+// source clone, then proves the bundle restores that exact head into a new
+// empty repository before deletion is permitted.
+func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string, result BranchCleanupResult) (string, error) {
+	key := strings.NewReplacer("/", "_", "\\", "_").Replace(result.Repository + "--" + result.Branch + "-")
+	recoveryRoot := filepath.Join(reportDir, "recovery")
+	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(recoveryRoot, key)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	bundle := filepath.Join(dir, "source.bundle")
+	sourceRef := "refs/heads/" + result.Branch
+	if result.Scope == BranchScopeRemote {
+		sourceRef = "refs/remotes/origin/" + result.Branch
+	}
+	if _, err := git(ctx, repositoryPath, "bundle", "create", bundle, sourceRef); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(bundle, 0o600); err != nil {
+		return "", err
+	}
+	receipt, err := os.ReadFile(result.SupersessionReceipt)
+	if err != nil {
+		return "", err
+	}
+	if result.SupersessionSHA256 == "" || fmt.Sprintf("%x", sha256.Sum256(receipt)) != result.SupersessionSHA256 {
+		return "", errors.New("supersession receipt bytes changed after planning")
+	}
+	copyPath := filepath.Join(dir, "supersession.json")
+	if err := os.WriteFile(copyPath, receipt, 0o600); err != nil {
+		return "", err
+	}
+	bundleBytes, err := os.ReadFile(bundle)
+	if err != nil {
+		return "", err
+	}
+	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: fmt.Sprintf("%x", sha256.Sum256(receipt)), Bundle: "source.bundle", BundleSHA256: fmt.Sprintf("%x", sha256.Sum256(bundleBytes))}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	verify, err := os.MkdirTemp("", "wb-reviewed-branch-verify-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(verify)
+	if _, err := git(ctx, verify, "init", "--bare"); err != nil {
+		return "", err
+	}
+	if _, err := git(ctx, verify, "fetch", bundle, sourceRef+":refs/heads/recovery"); err != nil {
+		return "", err
+	}
+	restored, err := git(ctx, verify, "rev-parse", "refs/heads/recovery")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(restored) != result.SHA {
+		return "", fmt.Errorf("restored head %s does not match %s", strings.TrimSpace(restored), result.SHA)
+	}
+	return dir, nil
+}
+
+func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult, options BranchCleanupOptions) {
 	freshTarget, err := fetchRemoteTargetHead(ctx, repositoryPath, result.Base)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch exact origin/%s target: %v", result.Base, err)
@@ -274,6 +408,9 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 	currentSHA = strings.TrimSpace(currentSHA)
 	if currentSHA != result.SHA {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(currentSHA))
+		return
+	}
+	if !recheckBranchRetirementGuards(ctx, options.ProjectsRoot, repositoryPath, result) {
 		return
 	}
 	if !recheckDeletionEvidence(ctx, repositoryPath, currentSHA, freshTarget, result) {
@@ -301,6 +438,28 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 // is marked and false is returned. See
 // #req:receipted-requires-a-proved-landing.
 func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, freshTarget string, result *BranchCleanupResult) bool {
+	if result.SupersededAtOrigin {
+		digest, digestErr := supersessionFileSHA256(result.SupersessionReceipt)
+		if digestErr != nil || digest != result.SupersessionSHA256 {
+			result.Outcome = "failed"
+			result.Error = "supersession receipt bytes changed after planning; refusing"
+			return false
+		}
+		_, rejection, err := branchSupersessionReceipt(ctx, result.SupersessionReceipt, ListResult{
+			Repository: result.Repository, Branch: result.Branch, HeadSHA: currentSHA,
+			Base: result.Base, RemoteTargetSHA: freshTarget, CanonicalDir: repositoryPath,
+		})
+		if err != nil || rejection != "" {
+			result.Outcome = "failed"
+			if err != nil {
+				result.Error = fmt.Sprintf("recheck supersession receipt: %v", err)
+			} else {
+				result.Error = rejection
+			}
+			return false
+		}
+		return true
+	}
 	if result.Disposition == BranchReceipted {
 		if !isGitObjectID(result.LandingSHA) {
 			result.Outcome, result.Error = "failed", "receipted plan carries no landing commit; refusing"
@@ -341,7 +500,7 @@ func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, fr
 	return true
 }
 
-func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult) {
+func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult, options BranchCleanupOptions) {
 	if _, err := git(ctx, repositoryPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch --prune origin: %v", err)
 		return
@@ -363,6 +522,9 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 	}
 	if observedSHA != result.SHA {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("remote branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(observedSHA))
+		return
+	}
+	if !recheckBranchRetirementGuards(ctx, options.ProjectsRoot, repositoryPath, result) {
 		return
 	}
 	if !recheckDeletionEvidence(ctx, repositoryPath, observedSHA, freshTarget, result) {
@@ -389,6 +551,42 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		return
 	}
 	result.Applied, result.Outcome = true, "deleted"
+}
+
+// recheckBranchRetirementGuards repeats the non-content guards after the
+// durable plan/archive work. A branch can become checked out or claimed while
+// the receipt is being archived, so plan-time classification is insufficient.
+func recheckBranchRetirementGuards(ctx context.Context, projectsRoot, repositoryPath string, result *BranchCleanupResult) bool {
+	head, err := git(ctx, repositoryPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck canonical HEAD: %v", err)
+		return false
+	}
+	if isProtectedBranch(result.Branch, result.Base, strings.TrimSpace(head)) {
+		result.Outcome, result.Error = "failed", "branch is now protected; refusing deletion"
+		return false
+	}
+	checkedOut, diagnostic := checkedOutLocalBranches(ctx, repositoryPath)
+	if diagnostic != "" {
+		result.Outcome, result.Error = "failed", diagnostic
+		return false
+	}
+	if projectsRoot != "" {
+		claims, diagnostic := branchInUseIndex(ctx, projectsRoot, "")
+		if diagnostic != "" {
+			result.Outcome, result.Error = "failed", diagnostic
+			return false
+		}
+		if _, claimed := claims[branchInUseKey(result.Repository, result.Branch)]; claimed {
+			result.Outcome, result.Error = "failed", "branch became claimed by a live WB work log"
+			return false
+		}
+	}
+	if checkedOut[result.Branch] {
+		result.Outcome, result.Error = "failed", "branch became checked out in a linked worktree"
+		return false
+	}
+	return true
 }
 
 type branchCleanupReport struct {
