@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // worktreeMergeAbsorbedConflictAcknowledgementSuffix is kept as a plain alias
@@ -48,14 +49,15 @@ type WorktreeMergeAbsorbedConflictAcknowledgementOptions struct {
 
 // AcknowledgeAbsorbedConflict proves, for every receipted source of a
 // prepare-phase conflict receipt whose source worktrees are all gone, that
-// the source's exact content is already reachable from the freshly fetched
+// the source's changes are safely represented on the freshly fetched
 // current remote target -- either because the source SHA is a graph ancestor
 // of that target, or because every path it changed relative to its
-// merge-base with the target now carries an identical blob there -- then
+// merge-base with the target is independently proved absorbed (including a
+// narrowly checked root Go dependency upgrade) -- then
 // records a separate audited acknowledgement so a fresh candidate can own the
 // merger lane. It never reads or requires a receipted source worktree (that
 // infrastructure being gone is exactly the failure this recovers from), never
-// rewrites the historical receipt or any Work Log, and never deletes the
+// rewrites the historical receipt or any Work Log, and never deletes a
 // preserved, unpublished candidate worktree. This is a dry-run by default;
 // --apply requires --actor and --reason and writes only the new
 // acknowledgement artifact.
@@ -101,24 +103,24 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("inspect receipted source %s: %w", source.Worktree, statErr)
 		}
 	}
-	candidateInfo, statErr := os.Stat(receipt.Candidate.Worktree)
-	if statErr != nil || !candidateInfo.IsDir() {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("candidate worktree %s is required for read-only git object resolution and is missing: %v", receipt.Candidate.Worktree, statErr)
-	}
-	if err := requireAbsorbedConflictCandidateUnpublished(ctx, receipt); err != nil {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
-	}
-	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	gitRoot, err := absorbedConflictGitRoot(ctx, options.ProjectsRoot, receipt)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
-	excusedDerivedPaths, derivedPathSet, err := validateAbsorbedConflictDerivedPaths(ctx, receipt.Candidate.Worktree, currentTarget, options.DerivedPaths)
+	if err := requireAbsorbedConflictCandidateUnpublished(ctx, gitRoot, receipt); err != nil {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, gitRoot, receipt.Target)
+	if err != nil {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	excusedDerivedPaths, derivedPathSet, err := validateAbsorbedConflictDerivedPaths(ctx, gitRoot, currentTarget, options.DerivedPaths)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	proofs := make([]WorktreeMergeAbsorbedConflictSourceProof, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
-		result, proofErr := proveAbsorbedConflictSource(ctx, receipt.Candidate.Worktree, currentTarget, source, derivedPathSet)
+		result, proofErr := proveAbsorbedConflictSource(ctx, gitRoot, currentTarget, source, derivedPathSet)
 		if proofErr != nil {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipted source %s: %w", source.Branch, proofErr)
 		}
@@ -221,14 +223,51 @@ func validateAbsorbedConflictReceipt(receipt WorktreeMergeReceipt, receiptPath s
 	return nil
 }
 
-// requireAbsorbedConflictCandidateUnpublished proves the preserved candidate
-// branch carries no remote publication. An empty candidate SHA (prepare
-// failed before computing one) is trivially unpublished.
-func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, receipt WorktreeMergeReceipt) error {
-	if receipt.Candidate.SHA == "" {
-		return nil
+// absorbedConflictGitRoot uses the preserved candidate when present. A legacy
+// prepare conflict can have no candidate commit and a missing worktree; in
+// that narrow case the canonical clone can resolve the same Git objects. A
+// surviving local branch is refused rather than silently losing its work.
+func absorbedConflictGitRoot(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (string, error) {
+	info, statErr := os.Stat(receipt.Candidate.Worktree)
+	if statErr == nil {
+		if !info.IsDir() {
+			return "", fmt.Errorf("candidate worktree %s is not a directory", receipt.Candidate.Worktree)
+		}
+		return receipt.Candidate.Worktree, nil
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if !errors.Is(statErr, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect candidate worktree %s: %w", receipt.Candidate.Worktree, statErr)
+	}
+	if receipt.Candidate.SHA != "" {
+		return "", fmt.Errorf("candidate worktree %s is missing but receipt records candidate SHA %s", receipt.Candidate.Worktree, receipt.Candidate.SHA)
+	}
+	root, err := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+	if err != nil {
+		return "", fmt.Errorf("resolve canonical clone for missing candidate: %w", err)
+	}
+	branches := []string{receipt.Candidate.Branch}
+	for _, source := range receipt.Sources {
+		branches = append(branches, source.Branch)
+	}
+	for _, branch := range branches {
+		refs, _, refErr := runCommand(ctx, 0, 0, root, "git", "for-each-ref", "--format=%(refname)", "refs/heads/"+branch)
+		if refErr != nil {
+			return "", fmt.Errorf("inspect local branch %s: %w", branch, refErr)
+		}
+		for _, ref := range nonEmptyTrimmedLines(refs) {
+			if ref == "refs/heads/"+branch {
+				return "", fmt.Errorf("local branch %s still exists while its worktree is missing; inspect it before acknowledging absorbed conflict", branch)
+			}
+		}
+	}
+	return root, nil
+}
+
+// requireAbsorbedConflictCandidateUnpublished checks the remote branch even
+// when a legacy receipt has no candidate SHA: an empty recorded SHA alone
+// does not prove that nobody subsequently published the branch.
+func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
+	remote, _, err := runCommand(ctx, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("inspect candidate publication state: %w", err)
 	}
@@ -250,7 +289,8 @@ type absorbedConflictProof struct {
 // the source worktree that would normally hold it is gone) and proves its
 // content already reachable from currentTarget, either by graph ancestry, or
 // path by path relative to its merge-base with currentTarget: an exact blob
-// match ("blob_absorbed"), every line a `*.jsonl` append-only ledger added
+// match ("blob_absorbed"), a paired monotonic root Go dependency upgrade
+// ("go_dependency_upgrade"), every line a `*.jsonl` append-only ledger added
 // present verbatim in the target's copy ("lines_absorbed"), or an
 // operator-audited derived-index exclusion present in derivedPaths
 // ("derived_excused").
@@ -278,8 +318,25 @@ func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget st
 	if len(paths) == 0 {
 		return absorbedConflictProof{}, fmt.Errorf("source changed no path relative to its merge base %s with the current target; it is neither an ancestor nor content-absorbed", mergeBase)
 	}
+	goUpgradeProved := false
+	if slices.Contains(paths, "go.mod") && slices.Contains(paths, "go.sum") {
+		sourceModBlob, sourceModPresent := gitBlobAtPath(ctx, worktree, source.SHA, "go.mod")
+		targetModBlob, targetModPresent := gitBlobAtPath(ctx, worktree, currentTarget, "go.mod")
+		sourceSumBlob, sourceSumPresent := gitBlobAtPath(ctx, worktree, source.SHA, "go.sum")
+		targetSumBlob, targetSumPresent := gitBlobAtPath(ctx, worktree, currentTarget, "go.sum")
+		if sourceModPresent != targetModPresent || sourceModBlob != targetModBlob || sourceSumPresent != targetSumPresent || sourceSumBlob != targetSumBlob {
+			if _, err := proveGoDependencyUpgradePair(ctx, worktree, source.SHA, currentTarget); err != nil {
+				return absorbedConflictProof{}, fmt.Errorf("root Go dependency files are not safely absorbed: %w", err)
+			}
+			goUpgradeProved = true
+		}
+	}
 	pathProofs := make([]WorktreeMergeAbsorbedConflictPathProof, 0, len(paths))
 	for _, path := range paths {
+		if goUpgradeProved && (path == "go.mod" || path == "go.sum") {
+			pathProofs = append(pathProofs, WorktreeMergeAbsorbedConflictPathProof{Path: path, Method: "go_dependency_upgrade"})
+			continue
+		}
 		if derivedPaths[path] {
 			pathProofs = append(pathProofs, WorktreeMergeAbsorbedConflictPathProof{Path: path, Method: "derived_excused"})
 			continue
