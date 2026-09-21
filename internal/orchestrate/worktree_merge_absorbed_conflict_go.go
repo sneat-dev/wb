@@ -23,7 +23,7 @@ func proveGoDependencyUpgradePair(ctx context.Context, gitRoot, sourceSHA, targe
 	sourceSum, sourceSumPresent := gitFileContentsAtRevision(ctx, gitRoot, sourceSHA, "go.sum")
 	targetSum, targetSumPresent := gitFileContentsAtRevision(ctx, gitRoot, targetSHA, "go.sum")
 	if !sourceModPresent || !targetModPresent || !sourceSumPresent || !targetSumPresent {
-		return 0, errors.New("Go dependency upgrade proof requires go.mod and go.sum at both revisions")
+		return 0, errors.New("go dependency upgrade proof requires go.mod and go.sum at both revisions")
 	}
 	upgrades, err := goModDependencyUpgrades(sourceMod, targetMod)
 	if err != nil {
