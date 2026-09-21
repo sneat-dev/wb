@@ -30,6 +30,7 @@ const (
 	BranchContained  = "contained"  // ancestor of the fetched exact target; always eligible for deletion
 	BranchAbsorbed   = "absorbed"   // patch-id/tree equal to the target, but not an ancestor; report-only, forever
 	BranchReceipted  = "receipted"  // a proved landing receipt shows the work is in the target; eligible only under --receipts
+	BranchSuperseded = "superseded" // a trusted reviewer receipt replaces the exact branch; eligible only under --superseded-by
 	BranchUnique     = "unique"     // has content git cherry proves is not upstream
 	BranchProtected  = "protected"  // base, canonical HEAD, or a protected name
 	BranchInUse      = "in-use"     // checked out in a linked worktree, or named by a WB Work Log claim
@@ -159,7 +160,7 @@ func normalizeBranchListOptions(options BranchListOptions) (BranchListOptions, e
 	}
 	if options.Only != "" {
 		switch options.Only {
-		case BranchContained, BranchAbsorbed, BranchReceipted, BranchUnique, BranchProtected, BranchInUse, BranchUnreadable:
+		case BranchContained, BranchAbsorbed, BranchReceipted, BranchSuperseded, BranchUnique, BranchProtected, BranchInUse, BranchUnreadable:
 		default:
 			return BranchListOptions{}, fmt.Errorf("unsupported --only %q", options.Only)
 		}
@@ -608,6 +609,7 @@ func classifyBranch(
 			return entry
 		}
 		if rejection == "" {
+			entry.Disposition = BranchSuperseded
 			entry.SupersededAtOrigin = true
 			entry.SupersessionReceipt, entry.SupersessionReviewer, entry.SupersessionReceiptID = sweep.SupersededBy, receipt.Approval.Actor, receipt.Approval.ReceiptID
 			digest, digestErr := supersessionFileSHA256(sweep.SupersededBy)
@@ -617,6 +619,9 @@ func classifyBranch(
 			}
 			entry.SupersessionSHA256 = digest
 			entry.Evidence = "trusted reviewer receipt binds the exact source, target, replacements, and complete residual inventory"
+			if scope == BranchScopeRemote {
+				classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
+			}
 			return entry
 		}
 		entry.SupersessionRejection = rejection

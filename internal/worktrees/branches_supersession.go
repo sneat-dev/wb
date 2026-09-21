@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -26,9 +27,18 @@ func branchSupersessionReceipt(ctx context.Context, receiptPath string, entry Li
 }
 
 func supersessionFileSHA256(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	return fileSHA256(path)
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }

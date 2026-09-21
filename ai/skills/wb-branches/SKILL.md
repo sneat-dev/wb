@@ -32,7 +32,13 @@ Flags on both: `--base` (default `main`), `--scope` (`local`, `remote`, or
 and `--projects-root`. `wb branch list` adds `--only <disposition>` and
 `--older-than` (default `0`, shows every age). `wb branch cleanup` adds
 `--apply`, `--older-than` (default `24h`, `0` disables the grace window),
-`--report-dir`, `--receipts`, and `--absorbed-by <pr-or-commit>`. Scope is
+`--report-dir`, `--receipts`, `--absorbed-by <pr-or-commit>`, and the reviewed
+retirement inputs `--superseded-by <receipt.json>`, exact `--repo` and
+`--branch`, `--peer-evidence`, and `--require-host`. Reviewed retirement in
+any scope that includes remote deletion requires peer evidence from every
+named host, rechecks it immediately before the leased push, refuses fork
+origins, and stores a SHA-bound restored recovery bundle outside every source
+clone and linked worktree. Scope is
 selected only by `--scope` — there is no `--remote` boolean here, unlike
 `wb worktree cleanup --remote`.
 

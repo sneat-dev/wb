@@ -148,6 +148,13 @@ re-resolves the branch, and re-verifies containment; a branch that moved
 between plan and apply refuses only itself, with the moved SHA reported, and
 never aborts the run.
 
+--superseded-by <receipt.json> retires one deliberately split branch only with
+exact --repo and --branch selectors. Every scope containing remote deletion
+also requires fresh --peer-evidence for every --require-host, rechecks that
+evidence immediately before the leased push, refuses fork origins whose
+upstream PR state cannot be proven, and archives a SHA-bound source bundle
+outside the source clone before deletion.
+
 --scope remote (and the remote half of --scope all) additionally requires
 pull-request evidence: a branch that is the head of an open pull request is
 refused regardless of containment, and when pull-request evidence cannot be
@@ -168,7 +175,6 @@ in-use and therefore never a candidate.`,
 				return err
 			}
 			progress := command.ErrOrStderr()
-			now := time.Now()
 			outcome, err := worktrees.BranchCleanup(command.Context(), worktrees.BranchCleanupOptions{
 				Receipts:     receipts,
 				AbsorbedBy:   absorbedBy,
@@ -177,7 +183,6 @@ in-use and therefore never a candidate.`,
 				OlderThan: olderThan, ReportDir: reportDir, Filter: filterFlag, Progress: progress,
 				Repository: repository, Branch: branch,
 				PeerEvidence: peerEvidence, RequireHosts: requireHosts,
-				Now: func() time.Time { return now },
 			})
 			if err != nil {
 				return err
@@ -209,7 +214,7 @@ in-use and therefore never a candidate.`,
 	command.Flags().BoolVar(&apply, "apply", false, "delete every eligible branch; the default is a dry-run plan")
 	command.Flags().BoolVar(&receipts, "receipts", false, "prove landings via GitHub pull-request receipts, making receipted branches eligible (one query per candidate)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify this merged pull request number or exact landing commit absorbed a branch's content, making a content-proven squash-absorbed branch eligible even with no worktree left (same proof as 'wb worktree cleanup --absorbed-by')")
-	command.Flags().StringVar(&supersededBy, "superseded-by", "", "trusted-reviewer receipt for one exact intentionally superseded branch; requires --repo and --branch")
+	command.Flags().StringVar(&supersededBy, "superseded-by", "", "trusted-reviewer receipt for one exact intentionally superseded branch; requires --repo, --branch, and peer evidence for remote scope")
 	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository selector")
 	command.Flags().StringVar(&branch, "branch", "", "exact branch ref selector")
 	command.Flags().StringSliceVar(&peerEvidence, "peer-evidence", nil, "machine-generated exact branch-list JSON from one required host; repeat per host")

@@ -98,12 +98,12 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 	if options.SupersededBy != "" && (options.Repository == "" || options.Branch == "") {
 		return BranchCleanupOptions{}, errors.New("--superseded-by requires exact --repo owner/name and --branch ref selectors")
 	}
-	if options.SupersededBy != "" && options.Scope == BranchScopeRemote && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
+	if options.SupersededBy != "" && scopeIncludesRemote(options.Scope) && (len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0) {
 		return BranchCleanupOptions{}, errors.New("reviewed remote retirement requires --peer-evidence and --require-host")
 	}
 	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
-		if options.Scope != BranchScopeRemote || options.Repository == "" || options.Branch == "" {
-			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host require exact --scope remote --repo owner/name --branch ref")
+		if !scopeIncludesRemote(options.Scope) || options.Repository == "" || options.Branch == "" {
+			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host require exact remote scope, --repo owner/name, and --branch ref")
 		}
 		if len(options.PeerEvidence) == 0 || len(options.RequireHosts) == 0 {
 			return BranchCleanupOptions{}, errors.New("--peer-evidence and --require-host must be supplied together")
@@ -120,6 +120,10 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 		options.ReportDir = filepath.Clean(absolute)
 	}
 	return options, nil
+}
+
+func scopeIncludesRemote(scope string) bool {
+	return scope == BranchScopeRemote || scope == BranchScopeAll
 }
 
 // DefaultBranchCleanupReportDir mirrors DefaultCleanupReportDir's naming
@@ -171,6 +175,9 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 		}
 		reportDir = DefaultBranchCleanupReportDir(resolution.Write.Home, now)
 	}
+	if err := validateBranchCleanupReportDir(ctx, reportDir, paths); err != nil {
+		return BranchCleanupOutcome{}, err
+	}
 	// durable-audit: the plan is written before the first destructive Git
 	// operation, then rewritten as each candidate's outcome is known.
 	reportPath, err := writeBranchCleanupReport(reportDir, normalized, now, results)
@@ -219,7 +226,7 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 	for _, entry := range entries {
 		result := BranchCleanupResult{BranchEntry: entry, Outcome: "skipped"}
 		switch {
-		case !entry.SupersededAtOrigin && entry.Disposition != BranchContained && entry.Disposition != BranchReceipted:
+		case !eligibleBranchCleanupDisposition(entry):
 			result.SkipReason = skipReasonForDisposition(entry)
 		case sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan:
 			result.SkipReason = fmt.Sprintf("branch is younger than --older-than %s", sweep.OlderThan)
@@ -234,6 +241,17 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 		results = append(results, result)
 	}
 	return results
+}
+
+func eligibleBranchCleanupDisposition(entry BranchEntry) bool {
+	switch entry.Disposition {
+	case BranchContained, BranchReceipted:
+		return true
+	case BranchSuperseded:
+		return entry.SupersededAtOrigin
+	default:
+		return false
+	}
 }
 
 // skipReasonForDisposition prefers the entry's own tailored Reason, then its
@@ -265,7 +283,7 @@ func remotePullRequestEvidenceUnavailable(entries []BranchEntry, sweep branchSwe
 	}
 	for _, entry := range entries {
 		if entry.Scope == BranchScopeRemote &&
-			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted) &&
+			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted || entry.Disposition == BranchSuperseded) &&
 			entry.PullRequestQueryFailed {
 			return true
 		}
@@ -313,23 +331,31 @@ func applyBranchCleanup(ctx context.Context, results []BranchCleanupResult, path
 }
 
 type reviewedBranchRecoveryManifest struct {
-	Repository    string `json:"repository"`
-	Branch        string `json:"branch"`
-	Head          string `json:"head"`
-	Target        string `json:"target"`
-	Receipt       string `json:"receipt"`
-	ReceiptSHA256 string `json:"receipt_sha256"`
-	Bundle        string `json:"bundle"`
-	BundleSHA256  string `json:"bundle_sha256"`
+	Repository    string    `json:"repository"`
+	Branch        string    `json:"branch"`
+	Head          string    `json:"head"`
+	Target        string    `json:"target"`
+	Receipt       string    `json:"receipt"`
+	ReceiptSHA256 string    `json:"receipt_sha256"`
+	Bundle        string    `json:"bundle"`
+	BundleSHA256  string    `json:"bundle_sha256"`
+	RestoredHead  string    `json:"restored_head"`
+	VerifiedAt    time.Time `json:"verified_at"`
 }
 
 // archiveReviewedBranch preserves the exact source independently of the
 // source clone, then proves the bundle restores that exact head into a new
 // empty repository before deletion is permitted.
 func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string, result BranchCleanupResult) (string, error) {
+	if err := validateBranchCleanupReportDir(ctx, reportDir, map[string]string{result.Repository: repositoryPath}); err != nil {
+		return "", err
+	}
 	key := strings.NewReplacer("/", "_", "\\", "_").Replace(result.Repository + "--" + result.Branch + "-")
 	recoveryRoot := filepath.Join(reportDir, "recovery")
 	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
+		return "", err
+	}
+	if err := syncDirectoryAndAncestors(recoveryRoot); err != nil {
 		return "", err
 	}
 	dir, err := os.MkdirTemp(recoveryRoot, key)
@@ -337,6 +363,9 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 		return "", err
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(recoveryRoot); err != nil {
 		return "", err
 	}
 	bundle := filepath.Join(dir, "source.bundle")
@@ -350,28 +379,20 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 	if err := os.Chmod(bundle, 0o600); err != nil {
 		return "", err
 	}
-	receipt, err := os.ReadFile(result.SupersessionReceipt)
-	if err != nil {
+	if err := syncFile(bundle); err != nil {
 		return "", err
 	}
-	if result.SupersessionSHA256 == "" || fmt.Sprintf("%x", sha256.Sum256(receipt)) != result.SupersessionSHA256 {
-		return "", errors.New("supersession receipt bytes changed after planning")
+	bundleDigest, err := fileSHA256(bundle)
+	if err != nil {
+		return "", err
 	}
 	copyPath := filepath.Join(dir, "supersession.json")
-	if err := os.WriteFile(copyPath, receipt, 0o600); err != nil {
-		return "", err
-	}
-	bundleBytes, err := os.ReadFile(bundle)
+	receiptDigest, err := copyFileSHA256(result.SupersessionReceipt, copyPath)
 	if err != nil {
 		return "", err
 	}
-	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: fmt.Sprintf("%x", sha256.Sum256(receipt)), Bundle: "source.bundle", BundleSHA256: fmt.Sprintf("%x", sha256.Sum256(bundleBytes))}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
-		return "", err
+	if result.SupersessionSHA256 == "" || receiptDigest != result.SupersessionSHA256 {
+		return "", errors.New("supersession receipt bytes changed after planning")
 	}
 	verify, err := os.MkdirTemp("", "wb-reviewed-branch-verify-")
 	if err != nil {
@@ -390,6 +411,20 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 	}
 	if strings.TrimSpace(restored) != result.SHA {
 		return "", fmt.Errorf("restored head %s does not match %s", strings.TrimSpace(restored), result.SHA)
+	}
+	manifest := reviewedBranchRecoveryManifest{Repository: result.Repository, Branch: result.Branch, Head: result.SHA, Target: result.TargetSHA, Receipt: "supersession.json", ReceiptSHA256: receiptDigest, Bundle: "source.bundle", BundleSHA256: bundleDigest, RestoredHead: strings.TrimSpace(restored), VerifiedAt: time.Now().UTC()}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := writeDurableFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(dir); err != nil {
+		return "", err
+	}
+	if err := syncDirectory(recoveryRoot); err != nil {
+		return "", err
 	}
 	return dir, nil
 }
@@ -539,12 +574,24 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the head of open pull request %s", open.URL)
 		return
 	}
+	if result.SupersededAtOrigin {
+		if err := reviewedRemoteForkGuard(ctx, repositoryPath, result.Repository); err != nil {
+			result.Outcome, result.Error = "failed", err.Error()
+			return
+		}
+	}
 	canonical, err := openCanonicalRepository(repositoryPath)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("open canonical repository: %v", err)
 		return
 	}
 	defer canonical.close()
+	if len(options.PeerEvidence) > 0 || len(options.RequireHosts) > 0 {
+		if err := validatePeerEvidence(options, []BranchCleanupResult{*result}, options.Now()); err != nil {
+			result.Outcome, result.Error = "failed", fmt.Sprintf("recheck peer evidence immediately before remote deletion: %v", err)
+			return
+		}
+	}
 	pushSpec := "--force-with-lease=refs/heads/" + result.Branch + ":" + observedSHA
 	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", pushSpec, "origin", ":refs/heads/"+result.Branch); err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("force-with-lease delete refs/heads/%s: %v", result.Branch, err)
@@ -599,8 +646,14 @@ type branchCleanupReport struct {
 }
 
 func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult) (string, error) {
+	if err := rejectSymlinkAncestors(reportDir); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create branch cleanup report directory: %w", err)
+	}
+	if err := syncDirectoryAndAncestors(reportDir); err != nil {
+		return "", err
 	}
 	report := branchCleanupReport{
 		GeneratedAt: now, Base: options.Base, Scope: options.Scope, Apply: options.Apply,
@@ -613,11 +666,163 @@ func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, no
 	content = append(content, '\n')
 	path := filepath.Join(reportDir, "cleanup.json")
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o644); err != nil {
+	if err := writeDurableFile(temporary, content, 0o644); err != nil {
 		return "", fmt.Errorf("write branch cleanup report: %w", err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		return "", fmt.Errorf("activate branch cleanup report: %w", err)
 	}
+	if err := syncDirectory(reportDir); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+func validateBranchCleanupReportDir(ctx context.Context, reportDir string, repositoryPaths map[string]string) error {
+	if err := rejectSymlinkAncestors(reportDir); err != nil {
+		return fmt.Errorf("unsafe branch cleanup report directory: %w", err)
+	}
+	for repository, sourcePath := range repositoryPaths {
+		if sourcePath == "" {
+			continue
+		}
+		sourceRoots, err := sourceRepositoryRoots(ctx, sourcePath)
+		if err != nil {
+			return fmt.Errorf("resolve source repository %s: %w", repository, err)
+		}
+		for _, sourceRoot := range sourceRoots {
+			if pathIsWithin(reportDir, sourceRoot) {
+				return fmt.Errorf("branch cleanup report directory %s is inside source repository %s; choose a location outside the clone or worktree", reportDir, repository)
+			}
+		}
+	}
+	return nil
+}
+
+func sourceRepositoryRoots(ctx context.Context, sourcePath string) ([]string, error) {
+	output, err := git(ctx, sourcePath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var roots []string
+	for _, line := range strings.Split(output, "\n") {
+		root, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		absoluteRoot, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, absoluteRoot)
+		if physicalRoot, err := filepath.EvalSymlinks(absoluteRoot); err == nil {
+			roots = append(roots, physicalRoot)
+		}
+	}
+	if len(roots) == 0 {
+		return nil, errors.New("source repository has no registered worktree roots")
+	}
+	return compactStrings(roots), nil
+}
+
+func pathIsWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func rejectSymlinkAncestors(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink", current)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+	}
+}
+
+func copyFileSHA256(source, destination string) (string, error) {
+	input, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
+	syncErr := output.Sync()
+	closeErr := output.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if syncErr != nil {
+		return "", syncErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func writeDurableFile(path string, content []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(content)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func syncDirectoryAndAncestors(path string) error {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		if err := syncDirectory(current); err != nil {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+	}
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
