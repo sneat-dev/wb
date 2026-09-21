@@ -92,6 +92,7 @@ type defaultBranchRepoMetadata struct {
 	DefaultBranch string `json:"default_branch"`
 	Archived      bool   `json:"archived"`
 	Fork          bool   `json:"fork"`
+	Size          int    `json:"size"`
 	Parent        *struct {
 		FullName string `json:"full_name"`
 	} `json:"parent"`
@@ -565,6 +566,11 @@ func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired strin
 	}
 	oldRef, err := readDefaultBranchRef(ctx, repo.Slug(), meta.DefaultBranch)
 	if err != nil {
+		if meta.Size == 0 && isDefaultBranchNotFound(err) {
+			result.Disposition = "blocked"
+			result.Error = "empty repository has no initial commit on its advertised default branch; create and push the desired branch first"
+			return result
+		}
 		result.Disposition = "error"
 		result.Error = err.Error()
 		return result

@@ -17,7 +17,8 @@ default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
 archived repositories, open source-branch pull requests, divergent targets,
 Pages/protection/rules impacts, and concrete workflow references to the old
-branch. The report is the exception queue; WB never rewrites workflow strings
+branch. Repositories without an initial commit are also exception rows, even
+when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
 blindly.
 
 After a remote change, WB refreshes each matching local canonical clone and

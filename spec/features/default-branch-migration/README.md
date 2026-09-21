@@ -14,7 +14,9 @@ different target SHA is never promoted or overwritten.
 
 Archived repositories, fork outbound-pull-request uncertainty, source-branch
 pull requests, Pages, protection/rules effects, and concrete workflow
-references to the source branch are exception rows. They require a separate,
+references to the source branch are exception rows. A repository with no
+initial commit is also an exception row even if GitHub advertises a default
+branch name. They require a separate,
 reviewed migration; this command never performs a broad `master` replacement.
 
 When a remote change succeeds, WB refreshes every matching local canonical

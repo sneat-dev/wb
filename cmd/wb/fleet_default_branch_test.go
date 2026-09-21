@@ -222,6 +222,10 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 		switch endpoint {
 		case "repos/acme/empty":
 			return []byte(`{"default_branch":""}`), nil
+		case "repos/acme/no-initial-commit":
+			return []byte(`{"default_branch":"main","size":0}`), nil
+		case "repos/acme/no-initial-commit/branches/main":
+			return nil, errors.New("HTTP 404")
 		case "repos/fork/app":
 			return []byte(`{"default_branch":"master","fork":true,"parent":{"full_name":"upstream/app"}}`), nil
 		case "repos/fork/app/branches/master":
@@ -247,6 +251,10 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 	empty := inspectDefaultBranch(context.Background(), repo("acme/empty"), "main")
 	if empty.Disposition != "blocked" || !strings.Contains(empty.Error, "empty repository") {
 		t.Fatalf("empty = %#v", empty)
+	}
+	noInitialCommit := inspectDefaultBranch(context.Background(), repo("acme/no-initial-commit"), "main")
+	if noInitialCommit.Disposition != "blocked" || !strings.Contains(noInitialCommit.Error, "no initial commit") {
+		t.Fatalf("no initial commit = %#v", noInitialCommit)
 	}
 	fork := inspectDefaultBranch(context.Background(), repo("fork/app"), "main")
 	if fork.Disposition != "drift" || len(fork.Impacts) == 0 {
