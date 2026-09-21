@@ -694,9 +694,11 @@
               "path": "wb branch list",
               "flags": [
                 "--base",
+                "--branch",
                 "--format",
                 "--older-than",
                 "--only",
+                "--repo",
                 "--scope"
               ],
               "modes": [

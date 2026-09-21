@@ -175,8 +175,13 @@ func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *test
 	if firstUnits != 18 {
 		t.Fatalf("first alone = %d units, want 18 (the whole machine)", firstUnits)
 	}
-	if !strings.Contains(firstOut.String(), "wb run: admitted (queue empty)") {
-		t.Fatalf("first output = %q, want the immediate-admission line", firstOut.String())
+	firstRendered := firstOut.String()
+	if !strings.Contains(firstRendered, "wb run: admitted") {
+		t.Fatalf("first output = %q, want an admission receipt", firstRendered)
+	}
+	falseQueued := fmt.Sprintf("wb run: queued first (position 0 of 0, waiting on: %d first)", firstSelf.PID)
+	if strings.Contains(firstRendered, falseQueued) {
+		t.Fatalf("first output contains contradictory self-holder queue receipt %q: %q", falseQueued, firstRendered)
 	}
 
 	var secondOut bytes.Buffer
@@ -189,6 +194,26 @@ func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *test
 	defer secondLease.Release()
 	if secondUnits != 9 {
 		t.Fatalf("second while the first holds 18 = %d units, want min(12, 27-18) = 9", secondUnits)
+	}
+}
+
+func TestQueueStateHasAdmittedSelfRequiresTheExactSelfHolderAfterTicketRemoval(t *testing.T) {
+	self := runqueue.Participant{PID: 7, Summary: "go test", Worktree: "/worktree"}
+	if !queueStateHasAdmittedSelf(runqueue.State{Holders: []runqueue.Holder{{Participant: self}}}, self) {
+		t.Fatal("own holder after ticket removal must prove admission")
+	}
+	for name, state := range map[string]runqueue.State{
+		"still waiting":  {Total: 1, Holders: []runqueue.Holder{{Participant: self}}},
+		"other pid":      {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: 8, Summary: self.Summary, Worktree: self.Worktree}}}},
+		"other summary":  {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: self.PID, Summary: "go build", Worktree: self.Worktree}}}},
+		"other worktree": {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: self.PID, Summary: self.Summary, Worktree: "/other"}}}},
+		"no visibility":  {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if queueStateHasAdmittedSelf(state, self) {
+				t.Fatalf("queueStateHasAdmittedSelf(%+v) = true", state)
+			}
+		})
 	}
 }
 
