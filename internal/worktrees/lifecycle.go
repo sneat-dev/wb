@@ -4382,6 +4382,19 @@ func attestedAbsorbedReceipt(
 		return nil, rejection, err
 	}
 	if pullRequest != nil {
+		receiptAfterContentProof := func(landing string) (*absorbedReceipt, string, error) {
+			absorbed, err := contentAbsorbed(ctx, repository, head, landing, target)
+			if err != nil {
+				return nil, "", err
+			}
+			if !absorbed {
+				return nil, fmt.Sprintf(
+					"work absorbed by %s no longer survives in the exact fetched origin/%s target %s",
+					landing, base, target,
+				), nil
+			}
+			return &absorbedReceipt{LandingSHA: landing, PullRequest: pullRequest}, "", nil
+		}
 		// A numbered PR has a stronger, topology-aware proof than generic
 		// patch containment: the exact source head is in the fetched PR
 		// head, and the reported merge is in the fresh target. Two landing
@@ -4400,14 +4413,14 @@ func attestedAbsorbedReceipt(
 			return nil, "", err
 		}
 		if squashRejection == "" {
-			return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+			return receiptAfterContentProof(landingSHA)
 		}
 		mergeCommitRejection, err := verifyAttestedMergeCommitPullRequest(ctx, repository, head, target, absorbedBy, pullRequest)
 		if err != nil {
 			return nil, "", err
 		}
 		if mergeCommitRejection == "" {
-			return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+			return receiptAfterContentProof(pullRequest.MergeSHA)
 		}
 		return nil, squashRejection + "; " + mergeCommitRejection, nil
 	}

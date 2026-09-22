@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -44,6 +45,46 @@ func agentHookShellCommand(executable string) string {
 	return fmt.Sprintf("%s %s 2>/dev/null; exit 0", shellQuote(executable), agentHookInvocation)
 }
 
+// resolveWBExecutableForHook decides what a governed-command rewrite should
+// splice in front of "run --": self (the hook's own executable, as
+// hookExecutable() resolves it) when PATH would find a DIFFERENT binary
+// under the name "wb", and "" — meaning "use the bare name 'wb', unquoted" —
+// when exec.LookPath("wb") resolves to the identical file self already is.
+//
+// This exists because the bare name is what a user's own Claude Code
+// permission rule is written against (`Bash(wb run:*)`): a rewrite that
+// always spliced in the absolute path stopped matching that rule the moment
+// the two files were the same binary anyway (wb#645 review r2, NM1/minor 2).
+// os.SameFile compares device and inode, not string equality, so a
+// symlink, a different relative spelling, or hash-cached shell lookup that
+// still ultimately names this same executable is still treated as a match.
+// When the two are genuinely different files — self was launched from a
+// build directory or an absolute path never added to PATH, while some other
+// "wb" (or none) sits on PATH — only the absolute path is guaranteed to run
+// the same guard that is making this decision, so it is returned for the
+// caller to shell-quote before splicing.
+func resolveWBExecutableForHook(self string) string {
+	if self == "" {
+		return self
+	}
+	onPath, err := exec.LookPath("wb")
+	if err != nil {
+		return self
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		return self
+	}
+	onPathInfo, err := os.Stat(onPath)
+	if err != nil {
+		return self
+	}
+	if os.SameFile(selfInfo, onPathInfo) {
+		return ""
+	}
+	return self
+}
+
 func shellQuote(value string) string {
 	if value != "" && !strings.ContainsAny(value, " \t\n\"'\\$`*?[]{}();&|<>#~!") {
 		return value
@@ -59,8 +100,9 @@ func newHooksAgentPreToolUseCmd() *cobra.Command {
 		Long: `Refuse an agent tool call that violates one of this guard's policies.
 
 Reads a Claude Code PreToolUse payload as JSON on stdin and writes a deny
-document on stdout when the call matches one of the policies below. It writes
-nothing at all for every other outcome.
+document, or a rewrite document with no permission decision, on stdout when
+the call matches one of the policies below. It writes nothing at all for
+every other outcome.
 
 Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
 
@@ -76,8 +118,57 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     (an explicit 'agent.autoTags: true' in '.wb/hooks.yaml', or a
     strongo/cicd reusable workflow with no 'disable-version-bumping: true').
     See lessons l3/l11.
-  - Governed heavy validation: refuses 'go test'/'golangci-lint'/etc. run
-    directly inside a managed worktree instead of through 'wb run --'.
+  - Governed heavy validation: rewrites 'go test'/'golangci-lint'/etc. run
+    directly inside a managed worktree into 'wb run -- ...' instead of
+    refusing it (wb#637, founder decision 2026-09-18), but only for the one
+    narrow shape wb#645's review restricted this to: a single governed
+    command, optionally prefixed by 'VAR=value' assignments and/or a leading
+    'cd <dir> &&'. The env assignments move in front of 'wb run' so they
+    still apply ('GOOS=windows go build ./...' becomes
+    'GOOS=windows wb run -- go build ./...'), and a leading 'cd' stays
+    outside 'wb run --' so it still changes the shell's directory. Any other
+    compound command ('&&' twice, ';', a pipeline, '||', a subshell, a
+    heredoc) is never rewritten; it falls back to the pre-PR refusal that
+    names the command to submit through 'wb run --' yourself. There is no
+    'sh -c' wrapping anywhere: it hid the inner command from the user's own
+    Bash permission rules, changed semantics under a non-bash /bin/sh, and
+    could let a governed command hide a chained deny. Outside a managed
+    worktree, and for a call already under 'wb run --', nothing changes.
+    'time <command>' is treated as a compound shape and is never rewritten,
+    because 'wb run -- time ...' would run /usr/bin/time instead of the
+    shell's own 'time' keyword.
+
+    A rewrite is written as 'updatedInput' with NO 'permissionDecision' at
+    all — this is the guard's one exception to "only a deny is ever
+    written". Claude Code v2.1.276 applies a response that sets
+    'updatedInput' with no 'permissionDecision' as the new input and then
+    runs its NORMAL permission flow on it, so the user's own prompts and
+    allow/deny/ask rules still apply to the rewritten command exactly as
+    they would to the one the agent proposed. This is deliberate: an
+    explicit 'allow' would suppress the permission prompt entirely, which is
+    not this guard's call to make, and this behaviour is undocumented and
+    depends on Claude Code >= 2.1.276. Every other 'tool_input' field the
+    call carried (description, timeout, run_in_background, ...) passes
+    through unchanged. Every WB deny policy is evaluated across the WHOLE
+    command line before a rewrite is even considered, ignoring any governed
+    match while doing so, so a real deny anywhere on the line (a chained
+    'gh pr merge', a canonical-clone write, ...) always wins over a rewrite.
+  - Subagent-ID stamp: when the PreToolUse payload carries 'agent_id' (Claude
+    Code sends it only from a subagent) and the Bash command is, entirely on
+    its own, a simple invocation of 'wb' (a single command, no '&&'/';'/'|',
+    optionally prefixed by 'VAR=value' assignments), prefixes
+    'export WB_SUBAGENT_ID=<agent_id> WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>;'
+    onto it, so every WB record that call's 'wb' invocation writes carries
+    the subagent and tool-call identity (wb#631's provenance fields). These
+    names are deliberately outside the WB_AGENT_* family WB's own
+    owner-identity variables use (WB_AGENT_ID already names the session that
+    claims a worktree), so a subagent stamp is never mistaken for a
+    declared owner identity by wb's own admission checks. Both IDs are
+    validated against a compact safe charset before they are ever
+    interpolated into the rewritten command; an unsafe or absent agent_id
+    drops the whole prefix. A main-thread call (no 'agent_id'), or a Bash
+    command that chains 'wb' with anything else, is never stamped, and this
+    never sets 'permissionDecision' either.
   - Missing model (Agent/Task tool): refuses a subagent dispatch that names
     no 'model'. See lesson l49.
   - Literal report path (Agent/Task tool): refuses a dispatch prompt that
@@ -198,11 +289,9 @@ Install it with 'wb hooks agent install'.`,
 				defer func() { _ = file.Close() }()
 				reader = file
 			}
-			decision := agentguard.Inspect(
-				agentguard.DecodeToolCall(reader),
-				agentguard.Options{ProjectsRoot: projectsRoot},
-			)
-			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision); err != nil {
+			call := agentguard.DecodeToolCall(reader)
+			decision := agentguard.Inspect(call, agentguard.Options{ProjectsRoot: projectsRoot, WBExecutable: resolveWBExecutableForHook(hookExecutable())})
+			if _, err := agentguard.WriteDecision(cmd.OutOrStdout(), decision, call.ToolInput); err != nil {
 				return nil
 			}
 			return nil

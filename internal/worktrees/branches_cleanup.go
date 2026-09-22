@@ -435,6 +435,7 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch exact origin/%s target: %v", result.Base, err)
 		return
 	}
+	result.TargetSHA = freshTarget
 	currentSHA, err := git(ctx, repositoryPath, "rev-parse", "--verify", "refs/heads/"+result.Branch)
 	if err != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch no longer exists: %v", err)
@@ -545,6 +546,7 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("refetch exact origin/%s target: %v", result.Base, err)
 		return
 	}
+	result.TargetSHA = freshTarget
 	observedSHA, err := remoteBranchHead(ctx, repositoryPath, result.Branch)
 	if err != nil || observedSHA == "" {
 		result.Outcome = "failed"
