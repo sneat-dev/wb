@@ -930,6 +930,29 @@ func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *te
 	}
 }
 
+func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) {
+	original := defaultBranchGit
+	t.Cleanup(func() { defaultBranchGit = original })
+	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "rev-parse HEAD":
+			return "moved", nil
+		case "rev-parse main", "rev-parse master", "rev-parse origin/main":
+			return "same", nil
+		case "status --porcelain":
+			return "", nil
+		default:
+			return "", errors.New("unexpected git")
+		}
+	}
+	if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("moved attachment accepted: %v", err)
+	}
+	if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "master", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("moved master attachment accepted: %v", err)
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *testing.T) {
 	tests := []struct {
 		name           string

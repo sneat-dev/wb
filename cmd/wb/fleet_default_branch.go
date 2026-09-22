@@ -1553,6 +1553,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 			if err := defaultBranchAttachHead(ctx, entry.Path, sourceDefault); err != nil {
 				return fmt.Errorf("reattach detached HEAD to local %s: %w", sourceDefault, err)
 			}
+			if err := verifyDefaultBranchAttachment(ctx, entry.Path, sourceDefault, repository.Desired, remoteHead); err != nil {
+				entry.Disposition = "blocked"
+				entry.Actions = append(entry.Actions, "attachment verification failed")
+				if checkpointErr := checkpoint(); checkpointErr != nil {
+					return fmt.Errorf("verify restored local %s attachment: %v; persist blocked detached recovery receipt: %w", sourceDefault, err, checkpointErr)
+				}
+				return fmt.Errorf("verify restored local %s attachment: %w", sourceDefault, err)
+			}
 			entry.Actions = []string{"restored HEAD to local " + sourceDefault + " after failed atomic rename"}
 			if err := checkpoint(); err != nil {
 				return fmt.Errorf("persist detached atomic rename recovery receipt: %w", err)
@@ -1573,6 +1581,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 		}
 		if err := defaultBranchAttachHead(ctx, entry.Path, repository.Desired); err != nil {
 			return fmt.Errorf("attach detached HEAD to local %s: %w", repository.Desired, err)
+		}
+		if err := verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, remoteHead); err != nil {
+			entry.Disposition = "blocked"
+			entry.Actions = append(entry.Actions, "attachment verification failed")
+			if checkpointErr := checkpoint(); checkpointErr != nil {
+				return fmt.Errorf("verify recovered local %s attachment: %v; persist blocked detached recovery receipt: %w", repository.Desired, err, checkpointErr)
+			}
+			return fmt.Errorf("verify recovered local %s attachment: %w", repository.Desired, err)
 		}
 		if _, err := defaultBranchGit(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
 			return fmt.Errorf("set local tracking branch after detached recovery: %w", err)
@@ -1699,6 +1715,29 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 	entry.Actions = append(renamedActions, "set upstream to origin/"+repository.Desired)
 	if err := checkpoint(); err != nil {
 		return fmt.Errorf("persist local-reconciliation receipt: %w", err)
+	}
+	return nil
+}
+
+func verifyDefaultBranchAttachment(ctx context.Context, path, branch, desired, expected string) error {
+	head, err := defaultBranchGit(ctx, path, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve HEAD: %w", err)
+	}
+	branchHead, err := defaultBranchGit(ctx, path, "rev-parse", branch)
+	if err != nil {
+		return fmt.Errorf("resolve local %s: %w", branch, err)
+	}
+	remoteHead, err := defaultBranchGit(ctx, path, "rev-parse", "origin/"+desired)
+	if err != nil {
+		return fmt.Errorf("resolve origin/%s: %w", desired, err)
+	}
+	status, err := defaultBranchGit(ctx, path, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect local changes: %w", err)
+	}
+	if head != expected || branchHead != expected || remoteHead != expected || status != "" {
+		return fmt.Errorf("HEAD %s, local %s %s, origin/%s %s, status %q do not match expected clean %s", head, branch, branchHead, desired, remoteHead, status, expected)
 	}
 	return nil
 }
