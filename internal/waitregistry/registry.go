@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/session"
 )
 
@@ -50,6 +51,17 @@ type Record struct {
 	// derives it, because a wait that died without clearing its record is
 	// exactly the thing worth seeing.
 	Stale bool `json:"stale,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, stamped by Register from the environment at zero cost, never a
+	// prompt or response body. Additive and omitempty; recordSchema did not
+	// need to move for a purely additive field.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ToolUseID        string `json:"tool_use_id,omitempty"`
+	WBVersion        string `json:"wb_version,omitempty"`
 }
 
 // Alive reports whether a process still exists. It delegates to WB's existing
@@ -75,6 +87,25 @@ func Register(home string, record Record) (func(), error) {
 		return nil, errors.New("wait record requires an id")
 	}
 	record.Schema = recordSchema
+	fields := provenance.FromEnv()
+	if record.HarnessSessionID == "" {
+		record.HarnessSessionID = fields.HarnessSessionID
+	}
+	if record.Harness == "" {
+		record.Harness = fields.Harness
+	}
+	if record.EffortLevel == "" {
+		record.EffortLevel = fields.EffortLevel
+	}
+	if record.AgentID == "" {
+		record.AgentID = fields.AgentID
+	}
+	if record.ToolUseID == "" {
+		record.ToolUseID = fields.ToolUseID
+	}
+	if record.WBVersion == "" {
+		record.WBVersion = fields.WBVersion
+	}
 	root := dir(home)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create wait registry: %w", err)
