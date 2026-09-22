@@ -1434,6 +1434,90 @@ func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *tes
 	}
 }
 
+func TestDefaultBranchArchiveRestoreReceiptValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if _, err := readDefaultBranchArchiveRestoreReport(path, "bad"); err == nil {
+		t.Fatal("short digest was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchArchiveRestoreReport(path, defaultBranchDigest(malformed)); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("malformed receipt err = %v", err)
+	}
+	wrongSchema := []byte(`{"schema_version":99,"mode":"apply"}`)
+	if err := os.WriteFile(path, wrongSchema, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchArchiveRestoreReport(path, defaultBranchDigest(wrongSchema)); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("wrong schema err = %v", err)
+	}
+
+	valid := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}
+	if _, _, err := defaultBranchArchiveRestoreTarget(valid, "acme/missing"); err == nil || !strings.Contains(err.Error(), "no archived") {
+		t.Fatalf("missing target err = %v", err)
+	}
+	invalid := valid
+	invalid.Repositories = append([]defaultBranchRepository(nil), valid.Repositories...)
+	invalidTransition := *invalid.Repositories[0].Archive
+	invalidTransition.InitialHead = "not-a-sha"
+	invalid.Repositories[0].Archive = &invalidTransition
+	if _, _, err := defaultBranchArchiveRestoreTarget(invalid, "acme/app"); err == nil || !strings.Contains(err.Error(), "stable") {
+		t.Fatalf("invalid target err = %v", err)
+	}
+	valid.Repositories[0].Desired = "trunk"
+	if _, _, err := defaultBranchArchiveRestoreTarget(valid, "acme/app"); err == nil || !strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("conflicting desired err = %v", err)
+	}
+}
+
+func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure(t *testing.T) {
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "failed"}}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	for name, archived := range map[string]bool{"already archived": true, "mutation failure": false} {
+		t.Run(name, func(t *testing.T) {
+			mutations := 0
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch endpoint {
+				case "repos/acme/app":
+					return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+				case "repos/acme/app/branches/master":
+					return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+				default:
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+				mutations++
+				return githubobserver.CommandResponse{Err: errors.New("network dropped")}
+			}
+			report, runErr := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+			if archived {
+				if runErr != nil || mutations != 0 || report.Repositories[0].Archive.Phase != "restored" || report.Repositories[0].Disposition != "compliant" {
+					t.Fatalf("already archived report = %#v err=%v mutations=%d", report, runErr, mutations)
+				}
+				return
+			}
+			if runErr == nil || mutations != 1 || report.Repositories[0].Archive.Phase != "failed" || !report.Repositories[0].Archive.RecoveryRequired {
+				t.Fatalf("mutation failure report = %#v err=%v mutations=%d", report, runErr, mutations)
+			}
+		})
+	}
+}
+
 func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 	current := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "same"}
 	verified := defaultBranchRepository{
