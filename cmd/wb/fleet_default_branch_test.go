@@ -1031,6 +1031,21 @@ func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchGitRunsAndReportsFailures(t *testing.T) {
+	dir := t.TempDir()
+	command := exec.Command("git", "init", "-q")
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if _, err := defaultBranchGit(context.Background(), dir, "status", "--porcelain"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := defaultBranchGit(context.Background(), dir, "rev-parse", "--verify", "refs/heads/missing"); err == nil {
+		t.Fatal("missing ref was accepted")
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *testing.T) {
 	originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
 	t.Cleanup(func() {
