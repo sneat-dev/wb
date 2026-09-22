@@ -793,6 +793,49 @@ func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDiverg
 	}
 }
 
+func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *testing.T) {
+	for name, test := range map[string]struct{ ancestryErr, logErr, want string }{
+		"ancestry":          {ancestryErr: "merge-base unavailable", want: "classify local master"},
+		"unpublished query": {logErr: "log unavailable", want: "inspect local master unpublished"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
+			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) {
+				return false, errors.New(test.ancestryErr)
+			}
+			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+				switch call := strings.Join(args, " "); call {
+				case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain":
+					return "", nil
+				case "worktree list --porcelain":
+					return "worktree /canonical\nbranch refs/heads/master", nil
+				case "branch --show-current":
+					return "master", nil
+				case "for-each-ref --format=%(refname:strip=2) refs/heads":
+					return "master", nil
+				case "rev-parse origin/main":
+					return "remote", nil
+				case "rev-parse master":
+					return "local", nil
+				case "log origin/main..master --not --remotes --format=%H":
+					return "", errors.New(test.logErr)
+				default:
+					return "", errors.New("unexpected git " + call)
+				}
+			}
+			if test.ancestryErr == "" {
+				defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
+			}
+			repo := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+			err := reconcileDefaultBranchCanonical(context.Background(), &repo, &defaultBranchCanonical{Path: "/canonical", Disposition: "blocked"}, "master", "remote", func() error { return nil })
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testing.T) {
 	originalGit, originalAncestor, originalRename, originalAttach := defaultBranchGit, defaultBranchIsAncestor, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
 	t.Cleanup(func() {
