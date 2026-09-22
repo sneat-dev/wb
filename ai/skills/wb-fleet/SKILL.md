@@ -18,6 +18,7 @@ Choose one command that answers the question:
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
 | Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |
 | Inventory every visible open remote pull request | `wb fleet prs` | [status.md](references/status.md) |
+| Audit or safely migrate GitHub default branches | `wb fleet default-branch` | [default-branch.md](references/default-branch.md) |
 | Audit or clean non-canonical clone placement | `wb layout audit` / `wb layout clean` | [layout.md](references/layout.md) |
 | Delete a local clone whose repository is archived on GitHub, only when nothing would be lost | `wb archive clean` | [archive.md](references/archive.md) |
 | Inspect one repository checkout | `wb repo status` | [status.md](references/status.md) |

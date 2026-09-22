@@ -50,6 +50,13 @@ const (
 // and append that guidance; the observer package has no such context.
 var ErrTransientRetriesExhausted = errors.New("github transient read retries exhausted")
 
+// ErrTransientMutationOutcomeUnknown marks a GitHub write whose command
+// failed for a transient transport/provider reason. WB must not blindly retry
+// the mutation: GitHub may have accepted it before the response was lost.
+// Callers first re-read authoritative state, then leave the operation
+// resumable when that read cannot prove the write landed.
+var ErrTransientMutationOutcomeUnknown = errors.New("github transient mutation outcome unknown")
+
 // RetryTelemetry accumulates the in-process GitHub read retries performed
 // while it is attached to a context via WithRetryTelemetry. Count is the
 // number of retries attempted (not the number of calls), and LastReason
@@ -192,6 +199,30 @@ func Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
 
 func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
 	return Default().Execute(ctx, dir, args...)
+}
+
+// IsTransientCommandFailure applies the observer's existing transient
+// transport/provider classification to a single non-read command result. It
+// classifies only; it never retries a mutation whose outcome may be unknown.
+func IsTransientCommandFailure(ctx context.Context, response CommandResponse) bool {
+	if response.Err == nil {
+		return false
+	}
+	// Execute has already dispatched the mutation. If the caller deadline or
+	// cancellation fired while it was in flight, the provider may have
+	// accepted the write before the local process stopped observing it.
+	if ctx.Err() != nil {
+		return true
+	}
+	message := commandFailureMessage(response)
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"http 500", "status code 500"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	_, retryable := retryableReadFailure(ctx, false, response, message)
+	return retryable
 }
 
 func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {

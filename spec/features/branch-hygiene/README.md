@@ -117,7 +117,11 @@ disposition name), `--older-than` (duration, default `0`), `--format` (string,
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,
 default false), `--older-than` (duration, default `24h`; `0` disables),
 `--report-dir` (string, default `<wb-home>/reports/branch-cleanup/<timestamp>`),
-`--format` (string, `text` or `json`; default `text`). It MUST accept the root
+`--format` (string, `text` or `json`; default `text`), `--superseded-by`
+(trusted-reviewer receipt), exact `--repo` and `--branch` selectors, and
+repeatable `--peer-evidence` and `--require-host`. A reviewed retirement whose
+scope includes remote deletion MUST provide evidence from every required host;
+`--scope all` does not bypass this requirement. It MUST accept the root
 `--filter` and `--projects-root` flags.
 
 `wb branch cleanup` MUST NOT define a `--remote` boolean. Remote action is
@@ -355,6 +359,20 @@ with applied or failed state. Each entry MUST retain repository, branch, branch
 SHA, target branch, fetched target SHA, evidence class, evidence string,
 decision, and outcome. The report MUST remain readable after the branches it
 describes are gone.
+
+#### REQ: reviewed-branch-retirement
+
+`--superseded-by` MUST create a distinct `superseded` disposition only after a
+trusted reviewer receipt binds the exact source and target identities. Empty,
+unknown, absorbed, protected, in-use, and unreadable dispositions MUST remain
+ineligible. Before remote deletion WB MUST recheck ownership, protection,
+source and target SHA, and open pull-request state. It MUST re-read fresh peer
+inventories immediately before its leased push, refuse a fork origin when it
+cannot prove upstream pull-request ownership, and reject a report or recovery
+path inside the source clone or any linked worktree, including symlinked paths.
+The source bundle and copied receipt MUST be SHA-bound, fsynced, independently
+restored into a new repository, and recorded with that restore verification in
+the durable manifest before either local or remote deletion.
 
 ### Remote-branches-only mode
 

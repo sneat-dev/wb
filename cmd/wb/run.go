@@ -407,8 +407,26 @@ func admitWithQueueVisibility(ctx context.Context, projectsRoot string, argv []s
 	case <-time.After(queueAdmissionGrace):
 	}
 
+	state := ticket.Snapshot(runqueue.Budget())
+	select {
+	case result := <-resultCh:
+		progress.admittedImmediately()
+		return result.admission.Lease, result.admission.Units, result.admission.Waited, result.err
+	default:
+	}
+	if queueStateHasAdmittedSelf(state, self) {
+		// Adaptive admission records its holder before it removes its waiting
+		// ticket. A self holder with no ticket therefore proves admission won;
+		// only delivery to resultCh remains. Do not emit the contradictory
+		// "queued ... position 0 of 0, waiting on: self" receipt seen when the
+		// scheduler ran the grace timer before it scheduled this goroutine.
+		result := <-resultCh
+		progress.admittedImmediately()
+		return result.admission.Lease, result.admission.Units, result.admission.Waited, result.err
+	}
+
 	queuedAt := time.Now()
-	progress.queued(self.Summary, ticket.Snapshot(runqueue.Budget()))
+	progress.queued(self.Summary, state)
 
 	ticker := time.NewTicker(progress.heartbeatEvery)
 	defer ticker.Stop()
@@ -427,6 +445,22 @@ func admitWithQueueVisibility(ctx context.Context, projectsRoot string, argv []s
 			progress.heartbeat(time.Since(queuedAt), ticket.Snapshot(runqueue.Budget()))
 		}
 	}
+}
+
+// queueStateHasAdmittedSelf identifies the adaptive pool's brief handoff
+// window after it has replaced this caller's waiting ticket with its holder,
+// but before admitWithQueueVisibility receives the buffered result. A missing
+// ticket alone is only best-effort visibility and is deliberately insufficient.
+func queueStateHasAdmittedSelf(state runqueue.State, self runqueue.Participant) bool {
+	if state.Total != 0 {
+		return false
+	}
+	for _, holder := range state.Holders {
+		if holder.PID == self.PID && holder.Summary == self.Summary && holder.Worktree == self.Worktree {
+			return true
+		}
+	}
+	return false
 }
 
 // runQueueSummary is the short, privacy-safe label runqueue.Participant
