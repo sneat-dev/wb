@@ -1529,15 +1529,41 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 		if err != nil {
 			return fmt.Errorf("resolve detached HEAD: %w", err)
 		}
-		mainHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", repository.Desired)
+		mainExists, err := defaultBranchRefExists(ctx, entry.Path, "refs/heads/"+repository.Desired)
 		if err != nil {
-			return fmt.Errorf("resolve detached local %s: %w", repository.Desired, err)
+			return fmt.Errorf("inspect detached local %s: %w", repository.Desired, err)
 		}
 		sourceExists, err := defaultBranchRefExists(ctx, entry.Path, "refs/heads/"+sourceDefault)
 		if err != nil {
 			return fmt.Errorf("inspect detached old local %s: %w", sourceDefault, err)
 		}
-		if head != remoteHead || mainHead != remoteHead || sourceExists {
+		if !mainExists && sourceExists {
+			sourceHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", sourceDefault)
+			if err != nil {
+				return fmt.Errorf("resolve detached local %s: %w", sourceDefault, err)
+			}
+			if head != remoteHead || sourceHead != remoteHead {
+				return fmt.Errorf("detached HEAD is not the failed atomic rename state for %s; preserve it for explicit recovery", sourceDefault)
+			}
+			entry.Disposition = "drift"
+			entry.Actions = []string{"recovered detached HEAD before atomically renaming local " + sourceDefault + " to " + repository.Desired}
+			if err := checkpoint(); err != nil {
+				return fmt.Errorf("persist detached atomic rename recovery plan: %w", err)
+			}
+			if err := defaultBranchAttachHead(ctx, entry.Path, sourceDefault); err != nil {
+				return fmt.Errorf("reattach detached HEAD to local %s: %w", sourceDefault, err)
+			}
+			entry.Actions = []string{"restored HEAD to local " + sourceDefault + " after failed atomic rename"}
+			if err := checkpoint(); err != nil {
+				return fmt.Errorf("persist detached atomic rename recovery receipt: %w", err)
+			}
+			return nil
+		}
+		mainHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", repository.Desired)
+		if err != nil {
+			return fmt.Errorf("resolve detached local %s: %w", repository.Desired, err)
+		}
+		if head != remoteHead || !mainExists || mainHead != remoteHead || sourceExists {
 			return fmt.Errorf("detached HEAD is not the recorded atomic rename state for %s; preserve it for explicit recovery", sourceDefault)
 		}
 		entry.Disposition = "drift"
