@@ -171,8 +171,8 @@ func retiredPrepareDefaultBranch(ctx context.Context, root string) (string, erro
 	}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 2 && f[1] == "HEAD" && strings.HasPrefix(f[0], "refs/heads/") {
-			return strings.TrimPrefix(f[0], "refs/heads/"), nil
+		if len(f) == 3 && f[0] == "ref:" && f[2] == "HEAD" && strings.HasPrefix(f[1], "refs/heads/") {
+			return strings.TrimPrefix(f[1], "refs/heads/"), nil
 		}
 	}
 	return "", errors.New("origin has no default branch")

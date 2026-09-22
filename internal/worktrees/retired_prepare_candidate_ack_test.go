@@ -120,6 +120,26 @@ func TestCleanupRecoversRetiredPrepareCandidateAfterRecordedTargetDeleted(t *tes
 	defaultSHA := remoteBranchForTest(t, fixture.canonical, "main")
 	receiptPath := filepath.Join(fixture.home, "reports", "worktree-merge", "retired-prepare-cleanup.json")
 	writeRetiredPrepareCandidateFixture(t, fixture.home, receiptPath, "retired-prepare-cleanup", candidate.WorktreeDir, candidate.Branch, "deleted-target", head, defaultSHA, retiredPrepareSource())
+	assertNoProof := func(reason, branch string) {
+		t.Helper()
+		proof, err := findRetiredPrepareCandidateAcknowledgement(context.Background(), fixture.home, fixture.canonical,
+			"retired-prepare-cleanup", candidate.WorktreeDir, candidate.Branch, head, branch, defaultSHA)
+		if err != nil || proof != nil {
+			t.Fatalf("%s unexpectedly authorized cleanup: proof=%+v err=%v", reason, proof, err)
+		}
+	}
+	assertNoProof("wrong default branch", "other-default")
+	dirtyFile := filepath.Join(candidate.WorktreeDir, "untracked.txt")
+	if err := os.WriteFile(dirtyFile, []byte("local data\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertNoProof("dirty candidate", "main")
+	if err := os.Remove(dirtyFile); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, candidate.WorktreeDir, "push", "origin", candidate.Branch)
+	assertNoProof("published candidate", "main")
+	gitTest(t, candidate.WorktreeDir, "push", "origin", ":"+candidate.Branch)
 
 	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "retired-prepare-cleanup", Base: "main", GitHub: true})
 	if err != nil {

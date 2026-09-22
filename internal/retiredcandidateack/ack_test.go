@@ -2,6 +2,7 @@ package retiredcandidateack
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,20 @@ func TestLoadBindsExactReceiptAndCandidateOnlyIdentity(t *testing.T) {
 	}
 	if _, err := Load(Path(receipt), id); err != nil {
 		t.Fatal(err)
+	}
+	wrongIdentity := id
+	wrongIdentity.ID = "other-receipt"
+	if _, err := Load(Path(receipt), wrongIdentity); err == nil {
+		t.Fatal("sidecar accepted another receipt identity")
+	}
+	wrongIdentity = id
+	wrongIdentity.Sources = append([]Source(nil), id.Sources...)
+	wrongIdentity.Sources[0].SHA = "another-source-sha"
+	if _, err := Load(Path(receipt), wrongIdentity); err == nil {
+		t.Fatal("sidecar accepted another source identity")
+	}
+	if err := Persist(Path(receipt), ack); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("append-only sidecar was overwritten: %v", err)
 	}
 	ack.Actor, ack.Reason = "", ""
 	ack.ID = ComputeID(ack)
@@ -57,6 +72,22 @@ func TestLoadBindsExactReceiptAndCandidateOnlyIdentity(t *testing.T) {
 	}
 	if _, err := Load(Path(receipt), id); err == nil {
 		t.Fatal("tampered receipt was accepted")
+	}
+}
+
+func TestLoadAndHashRejectMissingOrMalformedFiles(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := FileSHA256(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing receipt hash: %v", err)
+	}
+	if _, err := Load(missing, ReceiptIdentity{Path: missing}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing sidecar load: %v", err)
+	}
+	if err := os.WriteFile(missing, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(missing, ReceiptIdentity{Path: missing}); err == nil {
+		t.Fatal("malformed sidecar was accepted")
 	}
 }
 
