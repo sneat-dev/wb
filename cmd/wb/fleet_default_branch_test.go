@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -950,6 +951,51 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 	}
 	if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "master", "main", "same"); err == nil || !strings.Contains(err.Error(), "do not match") {
 		t.Fatalf("moved master attachment accepted: %v", err)
+	}
+}
+
+func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		command := exec.Command("git", args...)
+		command.Dir = dir
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	run("commit", "--allow-empty", "-qm", "initial")
+	run("branch", "-M", "master")
+	run("branch", "older")
+	run("commit", "--allow-empty", "-qm", "advance")
+	if ancestor, err := defaultBranchIsAncestor(context.Background(), dir, "older", "master"); err != nil || !ancestor {
+		t.Fatalf("older ancestry = %t err=%v", ancestor, err)
+	}
+	if ancestor, err := defaultBranchIsAncestor(context.Background(), dir, "master", "older"); err != nil || ancestor {
+		t.Fatalf("reverse ancestry = %t err=%v", ancestor, err)
+	}
+	sha := run("rev-parse", "master")
+	run("update-ref", "refs/remotes/origin/main", sha)
+	if err := defaultBranchAtomicRenameRefs(context.Background(), dir, "master", "main", sha); err != nil {
+		t.Fatal(err)
+	}
+	if err := defaultBranchAttachHead(context.Background(), dir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	master, err := defaultBranchRefExists(context.Background(), dir, "refs/heads/master")
+	if err != nil || master {
+		t.Fatalf("master exists=%t err=%v", master, err)
+	}
+	main, err := defaultBranchRefExists(context.Background(), dir, "refs/heads/main")
+	if err != nil || !main {
+		t.Fatalf("main exists=%t err=%v", main, err)
+	}
+	if err := verifyDefaultBranchAttachment(context.Background(), dir, "main", "main", sha); err != nil {
+		t.Fatal(err)
 	}
 }
 
