@@ -19,6 +19,15 @@ initial commit is also an exception row even if GitHub advertises a default
 branch name. They require a separate,
 reviewed migration; this command never performs a broad `master` replacement.
 
+An archived repository may be included only with `--temporarily-unarchive`.
+WB records its numeric GitHub repository ID and the initial default/head before
+the unarchive request, persists each state around the remote mutation, and
+restores `archived=true` before canonical-clone reconciliation. A partial run
+can be recovered only with `--restore-archive-from` and the exact caller-held
+SHA-256 of that apply report. Recovery accepts one exact `--repo`, verifies the
+recorded ID/default/head, writes a new receipt, and changes only the archive
+state.
+
 When a remote change succeeds, WB refreshes every matching local canonical
 clone and only renames its old local branch when it is clean, has no unpublished
 commits or linked worktrees, has no destination branch, and exactly matches the

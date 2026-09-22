@@ -10,12 +10,14 @@ what may be a partial owner scope.
 wb fleet default-branch --all-orgs --format json
 wb fleet default-branch --all-orgs --apply --report-dir reports/default-branch
 wb fleet default-branch --repo acme/app --apply --reconcile-from reports/default-branch/previous.json --reconcile-sha256 <sha256>
+wb fleet default-branch --repo acme/app --apply --temporarily-unarchive
+wb fleet default-branch --repo acme/app --apply --restore-archive-from reports/default-branch/partial.json --restore-archive-sha256 <sha256>
 ```
 
 Apply writes a durable report before every mutation and verifies the observed
 default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
-archived repositories, open source-branch pull requests, divergent targets,
+archived repositories unless `--temporarily-unarchive` is explicit, open source-branch pull requests, divergent targets,
 Pages/protection/rules impacts, and concrete workflow references to the old
 branch. Repositories without an initial commit are also exception rows, even
 when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
@@ -44,3 +46,13 @@ not a signature or an authentication system, so the receipt remains trusted
 operator input. Dirty,
 unpublished, divergent, or conflicting local state stays intact with an exact
 report blocker.
+
+`--temporarily-unarchive` is limited to a previously archived repository that
+passes the ordinary safety audit and has a numeric GitHub repository ID. WB
+checkpoints before and after unarchiving, restores the archived state before it
+touches a local clone, and verifies the same repository ID, default branch, and
+default head. If that process is interrupted, `--restore-archive-from` with the
+exact SHA-256 of the original apply report is the only recovery route. It
+accepts exactly one `--repo`, creates a new recovery receipt, verifies the
+repository identity/default/head before mutation, and changes only
+`archived=true`.

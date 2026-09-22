@@ -32,11 +32,11 @@ import (
 const defaultBranchSchemaVersion = 1
 
 type defaultBranchOptions struct {
-	apply, json, includeUser, allOrgs bool
-	branch, reportDir, reconcileFrom  string
-	reconcileSHA256                   string
-	owners, repositories              []string
-	parallel                          int
+	apply, json, includeUser, allOrgs, temporarilyUnarchive bool
+	branch, reportDir, reconcileFrom, restoreArchiveFrom    string
+	reconcileSHA256, restoreArchiveSHA256                   string
+	owners, repositories                                    []string
+	parallel                                                int
 }
 type defaultBranchConfig struct {
 	Fleet struct {
@@ -66,6 +66,7 @@ type defaultBranchSummary struct {
 }
 type defaultBranchRepository struct {
 	Repository      string                   `json:"repository"`
+	RepositoryID    int64                    `json:"repository_id,omitempty"`
 	ObservedDefault string                   `json:"observed_default,omitempty"`
 	VerifiedDefault string                   `json:"verified_default,omitempty"`
 	Desired         string                   `json:"desired"`
@@ -79,9 +80,25 @@ type defaultBranchRepository struct {
 	RenameAccepted  bool                     `json:"rename_accepted,omitempty"`
 	RecoveredFrom   string                   `json:"recovered_from,omitempty"`
 	RecoveredSHA256 string                   `json:"recovered_sha256,omitempty"`
+	Archive         *defaultBranchArchive    `json:"archive_transition,omitempty"`
 	Impacts         []string                 `json:"impacts,omitempty"`
 	Actions         []string                 `json:"actions,omitempty"`
 	CanonicalClones []defaultBranchCanonical `json:"canonical_clones,omitempty"`
+}
+type defaultBranchArchive struct {
+	RepositoryID      int64  `json:"repository_id"`
+	OriginalArchived  bool   `json:"original_archived"`
+	InitialDefault    string `json:"initial_default"`
+	DesiredDefault    string `json:"desired_default"`
+	InitialHead       string `json:"initial_head"`
+	FinalHead         string `json:"final_head,omitempty"`
+	Phase             string `json:"phase"`
+	UnarchiveAccepted bool   `json:"unarchive_accepted,omitempty"`
+	RestoreAccepted   bool   `json:"restore_accepted,omitempty"`
+	RecoveryRequired  bool   `json:"recovery_required,omitempty"`
+	RestoreError      string `json:"restore_error,omitempty"`
+	RecoveredFrom     string `json:"recovered_from,omitempty"`
+	RecoveredSHA256   string `json:"recovered_sha256,omitempty"`
 }
 type defaultBranchCanonical struct {
 	Path           string   `json:"path"`
@@ -92,6 +109,7 @@ type defaultBranchCanonical struct {
 	Actions        []string `json:"actions,omitempty"`
 }
 type defaultBranchRepoMetadata struct {
+	ID            int64  `json:"id"`
 	DefaultBranch string `json:"default_branch"`
 	Archived      bool   `json:"archived"`
 	Fork          bool   `json:"fork"`
@@ -148,7 +166,9 @@ The desired branch comes from wb.yaml fleet.default_branch, overridden by fleet.
 
 When the desired branch is absent, WB uses GitHub's branch-rename endpoint only after fresh repository and branch reads. If it already exists at the same SHA, WB may change the repository default only after confirming protection/ruleset coverage. A different target SHA, an archived repository, an open source-default PR (including fork-to-parent PRs), Pages source, or a protection/ruleset impact is a refusal. Workflow references are reported only; WB never rewrites branch strings blindly.
 
-GitHub may make an accepted rename visible asynchronously. WB records the accepted response, waits with bounded read-only checks, and never retries the mutation. --reconcile-from accepts only an exact-byte, SHA-256-bound apply receipt and fresh remote proof before reconciling a canonical clone; it is remote read-only and records a blocker while any refreshed repository is not compliant.`, Args: cobra.NoArgs,
+GitHub may make an accepted rename visible asynchronously. WB records the accepted response, waits with bounded read-only checks, and never retries the mutation. --reconcile-from accepts only an exact-byte, SHA-256-bound apply receipt and fresh remote proof before reconciling a canonical clone; it is remote read-only and records a blocker while any refreshed repository is not compliant.
+
+--temporarily-unarchive is an explicit exception for an archived repository that passes all existing branch-safety checks. WB checkpoints its numeric repository ID and original archive state, restores archival before local reconciliation, and provides a digest-bound restore-only recovery path.`, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			options.owners = requestedDefaultBranchOwners(cmd, options.owners)
 			if options.parallel < 1 || options.parallel > 16 {
@@ -171,6 +191,18 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 			}
 			if options.reconcileFrom == "" && options.reconcileSHA256 != "" {
 				return usageError("--reconcile-sha256 requires --reconcile-from")
+			}
+			if options.restoreArchiveFrom != "" && !options.apply {
+				return usageError("--restore-archive-from requires --apply")
+			}
+			if options.restoreArchiveFrom != "" && !validDefaultBranchDigest(options.restoreArchiveSHA256) {
+				return usageError("--restore-archive-from requires --restore-archive-sha256 with the exact 64-character SHA-256 of that report")
+			}
+			if options.restoreArchiveFrom == "" && options.restoreArchiveSHA256 != "" {
+				return usageError("--restore-archive-sha256 requires --restore-archive-from")
+			}
+			if options.restoreArchiveFrom != "" && (options.branch != "" || options.reconcileFrom != "" || options.temporarilyUnarchive || len(options.repositories) != 1 || len(options.owners) > 0 || options.includeUser || options.allOrgs) {
+				return usageError("--restore-archive-from requires exactly one --repo and cannot be combined with migration or reconciliation flags")
 			}
 			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
 			if err != nil {
@@ -199,11 +231,17 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "durable report directory (apply defaults below <wb-home>/reports/default-branch)")
 	command.Flags().StringVar(&options.reconcileFrom, "reconcile-from", "", "resume canonical-clone reconciliation from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
+	command.Flags().BoolVar(&options.temporarilyUnarchive, "temporarily-unarchive", false, "allow a safe archived repository to be temporarily unarchived and restored")
+	command.Flags().StringVar(&options.restoreArchiveFrom, "restore-archive-from", "", "restore archival only from an earlier default-branch apply report")
+	command.Flags().StringVar(&options.restoreArchiveSHA256, "restore-archive-sha256", "", "required SHA-256 of the exact --restore-archive-from report bytes")
 	addJSONFormatFlags(command, &options.json)
 	return command
 }
 
 func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
+	if options.restoreArchiveFrom != "" {
+		return runDefaultBranchArchiveRestore(ctx, options, progress)
+	}
 	config, err := loadDefaultBranchConfig(defaultBranchConfigPath())
 	if err != nil {
 		return defaultBranchReport{}, err
@@ -234,7 +272,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 			defer wg.Done()
 			for i := range jobs {
 				desired := effectiveDefaultBranch(options.branch, config, repos[i].Org)
-				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranch(ctx, repos[i], desired)
+				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithArchive(ctx, repos[i], desired, options.temporarilyUnarchive)
 			}
 		}()
 	}
@@ -260,6 +298,19 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 				if prior != nil {
 					report.Repositories[i].Disposition = "blocked"
 					report.Repositories[i].Error = "--reconcile-from is remote read-only, but the refreshed remote rename is not compliant; WB will not resend the mutation"
+				} else if report.Repositories[i].Archive != nil && report.Repositories[i].Archive.OriginalArchived {
+					report.Repositories[i] = applyArchivedDefaultBranch(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+						report.Repositories[i] = updated
+						summarizeDefaultBranch(&report)
+						return persistDefaultBranchReport(report)
+					})
+					summarizeDefaultBranch(&report)
+					if err := persistDefaultBranchReport(report); err != nil {
+						return report, err
+					}
+					if report.Repositories[i].Disposition == "compliant" && report.Repositories[i].Archive != nil && report.Repositories[i].Archive.Phase == "restored" {
+						sourceDefault, sourceHead = report.Repositories[i].ObservedDefault, report.Repositories[i].OldHead
+					}
 				} else {
 					report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
 						report.Repositories[i] = updated
@@ -344,6 +395,173 @@ func readDefaultBranchReport(path, expectedDigest string) (*defaultBranchReport,
 		return nil, errors.New("--reconcile-from must be a default-branch apply report from this WB schema")
 	}
 	return &report, nil
+}
+
+// runDefaultBranchArchiveRestore is deliberately separate from normal apply:
+// it has one repository, reads one caller-bound receipt, and can only restore
+// the archived bit.  It never discovers a fleet or scans/reconciles a clone.
+func runDefaultBranchArchiveRestore(ctx context.Context, options defaultBranchOptions, progress io.Writer) (defaultBranchReport, error) {
+	prior, err := readDefaultBranchArchiveRestoreReport(options.restoreArchiveFrom, options.restoreArchiveSHA256)
+	if err != nil {
+		return defaultBranchReport{}, err
+	}
+	repository, transition, err := defaultBranchArchiveRestoreTarget(*prior, options.repositories[0])
+	if err != nil {
+		return defaultBranchReport{}, err
+	}
+	path, err := defaultBranchReportPath(options.reportDir)
+	if err != nil {
+		return defaultBranchReport{}, err
+	}
+	repository.Archive = transition
+	repository.RecoveredFrom = options.restoreArchiveFrom
+	repository.RecoveredSHA256 = options.restoreArchiveSHA256
+	repository.Archive.RecoveredFrom = options.restoreArchiveFrom
+	repository.Archive.RecoveredSHA256 = options.restoreArchiveSHA256
+	report := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "restore-archive", Desired: repository.Desired, Repositories: []defaultBranchRepository{repository}, ReportPath: path}
+	checkpoint := func(updated defaultBranchRepository) error {
+		report.Repositories[0] = updated
+		summarizeDefaultBranch(&report)
+		return persistDefaultBranchReport(report)
+	}
+	if err := checkpoint(repository); err != nil {
+		return report, err
+	}
+
+	metadata, err := readDefaultBranchMetadata(ctx, repository.Repository)
+	if err != nil {
+		return failDefaultBranchArchiveRestore(&report, repository, "read restore target: "+err.Error())
+	}
+	if err := validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition); err != nil {
+		return failDefaultBranchArchiveRestore(&report, repository, err.Error())
+	}
+	if metadata.Archived {
+		repository.Archived = true
+		repository.Disposition = "compliant"
+		repository.Error = ""
+		repository.Archive.Phase = "restored"
+		repository.Archive.RecoveryRequired = false
+		repository.Actions = []string{"verified archived state from restore receipt"}
+		if err := checkpoint(repository); err != nil {
+			return report, err
+		}
+		_, _ = fmt.Fprintf(progress, "default-branch: verified archived %s\n", repository.Repository)
+		return report, nil
+	}
+
+	repository.Archive.Phase = "restore_pending"
+	repository.Disposition = "pending"
+	repository.Error = "archive restoration pending"
+	if err := checkpoint(repository); err != nil {
+		return report, err
+	}
+	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repository.Repository, "-f", "archived=true")
+	repository.Archive.RestoreAccepted = response.Err == nil
+	metadata, err = readDefaultBranchMetadata(ctx, repository.Repository)
+	if err == nil {
+		err = validateDefaultBranchArchiveRestoreTarget(ctx, metadata, repository.Repository, transition)
+	}
+	// A transport error is ambiguous. A fresh exact proof of the archived
+	// state is enough to record success; sending the PATCH again would weaken
+	// the one-mutation recovery contract.
+	if err != nil || !metadata.Archived {
+		repository.Archive.Phase = "failed"
+		repository.Archive.RecoveryRequired = true
+		if err != nil {
+			repository.Archive.RestoreError = "verify archive restoration: " + err.Error()
+		} else {
+			repository.Archive.RestoreError = "restore archival: " + githubCommandMessage(response)
+		}
+		repository.Disposition = "error"
+		repository.Error = repository.Archive.RestoreError
+		if checkpointErr := checkpoint(repository); checkpointErr != nil {
+			return report, checkpointErr
+		}
+		return report, errors.New(repository.Error)
+	}
+	repository.Archived = true
+	repository.Disposition = "compliant"
+	repository.Error = ""
+	repository.Archive.Phase = "restored"
+	repository.Archive.RecoveryRequired = false
+	repository.Archive.RestoreError = ""
+	repository.Actions = []string{"restored archived state from restore receipt"}
+	if err := checkpoint(repository); err != nil {
+		return report, err
+	}
+	_, _ = fmt.Fprintf(progress, "default-branch: restored archived %s\n", repository.Repository)
+	return report, nil
+}
+
+func failDefaultBranchArchiveRestore(report *defaultBranchReport, repository defaultBranchRepository, message string) (defaultBranchReport, error) {
+	repository.Disposition = "error"
+	repository.Error = message
+	repository.Archive.Phase = "failed"
+	repository.Archive.RecoveryRequired = true
+	repository.Archive.RestoreError = message
+	report.Repositories[0] = repository
+	summarizeDefaultBranch(report)
+	if err := persistDefaultBranchReport(*report); err != nil {
+		return *report, err
+	}
+	return *report, errors.New(message)
+}
+
+func readDefaultBranchArchiveRestoreReport(path, expectedDigest string) (*defaultBranchReport, error) {
+	if !validDefaultBranchDigest(expectedDigest) {
+		return nil, errors.New("--restore-archive-from requires --restore-archive-sha256 with the exact 64-character SHA-256 of that report")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read --restore-archive-from report: %w", err)
+	}
+	if actual := defaultBranchDigest(raw); !strings.EqualFold(actual, expectedDigest) {
+		return nil, fmt.Errorf("--restore-archive-from SHA-256 mismatch: got %s", actual)
+	}
+	var report defaultBranchReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return nil, fmt.Errorf("decode --restore-archive-from report: %w", err)
+	}
+	if report.SchemaVersion != defaultBranchSchemaVersion || report.Mode != "apply" {
+		return nil, errors.New("--restore-archive-from must be a default-branch apply report from this WB schema")
+	}
+	return &report, nil
+}
+
+func defaultBranchArchiveRestoreTarget(report defaultBranchReport, slug string) (defaultBranchRepository, *defaultBranchArchive, error) {
+	for _, repository := range report.Repositories {
+		if !strings.EqualFold(repository.Repository, slug) || repository.Archive == nil {
+			continue
+		}
+		transition := *repository.Archive
+		if repository.RepositoryID <= 0 || transition.RepositoryID != repository.RepositoryID || !transition.OriginalArchived || !validDefaultBranch(transition.InitialDefault) || !validDefaultBranch(transition.DesiredDefault) || !validDefaultBranchCommit(transition.InitialHead) || (transition.FinalHead != "" && !validDefaultBranchCommit(transition.FinalHead)) {
+			return defaultBranchRepository{}, nil, errors.New("--restore-archive-from does not contain a stable archived transition for the selected repository")
+		}
+		if repository.Desired != "" && repository.Desired != transition.DesiredDefault {
+			return defaultBranchRepository{}, nil, errors.New("--restore-archive-from has conflicting desired branch evidence")
+		}
+		repository.Desired = transition.DesiredDefault
+		repository.RepositoryID = transition.RepositoryID
+		return repository, &transition, nil
+	}
+	return defaultBranchRepository{}, nil, errors.New("--restore-archive-from has no archived transition for the selected --repo")
+}
+
+func validateDefaultBranchArchiveRestoreTarget(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *defaultBranchArchive) error {
+	if metadata.ID != transition.RepositoryID {
+		return errors.New("restore target repository ID differs from the receipt")
+	}
+	head, err := readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
+	if err != nil {
+		return fmt.Errorf("read restore target default head: %w", err)
+	}
+	if metadata.DefaultBranch == transition.InitialDefault && head == transition.InitialHead {
+		return nil
+	}
+	if transition.FinalHead != "" && metadata.DefaultBranch == transition.DesiredDefault && head == transition.FinalHead {
+		return nil
+	}
+	return errors.New("restore target default branch/head pair differs from the receipt")
 }
 
 func defaultBranchResumeSource(prior *defaultBranchReport, current defaultBranchRepository) (string, string, string) {
@@ -632,6 +850,10 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	return repos, failures, nil
 }
 func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired string) defaultBranchRepository {
+	return inspectDefaultBranchWithArchive(ctx, repo, desired, false)
+}
+
+func inspectDefaultBranchWithArchive(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive bool) defaultBranchRepository {
 	result := defaultBranchRepository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
 		result.Disposition = "blocked"
@@ -650,7 +872,7 @@ func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired strin
 		result.Error = "decode repository metadata: " + err.Error()
 		return result
 	}
-	result.ObservedDefault, result.Archived, result.Fork = meta.DefaultBranch, meta.Archived, meta.Fork
+	result.RepositoryID, result.ObservedDefault, result.Archived, result.Fork = meta.ID, meta.DefaultBranch, meta.Archived, meta.Fork
 	if strings.TrimSpace(meta.DefaultBranch) == "" {
 		result.Disposition = "blocked"
 		result.Error = "empty repository has no default branch; create and push the desired branch first"
@@ -678,10 +900,18 @@ func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired strin
 		result.Disposition = "compliant"
 		return result
 	}
-	if meta.Archived {
+	if meta.Archived && !temporarilyUnarchive {
 		result.Disposition = "blocked"
 		result.Error = "archived repository: GitHub makes archived repositories read-only; WB does not temporarily unarchive it"
 		return result
+	}
+	if meta.Archived {
+		if meta.ID <= 0 {
+			result.Disposition = "blocked"
+			result.Error = "archived repository did not provide a stable numeric ID; WB will not temporarily unarchive it"
+			return result
+		}
+		result.Archive = &defaultBranchArchive{RepositoryID: meta.ID, OriginalArchived: true, InitialDefault: meta.DefaultBranch, DesiredDefault: desired, InitialHead: oldRef, Phase: "prepared"}
 	}
 	newRef, err := readDefaultBranchRef(ctx, repo.Slug(), desired)
 	if err == nil {
@@ -840,6 +1070,186 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 }
 func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defaultBranchRepository {
 	return applyDefaultBranchWithCheckpoint(ctx, repo, nil)
+}
+
+// applyArchivedDefaultBranch permits one guarded temporary unarchive. Every
+// path after GitHub accepts that mutation attempts to restore archival before
+// returning, including a failed report checkpoint.
+func applyArchivedDefaultBranch(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {
+	transition := repo.Archive
+	if transition == nil || !transition.OriginalArchived || transition.RepositoryID <= 0 || repo.RepositoryID != transition.RepositoryID {
+		repo.Disposition = "blocked"
+		repo.Error = "archived repository transition lacks a stable original archive proof"
+		return repo
+	}
+	metadata, err := readDefaultBranchMetadata(ctx, repo.Repository)
+	if err != nil {
+		repo.Disposition = "error"
+		repo.Error = "refresh archived repository before temporary unarchive: " + err.Error()
+		return repo
+	}
+	if err := validatePlannedArchivedDefaultBranch(ctx, metadata, repo.Repository, transition); err != nil {
+		repo.Disposition = "blocked"
+		repo.Error = "archived repository changed after planning: " + err.Error()
+		return repo
+	}
+	transition.Phase = "unarchive_pending"
+	if err := checkpoint(repo); err != nil {
+		repo.Disposition = "error"
+		repo.Error = "persist pending archive transition: " + err.Error()
+		return repo
+	}
+	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=false")
+	transition.UnarchiveAccepted = response.Err == nil
+	transition.Phase = "unarchived"
+	if response.Err != nil {
+		repo.Disposition = "error"
+		repo.Error = "temporarily unarchive repository: " + githubCommandMessage(response)
+		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	if err := checkpoint(repo); err != nil {
+		repo.Disposition = "error"
+		repo.Error = "persist accepted unarchive response: " + err.Error()
+		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	owner, name, ok := strings.Cut(repo.Repository, "/")
+	if !ok {
+		repo.Disposition = "error"
+		repo.Error = "invalid repository observation"
+		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	fresh := inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+	if fresh.RepositoryID != transition.RepositoryID || fresh.Archived {
+		repo.Disposition = "error"
+		repo.Error = "temporary unarchive did not preserve the planned repository identity and active state"
+		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	fresh.Archive = transition
+	if fresh.Disposition != "drift" {
+		repo = fresh
+		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+	}
+	repo = applyDefaultBranchWithCheckpoint(ctx, fresh, func(updated defaultBranchRepository) error {
+		updated.Archive = transition
+		repo = updated
+		return checkpoint(repo)
+	})
+	repo.Archive = transition
+	if repo.Disposition == "compliant" {
+		transition.FinalHead = repo.NewHead
+	}
+	return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
+}
+
+func validatePlannedArchivedDefaultBranch(ctx context.Context, metadata defaultBranchRepoMetadata, slug string, transition *defaultBranchArchive) error {
+	if metadata.ID != transition.RepositoryID {
+		return errors.New("repository ID differs from the archived transition")
+	}
+	if !metadata.Archived {
+		return errors.New("repository is no longer archived")
+	}
+	if metadata.DefaultBranch != transition.InitialDefault {
+		return errors.New("default branch differs from the archived transition")
+	}
+	head, err := readDefaultBranchRef(ctx, slug, metadata.DefaultBranch)
+	if err != nil {
+		return fmt.Errorf("read planned default head: %w", err)
+	}
+	if head != transition.InitialHead {
+		return errors.New("default head differs from the archived transition")
+	}
+	return nil
+}
+
+func restoreArchivedDefaultBranch(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {
+	transition := repo.Archive
+	if transition == nil {
+		return repo
+	}
+	transition.Phase = "restore_pending"
+	pendingErr := checkpoint(repo)
+	if pendingErr != nil {
+		transition.RecoveryRequired = true
+		transition.RestoreError = "persist pending archive restoration: " + pendingErr.Error()
+		repo.Disposition = "error"
+		repo.Error = transition.RestoreError
+	}
+	beforeRestore, beforeRestoreErr := readDefaultBranchMetadata(ctx, repo.Repository)
+	if beforeRestoreErr != nil || beforeRestore.ID != transition.RepositoryID {
+		transition.Phase, transition.RecoveryRequired = "failed", true
+		if beforeRestoreErr != nil {
+			transition.RestoreError = "refresh repository before archive restoration: " + beforeRestoreErr.Error()
+		} else {
+			transition.RestoreError = "repository ID changed before archive restoration"
+		}
+		repo.Disposition, repo.Error = "error", transition.RestoreError
+		if checkpointErr := checkpoint(repo); checkpointErr != nil {
+			repo.Error += "; persist failed archive restoration: " + checkpointErr.Error()
+		}
+		return repo
+	}
+	response := defaultBranchExecute(ctx, "api", "--method", "PATCH", "repos/"+repo.Repository, "-f", "archived=true")
+	transition.RestoreAccepted = response.Err == nil
+	metadata, metadataErr := readDefaultBranchMetadata(ctx, repo.Repository)
+	expectedDefault, expectedHead := transition.InitialDefault, transition.InitialHead
+	if transition.FinalHead != "" {
+		expectedDefault, expectedHead = repo.Desired, transition.FinalHead
+	}
+	if metadataErr != nil || metadata.ID != transition.RepositoryID || !metadata.Archived || metadata.DefaultBranch != expectedDefault {
+		transition.Phase, transition.RecoveryRequired = "failed", true
+		if metadataErr != nil {
+			transition.RestoreError = "verify archive restoration: " + metadataErr.Error()
+		} else if response.Err != nil {
+			transition.RestoreError = "restore archival: " + githubCommandMessage(response)
+		} else {
+			transition.RestoreError = "archive restoration did not preserve repository identity, archived state, and desired default"
+		}
+		repo.Disposition = "error"
+		repo.Error = transition.RestoreError
+		if checkpointErr := checkpoint(repo); checkpointErr != nil {
+			repo.Error += "; persist failed archive restoration: " + checkpointErr.Error()
+		}
+		return repo
+	}
+	head, headErr := readDefaultBranchRef(ctx, repo.Repository, metadata.DefaultBranch)
+	if headErr != nil || head != expectedHead {
+		transition.Phase, transition.RecoveryRequired = "failed", true
+		if headErr != nil {
+			transition.RestoreError = "verify archived default head: " + headErr.Error()
+		} else {
+			transition.RestoreError = "archive restoration changed the verified default head"
+		}
+		repo.Disposition, repo.Error = "error", transition.RestoreError
+		if checkpointErr := checkpoint(repo); checkpointErr != nil {
+			repo.Error += "; persist failed archive restoration: " + checkpointErr.Error()
+		}
+		return repo
+	}
+	transition.Phase, transition.RecoveryRequired, transition.RestoreError = "restored", false, ""
+	repo.Archived = true
+	if repo.Disposition == "compliant" {
+		repo.Actions = append(repo.Actions, "restored archived state")
+	}
+	if err := checkpoint(repo); err != nil {
+		repo.Disposition = "error"
+		repo.Error = "persist verified archive restoration: " + err.Error()
+	}
+	return repo
+}
+
+func readDefaultBranchMetadata(ctx context.Context, repository string) (defaultBranchRepoMetadata, error) {
+	body, err := defaultBranchRead(ctx, "repos/"+repository)
+	if err != nil {
+		return defaultBranchRepoMetadata{}, err
+	}
+	var metadata defaultBranchRepoMetadata
+	if err := json.Unmarshal(body, &metadata); err != nil {
+		return defaultBranchRepoMetadata{}, fmt.Errorf("decode repository metadata: %w", err)
+	}
+	if metadata.ID <= 0 || !validDefaultBranch(metadata.DefaultBranch) {
+		return defaultBranchRepoMetadata{}, errors.New("repository metadata lacks a stable ID or valid default branch")
+	}
+	return metadata, nil
 }
 
 func applyDefaultBranchWithCheckpoint(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {

@@ -31,7 +31,7 @@ func (writer *defaultBranchFailWriter) Write(value []byte) (int, error) {
 
 func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	command := newFleetDefaultBranchCmd()
-	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "format", "json"} {
+	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}
@@ -1159,6 +1159,738 @@ func TestReadDefaultBranchReportRequiresExactCallerDigestBeforeParsing(t *testin
 	}
 	if _, err := readDefaultBranchReport(path, defaultBranchDigest(raw)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{
+		Repository: "acme/app", RepositoryID: 77, Desired: "main",
+		Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FinalHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Phase: "failed", RecoveryRequired: true},
+	}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived := false
+	mutations := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":"main","archived":%t}`, archived)), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if strings.Join(args, " ") != "api --method PATCH repos/acme/app -f archived=true" {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		archived = true
+		return githubobserver.CommandResponse{}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutations != 1 || report.Repositories[0].Disposition != "compliant" || report.Repositories[0].Archive.Phase != "restored" || len(report.Repositories[0].CanonicalClones) != 0 {
+		t.Fatalf("restore report = %#v mutations=%d", report, mutations)
+	}
+
+	mutations = 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":78,"default_branch":"main","archived":false}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository ID") {
+		t.Fatalf("wrong ID restore err = %v", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("wrong ID sent %d mutations", mutations)
+	}
+}
+
+func TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	mutations := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":78,"default_branch":"master","archived":true}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if result.Disposition != "blocked" || !strings.Contains(result.Error, "repository ID") || mutations != 0 {
+		t.Fatalf("unsafe unarchive = %#v mutations=%d", result, mutations)
+	}
+}
+
+func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived := true
+	mutations := []string{}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		case "repos/acme/app/branches/main":
+			return nil, errors.New("HTTP 404")
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutation := strings.Join(args, " ")
+		mutations = append(mutations, mutation)
+		switch mutation {
+		case "api --method PATCH repos/acme/app -f archived=false":
+			archived = false
+			return githubobserver.CommandResponse{}
+		case "api --method POST repos/acme/app/branches/master/rename -f new_name=main":
+			return githubobserver.CommandResponse{Err: errors.New("rename rejected")}
+		case "api --method PATCH repos/acme/app -f archived=true":
+			archived = true
+			return githubobserver.CommandResponse{}
+		default:
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if !archived || len(mutations) != 3 || result.Archive.Phase != "restored" || result.Archive.RecoveryRequired || result.Disposition != "error" {
+		t.Fatalf("failed migration did not restore archive: %#v mutations=%v", result, mutations)
+	}
+}
+
+func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived, branch := true, "master"
+	mutations := []string{}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":%q,"archived":%t}`, branch, archived)), nil
+		case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutation := strings.Join(args, " ")
+		mutations = append(mutations, mutation)
+		switch mutation {
+		case "api --method PATCH repos/acme/app -f archived=false":
+			archived = false
+		case "api --method PATCH repos/acme/app -f default_branch=main":
+			branch = "main"
+		case "api --method PATCH repos/acme/app -f archived=true":
+			archived = true
+		default:
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NewHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TargetExists: true, Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if !archived || branch != "main" || result.Disposition != "compliant" || result.Archive.Phase != "restored" || result.Archive.FinalHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || len(mutations) != 3 {
+		t.Fatalf("same-head archived migration = %#v mutations=%v", result, mutations)
+	}
+}
+
+func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	mutations := []string{}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":77,"default_branch":"master","archived":true}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutation := strings.Join(args, " ")
+		mutations = append(mutations, mutation)
+		if strings.Contains(mutation, "archived=false") {
+			return githubobserver.CommandResponse{Err: errors.New("unarchive request lost")}
+		}
+		if strings.Contains(mutation, "archived=true") {
+			return githubobserver.CommandResponse{}
+		}
+		return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "master", Desired: "main", OldHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Disposition: "drift", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if result.Archive.Phase != "restored" || result.Archive.RecoveryRequired || result.Disposition != "error" || len(mutations) != 2 || !strings.Contains(mutations[1], "archived=true") {
+		t.Fatalf("unarchive failure restore = %#v mutations=%v", result, mutations)
+	}
+}
+
+func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
+	originalRead := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = originalRead })
+	transition := &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	for name, test := range map[string]struct {
+		metadata defaultBranchRepoMetadata
+		head     string
+		want     string
+	}{
+		"ID":      {defaultBranchRepoMetadata{ID: 78, Archived: true, DefaultBranch: "master"}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "repository ID"},
+		"active":  {defaultBranchRepoMetadata{ID: 77, Archived: false, DefaultBranch: "master"}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "no longer archived"},
+		"default": {defaultBranchRepoMetadata{ID: 77, Archived: true, DefaultBranch: "trunk"}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "default branch"},
+		"head":    {defaultBranchRepoMetadata{ID: 77, Archived: true, DefaultBranch: "master"}, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "default head"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				if endpoint != "repos/acme/app/branches/master" {
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+				return []byte(`{"commit":{"sha":"` + test.head + `"}}`), nil
+			}
+			if err := validatePlannedArchivedDefaultBranch(context.Background(), test.metadata, "acme/app", transition); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("planned archive validation err = %v, want %q", err, test.want)
+			}
+		})
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		return nil, errors.New("branch unavailable: " + endpoint)
+	}
+	if err := validatePlannedArchivedDefaultBranch(context.Background(), defaultBranchRepoMetadata{ID: 77, Archived: true, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "read planned") {
+		t.Fatalf("planned head read err = %v", err)
+	}
+}
+
+func TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint(t *testing.T) {
+	base := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	if result := applyArchivedDefaultBranch(context.Background(), defaultBranchRepository{Repository: "acme/app"}, func(defaultBranchRepository) error { return nil }); result.Disposition != "blocked" || !strings.Contains(result.Error, "stable") {
+		t.Fatalf("missing archive proof = %#v", result)
+	}
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	defaultBranchRead = func(_ context.Context, _ string) ([]byte, error) { return nil, errors.New("metadata unavailable") }
+	if result := applyArchivedDefaultBranch(context.Background(), base, func(defaultBranchRepository) error { return nil }); result.Disposition != "error" || !strings.Contains(result.Error, "refresh archived") {
+		t.Fatalf("metadata failure = %#v", result)
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":77,"default_branch":"master","archived":true}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutations := 0
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{}
+	}
+	if result := applyArchivedDefaultBranch(context.Background(), base, func(defaultBranchRepository) error { return errors.New("disk full") }); result.Disposition != "error" || !strings.Contains(result.Error, "persist pending") || mutations != 0 {
+		t.Fatalf("pre-mutation checkpoint failure = %#v mutations=%d", result, mutations)
+	}
+}
+
+func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	defaultBranchRead = func(_ context.Context, _ string) ([]byte, error) { return nil, errors.New("metadata unavailable") }
+	mutations, checkpoints := 0, []defaultBranchRepository{}
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		mutations++
+		return githubobserver.CommandResponse{}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
+	result := restoreArchivedDefaultBranch(context.Background(), repository, func(updated defaultBranchRepository) error {
+		checkpoints = append(checkpoints, updated)
+		return nil
+	})
+	if mutations != 0 || result.Archive.Phase != "failed" || !result.Archive.RecoveryRequired || len(checkpoints) != 2 || checkpoints[1].Archive.Phase != "failed" || !strings.Contains(result.Error, "refresh repository") {
+		t.Fatalf("pre-restore read failure = %#v checkpoints=%#v mutations=%d", result, checkpoints, mutations)
+	}
+}
+
+func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived := true
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		if strings.Contains(strings.Join(args, " "), "archived=false") {
+			archived = false
+		} else if strings.Contains(strings.Join(args, " "), "archived=true") {
+			archived = true
+		} else {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	checkpoints := 0
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error {
+		checkpoints++
+		if checkpoints == 2 {
+			return errors.New("receipt disk full")
+		}
+		return nil
+	})
+	if !archived || result.Archive.Phase != "restored" || result.Disposition != "error" || !strings.Contains(result.Error, "persist accepted") {
+		t.Fatalf("accepted-unarchive checkpoint recovery = %#v", result)
+	}
+}
+
+func TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived, reads, mutations := true, 0, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			reads++
+			id := 77
+			if reads >= 2 {
+				id = 78
+			}
+			return []byte(fmt.Sprintf(`{"id":%d,"default_branch":"master","archived":%t}`, id, archived)), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if strings.Contains(strings.Join(args, " "), "archived=false") {
+			archived = false
+			return githubobserver.CommandResponse{}
+		}
+		return githubobserver.CommandResponse{Err: errors.New("must not rearchive a changed repository")}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
+	result := applyArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if mutations != 1 || result.Archive.Phase != "failed" || !result.Archive.RecoveryRequired || !strings.Contains(result.Error, "repository ID changed") {
+		t.Fatalf("post-unarchive identity change = %#v mutations=%d", result, mutations)
+	}
+}
+
+func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived := false
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+		archived = true
+		return githubobserver.CommandResponse{}
+	}
+	checkpoints := 0
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "compliant", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
+	result := restoreArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error {
+		checkpoints++
+		if checkpoints == 2 {
+			return errors.New("final receipt write failed")
+		}
+		return nil
+	})
+	if result.Disposition != "error" || !strings.Contains(result.Error, "persist verified") || len(result.Actions) != 1 || result.Actions[0] != "restored archived state" {
+		t.Fatalf("final checkpoint failure = %#v", result)
+	}
+}
+
+func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+	})
+	projectsRoot = t.TempDir()
+	config := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return config }
+	archived, branch := true, "master"
+	mutations := []string{}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":%q,"archived":%t}`, branch, archived)), nil
+		case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		default:
+			if strings.HasSuffix(endpoint, "/pages") || strings.HasSuffix(endpoint, "/protection") {
+				return nil, errors.New("HTTP 404")
+			}
+			if strings.Contains(endpoint, "/rules/branches/") {
+				return []byte(`[]`), nil
+			}
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutation := strings.Join(args, " ")
+		mutations = append(mutations, mutation)
+		switch mutation {
+		case "api --method PATCH repos/acme/app -f archived=false":
+			archived = false
+		case "api --method PATCH repos/acme/app -f default_branch=main":
+			branch = "main"
+		case "api --method PATCH repos/acme/app -f archived=true":
+			archived = true
+		default:
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		return githubobserver.CommandResponse{}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, temporarilyUnarchive: true, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := report.Repositories[0]
+	if !archived || branch != "main" || len(mutations) != 3 || repository.Disposition != "compliant" || repository.Archive == nil || repository.Archive.Phase != "restored" || len(repository.CanonicalClones) != 0 {
+		t.Fatalf("archived command run = %#v mutations=%v", repository, mutations)
+	}
+	persisted, err := os.ReadFile(report.ReportPath)
+	if err != nil || !strings.Contains(string(persisted), `"phase": "restored"`) {
+		t.Fatalf("archived command receipt = %q err=%v", persisted, err)
+	}
+}
+
+func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T) {
+	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{restoreArchiveFrom: "missing.json", restoreArchiveSHA256: "bad"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
+		t.Fatalf("invalid digest err = %v", err)
+	}
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{repositories: []string{"acme/missing"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw)}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no archived") {
+		t.Fatalf("wrong repository err = %v", err)
+	}
+	reportDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(reportDir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDefaultBranch(context.Background(), defaultBranchOptions{repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: reportDir}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("unwritable report directory err = %v", err)
+	}
+}
+
+func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := readDefaultBranchArchiveRestoreReport(missing, strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "read") {
+		t.Fatalf("missing receipt err = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"mode":"apply"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchArchiveRestoreReport(path, strings.Repeat("b", 64)); err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("changed receipt err = %v", err)
+	}
+	transition := &defaultBranchArchive{RepositoryID: 77, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if err := validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 78, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "repository ID") {
+		t.Fatalf("wrong restore target ID err = %v", err)
+	}
+	report := defaultBranchReport{ReportPath: filepath.Join(t.TempDir(), "missing", "receipt.json"), Repositories: []defaultBranchRepository{{Repository: "acme/app", Archive: transition}}}
+	if _, err := failDefaultBranchArchiveRestore(&report, report.Repositories[0], "receipt persistence failure"); err == nil {
+		t.Fatal("failed receipt persistence was accepted")
+	}
+	unchanged := defaultBranchRepository{Repository: "acme/app"}
+	if got := restoreArchivedDefaultBranch(context.Background(), unchanged, func(defaultBranchRepository) error { return errors.New("must not checkpoint") }); got.Repository != unchanged.Repository || got.Archive != nil || got.Disposition != unchanged.Disposition || got.Error != unchanged.Error {
+		t.Fatalf("nil archive transition changed repository: %#v", got)
+	}
+}
+
+func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	archived := false
+	mutations := 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		if strings.Join(args, " ") != "api --method PATCH repos/acme/app -f archived=true" {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+		}
+		archived = true
+		return githubobserver.CommandResponse{}
+	}
+	repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "error", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
+	result := restoreArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return errors.New("disk full") })
+	if mutations != 1 || !archived || result.Archive.Phase != "restored" || result.Disposition != "error" || !strings.Contains(result.Error, "persist verified") {
+		t.Fatalf("checkpoint failure did not attempt durable restore: %#v mutations=%d", result, mutations)
+	}
+
+	mutations = 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if endpoint == "repos/acme/app" {
+			return []byte(`{"id":78,"default_branch":"master","archived":false}`), nil
+		}
+		return nil, errors.New("unexpected endpoint " + endpoint)
+	}
+	result = restoreArchivedDefaultBranch(context.Background(), repository, func(defaultBranchRepository) error { return nil })
+	if mutations != 0 || result.Archive.Phase != "failed" || !strings.Contains(result.Error, "repository ID changed") {
+		t.Fatalf("changed restore identity sent a mutation: %#v mutations=%d", result, mutations)
+	}
+}
+
+func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *testing.T) {
+	for name, read := range map[string]func(int, string) ([]byte, error){
+		"metadata": func(repoReads int, endpoint string) ([]byte, error) {
+			if endpoint != "repos/acme/app" {
+				return nil, errors.New("unexpected endpoint " + endpoint)
+			}
+			if repoReads == 2 {
+				return nil, errors.New("metadata unavailable")
+			}
+			return []byte(`{"id":77,"default_branch":"master","archived":false}`), nil
+		},
+		"head": func(_ int, endpoint string) ([]byte, error) {
+			switch endpoint {
+			case "repos/acme/app":
+				return []byte(`{"id":77,"default_branch":"master","archived":true}`), nil
+			case "repos/acme/app/branches/master":
+				return nil, errors.New("head unavailable")
+			default:
+				return nil, errors.New("unexpected endpoint " + endpoint)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			repoReads, mutations := 0, 0
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				if endpoint == "repos/acme/app" {
+					repoReads++
+				}
+				return read(repoReads, endpoint)
+			}
+			defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+				mutations++
+				if strings.Join(args, " ") != "api --method PATCH repos/acme/app -f archived=true" {
+					return githubobserver.CommandResponse{Err: errors.New("unexpected mutation")}
+				}
+				return githubobserver.CommandResponse{}
+			}
+			persisted := []defaultBranchRepository{}
+			repository := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Disposition: "error", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "unarchived"}}
+			result := restoreArchivedDefaultBranch(context.Background(), repository, func(updated defaultBranchRepository) error {
+				persisted = append(persisted, updated)
+				return nil
+			})
+			if mutations != 1 || result.Archive.Phase != "failed" || !result.Archive.RecoveryRequired || len(persisted) < 2 || persisted[len(persisted)-1].Archive.Phase != "failed" || !persisted[len(persisted)-1].Archive.RecoveryRequired {
+				t.Fatalf("post-mutation failure was not durably checkpointed: %#v persisted=%#v mutations=%d", result, persisted, mutations)
+			}
+		})
+	}
+}
+
+func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *testing.T) {
+	transition := &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FinalHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	originalRead := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = originalRead })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		if endpoint == "repos/acme/app/branches/master" {
+			return []byte(`{"commit":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`), nil
+		}
+		return nil, errors.New("unexpected endpoint " + endpoint)
+	}
+	if err := validateDefaultBranchArchiveRestoreTarget(context.Background(), defaultBranchRepoMetadata{ID: 77, DefaultBranch: "master"}, "acme/app", transition); err == nil || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("cross-paired restore state was accepted: %v", err)
+	}
+
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: transition}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":77,"default_branch":"master","archived":false}`), nil
+		case "repos/acme/app/branches/master":
+			return []byte(`{"commit":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err == nil || report.Repositories[0].Archive.Phase != "failed" || !report.Repositories[0].Archive.RecoveryRequired {
+		t.Fatalf("unsafe restore refusal was not durably recorded: %#v err=%v", report, err)
+	}
+	persisted, readErr := os.ReadFile(report.ReportPath)
+	if readErr != nil || !strings.Contains(string(persisted), `"phase": "failed"`) {
+		t.Fatalf("restore refusal receipt = %q err=%v", persisted, readErr)
+	}
+}
+
+func TestDefaultBranchArchiveRestoreReceiptValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if _, err := readDefaultBranchArchiveRestoreReport(path, "bad"); err == nil {
+		t.Fatal("short digest was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchArchiveRestoreReport(path, defaultBranchDigest(malformed)); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("malformed receipt err = %v", err)
+	}
+	wrongSchema := []byte(`{"schema_version":99,"mode":"apply"}`)
+	if err := os.WriteFile(path, wrongSchema, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDefaultBranchArchiveRestoreReport(path, defaultBranchDigest(wrongSchema)); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("wrong schema err = %v", err)
+	}
+
+	valid := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}
+	if _, _, err := defaultBranchArchiveRestoreTarget(valid, "acme/missing"); err == nil || !strings.Contains(err.Error(), "no archived") {
+		t.Fatalf("missing target err = %v", err)
+	}
+	invalid := valid
+	invalid.Repositories = append([]defaultBranchRepository(nil), valid.Repositories...)
+	invalidTransition := *invalid.Repositories[0].Archive
+	invalidTransition.InitialHead = "not-a-sha"
+	invalid.Repositories[0].Archive = &invalidTransition
+	if _, _, err := defaultBranchArchiveRestoreTarget(invalid, "acme/app"); err == nil || !strings.Contains(err.Error(), "stable") {
+		t.Fatalf("invalid target err = %v", err)
+	}
+	valid.Repositories[0].Desired = "trunk"
+	if _, _, err := defaultBranchArchiveRestoreTarget(valid, "acme/app"); err == nil || !strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("conflicting desired err = %v", err)
+	}
+}
+
+func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure(t *testing.T) {
+	prior := defaultBranchReport{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []defaultBranchRepository{{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &defaultBranchArchive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "failed"}}}}
+	raw, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	for name, archived := range map[string]bool{"already archived": true, "mutation failure": false} {
+		t.Run(name, func(t *testing.T) {
+			mutations := 0
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch endpoint {
+				case "repos/acme/app":
+					return []byte(fmt.Sprintf(`{"id":77,"default_branch":"master","archived":%t}`, archived)), nil
+				case "repos/acme/app/branches/master":
+					return []byte(`{"commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`), nil
+				default:
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			defaultBranchExecute = func(_ context.Context, _ ...string) githubobserver.CommandResponse {
+				mutations++
+				return githubobserver.CommandResponse{Err: errors.New("network dropped")}
+			}
+			report, runErr := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, repositories: []string{"acme/app"}, restoreArchiveFrom: path, restoreArchiveSHA256: defaultBranchDigest(raw), reportDir: t.TempDir()}, &bytes.Buffer{})
+			if archived {
+				if runErr != nil || mutations != 0 || report.Repositories[0].Archive.Phase != "restored" || report.Repositories[0].Disposition != "compliant" {
+					t.Fatalf("already archived report = %#v err=%v mutations=%d", report, runErr, mutations)
+				}
+				return
+			}
+			if runErr == nil || mutations != 1 || report.Repositories[0].Archive.Phase != "failed" || !report.Repositories[0].Archive.RecoveryRequired {
+				t.Fatalf("mutation failure report = %#v err=%v mutations=%d", report, runErr, mutations)
+			}
+		})
 	}
 }
 
