@@ -94,6 +94,68 @@ func TestBranchCleanupAbsorbedByRetiresContentProvenSquashAbsorbedRemoteBranch(t
 	}
 }
 
+// TestBranchCleanupAbsorbedByNumberedPullRequestRefusesConflictedCurrentTarget
+// reproduces #671: the numbered PR proves that the source reached its squash
+// landing, but a later target commit changes the same path. The plan must
+// reject that stale receipt, and --apply must leave the remote ref intact.
+func TestBranchCleanupAbsorbedByNumberedPullRequestRefusesConflictedCurrentTarget(t *testing.T) {
+	fixture := newGitFixture(t)
+
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/receipt-parity")
+	head := writeAndCommit(t, fixture.canonical, "candidate.txt", "candidate\n", "candidate work")
+	gitTest(t, fixture.canonical, "push", "origin", "feature/receipt-parity")
+
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "checkout", "-b", "integration/receipt-parity")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "feature/receipt-parity", "-m", "merge candidate into integration")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "integration/receipt-parity")
+	gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", integrationHead)
+
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--squash", "integration/receipt-parity")
+	gitTest(t, fixture.canonical, "commit", "-m", "squash integration batch (#77)")
+	landingSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	writeAndCommit(t, fixture.canonical, "candidate.txt", "changed after landing\n", "later conflicting target work")
+	targetSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+
+	contained, err := contentAbsorbed(context.Background(), fixture.canonical, head, landingSHA, targetSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contained {
+		t.Fatal("fixture must make current-target receipt proof fail")
+	}
+
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installAbsorbingPullRequestFixture(t, integrationHead, landingSHA, mergedAt)
+
+	plan, err := BranchCleanup(context.Background(), absorbedByCleanupOptions(fixture, BranchScopeRemote, false, "77"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned := resultFor(t, plan, "feature/receipt-parity")
+	if planned.Disposition == BranchReceipted || planned.Eligible {
+		t.Fatalf("stale numbered receipt became eligible: %#v", planned)
+	}
+	if !strings.Contains(planned.AbsorbedByRejection, "no longer survives in the exact fetched origin/main target") {
+		t.Fatalf("rejection does not name current-target proof: %q", planned.AbsorbedByRejection)
+	}
+
+	applied, err := BranchCleanup(context.Background(), absorbedByCleanupOptions(fixture, BranchScopeRemote, true, "77"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := resultFor(t, applied, "feature/receipt-parity")
+	if result.Applied {
+		t.Fatalf("stale numbered receipt deleted remote branch: %#v", result)
+	}
+	if remoteBranchForTest(t, fixture.canonical, "feature/receipt-parity") != head {
+		t.Fatal("remote branch was deleted or moved despite stale numbered receipt")
+	}
+}
+
 // partialLandingFixture builds a branch with two commits where only the first
 // landed — the "unknown path in the branch not present in the absorbing
 // commit" shape #182 requires WB to refuse.
