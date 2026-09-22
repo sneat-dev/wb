@@ -979,6 +979,13 @@ func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
 		t.Fatalf("reverse ancestry = %t err=%v", ancestor, err)
 	}
 	sha := run("rev-parse", "master")
+	older := run("rev-parse", "older")
+	if err := defaultBranchAtomicRenameRefs(context.Background(), dir, "master", "main", older); err == nil {
+		t.Fatal("stale atomic rename was accepted")
+	}
+	if err := defaultBranchAttachHead(context.Background(), dir, "master"); err != nil {
+		t.Fatal(err)
+	}
 	run("update-ref", "refs/remotes/origin/main", sha)
 	if err := defaultBranchAtomicRenameRefs(context.Background(), dir, "master", "main", sha); err != nil {
 		t.Fatal(err)
@@ -996,6 +1003,12 @@ func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
 	}
 	if err := verifyDefaultBranchAttachment(context.Background(), dir, "main", "main", sha); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dirty"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyDefaultBranchAttachment(context.Background(), dir, "main", "main", sha); err == nil {
+		t.Fatal("dirty attachment was accepted")
 	}
 }
 
