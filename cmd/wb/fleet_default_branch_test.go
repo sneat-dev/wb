@@ -2430,7 +2430,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 			return "worktree " + clone + "\nbranch refs/heads/master", nil
 		case "branch --show-current":
 			return "master", nil
-		case "rev-parse origin/main", "rev-parse master":
+		case "rev-parse origin/main", "rev-parse master", "rev-parse main", "rev-parse HEAD":
 			return remoteHead, nil
 		case "for-each-ref --format=%(refname:strip=2) refs/heads":
 			return "master", nil
