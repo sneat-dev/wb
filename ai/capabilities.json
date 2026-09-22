@@ -15167,6 +15167,96 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-retired-prepare-candidate",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-prepare-candidate",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves one clean unpublished legacy empty-candidate prepare/conflict checkout remains exactly at the receipt target SHA after the recorded target ref was deleted",
+                "Requires the exact unchanged receipt bytes, complete source identity distinct from the candidate, a freshly resolved default branch, and fresh candidate/default acknowledgement ancestry into its fetched target without asserting source absorption",
+                "Writes an append-only candidate-only acknowledgement; adoption and ordinary cleanup revalidate it without rewriting the receipt or freeing the historical merge lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-prepare-candidate --help",
+              "contains": [
+                "unpublished legacy prepare/conflict candidate",
+                "default target",
+                "never asserts",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_prepare_candidate_test.go",
+              "name": "TestValidateRetiredPrepareCandidateReceiptRejectsCandidateOrSourceConfusion",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestAdoptCurrentLayoutOnlyWithRetiredPrepareCandidateAcknowledgement",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestCleanupRecoversRetiredPrepareCandidateAfterRecordedTargetDeleted",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestRetiredPrepareCandidateAcknowledgementRejectsChangedDefaultTarget",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Candidate-only recovery for a historical failed prepare receipt whose recorded target branch disappeared after its exact candidate commit reached the remote default branch. The acknowledgement says nothing about source absorption, and cleanup uses the ordinary descriptor-safe transaction only after rechecking the fresh default target and candidate publication state."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-retired-publication",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
