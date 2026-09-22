@@ -168,7 +168,7 @@ var (
 		}
 		return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w: %s", ancestor, descendant, err, strings.TrimSpace(string(output)))
 	}
-	defaultBranchAtomicRename = func(ctx context.Context, dir, source, destination, expected string) error {
+	defaultBranchAtomicRenameRefs = func(ctx context.Context, dir, source, destination, expected string) error {
 		checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", expected)
 		checkout.Dir = dir
 		if output, err := checkout.CombinedOutput(); err != nil {
@@ -180,12 +180,28 @@ var (
 		if output, err := transaction.CombinedOutput(); err != nil {
 			return fmt.Errorf("atomically rename local %s to %s at %s: %w: %s", source, destination, expected, err, strings.TrimSpace(string(output)))
 		}
+		return nil
+	}
+	defaultBranchAttachHead = func(ctx context.Context, dir, destination string) error {
 		attach := exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD", "refs/heads/"+destination)
 		attach.Dir = dir
 		if output, err := attach.CombinedOutput(); err != nil {
 			return fmt.Errorf("attach HEAD to renamed local %s: %w: %s", destination, err, strings.TrimSpace(string(output)))
 		}
 		return nil
+	}
+	defaultBranchRefExists = func(ctx context.Context, dir, ref string) (bool, error) {
+		command := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
+		command.Dir = dir
+		output, err := command.CombinedOutput()
+		if err == nil {
+			return true, nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git rev-parse --verify %s: %w: %s", ref, err, strings.TrimSpace(string(output)))
 	}
 )
 
@@ -1508,6 +1524,40 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 		entry.Actions = []string{"restored upstream origin/" + repository.Desired}
 		return checkpoint()
 	}
+	if current == "" {
+		head, err := defaultBranchGit(ctx, entry.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("resolve detached HEAD: %w", err)
+		}
+		mainHead, err := defaultBranchGit(ctx, entry.Path, "rev-parse", repository.Desired)
+		if err != nil {
+			return fmt.Errorf("resolve detached local %s: %w", repository.Desired, err)
+		}
+		sourceExists, err := defaultBranchRefExists(ctx, entry.Path, "refs/heads/"+sourceDefault)
+		if err != nil {
+			return fmt.Errorf("inspect detached old local %s: %w", sourceDefault, err)
+		}
+		if head != remoteHead || mainHead != remoteHead || sourceExists {
+			return fmt.Errorf("detached HEAD is not the recorded atomic rename state for %s; preserve it for explicit recovery", sourceDefault)
+		}
+		entry.Disposition = "drift"
+		entry.Actions = []string{"recovered detached HEAD after atomically renaming local " + sourceDefault + " to " + repository.Desired}
+		if err := checkpoint(); err != nil {
+			return fmt.Errorf("persist detached local reconciliation recovery plan: %w", err)
+		}
+		if err := defaultBranchAttachHead(ctx, entry.Path, repository.Desired); err != nil {
+			return fmt.Errorf("attach detached HEAD to local %s: %w", repository.Desired, err)
+		}
+		if _, err := defaultBranchGit(ctx, entry.Path, "branch", "--set-upstream-to=origin/"+repository.Desired, repository.Desired); err != nil {
+			return fmt.Errorf("set local tracking branch after detached recovery: %w", err)
+		}
+		entry.Disposition = "compliant"
+		entry.Actions = append(entry.Actions, "set upstream to origin/"+repository.Desired)
+		if err := checkpoint(); err != nil {
+			return fmt.Errorf("persist detached local reconciliation receipt: %w", err)
+		}
+		return nil
+	}
 	if current != sourceDefault {
 		return fmt.Errorf("canonical checkout is on %q; only the old default %q may be renamed automatically", current, sourceDefault)
 	}
@@ -1588,8 +1638,24 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 	if localHead != checkpointedHead || remoteHead != checkpointedHead {
 		return fmt.Errorf("local %s is %s while origin/%s is %s before rename checkpoint %s; preserve it for explicit recovery", sourceDefault, localHead, repository.Desired, remoteHead, checkpointedHead)
 	}
-	if err := defaultBranchAtomicRename(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
+	if err := defaultBranchAtomicRenameRefs(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
 		return fmt.Errorf("rename local default branch: %w", err)
+	}
+	atomicAction := "atomically renamed local " + sourceDefault + " to " + repository.Desired + "; HEAD detached"
+	if len(entry.Actions) > 0 && strings.HasPrefix(entry.Actions[0], "fast-forwarded local ") {
+		entry.Actions = []string{entry.Actions[0], atomicAction}
+	} else {
+		entry.Actions = []string{atomicAction}
+	}
+	if err := checkpoint(); err != nil {
+		return fmt.Errorf("persist atomic local rename receipt: %w", err)
+	}
+	if err := defaultBranchAttachHead(ctx, entry.Path, repository.Desired); err != nil {
+		entry.Disposition = "error"
+		if checkpointErr := checkpoint(); checkpointErr != nil {
+			return fmt.Errorf("attach HEAD to local %s: %v; persist detached local rename receipt: %w", repository.Desired, err, checkpointErr)
+		}
+		return fmt.Errorf("attach HEAD to local %s: %w", repository.Desired, err)
 	}
 	renamedActions := []string{"renamed local " + sourceDefault + " to " + repository.Desired}
 	if len(entry.Actions) > 0 && strings.HasPrefix(entry.Actions[0], "fast-forwarded local ") {
