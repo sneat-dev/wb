@@ -77,7 +77,25 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 	if absolute, ok := absolutePath(sessionCwd); ok {
 		workingDirectory = absolute
 	}
-	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false)
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, false)
+}
+
+// inspectBashDenyOnly scans command for every WB deny policy while ignoring
+// any governed-validation match, so a real deny anywhere on the line is
+// never hidden behind a governed command earlier in it.
+//
+// wb#645's review (Blocker 2) found `go test ./... && gh pr merge 5 --merge`
+// allowed: inspectBash stops at the first governed-validation segment and
+// hands the whole line to the rewrite, so the gh pr merge chained after it —
+// and any other real deny later on the line — was never reached. This scan
+// runs first and, if it finds anything, deny wins outright: inspectBashCall
+// never even considers a rewrite.
+func inspectBashDenyOnly(command, sessionCwd, projectsRoot string) *finding {
+	workingDirectory := ""
+	if absolute, ok := absolutePath(sessionCwd); ok {
+		workingDirectory = absolute
+	}
+	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, true)
 }
 
 // programName is the name every recogniser is keyed by: the last path
@@ -103,8 +121,11 @@ const maxShellUnwrapDepth = 8
 // -c payloads have already been unwrapped to reach command, so recursion into
 // a nested `bash -c "bash -c '...'"` terminates. governed is true when command
 // is a payload that `wb run --` runs, so the governed-validation gate never
-// sends back to wb run what wb run is already running.
-func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int, governed bool) *finding {
+// sends back to wb run what wb run is already running. ignoreGoverned, set
+// only by inspectBashDenyOnly, skips the governed-validation match entirely
+// so scanning continues past it to any real deny later on the line
+// (wb#645 review Blocker 2, "deny wins").
+func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int, governed, ignoreGoverned bool) *finding {
 	for _, current := range splitSegments(command) {
 		if result := inspectRedirects(current, workingDirectory, projectsRoot); result != nil {
 			return result
@@ -130,7 +151,7 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int,
 		if readings, ok := shellInterpreters[name]; ok && depth < maxShellUnwrapDepth {
 			if payloads := shellDashCPayloads(words, readings); len(payloads) > 0 {
 				for _, payload := range payloads {
-					if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1, segmentGoverned); result != nil {
+					if result := inspectBashDepth(payload, workingDirectory, projectsRoot, depth+1, segmentGoverned, ignoreGoverned); result != nil {
 						return result
 					}
 				}
@@ -167,7 +188,7 @@ func inspectBashDepth(command, workingDirectory, projectsRoot string, depth int,
 		// validation to. The command it runs is still judged by every other
 		// policy below (a gh pr merge, a canonical-clone write), but it is
 		// never sent back to wb run.
-		if !segmentGoverned && managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
+		if !segmentGoverned && !ignoreGoverned && managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
 			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
 		}
 		if result := inspectCommand(name, words, current.Words, workingDirectory, projectsRoot); result != nil {
@@ -1042,4 +1063,252 @@ func containsWord(words []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// spliceWord is one word a spliceCandidate walk read, paired with its exact
+// byte range in the original, untouched command text.
+type spliceWord struct {
+	Text  string
+	Start int
+	End   int
+}
+
+// parseSpliceCandidate tokenizes command the way a conservative POSIX-ish
+// reader would split it into words, recording each word's own byte range in
+// the ORIGINAL text — not a re-quoted reconstruction of it — so a caller can
+// splice new text into the line without touching a single byte the caller
+// wrote elsewhere on it.
+//
+// This exists because rebuilding a command from splitSegments' already
+// unquoted Words and re-quoting them with shellQuote silently changes what
+// the command does (wb#645 review r2, NB1): `go build -o $TMPDIR/x` became
+// `go build -o '$TMPDIR/x'`, turning off variable expansion and writing to a
+// literal `$TMPDIR` directory; `GOFLAGS="-count=1 -race" go test` became
+// `'GOFLAGS=-count=1 -race' wb run -- go test`, which is no longer a
+// VAR=value assignment at all and fails with "command not found". Splicing
+// `wbExecutable run -- ` in front of the governed command's own start offset,
+// and leaving every byte before and after that point exactly as written,
+// cannot have either failure mode: nothing this function reads is ever
+// written back out.
+//
+// ok is false the moment the walk sees any of & (except the one && directly
+// after a leading "cd <dir>", the only compounding the simple-command shape
+// allows), ;, |, <, >, (, ), {, }, a backtick, a newline, or an unterminated
+// quote or trailing backslash — the same construct list wb#645's review
+// requires this rewrite to refuse rather than paper over (a lost `&`
+// backgrounding, a subshell's `cd` silently escaping into the next Bash
+// call, a swallowed `< /dev/null`, and so on). A false here always means
+// "fall back to the pre-PR refusal", never "guess and rewrite anyway".
+func parseSpliceCandidate(command string) (words []spliceWord, hadCdPrefix bool, ok bool) {
+	index := 0
+	length := len(command)
+	for index < length {
+		for index < length && isSpliceSpace(command[index]) {
+			index++
+		}
+		if index >= length {
+			break
+		}
+		if command[index] == '&' && index+1 < length && command[index+1] == '&' {
+			if !hadCdPrefix && len(words) == 2 && words[0].Text == "cd" {
+				index += 2
+				hadCdPrefix = true
+				continue
+			}
+			return nil, false, false
+		}
+		text, end, wordOK := readSpliceWord(command, index)
+		if !wordOK {
+			return nil, false, false
+		}
+		words = append(words, spliceWord{Text: text, Start: index, End: end})
+		index = end
+	}
+	return words, hadCdPrefix, true
+}
+
+func isSpliceSpace(character byte) bool {
+	return character == ' ' || character == '\t'
+}
+
+// readSpliceWord reads one quote-aware word starting at index (already
+// known not to be whitespace), stopping at the first unquoted whitespace.
+// ok is false on an unterminated quote, a trailing backslash, or any of the
+// forbidden shell constructs parseSpliceCandidate's own doc lists.
+func readSpliceWord(command string, index int) (text string, end int, ok bool) {
+	var word strings.Builder
+	length := len(command)
+	for index < length {
+		character := command[index]
+		switch {
+		case isSpliceSpace(character):
+			return word.String(), index, true
+		case character == '\'':
+			index++
+			closing := strings.IndexByte(command[index:], '\'')
+			if closing < 0 {
+				return "", 0, false
+			}
+			word.WriteString(command[index : index+closing])
+			index += closing + 1
+		case character == '"':
+			index++
+			for index < length && command[index] != '"' {
+				if command[index] == '\\' && index+1 < length {
+					index++
+					word.WriteByte(command[index])
+					index++
+					continue
+				}
+				word.WriteByte(command[index])
+				index++
+			}
+			if index >= length {
+				return "", 0, false
+			}
+			index++
+		case character == '\\':
+			index++
+			if index >= length {
+				return "", 0, false
+			}
+			word.WriteByte(command[index])
+			index++
+		case character == '&' || character == ';' || character == '|' ||
+			character == '<' || character == '>' || character == '(' || character == ')' ||
+			character == '{' || character == '}' || character == '`' || character == '\n':
+			return "", 0, false
+		default:
+			word.WriteByte(character)
+			index++
+		}
+	}
+	return word.String(), index, true
+}
+
+// simpleGovernedRewrite splices `wbExecutable run -- ` into the ORIGINAL
+// command text at the byte offset where the governed command's own first
+// word starts — after a leading `cd <dir> &&` and any `VAR=value`
+// assignments, neither of which is rewritten or re-quoted, only skipped over
+// (wb#645 review r2, NB1: "splice, don't rebuild"). It succeeds only for the
+// narrow shape wb#645's review (fix 2, founder decision) allows a rewrite at
+// all — a single governed-validation command, optionally prefixed by
+// `VAR=value` assignments and/or a leading `cd <dir> &&` — and refuses
+// (ok=false) the moment parseSpliceCandidate finds any other shell
+// construct on the line; the caller then falls back to the pre-PR
+// governedCommandRefusal. There is no `sh -c` wrapping anywhere in this
+// package any more: that wrap hid the inner command from the user's own
+// Bash permission rules, changed semantics under dash, and (combined with
+// the guard's old auto-allow) let a governed command hide a chained deny
+// (wb#645 review Blockers 1, 2, 4, Major 1).
+//
+// wbExecutable is the absolute path the hook is registered with, already
+// decided by the caller against exec.LookPath("wb") (wb#645 review r2,
+// NM1/m5): "" means bare "wb" resolves to the identical binary and is used
+// unquoted so a rewrite still matches a user's own `Bash(wb run:*)`
+// permission rule, and any other value is shell-quoted before use, since it
+// is a filesystem path this function does not control the contents of.
+func simpleGovernedRewrite(command, wbExecutable string) (string, bool) {
+	executable := "wb"
+	if wbExecutable != "" {
+		executable = shellQuote(wbExecutable)
+	}
+
+	words, hadCdPrefix, ok := parseSpliceCandidate(command)
+	if !ok || len(words) == 0 {
+		return "", false
+	}
+
+	commandWords := words
+	if hadCdPrefix {
+		if len(words) < 2 {
+			return "", false
+		}
+		commandWords = words[2:]
+	}
+
+	assignmentCount := 0
+	for assignmentCount < len(commandWords) && isEnvironmentAssignment(commandWords[assignmentCount].Text) {
+		assignmentCount++
+	}
+	programWords := commandWords[assignmentCount:]
+	if len(programWords) == 0 {
+		return "", false
+	}
+	rawWords := make([]string, len(programWords))
+	for index, word := range programWords {
+		rawWords[index] = word.Text
+	}
+	if !isGovernedValidation(programName(rawWords[0]), rawWords) {
+		return "", false
+	}
+
+	spliceOffset := programWords[0].Start
+	return command[:spliceOffset] + executable + " run -- " + command[spliceOffset:], true
+}
+
+// safeProvenanceID is the charset WB_SUBAGENT_ID/WB_SUBAGENT_TOOL_USE_ID must
+// clear before stampSubagentID interpolates either into a rewritten shell
+// command. It matches internal/provenance.SafeID; duplicated here rather than
+// imported so this scanner keeps its own dependency-free, independently
+// auditable read path (see claimOwnerFile's doc for the same reasoning) and
+// so a value this guard will shell out is validated by code this package
+// alone owns.
+var safeProvenanceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// simpleWBInvocation reports whether command is, entirely on its own, a
+// direct invocation of the wb binary: a single segment, no redirects,
+// optionally prefixed by leading `VAR=value` assignments, whose program is
+// "wb". Anything else — a second command chained with `&&`/`;`/`|`, a
+// redirect, a wrapper such as sudo — is not a simple wb invocation, so the
+// ID stamp is never added: stamping a compound line would export the
+// subagent identity to every other command it happens to chain with, not
+// only wb (wb#645 review Blocker 1's `wb status && rm -rf /tmp/zzz` shape).
+func simpleWBInvocation(command string) bool {
+	segments := splitSegments(strings.TrimSpace(command))
+	if len(segments) != 1 {
+		return false
+	}
+	current := segments[0]
+	if len(current.RedirectTargets) > 0 {
+		return false
+	}
+	rest := current.Words
+	for len(rest) > 0 && isEnvironmentAssignment(rest[0]) {
+		rest = rest[1:]
+	}
+	return len(rest) > 0 && programName(rest[0]) == "wb"
+}
+
+// stampSubagentID prefixes command with an export of the subagent identity a
+// PreToolUse payload declared, so every wb call the command makes can
+// attribute the WB record it writes to the exact subagent and tool call that
+// ran it (wb#631's provenance fields). It only ever adds the prefix when
+// command is, entirely on its own, a simple wb invocation (see
+// simpleWBInvocation): stamping a compound line would export the identity to
+// every other command on it, not only wb (wb#645 review Blocker 1).
+//
+// The variable names are WB_SUBAGENT_ID and WB_SUBAGENT_TOOL_USE_ID,
+// deliberately outside the WB_AGENT_* family: WB_AGENT_ID already exists as
+// the owner-identity variable a session declares to claim a worktree
+// (internal/worktrees.EnvAgentID), and reusing that name made a declared
+// subagent identity look like a live owner declaration, which flipped
+// `--mode auto` to agent mode and then failed admission for any subagent
+// that never separately registered a session (wb#645 review Blocker 3).
+//
+// Both IDs are validated against safeProvenanceID before they are ever
+// interpolated into a shell command. An unsafe or absent agentID drops the
+// whole prefix — a record this guard cannot trust is safer omitted than
+// quoted. An unsafe toolUseID drops only itself; agentID alone is still
+// useful provenance.
+func stampSubagentID(command, agentID, toolUseID string) string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || !safeProvenanceID.MatchString(agentID) || !simpleWBInvocation(command) {
+		return command
+	}
+	prefix := "export WB_SUBAGENT_ID=" + agentID
+	if toolUseID = strings.TrimSpace(toolUseID); toolUseID != "" && safeProvenanceID.MatchString(toolUseID) {
+		prefix += " WB_SUBAGENT_TOOL_USE_ID=" + toolUseID
+	}
+	return prefix + "; " + command
 }

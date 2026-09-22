@@ -3036,7 +3036,7 @@
                 "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
                 "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
                 "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted.",
-                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling \u2014 the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
+                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling — the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
               ]
             }
           ],
@@ -3103,7 +3103,7 @@
           "limitation": null
         }
       },
-      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run \u2014 the concrete failure mode motivating the policy, not a cosmetic preference."
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run — the concrete failure mode motivating the policy, not a cosmetic preference."
     },
     {
       "id": "wb.deps.go-directive.report",
@@ -3127,10 +3127,10 @@
                 "--toolchain"
               ],
               "modes": [
-                "Walks every discovered repository and every Go module inside it \u2014 one row per module, not per repository \u2014 and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
+                "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
                 "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
                 "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first.",
-                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius \u2014 the number of repositories the policy actually protects \u2014 is a single number in the report."
+                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius — the number of repositories the policy actually protects — is a single number in the report."
               ]
             }
           ],
@@ -3985,7 +3985,7 @@
                 "Records every link in stream state BEFORE the filesystem is touched and again with the exact artefacts afterwards, so a crash mid-apply leaves a record --undo can act on",
                 "Refuses (exit 2, link-not-recordable) a consumer no open stream holds, before anything is written: an unrecorded link cannot be undone and is invisible to the merge guard",
                 "Proves the frozen install once per consumer before any linking, never once per package",
-                "Preserves whatever node_modules/<pkg> was \u2014 a pnpm symlink's target is recorded and re-created, an npm directory is moved aside \u2014 so --undo restores the published package either way",
+                "Preserves whatever node_modules/<pkg> was — a pnpm symlink's target is recorded and re-created, an npm directory is moved aside — so --undo restores the published package either way",
                 "--undo clears an unrecorded go.work too, so the command the merge guard names can satisfy the guard; a removal that fails keeps its record so the guard stays closed",
                 "go mod tidy and go get run with GOWORK=off, set by the verb, so a module-graph mutation can never resolve against an unpublished library tree"
               ]
@@ -4368,9 +4368,9 @@
                 "--skip-sizes"
               ],
               "modes": [
-                "Reports WB-attributable bytes per category \u2014 worktrees, Go build and module caches, the node package store, WB state, and per-task scratch \u2014 against the headroom remaining on the volume holding the projects root.",
+                "Reports WB-attributable bytes per category — worktrees, Go build and module caches, the node package store, WB state, and per-task scratch — against the headroom remaining on the volume holding the projects root.",
                 "Separates what removing a category would actually reclaim from what its trees appear to hold. Git worktrees share objects with their canonical clone and pnpm hard-links store entries into every consumer, so apparent size overstates a reclaim; every category is measured in one accounting walk so content linked into two is counted once.",
-                "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured \u2014 so a partial measurement is never mistaken for a tidy machine.",
+                "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured — so a partial measurement is never mistaken for a tidy machine.",
                 "--skip-sizes reports roots and filesystem headroom without walking trees, because measuring a multi-gigabyte cache costs minutes of IO and the free-space figure is often the whole answer.",
                 "Reports only. Retiring a worktree remains wb worktree gc, which knows what holds unlanded work."
               ]
@@ -4427,7 +4427,7 @@
           "limitation": null
         }
       },
-      "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total \u2014 worktrees held 340 MB fleet-wide while per-task scratch held 46 GB \u2014 so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
+      "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total — worktrees held 340 MB fleet-wide while per-task scratch held 46 GB — so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
     },
     {
       "id": "wb.fleet",
@@ -5015,7 +5015,12 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
-                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Rewrites CPU-heavy validation run directly in a WB-managed worktree into wb run -- ... instead of refusing it (wb#637), but only for the narrow \"simple command\" shape wb#645's review restricted this to: a single governed command, optionally prefixed by VAR=value assignments and/or a leading cd <dir> &&. The env assignments move in front of wb run so they still apply; a leading cd stays outside wb run -- so it still changes the shell's directory.",
+                "Any wider compound command (a second &&, ;, a pipeline, ||, a subshell, a heredoc, or a wrapper like nice/timeout/time first) is never rewritten and falls back to the pre-PR refusal — there is no sh -c wrapping anywhere. Outside a managed worktree, and for a call already under wb run --, nothing changes. Every deny policy is evaluated across the whole line, ignoring any governed match, before a rewrite is considered, so a real deny anywhere always wins over a rewrite (deny wins).",
+                "When the payload carries agent_id (sent only from a subagent) and the Bash command is, entirely on its own, a simple invocation of wb (no other command chained onto the line), prefixes export WB_SUBAGENT_ID=<agent_id> WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>; onto it, feeding the provenance fields wb#631 stamps onto claims, fleet events, wb run events, and wait records.",
+                "These names are deliberately outside the WB_AGENT_* family WB's own owner-identity variables use, so a subagent stamp is never mistaken for a declared owner identity. Both IDs are validated against a safe charset before interpolation; an unsafe or absent agent_id drops the whole prefix.",
+                "A rewrite is written as updatedInput.command with no permissionDecision at all, the guard's one exception to writing only a deny; every other tool_input field the call sent is carried through unchanged.",
+                "Claude Code v2.1.276 applies a response carrying updatedInput with no permissionDecision as the new input and then runs its normal permission flow on it, so the user's own prompts and allow/deny/ask rules still apply to the rewritten command — an explicit allow here was found to suppress that prompt entirely, which is not this guard's call to make. This relies on Claude Code >= 2.1.276's undocumented behaviour.",
                 "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
                 "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
                 "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth); through the shell's brace expansion of any word (gh pr {merge,} 1); and whatever the letter case of the program name (Gh pr merge 1 runs gh on macOS).",
@@ -5024,8 +5029,8 @@
                 "The escape hatch is WB_AGENTGUARD_ALLOW_GH_PR_MERGE=\"<reason>\" on that exact call, where the shell really exports it to gh: at the start of the call, or right after env, sudo, time or a shell keyword. It lets that one call through, and the guard records the reason when it allows the call. The record proves only that the guard allowed the call, not that the call ran, and the hook process's own ambient environment is never read.",
                 "A specscore/go/npm/pnpm/yarn/bun invocation bypasses its write-verb check only for a genuine help request (wb#493); which shape counts depends on the tool, because --help/-h behaves differently once a subcommand precedes it.",
                 "cobra-based specscore accepts a subcommand chain trailing in exactly one --help/-h with nothing after, or the word help first with no flag anywhere else.",
-                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser \u2014 confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
-                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead \u2014 for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
+                "go/npm/pnpm/yarn/bun accept only the bare <tool> --help/<tool> -h invocation or <tool> help followed by non-flag words, because each has a subcommand that passes positional arguments straight through to a script or program instead of stopping at its own flag parser — confirmed against the real binaries, where pnpm run build --help, bun run build --help, and go run . --help all ran for real instead of printing help.",
+                "Any other flag on the line, including one positioned to swallow --help as its own value, a -- separator handing --help to a script instead of the wrapper, or (for go/npm/pnpm/yarn/bun) any subcommand word at all in front of --help/-h, is inspected normally instead — for these five tools that means it still hits the governed-validation gate inside a managed worktree exactly like the same command without --help would.",
                 "gh pr merge's own --help/-h recognition is separate and reads the flags the way gh does. A --help consumed by a value-taking flag (gh pr merge 123 --subject --help, gh pr merge 123 -st --help) is a real merge, not a help request, and so is a --help placed after -- (gh pr merge -- --help).",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
                 "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
@@ -5079,7 +5084,57 @@
             },
             {
               "path": "internal/agentguard/agentguard_test.go",
-              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "name": "TestManagedWorktreeRewritesGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestNonSimpleGovernedCommandsAreRefusedNotRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestDenyWinsOverAGovernedRewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestCompoundWBInvocationIsNeverStamped",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewrittenSimpleCommandsRunCorrectlyInARealShell",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestWbRunCommandIsNeverRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestSubagentWBCallGetsTheIDPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestMainThreadWBCallGetsNoPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestOtherToolInputFieldsArePreservedAcrossARewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewriteAndStampNeverSetPermissionDecision",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/worklog_test.go",
+              "name": "TestSubagentStampEnvVarsDoNotDeclareAnIdentity",
               "kind": "unit"
             },
             {
@@ -5181,7 +5236,7 @@
           "limitation": null
         }
       },
-      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands \u2014 while every unmodelled construct is allowed rather than guessed at."
+      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial — recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands — while every unmodelled construct is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -5977,7 +6032,7 @@
               ],
               "modes": [
                 "Prices three profiles from the recorded hook events: the commit profile, a push to a stream/<name> branch, and every other push",
-                "Each profile carries its measured budget \u2014 the slowest run actually observed, never an estimate",
+                "Each profile carries its measured budget — the slowest run actually observed, never an estimate",
                 "The stream saving is the number of stream-branch pushes priced at the measured average of a non-stream push, with the basis printed beside it",
                 "Anything the window could not price is listed under 'not measured', so a zero saving is never readable as the stream profile saving nothing",
                 "Per-block cost is reported so a slow profile can be named rather than guessed at",
@@ -7285,10 +7340,10 @@
                 "--keep-commits requires explicit --merge-method squash and a mandatory --reason; it rebuilds the branch so the named commits land as their own, in order, with the rest aggregated, while merge/rebase combinations are refused",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
                 "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
-                "The live-link refusal runs whatever --keep says \u2014 --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed \u2014 and a stream WB cannot read stops the landing rather than being reported as no link",
+                "The live-link refusal runs whatever --keep says — --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed — and a stream WB cannot read stops the landing rather than being reported as no link",
                 "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
-                "Every invocation writes exactly one stream event \u2014 success, findings or refusal, and including --keep \u2014 carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
+                "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
                 "Source commits are paired with the commits that landed them by git patch-id --stable over the base's new commits, never by the scratch worktree's SHAs, which exist nowhere after a rebase merge",
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
@@ -10350,7 +10405,7 @@
                 "Refuses (exit 2) on stream-exists, repository-in-stream naming wb stream join, and preflight-failed naming wb hooks repair",
                 "Reports (exit 1) a red base, a missing CI concurrency group, a check it could not establish, and any transitive consumer left out of the stream",
                 "Stream membership is recorded in WB-owned state outside every repository, so git status in each member stays clean",
-                "Writes the stream record \u2014 with every member's intended worktree, branch and base \u2014 BEFORE the first side effect, so an interrupted start leaves a `creating` stream wb stream end can retire",
+                "Writes the stream record — with every member's intended worktree, branch and base — BEFORE the first side effect, so an interrupted start leaves a `creating` stream wb stream end can retire",
                 "Reserves the name under the store-wide lock that also decides the one-open-stream question, so two concurrent starts arbitrate before either pushes anything",
                 "Starting on the name of an ENDED stream archives the old record as <name>.ended-<timestamp> and proceeds, so a name is never burned by its first use",
                 "An unreadable stream record elsewhere in the store is reported, never allowed to refuse an unrelated start"
@@ -10465,7 +10520,7 @@
               ],
               "modes": [
                 "Reports the three gaps separately and per repository: consumers holding a live local link, library changes merged but untagged, and consumers behind the newest published version",
-                "Lists every open pull request targeting a stream branch \u2014 the ones GitHub would silently retarget at the base if the branch were deleted",
+                "Lists every open pull request targeting a stream branch — the ones GitHub would silently retarget at the base if the branch were deleted",
                 "Collapses patch-identical unabsorbed commits so N branches carrying one body of work read as one cluster",
                 "Reconstructs everything from WB-owned stream state, so it answers after an interrupted session",
                 "Anything it could not establish is reported under 'could not establish'; an empty gap list is never readable as nothing is wrong",
@@ -10569,7 +10624,7 @@
                 "Reports conflicts per agent branch with the branch, its claiming agent and the conflicting paths; a conflict in one never aborts the others",
                 "Refuses by default while a branch is under review, because rebasing it invalidates the review that pinned its patch set",
                 "--verify applies the whole batch and runs the suite once, then finds the culprit by cumulative prefix re-apply on a local scratch branch that is never pushed",
-                "Costs one run when the batch passes and 1+k when the culprit is element k \u2014 a linear prefix scan, not a bisection",
+                "Costs one run when the batch passes and 1+k when the culprit is element k — a linear prefix scan, not a bisection",
                 "A lockstep family is one element and is never split during prefix re-apply",
                 "Reports an interaction failure, blaming no element, when every prefix passes",
                 "Names a skipped CI mechanism only after reading the member's stream-PR workflows and proving CI runs it; anything neither side carries is reported as unguarded",
@@ -11856,7 +11911,7 @@
               ]
             }
           ],
-          "limitation": "Reports only; it never merges, and it is not merge evidence. Conditions beyond checks, state and head movement \u2014 a review submitted, changes requested, or a new comment \u2014 are not observed."
+          "limitation": "Reports only; it never merges, and it is not merge evidence. Conditions beyond checks, state and head movement — a review submitted, changes requested, or a new comment — are not observed."
         },
         "help": {
           "status": "Full",
@@ -13019,7 +13074,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/SKILL.md",
-              "marker": "## Ending a task \u2014 `wb worktree end`",
+              "marker": "## Ending a task — `wb worktree end`",
               "examples": [
                 "wb worktree end improve-login",
                 "wb worktree end improve-login --apply"
@@ -13092,18 +13147,18 @@
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required to retire anything",
-                "Merged-ness is decided by commit identity \u2014 GitHub's commit-to-pull-request index for the head, then for its ancestors \u2014 never by branch-name ancestry, because a squash merge leaves none",
+                "Merged-ness is decided by commit identity — GitHub's commit-to-pull-request index for the head, then for its ancestors — never by branch-name ancestry, because a squash merge leaves none",
                 "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
                 "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
                 "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
                 "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
-                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past \u2014 the residual commits, or the receipt and the reviewer after every bound head is re-verified",
+                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past — the residual commits, or the receipt and the reviewer after every bound head is re-verified",
                 "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
-                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
+                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes — no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
                 "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
-                "The in-use guard applies to every checkout, including one with no owner registration at all \u2014 a review checkout, a git worktree add checkout, or one whose registering process exited \u2014 because those are exactly the checkouts a sweep removed while they were in use",
-                "In use is decided from four activity signals \u2014 a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit \u2014 and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
+                "The in-use guard applies to every checkout, including one with no owner registration at all — a review checkout, a git worktree add checkout, or one whose registering process exited — because those are exactly the checkouts a sweep removed while they were in use",
+                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
@@ -13282,7 +13337,7 @@
           "limitation": null
         }
       },
-      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup \u2014 cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
+      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup — cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
     },
     {
       "id": "wb.worktree.guard",
@@ -15971,7 +16026,7 @@
               "modes": [
                 "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
                 "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge",
-                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated \u2014 nothing left to re-validate locally.",
+                "Before resuming, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at). The check is skipped when the receipt is already complete, or already published with its exact candidate SHA already validated — nothing left to re-validate locally.",
                 "On a prepare/validation_failed (or interrupted prepare/preparing) receipt, re-runs candidate validation for the exact candidate SHA before any publish or landing transition, honoring the receipt's stored validation timeouts unless --prepare-timeout/--check-timeout/--shard-attempt-timeout override them; every push, PR creation/adoption, direct push, and merge then refuses unless that exact candidate has left validation_failed and its recorded validation identity still names it",
                 "Resuming an already land-phase receipt (open PR or direct-push target recorded) whose candidate moved past its last proven/published SHA re-runs validation for the exact SHA before the same publish guard, unless --stop-before-merge already did so or that SHA is already pushed and proven by remote CI; a still-failing advance is refused unpushed",
                 "When the target has advanced past a published candidate's recorded target SHA, WB refreshes it instead of refusing: merges the freshly fetched target (and any already-advanced candidate descendant) into the published head, records a target_refreshes entry, re-validates the exact resulting candidate, and fast-forward pushes the same PR branch; a merge conflict reports the conflicting paths and leaves the receipt prepare/conflict without pushing, and no target advance is a no-op"

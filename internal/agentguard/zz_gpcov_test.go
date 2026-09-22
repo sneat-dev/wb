@@ -1028,9 +1028,17 @@ func TestGpCovRefusalWordingFallbacks(t *testing.T) {
 		}
 	}
 
+	// A finding carrying GovernedCommand reaches refusal() whenever
+	// inspectBashCall could not rewrite it (wb#645 review): deny-wins found a
+	// real deny elsewhere on the line, or the command did not match the
+	// narrow "simple command" shape. Either way it renders the pre-PR
+	// governed-command wording, naming the command to submit through
+	// `wb run --` directly.
 	governed := refusal(finding{Detail: "go test ./...", GovernedCommand: []string{"go", "test", "./..."}})
-	if !strings.Contains(governed, "wb run -- go test ./...") {
-		t.Fatalf("governed refusal = %q, want the quoted command", governed)
+	for _, expected := range []string{"wb run -- go test ./...", "durable ID"} {
+		if !strings.Contains(governed, expected) {
+			t.Fatalf("governed refusal is missing %q:\n%s", expected, governed)
+		}
 	}
 }
 
@@ -1058,7 +1066,7 @@ func (gpCovFailingWriter) Write([]byte) (int, error) {
 // TestGpCovWriteDecisionReportsWriterFailure pins that a deny whose JSON
 // cannot be delivered is reported as an error rather than silently lost.
 func TestGpCovWriteDecisionReportsWriterFailure(t *testing.T) {
-	written, err := WriteDecision(gpCovFailingWriter{}, Decision{Deny: true, Reason: "refused"})
+	written, err := WriteDecision(gpCovFailingWriter{}, Decision{Deny: true, Reason: "refused"}, nil)
 	if err == nil {
 		t.Fatal("WriteDecision hid a writer failure")
 	}

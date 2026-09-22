@@ -9,8 +9,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
+
+// stampProvenance fills every unset provenance field on event from the
+// environment (wb#631). It never overwrites a field a caller already set:
+// most stream events are constructed once and appended immediately, but this
+// keeps Append idempotent-safe for a caller that stamped its own value.
+func stampProvenance(event *Event) {
+	fields := provenance.FromEnv()
+	if event.HarnessSessionID == "" {
+		event.HarnessSessionID = fields.HarnessSessionID
+	}
+	if event.Harness == "" {
+		event.Harness = fields.Harness
+	}
+	if event.EffortLevel == "" {
+		event.EffortLevel = fields.EffortLevel
+	}
+	if event.AgentID == "" {
+		event.AgentID = fields.AgentID
+	}
+	if event.ToolUseID == "" {
+		event.ToolUseID = fields.ToolUseID
+	}
+	if event.WBVersion == "" {
+		event.WBVersion = fields.WBVersion
+	}
+}
 
 // EventSchemaVersion is the stream event-log format this binary writes.
 const EventSchemaVersion = 1
@@ -44,6 +71,18 @@ type Event struct {
 	// Evidence carries the exact facts the verb relied on. Values are
 	// redacted before the event is written.
 	Evidence map[string]string `json:"evidence,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, stamped by Append from the environment at zero cost, never a
+	// prompt or response body. Additive and omitempty: a reader older than
+	// this change simply never sees them, and EventSchemaVersion did not
+	// need to move for a purely additive field.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ToolUseID        string `json:"tool_use_id,omitempty"`
+	WBVersion        string `json:"wb_version,omitempty"`
 }
 
 // EventAppender is the seam between a stream verb and the event log.
@@ -84,6 +123,7 @@ func (log *FileEventLog) Append(event Event) error {
 			event.Timestamp = time.Now().UTC()
 		}
 	}
+	stampProvenance(&event)
 	event = Redact(event)
 	line, err := json.Marshal(event)
 	if err != nil {
