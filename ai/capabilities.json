@@ -4511,11 +4511,11 @@
           "status": "Full",
           "commands": [{
             "path": "wb fleet default-branch",
-            "flags": ["--all-orgs", "--apply", "--branch", "--format", "--json", "--org", "--parallel", "--reconcile-from", "--reconcile-sha256", "--repo", "--report-dir", "--user"],
+            "flags": ["--all-orgs", "--apply", "--branch", "--format", "--json", "--org", "--parallel", "--reconcile-from", "--reconcile-sha256", "--repo", "--report-dir", "--restore-archive-from", "--restore-archive-sha256", "--temporarily-unarchive", "--user"],
             "modes": [
               "Audit is read-only. Desired policy uses --branch, then fleet.organizations.<owner>.default_branch, then fleet.default_branch.",
               "Apply needs explicit --all-orgs, --org, --repo, or --user scope and writes a durable report before mutation. GitHub rename visibility may lag: WB records an accepted response, performs bounded read-only checks, and does not retry. --reconcile-from needs its exact-byte --reconcile-sha256 and fresh proof, is remote read-only, and blocks any refreshed repository that is not compliant.",
-              "Differing target SHA, archived repositories, source-head pull requests including a fork's upstream, Pages/protection/rules impacts, and concrete old-branch workflow references are explicit refusals."
+              "Differing target SHA, source-head pull requests including a fork's upstream, Pages/protection/rules impacts, and concrete old-branch workflow references are explicit refusals. Archived repositories require --temporarily-unarchive, a numeric repository-ID checkpoint, and verified restoration before any local reconciliation. --restore-archive-from is a one-repository, apply-only, digest-bound recovery receipt that can only restore the archived state."
             ]
           }],
           "limitation": null
