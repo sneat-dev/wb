@@ -14,6 +14,7 @@ wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <ope
 wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
@@ -191,6 +192,20 @@ candidate branch and SHA, active claims, clean worktrees, and remote branch.
 It writes an append-only acknowledgement, never force-pushes or rewrites the
 receipt. A normal prepare can then consume that proof when one source advances
 cleanly by descent, preserving the published predecessor and pull request.
+
+For the narrow historical shape where a failed `prepare/conflict` receipt has
+an empty candidate SHA, its clean candidate worktree still sits exactly at the
+receipt target SHA, and that recorded target branch was deleted after the same
+commit reached the repository's current default branch, use
+`acknowledge-retired-prepare-candidate` first without `--apply`. It requires
+the exact unchanged receipt bytes, a complete source identity distinct from the
+candidate (without claiming those sources landed), an unpublished candidate
+branch, the absent recorded target ref, and fresh ancestry of both the candidate
+and acknowledgement's default target SHA into the current default target. The
+append-only sidecar permits only that exact current-layout candidate to be
+adopted; ordinary cleanup repeats the fresh-default and unpublished-candidate
+proof before removal. It never rewrites the failed receipt and does not free or
+terminalize the historical merge lane.
 
 For the one audited preparing-receipt collision recovery, use
 `acknowledge-receipt-collision` only with all six explicit expected digests and
