@@ -1012,6 +1012,25 @@ func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := defaultBranchIsAncestor(context.Background(), missing, "master", "main"); err == nil {
+		t.Fatal("ancestor check accepted missing repository")
+	}
+	if err := defaultBranchAtomicRenameRefs(context.Background(), missing, "master", "main", "0123456789012345678901234567890123456789"); err == nil {
+		t.Fatal("atomic rename accepted missing repository")
+	}
+	if err := defaultBranchAttachHead(context.Background(), missing, "main"); err == nil {
+		t.Fatal("attach accepted missing repository")
+	}
+	if _, err := defaultBranchRefExists(context.Background(), missing, "refs/heads/main"); err == nil {
+		t.Fatal("ref check accepted missing repository")
+	}
+	if err := verifyDefaultBranchAttachment(context.Background(), missing, "main", "main", "same"); err == nil {
+		t.Fatal("attachment verification accepted missing repository")
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *testing.T) {
 	originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
 	t.Cleanup(func() {
