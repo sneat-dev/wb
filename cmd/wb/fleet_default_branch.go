@@ -1641,7 +1641,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 	if err := defaultBranchAtomicRenameRefs(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
 		return fmt.Errorf("rename local default branch: %w", err)
 	}
-	atomicAction := "atomically renamed local " + sourceDefault + " to " + repository.Desired + "; HEAD detached"
+	atomicAction := "renamed refs local " + sourceDefault + " to " + repository.Desired + "; HEAD detached; tracking incomplete"
 	if len(entry.Actions) > 0 && strings.HasPrefix(entry.Actions[0], "fast-forwarded local ") {
 		entry.Actions = []string{entry.Actions[0], atomicAction}
 	} else {
