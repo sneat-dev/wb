@@ -50,15 +50,15 @@ func AcknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMer
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
+	if !options.Apply {
+		return ack, nil
+	}
 	// Re-observe every mutable ref/worktree fact immediately before a write.
 	ack, err = proveRetiredPrepareCandidate(ctx, path, receipt, options.Actor, options.Reason)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	ackPath := retiredcandidateack.Path(path)
-	if !options.Apply {
-		return ack, nil
-	}
 	if existing, loadErr := retiredcandidateack.Load(ackPath, retiredPrepareCandidateIdentity(receipt, path)); loadErr == nil {
 		return existing, nil
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
