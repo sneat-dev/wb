@@ -953,6 +953,47 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 	}
 }
 
+func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *testing.T) {
+	originalGit, originalRename, originalAttach := defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead
+	t.Cleanup(func() {
+		defaultBranchGit, defaultBranchAtomicRenameRefs, defaultBranchAttachHead = originalGit, originalRename, originalAttach
+	})
+	moved, upstream := false, false
+	defaultBranchAtomicRenameRefs = func(_ context.Context, _, _, _, _ string) error { return nil }
+	defaultBranchAttachHead = func(_ context.Context, _, _ string) error { moved = true; return nil }
+	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+		switch call := strings.Join(args, " "); call {
+		case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain":
+			return "", nil
+		case "worktree list --porcelain":
+			return "worktree /canonical\nbranch refs/heads/master", nil
+		case "branch --show-current":
+			return "master", nil
+		case "for-each-ref --format=%(refname:strip=2) refs/heads":
+			return "master", nil
+		case "rev-parse origin/main", "rev-parse master":
+			return "same", nil
+		case "rev-parse main", "rev-parse HEAD":
+			if moved {
+				return "moved", nil
+			}
+			return "same", nil
+		case "branch --set-upstream-to=origin/main main":
+			upstream = true
+			return "", nil
+		default:
+			return "", errors.New("unexpected git " + call)
+		}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+	entry := defaultBranchCanonical{Path: "/canonical", Disposition: "blocked"}
+	var receipts []defaultBranchCanonical
+	err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "same", func() error { receipts = append(receipts, entry); return nil })
+	if err == nil || entry.Disposition != "blocked" || upstream || !strings.Contains(strings.Join(entry.Actions, " "), "attachment verification failed") || !strings.Contains(strings.Join(receipts[len(receipts)-1].Actions, " "), "attachment verification failed") {
+		t.Fatalf("attach movement = %#v err=%v upstream=%t receipts=%#v", entry, err, upstream, receipts)
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *testing.T) {
 	tests := []struct {
 		name           string
