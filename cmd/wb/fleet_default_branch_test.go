@@ -618,7 +618,7 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 					return "worktree /canonical\nbranch refs/heads/master", nil
 				case "branch --show-current":
 					return "master", nil
-				case "rev-parse origin/main", "rev-parse master":
+				case "rev-parse origin/main", "rev-parse master", "rev-parse main", "rev-parse HEAD":
 					return "same", nil
 				case "for-each-ref --format=%(refname:strip=2) refs/heads":
 					return "master", nil
@@ -656,7 +656,7 @@ func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *test
 					return "worktree /canonical\nbranch refs/heads/master", nil
 				case "branch --show-current":
 					return "master", nil
-				case "rev-parse origin/main", "rev-parse master":
+				case "rev-parse origin/main", "rev-parse master", "rev-parse main", "rev-parse HEAD":
 					return "same", nil
 				case "for-each-ref --format=%(refname:strip=2) refs/heads":
 					return "master", nil
@@ -713,7 +713,7 @@ func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testi
 			return "master", nil
 		case "for-each-ref --format=%(refname:strip=2) refs/heads":
 			return "master", nil
-		case "rev-parse master":
+		case "rev-parse master", "rev-parse main", "rev-parse HEAD":
 			return localHead, nil
 		case "rev-parse origin/main":
 			return remoteHead, nil

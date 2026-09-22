@@ -1699,6 +1699,14 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 		}
 		return fmt.Errorf("attach HEAD to local %s: %w", repository.Desired, err)
 	}
+	if err := verifyDefaultBranchAttachment(ctx, entry.Path, repository.Desired, repository.Desired, checkpointedHead); err != nil {
+		entry.Disposition = "blocked"
+		entry.Actions = append(entry.Actions, "attachment verification failed")
+		if checkpointErr := checkpoint(); checkpointErr != nil {
+			return fmt.Errorf("verify renamed local %s attachment: %v; persist blocked local rename receipt: %w", repository.Desired, err, checkpointErr)
+		}
+		return fmt.Errorf("verify renamed local %s attachment: %w", repository.Desired, err)
+	}
 	renamedActions := []string{"renamed local " + sourceDefault + " to " + repository.Desired}
 	if len(entry.Actions) > 0 && strings.HasPrefix(entry.Actions[0], "fast-forwarded local ") {
 		renamedActions = append([]string{entry.Actions[0]}, renamedActions...)
