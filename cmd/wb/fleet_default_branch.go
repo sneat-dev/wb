@@ -168,6 +168,25 @@ var (
 		}
 		return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w: %s", ancestor, descendant, err, strings.TrimSpace(string(output)))
 	}
+	defaultBranchAtomicRename = func(ctx context.Context, dir, source, destination, expected string) error {
+		checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", expected)
+		checkout.Dir = dir
+		if output, err := checkout.CombinedOutput(); err != nil {
+			return fmt.Errorf("detach HEAD at verified %s: %w: %s", source, err, strings.TrimSpace(string(output)))
+		}
+		transaction := exec.CommandContext(ctx, "git", "update-ref", "--stdin")
+		transaction.Dir = dir
+		transaction.Stdin = strings.NewReader("start\ncreate refs/heads/" + destination + " " + expected + "\ndelete refs/heads/" + source + " " + expected + "\nprepare\ncommit\n")
+		if output, err := transaction.CombinedOutput(); err != nil {
+			return fmt.Errorf("atomically rename local %s to %s at %s: %w: %s", source, destination, expected, err, strings.TrimSpace(string(output)))
+		}
+		attach := exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD", "refs/heads/"+destination)
+		attach.Dir = dir
+		if output, err := attach.CombinedOutput(); err != nil {
+			return fmt.Errorf("attach HEAD to renamed local %s: %w: %s", destination, err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
 )
 
 func newFleetDefaultBranchCmd() *cobra.Command {
@@ -1569,7 +1588,7 @@ func reconcileDefaultBranchCanonical(ctx context.Context, repository *defaultBra
 	if localHead != checkpointedHead || remoteHead != checkpointedHead {
 		return fmt.Errorf("local %s is %s while origin/%s is %s before rename checkpoint %s; preserve it for explicit recovery", sourceDefault, localHead, repository.Desired, remoteHead, checkpointedHead)
 	}
-	if _, err := defaultBranchGit(ctx, entry.Path, "branch", "-m", sourceDefault, repository.Desired); err != nil {
+	if err := defaultBranchAtomicRename(ctx, entry.Path, sourceDefault, repository.Desired, checkpointedHead); err != nil {
 		return fmt.Errorf("rename local default branch: %w", err)
 	}
 	renamedActions := []string{"renamed local " + sourceDefault + " to " + repository.Desired}
