@@ -954,6 +954,25 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 	}
 }
 
+func TestVerifyDefaultBranchAttachmentReportsReadFailures(t *testing.T) {
+	for _, failed := range []string{"rev-parse HEAD", "rev-parse main", "rev-parse origin/main", "status --porcelain"} {
+		t.Run(failed, func(t *testing.T) {
+			original := defaultBranchGit
+			t.Cleanup(func() { defaultBranchGit = original })
+			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+				call := strings.Join(args, " ")
+				if call == failed {
+					return "", errors.New("read failed")
+				}
+				return "same", nil
+			}
+			if err := verifyDefaultBranchAttachment(context.Background(), "/canonical", "main", "main", "same"); err == nil || !strings.Contains(err.Error(), "read failed") {
+				t.Fatalf("%s was accepted: %v", failed, err)
+			}
+		})
+	}
+}
+
 func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) string {
