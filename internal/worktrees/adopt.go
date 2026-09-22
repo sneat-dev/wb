@@ -239,7 +239,7 @@ func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
 
 func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWorktree, apply bool, initiator string, now time.Time) AdoptResult {
 	result := AdoptResult{Path: candidate.Path}
-	if candidate.Layout != LayoutExternal {
+	if candidate.Layout != LayoutExternal && !(candidate.Layout == LayoutCurrent && hasRetiredPrepareCandidateAcknowledgement(projectsRoot, candidate.EffortID, candidate.Path, candidate.Branch, candidateBranchHead(ctx, candidate.Path))) {
 		result.Action = AdoptSkipped
 		result.Reason = fmt.Sprintf("layout is %q, not external; already under WB management", candidate.Layout)
 		return result
