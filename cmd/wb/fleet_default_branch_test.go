@@ -594,16 +594,16 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 		want   string
 	}{
 		{name: "dirty", values: map[string]string{"status --porcelain": " M README.md"}, want: "local changes present"},
-		{name: "unpublished", values: map[string]string{"log --branches --not --remotes --format=%H": "local-commit"}, want: "local unpublished commits"},
 		{name: "linked worktree", values: map[string]string{"worktree list --porcelain": "worktree /canonical\nbranch refs/heads/master\nworktree /other\nbranch refs/heads/topic"}, want: "linked worktree exists"},
 		{name: "different checkout", values: map[string]string{"branch --show-current": "topic"}, want: "only the old default"},
 		{name: "destination exists", values: map[string]string{"for-each-ref --format=%(refname:strip=2) refs/heads": "master\nmain"}, want: "destination branch"},
-		{name: "local source diverged", values: map[string]string{"rev-parse master": "different"}, want: "local master is different"},
+		{name: "local source diverged", values: map[string]string{"rev-parse master": "different"}, want: "not contained in origin/main"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			original := defaultBranchGit
-			t.Cleanup(func() { defaultBranchGit = original })
+			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
+			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
 			var calls []string
 			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
 				call := strings.Join(args, " ")
@@ -612,7 +612,7 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 					return value, nil
 				}
 				switch call {
-				case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain", "log --branches --not --remotes --format=%H":
+				case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain", "log origin/main..master --not --remotes --format=%H":
 					return "", nil
 				case "worktree list --porcelain":
 					return "worktree /canonical\nbranch refs/heads/master", nil
@@ -682,6 +682,151 @@ func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *test
 	}
 }
 
+func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testing.T) {
+	originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
+	t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+	localHead, remoteHead := "old", "new"
+	var calls []string
+	defaultBranchIsAncestor = func(_ context.Context, _ string, ancestor, descendant string) (bool, error) {
+		if ancestor != "master" || descendant != "origin/main" {
+			t.Fatalf("ancestry check = %s %s", ancestor, descendant)
+		}
+		return true, nil
+	}
+	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain", "branch -m master main", "branch --set-upstream-to=origin/main main":
+			return "", nil
+		case "worktree list --porcelain":
+			return "worktree /canonical\nbranch refs/heads/master", nil
+		case "branch --show-current":
+			return "master", nil
+		case "for-each-ref --format=%(refname:strip=2) refs/heads":
+			return "master", nil
+		case "rev-parse master":
+			return localHead, nil
+		case "rev-parse origin/main":
+			return remoteHead, nil
+		case "merge --ff-only origin/main":
+			if localHead != "old" {
+				return "", errors.New("fast-forward was repeated")
+			}
+			localHead = remoteHead
+			return "", nil
+		default:
+			return "", errors.New("unexpected git " + call)
+		}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+	entry := defaultBranchCanonical{Path: "/canonical", Disposition: "blocked"}
+	var receipts []defaultBranchCanonical
+	if err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error {
+		receipts = append(receipts, entry)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Disposition != "compliant" || strings.Join(entry.Actions, " | ") != "fast-forwarded local master to origin/main | renamed local master to main | set upstream to origin/main" {
+		t.Fatalf("entry = %#v", entry)
+	}
+	if len(receipts) != 4 || !strings.Contains(strings.Join(receipts[0].Actions, " "), "old") || !strings.Contains(strings.Join(receipts[0].Actions, " "), "new") || !strings.Contains(strings.Join(receipts[1].Actions, " "), "fast-forwarded") || !strings.Contains(strings.Join(receipts[2].Actions, " "), "planned rename") {
+		t.Fatalf("receipts = %#v", receipts)
+	}
+	if strings.Contains(strings.Join(calls, "\n"), "log --branches --not --remotes") || !strings.Contains(strings.Join(calls, "\n"), "merge --ff-only origin/main") {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDivergence(t *testing.T) {
+	for name, unpublished := range map[string]string{
+		"unpublished":      "local-only",
+		"known divergence": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
+			t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+			var calls []string
+			defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return false, nil }
+			defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+				call := strings.Join(args, " ")
+				calls = append(calls, call)
+				switch call {
+				case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain":
+					return "", nil
+				case "worktree list --porcelain":
+					return "worktree /canonical\nbranch refs/heads/master", nil
+				case "branch --show-current":
+					return "master", nil
+				case "for-each-ref --format=%(refname:strip=2) refs/heads":
+					return "master", nil
+				case "rev-parse master":
+					return "local", nil
+				case "rev-parse origin/main":
+					return "remote", nil
+				case "log origin/main..master --not --remotes --format=%H":
+					return unpublished, nil
+				default:
+					return "", errors.New("unexpected git " + call)
+				}
+			}
+			repo := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+			entry := defaultBranchCanonical{Path: "/canonical", Disposition: "blocked"}
+			err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "remote", func() error { return nil })
+			if err == nil || !strings.Contains(err.Error(), map[bool]string{true: "has unpublished commits", false: "not contained"}[unpublished != ""]) {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(strings.Join(calls, "\n"), "merge --ff-only") || strings.Contains(strings.Join(calls, "\n"), "branch -m") {
+				t.Fatalf("diverged clone mutated: %v", calls)
+			}
+		})
+	}
+}
+
+func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testing.T) {
+	originalGit, originalAncestor := defaultBranchGit, defaultBranchIsAncestor
+	t.Cleanup(func() { defaultBranchGit, defaultBranchIsAncestor = originalGit, originalAncestor })
+	localHead, remoteHead := "old", "new"
+	defaultBranchIsAncestor = func(_ context.Context, _ string, _, _ string) (bool, error) { return true, nil }
+	defaultBranchGit = func(_ context.Context, _ string, args ...string) (string, error) {
+		switch call := strings.Join(args, " "); call {
+		case "fetch --prune origin", "remote set-head origin --auto", "status --porcelain":
+			return "", nil
+		case "worktree list --porcelain":
+			return "worktree /canonical\nbranch refs/heads/master", nil
+		case "branch --show-current":
+			return "master", nil
+		case "for-each-ref --format=%(refname:strip=2) refs/heads":
+			return "master", nil
+		case "rev-parse master":
+			return localHead, nil
+		case "rev-parse origin/main":
+			return remoteHead, nil
+		case "merge --ff-only origin/main":
+			localHead = "new"
+			return "", nil
+		case "branch -m master main":
+			return "", errors.New("rename must not run after ref movement")
+		default:
+			return "", errors.New("unexpected git " + call)
+		}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+	entry := defaultBranchCanonical{Path: "/canonical", Disposition: "blocked"}
+	checkpoints := 0
+	err := reconcileDefaultBranchCanonical(context.Background(), &repo, &entry, "master", "new", func() error {
+		checkpoints++
+		if checkpoints == 3 {
+			localHead, remoteHead = "moved", "moved"
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "before rename checkpoint new") {
+		t.Fatalf("moved refs were accepted: %v", err)
+	}
+}
+
 func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -692,7 +837,6 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 		{name: "fetch", failGitCall: "fetch --prune origin", want: "refresh origin before"},
 		{name: "remote head", failGitCall: "remote set-head origin --auto", want: "refresh origin/HEAD"},
 		{name: "status", failGitCall: "status --porcelain", want: "inspect local changes"},
-		{name: "unpublished inspection", failGitCall: "log --branches --not --remotes --format=%H", want: "inspect local unpublished"},
 		{name: "worktree inspection", failGitCall: "worktree list --porcelain", want: "inspect linked worktrees"},
 		{name: "current branch", failGitCall: "branch --show-current", want: "inspect checked-out"},
 		{name: "remote ref", failGitCall: "rev-parse origin/main", want: "resolve refreshed"},
