@@ -43,7 +43,8 @@ not fetch `origin/main`. With `--scope remote` or `all`, WB refreshes only
 `origin`'s `retired/*` namespace before reading its tracking refs, so the
 remote number is current without a full branch or base-target fetch. The
 report records that the base fetch was skipped; if the scoped remote refresh
-fails, the remote row is `unreadable` rather than a cached zero.
+fails, diagnostics and `retired_remote_unavailable` make the remote count
+explicitly unknown rather than a cached zero.
 
 ## Local quarantine
 

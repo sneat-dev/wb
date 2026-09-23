@@ -467,6 +467,18 @@ func TestRetiredCountHonoursExactBranchAndAgeSelectors(t *testing.T) {
 	}
 }
 
+func TestRetiredNamespaceFastPathHonoursOnlySelector(t *testing.T) {
+	if retiredNamespaceSelected(branchSweepOptions{Name: "retired/*", Only: BranchUnique}) {
+		t.Fatal("retired name with --only unique bypassed the disposition filter")
+	}
+	if retiredNamespaceSelected(branchSweepOptions{Branch: "retired/example", Only: BranchContained}) {
+		t.Fatal("exact retired ref with a non-retired disposition bypassed the filter")
+	}
+	if !retiredNamespaceSelected(branchSweepOptions{Name: "retired/*", Only: BranchRetired}) {
+		t.Fatal("--only retired did not select the retired inventory")
+	}
+}
+
 func TestRetiredNamespaceInventoryIsOfflineForLocalRetiredGlob(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "retired/local-only")
@@ -487,11 +499,32 @@ func TestRetiredNamespaceInventoryIsOfflineForLocalRetiredGlob(t *testing.T) {
 	if outcome.Entries[0].TargetSHA != "" {
 		t.Fatalf("retired offline inventory unexpectedly resolved a base target: %#v", outcome.Entries[0])
 	}
+	if outcome.Entries[0].Author == "" || outcome.Entries[0].Title != "retire local branch" {
+		t.Fatalf("retired list metadata = %#v", outcome.Entries[0])
+	}
 	if outcome.RetiredRefs[BranchScopeLocal] != 1 || outcome.RetiredBranches != 1 {
 		t.Fatalf("retired counts = refs=%#v names=%d", outcome.RetiredRefs, outcome.RetiredBranches)
 	}
 	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "skipped fetch of origin/main") {
 		t.Fatalf("offline diagnostic missing: %#v", outcome.Diagnostics)
+	}
+}
+
+func TestRetiredNamespaceRemoteFailureIsDiagnosticNotSyntheticBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{
+		ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 0 || !outcome.RetiredRemoteUnavailable {
+		t.Fatalf("remote failure result = %#v", outcome)
+	}
+	if !strings.Contains(strings.Join(outcome.Diagnostics, "\n"), "retired remote refs") {
+		t.Fatalf("remote failure diagnostic missing: %#v", outcome.Diagnostics)
 	}
 }
 

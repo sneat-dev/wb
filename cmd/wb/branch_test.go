@@ -111,11 +111,9 @@ func TestBranchCountRetiredTextFormatKeepsScopedRefTotals(t *testing.T) {
 func TestBranchCountDoesNotRenderAnUnavailableRemoteRetiredInventoryAsZero(t *testing.T) {
 	var out bytes.Buffer
 	if err := printBranchCount(&out, worktrees.BranchListOutcome{
-		Scope:       worktrees.BranchScopeRemote,
-		RetiredRefs: map[string]int{},
-		Entries: []worktrees.BranchEntry{{
-			Scope: worktrees.BranchScopeRemote, Disposition: worktrees.BranchUnreadable,
-		}},
+		Scope:                    worktrees.BranchScopeRemote,
+		RetiredRefs:              map[string]int{},
+		RetiredRemoteUnavailable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

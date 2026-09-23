@@ -128,7 +128,8 @@ for its branches without blocking the rest of the sweep.
 uses a bounded quarantine inventory instead: local scope reads only local
 retired refs and does not fetch origin/<base>; remote scope refreshes only
 origin's retired namespace before reading its tracking refs. The report names
-the skipped base fetch, and a failed remote namespace refresh is unreadable.
+the skipped base fetch, and a failed remote namespace refresh sets
+retired_remote_unavailable with its diagnostic.
 
 The default --scope local inventories local refs. Use --scope remote or --scope
 all to include known origin refs; --org narrows only locally discovered
@@ -386,15 +387,11 @@ func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error 
 }
 
 func retiredRemoteRefCount(outcome worktrees.BranchListOutcome) string {
+	if outcome.RetiredRemoteUnavailable {
+		return "unavailable"
+	}
 	if count, ok := outcome.RetiredRefs[worktrees.BranchScopeRemote]; ok {
 		return fmt.Sprintf("%d", count)
-	}
-	if outcome.Scope != worktrees.BranchScopeLocal {
-		for _, entry := range outcome.Entries {
-			if entry.Scope == worktrees.BranchScopeRemote && entry.Disposition == worktrees.BranchUnreadable {
-				return "unavailable"
-			}
-		}
 	}
 	return "0"
 }

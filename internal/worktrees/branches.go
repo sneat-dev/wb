@@ -139,6 +139,9 @@ type BranchListOutcome struct {
 	// --scope all a local and remote ref of the same name are two refs.
 	RetiredRefs     map[string]int `json:"retired_refs,omitempty"`
 	RetiredBranches int            `json:"retired_branches,omitempty"`
+	// RetiredRemoteUnavailable distinguishes an unknown remote retired count
+	// from zero when the narrowly scoped remote refresh fails.
+	RetiredRemoteUnavailable bool `json:"retired_remote_unavailable,omitempty"`
 }
 
 // BranchList enumerates every branch matching options and reports its
@@ -284,9 +287,13 @@ func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOu
 // retired refs. Those refs need no target-based disposition evidence, so their
 // inventory must not fetch origin/<base> merely to count a quarantine.
 func retiredNamespaceSelected(sweep branchSweepOptions) bool {
-	return sweep.Only == BranchRetired ||
-		strings.HasPrefix(sweep.Branch, "retired/") ||
-		strings.HasPrefix(sweep.Name, "retired/")
+	if sweep.Only == BranchRetired {
+		return true
+	}
+	if sweep.Only != "" {
+		return false
+	}
+	return strings.HasPrefix(sweep.Branch, "retired/") || strings.HasPrefix(sweep.Name, "retired/")
 }
 
 // inventoryRetiredNamespace is the narrow inventory used by --only retired
@@ -301,6 +308,7 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	entries := make([]BranchEntry, 0)
 	retiredRefs := map[string]int{}
 	retiredNames := map[string]bool{}
+	retiredRemoteUnavailable := false
 	diagnostics := []string{fmt.Sprintf("retired namespace inventory skipped fetch of origin/%s", sweep.Base)}
 	for _, repository := range repositories {
 		owner, _, _ := strings.Cut(repository.Slug(), "/")
@@ -312,17 +320,16 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired local refs: %s", repository.Slug(), diagnostic))
 			} else {
-				retiredRefs[BranchScopeLocal] += appendRetiredEntries(&entries, retiredNames, repository, sweep, refs, BranchScopeLocal)
+				retiredRefs[BranchScopeLocal] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeLocal)
 			}
 		}
 		if sweep.Scope == BranchScopeRemote || sweep.Scope == BranchScopeAll {
 			refs, diagnostic := listRetiredRemoteRefs(ctx, repository.Path)
 			if diagnostic != "" {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: retired remote refs: %s", repository.Slug(), diagnostic))
-				entries = append(entries, BranchEntry{Repository: repository.Slug(), Base: sweep.Base, Scope: BranchScopeRemote, Disposition: BranchUnreadable,
-					Evidence: fmt.Sprintf("fetch origin retired namespace: %s", diagnostic)})
+				retiredRemoteUnavailable = true
 			} else {
-				retiredRefs[BranchScopeRemote] += appendRetiredEntries(&entries, retiredNames, repository, sweep, refs, BranchScopeRemote)
+				retiredRefs[BranchScopeRemote] += appendRetiredEntries(ctx, &entries, retiredNames, repository, sweep, refs, BranchScopeRemote)
 			}
 		}
 	}
@@ -330,11 +337,12 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	return BranchListOutcome{
 		Host: branchEvidenceHost(), GeneratedAt: generatedAt, Repository: sweep.Repository, Org: sweep.Org, Branch: sweep.Branch,
 		Base: sweep.Base, Scope: sweep.Scope, Entries: entries, Diagnostics: diagnostics,
-		Totals: tallyDispositions(entries), RetiredRefs: retiredRefs, RetiredBranches: len(retiredNames), ElapsedMS: time.Since(generatedAt).Milliseconds(),
+		Totals: tallyDispositions(entries), RetiredRefs: retiredRefs, RetiredBranches: len(retiredNames), RetiredRemoteUnavailable: retiredRemoteUnavailable, ElapsedMS: time.Since(generatedAt).Milliseconds(),
 	}, nil
 }
 
-func appendRetiredEntries(entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
+func appendRetiredEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
+	start := len(*entries)
 	count := 0
 	for _, ref := range refs {
 		if !retiredRefSelected(sweep, ref) {
@@ -344,7 +352,45 @@ func appendRetiredEntries(entries *[]BranchEntry, names map[string]bool, reposit
 		names[repository.Slug()+"|"+ref.Name] = true
 		count++
 	}
+	decorateBranchCommits(ctx, repository.Path, (*entries)[start:])
 	return count
+}
+
+// decorateBranchCommits reads metadata for one repository's selected refs in
+// one Git process. Retired list output has the same author/title fields as the
+// normal disposition path without turning a fleet count into one process per
+// ref.
+func decorateBranchCommits(ctx context.Context, repositoryPath string, entries []BranchEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	args := []string{"show", "-s", "--format=%H%x1f%an%x1f%s%x1e"}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.SHA != "" && !seen[entry.SHA] {
+			args = append(args, entry.SHA)
+			seen[entry.SHA] = true
+		}
+	}
+	if len(args) == 3 {
+		return
+	}
+	output, err := git(ctx, repositoryPath, args...)
+	if err != nil {
+		return
+	}
+	metadata := make(map[string][2]string, len(entries))
+	for _, record := range strings.Split(output, "\x1e") {
+		fields := strings.SplitN(record, "\x1f", 3)
+		if len(fields) == 3 {
+			metadata[strings.TrimSpace(fields[0])] = [2]string{strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])}
+		}
+	}
+	for index := range entries {
+		if detail, ok := metadata[entries[index].SHA]; ok {
+			entries[index].Author, entries[index].Title = detail[0], detail[1]
+		}
+	}
 }
 
 func branchEvidenceHost() string {
