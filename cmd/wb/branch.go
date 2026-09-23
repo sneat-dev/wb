@@ -326,7 +326,7 @@ in-use and therefore never a candidate.`,
 func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome) error {
 	out := command.OutOrStdout()
 	if len(outcome.Entries) == 0 {
-		if _, err := fmt.Fprintln(out, "no active branches matched"); err != nil {
+		if _, err := fmt.Fprintln(out, "no branches matched (no active branches)"); err != nil {
 			return err
 		}
 		return printRetiredBranchSummary(out, outcome)

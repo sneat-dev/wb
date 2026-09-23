@@ -265,9 +265,9 @@ func TestCwCovPrintBranchListAndDispositionTotals(t *testing.T) {
 			t.Errorf("branch list missing %q:\n%s", want, text)
 		}
 	}
-	// The repository header appears once per repository run.
-	if strings.Count(text, "acme/app") != 1 {
-		t.Errorf("repository header repeated:\n%s", text)
+	// The table prints a repository column on every row for copyable fleet output.
+	if strings.Count(text, "acme/app") != 3 {
+		t.Errorf("repository column occurrence count changed:\n%s", text)
 	}
 
 	out.Reset()

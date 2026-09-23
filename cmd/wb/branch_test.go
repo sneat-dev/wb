@@ -174,7 +174,7 @@ func TestBranchListRejectsUnsupportedScopeAndOnlyAsUsageErrors(t *testing.T) {
 	}{
 		{"bad scope", []string{"branch", "list", "--scope", "bogus", "--projects-root", t.TempDir()}, "unsupported --scope"},
 		{"bad only", []string{"branch", "list", "--only", "bogus", "--projects-root", t.TempDir()}, "unsupported --only"},
-		{"bad format", []string{"branch", "list", "--format", "yaml", "--projects-root", t.TempDir()}, "unsupported format"},
+		{"bad format", []string{"branch", "list", "--format", "toml", "--projects-root", t.TempDir()}, "unsupported format"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
