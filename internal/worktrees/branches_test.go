@@ -362,6 +362,111 @@ func TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination(t *testing.T) 
 	}
 }
 
+func TestRetiredBranchDestinationFlattensTheSourceName(t *testing.T) {
+	got := retiredBranchDestination(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC), "feature/old/name", "0123456789abcdef")
+	if got != "retired/20260923-feature-old-name-0123456789ab" {
+		t.Fatalf("destination = %q", got)
+	}
+}
+
+func TestQuarantineManifestRequiresExactIdentityAndReason(t *testing.T) {
+	_, err := validateQuarantineRequests([]BranchQuarantineRequest{{Repository: "acme/app", Ref: "feature/old", Reason: "obsolete"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateQuarantineRequests([]BranchQuarantineRequest{{Repository: "acme/app", Ref: "feature/old", SHA: "bad", Reason: "obsolete"}}); err == nil {
+		t.Fatal("invalid manifest SHA was accepted")
+	}
+	if _, err := validateQuarantineRequests([]BranchQuarantineRequest{{Repository: "acme/app", Ref: "retired/old", SHA: "0123456789012345678901234567890123456789", Reason: "obsolete"}}); err == nil {
+		t.Fatal("already retired source was accepted")
+	}
+}
+
+func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/old")
+	head := writeAndCommit(t, fixture.canonical, "old.txt", "old\n", "old branch")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	destination := "retired/20260923-feature-old-" + shortSHA(head)
+	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "feature/old", destination, head); err != nil {
+		t.Fatal(err)
+	}
+	if gitRefExists(fixture.canonical, "refs/heads/feature/old") {
+		t.Fatal("source remains after quarantine")
+	}
+	got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+destination)
+	if got != head {
+		t.Fatalf("retired head = %s, want %s", got, head)
+	}
+	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "main", destination, gitTestOutput(t, fixture.canonical, "rev-parse", "main")); err == nil {
+		t.Fatal("destination collision was accepted")
+	}
+}
+
+func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
+	fixture := newGitFixture(t)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/quarantine")
+	head := writeAndCommit(t, fixture.canonical, "quarantine.txt", "v1\n", "old branch")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	options := BranchQuarantineOptions{ProjectsRoot: fixture.projectsRoot, Repository: "acme/app", Branch: "feature/quarantine", SHA: head, Reason: "obsolete", Now: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}
+	plan, err := BranchQuarantine(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Results) != 1 || plan.Results[0].Outcome != "planned" || plan.ReportPath != "" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	options.Apply, options.ReportDir = true, filepath.Join(t.TempDir(), "receipt")
+	applied, err := BranchQuarantine(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Results[0].Outcome != "quarantined" || applied.ReportPath == "" {
+		t.Fatalf("apply = %#v", applied)
+	}
+	if _, err := os.Stat(applied.ReportPath); err != nil {
+		t.Fatalf("durable report: %v", err)
+	}
+	if gitRefExists(fixture.canonical, "refs/heads/feature/quarantine") {
+		t.Fatal("source was not quarantined")
+	}
+}
+
+func TestReserveQuarantineReportDirCreatesFreshDefaultParentAndRefusesReuse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "fresh", "reports", "branch-quarantine", "run")
+	if err := reserveQuarantineReportDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("reserved dir = %v, %v", info, err)
+	}
+	if err := reserveQuarantineReportDir(dir); err == nil {
+		t.Fatal("existing report directory was reused")
+	}
+}
+
+func TestRetiredCountHonoursExactBranchAndAgeSelectors(t *testing.T) {
+	now := time.Now()
+	sweep := branchSweepOptions{Branch: "retired/one", OlderThan: time.Hour, Now: now}
+	// The count helper's selector predicate is shared for both scopes; this
+	// table protects the no-double-count presentation contract independently of
+	// repository discovery.
+	if !retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-2 * time.Hour)}) {
+		t.Fatal("matching retired ref was excluded")
+	}
+	if retiredRefSelected(sweep, branchRef{Name: "retired/two", CommitterDate: now.Add(-2 * time.Hour)}) {
+		t.Fatal("exact branch selector was ignored")
+	}
+	if retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-time.Minute)}) {
+		t.Fatal("age selector was ignored")
+	}
+}
+
 // TestBranchCleanupDeletesOnlyContainedAndRefusesInUse is the AC-2 core: a
 // contained branch is deleted with --apply, but a branch checked out in a
 // linked worktree is never deleted even though its content is contained.

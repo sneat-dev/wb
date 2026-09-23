@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -23,12 +24,94 @@ func newBranchCmd() *cobra.Command {
 		Short: "Inventory and safely retire local and remote Git branches across the fleet",
 	}
 	command.AddCommand(newBranchListCmd())
+	command.AddCommand(newBranchCountCmd())
 	command.AddCommand(newBranchCleanupCmd())
+	command.AddCommand(newBranchQuarantineCmd())
+	return command
+}
+
+func newBranchCountCmd() *cobra.Command {
+	var base, scope, only, format, repository, org, name string
+	var olderThan time.Duration
+	command := &cobra.Command{Use: "count", Short: "Count active and retired branch refs in locally discovered clones", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
+				return err
+			}
+			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, OlderThan: olderThan, Filter: filterFlag, Repository: repository, Org: org, Name: name, Progress: command.ErrOrStderr()})
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "text":
+				return printBranchCount(command.OutOrStdout(), outcome)
+			case "json":
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(outcome)
+			case "yaml":
+				raw, err := yamlCompatibleBranchList(outcome)
+				if err != nil {
+					return err
+				}
+				_, err = command.OutOrStdout().Write(raw)
+				return err
+			default:
+				return fmt.Errorf("unsupported format %q; use text, json, or yaml", format)
+			}
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "exact origin target branch every disposition is computed against")
+	command.Flags().StringVar(&scope, "scope", "local", "local, remote, or all")
+	command.Flags().StringVar(&only, "only", "", "count only this disposition, including retired")
+	command.Flags().DurationVar(&olderThan, "older-than", 0, "count only branches at least this old")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text, json, or yaml")
+	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository selector")
+	command.Flags().StringVar(&org, "org", "", "exact repository owner selector")
+	command.Flags().StringVar(&name, "name", "", "branch-name glob, for example 'retired/*'")
+	return command
+}
+
+func newBranchQuarantineCmd() *cobra.Command {
+	var repository, branch, sha, reason, manifest, reportDir string
+	var apply bool
+	command := &cobra.Command{Use: "quarantine", Short: "Plan or locally quarantine exact old branches under retired/*", Args: cobra.NoArgs,
+		Long: "Quarantine is dry-run by default. --apply atomically creates retired/<date>-<flat-source>-<short-sha> and compare-and-deletes the exact local source SHA, recording every row in a durable report. Remote quarantine is intentionally refused until WB has equivalent peer evidence and a leased remote rename.",
+		RunE: func(command *cobra.Command, args []string) error {
+			outcome, err := worktrees.BranchQuarantine(command.Context(), worktrees.BranchQuarantineOptions{ProjectsRoot: projectsRoot, Repository: repository, Branch: branch, SHA: sha, Reason: reason, Manifest: manifest, Apply: apply, ReportDir: reportDir})
+			if err != nil {
+				return err
+			}
+			for _, result := range outcome.Results {
+				if result.Error != "" {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s: %s\n", result.Outcome, result.Ref, result.Error); err != nil {
+						return err
+					}
+				} else {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s -> %s\n", result.Outcome, result.Ref, result.Destination); err != nil {
+						return err
+					}
+				}
+			}
+			if outcome.ReportPath != "" {
+				_, err = fmt.Fprintf(command.OutOrStdout(), "report: %s\n", outcome.ReportPath)
+			}
+			return err
+		},
+	}
+	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository source")
+	command.Flags().StringVar(&branch, "branch", "", "exact local source ref")
+	command.Flags().StringVar(&sha, "sha", "", "expected source SHA (required by manifest rows)")
+	command.Flags().StringVar(&reason, "reason", "", "durable operator reason")
+	command.Flags().StringVar(&manifest, "manifest", "", "JSON manifest containing exact repository, ref, sha, and reason rows")
+	command.Flags().BoolVar(&apply, "apply", false, "perform planned local CAS renames")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "durable quarantine report directory")
 	return command
 }
 
 func newBranchListCmd() *cobra.Command {
-	var base, scope, only, format, repository, branch string
+	var base, scope, only, format, repository, branch, org, name string
+	var includeRetired bool
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "list",
@@ -36,10 +119,14 @@ func newBranchListCmd() *cobra.Command {
 		Long: `List every local and/or remote branch below --projects-root with the exact
 evidence behind its disposition.
 
-Every disposition is computed against the exact commit SHA WB fetches from
+Every disposition is computed for locally discovered canonical clones against the exact commit SHA WB fetches from
 origin/<base> during this run, never a stale local branch or tracking ref. A
 repository whose target cannot be fetched yields the unreadable disposition
 for its branches without blocking the rest of the sweep.
+
+The default --scope local inventories local refs. Use --scope remote or --scope
+all to include known origin refs; --org narrows only locally discovered
+canonical clones and never queries every repository on GitHub.
 
 Disposition is one of a closed set:
   contained   ancestor of the fetched exact target; the only one eligible for deletion
@@ -66,14 +153,15 @@ flushed per event, so a long fleet sweep never looks hung; stdout stays
 reserved for the report.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
+			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
 				return err
 			}
 			progress := command.ErrOrStderr()
 			outcome, err := worktrees.BranchList(command.Context(), worktrees.BranchListOptions{
-				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only,
+				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Only: only, Org: org,
 				OlderThan: olderThan, Filter: filterFlag, Progress: progress,
-				Repository: repository, Branch: branch,
+				Repository: repository, Branch: branch, Name: name,
+				IncludeRetired: includeRetired,
 			})
 			if err != nil {
 				return err
@@ -85,18 +173,28 @@ reserved for the report.`,
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
 				return encoder.Encode(outcome)
+			case "yaml":
+				raw, err := yamlCompatibleBranchList(outcome)
+				if err != nil {
+					return err
+				}
+				_, err = command.OutOrStdout().Write(raw)
+				return err
 			default:
-				return fmt.Errorf("unsupported format %q; use text or json", format)
+				return fmt.Errorf("unsupported format %q; use text, json, or yaml", format)
 			}
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "exact origin target branch every disposition is computed against")
 	command.Flags().StringVar(&scope, "scope", "local", "local, remote, or all")
-	command.Flags().StringVar(&only, "only", "", "show only this disposition: contained, absorbed, unique, protected, in-use, or unreadable")
+	command.Flags().StringVar(&only, "only", "", "show only this disposition: contained, absorbed, retired, unique, protected, in-use, or unreadable")
 	command.Flags().DurationVar(&olderThan, "older-than", 0, "show only branches at least this old (0 shows every age)")
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text, json, or yaml")
 	command.Flags().StringVar(&repository, "repo", "", "exact owner/repository selector")
+	command.Flags().StringVar(&org, "org", "", "exact repository owner selector")
 	command.Flags().StringVar(&branch, "branch", "", "exact branch ref selector")
+	command.Flags().StringVar(&name, "name", "", "branch-name glob, for example 'retired/*'")
+	command.Flags().BoolVar(&includeRetired, "include-retired", false, "include retired/* quarantine branches (excluded by default)")
 	return command
 }
 
@@ -228,10 +326,15 @@ in-use and therefore never a candidate.`,
 func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome) error {
 	out := command.OutOrStdout()
 	if len(outcome.Entries) == 0 {
-		_, err := fmt.Fprintln(out, "no branches matched")
-		return err
+		if _, err := fmt.Fprintln(out, "no active branches matched"); err != nil {
+			return err
+		}
+		return printRetiredBranchSummary(out, outcome)
 	}
 	currentRepository := ""
+	if _, err := fmt.Fprintln(out, "  REPOSITORY         BRANCH                           SHORT SHA    STATUS      LAST COMMIT           AUTHOR           TITLE                    SCOPE    EVIDENCE"); err != nil {
+		return err
+	}
 	for _, entry := range outcome.Entries {
 		if entry.Repository != currentRepository {
 			currentRepository = entry.Repository
@@ -239,19 +342,56 @@ func printBranchList(command *cobra.Command, outcome worktrees.BranchListOutcome
 				return err
 			}
 		}
-		age := "-"
+		date := "-"
 		if !entry.CommitterDate.IsZero() {
-			age = time.Since(entry.CommitterDate).Round(time.Hour).String() + " old"
+			date = entry.CommitterDate.UTC().Format(time.RFC3339)
 		}
-		if _, err := fmt.Fprintf(out, "  %-8s %-40s %-12s %-11s %-10s %s\n",
-			entry.Scope, entry.Branch, entry.ShortSHA, entry.Disposition, age, entry.Evidence); err != nil {
+		if _, err := fmt.Fprintf(out, "  %-18s %-32s %-12s %-11s %-21s %-16s %-24s %-8s %s\n",
+			entry.Repository, entry.Branch, entry.ShortSHA, entry.Disposition, date, entry.Author, entry.Title, entry.Scope, entry.Evidence); err != nil {
 			return err
 		}
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
 		return err
 	}
-	return printDispositionTotals(out, outcome.Totals)
+	if err := printDispositionTotals(out, outcome.Totals); err != nil {
+		return err
+	}
+	return printRetiredBranchSummary(out, outcome)
+}
+
+func printRetiredBranchSummary(out io.Writer, outcome worktrees.BranchListOutcome) error {
+	if outcome.RetiredBranches == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(out, "retired branches %d (refs local=%d remote=%d); excluded from active backlog; use --only retired or --include-retired\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	return err
+}
+
+func printBranchCount(out io.Writer, outcome worktrees.BranchListOutcome) error {
+	if _, err := fmt.Fprintln(out, "STATUS       REFS"); err != nil {
+		return err
+	}
+	if err := printDispositionTotals(out, outcome.Totals); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "retired      %d names (%d local refs, %d remote refs)\n", outcome.RetiredBranches, outcome.RetiredRefs["local"], outcome.RetiredRefs["remote"])
+	return err
+}
+
+// yamlCompatibleBranchList preserves the machine contract's JSON field names.
+// yaml.v3 does not use json tags, so marshal through JSON rather than allowing
+// generatedat-style YAML keys to drift from the JSON API.
+func yamlCompatibleBranchList(outcome worktrees.BranchListOutcome) ([]byte, error) {
+	data, err := json.Marshal(outcome)
+	if err != nil {
+		return nil, err
+	}
+	var document any
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(document)
 }
 
 func printDispositionTotals(out io.Writer, totals map[string]int) error {

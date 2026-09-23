@@ -102,16 +102,49 @@ retirement, and the same durable audit-report discipline.
 
 #### REQ: top-level-branch-family
 
-WB MUST expose a top-level `wb branch` command family with exactly two public
-leaves in this feature: `wb branch list` and `wb branch cleanup`. The family
+WB MUST expose a top-level `wb branch` command family with `wb branch list`,
+`wb branch count`, `wb branch cleanup`, and `wb branch quarantine`. The family
 MUST NOT be nested under `wb worktree`, and `wb worktree cleanup` MUST NOT gain
 a branch-scope or remote-only flag.
 
 `wb branch list` flags: `--base` (string, default `main`), `--scope` (string,
 one of `local`, `remote`, `all`; default `local`), `--only` (string, one
 disposition name), `--older-than` (duration, default `0`), `--format` (string,
-`text` or `json`; default `text`). It MUST accept the root `--filter` and
+`text`, `json`, or `yaml`; default `text`), exact `--repo`, exact `--org`, and
+`--include-retired`, and `--name` branch-name glob (for example
+`'retired/*'`). It MUST accept the root `--filter` and
 `--projects-root` flags.
+
+`wb branch list` inventories locally discovered canonical clones only (and
+their known remote refs); `--org` is an exact owner selector over that local
+inventory, never a GitHub-wide organization query. Retired refs are excluded
+from the active backlog by default, but their local/remote ref counts and
+distinct branch-name count remain visible; `--only retired` lists them.
+
+`wb branch count` shares the exact one-pass `wb branch list` inventory and
+selectors (`--org`, `--repo`, `--scope`, `--only`, `--name`, and `--older-than`) but
+renders concise active-disposition and retired-ref counts. It must not launch a
+second fleet sweep. JSON and YAML preserve the same machine-readable outcome.
+
+`wb branch quarantine` accepts one exact local `--repo`, `--branch`, optional
+`--sha`, and required `--reason`, or a JSON `--manifest` whose every row names
+exact repository, ref, SHA, and reason. It plans by default. Under `--apply`
+it atomically moves each proven-safe local source to
+`retired/<UTC-date>-<flat-source>-<short-SHA>` and writes a durable per-row
+receipt. Remote quarantine is refused until equivalent remote peer proof and
+leased mutation exist.
+
+This local-only command does not retire worktrees, Work Logs, or remote refs.
+The remote-retirement follow-up will persist original path/ref/SHA, pull-request
+state, operator reason, and WB receipts in a recovery manifest. Its archive
+target is a WB-configured private retirement repository per organization, never
+a universal hard-coded name (for example, `sneat-co/backstage-retired`). Before
+`wb worktree cleanup`, that follow-up must archive worktree metadata and Work
+Log pointers there and verify the archive commit reached its remote. Sensitive
+or bulky logs remain in the configured private archive; Backstage carries only
+a summary and index, never raw logs. The configured retirement repository is
+private by default; WB must verify that privacy before writing. A public target
+fails closed unless an explicit policy authorizes it.
 
 `wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,
