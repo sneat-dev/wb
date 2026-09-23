@@ -20,7 +20,7 @@ default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
 archived repositories unless `--temporarily-unarchive` is explicit, open source-branch pull requests, divergent targets,
 protection/rules impacts, and concrete workflow references to the old
-branch. `--migrate-pages-source` admits only a legacy Pages source on the observed default branch with path `/` or `/docs`; it preserves that path and verifies it after the branch migration. Every other Pages source remains an exception row. Repositories without an initial commit are also exception rows, even
+branch. `--migrate-pages-source` admits a legacy Pages source on the observed default branch with path `/` or `/docs`, preserving and verifying that path after branch migration. It also repairs an already-`main` default only when its Pages source is legacy `master` with one of those paths. Every other Pages source remains an exception row. Repositories without an initial commit are also exception rows, even
 when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
 blindly.
 
