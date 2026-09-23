@@ -795,7 +795,13 @@ func defaultBranchMigrationActionsVerified(repository defaultBranchRepository) b
 // action list ends with the restored-archive checkpoint.
 func defaultBranchVerifiedMigrationReceipt(previous, current defaultBranchRepository) bool {
 	if previous.Archive == nil {
-		return !previous.Archived && !current.Archived && defaultBranchMigrationActionsVerified(previous)
+		if previous.Archived || current.Archived {
+			return false
+		}
+		if previous.PagesBefore != nil {
+			return defaultBranchVerifiedPagesMigrationReceipt(previous, current)
+		}
+		return defaultBranchMigrationActionsVerified(previous)
 	}
 	transition := previous.Archive
 	if previous.RepositoryID <= 0 || current.RepositoryID != previous.RepositoryID || previous.Archived != current.Archived || !previous.Archived || previous.Fork != current.Fork ||
@@ -808,6 +814,21 @@ func defaultBranchVerifiedMigrationReceipt(previous, current defaultBranchReposi
 	base := previous
 	base.Actions = append([]string(nil), previous.Actions[:len(previous.Actions)-1]...)
 	return defaultBranchMigrationActionsVerified(base)
+}
+
+func defaultBranchVerifiedPagesMigrationReceipt(previous, current defaultBranchRepository) bool {
+	before, after, observed := previous.PagesBefore, previous.PagesAfter, current.PagesAfter
+	if previous.RepositoryID <= 0 || previous.RepositoryID != current.RepositoryID || previous.PagesPhase != "verified" || before == nil || after == nil || observed == nil || *after != *observed || before.BuildType != "legacy" || before.Branch != previous.ObservedDefault || !validDefaultBranchPagesPath(before.Path) || after.BuildType != "legacy" || after.Branch != previous.Desired || after.Path != before.Path {
+		return false
+	}
+	base := []string{"renamed " + previous.ObservedDefault + " to " + previous.Desired, "verified default branch and head"}
+	if previous.TargetExists {
+		base[0] = "set default branch to existing same-SHA " + previous.Desired
+	}
+	if previous.PagesAccepted {
+		return slicesEqual(previous.Actions, append(base, "migrated Pages source to "+previous.Desired+" with path "+before.Path, "verified Pages source"))
+	}
+	return previous.ObservedDefault == "master" && previous.Desired == "main" && slicesEqual(previous.Actions, append(base, "verified GitHub automatic Pages source transition to main with path "+before.Path))
 }
 
 func slicesEqual(left, right []string) bool {
@@ -1254,6 +1275,7 @@ func inspectDefaultBranchPagesAtDesired(ctx context.Context, result *defaultBran
 		return
 	}
 	if pages.BuildType == "legacy" && pages.Branch == meta.DefaultBranch && validDefaultBranchPagesPath(pages.Path) {
+		result.PagesAfter = &pages
 		result.Disposition = "compliant"
 		return
 	}

@@ -2844,6 +2844,42 @@ func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchResumeSourceRequiresTerminalPagesProof(t *testing.T) {
+	sha := "2d2c113d93c2309584499baf511bfa26db66dbee"
+	before := &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"}
+	after := &defaultBranchPagesSource{BuildType: "legacy", Branch: "main", Path: "/"}
+	current := defaultBranchRepository{Repository: "angular-dnd/angular-dnd.github.io", RepositoryID: 263838803, ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Disposition: "compliant", PagesAfter: after}
+	verified := defaultBranchRepository{Repository: current.Repository, RepositoryID: current.RepositoryID, Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, RenameAccepted: true, PagesBefore: before, PagesAfter: after, PagesPhase: "verified", Actions: []string{"renamed master to main", "verified default branch and head", "verified GitHub automatic Pages source transition to main with path /"}}
+	receipt := &defaultBranchReport{Repositories: []defaultBranchRepository{verified}}
+	if source, head, reason := defaultBranchResumeSource(receipt, current); source != "master" || head != sha || reason != "" {
+		t.Fatalf("verified Pages resume = %q %q %q", source, head, reason)
+	}
+	for name, mutate := range map[string]func(*defaultBranchRepository, *defaultBranchRepository){
+		"unfinished Pages":        func(p, _ *defaultBranchRepository) { p.PagesPhase = "prepared" },
+		"missing Pages post-read": func(p, _ *defaultBranchRepository) { p.PagesAfter = nil },
+		"changed current path": func(_, c *defaultBranchRepository) {
+			c.PagesAfter = &defaultBranchPagesSource{BuildType: "legacy", Branch: "main", Path: "/docs"}
+		},
+		"wrong repository ID": func(_, c *defaultBranchRepository) { c.RepositoryID++ },
+		"forged action": func(p, _ *defaultBranchRepository) {
+			p.Actions = []string{"renamed master to main", "verified default branch and head"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			priorCopy, currentCopy := verified, current
+			mutate(&priorCopy, &currentCopy)
+			if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{priorCopy}}, currentCopy); source != "" || head != "" || reason == "" {
+				t.Fatalf("unverified Pages resume = %q %q %q", source, head, reason)
+			}
+		})
+	}
+	verified.PagesAccepted = true
+	verified.Actions = []string{"renamed master to main", "verified default branch and head", "migrated Pages source to main with path /", "verified Pages source"}
+	if source, head, reason := defaultBranchResumeSource(&defaultBranchReport{Repositories: []defaultBranchRepository{verified}}, current); source != "master" || head != sha || reason != "" {
+		t.Fatalf("verified Pages PUT resume = %q %q %q", source, head, reason)
+	}
+}
+
 func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	current := defaultBranchRepository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Archived: true, Fork: true}
