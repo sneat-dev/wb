@@ -34,6 +34,7 @@ type RetireOptions struct {
 	Inspect          RetiredArchiveInspector
 	ArchiveRemote    string
 	OpenPullRequests func(context.Context, string, string, string) (bool, error)
+	RemoteOwnership  func(context.Context, string) error
 	afterPhase       func(string) error // deterministic interruption point for integration tests
 }
 
@@ -121,6 +122,12 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if archivePlan.Outcome != "planned" {
 		return RetireResult{}, fmt.Errorf("retirement refused: %s", archivePlan.Refusal)
 	}
+	if options.RemoteOwnership == nil {
+		return RetireResult{}, fmt.Errorf("retirement requires an authoritative remote owner check")
+	}
+	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
+		return RetireResult{}, fmt.Errorf("retirement remote owner preflight: %w", err)
+	}
 	if options.ArchiveRemote == "" {
 		options.ArchiveRemote = "git@github.com:" + archivePlan.ArchiveRepository + ".git"
 	}
@@ -171,6 +178,9 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	defer task.lock.release()
 	if err := task.validate(); err != nil {
 		return RetireResult{}, err
+	}
+	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
+		return RetireResult{}, fmt.Errorf("retirement remote owner recheck: %w", err)
 	}
 	heldWorktree, err := openCleanupWorktree(task, CleanupResult{ListResult: entry})
 	if err != nil {
@@ -328,6 +338,9 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	}
 	if err := retireCheckPR(ctx, entry, options); err != nil {
 		return result, err
+	}
+	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
+		return result, fmt.Errorf("retirement remote owner final recheck: %w", err)
 	}
 	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
 		return result, err
@@ -502,6 +515,12 @@ func retireResumeRemoved(ctx context.Context, home string, options RetireOptions
 	defer task.lock.release()
 	if err := task.validate(); err != nil {
 		return result, err
+	}
+	if options.RemoteOwnership == nil {
+		return result, fmt.Errorf("retirement requires an authoritative remote owner check")
+	}
+	if err := options.RemoteOwnership(ctx, options.Task); err != nil {
+		return result, fmt.Errorf("retirement remote owner recheck: %w", err)
 	}
 	if err := retireVerifyReceipts(ctx, result.Canonical, options.ArchiveRemote, result); err != nil {
 		return result, err

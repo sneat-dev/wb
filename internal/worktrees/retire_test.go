@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+func retireAllowRemoteOwner(context.Context, string) error { return nil }
+
 func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	fixture := newGitFixture(t)
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
@@ -29,6 +31,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 	options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-demo", ArchiveRemote: archive,
+		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 		},
@@ -103,6 +106,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 			options := RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-resume", ArchiveRemote: archive, Apply: true,
+				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 					return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 				},
@@ -162,6 +166,7 @@ func TestRetirePreservesUnpushedCommits(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-ahead", ArchiveRemote: archive, Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 		},
@@ -204,6 +209,7 @@ func TestRetireRefusesIgnoredFilesAndUntrackedSymlinksBeforeStaging(t *testing.T
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 			_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-extra", ArchiveRemote: archive, Apply: true,
+				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 					return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 				},
@@ -228,6 +234,7 @@ func TestRetireRefusesPublicArchiveBeforeMutation(t *testing.T) {
 	worktree := created[0].WorktreeDir
 	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
 	_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-public", Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: false, Repository: repository}, nil
 		},
@@ -267,6 +274,7 @@ func TestRetireRefusesOpenPRSecretPathAndHookFailure(t *testing.T) {
 			archive := filepath.Join(t.TempDir(), "archive.git")
 			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 			_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-refusal", ArchiveRemote: archive, Apply: true,
+				RemoteOwnership: retireAllowRemoteOwner,
 				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 					return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 				},
@@ -310,6 +318,7 @@ func TestRetireCommitsDeletionOnlySourceChange(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "archive.git")
 	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
 	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-deletion", ArchiveRemote: archive, Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 		},
@@ -345,6 +354,7 @@ func TestRetireRefusesChangedOriginalRemote(t *testing.T) {
 	gitTest(t, writer, "commit", "-m", "remote moved")
 	gitTest(t, writer, "push", "origin", "retire-moved")
 	_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-moved", Apply: true,
+		RemoteOwnership: retireAllowRemoteOwner,
 		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 		},
@@ -352,5 +362,47 @@ func TestRetireRefusesChangedOriginalRemote(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "remote branch moved") {
 		t.Fatalf("changed ref error: %v", err)
+	}
+}
+
+func TestRetireRechecksRemoteOwnerBeforeSourceMutation(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-owner", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "push", "-u", "origin", "retire-owner")
+	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(worktree, "pending.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	checks := 0
+	_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-owner", ArchiveRemote: archive, Apply: true,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+		RemoteOwnership: func(context.Context, string) error {
+			checks++
+			if checks == 2 {
+				return errors.New("remote VM claimed task")
+			}
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote VM claimed task") || checks != 2 {
+		t.Fatalf("owner recheck: checks=%d err=%v", checks, err)
+	}
+	if head := gitTestOutput(t, worktree, "rev-parse", "HEAD"); head != before {
+		t.Fatalf("source moved despite remote owner refusal: %s", head)
+	}
+	if staged := gitTestOutput(t, worktree, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("source staged despite remote owner refusal: %s", staged)
+	}
+	if refs := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retired/*"); refs != "" {
+		t.Fatalf("source published despite remote owner refusal: %s", refs)
 	}
 }

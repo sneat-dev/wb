@@ -194,6 +194,9 @@ local-only.
 hold the task lock and refuse a competing live claim, an open pull request,
 a changed source or remote ref, a secret-looking source commit path, or a
 missing, public, mismatched, or unavailable private archive target. It MUST
+read the configured remote task claims and machine snapshots before planning,
+recheck them under the task lock and before original-ref deletion, and refuse
+when another machine holds the task or the remote state cannot be read. It MUST
 commit tracked and nonignored untracked source changes on the original branch
 with hooks enabled, create the deterministic retired source ref, and commit
 actual plain Work Log and checkout metadata files to the configured private
@@ -202,6 +205,8 @@ WB MUST verify both remote refs and the archive file digests before deleting
 the original remote ref with an exact SHA lease. It MUST then remove the local
 worktree and branch while retaining the retired source ref. An interrupted
 apply MUST resume from its durable receipt and recheck remote identities.
+After the last repository is removed, WB MUST release its remote task claim;
+a failed release MUST be reported as a partial completion.
 
 `wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +27,9 @@ remote ref with an exact lease and remove the local checkout and branch.
 An open pull request, changed remote ref, competing claim, or unavailable or
 public retirement repository refuses retirement. Retry the same command to
 resume an interrupted apply. A coordinated task with multiple repositories
-must be retired one repository at a time with --filter.`,
+must be retired one repository at a time with --filter. The configured remote
+task store must be readable; WB checks claims and machine snapshots before
+planning, again under the task lock, and before deleting the original ref.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if jsonShortcut {
@@ -43,21 +46,34 @@ must be retired one repository at a time with --filter.`,
 			result, err := worktrees.Retire(command.Context(), worktrees.RetireOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Repository: filterFlag,
 				Message: message, Apply: apply,
+				RemoteOwnership: func(ctx context.Context, task string) error {
+					return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), projectsRoot, task)
+				},
 			})
 			if err != nil {
 				return err
 			}
+			var releaseLeaked bool
 			if apply && result.Phase == "complete" {
-				retireReleaseClaim(command.Context(), projectsRoot, args[0], remoteClaimWriter(command), worktrees.ListWithDiagnostics,
+				releaseResult := retireReleaseClaim(command.Context(), projectsRoot, args[0], remoteClaimWriter(command), worktrees.ListWithDiagnostics,
 					func(root, task string, out io.Writer) autoReleaseResult {
 						return tryAutoRelease(defaultRemoteDeps(), root, task, out)
 					})
+				releaseLeaked = releaseResult.Leaked()
 			}
 			if format == "json" {
-				return json.NewEncoder(command.OutOrStdout()).Encode(result)
+				if err := json.NewEncoder(command.OutOrStdout()).Encode(result); err != nil {
+					return err
+				}
+			} else {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s -> %s (archive %s, phase %s)\n", result.Task, result.Repository, result.Branch, result.RetiredRef, result.ArchiveRef, result.Phase); err != nil {
+					return err
+				}
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "%s %s %s -> %s (archive %s, phase %s)\n", result.Task, result.Repository, result.Branch, result.RetiredRef, result.ArchiveRef, result.Phase)
-			return err
+			if releaseLeaked {
+				return fmt.Errorf("task %q retirement completed but remote claim release failed", args[0])
+			}
+			return nil
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "apply the verified retirement plan")
@@ -65,6 +81,48 @@ must be retired one repository at a time with --filter.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonShortcut, "json", false, "shorthand for --format=json")
 	return command
+}
+
+// Retirement requires a fresh remote store read. A missing configuration or
+// unreadable snapshot cannot prove that another machine has released the task.
+func retireCheckRemoteOwnership(ctx context.Context, deps remoteDeps, root, task string) error {
+	cfg, provider, err := loadRemote(deps, root)
+	if err != nil {
+		return fmt.Errorf("load remote task ownership: %w", err)
+	}
+	login, err := deps.login()
+	if err != nil {
+		return fmt.Errorf("determine remote task owner: %w", err)
+	}
+	if login == "" {
+		return fmt.Errorf("determine remote task owner: empty login")
+	}
+	status, err := remotestate.ReadStatus(ctx, provider)
+	if err != nil {
+		return fmt.Errorf("read remote task ownership: %w", err)
+	}
+	for _, claim := range status.Claims {
+		if claim.Error != "" {
+			return fmt.Errorf("remote claim %s is unreadable: %s", claim.Claim.Task, claim.Error)
+		}
+		if claim.Claim.Task != task {
+			continue
+		}
+		if claim.Claim.Login != login || claim.Claim.Machine != cfg.Machine {
+			return fmt.Errorf("task %s has competing remote claim held by %s", task, claim.Claim.Holder())
+		}
+	}
+	for _, machine := range status.Machines {
+		if machine.Error != "" {
+			return fmt.Errorf("unreadable remote machine snapshot for %s: %s", machine.Snapshot.Key(), machine.Error)
+		}
+		for _, checkout := range machine.Snapshot.Worktrees {
+			if checkout.Task == task && (machine.Snapshot.Login != login || machine.Snapshot.Machine != cfg.Machine) {
+				return fmt.Errorf("task %s has competing remote checkout on %s", task, machine.Snapshot.Key())
+			}
+		}
+	}
+	return nil
 }
 
 // A filtered retirement ends only one checkout. Retain the shared task claim
@@ -75,13 +133,17 @@ func retireReleaseClaim(ctx context.Context, root, task string, out io.Writer,
 ) autoReleaseResult {
 	remaining, err := inventory(ctx, worktrees.ListOptions{ProjectsRoot: root, Task: task, Workers: 1})
 	if err != nil {
-		return skippedAutoRelease(out, "cannot inventory remaining task worktrees: "+err.Error())
+		return failedAutoRelease(out, task, "cannot inventory remaining task worktrees: "+err.Error())
 	}
 	if len(remaining.Diagnostics) != 0 {
-		return skippedAutoRelease(out, fmt.Sprintf("%d malformed task worktree records remain", len(remaining.Diagnostics)))
+		return failedAutoRelease(out, task, fmt.Sprintf("%d malformed task worktree records remain", len(remaining.Diagnostics)))
 	}
 	if len(remaining.Results) != 0 {
 		return skippedAutoRelease(out, fmt.Sprintf("%d task worktrees remain", len(remaining.Results)))
 	}
-	return release(root, task, out)
+	result := release(root, task, out)
+	if result.Outcome != "released" && result.Outcome != "noop" && !result.Leaked() {
+		return failedAutoRelease(out, task, "remote claim release outcome: "+result.Outcome+" "+result.Detail)
+	}
+	return result
 }
