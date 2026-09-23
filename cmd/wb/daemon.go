@@ -2541,16 +2541,46 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), line)
 	}
 	errorsCh := make(chan error, 4)
-	go func() { errorsCh <- server.Serve(listener) }()
-	go func() { errorsCh <- rpcServer.Serve(localListener) }()
-	go func() { errorsCh <- fileBridge.Serve(ctx) }()
+	go func() { errorsCh <- classifyServeResult(server.Serve(listener)) }()
+	go func() { errorsCh <- classifyServeResult(rpcServer.Serve(localListener)) }()
+	go func() { errorsCh <- classifyServeResult(fileBridge.Serve(ctx)) }()
 	go func() {
 		if err := daemonRuntimeGuard(command.ErrOrStderr(), ctx, address, store, state, ownerToken); err != nil {
 			errorsCh <- err
 		}
 	}()
-	err = <-errorsCh
-	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+	return awaitDaemonServeResult(<-errorsCh)
+}
+
+// errCleanDaemonShutdown is the single sentinel every serving goroutine's
+// benign shutdown outcome is normalized to (see classifyServeResult), so
+// serveDashboard returns nil down exactly one code path no matter which
+// goroutine's result the select above happens to read first.
+var errCleanDaemonShutdown = errors.New("daemon: clean shutdown")
+
+// classifyServeResult normalizes the three benign outcomes a serving
+// goroutine can report once ctx is cancelled — nil (fileBridge.Serve, which
+// already treats ctx.Done as success), http.ErrServerClosed, and
+// net.ErrClosed (both from server.Serve/rpcServer.Serve after Shutdown or
+// listener.Close) — to errCleanDaemonShutdown. Which of the serving
+// goroutines finishes first after cancellation is decided by OS scheduling;
+// without this normalization, the "clean shutdown" branch in
+// awaitDaemonServeResult was only taken when an HTTP server happened to win
+// that race, not when fileBridge.Serve's already-nil result did. Any other
+// error is returned unchanged, so a real serve failure still propagates
+// exactly as before.
+func classifyServeResult(err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		return errCleanDaemonShutdown
+	}
+	return err
+}
+
+// awaitDaemonServeResult reduces the first classified result read from
+// errorsCh to serveDashboard's return value: nil after a clean shutdown,
+// the original error otherwise.
+func awaitDaemonServeResult(err error) error {
+	if errors.Is(err, errCleanDaemonShutdown) {
 		return nil
 	}
 	return err
