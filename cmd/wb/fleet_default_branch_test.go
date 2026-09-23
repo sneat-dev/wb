@@ -1093,6 +1093,82 @@ func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
 	}
 }
 
+// TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames exercises
+// the complete successful local recovery against a real bare origin. The
+// canonical clone starts on master at an ancestor of origin/main, exactly the
+// state left by a previously renamed remote default branch.
+func TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames(t *testing.T) {
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed")
+	origin := filepath.Join(root, "origin.git")
+	canonical := filepath.Join(root, "canonical")
+	for _, directory := range []string{seed, canonical} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scratchGit(t, seed, "init", "-q", "-b", "master")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scratchGit(t, seed, "add", "README.md")
+	scratchGit(t, seed, "commit", "-qm", "base")
+	base := scratchGit(t, seed, "rev-parse", "HEAD")
+	scratchGit(t, root, "init", "-q", "--bare", "--initial-branch=main", origin)
+	scratchGit(t, seed, "remote", "add", "origin", origin)
+	scratchGit(t, seed, "push", "-q", "origin", "master:main")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("first\nsecond\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scratchGit(t, seed, "commit", "-am", "advance remote main")
+	scratchGit(t, seed, "push", "-q", "origin", "master:main")
+	remoteHead := scratchGit(t, origin, "rev-parse", "refs/heads/main")
+
+	scratchGit(t, root, "clone", "-q", origin, canonical)
+	scratchGit(t, canonical, "checkout", "-q", "-b", "master", base)
+	scratchGit(t, canonical, "branch", "-D", "main")
+
+	repository := defaultBranchRepository{Repository: "acme/app", Desired: "main"}
+	entry := defaultBranchCanonical{Path: canonical}
+	checkpoints := 0
+	if err := reconcileDefaultBranchCanonical(context.Background(), &repository, &entry, "master", remoteHead, func() error {
+		checkpoints++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Disposition != "compliant" {
+		t.Fatalf("disposition = %q, want compliant: %#v", entry.Disposition, entry)
+	}
+	if got, want := strings.Join(entry.Actions, " | "), "fast-forwarded local master to origin/main | renamed local master to main | set upstream to origin/main"; got != want {
+		t.Fatalf("actions = %q, want %q", got, want)
+	}
+	if checkpoints != 5 {
+		t.Fatalf("checkpoints = %d, want 5", checkpoints)
+	}
+	for _, ref := range []string{"HEAD", "main", "origin/main"} {
+		if got := scratchGit(t, canonical, "rev-parse", ref); got != remoteHead {
+			t.Fatalf("%s = %s, want %s", ref, got, remoteHead)
+		}
+	}
+	if got := scratchGit(t, canonical, "branch", "--show-current"); got != "main" {
+		t.Fatalf("current branch = %q, want main", got)
+	}
+	if got := scratchGit(t, canonical, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); got != "origin/main" {
+		t.Fatalf("upstream = %q, want origin/main", got)
+	}
+	if output, err := exec.Command("git", "-C", canonical, "show-ref", "--verify", "--quiet", "refs/heads/master").CombinedOutput(); err == nil {
+		t.Fatalf("local master remains after reconciliation: %s", output)
+	}
+	if got := scratchGit(t, origin, "rev-parse", "refs/heads/main"); got != remoteHead {
+		t.Fatalf("origin/main changed from %s to %s", remoteHead, got)
+	}
+	if output, err := exec.Command("git", "-C", origin, "show-ref", "--verify", "--quiet", "refs/heads/master").CombinedOutput(); err == nil {
+		t.Fatalf("origin master was created: %s", output)
+	}
+}
+
 func TestDefaultBranchGitRunsAndReportsFailures(t *testing.T) {
 	dir := t.TempDir()
 	command := exec.Command("git", "init", "-q")
