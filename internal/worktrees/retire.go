@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 // RetireOptions selects one WB-managed checkout. Inspector and ArchiveRemote
