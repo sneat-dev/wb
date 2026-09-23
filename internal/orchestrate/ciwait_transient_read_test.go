@@ -149,3 +149,74 @@ echo "unexpected gh args: $*" >&2; exit 30
 		t.Fatalf("evidence = %#v, want github_read_retries recorded on the ci-wait result the same way LandPullRequest already records it", result.Evidence)
 	}
 }
+
+// TestWaitForCommitChecksTreatsExhaustedTransientPullRequestIdentityReadAsPendingNotFailed
+// forces the candidate (pull-request) branch's own read of the pull request's
+// exact head and target to exhaust its in-process transient-retry budget
+// every single time, deterministically driving the `if reason != ""` pending
+// branch right after pullRequestIdentity inside WaitForCommitChecks — a
+// statement CI's own flaky-coverage sweep found covered on only 1 of 8 runs
+// because the only prior coverage of it came from an accidental real
+// transient failure racing the slice deadline, not from a test built to hit
+// it. This test hits it on every run instead of relying on that race.
+func TestWaitForCommitChecksTreatsExhaustedTransientPullRequestIdentityReadAsPendingNotFailed(t *testing.T) {
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
+  kill -9 $$
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want pending after exhausting in-process retries reading the pull request's exact identity", result)
+	}
+	if !strings.Contains(result.Reason, "resume the same exact target identity") {
+		t.Fatalf("reason = %q, want resumable guidance", result.Reason)
+	}
+}
+
+// TestWaitForCommitChecksTreatsExhaustedTransientCandidateAncestryReadAsPendingNotFailed
+// lets the pull-request identity read and the exact target-head read both
+// succeed, then forces the candidate branch's read proving the candidate
+// contains the current target (the `/compare/` ancestry check) to exhaust
+// its in-process transient-retry budget every single time. This
+// deterministically drives the third `if reason != ""` pending branch inside
+// WaitForCommitChecks's candidate path (right after candidateContainsTarget)
+// — flaky-coverage sweep found it covered on only 6 of 8 runs for the same
+// reason as the sibling test above.
+func TestWaitForCommitChecksTreatsExhaustedTransientCandidateAncestryReadAsPendingNotFailed(t *testing.T) {
+	installTransientReadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
+  echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"`+rereadTestHead+`","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/'; then
+  kill -9 $$
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPending {
+		t.Fatalf("result = %+v, want pending after exhausting in-process retries proving candidate ancestry against the target", result)
+	}
+	if !strings.Contains(result.Reason, "resume the same exact target identity") {
+		t.Fatalf("reason = %q, want resumable guidance", result.Reason)
+	}
+	if result.ObservedTargetHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("ObservedTargetHead = %q, want the matched exact target head to have already been recorded", result.ObservedTargetHead)
+	}
+}
