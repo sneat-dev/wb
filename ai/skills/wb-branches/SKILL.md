@@ -37,6 +37,15 @@ Use `--scope remote` or `--scope all` to include known remote refs. Retired
 refs are excluded from active totals, reported separately, and can be selected
 with `--only retired` or `--name 'retired/*'`.
 
+A retired-only selector takes a bounded namespace inventory. With `--scope
+local`, it reads only local `refs/heads/retired/*` and works offline; it does
+not fetch `origin/main`. With `--scope remote` or `all`, WB refreshes only
+`origin`'s `retired/*` namespace before reading its tracking refs, so the
+remote number is current without a full branch or base-target fetch. The
+report records that the base fetch was skipped; if the scoped remote refresh
+fails, diagnostics and `retired_remote_unavailable` make the remote count
+explicitly unknown rather than a cached zero.
+
 ## Local quarantine
 
 `wb branch quarantine` is a deliberate local-only rename into `retired/*`.
