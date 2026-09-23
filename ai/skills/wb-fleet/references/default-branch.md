@@ -11,6 +11,7 @@ wb fleet default-branch --all-orgs --format json
 wb fleet default-branch --all-orgs --apply --report-dir reports/default-branch
 wb fleet default-branch --repo acme/app --apply --reconcile-from reports/default-branch/previous.json --reconcile-sha256 <sha256>
 wb fleet default-branch --repo acme/app --apply --temporarily-unarchive
+wb fleet default-branch --repo acme/app --branch main --migrate-pages-source --apply
 wb fleet default-branch --repo acme/app --apply --restore-archive-from reports/default-branch/partial.json --restore-archive-sha256 <sha256>
 ```
 
@@ -18,8 +19,8 @@ Apply writes a durable report before every mutation and verifies the observed
 default branch and head afterwards. Forks are eligible only after WB queries
 the parent repository for outgoing source-branch pull requests. It refuses
 archived repositories unless `--temporarily-unarchive` is explicit, open source-branch pull requests, divergent targets,
-Pages/protection/rules impacts, and concrete workflow references to the old
-branch. Repositories without an initial commit are also exception rows, even
+protection/rules impacts, and concrete workflow references to the old
+branch. `--migrate-pages-source` admits a legacy Pages source on the observed default branch with path `/` or `/docs`, preserving and verifying that path after branch migration. It also repairs an already-`main` default only when its Pages source is legacy `master` with one of those paths. Every other Pages source remains an exception row. Repositories without an initial commit are also exception rows, even
 when GitHub advertises a default-branch name. The report is the exception queue; WB never rewrites workflow strings
 blindly.
 

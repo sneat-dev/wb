@@ -32,7 +32,7 @@ func (writer *defaultBranchFailWriter) Write(value []byte) (int, error) {
 
 func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	command := newFleetDefaultBranchCmd()
-	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
+	for _, name := range []string{"apply", "branch", "org", "repo", "user", "all-orgs", "parallel", "report-dir", "reconcile-from", "reconcile-sha256", "temporarily-unarchive", "migrate-pages-source", "restore-archive-from", "restore-archive-sha256", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}
@@ -50,6 +50,266 @@ func TestFleetDefaultBranchHelpAndPolicyPrecedence(t *testing.T) {
 	}
 	if got := effectiveDefaultBranch("release", cfg, "legacy"); got != "release" {
 		t.Fatalf("explicit default = %q", got)
+	}
+}
+
+func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.T) {
+	for _, sourcePath := range []string{"/", "/docs"} {
+		t.Run("migrates "+sourcePath, func(t *testing.T) {
+			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			defaultBranchPagesFixture(t, sourcePath, "legacy", "master", false, false)
+			planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			if planned.Disposition != "drift" || planned.PagesBefore == nil || planned.PagesBefore.Path != sourcePath {
+				t.Fatalf("plan = %#v", planned)
+			}
+			renamed := applyDefaultBranchWithCheckpoint(context.Background(), planned, func(defaultBranchRepository) error { return nil })
+			result := applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(defaultBranchRepository) error { return nil })
+			if result.Disposition != "compliant" || !defaultBranchPagesTerminal(result) || result.PagesAfter.Path != sourcePath {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+	for name, test := range map[string]struct{ buildType, branch string }{
+		"workflow":       {"workflow", "master"},
+		"foreign source": {"legacy", "release"},
+		"unknown path":   {"legacy", "master"},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			path := "/"
+			if name == "unknown path" {
+				path = "/site"
+			}
+			defaultBranchPagesFixture(t, path, test.buildType, test.branch, false, false)
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			if result.Disposition != "blocked" || !strings.Contains(result.Error, "pages source") {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismatch(t *testing.T) {
+	for name, test := range map[string]struct{ changedBeforeWrite, postWriteMismatch bool }{
+		"changed source":      {changedBeforeWrite: true},
+		"post-write mismatch": {postWriteMismatch: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+			t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+			defaultBranchPagesFixture(t, "/", "legacy", "master", test.changedBeforeWrite, test.postWriteMismatch)
+			planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+			renamed := applyDefaultBranchWithCheckpoint(context.Background(), planned, func(defaultBranchRepository) error { return nil })
+			result := applyDefaultBranchPagesWithCheckpoint(context.Background(), renamed, func(defaultBranchRepository) error { return nil })
+			if result.Disposition != "error" || defaultBranchPagesTerminal(result) {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t *testing.T) {
+	originalRead := defaultBranchRead
+	t.Cleanup(func() { defaultBranchRead = originalRead })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"master","path":"/"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, true)
+	if result.Disposition != "drift" || result.PagesBefore == nil || result.PagesPhase != "unfinished" || !strings.Contains(result.Error, "unfinished") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing.T) {
+	originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+	t.Cleanup(func() {
+		defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+	})
+	projectsRoot = t.TempDir()
+	config := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchConfigPath = func() string { return config }
+	source, mutations, renames := "master", 0, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pages":
+			return []byte(`{"build_type":"legacy","source":{"branch":"` + source + `","path":"/docs"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		got := strings.Join(args, " ")
+		if strings.Contains(got, "/rename") {
+			renames++
+			return githubobserver.CommandResponse{Err: errors.New("rename must not run")}
+		}
+		if got != "api --method PUT repos/acme/app/pages -f source[branch]=main -f source[path]=/docs" {
+			return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + got)}
+		}
+		source = "main"
+		return githubobserver.CommandResponse{}
+	}
+	report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := report.Repositories[0]
+	if mutations != 1 || renames != 0 || got.Disposition != "compliant" || got.PagesPhase != "verified" || len(got.CanonicalClones) != 0 {
+		t.Fatalf("report=%#v mutations=%d renames=%d", got, mutations, renames)
+	}
+}
+
+func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"trunk"}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutated := false
+	defaultBranchExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "same", Disposition: "drift", PagesBefore: &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "unfinished"}
+	result := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(defaultBranchRepository) error { return nil })
+	if result.Disposition != "error" || mutated {
+		t.Fatalf("result=%#v mutated=%t", result, mutated)
+	}
+}
+
+func TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges(t *testing.T) {
+	originalRead, originalExecute := defaultBranchRead, defaultBranchExecute
+	t.Cleanup(func() { defaultBranchRead, defaultBranchExecute = originalRead, originalExecute })
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"main"}`), nil
+		case "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"advanced"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	mutated := false
+	defaultBranchExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+		mutated = true
+		return githubobserver.CommandResponse{}
+	}
+	repo := defaultBranchRepository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "planned", Disposition: "drift", PagesBefore: &defaultBranchPagesSource{BuildType: "legacy", Branch: "master", Path: "/"}, PagesPhase: "unfinished"}
+	result := applyDefaultBranchPagesWithCheckpoint(context.Background(), repo, func(defaultBranchRepository) error { return nil })
+	if result.Disposition != "error" || !strings.Contains(result.Error, "head changed") || mutated {
+		t.Fatalf("result=%#v mutated=%t", result, mutated)
+	}
+}
+
+func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
+	for name, test := range map[string]struct{ buildType, sourcePath, sourceBranch string }{
+		"workflow Pages":   {"workflow", "/", "master"},
+		"unsupported path": {"legacy", "/site", "master"},
+		"foreign source":   {"legacy", "/", "release"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			originalRead, originalExecute, originalConfig, originalProjects := defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot
+			t.Cleanup(func() {
+				defaultBranchRead, defaultBranchExecute, defaultBranchConfigPath, projectsRoot = originalRead, originalExecute, originalConfig, originalProjects
+			})
+			projectsRoot = t.TempDir()
+			config := filepath.Join(t.TempDir(), "wb.yaml")
+			if err := os.WriteFile(config, []byte("fleet:\n  default_branch: main\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			defaultBranchConfigPath = func() string { return config }
+			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+				switch endpoint {
+				case "repos/acme/app":
+					return []byte(`{"id":1,"default_branch":"main"}`), nil
+				case "repos/acme/app/branches/main":
+					return []byte(`{"commit":{"sha":"same"}}`), nil
+				case "repos/acme/app/pages":
+					return []byte(`{"build_type":"` + test.buildType + `","source":{"branch":"` + test.sourceBranch + `","path":"` + test.sourcePath + `"}}`), nil
+				default:
+					return nil, errors.New("unexpected endpoint " + endpoint)
+				}
+			}
+			mutated := false
+			defaultBranchExecute = func(context.Context, ...string) githubobserver.CommandResponse {
+				mutated = true
+				return githubobserver.CommandResponse{}
+			}
+			report, err := runDefaultBranch(context.Background(), defaultBranchOptions{apply: true, migratePagesSource: true, repositories: []string{"acme/app"}, parallel: 1, reportDir: t.TempDir()}, &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := report.Repositories[0]; got.Disposition != "blocked" || !strings.Contains(got.Error, "outside the supported") || mutated {
+				t.Fatalf("report=%#v mutated=%t", got, mutated)
+			}
+		})
+	}
+}
+
+func defaultBranchPagesFixture(t *testing.T, sourcePath, buildType, initialSource string, changedBeforeWrite, postWriteMismatch bool) {
+	t.Helper()
+	observedDefault, source, reads, mutations := "master", initialSource, 0, 0
+	defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"id":1,"default_branch":"` + observedDefault + `"}`), nil
+		case "repos/acme/app/branches/master", "repos/acme/app/branches/main":
+			return []byte(`{"commit":{"sha":"same"}}`), nil
+		case "repos/acme/app/pulls?state=open&head=acme%3Amaster", "repos/acme/app/contents/.github/workflows?ref=master":
+			return []byte(`[]`), nil
+		case "repos/acme/app/branches/master/protection":
+			return nil, errors.New("HTTP 404")
+		case "repos/acme/app/rules/branches/master?per_page=100":
+			return []byte(`[]`), nil
+		case "repos/acme/app/pages":
+			reads++
+			if changedBeforeWrite && reads > 1 {
+				return []byte(`{"build_type":"legacy","source":{"branch":"master","path":"/docs"}}`), nil
+			}
+			return []byte(`{"build_type":"` + buildType + `","source":{"branch":"` + source + `","path":"` + sourcePath + `"}}`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	defaultBranchExecute = func(_ context.Context, args ...string) githubobserver.CommandResponse {
+		mutations++
+		got := strings.Join(args, " ")
+		if mutations == 1 && (got == "api --method POST repos/acme/app/branches/master/rename -f new_name=main" || got == "api --method PATCH repos/acme/app -f default_branch=main") {
+			observedDefault = "main"
+			return githubobserver.CommandResponse{}
+		}
+		if mutations == 2 && got == "api --method PUT repos/acme/app/pages -f source[branch]=main -f source[path]="+sourcePath {
+			if !postWriteMismatch {
+				source = "main"
+			}
+			return githubobserver.CommandResponse{}
+		}
+		return githubobserver.CommandResponse{Err: errors.New("unexpected mutation " + got)}
 	}
 }
 
@@ -72,11 +332,11 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	archived := inspectDefaultBranch(context.Background(), repo("acme/old"), "main")
+	archived := inspectDefaultBranchWithOptions(context.Background(), repo("acme/old"), "main", false, false)
 	if archived.Disposition != "blocked" || !strings.Contains(archived.Error, "archived") {
 		t.Fatalf("archived = %#v", archived)
 	}
-	diverged := inspectDefaultBranch(context.Background(), repo("acme/diverged"), "main")
+	diverged := inspectDefaultBranchWithOptions(context.Background(), repo("acme/diverged"), "main", false, false)
 	if diverged.Disposition != "blocked" || !strings.Contains(diverged.Error, "different SHA") {
 		t.Fatalf("diverged = %#v", diverged)
 	}
@@ -189,11 +449,11 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 		observedDefault = "main"
 		return githubobserver.CommandResponse{}
 	}
-	planned := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 	if planned.Disposition != "drift" || planned.OldHead != "source" {
 		t.Fatalf("plan = %#v", planned)
 	}
-	result := applyDefaultBranch(context.Background(), planned)
+	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || result.NewHead != "source" {
 		t.Fatalf("rename proof = %#v", result)
 	}
@@ -247,8 +507,8 @@ func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *tes
 		state = 2
 		return nil
 	}
-	planned := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
-	result := applyDefaultBranch(context.Background(), planned)
+	planned := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
+	result := applyDefaultBranchWithCheckpoint(context.Background(), planned, nil)
 	if result.Disposition != "compliant" || result.VerifiedDefault != "main" || mutations != 1 || waits != 1 {
 		t.Fatalf("delayed visibility result=%#v mutations=%d waits=%d", result, mutations, waits)
 	}
@@ -409,7 +669,7 @@ func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
 		mutated = true
 		return githubobserver.CommandResponse{}
 	}
-	result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"})
+	result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 	if result.Disposition != "blocked" || !strings.Contains(result.Error, "changed after planning") || mutated {
 		t.Fatalf("fresh plan drift = %#v mutated=%t", result, mutated)
 	}
@@ -448,7 +708,7 @@ func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T)
 			t.Cleanup(func() { defaultBranchRead = original })
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return configure(endpoint) }
 			result := defaultBranchRepository{Repository: "acme/app"}
-			if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err == nil {
+			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil {
 				t.Fatalf("unsafe %s was accepted", name)
 			}
 		})
@@ -497,7 +757,7 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 				}
 			}
 			result := defaultBranchRepository{Repository: "acme/app"}
-			if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err == nil || !strings.Contains(err.Error(), want) {
+			if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("active dependency was accepted: %v", err)
 			}
 		})
@@ -550,7 +810,7 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 				}
 				return nil, errors.New("unexpected endpoint " + endpoint)
 			}
-			result := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unsafe repository state = %#v", result)
 			}
@@ -1289,7 +1549,7 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 }
 
 func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T) {
-	if result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "not-a-slug"}); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
+	if result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "not-a-slug"}, nil); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
 		t.Fatalf("invalid repository = %#v", result)
 	}
 	for name, test := range map[string]struct {
@@ -1333,7 +1593,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 				test.mutate(&observedDefault)
 				return githubobserver.CommandResponse{}
 			}
-			result := applyDefaultBranch(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"})
+			result := applyDefaultBranchWithCheckpoint(context.Background(), defaultBranchRepository{Repository: "acme/app", ObservedDefault: "master", Desired: "main", OldHead: "planned"}, nil)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("unproven mutation = %#v", result)
 			}
@@ -1393,13 +1653,13 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 			original := defaultBranchRead
 			t.Cleanup(func() { defaultBranchRead = original })
 			defaultBranchRead = func(_ context.Context, endpoint string) ([]byte, error) { return test.read(endpoint) }
-			result := inspectDefaultBranch(context.Background(), repo("acme/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "main", false, false)
 			if result.Disposition != "error" || !strings.Contains(result.Error, test.want) {
 				t.Fatalf("untrusted observation = %#v", result)
 			}
 		})
 	}
-	if result := inspectDefaultBranch(context.Background(), repo("acme/app"), "bad ref"); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
+	if result := inspectDefaultBranchWithOptions(context.Background(), repo("acme/app"), "bad ref", false, false); result.Disposition != "blocked" || !strings.Contains(result.Error, "invalid desired branch") {
 		t.Fatalf("invalid desired branch = %#v", result)
 	}
 }
@@ -1569,15 +1829,15 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 			return nil, errors.New("unexpected endpoint " + endpoint)
 		}
 	}
-	empty := inspectDefaultBranch(context.Background(), repo("acme/empty"), "main")
+	empty := inspectDefaultBranchWithOptions(context.Background(), repo("acme/empty"), "main", false, false)
 	if empty.Disposition != "blocked" || !strings.Contains(empty.Error, "empty repository") {
 		t.Fatalf("empty = %#v", empty)
 	}
-	noInitialCommit := inspectDefaultBranch(context.Background(), repo("acme/no-initial-commit"), "main")
+	noInitialCommit := inspectDefaultBranchWithOptions(context.Background(), repo("acme/no-initial-commit"), "main", false, false)
 	if noInitialCommit.Disposition != "blocked" || !strings.Contains(noInitialCommit.Error, "no initial commit") {
 		t.Fatalf("no initial commit = %#v", noInitialCommit)
 	}
-	fork := inspectDefaultBranch(context.Background(), repo("fork/app"), "main")
+	fork := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 	if fork.Disposition != "drift" || len(fork.Impacts) == 0 {
 		t.Fatalf("fork = %#v", fork)
 	}
@@ -1608,7 +1868,7 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 					return nil, errors.New("unexpected endpoint " + endpoint)
 				}
 			}
-			result := inspectDefaultBranch(context.Background(), repo("fork/app"), "main")
+			result := inspectDefaultBranchWithOptions(context.Background(), repo("fork/app"), "main", false, false)
 			if result.Disposition != "blocked" || !strings.Contains(result.Error, "open pull request") {
 				t.Fatalf("result = %#v", result)
 			}
@@ -3001,7 +3261,7 @@ func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
 		}
 	}
 	result := defaultBranchRepository{Repository: "acme/app"}
-	if err := defaultBranchSafety(context.Background(), &result, defaultBranchRepoMetadata{}, "master"); err != nil {
+	if err := defaultBranchSafetyWithOptions(context.Background(), &result, defaultBranchRepoMetadata{}, "master", false); err != nil {
 		t.Fatalf("whitespace empty rules array blocked migration: %v", err)
 	}
 }

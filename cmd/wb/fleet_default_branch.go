@@ -32,11 +32,11 @@ import (
 const defaultBranchSchemaVersion = 1
 
 type defaultBranchOptions struct {
-	apply, json, includeUser, allOrgs, temporarilyUnarchive bool
-	branch, reportDir, reconcileFrom, restoreArchiveFrom    string
-	reconcileSHA256, restoreArchiveSHA256                   string
-	owners, repositories                                    []string
-	parallel                                                int
+	apply, json, includeUser, allOrgs, temporarilyUnarchive, migratePagesSource bool
+	branch, reportDir, reconcileFrom, restoreArchiveFrom                        string
+	reconcileSHA256, restoreArchiveSHA256                                       string
+	owners, repositories                                                        []string
+	parallel                                                                    int
 }
 type defaultBranchConfig struct {
 	Fleet struct {
@@ -65,25 +65,34 @@ type defaultBranchSummary struct {
 	CanonicalErrors  int `json:"canonical_errors"`
 }
 type defaultBranchRepository struct {
-	Repository      string                   `json:"repository"`
-	RepositoryID    int64                    `json:"repository_id,omitempty"`
-	ObservedDefault string                   `json:"observed_default,omitempty"`
-	VerifiedDefault string                   `json:"verified_default,omitempty"`
-	Desired         string                   `json:"desired"`
-	OldHead         string                   `json:"old_head,omitempty"`
-	NewHead         string                   `json:"new_head,omitempty"`
-	Disposition     string                   `json:"disposition"`
-	Error           string                   `json:"error,omitempty"`
-	Archived        bool                     `json:"archived,omitempty"`
-	Fork            bool                     `json:"fork,omitempty"`
-	TargetExists    bool                     `json:"target_exists,omitempty"`
-	RenameAccepted  bool                     `json:"rename_accepted,omitempty"`
-	RecoveredFrom   string                   `json:"recovered_from,omitempty"`
-	RecoveredSHA256 string                   `json:"recovered_sha256,omitempty"`
-	Archive         *defaultBranchArchive    `json:"archive_transition,omitempty"`
-	Impacts         []string                 `json:"impacts,omitempty"`
-	Actions         []string                 `json:"actions,omitempty"`
-	CanonicalClones []defaultBranchCanonical `json:"canonical_clones,omitempty"`
+	Repository      string                    `json:"repository"`
+	RepositoryID    int64                     `json:"repository_id,omitempty"`
+	ObservedDefault string                    `json:"observed_default,omitempty"`
+	VerifiedDefault string                    `json:"verified_default,omitempty"`
+	Desired         string                    `json:"desired"`
+	OldHead         string                    `json:"old_head,omitempty"`
+	NewHead         string                    `json:"new_head,omitempty"`
+	Disposition     string                    `json:"disposition"`
+	Error           string                    `json:"error,omitempty"`
+	Archived        bool                      `json:"archived,omitempty"`
+	Fork            bool                      `json:"fork,omitempty"`
+	TargetExists    bool                      `json:"target_exists,omitempty"`
+	RenameAccepted  bool                      `json:"rename_accepted,omitempty"`
+	RecoveredFrom   string                    `json:"recovered_from,omitempty"`
+	RecoveredSHA256 string                    `json:"recovered_sha256,omitempty"`
+	Archive         *defaultBranchArchive     `json:"archive_transition,omitempty"`
+	PagesBefore     *defaultBranchPagesSource `json:"pages_before,omitempty"`
+	PagesAfter      *defaultBranchPagesSource `json:"pages_after,omitempty"`
+	PagesPhase      string                    `json:"pages_phase,omitempty"`
+	PagesAccepted   bool                      `json:"pages_mutation_accepted,omitempty"`
+	Impacts         []string                  `json:"impacts,omitempty"`
+	Actions         []string                  `json:"actions,omitempty"`
+	CanonicalClones []defaultBranchCanonical  `json:"canonical_clones,omitempty"`
+}
+type defaultBranchPagesSource struct {
+	BuildType string `json:"build_type"`
+	Branch    string `json:"branch"`
+	Path      string `json:"path"`
 }
 type defaultBranchArchive struct {
 	RepositoryID      int64  `json:"repository_id"`
@@ -252,6 +261,9 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 			if options.restoreArchiveFrom != "" && (options.branch != "" || options.reconcileFrom != "" || options.temporarilyUnarchive || len(options.repositories) != 1 || len(options.owners) > 0 || options.includeUser || options.allOrgs) {
 				return usageError("--restore-archive-from requires exactly one --repo and cannot be combined with migration or reconciliation flags")
 			}
+			if options.migratePagesSource && options.temporarilyUnarchive {
+				return usageError("--migrate-pages-source does not support archived repositories; complete the separately reviewed archive transition first")
+			}
 			report, err := runDefaultBranch(cmd.Context(), options, cmd.ErrOrStderr())
 			if err != nil {
 				return err
@@ -280,6 +292,7 @@ GitHub may make an accepted rename visible asynchronously. WB records the accept
 	command.Flags().StringVar(&options.reconcileFrom, "reconcile-from", "", "resume canonical-clone reconciliation from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.reconcileSHA256, "reconcile-sha256", "", "required SHA-256 of the exact --reconcile-from report bytes")
 	command.Flags().BoolVar(&options.temporarilyUnarchive, "temporarily-unarchive", false, "allow a safe archived repository to be temporarily unarchived and restored")
+	command.Flags().BoolVar(&options.migratePagesSource, "migrate-pages-source", false, "migrate a verified legacy GitHub Pages source after the default branch rename")
 	command.Flags().StringVar(&options.restoreArchiveFrom, "restore-archive-from", "", "restore archival only from an earlier default-branch apply report")
 	command.Flags().StringVar(&options.restoreArchiveSHA256, "restore-archive-sha256", "", "required SHA-256 of the exact --restore-archive-from report bytes")
 	addJSONFormatFlags(command, &options.json)
@@ -320,7 +333,7 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 			defer wg.Done()
 			for i := range jobs {
 				desired := effectiveDefaultBranch(options.branch, config, repos[i].Org)
-				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithArchive(ctx, repos[i], desired, options.temporarilyUnarchive)
+				report.Repositories[len(discoveryFailures)+i] = inspectDefaultBranchWithOptions(ctx, repos[i], desired, options.temporarilyUnarchive, options.migratePagesSource)
 			}
 		}()
 	}
@@ -359,6 +372,27 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 					if report.Repositories[i].Disposition == "compliant" && report.Repositories[i].Archive != nil && report.Repositories[i].Archive.Phase == "restored" {
 						sourceDefault, sourceHead = report.Repositories[i].ObservedDefault, report.Repositories[i].OldHead
 					}
+				} else if defaultBranchPagesOnlyRepair(report.Repositories[i]) {
+					report.Repositories[i] = applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+						report.Repositories[i] = updated
+						summarizeDefaultBranch(&report)
+						return persistDefaultBranchReport(report)
+					})
+					summarizeDefaultBranch(&report)
+					if err := persistDefaultBranchReport(report); err != nil {
+						return report, err
+					}
+					if report.Repositories[i].Disposition == "compliant" {
+						if _, err := fmt.Fprintf(progress, "default-branch: applied %s\n", report.Repositories[i].Repository); err != nil {
+							return report, err
+						}
+					}
+				} else if report.Repositories[i].ObservedDefault == report.Repositories[i].Desired && report.Repositories[i].PagesBefore != nil && report.Repositories[i].PagesPhase == "unfinished" {
+					report.Repositories[i].Disposition = "blocked"
+					report.Repositories[i].Error = "unfinished Pages source is outside the supported legacy master root or /docs repair; WB will not infer or overwrite it"
+					if err := persistDefaultBranchReport(report); err != nil {
+						return report, err
+					}
 				} else {
 					report.Repositories[i] = applyDefaultBranchWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
 						report.Repositories[i] = updated
@@ -369,7 +403,18 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 					if err := persistDefaultBranchReport(report); err != nil {
 						return report, err
 					}
-					if len(report.Repositories[i].Actions) > 0 {
+					if report.Repositories[i].Disposition == "compliant" && report.Repositories[i].PagesBefore != nil {
+						report.Repositories[i] = applyDefaultBranchPagesWithCheckpoint(ctx, report.Repositories[i], func(updated defaultBranchRepository) error {
+							report.Repositories[i] = updated
+							summarizeDefaultBranch(&report)
+							return persistDefaultBranchReport(report)
+						})
+						summarizeDefaultBranch(&report)
+						if err := persistDefaultBranchReport(report); err != nil {
+							return report, err
+						}
+					}
+					if len(report.Repositories[i].Actions) > 0 && report.Repositories[i].Disposition == "compliant" && defaultBranchPagesTerminal(report.Repositories[i]) {
 						if _, err := fmt.Fprintf(progress, "default-branch: applied %s\n", report.Repositories[i].Repository); err != nil {
 							return report, err
 						}
@@ -419,6 +464,14 @@ func runDefaultBranch(ctx context.Context, options defaultBranchOptions, progres
 		}
 	}
 	return report, nil
+}
+
+func defaultBranchPagesOnlyRepair(repository defaultBranchRepository) bool {
+	if repository.ObservedDefault != repository.Desired || repository.PagesBefore == nil || repository.PagesPhase != "unfinished" {
+		return false
+	}
+	pages := *repository.PagesBefore
+	return pages.BuildType == "legacy" && pages.Branch == "master" && validDefaultBranchPagesPath(pages.Path)
 }
 
 func readDefaultBranchReport(path, expectedDigest string) (*defaultBranchReport, error) {
@@ -918,11 +971,7 @@ func discoverDefaultBranchFleet(filter string, owners, exact []string, includeUs
 	sort.Slice(failures, func(i, j int) bool { return failures[i].Repository < failures[j].Repository })
 	return repos, failures, nil
 }
-func inspectDefaultBranch(ctx context.Context, repo discover.Repo, desired string) defaultBranchRepository {
-	return inspectDefaultBranchWithArchive(ctx, repo, desired, false)
-}
-
-func inspectDefaultBranchWithArchive(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive bool) defaultBranchRepository {
+func inspectDefaultBranchWithOptions(ctx context.Context, repo discover.Repo, desired string, temporarilyUnarchive, migratePagesSource bool) defaultBranchRepository {
 	result := defaultBranchRepository{Repository: repo.Slug(), Desired: desired}
 	if !validDefaultBranch(desired) {
 		result.Disposition = "blocked"
@@ -966,6 +1015,10 @@ func inspectDefaultBranchWithArchive(ctx context.Context, repo discover.Repo, de
 	result.OldHead = oldRef
 	if meta.DefaultBranch == desired {
 		result.NewHead = oldRef
+		if migratePagesSource {
+			inspectDefaultBranchPagesAtDesired(ctx, &result, meta)
+			return result
+		}
 		result.Disposition = "compliant"
 		return result
 	}
@@ -997,7 +1050,7 @@ func inspectDefaultBranchWithArchive(ctx context.Context, repo discover.Repo, de
 		result.Error = err.Error()
 		return result
 	}
-	if err := defaultBranchSafety(ctx, &result, meta, meta.DefaultBranch); err != nil {
+	if err := defaultBranchSafetyWithOptions(ctx, &result, meta, meta.DefaultBranch, migratePagesSource); err != nil {
 		result.Disposition = "blocked"
 		result.Error = err.Error()
 		return result
@@ -1016,7 +1069,7 @@ func readDefaultBranchRef(ctx context.Context, slug, branch string) (string, err
 	}
 	return ref.Commit.SHA, nil
 }
-func defaultBranchSafety(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string) error {
+func defaultBranchSafetyWithOptions(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata, old string, migratePagesSource bool) error {
 	slug := result.Repository
 	headOwner := strings.Split(slug, "/")[0]
 	querySlugs := []string{slug}
@@ -1091,7 +1144,10 @@ func defaultBranchSafety(ctx context.Context, result *defaultBranchRepository, m
 			}
 		}
 	}
-	for _, endpoint := range []string{"repos/" + slug + "/pages", "repos/" + slug + "/branches/" + url.PathEscape(old) + "/protection"} {
+	if err := inspectDefaultBranchPages(ctx, result, old, migratePagesSource); err != nil {
+		return err
+	}
+	for _, endpoint := range []string{"repos/" + slug + "/branches/" + url.PathEscape(old) + "/protection"} {
 		body, err := defaultBranchRead(ctx, endpoint)
 		if err == nil && len(strings.TrimSpace(string(body))) > 0 {
 			result.Impacts = append(result.Impacts, "inspect before apply: "+endpoint)
@@ -1124,6 +1180,73 @@ func isDefaultBranchNotFound(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "404")
 }
 
+func inspectDefaultBranchPages(ctx context.Context, result *defaultBranchRepository, old string, migrate bool) error {
+	body, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/pages")
+	if isDefaultBranchNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Pages source: %w", err)
+	}
+	pages, err := decodeDefaultBranchPages(body)
+	if err != nil {
+		return err
+	}
+	result.Impacts = append(result.Impacts, "inspect before apply: repos/"+result.Repository+"/pages")
+	if !migrate {
+		return errors.New("pages, classic protection, or effective rules require an explicit migration; WB will not weaken or assume renamed coverage")
+	}
+	if pages.BuildType != "legacy" || pages.Branch != old || !validDefaultBranchPagesPath(pages.Path) {
+		return errors.New("pages source is not a complete legacy source on the observed default branch; WB will not change it")
+	}
+	result.PagesBefore, result.PagesPhase = &pages, "prepared"
+	return nil
+}
+
+func inspectDefaultBranchPagesAtDesired(ctx context.Context, result *defaultBranchRepository, meta defaultBranchRepoMetadata) {
+	body, err := defaultBranchRead(ctx, "repos/"+result.Repository+"/pages")
+	if isDefaultBranchNotFound(err) {
+		result.Disposition = "compliant"
+		return
+	}
+	if err != nil {
+		result.Disposition, result.Error = "error", "inspect Pages source: "+err.Error()
+		return
+	}
+	pages, err := decodeDefaultBranchPages(body)
+	if err != nil {
+		result.Disposition, result.Error = "blocked", err.Error()
+		return
+	}
+	if pages.BuildType == "legacy" && pages.Branch == meta.DefaultBranch && validDefaultBranchPagesPath(pages.Path) {
+		result.Disposition = "compliant"
+		return
+	}
+	result.PagesBefore, result.PagesPhase = &pages, "unfinished"
+	result.Disposition = "drift"
+	result.Error = "default branch already matches desired branch, but Pages source migration remains unfinished; WB will not infer the prior default branch"
+}
+
+func decodeDefaultBranchPages(body []byte) (defaultBranchPagesSource, error) {
+	var value struct {
+		BuildType string `json:"build_type"`
+		Source    struct {
+			Branch string `json:"branch"`
+			Path   string `json:"path"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return defaultBranchPagesSource{}, fmt.Errorf("decode Pages source: %w", err)
+	}
+	return defaultBranchPagesSource{BuildType: value.BuildType, Branch: value.Source.Branch, Path: value.Source.Path}, nil
+}
+
+func validDefaultBranchPagesPath(path string) bool { return path == "/" || path == "/docs" }
+
+func defaultBranchPagesTerminal(repository defaultBranchRepository) bool {
+	return repository.PagesBefore == nil || (repository.PagesPhase == "verified" && repository.PagesAfter != nil)
+}
+
 func validDefaultBranchRepository(slug string) bool {
 	owner, name, ok := strings.Cut(slug, "/")
 	return ok && owner != "" && name != "" && !strings.Contains(name, "/")
@@ -1136,9 +1259,6 @@ func workflowReferencesDefaultBranch(contents, branch string) bool {
 	// free-form occurrences: a false positive is reviewable, while a missed
 	// reference could be broken by the branch rename.
 	return regexp.MustCompile(`(?mi)(^|[^[:alnum:]_.-])` + escaped + `($|[^[:alnum:]_.-])`).MatchString(contents)
-}
-func applyDefaultBranch(ctx context.Context, repo defaultBranchRepository) defaultBranchRepository {
-	return applyDefaultBranchWithCheckpoint(ctx, repo, nil)
 }
 
 // applyArchivedDefaultBranch permits one guarded temporary unarchive. Every
@@ -1187,7 +1307,7 @@ func applyArchivedDefaultBranch(ctx context.Context, repo defaultBranchRepositor
 		repo.Error = "invalid repository observation"
 		return restoreArchivedDefaultBranch(ctx, repo, checkpoint)
 	}
-	fresh := inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil)
 	if fresh.RepositoryID != transition.RepositoryID || fresh.Archived {
 		repo.Disposition = "error"
 		repo.Error = "temporary unarchive did not preserve the planned repository identity and active state"
@@ -1328,7 +1448,7 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo defaultBranchRep
 		repo.Error = "invalid repository observation"
 		return repo
 	}
-	fresh := inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+	fresh := inspectDefaultBranchWithOptions(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired, false, repo.PagesBefore != nil)
 	if fresh.Disposition != "drift" {
 		repo.Disposition = fresh.Disposition
 		repo.Error = fresh.Error
@@ -1370,7 +1490,7 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo defaultBranchRep
 	}
 	var verified defaultBranchRepository
 	if repo.TargetExists {
-		verified = inspectDefaultBranch(ctx, discover.Repo{Org: owner, Name: name}, repo.Desired)
+		verified = readDefaultBranchRenameVisibility(ctx, repo, defaultBranchRenameNow().Add(30*time.Second))
 	} else {
 		var waitErr error
 		verified, waitErr = waitForDefaultBranchRename(ctx, repo)
@@ -1398,6 +1518,95 @@ func applyDefaultBranchWithCheckpoint(ctx context.Context, repo defaultBranchRep
 		repo.Actions = []string{"set default branch to existing same-SHA " + repo.Desired, "verified default branch and head"}
 	} else {
 		repo.Actions = []string{"renamed " + repo.ObservedDefault + " to " + repo.Desired, "verified default branch and head"}
+	}
+	return repo
+}
+
+// applyDefaultBranchPagesWithCheckpoint updates only the legacy Pages source
+// after the default rename has been read back. Pages has no documented CAS
+// precondition, so the persisted pre-write observation and immediate exact
+// post-read are the recovery boundary.
+func applyDefaultBranchPagesWithCheckpoint(ctx context.Context, repo defaultBranchRepository, checkpoint func(defaultBranchRepository) error) defaultBranchRepository {
+	if repo.PagesBefore == nil {
+		return repo
+	}
+	fresh, err := readDefaultBranchMetadata(ctx, repo.Repository)
+	if err != nil || fresh.DefaultBranch != repo.Desired {
+		repo.Disposition = "error"
+		if err != nil {
+			repo.Error = "verify default branch before Pages migration: " + err.Error()
+		} else {
+			repo.Error = "default branch changed before Pages migration"
+		}
+		return repo
+	}
+	head, err := readDefaultBranchRef(ctx, repo.Repository, repo.Desired)
+	if err != nil || head != repo.OldHead {
+		repo.Disposition = "error"
+		if err != nil {
+			repo.Error = "verify default head before Pages migration: " + err.Error()
+		} else {
+			repo.Error = "default branch head changed before Pages migration"
+		}
+		return repo
+	}
+	body, err := defaultBranchRead(ctx, "repos/"+repo.Repository+"/pages")
+	if err != nil {
+		repo.Disposition, repo.Error = "error", "read Pages source before migration: "+err.Error()
+		return repo
+	}
+	before, err := decodeDefaultBranchPages(body)
+	if err != nil || before != *repo.PagesBefore || before.BuildType != "legacy" || !validDefaultBranchPagesPath(before.Path) || (repo.PagesPhase == "unfinished" && before.Branch != "master") || (repo.PagesPhase != "unfinished" && before.Branch != repo.ObservedDefault) {
+		repo.Disposition = "error"
+		if err != nil {
+			repo.Error = "decode Pages source before migration: " + err.Error()
+		} else {
+			repo.Error = "Pages source changed after planning; WB will not overwrite it"
+		}
+		return repo
+	}
+	repo.PagesPhase = "pending"
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition, repo.Error = "error", "persist pending Pages migration: "+err.Error()
+			return repo
+		}
+	}
+	response := defaultBranchExecute(ctx, "api", "--method", "PUT", "repos/"+repo.Repository+"/pages", "-f", "source[branch]="+repo.Desired, "-f", "source[path]="+before.Path)
+	if response.Err != nil {
+		repo.Disposition, repo.Error = "error", "update Pages source: "+githubCommandMessage(response)
+		return repo
+	}
+	repo.PagesAccepted, repo.PagesPhase = true, "response_received"
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition, repo.Error = "error", "persist Pages migration response: "+err.Error()
+			return repo
+		}
+	}
+	body, err = defaultBranchRead(ctx, "repos/"+repo.Repository+"/pages")
+	if err != nil {
+		repo.Disposition, repo.Error = "error", "verify Pages source migration: "+err.Error()
+		return repo
+	}
+	after, err := decodeDefaultBranchPages(body)
+	if err != nil || after.BuildType != "legacy" || after.Branch != repo.Desired || after.Path != before.Path {
+		repo.Disposition = "error"
+		if err != nil {
+			repo.Error = "decode Pages source after migration: " + err.Error()
+		} else {
+			repo.Error = "Pages source post-write verification did not preserve legacy build type and source path"
+		}
+		return repo
+	}
+	repo.PagesAfter = &after
+	repo.PagesPhase = "verified"
+	repo.Disposition, repo.Error = "compliant", ""
+	repo.Actions = append(repo.Actions, "migrated Pages source to "+repo.Desired+" with path "+before.Path, "verified Pages source")
+	if checkpoint != nil {
+		if err := checkpoint(repo); err != nil {
+			repo.Disposition, repo.Error = "error", "persist verified Pages migration: "+err.Error()
+		}
 	}
 	return repo
 }
