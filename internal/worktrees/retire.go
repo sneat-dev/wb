@@ -40,25 +40,29 @@ type RetireOptions struct {
 // RetireResult is also the durable resume receipt. It contains only identities
 // and hashes; prompt and journal bytes are written only to the private repo.
 type RetireResult struct {
-	Version           int    `json:"version"`
-	Task              string `json:"task"`
-	Repository        string `json:"repository"`
-	ArchiveRepository string `json:"archive_repository"`
-	Worktree          string `json:"worktree"`
-	Canonical         string `json:"canonical"`
-	WorktreesRoot     string `json:"worktrees_root"`
-	Local             bool   `json:"local"`
-	Branch            string `json:"branch"`
-	OriginalRemoteSHA string `json:"original_remote_sha,omitempty"`
-	SourceSHA         string `json:"source_sha"`
-	RetiredRef        string `json:"retired_ref"`
-	ArchiveRef        string `json:"archive_ref"`
-	ArchiveSHA        string `json:"archive_sha,omitempty"`
-	ClaimID           string `json:"claim_id"`
-	EffortID          string `json:"effort_id"`
-	RunID             string `json:"run_id"`
-	Phase             string `json:"phase"`
-	ReportPath        string `json:"report_path,omitempty"`
+	Version           int       `json:"version"`
+	Task              string    `json:"task"`
+	Repository        string    `json:"repository"`
+	ArchiveRepository string    `json:"archive_repository"`
+	Worktree          string    `json:"worktree"`
+	Canonical         string    `json:"canonical"`
+	WorktreesRoot     string    `json:"worktrees_root"`
+	Local             bool      `json:"local"`
+	Branch            string    `json:"branch"`
+	OriginalRemoteSHA string    `json:"original_remote_sha,omitempty"`
+	SourceSHA         string    `json:"source_sha"`
+	IntentParentSHA   string    `json:"intent_parent_sha,omitempty"`
+	IntentTreeSHA     string    `json:"intent_tree_sha,omitempty"`
+	IntentMessage     string    `json:"intent_message,omitempty"`
+	IntentAt          time.Time `json:"intent_at,omitempty"`
+	RetiredRef        string    `json:"retired_ref"`
+	ArchiveRef        string    `json:"archive_ref"`
+	ArchiveSHA        string    `json:"archive_sha,omitempty"`
+	ClaimID           string    `json:"claim_id"`
+	EffortID          string    `json:"effort_id"`
+	RunID             string    `json:"run_id"`
+	Phase             string    `json:"phase"`
+	ReportPath        string    `json:"report_path,omitempty"`
 }
 
 func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
@@ -133,6 +137,9 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if claim.Task != entry.Task || claim.Repository != entry.Repository || claim.Branch != entry.Branch || projection.ClaimID != claim.ClaimID {
 		return RetireResult{}, fmt.Errorf("Work Log claim does not bind the selected checkout")
 	}
+	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
+		return RetireResult{}, err
+	}
 	remoteSHA, err := retireRemoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch)
 	if err != nil {
 		return RetireResult{}, err
@@ -142,8 +149,10 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if priorErr != nil && !errors.Is(priorErr, os.ErrNotExist) {
 		return RetireResult{}, priorErr
 	}
-	if errors.Is(priorErr, os.ErrNotExist) && remoteSHA != "" && remoteSHA != entry.HeadSHA {
-		return RetireResult{}, fmt.Errorf("original remote branch moved: %s", entry.Branch)
+	if errors.Is(priorErr, os.ErrNotExist) {
+		if err := retireCheckRemoteAncestor(ctx, entry.CanonicalDir, remoteSHA, entry.HeadSHA); err != nil {
+			return RetireResult{}, err
+		}
 	}
 	result := RetireResult{Version: 1, Task: entry.Task, Repository: entry.Repository, ArchiveRepository: archivePlan.ArchiveRepository,
 		Worktree: entry.WorktreeDir, Canonical: entry.CanonicalDir, WorktreesRoot: lifecycleTaskLockRoot(resolution.Write.Home, wbhome.Layout{WorktreesRoot: entry.WorktreesRoot, Local: entry.Local}), Local: entry.Local,
@@ -192,7 +201,15 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 	if observed, err := retireRemoteSHA(ctx, entry.CanonicalDir, "origin", "refs/heads/"+entry.Branch); err != nil || observed != remoteSHA {
 		return RetireResult{}, fmt.Errorf("original remote branch changed before retirement: %w", err)
 	}
+	if priorErr != nil {
+		if err := retireCheckRemoteAncestor(ctx, entry.CanonicalDir, remoteSHA, current); err != nil {
+			return RetireResult{}, err
+		}
+	}
 	if err := retireCheckPR(ctx, entry, options); err != nil {
+		return RetireResult{}, err
+	}
+	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
 		return RetireResult{}, err
 	}
 	if priorErr == nil {
@@ -200,15 +217,62 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 			return RetireResult{}, fmt.Errorf("retirement receipt conflicts with current checkout")
 		}
 		result = prior
-		if current != result.SourceSHA {
+		if result.Phase == "commit_intent" {
+			if current == result.IntentParentSHA {
+				committed, err := retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, result.IntentMessage, func(tree, message string) error {
+					if tree != result.IntentTreeSHA || message != result.IntentMessage {
+						return fmt.Errorf("staged source changed after retirement commit intent")
+					}
+					return nil
+				})
+				if err != nil {
+					return result, err
+				}
+				if !committed {
+					return result, fmt.Errorf("retirement commit intent lost its staged changes")
+				}
+				current, err = git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
+				if err != nil {
+					return result, err
+				}
+			}
+			if err := retireValidateIntentCommit(ctx, entry.WorktreeDir, result, current); err != nil {
+				return result, err
+			}
+			if options.afterPhase != nil {
+				if err := options.afterPhase("source_committed"); err != nil {
+					return result, err
+				}
+			}
+			result.SourceSHA = current
+			result.RetiredRef = retiredBranchDestination(result.IntentAt, result.Branch, current)
+			result.ArchiveRef = retireArchiveRef(result)
+			result.Phase = "committed"
+			if err := writeRetireReport(result); err != nil {
+				return result, err
+			}
+		} else if current != result.SourceSHA {
 			return RetireResult{}, fmt.Errorf("checkout moved after recorded retirement commit")
 		}
 	} else {
 		if err := heldWorktree.validate(); err != nil {
 			return RetireResult{}, err
 		}
-		if err := retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, options.Message); err != nil {
+		committed, err := retireCommitSource(ctx, entry.CanonicalDir, heldWorktree, options.Message, func(tree, message string) error {
+			result.IntentParentSHA = entry.HeadSHA
+			result.IntentTreeSHA = tree
+			result.IntentMessage = message
+			result.IntentAt = options.Now().UTC()
+			result.Phase = "commit_intent"
+			return writeRetireReport(result)
+		})
+		if err != nil {
 			return RetireResult{}, err
+		}
+		if committed && options.afterPhase != nil {
+			if err := options.afterPhase("source_committed"); err != nil {
+				return result, err
+			}
 		}
 		result.SourceSHA, err = git(ctx, entry.WorktreeDir, "rev-parse", "HEAD")
 		if err != nil {
@@ -217,7 +281,11 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		if clean, cleanErr := cleanWorktree(ctx, entry.WorktreeDir); cleanErr != nil || !clean {
 			return RetireResult{}, fmt.Errorf("source checkout is dirty after retirement commit: %w", cleanErr)
 		}
-		result.RetiredRef = retiredBranchDestination(options.Now(), result.Branch, result.SourceSHA)
+		date := options.Now()
+		if committed {
+			date = result.IntentAt
+		}
+		result.RetiredRef = retiredBranchDestination(date, result.Branch, result.SourceSHA)
 		result.ArchiveRef = retireArchiveRef(result)
 		result.Phase = "committed"
 		if err := writeRetireReport(result); err != nil {
@@ -259,6 +327,9 @@ func Retire(ctx context.Context, options RetireOptions) (RetireResult, error) {
 		return result, err
 	}
 	if err := retireCheckPR(ctx, entry, options); err != nil {
+		return result, err
+	}
+	if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
 		return result, err
 	}
 	if err := retireDeleteOriginal(ctx, &result); err != nil {
@@ -326,6 +397,57 @@ func retireCheckPrivateArchive(ctx context.Context, result RetireResult, inspect
 	}
 	if plan.Outcome != "planned" || plan.ArchiveRepository != result.ArchiveRepository {
 		return fmt.Errorf("retirement archive is no longer the configured private repository")
+	}
+	return nil
+}
+
+func retireCheckRemoteAncestor(ctx context.Context, canonical, remoteSHA, localSHA string) error {
+	if remoteSHA == "" || remoteSHA == localSHA {
+		return nil
+	}
+	if _, err := git(ctx, canonical, "merge-base", "--is-ancestor", remoteSHA, localSHA); err != nil {
+		return fmt.Errorf("original remote branch moved ahead or diverged from local HEAD")
+	}
+	return nil
+}
+
+func retireCheckIgnored(ctx context.Context, worktree string) error {
+	output, err := git(ctx, worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	var unexpected []string
+	for _, path := range strings.Split(output, "\x00") {
+		if path == "" || path == ".worktree.md" || path == ".wb-worklog.json" || strings.HasPrefix(path, ".wb/local/") || strings.HasPrefix(path, ".wb-worklog/") {
+			continue
+		}
+		unexpected = append(unexpected, path)
+	}
+	if len(unexpected) != 0 {
+		sort.Strings(unexpected)
+		return fmt.Errorf("ignored worktree files would be lost during retirement: %s", strings.Join(unexpected, ", "))
+	}
+	return nil
+}
+
+func retireValidateIntentCommit(ctx context.Context, worktree string, intent RetireResult, head string) error {
+	if head == intent.IntentParentSHA {
+		return fmt.Errorf("retirement commit was not created")
+	}
+	parent, err := git(ctx, worktree, "rev-parse", "HEAD^")
+	if err != nil || parent != intent.IntentParentSHA {
+		return fmt.Errorf("retirement commit parent does not match durable intent: %w", err)
+	}
+	tree, err := git(ctx, worktree, "rev-parse", "HEAD^{tree}")
+	if err != nil || tree != intent.IntentTreeSHA {
+		return fmt.Errorf("retirement commit tree does not match durable intent: %w", err)
+	}
+	message, err := git(ctx, worktree, "log", "-1", "--format=%B")
+	if err != nil || strings.TrimSpace(message) != intent.IntentMessage {
+		return fmt.Errorf("retirement commit message does not match durable intent: %w", err)
+	}
+	if clean, err := cleanWorktree(ctx, worktree); err != nil || !clean {
+		return fmt.Errorf("checkout changed after retirement commit: %w", err)
 	}
 	return nil
 }
@@ -501,8 +623,9 @@ func retireRemoteSHA(ctx context.Context, directory, remote, ref string) (string
 	return fields[0], nil
 }
 
-func retireCommitSource(ctx context.Context, canonical string, held *cleanupWorktreeHandle, message string) error {
-	if strings.TrimSpace(message) == "" {
+func retireCommitSource(ctx context.Context, canonical string, held *cleanupWorktreeHandle, message string, prepared func(tree, message string) error) (bool, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
 		message = "Retire worktree source changes"
 	}
 	gitHeld := func(args ...string) ([]byte, error) {
@@ -511,26 +634,77 @@ func retireCommitSource(ctx context.Context, canonical string, held *cleanupWork
 		}
 		return runSecureRenameGitBytesWithHeldWorktree(ctx, canonical, held.parentPath, held.worktreePath, held.worktree, args...)
 	}
-	// Include tracked changes and every nonignored untracked file, including
-	// children of an untracked directory. Git hooks run on the plain commit.
+	// Check every path that could introduce file bytes before touching the
+	// index. --others expands untracked directories to actual files.
+	for _, args := range [][]string{{"diff", "--name-only", "-z", "--diff-filter=ACMR"}, {"diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"}, {"ls-files", "--others", "--exclude-standard", "-z"}} {
+		paths, err := gitHeld(args...)
+		if err != nil {
+			return false, err
+		}
+		for _, path := range strings.Split(string(paths), "\x00") {
+			if path == "" {
+				continue
+			}
+			if retireLooksLikeSecretPath(path) {
+				return false, fmt.Errorf("refusing secret-looking source commit path %q", path)
+			}
+			if args[0] == "ls-files" {
+				if err := retireCheckUntrackedPath(held.worktreePath, path); err != nil {
+					return false, err
+				}
+			}
+		}
+	}
 	if _, err := gitHeld("add", "-A"); err != nil {
-		return err
+		return false, err
 	}
 	_, _ = gitHeld("reset", "-q", "--", ".worktree.md")
-	paths, err := gitHeld("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+	paths, err := gitHeld("diff", "--cached", "--name-only", "-z")
 	if err != nil {
-		return err
+		return false, err
 	}
-	for _, path := range strings.Split(string(paths), "\x00") {
+	secretPaths, err := gitHeld("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+	if err != nil {
+		return false, err
+	}
+	for _, path := range strings.Split(string(secretPaths), "\x00") {
 		if path != "" && retireLooksLikeSecretPath(path) {
-			return fmt.Errorf("refusing secret-looking source commit path %s", path)
+			return false, fmt.Errorf("refusing secret-looking source commit path %q", path)
 		}
 	}
 	if len(paths) == 0 {
-		return nil
+		return false, nil
+	}
+	tree, err := gitHeld("write-tree")
+	if err != nil {
+		return false, err
+	}
+	if prepared != nil {
+		if err := prepared(strings.TrimSpace(string(tree)), message); err != nil {
+			return false, err
+		}
 	}
 	if _, err := gitHeld("commit", "-m", message); err != nil {
-		return fmt.Errorf("commit source with hooks: %w", err)
+		return false, fmt.Errorf("commit source with hooks: %w", err)
+	}
+	return true, nil
+}
+
+func retireCheckUntrackedPath(worktree, relative string) error {
+	parent, err := openAbsoluteDirectoryNoFollow(filepath.Join(worktree, filepath.Dir(relative)), false)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstatat(int(parent.Fd()), filepath.Base(relative), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return fmt.Errorf("refusing untracked symlink %q", relative)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("refusing nonregular untracked path %q", relative)
 	}
 	return nil
 }
@@ -578,7 +752,16 @@ func readRetireReport(path string) (RetireResult, error) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		return result, err
 	}
-	if result.Version != 1 || !isGitObjectID(result.SourceSHA) || !strings.HasPrefix(result.RetiredRef, "retired/") || result.ArchiveRef != retireArchiveRef(result) {
+	if result.Version != 1 || !isGitObjectID(result.SourceSHA) {
+		return result, fmt.Errorf("invalid retirement receipt")
+	}
+	if result.Phase == "commit_intent" {
+		if result.SourceSHA != result.IntentParentSHA || !isGitObjectID(result.IntentTreeSHA) || result.IntentMessage == "" || result.IntentAt.IsZero() || result.RetiredRef != "" || result.ArchiveRef != "" {
+			return result, fmt.Errorf("invalid retirement commit intent")
+		}
+		return result, nil
+	}
+	if !strings.HasPrefix(result.RetiredRef, "retired/") || result.ArchiveRef != retireArchiveRef(result) {
 		return result, fmt.Errorf("invalid retirement receipt")
 	}
 	stem := strings.TrimPrefix(result.RetiredRef, "retired/")

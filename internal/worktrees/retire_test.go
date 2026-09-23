@@ -88,7 +88,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 }
 
 func TestRetireResumesAfterRemotePhases(t *testing.T) {
-	for _, phase := range []string{"source_published", "archive_published", "original_deleted", "worktree_removed"} {
+	for _, phase := range []string{"source_committed", "source_published", "archive_published", "original_deleted", "worktree_removed"} {
 		t.Run(phase, func(t *testing.T) {
 			fixture := newGitFixture(t)
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-resume", WorkLog: WorkLogOptions{Model: "unknown"}})
@@ -116,6 +116,9 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 			}
 			partial, err := Retire(context.Background(), options)
 			wantPartialPhase := phase
+			if phase == "source_committed" {
+				wantPartialPhase = "commit_intent"
+			}
 			if phase == "worktree_removed" {
 				wantPartialPhase = "original_deleted"
 			}
@@ -127,8 +130,90 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if finished.Phase != "complete" || finished.SourceSHA != partial.SourceSHA || finished.RetiredRef != partial.RetiredRef {
+			if finished.Phase != "complete" {
 				t.Fatalf("resume changed identity: partial=%#v finished=%#v", partial, finished)
+			}
+			if phase == "source_committed" {
+				if finished.IntentParentSHA != partial.SourceSHA || finished.RetiredRef != retiredBranchDestination(partial.IntentAt, partial.Branch, finished.SourceSHA) {
+					t.Fatalf("resume did not honor durable commit intent: partial=%#v finished=%#v", partial, finished)
+				}
+			} else if finished.SourceSHA != partial.SourceSHA || finished.RetiredRef != partial.RetiredRef {
+				t.Fatalf("resume changed identity: partial=%#v finished=%#v", partial, finished)
+			}
+		})
+	}
+}
+
+func TestRetirePreservesUnpushedCommits(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-ahead", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "push", "-u", "origin", "retire-ahead")
+	remoteBefore := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(worktree, "ahead.txt"), []byte("unpublished\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "ahead.txt")
+	gitTest(t, worktree, "commit", "-m", "local source commit")
+	want := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-ahead", ArchiveRemote: archive, Apply: true,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceSHA != want || result.OriginalRemoteSHA != remoteBefore {
+		t.Fatalf("unpushed commit not preserved: %#v", result)
+	}
+	if body := gitTestOutput(t, fixture.canonical, "show", result.SourceSHA+":ahead.txt"); body != "unpublished" {
+		t.Fatalf("retired source lost unpushed commit: %q", body)
+	}
+}
+
+func TestRetireRefusesIgnoredFilesAndUntrackedSymlinksBeforeStaging(t *testing.T) {
+	for _, kind := range []string{"ignored", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-extra", WorkLog: WorkLogOptions{Model: "unknown"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			worktree := created[0].WorktreeDir
+			gitTest(t, worktree, "push", "-u", "origin", "retire-extra")
+			if kind == "ignored" {
+				if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(worktree, "build"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(worktree, "build", "cache.bin"), []byte("cannot lose\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink("README.md", filepath.Join(worktree, "linked.md")); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "archive.git")
+			gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+			_, err = Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-extra", ArchiveRemote: archive, Apply: true,
+				Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+					return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+				},
+				OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+			})
+			if err == nil || !strings.Contains(err.Error(), kind) {
+				t.Fatalf("%s refusal: %v", kind, err)
+			}
+			if staged := gitTestOutput(t, worktree, "diff", "--cached", "--name-only"); staged != "" {
+				t.Fatalf("%s refusal changed index: %s", kind, staged)
 			}
 		})
 	}
@@ -193,10 +278,51 @@ func TestRetireRefusesOpenPRSecretPathAndHookFailure(t *testing.T) {
 			if head := gitTestOutput(t, worktree, "rev-parse", "HEAD"); head != before {
 				t.Fatalf("refusal moved source HEAD")
 			}
+			if reason == "secret-path" {
+				if staged := gitTestOutput(t, worktree, "diff", "--cached", "--name-only"); staged != "" {
+					t.Fatalf("secret refusal changed index: %s", staged)
+				}
+			}
 			if refs := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retired/*"); refs != "" {
 				t.Fatalf("refusal published retired ref: %s", refs)
 			}
 		})
+	}
+}
+
+func TestRetireCommitsDeletionOnlySourceChange(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "retire-deletion", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "remove.txt"), []byte("remove\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "remove.txt")
+	gitTest(t, worktree, "commit", "-m", "add removable file")
+	gitTest(t, worktree, "push", "-u", "origin", "retire-deletion")
+	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	if err := os.Remove(filepath.Join(worktree, "remove.txt")); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "archive.git")
+	gitTest(t, t.TempDir(), "init", "--bare", "--initial-branch=main", archive)
+	result, err := Retire(context.Background(), RetireOptions{ProjectsRoot: fixture.projectsRoot, Task: "retire-deletion", ArchiveRemote: archive, Apply: true,
+		Inspect: func(_ context.Context, repository string) (RetiredArchiveInspection, error) {
+			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
+		},
+		OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != "complete" || result.SourceSHA == before {
+		t.Fatalf("deletion was not committed: %#v", result)
+	}
+	if _, err := gitTestRun(fixture.canonical, "show", result.SourceSHA+":remove.txt"); err == nil {
+		t.Fatal("deleted source file still exists in retired commit")
 	}
 }
 

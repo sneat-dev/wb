@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
@@ -45,6 +47,12 @@ must be retired one repository at a time with --filter.`,
 			if err != nil {
 				return err
 			}
+			if apply && result.Phase == "complete" {
+				retireReleaseClaim(command.Context(), projectsRoot, args[0], remoteClaimWriter(command), worktrees.ListWithDiagnostics,
+					func(root, task string, out io.Writer) autoReleaseResult {
+						return tryAutoRelease(defaultRemoteDeps(), root, task, out)
+					})
+			}
 			if format == "json" {
 				return json.NewEncoder(command.OutOrStdout()).Encode(result)
 			}
@@ -57,4 +65,23 @@ must be retired one repository at a time with --filter.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonShortcut, "json", false, "shorthand for --format=json")
 	return command
+}
+
+// A filtered retirement ends only one checkout. Retain the shared task claim
+// until every repository in that task has been retired locally.
+func retireReleaseClaim(ctx context.Context, root, task string, out io.Writer,
+	inventory func(context.Context, worktrees.ListOptions) (worktrees.ListOutcome, error),
+	release func(string, string, io.Writer) autoReleaseResult,
+) autoReleaseResult {
+	remaining, err := inventory(ctx, worktrees.ListOptions{ProjectsRoot: root, Task: task, Workers: 1})
+	if err != nil {
+		return skippedAutoRelease(out, "cannot inventory remaining task worktrees: "+err.Error())
+	}
+	if len(remaining.Diagnostics) != 0 {
+		return skippedAutoRelease(out, fmt.Sprintf("%d malformed task worktree records remain", len(remaining.Diagnostics)))
+	}
+	if len(remaining.Results) != 0 {
+		return skippedAutoRelease(out, fmt.Sprintf("%d task worktrees remain", len(remaining.Results)))
+	}
+	return release(root, task, out)
 }
