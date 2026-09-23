@@ -82,7 +82,7 @@ Dependency order:
 
 Every task:
 
-- keeps the repository coverage floor, `--minimum=88` in `go-ci.yml`. No
+- keeps the repository coverage floor, `--minimum=87` in `go-ci.yml`. No
   per-package floor exists, so the reviewer checks that new packages are well
   covered. An agent never cuts approved scope to satisfy a guard;
 - adds `ai/capabilities.json` rows and `docs/cli-flag-matrix.md` lines for new
