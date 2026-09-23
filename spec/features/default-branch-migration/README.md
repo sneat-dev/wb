@@ -1,4 +1,12 @@
+---
+format: https://specscore.md/feature-specification
+status: Draft
+---
+
 # Default branch migration
+
+> [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/default-branch-migration?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/default-branch-migration?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/default-branch-migration?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/default-branch-migration?op=request-change) |
+**Status:** Draft
 
 ## Outcome
 
@@ -45,3 +53,7 @@ stashing, or rewriting it.
 `fleet.organizations.<owner>.default_branch` wins, and `--branch` wins for one
 invocation. `--all-orgs` explicitly selects every accessible organization;
 personal repositories remain opt-in with `--user`.
+
+## Open Questions
+
+None at this time.
